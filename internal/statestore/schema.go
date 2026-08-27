@@ -24,7 +24,7 @@ import (
 
 const (
 	currentSchemaMajorVersion        = 1
-	currentSchemaMinorVersion        = 2
+	currentSchemaMinorVersion        = 3
 	legacySchemaVersion2             = 2
 	legacySchemaVersion2MajorVersion = 1
 	legacySchemaVersion2MinorVersion = 1
@@ -40,6 +40,7 @@ const (
 	initialMigrationAppliedProbe           = `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'persistent_processes')`
 	workloadIDsMigrationAppliedProbe       = `SELECT EXISTS(SELECT 1 FROM pragma_table_info('persistent_processes') WHERE name = 'workload_id')`
 	persistentVolumesMigrationAppliedProbe = `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'persistent_volumes')`
+	volumeOwnershipMigrationAppliedProbe   = `SELECT EXISTS(SELECT 1 FROM pragma_table_info('persistent_volumes') WHERE name = 'ownership_token')`
 )
 
 // schemaMigrationProbe reports whether a single migration's schema changes are present in the database.
@@ -74,6 +75,7 @@ var (
 		minorProbes: []schemaMigrationProbe{
 			{version: 1, appliedQuery: workloadIDsMigrationAppliedProbe},
 			{version: 2, appliedQuery: persistentVolumesMigrationAppliedProbe},
+			{version: 3, appliedQuery: volumeOwnershipMigrationAppliedProbe},
 		},
 	}
 	schemaMajorMigrations = []schemaMajorMigration{schemaMajorVersion1Migration}
@@ -276,19 +278,29 @@ func (s *Store) importSchemaVersion2(ctx context.Context, busyTimeout time.Durat
 		return fmt.Errorf("schema major version %d is dirty", version)
 	}
 
-	migrationRunner, runnerErr := s.newMigrationRunner(
+	minorVersion, minorFound, _, minorVersionErr := readSchemaVersion(
 		ctx,
-		busyTimeout,
-		schemaMajorVersion1Migration.minorPath(),
+		s.db,
 		schemaMajorVersion1Migration.minorTableName,
 	)
-	if runnerErr != nil {
-		return runnerErr
+	if minorVersionErr != nil {
+		return fmt.Errorf("could not read schema minor version before importing schema version 2: %w", minorVersionErr)
 	}
-	forceErr := migrationRunner.Force(legacySchemaVersion2MinorVersion)
-	sourceCloseErr, databaseCloseErr := migrationRunner.Close()
-	if importErr := errors.Join(forceErr, sourceCloseErr, databaseCloseErr); importErr != nil {
-		return fmt.Errorf("could not import schema version 2 as a minor migration: %w", importErr)
+	if !minorFound || minorVersion < legacySchemaVersion2MinorVersion {
+		migrationRunner, runnerErr := s.newMigrationRunner(
+			ctx,
+			busyTimeout,
+			schemaMajorVersion1Migration.minorPath(),
+			schemaMajorVersion1Migration.minorTableName,
+		)
+		if runnerErr != nil {
+			return runnerErr
+		}
+		forceErr := migrationRunner.Force(legacySchemaVersion2MinorVersion)
+		sourceCloseErr, databaseCloseErr := migrationRunner.Close()
+		if importErr := errors.Join(forceErr, sourceCloseErr, databaseCloseErr); importErr != nil {
+			return fmt.Errorf("could not import schema version 2 as a minor migration: %w", importErr)
+		}
 	}
 
 	updateQuery := fmt.Sprintf(

@@ -121,6 +121,8 @@ func TestPersistentVolumeRecordsWorkloadID(t *testing.T) {
 	require.NoError(t, getErr)
 	require.Equal(t, commonapi.WorkloadID("workload-a"), record.WorkloadID)
 	require.Equal(t, inspectedVolume.Name, record.VolumeName)
+	require.NotEmpty(t, record.OwnershipToken)
+	require.Equal(t, record.OwnershipToken, inspectedVolume.Labels[containers.VolumeOwnershipTokenLabel])
 }
 
 func TestExistingPersistentVolumeIsNotRecordedForWorkloadCleanup(t *testing.T) {

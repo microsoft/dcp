@@ -153,6 +153,15 @@ func requirePersistentVolumesTable(t *testing.T, ctx context.Context, db *sql.DB
 	require.Equal(t, expected, hasTable)
 }
 
+func requireVolumeOwnershipColumn(t *testing.T, ctx context.Context, db *sql.DB, expected bool) {
+	t.Helper()
+
+	row := db.QueryRowContext(ctx, volumeOwnershipMigrationAppliedProbe)
+	var hasColumn bool
+	require.NoError(t, row.Scan(&hasColumn))
+	require.Equal(t, expected, hasColumn)
+}
+
 func resourceLocksHasColumn(ctx context.Context, conn *sql.Conn, columnName string) (bool, error) {
 	rows, queryErr := conn.QueryContext(ctx, `PRAGMA table_info(resource_locks)`)
 	if queryErr != nil {
@@ -491,7 +500,7 @@ func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T
 	store := openTestStore(t, ctx, storePath)
 	// Undo the latest minor migration's schema changes to simulate a migration that never committed,
 	// leaving only the dirty marker behind.
-	_, revertErr := store.db.ExecContext(ctx, `DROP TABLE persistent_volumes`)
+	_, revertErr := store.db.ExecContext(ctx, `ALTER TABLE persistent_volumes DROP COLUMN ownership_token`)
 	require.NoError(t, revertErr)
 	updateQuery := fmt.Sprintf(
 		`UPDATE %s SET dirty = 1`,
@@ -499,7 +508,8 @@ func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T
 	)
 	_, updateErr := store.db.ExecContext(ctx, updateQuery)
 	require.NoError(t, updateErr)
-	requirePersistentVolumesTable(t, ctx, store.db, false)
+	requirePersistentVolumesTable(t, ctx, store.db, true)
+	requireVolumeOwnershipColumn(t, ctx, store.db, false)
 
 	reopenedStore := openTestStore(t, ctx, storePath)
 
@@ -507,6 +517,7 @@ func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T
 	requireSchemaMinorVersion(t, ctx, reopenedStore, currentSchemaMinorVersion)
 	requireWorkloadIDColumn(t, ctx, reopenedStore.db, true)
 	requirePersistentVolumesTable(t, ctx, reopenedStore.db, true)
+	requireVolumeOwnershipColumn(t, ctx, reopenedStore.db, true)
 }
 
 func TestOpenRecoversDirtyInitialSchemaMajorVersion(t *testing.T) {
@@ -1419,10 +1430,11 @@ func TestPersistentVolumeRecordRoundTripByWorkloadID(t *testing.T) {
 	store := openTestStore(t, ctx, storePath)
 
 	record := PersistentVolumeRecord{
-		ResourceKey: "containervolumes/data",
-		VolumeName:  "data",
-		RuntimeName: "docker",
-		WorkloadID:  "workload-a",
+		ResourceKey:    "containervolumes/data",
+		VolumeName:     "data",
+		RuntimeName:    "docker",
+		WorkloadID:     "workload-a",
+		OwnershipToken: "ownership-token",
 	}
 	require.NoError(t, store.UpsertPersistentVolume(ctx, record))
 
@@ -1432,6 +1444,7 @@ func TestPersistentVolumeRecordRoundTripByWorkloadID(t *testing.T) {
 	require.Equal(t, record.VolumeName, actual.VolumeName)
 	require.Equal(t, record.RuntimeName, actual.RuntimeName)
 	require.Equal(t, record.WorkloadID, actual.WorkloadID)
+	require.Equal(t, record.OwnershipToken, actual.OwnershipToken)
 	require.False(t, actual.UpdatedAt.IsZero())
 
 	records, listErr := store.ListPersistentVolumesByWorkloadID(ctx, record.WorkloadID)
@@ -1441,6 +1454,7 @@ func TestPersistentVolumeRecordRoundTripByWorkloadID(t *testing.T) {
 	require.Equal(t, record.VolumeName, records[0].VolumeName)
 	require.Equal(t, record.RuntimeName, records[0].RuntimeName)
 	require.Equal(t, record.WorkloadID, records[0].WorkloadID)
+	require.Equal(t, record.OwnershipToken, records[0].OwnershipToken)
 	require.False(t, records[0].UpdatedAt.IsZero())
 
 	require.NoError(t, records[0].Delete(ctx))

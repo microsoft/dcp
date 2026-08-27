@@ -173,12 +173,19 @@ func TestCleanupWorkloadResourcesOnlyRemovesVolumesWhenEnabled(t *testing.T) {
 	require.NoError(t, orchestratorErr)
 
 	const volumeName = "app-data"
-	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+	const ownershipToken = "app-data-token"
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name: volumeName,
+		Labels: map[string]string{
+			containers.VolumeOwnershipTokenLabel: ownershipToken,
+		},
+	}))
 	require.NoError(t, stateStore.UpsertPersistentVolume(ctx, statestore.PersistentVolumeRecord{
-		ResourceKey: "containervolumes/" + volumeName,
-		VolumeName:  volumeName,
-		RuntimeName: cleanupTestRuntimeName,
-		WorkloadID:  "workload-a",
+		ResourceKey:    "containervolumes/" + volumeName,
+		VolumeName:     volumeName,
+		RuntimeName:    cleanupTestRuntimeName,
+		WorkloadID:     "workload-a",
+		OwnershipToken: ownershipToken,
 	}))
 
 	report, cleanupErr := cleanupWorkloadResources(
@@ -234,12 +241,67 @@ func TestRemovePersistentVolumeDoesNotForceRemoval(t *testing.T) {
 	wrappedOrchestrator := &recordingVolumeRemovalOrchestrator{ContainerOrchestrator: orchestrator}
 
 	const volumeName = "app-data"
-	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+	const ownershipToken = "app-data-token"
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name: volumeName,
+		Labels: map[string]string{
+			containers.VolumeOwnershipTokenLabel: ownershipToken,
+		},
+	}))
 
-	removeErr := removePersistentVolume(ctx, wrappedOrchestrator, volumeName)
+	removeErr := removePersistentVolume(ctx, wrappedOrchestrator, volumeName, ownershipToken)
 
 	require.NoError(t, removeErr)
 	require.False(t, wrappedOrchestrator.options.Force)
+}
+
+func TestCleanupWorkloadResourcesPreservesReplacementVolume(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+
+	const volumeName = "replacement-data"
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name: volumeName,
+		Labels: map[string]string{
+			containers.VolumeOwnershipTokenLabel: "replacement-token",
+		},
+	}))
+	require.NoError(t, stateStore.UpsertPersistentVolume(ctx, statestore.PersistentVolumeRecord{
+		ResourceKey:    "containervolumes/" + volumeName,
+		VolumeName:     volumeName,
+		RuntimeName:    cleanupTestRuntimeName,
+		WorkloadID:     "workload-a",
+		OwnershipToken: "original-token",
+	}))
+
+	report, cleanupErr := cleanupWorkloadResources(
+		ctx,
+		"workload-a",
+		stateStore,
+		leaseOwner,
+		func(string) (containers.ContainerOrchestrator, error) {
+			return orchestrator, nil
+		},
+		processExecutor,
+		cleanupWorkloadOptions{Volumes: true},
+		logr.Discard(),
+	)
+
+	require.NoError(t, cleanupErr)
+	require.Equal(t, cleanupStoppedCounts{Volumes: 1}, report.Stopped)
+	_, inspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
+	require.NoError(t, inspectErr)
+	_, getRecordErr := stateStore.GetPersistentVolume(ctx, "containervolumes/"+volumeName)
+	require.ErrorIs(t, getRecordErr, statestore.ErrPersistentVolumeNotFound)
 }
 
 func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworksAndVolumes(t *testing.T) {
@@ -264,7 +326,13 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworksAndVolumes(t *te
 
 	networkID, createNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "app-network"})
 	require.NoError(t, createNetworkErr)
-	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: "app-data"}))
+	const volumeOwnershipToken = "app-data-token"
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name: "app-data",
+		Labels: map[string]string{
+			containers.VolumeOwnershipTokenLabel: volumeOwnershipToken,
+		},
+	}))
 	containerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name: "api",
 		Networks: []containers.CreateContainerNetworkOptions{
@@ -287,10 +355,11 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworksAndVolumes(t *te
 		WorkloadID:  "workload-a",
 	}))
 	require.NoError(t, stateStore.UpsertPersistentVolume(ctx, statestore.PersistentVolumeRecord{
-		ResourceKey: "containervolumes/app-data",
-		VolumeName:  "app-data",
-		RuntimeName: cleanupTestRuntimeName,
-		WorkloadID:  "workload-a",
+		ResourceKey:    "containervolumes/app-data",
+		VolumeName:     "app-data",
+		RuntimeName:    cleanupTestRuntimeName,
+		WorkloadID:     "workload-a",
+		OwnershipToken: volumeOwnershipToken,
 	}))
 
 	type cleanupResult struct {

@@ -678,7 +678,7 @@ func cleanupPersistentVolumeRecord(
 			return fmt.Errorf("could not resolve container runtime %q: %w", currentRecord.RuntimeName, resolveErr)
 		}
 
-		removeErr := removePersistentVolume(ctx, orchestrator, currentRecord.VolumeName)
+		removeErr := removePersistentVolume(ctx, orchestrator, currentRecord.VolumeName, currentRecord.OwnershipToken)
 		if removeErr != nil {
 			return removeErr
 		}
@@ -752,17 +752,28 @@ func removePersistentContainer(ctx context.Context, orchestrator containers.Cont
 	return fmt.Errorf("container %s still exists after cleanup", containerID)
 }
 
-func removePersistentVolume(ctx context.Context, orchestrator containers.ContainerOrchestrator, volumeName string) error {
+func removePersistentVolume(
+	ctx context.Context,
+	orchestrator containers.ContainerOrchestrator,
+	volumeName string,
+	ownershipToken string,
+) error {
 	if strings.TrimSpace(volumeName) == "" {
 		return fmt.Errorf("volume name cannot be empty")
 	}
 
-	_, initialInspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
+	inspectedVolumes, initialInspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
 	if errors.Is(initialInspectErr, containers.ErrNotFound) {
 		return nil
 	}
 	if initialInspectErr != nil {
 		return initialInspectErr
+	}
+	if len(inspectedVolumes) == 0 {
+		return fmt.Errorf("volume %s could not be inspected before cleanup", volumeName)
+	}
+	if ownershipToken == "" || inspectedVolumes[0].Labels[containers.VolumeOwnershipTokenLabel] != ownershipToken {
+		return nil
 	}
 
 	_, removeErr := orchestrator.RemoveVolumes(ctx, containers.RemoveVolumesOptions{

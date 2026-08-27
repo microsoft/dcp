@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/go-logr/logr"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,6 +22,7 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/pointers"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/randdata"
 )
 
 // Data about ContainerVolume objects that we keep in memory
@@ -69,6 +69,8 @@ var (
 		apiv1.ContainerVolumeStateReady:            handleReadyContainerVolume,
 	}
 )
+
+const volumeOwnershipTokenLength = 32
 
 type volumeName string
 type volumeDataMap = ObjectStateMap[volumeName, containerVolumeData, *containerVolumeData, *apiv1.ContainerVolume]
@@ -246,8 +248,12 @@ func handleNewContainerVolume(
 		return setContainerVolumeState(vol, apiv1.ContainerVolumeStateReady)
 	}
 
-	_, inspectErr := inspectContainerVolumeIfExists(ctx, r.orchestrator, vol.Spec.Name)
+	inspectedVolume, inspectErr := inspectContainerVolumeIfExists(ctx, r.orchestrator, vol.Spec.Name)
 	if inspectErr == nil {
+		if reconcileRecordErr := r.reconcileExistingPersistentVolumeRecord(ctx, vol, inspectedVolume); reconcileRecordErr != nil {
+			log.Error(reconcileRecordErr, "Could not reconcile existing ContainerVolume workload record", "ResourceKey", vol.GetLeaseKey())
+			return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
+		}
 		log.V(1).Info("Container volume already exists")
 		volData.state = apiv1.ContainerVolumeStateReady
 		r.volumeData.Update(vol.NamespacedName(), volumeName(vol.Spec.Name), volData)
@@ -258,51 +264,128 @@ func handleNewContainerVolume(
 	}
 
 	// Need to create the volume
-	inspectedVolume, createErr := createVolume(ctx, r.orchestrator, vol.Spec.Name)
+	ownershipToken, prepareRecordErr := r.preparePersistentVolumeRecord(ctx, vol)
+	if prepareRecordErr != nil {
+		log.Error(prepareRecordErr, "Could not persist pending ContainerVolume workload record", "ResourceKey", vol.GetLeaseKey())
+		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
+	}
+
+	createOptions := containers.CreateVolumeOptions{Name: vol.Spec.Name}
+	if ownershipToken != "" {
+		createOptions.Labels = map[string]string{
+			containers.VolumeOwnershipTokenLabel: ownershipToken,
+		}
+	}
+	var createErr error
+	inspectedVolume, createErr = createVolume(ctx, r.orchestrator, createOptions)
+	if errors.Is(createErr, containers.ErrAlreadyExists) {
+		inspectedVolume, inspectErr = inspectContainerVolume(ctx, r.orchestrator, vol.Spec.Name)
+		if inspectErr == nil {
+			createErr = nil
+		} else {
+			createErr = errors.Join(createErr, inspectErr)
+		}
+	}
 	if createErr != nil {
 		log.Error(createErr, "Could not create a container volume")
 		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
 	}
-	if persistErr := r.upsertPersistentVolumeRecord(ctx, vol, inspectedVolume, log); persistErr != nil {
-		removeErr := removeVolume(context.WithoutCancel(ctx), r.orchestrator, vol.Spec.Name)
-		persistErr = errors.Join(persistErr, removeErr)
-		log.Error(persistErr, "Could not persist ContainerVolume workload record", "ResourceKey", vol.GetLeaseKey())
-		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
+	if ownershipToken != "" && !persistentVolumeOwnershipMatches(inspectedVolume, ownershipToken) {
+		discardRecordErr := r.discardPendingPersistentVolumeRecord(ctx, vol, ownershipToken)
+		if discardRecordErr != nil {
+			log.Error(discardRecordErr, "Could not discard stale ContainerVolume workload record", "ResourceKey", vol.GetLeaseKey())
+			return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
+		}
+		log.V(1).Info("Container volume was created concurrently and will be adopted")
+	} else {
+		log.V(1).Info("Container volume created")
 	}
 
-	log.V(1).Info("Container volume created")
 	volData.state = apiv1.ContainerVolumeStateReady
 	r.volumeData.Update(vol.NamespacedName(), volumeName(vol.Spec.Name), volData)
 	return setContainerVolumeState(vol, apiv1.ContainerVolumeStateReady)
 }
 
-func (r *VolumeReconciler) upsertPersistentVolumeRecord(
+func (r *VolumeReconciler) preparePersistentVolumeRecord(
+	ctx context.Context,
+	vol *apiv1.ContainerVolume,
+) (string, error) {
+	if r.config.WorkloadID == "" || !pointers.TrueValue(vol.Spec.Persistent) {
+		return "", nil
+	}
+	if r.config.StateStore == nil {
+		return "", fmt.Errorf("state store is not configured")
+	}
+
+	existingRecord, getRecordErr := r.config.StateStore.GetPersistentVolume(ctx, vol.GetLeaseKey())
+	if getRecordErr == nil &&
+		existingRecord.VolumeName == vol.Spec.Name &&
+		existingRecord.RuntimeName == r.orchestrator.Name() &&
+		existingRecord.WorkloadID == r.config.WorkloadID &&
+		existingRecord.OwnershipToken != "" {
+		return existingRecord.OwnershipToken, nil
+	}
+	if getRecordErr != nil && !errors.Is(getRecordErr, statestore.ErrPersistentVolumeNotFound) {
+		return "", getRecordErr
+	}
+
+	tokenBytes, tokenErr := randdata.MakeRandomString(volumeOwnershipTokenLength)
+	if tokenErr != nil {
+		return "", fmt.Errorf("could not generate persistent volume ownership token: %w", tokenErr)
+	}
+	ownershipToken := string(tokenBytes)
+
+	record := statestore.PersistentVolumeRecord{
+		ResourceKey:    vol.GetLeaseKey(),
+		VolumeName:     vol.Spec.Name,
+		RuntimeName:    r.orchestrator.Name(),
+		WorkloadID:     r.config.WorkloadID,
+		OwnershipToken: ownershipToken,
+	}
+	if persistErr := r.config.StateStore.UpsertPersistentVolume(ctx, record); persistErr != nil {
+		return "", persistErr
+	}
+	return ownershipToken, nil
+}
+
+func (r *VolumeReconciler) discardPendingPersistentVolumeRecord(
+	ctx context.Context,
+	vol *apiv1.ContainerVolume,
+	ownershipToken string,
+) error {
+	if ownershipToken == "" {
+		return nil
+	}
+	return r.config.StateStore.DeletePersistentVolume(ctx, vol.GetLeaseKey())
+}
+
+func (r *VolumeReconciler) reconcileExistingPersistentVolumeRecord(
 	ctx context.Context,
 	vol *apiv1.ContainerVolume,
 	inspectedVolume *containers.InspectedVolume,
-	log logr.Logger,
 ) error {
-	if r.config.WorkloadID == "" || !pointers.TrueValue(vol.Spec.Persistent) {
+	if r.config.WorkloadID == "" || !pointers.TrueValue(vol.Spec.Persistent) || r.config.StateStore == nil {
 		return nil
 	}
-	if r.config.StateStore == nil {
-		return fmt.Errorf("state store is not configured")
-	}
-	if inspectedVolume == nil || strings.TrimSpace(inspectedVolume.Name) == "" {
-		return fmt.Errorf("cannot persist ContainerVolume record without a valid volume name")
-	}
 
-	record := statestore.PersistentVolumeRecord{
-		ResourceKey: vol.GetLeaseKey(),
-		VolumeName:  inspectedVolume.Name,
-		RuntimeName: r.orchestrator.Name(),
-		WorkloadID:  r.config.WorkloadID,
+	record, getRecordErr := r.config.StateStore.GetPersistentVolume(ctx, vol.GetLeaseKey())
+	if errors.Is(getRecordErr, statestore.ErrPersistentVolumeNotFound) {
+		return nil
 	}
-	if persistErr := r.config.StateStore.UpsertPersistentVolume(ctx, record); persistErr != nil {
-		log.Error(persistErr, "Could not persist ContainerVolume workload record", "ResourceKey", record.ResourceKey)
-		return persistErr
+	if getRecordErr != nil {
+		return getRecordErr
 	}
-	return nil
+	if record.WorkloadID != r.config.WorkloadID || persistentVolumeOwnershipMatches(inspectedVolume, record.OwnershipToken) {
+		return nil
+	}
+	return r.config.StateStore.DeletePersistentVolume(ctx, record.ResourceKey)
+}
+
+func persistentVolumeOwnershipMatches(inspectedVolume *containers.InspectedVolume, ownershipToken string) bool {
+	if inspectedVolume == nil || ownershipToken == "" {
+		return false
+	}
+	return inspectedVolume.Labels[containers.VolumeOwnershipTokenLabel] == ownershipToken
 }
 
 func handleReadyContainerVolume(

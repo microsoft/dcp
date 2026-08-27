@@ -254,7 +254,13 @@ func (pco *PodmanCliOrchestrator) GetDiagnostics(ctx context.Context) (container
 }
 
 func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
-	cmd := makePodmanCommand("volume", "create", options.Name)
+	args := []string{"volume", "create"}
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
+	}
+	args = append(args, options.Name)
+
+	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return errors.Join(err, normalizeCliErrors(errBuf, volumeAlreadyExistsErrorMatch.MaxObjects(1)))

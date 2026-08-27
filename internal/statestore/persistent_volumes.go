@@ -19,12 +19,13 @@ import (
 var ErrPersistentVolumeNotFound = errors.New("persistent volume record not found")
 
 type PersistentVolumeRecord struct {
-	ResourceKey string
-	VolumeName  string
-	RuntimeName string
-	WorkloadID  commonapi.WorkloadID
-	UpdatedAt   time.Time
-	store       *Store
+	ResourceKey    string
+	VolumeName     string
+	RuntimeName    string
+	WorkloadID     commonapi.WorkloadID
+	OwnershipToken string
+	UpdatedAt      time.Time
+	store          *Store
 }
 
 func (r *PersistentVolumeRecord) Delete(ctx context.Context) error {
@@ -42,6 +43,7 @@ func (s *Store) UpsertPersistentVolume(ctx context.Context, record PersistentVol
 	record.ResourceKey = strings.TrimSpace(record.ResourceKey)
 	record.VolumeName = strings.TrimSpace(record.VolumeName)
 	record.RuntimeName = strings.TrimSpace(record.RuntimeName)
+	record.OwnershipToken = strings.TrimSpace(record.OwnershipToken)
 	normalizedWorkloadID, workloadIDErr := normalizePersistentWorkloadID(record.WorkloadID)
 	if workloadIDErr != nil {
 		return workloadIDErr
@@ -59,22 +61,27 @@ func (s *Store) UpsertPersistentVolume(ctx context.Context, record PersistentVol
 	if record.WorkloadID == "" {
 		return fmt.Errorf("%w: persistent volume workload ID cannot be empty", ErrInvalidArgument)
 	}
+	if record.OwnershipToken == "" {
+		return fmt.Errorf("%w: persistent volume ownership token cannot be empty", ErrInvalidArgument)
+	}
 
 	now := time.Now().UTC()
 	return s.withImmediateTx(ctx, func(conn *sql.Conn) error {
 		_, execErr := conn.ExecContext(
 			ctx,
-			`INSERT INTO persistent_volumes(resource_key, volume_name, runtime_name, workload_id, updated_at_unix_nano)
-			 VALUES(?, ?, ?, ?, ?)
+			`INSERT INTO persistent_volumes(resource_key, volume_name, runtime_name, workload_id, ownership_token, updated_at_unix_nano)
+			 VALUES(?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(resource_key) DO UPDATE SET
 				volume_name = excluded.volume_name,
 				runtime_name = excluded.runtime_name,
 				workload_id = excluded.workload_id,
+				ownership_token = excluded.ownership_token,
 				updated_at_unix_nano = excluded.updated_at_unix_nano`,
 			record.ResourceKey,
 			record.VolumeName,
 			record.RuntimeName,
 			string(record.WorkloadID),
+			record.OwnershipToken,
 			unixNano(now),
 		)
 		if execErr != nil {
@@ -97,7 +104,7 @@ func (s *Store) GetPersistentVolume(ctx context.Context, resourceKey string) (*P
 
 	row := db.QueryRowContext(
 		ctx,
-		`SELECT resource_key, volume_name, runtime_name, workload_id, updated_at_unix_nano
+		`SELECT resource_key, volume_name, runtime_name, workload_id, ownership_token, updated_at_unix_nano
 		 FROM persistent_volumes
 		 WHERE resource_key = ?`,
 		resourceKey,
@@ -132,7 +139,7 @@ func (s *Store) ListPersistentVolumesByWorkloadID(ctx context.Context, workloadI
 
 	rows, queryErr := db.QueryContext(
 		ctx,
-		`SELECT resource_key, volume_name, runtime_name, workload_id, updated_at_unix_nano
+		`SELECT resource_key, volume_name, runtime_name, workload_id, ownership_token, updated_at_unix_nano
 		 FROM persistent_volumes
 		 WHERE workload_id = ?
 		 ORDER BY resource_key`,
@@ -188,6 +195,7 @@ func scanPersistentVolume(row persistentVolumeScanner) (*PersistentVolumeRecord,
 		&record.VolumeName,
 		&record.RuntimeName,
 		&record.WorkloadID,
+		&record.OwnershipToken,
 		&updatedAtUnixNano,
 	)
 	if scanErr != nil {

@@ -628,6 +628,7 @@ func (obj withId) matches(name string) bool {
 type containerVolume struct {
 	name    string
 	created time.Time
+	labels  map[string]string
 }
 
 type containerNetwork struct {
@@ -730,7 +731,15 @@ func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, options c
 		return containers.ErrAlreadyExists
 	}
 
-	to.volumes[options.Name] = containerVolume{name: options.Name, created: time.Now().UTC()}
+	labels := make(map[string]string, len(options.Labels))
+	for key, value := range options.Labels {
+		labels[key] = value
+	}
+	to.volumes[options.Name] = containerVolume{
+		name:    options.Name,
+		created: time.Now().UTC(),
+		labels:  labels,
+	}
 
 	return nil
 }
@@ -792,12 +801,16 @@ func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, options
 			continue
 		}
 
+		labels := make(map[string]string, len(volume.labels))
+		for key, value := range volume.labels {
+			labels[key] = value
+		}
 		result = append(result, containers.InspectedVolume{
 			Name:       name,
 			Driver:     "local",
 			MountPoint: "",
 			Scope:      "local",
-			Labels:     map[string]string{},
+			Labels:     labels,
 			CreatedAt:  volume.created,
 		})
 	}
@@ -1359,7 +1372,7 @@ func (to *TestContainerOrchestrator) resolveCreateContainerNetworks(options cont
 	for _, requestedNetwork := range requestedNetworks {
 		requestedNetworkName := requestedNetwork.Name
 		if len(requestedNetwork.Aliases) > 0 {
-            // Docker CLI lowercases the full name=...,alias=... field when parsing long --network syntax, we mimic this behavior here
+			// Docker CLI lowercases the full name=...,alias=... field when parsing long --network syntax, we mimic this behavior here
 			requestedNetworkName = strings.ToLower(requestedNetworkName)
 		}
 
