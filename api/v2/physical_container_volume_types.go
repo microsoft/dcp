@@ -7,8 +7,8 @@ package v2
 
 import (
 	"context"
+	"fmt"
 	"reflect"
-	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -21,6 +21,12 @@ import (
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 
 	"github.com/microsoft/dcp/pkg/commonapi"
+)
+
+var (
+	// Container runtimes apply the container restricted-name format to volume names.
+	validVolumeName       = validContainerName
+	validVolumeNameRegexp = validContainerNameRegexp
 )
 
 // PhysicalContainerVolumePhase describes the lifecycle phase of a PhysicalContainerVolume.
@@ -217,10 +223,10 @@ func (pv *PhysicalContainerVolume) Validate(ctx context.Context) field.ErrorList
 
 	volume := pv.Spec.Volume
 	volumePath := specPath.Child("volume")
-	if strings.TrimSpace(volume.VolumeName) == "" {
+	if volume.VolumeName == "" {
 		errorList = append(errorList, field.Required(volumePath.Child("volumeName"), "volumeName must be set"))
-	} else if strings.TrimSpace(volume.VolumeName) != volume.VolumeName {
-		errorList = append(errorList, field.Invalid(volumePath.Child("volumeName"), volume.VolumeName, "volumeName must not have leading or trailing whitespace"))
+	} else if !validVolumeNameRegexp.MatchString(volume.VolumeName) {
+		errorList = append(errorList, field.Invalid(volumePath.Child("volumeName"), volume.VolumeName, fmt.Sprintf("volumeName must match regex '%s'", validVolumeName)))
 	}
 
 	errorList = append(errorList, validateLabels(volume.Labels, volumePath.Child("labels"))...)

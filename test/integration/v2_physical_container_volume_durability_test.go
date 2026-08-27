@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -71,6 +72,28 @@ type failOncePhysicalContainerVolumeStatusWriter struct {
 	client *failOncePhysicalContainerVolumeStatusClient
 }
 
+type failingVolumeInspectionOrchestrator struct {
+	containers.VolumeOrchestrator
+
+	lock             sync.Mutex
+	inspectionErrors []error
+}
+
+func (orchestrator *failingVolumeInspectionOrchestrator) InspectVolumes(
+	ctx context.Context,
+	options containers.InspectVolumesOptions,
+) ([]containers.InspectedVolume, error) {
+	orchestrator.lock.Lock()
+	if len(orchestrator.inspectionErrors) > 0 {
+		inspectErr := orchestrator.inspectionErrors[0]
+		orchestrator.inspectionErrors = orchestrator.inspectionErrors[1:]
+		orchestrator.lock.Unlock()
+		return nil, inspectErr
+	}
+	orchestrator.lock.Unlock()
+	return orchestrator.VolumeOrchestrator.InspectVolumes(ctx, options)
+}
+
 func (writer *failOncePhysicalContainerVolumeStatusWriter) Patch(
 	ctx context.Context,
 	obj ctrl_client.Object,
@@ -81,6 +104,93 @@ func (writer *failOncePhysicalContainerVolumeStatusWriter) Patch(
 		return statusErr
 	}
 	return writer.SubResourceWriter.Patch(ctx, obj, patch, opts...)
+}
+
+func TestV2PhysicalContainerVolumeControllerRetriesUncertainCreateCleanup(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	namespace := durablePhysicalContainerVolumeNamespace("uncertain-volume-create-cleanup")
+	volumeName := "uncertain-volume-create-cleanup-runtime"
+	volume := durablePhysicalContainerVolume(namespace.Name, "uncertain-volume-create-cleanup", volumeName)
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalContainerVolume{}).
+		WithObjects(namespace, volume).
+		Build()
+	baseOrchestrator := newDurabilityTestContainerOrchestrator(t, ctx)
+	baseOrchestrator.FailNextCreateVolumeAfterCreation(volumeName, errors.New("create result lost"))
+	orchestrator := &failingVolumeInspectionOrchestrator{
+		VolumeOrchestrator: baseOrchestrator,
+		inspectionErrors: []error{
+			errors.New("create verification unavailable"),
+			errors.New("deletion verification unavailable"),
+		},
+	}
+
+	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
+	request := ctrl.Request{NamespacedName: volume.NamespacedName()}
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+
+		currentVolume := &apiv2.PhysicalContainerVolume{}
+		if getErr := baseClient.Get(ctx, volume.NamespacedName(), currentVolume); getErr != nil {
+			return false, getErr
+		}
+		readyCondition := apimeta.FindStatusCondition(currentVolume.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			readyCondition.Reason == string(apiv2.PhysicalContainerVolumeReasonCreateFailed), nil
+	})
+	require.NoError(t, waitErr)
+
+	currentVolume := &apiv2.PhysicalContainerVolume{}
+	require.NoError(t, baseClient.Get(ctx, volume.NamespacedName(), currentVolume))
+	require.NoError(t, baseClient.Delete(ctx, currentVolume))
+
+	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+
+		if getErr := baseClient.Get(ctx, volume.NamespacedName(), currentVolume); getErr != nil {
+			return false, getErr
+		}
+		readyCondition := apimeta.FindStatusCondition(currentVolume.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			readyCondition.Reason == string(apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoveFailed), nil
+	})
+	require.NoError(t, waitErr)
+	require.NotEmpty(t, currentVolume.Finalizers)
+
+	inspectedVolumes, inspectErr := baseOrchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedVolumes, 1)
+
+	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+
+		getErr := baseClient.Get(ctx, volume.NamespacedName(), currentVolume)
+		if apierrors.IsNotFound(getErr) {
+			return true, nil
+		}
+		if getErr != nil {
+			return false, getErr
+		}
+		return len(currentVolume.Finalizers) == 0, nil
+	})
+	require.NoError(t, waitErr)
+
+	_, inspectErr = baseOrchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
+	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
 }
 
 func TestV2PhysicalContainerVolumeControllerRetainsCreatedVolumeUntilStatusIsDurable(t *testing.T) {

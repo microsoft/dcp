@@ -101,6 +101,26 @@ func TestPhysicalContainerVolumeValidate(t *testing.T) {
 			expectedError: "spec.volume.volumeName",
 		},
 		{
+			name: "invalid volume name",
+			volume: PhysicalContainerVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
+				Spec: PhysicalContainerVolumeSpec{
+					Volume: &PhysicalContainerVolumeConfig{VolumeName: "invalid volume"},
+				},
+			},
+			expectedError: "volumeName must match regex",
+		},
+		{
+			name: "single-character volume name",
+			volume: PhysicalContainerVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
+				Spec: PhysicalContainerVolumeSpec{
+					Volume: &PhysicalContainerVolumeConfig{VolumeName: "v"},
+				},
+			},
+			expectedError: "volumeName must match regex",
+		},
+		{
 			name: "missing label key",
 			volume: PhysicalContainerVolume{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},

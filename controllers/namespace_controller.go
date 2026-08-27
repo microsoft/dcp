@@ -314,17 +314,21 @@ func (r *NamespaceReconciler) cleanupPhysicalContainerVolumes(ctx context.Contex
 		return 0, fmt.Errorf("failed to list PhysicalContainerVolumes in namespace %q: %w", namespace.Name, listErr)
 	}
 
-	for i := range physicalContainerVolumes.Items {
-		physicalContainerVolume := &physicalContainerVolumes.Items[i]
+	deleteErrors := slices.MapConcurrent[error](physicalContainerVolumes.Items, func(physicalContainerVolume apiv2.PhysicalContainerVolume) error {
 		if physicalContainerVolume.DeletionTimestamp != nil && !physicalContainerVolume.DeletionTimestamp.IsZero() {
-			continue
+			return nil
 		}
 
 		log.V(1).Info("Deleting PhysicalContainerVolume during namespace cleanup", "Namespace", namespace.Name, "PhysicalContainerVolume", physicalContainerVolume.Name)
-		deleteErr := r.Client.Delete(ctx, physicalContainerVolume)
-		if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-			return 0, fmt.Errorf("failed to delete PhysicalContainerVolume %q in namespace %q: %w", physicalContainerVolume.Name, namespace.Name, deleteErr)
+		deletePhysicalContainerVolumeErr := r.Client.Delete(ctx, &physicalContainerVolume)
+		if deletePhysicalContainerVolumeErr != nil && !apierrors.IsNotFound(deletePhysicalContainerVolumeErr) {
+			return fmt.Errorf("failed to delete PhysicalContainerVolume %q in namespace %q: %w", physicalContainerVolume.Name, namespace.Name, deletePhysicalContainerVolumeErr)
 		}
+		return nil
+	}, namespaceCleanupMaxConcurrentDeletes)
+	deleteErr := errors.Join(deleteErrors...)
+	if deleteErr != nil {
+		return 0, deleteErr
 	}
 
 	return len(physicalContainerVolumes.Items), nil
