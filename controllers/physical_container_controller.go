@@ -644,7 +644,7 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		Ports:        physicalPortsToCreateContainerPorts(containerConfig.Ports),
 		Networks:     physicalNetworksToCreateContainerNetworks(containerConfig.Networks),
 		Env:          containerConfig.Env,
-		Labels:       physicalContainerCreationLabels(container),
+		Labels:       physicalContainerCreationLabels(container, log),
 	})
 	if createErr != nil {
 		log.Error(createErr, "Failed to create physical container")
@@ -1044,12 +1044,13 @@ func physicalNetworksToCreateContainerNetworks(networks []apiv2.ContainerNetwork
 	return retval
 }
 
-func physicalContainerCreationLabels(container *apiv2.PhysicalContainer) []containers.Label {
-	labels := append([]containers.Label{}, container.Spec.Container.Labels...)
-	if container.UID != "" {
-		labels = setRuntimeLabel(labels, uidLabel, string(container.UID))
-	}
-	return labels
+func physicalContainerCreationLabels(container *apiv2.PhysicalContainer, log logr.Logger) []containers.Label {
+	return physicalResourceCreationLabels(
+		container.Spec.Container.Labels,
+		container.Spec.Container.RetainRuntimeContainer,
+		container.UID,
+		log,
+	)
 }
 
 func applyInspectedPhysicalContainerStatus(container *apiv2.PhysicalContainer, inspectedContainer *containers.InspectedContainer, log logr.Logger) objectChange {

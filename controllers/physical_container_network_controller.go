@@ -334,7 +334,7 @@ func (r *PhysicalContainerNetworkReconciler) createPhysicalContainerNetwork(
 	networkID, createErr := r.orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
 		Name:   networkConfig.NetworkName,
 		IPv6:   networkConfig.IPv6,
-		Labels: physicalContainerNetworkCreationLabels(network),
+		Labels: physicalContainerNetworkCreationLabels(network, log),
 	})
 	r.applyPhysicalContainerNetworkCreateResult(ctx, network, data, networkID, createErr, log)
 	r.queuePhysicalContainerNetworkDataResult(network, stateKey, data)
@@ -1000,14 +1000,17 @@ func inspectPhysicalContainerNetwork(ctx context.Context, orchestrator container
 	return nil, containers.ErrNotFound
 }
 
-func physicalContainerNetworkCreationLabels(network *apiv2.PhysicalContainerNetwork) map[string]string {
+func physicalContainerNetworkCreationLabels(network *apiv2.PhysicalContainerNetwork, log logr.Logger) map[string]string {
 	networkConfig := network.Spec.Network
-	labels := map[string]string{}
-	for _, label := range networkConfig.Labels {
+	creationLabels := physicalResourceCreationLabels(
+		networkConfig.Labels,
+		networkConfig.RetainRuntimeNetwork,
+		network.UID,
+		log,
+	)
+	labels := make(map[string]string, len(creationLabels))
+	for _, label := range creationLabels {
 		labels[label.Key] = label.Value
-	}
-	if network.UID != "" {
-		labels[uidLabel] = string(network.UID)
 	}
 	return labels
 }

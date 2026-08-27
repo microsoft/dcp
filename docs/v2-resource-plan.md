@@ -116,9 +116,10 @@ This document tracks the intended direction for DCP V2 resources. The current V2
    - Do not assume the V1 `Executable` type will migrate to `PhysicalProcess`; IDE protocol integration may make that migration too complicated or undesirable.
 
 7. Add logical resource controllers.
-   - Physical resource creation definitions expose runtime labels, but physical controllers do not infer logical lifecycle, persistence, or creator-process labels. They reserve only an internal resource UID label needed to recognize runtime objects created by an uncertain prior attempt.
-   - Build-created images receive the internal UID label through `build.labels`. Pulling resolves an expected named image and is not a runtime-object creation operation.
-   - Logical controllers determine those labels when creating physical resources. Physical resource retention fields govern API-driven deletion only; logical controllers provide any labels consumed by startup harvesting.
+   - Physical controllers preserve caller-supplied runtime labels and reserve the persistence, creator-process, and internal resource UID labels they need for harvesting and uncertain-create recovery.
+   - Containers and networks derive their persistence label from their physical retention field. Network harvesting intentionally ignores that label and removes orphaned networks after their creator exits so persistent networks cannot exhaust the runtime's finite default network allocations.
+   - Build-created images receive persistent, creator-process, and internal UID labels through `build.labels`. Pulling resolves an expected named image and is not a runtime-object creation operation.
+   - Logical controllers determine additional labels and physical retention intent when creating physical resources.
 
 8. Retry recoverable failures in `PhysicalContainerImage`.
    - `ensurePulledImage` and `ensureBuiltImage` record an inspection failure without requesting another reconciliation, so a repeated identical failure produces no status change and leaves the image with nothing scheduled to retry it.

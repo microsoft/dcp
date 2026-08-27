@@ -48,6 +48,9 @@ func TestV2PhysicalContainerNetworkControllerCreatesNetwork(t *testing.T) {
 				Labels: []commonapi.Label{
 					{Key: "test-label", Value: "test-value"},
 					{Key: "com.microsoft.developer.usvc-dev.uid", Value: "caller-value"},
+					{Key: controllers.PersistentLabel, Value: "caller-value"},
+					{Key: controllers.CreatorProcessIdLabel, Value: "caller-value"},
+					{Key: controllers.CreatorProcessStartTimeLabel, Value: "caller-value"},
 				},
 			},
 		},
@@ -73,9 +76,11 @@ func TestV2PhysicalContainerNetworkControllerCreatesNetwork(t *testing.T) {
 	labels := runtimeNetworkLabels(t, ctx, networkName)
 	require.Equal(t, "test-value", labels["test-label"])
 	require.Equal(t, string(updatedNetwork.UID), labels["com.microsoft.developer.usvc-dev.uid"])
-	require.NotContains(t, labels, controllers.PersistentLabel)
-	require.NotContains(t, labels, controllers.CreatorProcessIdLabel)
-	require.NotContains(t, labels, controllers.CreatorProcessStartTimeLabel)
+	require.Equal(t, "false", labels[controllers.PersistentLabel])
+	require.NotEmpty(t, labels[controllers.CreatorProcessIdLabel])
+	require.NotEqual(t, "caller-value", labels[controllers.CreatorProcessIdLabel])
+	require.NotEmpty(t, labels[controllers.CreatorProcessStartTimeLabel])
+	require.NotEqual(t, "caller-value", labels[controllers.CreatorProcessStartTimeLabel])
 }
 
 func TestV2PhysicalContainerNetworkControllerTracksExistingNetwork(t *testing.T) {
@@ -263,7 +268,7 @@ func TestV2PhysicalContainerNetworkControllerPreservesCreatedNetworkOnDeletion(t
 
 	updatedNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	networkID := updatedNetwork.Status.NetworkID
-	require.NotContains(t, runtimeNetworkLabels(t, ctx, networkName), controllers.PersistentLabel)
+	require.Equal(t, "true", runtimeNetworkLabels(t, ctx, networkName)[controllers.PersistentLabel])
 
 	require.NoError(t, client.Delete(ctx, network))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
