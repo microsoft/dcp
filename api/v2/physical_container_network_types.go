@@ -34,21 +34,20 @@ var (
 )
 
 // PhysicalContainerNetworkPhase describes the lifecycle phase of a PhysicalContainerNetwork.
-type PhysicalContainerNetworkPhase string
+type PhysicalContainerNetworkPhase PhysicalResourcePhase
 
 const (
 	// PhysicalContainerNetworkPhasePending indicates that the network is waiting for prerequisites.
-	PhysicalContainerNetworkPhasePending PhysicalContainerNetworkPhase = "Pending"
+	PhysicalContainerNetworkPhasePending PhysicalContainerNetworkPhase = PhysicalContainerNetworkPhase(PhysicalResourcePhasePending)
 
 	// PhysicalContainerNetworkPhaseReady indicates that the runtime network is available.
-	PhysicalContainerNetworkPhaseReady PhysicalContainerNetworkPhase = "Ready"
+	PhysicalContainerNetworkPhaseReady PhysicalContainerNetworkPhase = PhysicalContainerNetworkPhase(PhysicalResourcePhaseReady)
 
-	// PhysicalContainerNetworkPhaseMissing indicates that the referenced runtime network was not found.
-	PhysicalContainerNetworkPhaseMissing PhysicalContainerNetworkPhase = "Missing"
+	// PhysicalContainerNetworkPhaseUnknown indicates that network availability cannot be determined.
+	PhysicalContainerNetworkPhaseUnknown PhysicalContainerNetworkPhase = PhysicalContainerNetworkPhase(PhysicalResourcePhaseUnknown)
 
-	// PhysicalContainerNetworkPhaseFailed indicates that creating, inspecting, or removing the runtime network
-	// failed, or that its deletion policy is invalid for the observed runtime network.
-	PhysicalContainerNetworkPhaseFailed PhysicalContainerNetworkPhase = "Failed"
+	// PhysicalContainerNetworkPhaseFailed indicates a terminal creation or replacement failure.
+	PhysicalContainerNetworkPhaseFailed PhysicalContainerNetworkPhase = PhysicalContainerNetworkPhase(PhysicalResourcePhaseFailed)
 )
 
 const (
@@ -61,11 +60,17 @@ const (
 	// PhysicalContainerNetworkReasonCreateFailed indicates that runtime network creation failed.
 	PhysicalContainerNetworkReasonCreateFailed ConditionReason = "CreateFailed"
 
-	// PhysicalContainerNetworkReasonNetworkReady indicates that the runtime network is available.
-	PhysicalContainerNetworkReasonNetworkReady ConditionReason = "NetworkReady"
+	// PhysicalContainerNetworkReasonExistingNetworkReplacementFailed indicates that an existing runtime network could not be replaced.
+	PhysicalContainerNetworkReasonExistingNetworkReplacementFailed ConditionReason = "ExistingNetworkReplacementFailed"
+
+	// PhysicalContainerNetworkReasonNetworkAvailable indicates that the runtime network is available.
+	PhysicalContainerNetworkReasonNetworkAvailable ConditionReason = "NetworkAvailable"
 
 	// PhysicalContainerNetworkReasonRuntimeNetworkMissing indicates that the runtime network was not found.
 	PhysicalContainerNetworkReasonRuntimeNetworkMissing ConditionReason = "RuntimeNetworkMissing"
+
+	// PhysicalContainerNetworkReasonRuntimeNetworkInspectFailed indicates that the runtime network could not be inspected.
+	PhysicalContainerNetworkReasonRuntimeNetworkInspectFailed ConditionReason = "RuntimeNetworkInspectFailed"
 
 	// PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed indicates that the runtime network could not be removed.
 	PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed ConditionReason = "RuntimeNetworkRemoveFailed"
@@ -78,9 +83,6 @@ const (
 
 	// PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable indicates that replacement targeted a built-in runtime network.
 	PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable ConditionReason = "BuiltInNetworkNotRemovable"
-
-	// PhysicalContainerNetworkReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
-	PhysicalContainerNetworkReasonReconciliationFailed ConditionReason = "ReconciliationFailed"
 )
 
 // PhysicalContainerNetworkSpec describes either an existing runtime network or how to create one.
@@ -120,7 +122,7 @@ type PhysicalContainerNetworkConfig struct {
 // +k8s:openapi-gen=true
 type PhysicalContainerNetworkStatus struct {
 	// Phase summarizes whether the runtime network is available.
-	// +kubebuilder:validation:Enum=Pending;Ready;Missing;Failed
+	// +kubebuilder:validation:Enum=Pending;Ready;Unknown;Failed
 	// +optional
 	Phase PhysicalContainerNetworkPhase `json:"phase,omitempty"`
 

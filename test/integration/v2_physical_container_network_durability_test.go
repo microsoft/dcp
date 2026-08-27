@@ -276,7 +276,7 @@ func TestV2PhysicalContainerNetworkControllerRetriesUncertainCreateCleanup(t *te
 		}
 		readyCondition := apimeta.FindStatusCondition(currentNetwork.Status.Conditions, string(apiv2.ConditionReady))
 		return readyCondition != nil &&
-			readyCondition.Reason == string(apiv2.PhysicalContainerNetworkReasonReconciliationFailed), nil
+			readyCondition.Reason == string(apiv2.PhysicalContainerNetworkReasonCreateFailed), nil
 	})
 	require.NoError(t, waitErr)
 
