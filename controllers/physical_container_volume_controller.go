@@ -22,8 +22,6 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
-	"github.com/microsoft/dcp/pkg/osutil"
-	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -299,7 +297,7 @@ func (r *PhysicalContainerVolumeReconciler) createPhysicalContainerVolume(
 
 	createErr := r.orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
 		Name:   volumeConfig.VolumeName,
-		Labels: physicalContainerVolumeCreationLabels(volume, log),
+		Labels: physicalContainerVolumeCreationLabels(volume),
 	})
 	r.applyPhysicalContainerVolumeCreateResult(ctx, volume, data, createErr, log)
 	r.queuePhysicalContainerVolumeDataResult(volume, stateKey, data)
@@ -594,24 +592,14 @@ func inspectPhysicalContainerVolume(
 	return nil, containers.ErrNotFound
 }
 
-func physicalContainerVolumeCreationLabels(volume *apiv2.PhysicalContainerVolume, log logr.Logger) map[string]string {
+func physicalContainerVolumeCreationLabels(volume *apiv2.PhysicalContainerVolume) map[string]string {
 	labels := map[string]string{}
 	for _, label := range volume.Spec.Volume.Labels {
 		labels[label.Key] = label.Value
 	}
-	labels[PersistentLabel] = fmt.Sprintf("%t", volume.Spec.Volume.RetainRuntimeVolume)
 	if volume.UID != "" {
 		labels[uidLabel] = string(volume.UID)
 	}
-
-	thisProcess, thisProcessErr := process.This()
-	if thisProcessErr != nil {
-		log.Error(thisProcessErr, "Could not get the current process information; runtime volume will not have creator process information")
-		return labels
-	}
-
-	labels[CreatorProcessIdLabel] = fmt.Sprintf("%d", thisProcess.Pid)
-	labels[CreatorProcessStartTimeLabel] = thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)
 	return labels
 }
 

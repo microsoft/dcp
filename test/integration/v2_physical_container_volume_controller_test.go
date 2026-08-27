@@ -40,7 +40,10 @@ func TestV2PhysicalContainerVolumeControllerCreatesVolume(t *testing.T) {
 		Spec: apiv2.PhysicalContainerVolumeSpec{
 			Volume: &apiv2.PhysicalContainerVolumeConfig{
 				VolumeName: volumeName,
-				Labels:     []commonapi.Label{{Key: "test-label", Value: "test-value"}},
+				Labels: []commonapi.Label{
+					{Key: "test-label", Value: "test-value"},
+					{Key: "com.microsoft.developer.usvc-dev.uid", Value: "caller-value"},
+				},
 			},
 		},
 	}
@@ -57,10 +60,10 @@ func TestV2PhysicalContainerVolumeControllerCreatesVolume(t *testing.T) {
 
 	inspectedVolume := inspectRuntimeVolume(t, ctx, volumeName)
 	require.Equal(t, "test-value", inspectedVolume.Labels["test-label"])
-	require.Equal(t, "false", inspectedVolume.Labels[controllers.PersistentLabel])
 	require.Equal(t, string(readyVolume.UID), inspectedVolume.Labels["com.microsoft.developer.usvc-dev.uid"])
-	require.NotEmpty(t, inspectedVolume.Labels[controllers.CreatorProcessIdLabel])
-	require.NotEmpty(t, inspectedVolume.Labels[controllers.CreatorProcessStartTimeLabel])
+	require.NotContains(t, inspectedVolume.Labels, controllers.PersistentLabel)
+	require.NotContains(t, inspectedVolume.Labels, controllers.CreatorProcessIdLabel)
+	require.NotContains(t, inspectedVolume.Labels, controllers.CreatorProcessStartTimeLabel)
 }
 
 func TestV2PhysicalContainerVolumeControllerRetainsReferencedVolume(t *testing.T) {
@@ -116,7 +119,7 @@ func TestV2PhysicalContainerVolumeControllerDeletesCreatedVolumesUnlessPersisten
 		require.NoError(t, client.Delete(ctx, volume))
 		ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
 		if persistent {
-			require.Equal(t, "true", inspectRuntimeVolume(t, ctx, volumeName).Labels[controllers.PersistentLabel])
+			require.NotNil(t, inspectRuntimeVolume(t, ctx, volumeName))
 		} else {
 			waitRuntimeVolumeMissing(t, ctx, volumeName)
 		}
@@ -291,7 +294,7 @@ func TestV2PhysicalContainerVolumeControllerReplacesAndPersistsExistingVolume(t 
 	require.Equal(t, 1, containerOrchestrator.RemoveVolumeCallCount(volumeName))
 	replacement := inspectRuntimeVolume(t, ctx, volumeName)
 	require.Equal(t, string(readyVolume.UID), replacement.Labels["com.microsoft.developer.usvc-dev.uid"])
-	require.Equal(t, "true", replacement.Labels[controllers.PersistentLabel])
+	require.NotContains(t, replacement.Labels, controllers.PersistentLabel)
 
 	require.NoError(t, client.Delete(ctx, volume))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)

@@ -5866,7 +5866,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeConfig(ref common.Refere
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Labels contains labels to apply to a newly-created runtime volume.",
+							Description: "Labels contains labels to apply to a newly-created runtime volume. The physical resource UID label is reserved and set by the controller.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
