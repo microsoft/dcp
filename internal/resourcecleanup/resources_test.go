@@ -25,6 +25,7 @@ func TestShutdownResourcesIncludeV1AndV2Namespace(t *testing.T) {
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.PhysicalContainerImage{}).GetGroupVersionResource())
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource())
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.PhysicalContainerVolume{}).GetGroupVersionResource())
+	require.NotContains(t, shutdownResourceGVRs, (&apiv2.PhysicalProcess{}).GetGroupVersionResource())
 }
 
 func TestNamespaceResourcesCleanPhysicalContainersFirst(t *testing.T) {
@@ -33,12 +34,14 @@ func TestNamespaceResourcesCleanPhysicalContainersFirst(t *testing.T) {
 	physicalContainerImageGVR := (&apiv2.PhysicalContainerImage{}).GetGroupVersionResource()
 	physicalContainerNetworkGVR := (&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource()
 	physicalContainerVolumeGVR := (&apiv2.PhysicalContainerVolume{}).GetGroupVersionResource()
+	physicalProcessGVR := (&apiv2.PhysicalProcess{}).GetGroupVersionResource()
 
-	require.Len(t, namespaceResourcesByGVR, 4)
+	require.Len(t, namespaceResourcesByGVR, 5)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerImageGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerNetworkGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerVolumeGVR)
+	require.Contains(t, namespaceResourcesByGVR, physicalProcessGVR)
 	require.Contains(t, namespaceResourcesByGVR[physicalContainerImageGVR].CleanUpAfter, physicalContainerGVR)
 	// A network cannot be removed while containers are still attached to it.
 	require.Contains(t, namespaceResourcesByGVR[physicalContainerNetworkGVR].CleanUpAfter, physicalContainerGVR)

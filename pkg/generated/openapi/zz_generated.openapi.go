@@ -117,6 +117,11 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.PhysicalContainerVolumeList{}.OpenAPIModelName():       schema_microsoft_dcp_api_v2_PhysicalContainerVolumeList(ref),
 		v2.PhysicalContainerVolumeSpec{}.OpenAPIModelName():       schema_microsoft_dcp_api_v2_PhysicalContainerVolumeSpec(ref),
 		v2.PhysicalContainerVolumeStatus{}.OpenAPIModelName():     schema_microsoft_dcp_api_v2_PhysicalContainerVolumeStatus(ref),
+		v2.PhysicalProcess{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_PhysicalProcess(ref),
+		v2.PhysicalProcessConfig{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref),
+		v2.PhysicalProcessList{}.OpenAPIModelName():               schema_microsoft_dcp_api_v2_PhysicalProcessList(ref),
+		v2.PhysicalProcessSpec{}.OpenAPIModelName():               schema_microsoft_dcp_api_v2_PhysicalProcessSpec(ref),
+		v2.PhysicalProcessStatus{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref),
 		v2.VolumeMount{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v2_VolumeMount(ref),
 		commonapi.EnvVar{}.OpenAPIModelName():                     schema_microsoft_dcp_pkg_commonapi_EnvVar(ref),
 		commonapi.Label{}.OpenAPIModelName():                      schema_microsoft_dcp_pkg_commonapi_Label(ref),
@@ -6009,6 +6014,294 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeStatus(ref common.Refere
 						SchemaProps: spec.SchemaProps{
 							Description: "CreatedAt is the runtime volume creation timestamp.",
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe readiness and reconciliation progress.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalProcess(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalProcess represents one operating system process in a DCP V2 namespace.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.PhysicalProcessSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.PhysicalProcessStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalProcessSpec{}.OpenAPIModelName(), v2.PhysicalProcessStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalProcessConfig describes an operating system process to launch.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"retainRuntimeProcess": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RetainRuntimeProcess keeps a process launched by this resource running when the resource is deleted.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"executablePath": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExecutablePath is the executable path or name to launch.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"args": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Args are arguments passed to the executable.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"workingDirectory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "WorkingDirectory is the process working directory. The controller process working directory is used when omitted.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"inheritEnvironment": {
+						SchemaProps: spec.SchemaProps{
+							Description: "InheritEnvironment includes the controller process environment when true.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"env": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Env contains process environment variables. These values override inherited variables with the same name.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"executablePath"},
+			},
+		},
+		Dependencies: []string{
+			commonapi.EnvVar{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalProcessList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalProcessList contains a list of PhysicalProcess instances.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.PhysicalProcess{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalProcess{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalProcessSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalProcessSpec describes either an existing operating system process or how to launch one.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"pid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PID identifies an existing operating system process to track. Exactly one of pid or process must be set. The process is identified by PID initially and guarded against PID reuse by status.identityTimestamp.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"process": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Process describes an operating system process to launch. Exactly one of pid or process must be set.",
+							Ref:         ref(v2.PhysicalProcessConfig{}.OpenAPIModelName()),
+						},
+					},
+					"stop": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Stop requests that the tracked operating system process be stopped.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalProcessConfig{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalProcessStatus describes the observed operating system process.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase summarizes the operating system process lifecycle.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PID is the operating system process ID being tracked.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"identityTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IdentityTimestamp identifies the specific process instance and prevents PID reuse from targeting a different process. On Linux this value represents elapsed time since boot rather than wall-clock time.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"finishedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FinishedAt is when the controller observed process exit.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"exitCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExitCode is the process exit code when it was available to the controller.",
+							Type:        []string{"integer"},
+							Format:      "int32",
 						},
 					},
 					"conditions": {

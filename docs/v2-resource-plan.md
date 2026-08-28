@@ -1,6 +1,6 @@
 # V2 resource plan
 
-This document tracks the intended direction for DCP V2 resources. The current V2 work establishes the namespace model and the first physical container, image, network, and volume primitives; follow-up work should continue using the design guidelines below so future resources remain consistent.
+This document tracks the intended direction for DCP V2 resources. The current V2 work establishes the namespace model and the first physical container, image, network, volume, and process primitives; follow-up work should continue using the design guidelines below so future resources remain consistent.
 
 ## Design guidelines
 
@@ -80,6 +80,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - `PhysicalContainer` creates or tracks one runtime container, reports runtime status and port mappings, and references a same-namespace `PhysicalContainerImage`.
 - `PhysicalContainerNetwork` creates or references one runtime container network and reports its observed identity, driver, and address allocations. Its spec contains exactly one of top-level `networkID` or nested `network` creation config. Networks referenced by runtime ID are always retained. Created networks are retained when `network.retainRuntimeNetwork` is true; otherwise deletion enumerates running and stopped attachments, forcibly disconnects each container without removing it, and then removes the network. Name collisions are terminal unless `network.replaceExisting` is true, in which case the controller safely removes the specifically resolved network before creating its replacement. Runtime adapters classify their own built-in, non-removable networks, and replacement rejects them before disconnecting any attachments.
 - `PhysicalContainerVolume` creates or references one runtime container volume and reports its observed identifier, driver, scope, mount point, and creation time. Its spec contains exactly one of top-level `volumeID` or nested `volume` creation config. Volumes referenced by runtime ID are always retained. Created volumes are retained when `volume.retainRuntimeVolume` is true; otherwise deletion retries non-forced removal until the runtime releases the volume. Removal deliberately does not use force because Podman force-removes attached containers. During namespace deletion, each volume retries removal for up to 30 seconds so an externally attached volume cannot block graceful namespace cleanup indefinitely. Name collisions are terminal unless `volume.replaceExisting` is true, in which case the controller safely removes the specifically resolved volume before creating its replacement. Caller-supplied `volume.labels` pass through to created volumes, with reserved persistence, creator-process, and internal resource UID labels set by the controller.
+- `PhysicalProcess` launches or references one operating system process and reports its PID, PID-reuse identity timestamp, exit code when available, and lifecycle phase. Its spec contains exactly one of top-level `pid` or nested `process` creation config. Existing processes referenced by PID are observed and always retained when the resource is deleted. Created processes are stopped on deletion and namespace deletion unless `process.retainRuntimeProcess` is true. The mutable top-level `stop` request can terminate either mode. Creation supports executable path, arguments, working directory, and environment without importing logical executable or IDE policy.
 - The physical resources use the shared `Pending`, `Ready`, `Unknown`, and `Failed` phases, specific `Ready` condition reasons, separate in-memory operation progress, and queued work where side effects can block.
 
 ## Follow-up roadmap
@@ -105,13 +106,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
    - Delegate common image/container/network/volume runtime lifecycle to V2 physical resources.
    - Avoid keeping repeated container creation, start, inspect, watch, stop, and remove logic in multiple V1 controllers.
 
-5. Add V2 `PhysicalProcess`.
-   - Launch a new process or track an existing process by PID.
-   - Report observed status for the process lifetime.
-   - Use the same namespace, queued action, in-memory progress, phase, and condition patterns as the other physical resources.
-   - Do not assume the V1 `Executable` type will migrate to `PhysicalProcess`; IDE protocol integration may make that migration too complicated or undesirable.
-
-7. Add logical resource controllers.
+5. Add logical resource controllers.
    - Physical controllers preserve caller-supplied runtime labels and reserve the persistence, creator-process, and internal resource UID labels they need for harvesting and uncertain-create recovery.
    - Harvesting normally honors the controller-owned persistence label. Network harvesting is the exception: it intentionally ignores that label and removes orphaned networks after their creator exits so persistent networks cannot exhaust the runtime's finite default network allocations.
    - Build-created images receive persistent, creator-process, and internal UID labels through `build.labels`. Pulling resolves an expected named image and is not a runtime-object creation operation.

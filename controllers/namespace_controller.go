@@ -40,10 +40,38 @@ var (
 type namespaceCleanupResourceHandler func(*NamespaceReconciler, context.Context, *apiv2.Namespace, logr.Logger) (int, error)
 
 var namespaceCleanupResourceHandlers = map[schema.GroupVersionResource]namespaceCleanupResourceHandler{
+	(&apiv2.PhysicalProcess{}).GetGroupVersionResource():          (*NamespaceReconciler).cleanupPhysicalProcesses,
 	(&apiv2.PhysicalContainer{}).GetGroupVersionResource():        (*NamespaceReconciler).cleanupPhysicalContainers,
 	(&apiv2.PhysicalContainerImage{}).GetGroupVersionResource():   (*NamespaceReconciler).cleanupPhysicalContainerImages,
 	(&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource(): (*NamespaceReconciler).cleanupPhysicalContainerNetworks,
 	(&apiv2.PhysicalContainerVolume{}).GetGroupVersionResource():  (*NamespaceReconciler).cleanupPhysicalContainerVolumes,
+}
+
+func (r *NamespaceReconciler) cleanupPhysicalProcesses(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
+	physicalProcesses := apiv2.PhysicalProcessList{}
+	listErr := r.Client.List(ctx, &physicalProcesses, ctrl_client.InNamespace(namespace.Name))
+	if listErr != nil {
+		return 0, fmt.Errorf("failed to list PhysicalProcesses in namespace %q: %w", namespace.Name, listErr)
+	}
+
+	deleteErrors := slices.MapConcurrent[error](physicalProcesses.Items, func(physicalProcess apiv2.PhysicalProcess) error {
+		if physicalProcess.DeletionTimestamp != nil && !physicalProcess.DeletionTimestamp.IsZero() {
+			return nil
+		}
+
+		log.V(1).Info("Deleting PhysicalProcess during namespace cleanup", "Namespace", namespace.Name, "PhysicalProcess", physicalProcess.Name)
+		deletePhysicalProcessErr := r.Client.Delete(ctx, &physicalProcess)
+		if deletePhysicalProcessErr != nil && !apierrors.IsNotFound(deletePhysicalProcessErr) {
+			return fmt.Errorf("failed to delete PhysicalProcess %q in namespace %q: %w", physicalProcess.Name, namespace.Name, deletePhysicalProcessErr)
+		}
+		return nil
+	}, namespaceCleanupMaxConcurrentDeletes)
+	deleteErr := errors.Join(deleteErrors...)
+	if deleteErr != nil {
+		return 0, deleteErr
+	}
+
+	return len(physicalProcesses.Items), nil
 }
 
 type NamespaceReconciler struct {
