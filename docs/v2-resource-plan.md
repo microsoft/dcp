@@ -1,6 +1,6 @@
 # V2 resource plan
 
-This document tracks the intended direction for DCP V2 resources. The current V2 work establishes the namespace model and the first physical container, image, and network primitives; follow-up work should continue using the design guidelines below so future resources remain consistent.
+This document tracks the intended direction for DCP V2 resources. The current V2 work establishes the namespace model and the first physical container, image, network, and volume primitives; follow-up work should continue using the design guidelines below so future resources remain consistent.
 
 ## Design guidelines
 
@@ -113,7 +113,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 
 7. Add logical resource controllers.
    - Physical controllers preserve caller-supplied runtime labels and reserve the persistence, creator-process, and internal resource UID labels they need for harvesting and uncertain-create recovery.
-   - Containers and networks derive their persistence label from their physical retention field. Network harvesting intentionally ignores that label and removes orphaned networks after their creator exits so persistent networks cannot exhaust the runtime's finite default network allocations.
+   - Harvesting normally honors the controller-owned persistence label. Network harvesting is the exception: it intentionally ignores that label and removes orphaned networks after their creator exits so persistent networks cannot exhaust the runtime's finite default network allocations.
    - Build-created images receive persistent, creator-process, and internal UID labels through `build.labels`. Pulling resolves an expected named image and is not a runtime-object creation operation.
    - Logical controllers determine additional labels and physical retention intent when creating physical resources.
 
