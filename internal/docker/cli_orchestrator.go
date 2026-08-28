@@ -385,7 +385,6 @@ func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, options cont
 		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
 	}
 	args = append(args, options.Name)
-
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
@@ -420,6 +419,28 @@ func (dco *DockerCliOrchestrator) InspectVolumes(ctx context.Context, options co
 	}
 
 	return inspectedVolumes, err
+}
+
+func (dco *DockerCliOrchestrator) ListVolumes(ctx context.Context, options containers.ListVolumesOptions) ([]containers.ListedVolume, error) {
+	args := []string{"volume", "ls", "--quiet"}
+	for _, label := range options.Filters.LabelFilters {
+		filter := fmt.Sprintf("label=%s", label.Key)
+		if label.Value != "" {
+			filter += "=" + label.Value
+		}
+		args = append(args, "--filter", filter)
+	}
+
+	cmd := makeDockerCommand(args...)
+	outBuf, errBuf, listErr := dco.runBufferedDockerCommand(ctx, "ListVolumes", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	if listErr != nil {
+		return nil, errors.Join(listErr, normalizeCliErrors(errBuf))
+	}
+
+	names := slices.NonEmpty[byte](slices.Map[[]byte, []byte](bytes.Split(outBuf.Bytes(), osutil.LF()), bytes.TrimSpace))
+	return slices.Map[containers.ListedVolume](names, func(name []byte) containers.ListedVolume {
+		return containers.ListedVolume{Name: string(name)}
+	}), nil
 }
 
 func (dco *DockerCliOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {

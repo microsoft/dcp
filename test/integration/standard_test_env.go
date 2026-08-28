@@ -292,6 +292,19 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 
+	if inclCtrl&PhysicalContainerVolumeController != 0 {
+		physicalContainerVolumeR := controllers.NewPhysicalContainerVolumeReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerVolumeReconciler"),
+			serverInfo.ContainerOrchestrator,
+		)
+		if err = physicalContainerVolumeR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerVolumeReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerVolume reconciler: %w", err)
+		}
+	}
+
 	if inclCtrl&ContainerExecController != 0 {
 		containerExecR := controllers.NewContainerExecReconciler(
 			ctx,

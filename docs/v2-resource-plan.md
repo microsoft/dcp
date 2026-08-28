@@ -1,6 +1,6 @@
 # V2 resource plan
 
-This document tracks the intended direction for DCP V2 resources. The current V2 work establishes the namespace model and the first physical container, image, and network primitives; follow-up work should continue using the design guidelines below so future resources remain consistent.
+This document tracks the intended direction for DCP V2 resources. The current V2 work establishes the namespace model and the first physical container, image, network, and volume primitives; follow-up work should continue using the design guidelines below so future resources remain consistent.
 
 ## Design guidelines
 
@@ -79,37 +79,33 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - `PhysicalContainerImage` provides source image pull and build workflows.
 - `PhysicalContainer` creates or tracks one runtime container, reports runtime status and port mappings, and references a same-namespace `PhysicalContainerImage`.
 - `PhysicalContainerNetwork` creates or references one runtime container network and reports its observed identity, driver, and address allocations. Its spec contains exactly one of top-level `networkID` or nested `network` creation config. Networks referenced by runtime ID are always retained. Created networks are retained when `network.retainRuntimeNetwork` is true; otherwise deletion enumerates running and stopped attachments, forcibly disconnects each container without removing it, and then removes the network. Name collisions are terminal unless `network.replaceExisting` is true, in which case the controller safely removes the specifically resolved network before creating its replacement. Runtime adapters classify their own built-in, non-removable networks, and replacement rejects them before disconnecting any attachments.
-- The physical resources use in-memory progress data, standardized `Ready` conditions, and queued work where side effects can block.
+- `PhysicalContainerVolume` creates or references one runtime container volume and reports its observed identifier, driver, scope, mount point, and creation time. Its spec contains exactly one of top-level `volumeID` or nested `volume` creation config. Volumes referenced by runtime ID are always retained. Created volumes are retained when `volume.retainRuntimeVolume` is true; otherwise deletion retries non-forced removal until the runtime releases the volume. Removal deliberately does not use force because Podman force-removes attached containers. During namespace deletion, each volume retries removal for up to 30 seconds so an externally attached volume cannot block graceful namespace cleanup indefinitely. Name collisions are terminal unless `volume.replaceExisting` is true, in which case the controller safely removes the specifically resolved volume before creating its replacement. Caller-supplied `volume.labels` pass through to created volumes, with reserved persistence, creator-process, and internal resource UID labels set by the controller.
+- The physical resources use the shared `Pending`, `Ready`, `Unknown`, and `Failed` phases, specific `Ready` condition reasons, separate in-memory operation progress, and queued work where side effects can block.
 
 ## Follow-up roadmap
 
 ### Physical resource layer
 
-1. Add V2 `PhysicalContainerVolume`.
-   - Represent concrete container runtime volumes.
-   - Expose runtime volume identity and observed volume details.
-   - Preserve namespace-scoped cleanup semantics.
-
-2. Update `PhysicalContainer` to use physical network and volume resources.
+1. Update `PhysicalContainer` to use physical network and volume resources.
    - Replace direct runtime network names with references to same-namespace `PhysicalContainerNetwork` resources where appropriate.
    - Replace direct runtime volume names with references to same-namespace `PhysicalContainerVolume` resources where appropriate.
    - Watch referenced network and volume resources so containers reconcile when dependencies become ready.
 
-3. Decide how monitor processes should clean up physical resources after DCP crashes.
+2. Decide how monitor processes should clean up physical resources after DCP crashes.
    - Define how monitor processes are configured and launched for physical resources.
    - Decide which physical resources require crash cleanup monitoring.
    - Ensure cleanup behavior works when DCP exits unexpectedly and cannot rely on controller finalizers.
 
-4. Migrate V1 container-network tunnel proxy to V2 physical resources.
+3. Migrate V1 container-network tunnel proxy to V2 physical resources.
    - Keep tunnel-specific behavior in the V1 controller, including dcptun image handling, server proxy process management, TLS, tunnel gRPC calls, status, and endpoint projection.
    - Delegate common runtime container lifecycle to V2 physical resources instead of creating and managing the proxy container directly through the orchestrator.
 
-5. Migrate V1 container resource lifecycle to V2 physical resources.
+4. Migrate V1 container resource lifecycle to V2 physical resources.
    - Keep V1-specific policy in the V1 controller, including lifecycle keys, persistent and existing container lookup, leases, compatibility status, and V1 API semantics.
    - Delegate common image/container/network/volume runtime lifecycle to V2 physical resources.
    - Avoid keeping repeated container creation, start, inspect, watch, stop, and remove logic in multiple V1 controllers.
 
-6. Add V2 `PhysicalProcess`.
+5. Add V2 `PhysicalProcess`.
    - Launch a new process or track an existing process by PID.
    - Report observed status for the process lifetime.
    - Use the same namespace, queued action, in-memory progress, phase, and condition patterns as the other physical resources.
@@ -117,7 +113,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 
 7. Add logical resource controllers.
    - Physical controllers preserve caller-supplied runtime labels and reserve the persistence, creator-process, and internal resource UID labels they need for harvesting and uncertain-create recovery.
-   - Containers and networks derive their persistence label from their physical retention field. Network harvesting intentionally ignores that label and removes orphaned networks after their creator exits so persistent networks cannot exhaust the runtime's finite default network allocations.
+   - Harvesting normally honors the controller-owned persistence label. Network harvesting is the exception: it intentionally ignores that label and removes orphaned networks after their creator exits so persistent networks cannot exhaust the runtime's finite default network allocations.
    - Build-created images receive persistent, creator-process, and internal UID labels through `build.labels`. Pulling resolves an expected named image and is not a runtime-object creation operation.
    - Logical controllers determine additional labels and physical retention intent when creating physical resources.
 
