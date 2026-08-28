@@ -195,6 +195,66 @@ func TestV2PhysicalProcessControllerStopsProcessOnRequest(t *testing.T) {
 	require.True(t, execution.Finished())
 }
 
+func TestV2PhysicalProcessControllerDoesNotLaunchStoppedProcess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-initially-stopped")
+	executablePath := "v2-pproc-initially-stopped-command"
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "initially-stopped-process", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalProcessSpec{
+			Process: &apiv2.PhysicalProcessConfig{ExecutablePath: executablePath},
+			Stop:    true,
+		},
+	}
+	require.NoError(t, client.Create(ctx, physicalProcess))
+
+	stoppedProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseExited)
+	require.Nil(t, stoppedProcess.Status.PID)
+	requireReadyCondition(t, stoppedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonStopRequested)
+	require.Empty(t, testProcessExecutor.FindAll([]string{executablePath}, "", nil))
+}
+
+func TestV2PhysicalProcessControllerDoesNotRetryLaunchAfterStopRequest(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-stop-launch-retry")
+	executablePath := "v2-pproc-stop-launch-retry-command"
+	criteria := internal_testutil.ProcessSearchCriteria{Command: []string{executablePath}}
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: criteria,
+		StartupError: func(*internal_testutil.ProcessExecution) error {
+			return errors.New("simulated launch failure")
+		},
+	})
+	defer testProcessExecutor.RemoveAutoExecution(criteria)
+
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "stopped-retry-process", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalProcessSpec{
+			Process: &apiv2.PhysicalProcessConfig{ExecutablePath: executablePath},
+		},
+	}
+	require.NoError(t, client.Create(ctx, physicalProcess))
+	failedProcess := waitObjectAssumesState(t, ctx, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return condition != nil && apiv2.ConditionReason(condition.Reason) == apiv2.PhysicalProcessReasonLaunchFailed, nil
+	})
+
+	require.NoError(t, retryOnConflict[apiv2.PhysicalProcess](ctx, failedProcess.NamespacedName(), func(ctx context.Context, current *apiv2.PhysicalProcess) error {
+		current.Spec.Stop = true
+		return client.Update(ctx, current)
+	}))
+	testProcessExecutor.RemoveAutoExecution(criteria)
+
+	stoppedProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseExited)
+	requireReadyCondition(t, stoppedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonStopRequested)
+	require.Len(t, testProcessExecutor.FindAll([]string{executablePath}, "", nil), 1)
+}
+
 func TestV2PhysicalProcessControllerCleansUpOnNamespaceDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

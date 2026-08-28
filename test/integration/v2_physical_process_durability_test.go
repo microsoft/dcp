@@ -244,58 +244,6 @@ func TestV2PhysicalProcessControllerStopsProcessWhenDeletedDuringLaunch(t *testi
 	require.True(t, executions[0].Finished())
 }
 
-func TestV2PhysicalProcessControllerStopsUndurableRetainedProcessAtShutdown(t *testing.T) {
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-	reconcilerCtx, stopReconciler := context.WithCancel(ctx)
-
-	namespace := &apiv2.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       "v2-pproc-retained-shutdown",
-			Finalizers: []string{apiv2.NamespaceFinalizer},
-		},
-		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
-	}
-	physicalProcess := &apiv2.PhysicalProcess{
-		ObjectMeta: metav1.ObjectMeta{Name: "retained-process", Namespace: namespace.Name},
-		Spec: apiv2.PhysicalProcessSpec{
-			Process: &apiv2.PhysicalProcessConfig{
-				ExecutablePath:       "v2-pproc-retained-shutdown-command",
-				RetainRuntimeProcess: true,
-			},
-		},
-	}
-	baseClient := fake.NewClientBuilder().
-		WithScheme(client.Scheme()).
-		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalProcess{}).
-		WithObjects(namespace, physicalProcess).
-		Build()
-	statusClient := &failOncePhysicalProcessStatusClient{Client: baseClient}
-	processExecutor := internal_testutil.NewTestProcessExecutor(ctx)
-	reconciler := controllers.NewPhysicalProcessReconciler(reconcilerCtx, statusClient, baseClient, testutil.NewLogForTesting(t.Name()), processExecutor)
-	request := ctrl.Request{NamespacedName: physicalProcess.NamespacedName()}
-
-	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
-		_, reconcileErr := reconciler.Reconcile(ctx, request)
-		if reconcileErr != nil {
-			return false, reconcileErr
-		}
-		return statusClient.failureTriggered(), nil
-	})
-	require.NoError(t, waitErr)
-
-	executions := processExecutor.FindAll([]string{physicalProcess.Spec.Process.ExecutablePath}, "", nil)
-	require.Len(t, executions, 1)
-	require.True(t, executions[0].Running())
-	handle := process.NewHandle(executions[0].PID, executions[0].StartedAt)
-	stopReconciler()
-
-	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
-		return processExecutor.CheckProcessRunning(handle) != nil, nil
-	})
-	require.NoError(t, waitErr)
-}
-
 func TestV2PhysicalProcessControllerCleansInvalidLaunchIdentityBeforeRetry(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()

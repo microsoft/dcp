@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -61,16 +60,6 @@ type PhysicalProcessReconciler struct {
 	processExecutor process.Executor
 	processData     *ObjectStateMap[physicalProcessDataStateKey, physicalProcessData, *physicalProcessData, *apiv2.PhysicalProcess]
 	operationQueue  *resiliency.WorkQueue
-
-	retainedLaunchLock        sync.Mutex
-	pendingRetainedLaunches   map[physicalProcessOwner]process.ProcessHandle
-	shuttingDown              bool
-	retainedLaunchCleanupDone chan struct{}
-}
-
-type physicalProcessOwner struct {
-	name        types.NamespacedName
-	resourceUID types.UID
 }
 
 func NewPhysicalProcessReconciler(
@@ -80,19 +69,12 @@ func NewPhysicalProcessReconciler(
 	log logr.Logger,
 	processExecutor process.Executor,
 ) *PhysicalProcessReconciler {
-	reconciler := &PhysicalProcessReconciler{
-		ReconcilerBase:            NewReconcilerBase[apiv2.PhysicalProcess](client, noCacheClient, log, lifetimeCtx),
-		processExecutor:           processExecutor,
-		processData:               NewObjectStateMap[physicalProcessDataStateKey, physicalProcessData, *physicalProcessData, *apiv2.PhysicalProcess](),
-		operationQueue:            resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
-		pendingRetainedLaunches:   map[physicalProcessOwner]process.ProcessHandle{},
-		retainedLaunchCleanupDone: make(chan struct{}),
+	return &PhysicalProcessReconciler{
+		ReconcilerBase:  NewReconcilerBase[apiv2.PhysicalProcess](client, noCacheClient, log, lifetimeCtx),
+		processExecutor: processExecutor,
+		processData:     NewObjectStateMap[physicalProcessDataStateKey, physicalProcessData, *physicalProcessData, *apiv2.PhysicalProcess](),
+		operationQueue:  resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
 	}
-	_ = context.AfterFunc(lifetimeCtx, func() {
-		reconciler.stopPendingRetainedLaunches()
-		close(reconciler.retainedLaunchCleanupDone)
-	})
-	return reconciler
 }
 
 func (r *PhysicalProcessReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
@@ -157,7 +139,7 @@ func (r *PhysicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		patch,
 		change,
 		physicalProcessReconcileDelay(&physicalProcess),
-		r.onPhysicalProcessStatusDurable(&physicalProcess),
+		nil,
 		log,
 	)
 }
@@ -262,6 +244,9 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessData(
 	log logr.Logger,
 ) (physicalProcessDataStateKey, *physicalProcessData, objectChange) {
 	if physicalProcess.Spec.Process != nil && physicalProcess.Status.PID == nil {
+		if physicalProcess.Spec.Stop {
+			return "", nil, applyPhysicalProcessLaunchSkippedStatus(physicalProcess)
+		}
 		return physicalProcessDataKey(physicalProcess), nil, r.schedulePhysicalProcessLaunch(physicalProcess, physicalProcessDataKey(physicalProcess), nil, log)
 	}
 
@@ -366,11 +351,18 @@ func handlePhysicalProcessLaunchFailed(
 	data *physicalProcessData,
 	log logr.Logger,
 ) objectChange {
+	if data.handle.Pid > 0 {
+		if !physicalProcess.Spec.Stop && time.Now().Before(data.retryAfter) {
+			return additionalReconciliationNeeded
+		}
+		return reconciler.scheduleInvalidPhysicalProcessCleanup(physicalProcess, stateKey, data, log)
+	}
+	if physicalProcess.Spec.Stop {
+		reconciler.processData.DeleteByNamespacedName(physicalProcess.NamespacedName())
+		return applyPhysicalProcessLaunchSkippedStatus(physicalProcess)
+	}
 	if time.Now().Before(data.retryAfter) {
 		return additionalReconciliationNeeded
-	}
-	if data.handle.Pid > 0 {
-		return reconciler.scheduleInvalidPhysicalProcessCleanup(physicalProcess, stateKey, data, log)
 	}
 	return reconciler.schedulePhysicalProcessLaunch(physicalProcess, stateKey, data, log)
 }
@@ -439,19 +431,12 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 	var startWaitForExit func()
 	var startErr error
 	if processConfig.RetainRuntimeProcess {
-		r.retainedLaunchLock.Lock()
-		if r.shuttingDown || operationCtx.Err() != nil {
-			r.retainedLaunchLock.Unlock()
+		if operationCtx.Err() != nil {
 			return
 		}
 		processCtx = context.WithoutCancel(r.LifetimeCtx)
 		creationFlags = process.CreationFlagsNone
 		startedHandle, startWaitForExit, startErr = r.processExecutor.StartProcess(processCtx, cmd, exitHandler, creationFlags, nil)
-		if startErr == nil && startedHandle.Pid > 0 && !startedHandle.IdentityTime.IsZero() {
-			owner := physicalProcessOwner{name: physicalProcess.NamespacedName(), resourceUID: physicalProcess.UID}
-			r.pendingRetainedLaunches[owner] = startedHandle
-		}
-		r.retainedLaunchLock.Unlock()
 	} else {
 		startedHandle, startWaitForExit, startErr = r.processExecutor.StartProcess(processCtx, cmd, exitHandler, creationFlags, nil)
 	}
@@ -692,9 +677,6 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(physicalProcess *apiv2
 
 	retain := physicalProcess.Spec.Process == nil ||
 		(physicalProcess.Spec.Process != nil && physicalProcess.Spec.Process.RetainRuntimeProcess)
-	if retain && data != nil && r.retainedLaunchPending(physicalProcess, data.handle) {
-		retain = false
-	}
 	if data == nil || data.handle.Pid <= 0 || retain ||
 		data.conditionReason == apiv2.PhysicalProcessReasonRuntimeProcessExited ||
 		data.conditionReason == apiv2.PhysicalProcessReasonRuntimeProcessMissing {
@@ -720,55 +702,15 @@ func physicalProcessEnvironment(processConfig *apiv2.PhysicalProcessConfig) []st
 	return environment
 }
 
-func (r *PhysicalProcessReconciler) onPhysicalProcessStatusDurable(physicalProcess *apiv2.PhysicalProcess) func() {
-	if physicalProcess.Spec.Process == nil ||
-		!physicalProcess.Spec.Process.RetainRuntimeProcess ||
-		physicalProcess.Status.PID == nil {
-		return nil
-	}
-
-	_, data := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
-	if data == nil || data.handle.Pid != process.Pid_t(*physicalProcess.Status.PID) {
-		return nil
-	}
-	owner := physicalProcessOwner{name: physicalProcess.NamespacedName(), resourceUID: physicalProcess.UID}
-	handle := data.handle
-	return func() {
-		r.retainedLaunchLock.Lock()
-		defer r.retainedLaunchLock.Unlock()
-		if pendingHandle, found := r.pendingRetainedLaunches[owner]; found && pendingHandle == handle {
-			delete(r.pendingRetainedLaunches, owner)
-		}
-	}
-}
-
-func (r *PhysicalProcessReconciler) stopPendingRetainedLaunches() {
-	r.retainedLaunchLock.Lock()
-	r.shuttingDown = true
-	pendingLaunches := r.pendingRetainedLaunches
-	r.pendingRetainedLaunches = map[physicalProcessOwner]process.ProcessHandle{}
-	r.retainedLaunchLock.Unlock()
-
-	for owner, handle := range pendingLaunches {
-		stopErr := r.processExecutor.StopProcess(handle)
-		if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
-			r.Log.Error(stopErr, "Failed to stop retained process before its identity became durable", "PhysicalProcess", owner.name, "PID", handle.Pid)
-		}
-	}
-}
-
-func (r *PhysicalProcessReconciler) retainedLaunchPending(
-	physicalProcess *apiv2.PhysicalProcess,
-	handle process.ProcessHandle,
-) bool {
-	owner := physicalProcessOwner{name: physicalProcess.NamespacedName(), resourceUID: physicalProcess.UID}
-	r.retainedLaunchLock.Lock()
-	defer r.retainedLaunchLock.Unlock()
-	pendingHandle, found := r.pendingRetainedLaunches[owner]
-	return found && pendingHandle == handle
-}
-
-// WaitForRetainedLaunchCleanup waits until retained processes without durable identities are stopped.
-func (r *PhysicalProcessReconciler) WaitForRetainedLaunchCleanup() {
-	<-r.retainedLaunchCleanupDone
+func applyPhysicalProcessLaunchSkippedStatus(physicalProcess *apiv2.PhysicalProcess) objectChange {
+	change := setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseExited)
+	change |= setCondition(
+		&physicalProcess.Status.Conditions,
+		apiv2.ConditionReady,
+		physicalProcess.Generation,
+		metav1.ConditionFalse,
+		apiv2.PhysicalProcessReasonStopRequested,
+		"Physical process was not launched because stop was requested.",
+	)
+	return change
 }

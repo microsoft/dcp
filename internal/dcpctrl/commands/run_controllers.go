@@ -413,7 +413,6 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		}()
 
 		<-ctrlCtx.Done()
-		physicalProcessCtrl.WaitForRetainedLaunchCleanup()
 
 		select {
 		case mgrRunErr := <-mgrRunResultCh:

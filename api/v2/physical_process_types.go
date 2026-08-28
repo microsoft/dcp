@@ -71,6 +71,9 @@ const (
 
 	// PhysicalProcessReasonStopFailed indicates that process termination failed and will be retried.
 	PhysicalProcessReasonStopFailed ConditionReason = "StopFailed"
+
+	// PhysicalProcessReasonStopRequested indicates that process launch was skipped because stop was requested.
+	PhysicalProcessReasonStopRequested ConditionReason = "StopRequested"
 )
 
 // PhysicalProcessSpec describes either an existing operating system process or how to launch one.
