@@ -18,6 +18,7 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
+	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/health"
@@ -45,7 +46,8 @@ type TestEnvironmentInfo struct {
 }
 
 type TestEnvironmentOptions struct {
-	WorkloadID commonapi.WorkloadID
+	WorkloadID                    commonapi.WorkloadID
+	DecorateContainerOrchestrator func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
 }
 
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
@@ -96,6 +98,15 @@ func StartTestEnvironmentWithOptions(
 		serverInfo.Dispose()
 		stateStoreCleanup()
 		return nil, nil, fmt.Errorf("failed to initialize state store lease owner identity: %w", leaseOwnerErr)
+	}
+	if options.DecorateContainerOrchestrator != nil {
+		decoratedOrchestrator := options.DecorateContainerOrchestrator(serverInfo.ContainerOrchestrator, stateStore)
+		if decoratedOrchestrator == nil {
+			serverInfo.Dispose()
+			stateStoreCleanup()
+			return nil, nil, fmt.Errorf("container orchestrator decorator returned nil")
+		}
+		serverInfo.ContainerOrchestrator = decoratedOrchestrator
 	}
 	pex := internal_testutil.NewTestProcessExecutor(ctx)
 	// On Windows the process Executable runner uses the dcp stop-process-tree subcommand, so we need to simulate that.
@@ -314,6 +325,11 @@ func StartTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("VolumeReconciler"),
 			serverInfo.ContainerOrchestrator,
+			controllers.VolumeReconcilerConfig{
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         options.WorkloadID,
+			},
 		)
 		if err = volumeR.SetupWithManager(mgr, instanceTag+"-VolumeReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)

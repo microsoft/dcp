@@ -51,7 +51,7 @@ func NewRunControllersCommand(log *logger.Logger) *cobra.Command {
 		Short: "Runs the standard DCP controllers (for Executable, Container, and ContainerVolume objects)",
 		Long: `Runs the standard DCP controllers (for Executable, Container, and ContainerVolume objects).
 
-If --workload-id is set, newly-created persistent Containers, Executables, and ContainerNetworks are associated with that workload ID. If --workload-id is not set, DCP_WORKLOAD_ID is used when present. The cleanup command can stop persistent resources associated with a workload ID.`,
+If --workload-id is set, newly-created persistent Containers, Executables, ContainerNetworks, and ContainerVolumes are associated with that workload ID. If --workload-id is not set, DCP_WORKLOAD_ID is used when present. The cleanup command can stop persistent resources associated with a workload ID.`,
 		RunE: runControllers(controllerLog),
 		Args: cobra.NoArgs,
 	}
@@ -328,6 +328,11 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetAPIReader(),
 			log.WithName("VolumeReconciler"),
 			containerOrchestrator,
+			controllers.VolumeReconcilerConfig{
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         workloadID,
+			},
 		)
 		if err = volumeCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up ContainerVolume controller")
