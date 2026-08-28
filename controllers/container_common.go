@@ -428,9 +428,13 @@ func removeVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeNa
 	return err
 }
 
-func createVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeName string) (*containers.InspectedVolume, error) {
+func createVolume(
+	ctx context.Context,
+	o containers.VolumeOrchestrator,
+	options containers.CreateVolumeOptions,
+) (*containers.InspectedVolume, error) {
 	action := func(ctx context.Context) error {
-		err := o.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName})
+		err := o.CreateVolume(ctx, options)
 
 		if errors.Is(err, containers.ErrAlreadyExists) {
 			return backoff.Permanent(err)
@@ -440,7 +444,7 @@ func createVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeNa
 	}
 
 	verify := func(ctx context.Context) (*containers.InspectedVolume, error) {
-		return inspectContainerVolume(ctx, o, volumeName)
+		return inspectContainerVolume(ctx, o, options.Name)
 	}
 
 	inspected, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)

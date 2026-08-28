@@ -7,6 +7,7 @@ package v1
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -120,6 +121,10 @@ func (cv *ContainerVolume) NamespacedName() types.NamespacedName {
 		Name:      cv.Name,
 		Namespace: cv.Namespace,
 	}
+}
+
+func (cv *ContainerVolume) GetLeaseKey() string {
+	return fmt.Sprintf("%s/%s", cv.GetGroupVersionResource().Resource, strings.TrimSpace(cv.Spec.Name))
 }
 
 func (cv *ContainerVolume) GetStatus() apiserver_resource.StatusSubResource {

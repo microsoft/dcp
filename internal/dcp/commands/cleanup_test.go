@@ -26,12 +26,28 @@ import (
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	dcpio "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 const cleanupTestRuntimeName = "test"
+
+func TestCleanupVolumesFlagDefaultsToFalse(t *testing.T) {
+	t.Parallel()
+
+	cleanupCommand := NewCleanupCommand(&logger.Logger{Logger: logr.Discard()})
+	options, optionsErr := cleanupWorkloadOptionsFromCommand(cleanupCommand)
+
+	require.NoError(t, optionsErr)
+	require.False(t, options.Volumes)
+
+	require.NoError(t, cleanupCommand.Flags().Set(cleanupVolumesFlagName, "true"))
+	options, optionsErr = cleanupWorkloadOptionsFromCommand(cleanupCommand)
+	require.NoError(t, optionsErr)
+	require.True(t, options.Volumes)
+}
 
 func TestCleanupWorkloadResourcesNoRecordsDoesNotRequireContainerRuntime(t *testing.T) {
 	t.Parallel()
@@ -54,6 +70,7 @@ func TestCleanupWorkloadResourcesNoRecordsDoesNotRequireContainerRuntime(t *test
 			return nil, nil
 		},
 		processExecutor,
+		cleanupWorkloadOptions{},
 		logr.Discard(),
 	)
 
@@ -120,6 +137,7 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 			return orchestrator, nil
 		},
 		processExecutor,
+		cleanupWorkloadOptions{},
 		logr.Discard(),
 	)
 
@@ -139,7 +157,153 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 	require.Empty(t, networkRecords)
 }
 
-func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworks(t *testing.T) {
+func TestCleanupWorkloadResourcesOnlyRemovesVolumesWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+
+	const volumeName = "app-data"
+	const ownershipToken = "app-data-token"
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name: volumeName,
+		Labels: map[string]string{
+			containers.VolumeOwnershipTokenLabel: ownershipToken,
+		},
+	}))
+	require.NoError(t, stateStore.UpsertPersistentVolume(ctx, statestore.PersistentVolumeRecord{
+		ResourceKey:    "containervolumes/" + volumeName,
+		VolumeName:     volumeName,
+		RuntimeName:    cleanupTestRuntimeName,
+		WorkloadID:     "workload-a",
+		OwnershipToken: ownershipToken,
+	}))
+
+	report, cleanupErr := cleanupWorkloadResources(
+		ctx,
+		"workload-a",
+		stateStore,
+		leaseOwner,
+		func(string) (containers.ContainerOrchestrator, error) {
+			require.Fail(t, "container runtime should not be requested when volume cleanup is disabled")
+			return nil, nil
+		},
+		processExecutor,
+		cleanupWorkloadOptions{},
+		logr.Discard(),
+	)
+	require.NoError(t, cleanupErr)
+	require.Equal(t, cleanupStoppedCounts{}, report.Stopped)
+	_, inspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
+	require.NoError(t, inspectErr)
+	volumeRecords, listErr := stateStore.ListPersistentVolumesByWorkloadID(ctx, "workload-a")
+	require.NoError(t, listErr)
+	require.Len(t, volumeRecords, 1)
+
+	report, cleanupErr = cleanupWorkloadResources(
+		ctx,
+		"workload-a",
+		stateStore,
+		leaseOwner,
+		func(runtimeName string) (containers.ContainerOrchestrator, error) {
+			require.Equal(t, cleanupTestRuntimeName, runtimeName)
+			return orchestrator, nil
+		},
+		processExecutor,
+		cleanupWorkloadOptions{Volumes: true},
+		logr.Discard(),
+	)
+	require.NoError(t, cleanupErr)
+	require.Equal(t, cleanupStoppedCounts{Volumes: 1}, report.Stopped)
+	_, inspectErr = orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
+	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+	volumeRecords, listErr = stateStore.ListPersistentVolumesByWorkloadID(ctx, "workload-a")
+	require.NoError(t, listErr)
+	require.Empty(t, volumeRecords)
+}
+
+func TestRemovePersistentVolumeDoesNotForceRemoval(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	wrappedOrchestrator := &recordingVolumeRemovalOrchestrator{ContainerOrchestrator: orchestrator}
+
+	const volumeName = "app-data"
+	const ownershipToken = "app-data-token"
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name: volumeName,
+		Labels: map[string]string{
+			containers.VolumeOwnershipTokenLabel: ownershipToken,
+		},
+	}))
+
+	removed, removeErr := removePersistentVolume(ctx, wrappedOrchestrator, volumeName, ownershipToken)
+
+	require.NoError(t, removeErr)
+	require.True(t, removed)
+	require.False(t, wrappedOrchestrator.options.Force)
+}
+
+func TestCleanupWorkloadResourcesPreservesReplacementVolume(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+
+	const volumeName = "replacement-data"
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name: volumeName,
+		Labels: map[string]string{
+			containers.VolumeOwnershipTokenLabel: "replacement-token",
+		},
+	}))
+	require.NoError(t, stateStore.UpsertPersistentVolume(ctx, statestore.PersistentVolumeRecord{
+		ResourceKey:    "containervolumes/" + volumeName,
+		VolumeName:     volumeName,
+		RuntimeName:    cleanupTestRuntimeName,
+		WorkloadID:     "workload-a",
+		OwnershipToken: "original-token",
+	}))
+
+	report, cleanupErr := cleanupWorkloadResources(
+		ctx,
+		"workload-a",
+		stateStore,
+		leaseOwner,
+		func(string) (containers.ContainerOrchestrator, error) {
+			return orchestrator, nil
+		},
+		processExecutor,
+		cleanupWorkloadOptions{Volumes: true},
+		logr.Discard(),
+	)
+
+	require.NoError(t, cleanupErr)
+	require.Equal(t, cleanupStoppedCounts{}, report.Stopped)
+	_, inspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
+	require.NoError(t, inspectErr)
+	_, getRecordErr := stateStore.GetPersistentVolume(ctx, "containervolumes/"+volumeName)
+	require.ErrorIs(t, getRecordErr, statestore.ErrPersistentVolumeNotFound)
+}
+
+func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworksAndVolumes(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
@@ -156,10 +320,18 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworks(t *testing.T) {
 		removeContainersEntered: make(chan struct{}),
 		allowRemoveContainers:   make(chan struct{}),
 		removeNetworksEntered:   make(chan struct{}),
+		removeVolumesEntered:    make(chan struct{}),
 	}
 
 	networkID, createNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "app-network"})
 	require.NoError(t, createNetworkErr)
+	const volumeOwnershipToken = "app-data-token"
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name: "app-data",
+		Labels: map[string]string{
+			containers.VolumeOwnershipTokenLabel: volumeOwnershipToken,
+		},
+	}))
 	containerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name: "api",
 		Networks: []containers.CreateContainerNetworkOptions{
@@ -181,6 +353,13 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworks(t *testing.T) {
 		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
 	}))
+	require.NoError(t, stateStore.UpsertPersistentVolume(ctx, statestore.PersistentVolumeRecord{
+		ResourceKey:    "containervolumes/app-data",
+		VolumeName:     "app-data",
+		RuntimeName:    cleanupTestRuntimeName,
+		WorkloadID:     "workload-a",
+		OwnershipToken: volumeOwnershipToken,
+	}))
 
 	type cleanupResult struct {
 		report cleanupReport
@@ -200,6 +379,7 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworks(t *testing.T) {
 				return wrappedOrchestrator, nil
 			},
 			processExecutor,
+			cleanupWorkloadOptions{Volumes: true},
 			logr.Discard(),
 		)
 		resultCh <- cleanupResult{report: report, err: cleanupErr}
@@ -210,8 +390,8 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworks(t *testing.T) {
 	case <-ctx.Done():
 		require.FailNow(t, "container cleanup did not start", ctx.Err())
 	}
-	networkStartedEarlyTimer := time.NewTimer(100 * time.Millisecond)
-	defer networkStartedEarlyTimer.Stop()
+	dependentStartedEarlyTimer := time.NewTimer(100 * time.Millisecond)
+	defer dependentStartedEarlyTimer.Stop()
 	select {
 	case <-wrappedOrchestrator.removeNetworksEntered:
 		close(wrappedOrchestrator.allowRemoveContainers)
@@ -221,7 +401,15 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworks(t *testing.T) {
 			require.FailNow(t, "cleanup did not finish", ctx.Err())
 		}
 		require.FailNow(t, "network cleanup started before container cleanup finished")
-	case <-networkStartedEarlyTimer.C:
+	case <-wrappedOrchestrator.removeVolumesEntered:
+		close(wrappedOrchestrator.allowRemoveContainers)
+		select {
+		case <-resultCh:
+		case <-ctx.Done():
+			require.FailNow(t, "cleanup did not finish", ctx.Err())
+		}
+		require.FailNow(t, "volume cleanup started before container cleanup finished")
+	case <-dependentStartedEarlyTimer.C:
 	}
 	close(wrappedOrchestrator.allowRemoveContainers)
 
@@ -232,7 +420,7 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworks(t *testing.T) {
 		require.FailNow(t, "cleanup did not finish", ctx.Err())
 	}
 	require.NoError(t, result.err)
-	require.Equal(t, cleanupStoppedCounts{Containers: 1, Networks: 1}, result.report.Stopped)
+	require.Equal(t, cleanupStoppedCounts{Containers: 1, Networks: 1, Volumes: 1}, result.report.Stopped)
 	require.Empty(t, result.report.Failures)
 }
 
@@ -261,6 +449,13 @@ func TestCleanupWorkloadResourcesTreatsMissingRuntimeResourcesAsSuccess(t *testi
 		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
 	}))
+	require.NoError(t, stateStore.UpsertPersistentVolume(ctx, statestore.PersistentVolumeRecord{
+		ResourceKey:    "containervolumes/missing",
+		VolumeName:     "missing-volume",
+		RuntimeName:    cleanupTestRuntimeName,
+		WorkloadID:     "workload-a",
+		OwnershipToken: "missing-token",
+	}))
 
 	report, cleanupErr := cleanupWorkloadResources(
 		ctx,
@@ -272,12 +467,15 @@ func TestCleanupWorkloadResourcesTreatsMissingRuntimeResourcesAsSuccess(t *testi
 			return orchestrator, nil
 		},
 		processExecutor,
+		cleanupWorkloadOptions{Volumes: true},
 		logr.Discard(),
 	)
 
 	require.NoError(t, cleanupErr)
 	require.Equal(t, cleanupStoppedCounts{Containers: 1, Networks: 1}, report.Stopped)
 	require.Empty(t, report.Failures)
+	_, getVolumeErr := stateStore.GetPersistentVolume(ctx, "containervolumes/missing")
+	require.ErrorIs(t, getVolumeErr, statestore.ErrPersistentVolumeNotFound)
 }
 
 func TestCleanupWorkloadResourcesRunsIndependentRecordsInParallel(t *testing.T) {
@@ -336,6 +534,7 @@ func TestCleanupWorkloadResourcesRunsIndependentRecordsInParallel(t *testing.T) 
 				return wrappedOrchestrator, nil
 			},
 			processExecutor,
+			cleanupWorkloadOptions{},
 			logr.Discard(),
 		)
 		resultCh <- cleanupResult{report: report, err: cleanupErr}
@@ -685,6 +884,7 @@ func TestCleanupWorkloadResourcesTreatsMissingProcessAsSuccess(t *testing.T) {
 			return nil, nil
 		},
 		processExecutor,
+		cleanupWorkloadOptions{},
 		logr.Discard(),
 	)
 
@@ -787,6 +987,7 @@ func TestCleanupWorkloadResourcesRuntimeFailureDoesNotPreventExecutableCleanup(t
 			return nil, runtimeErr
 		},
 		processExecutor,
+		cleanupWorkloadOptions{},
 		logr.Discard(),
 	)
 
@@ -1061,6 +1262,7 @@ func TestCleanupWorkloadResourcesReportsFailuresAndContinues(t *testing.T) {
 			return wrappedOrchestrator, nil
 		},
 		processExecutor,
+		cleanupWorkloadOptions{},
 		logr.Discard(),
 	)
 
@@ -1146,6 +1348,7 @@ type orderedCleanupContainerOrchestrator struct {
 	removeContainersEntered chan struct{}
 	allowRemoveContainers   chan struct{}
 	removeNetworksEntered   chan struct{}
+	removeVolumesEntered    chan struct{}
 }
 
 func (o *orderedCleanupContainerOrchestrator) RemoveContainers(ctx context.Context, options containers.RemoveContainersOptions) ([]string, error) {
@@ -1179,6 +1382,18 @@ func (o *orderedCleanupContainerOrchestrator) RemoveNetworks(ctx context.Context
 	return o.ContainerOrchestrator.RemoveNetworks(ctx, options)
 }
 
+func (o *orderedCleanupContainerOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
+	close(o.removeVolumesEntered)
+	o.lock.Lock()
+	removeContainersDone := o.removeContainersDone
+	o.lock.Unlock()
+	if !removeContainersDone {
+		return nil, errors.New("volume cleanup started before container cleanup finished")
+	}
+
+	return o.ContainerOrchestrator.RemoveVolumes(ctx, options)
+}
+
 type failingCleanupContainerOrchestrator struct {
 	containers.ContainerOrchestrator
 
@@ -1187,4 +1402,14 @@ type failingCleanupContainerOrchestrator struct {
 
 func (o *failingCleanupContainerOrchestrator) RemoveContainers(context.Context, containers.RemoveContainersOptions) ([]string, error) {
 	return nil, o.removeContainersErr
+}
+
+type recordingVolumeRemovalOrchestrator struct {
+	containers.ContainerOrchestrator
+	options containers.RemoveVolumesOptions
+}
+
+func (o *recordingVolumeRemovalOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
+	o.options = options
+	return o.ContainerOrchestrator.RemoveVolumes(ctx, options)
 }

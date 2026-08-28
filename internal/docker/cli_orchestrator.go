@@ -380,7 +380,13 @@ func (dco *DockerCliOrchestrator) GetDiagnostics(ctx context.Context) (container
 }
 
 func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
-	cmd := makeDockerCommand("volume", "create", options.Name)
+	args := []string{"volume", "create"}
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
+	}
+	args = append(args, options.Name)
+
+	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		// Note: unlike Podman, Docker does not return an error if the volume already exists.

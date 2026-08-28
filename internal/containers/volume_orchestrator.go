@@ -10,11 +10,16 @@ import (
 	"time"
 )
 
+const VolumeOwnershipTokenLabel = "com.microsoft.developer.usvc-dev.volumeOwnershipToken"
+
 // CreateVolume command types
 
 type CreateVolumeOptions struct {
 	// Name of the volume to create
 	Name string
+
+	// Labels to apply to the volume
+	Labels map[string]string
 }
 
 type CreateVolume interface {
@@ -63,6 +68,9 @@ type RemoveVolumes interface {
 
 // Represents portion of container orchestrator functionality that is related related to volume management
 type VolumeOrchestrator interface {
+	// Get the name of the runtime.
+	Name() string
+
 	CreateVolume
 	InspectVolumes
 	RemoveVolumes

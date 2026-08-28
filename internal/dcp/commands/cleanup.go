@@ -35,6 +35,7 @@ const (
 	workloadCleanupLeaseRetryInterval        = 500 * time.Millisecond
 	workloadCleanupStopContainerTimeout      = 10
 	workloadCleanupResourceConcurrencyLimit  = uint16(8)
+	cleanupVolumesFlagName                   = "volumes"
 )
 
 type containerOrchestratorProvider func(runtimeName string) (containers.ContainerOrchestrator, error)
@@ -53,6 +54,7 @@ var (
 	cleanupResourceContainerGVR  = (&apiv1.Container{}).GetGroupVersionResource()
 	cleanupResourceExecutableGVR = (&apiv1.Executable{}).GetGroupVersionResource()
 	cleanupResourceNetworkGVR    = (&apiv1.ContainerNetwork{}).GetGroupVersionResource()
+	cleanupResourceVolumeGVR     = (&apiv1.ContainerVolume{}).GetGroupVersionResource()
 )
 
 type cleanupResourceState uint
@@ -109,6 +111,9 @@ var cleanupStoppedCounters = map[schema.GroupVersionResource]func(*cleanupStoppe
 	cleanupResourceNetworkGVR: func(counts *cleanupStoppedCounts) {
 		counts.Networks++
 	},
+	cleanupResourceVolumeGVR: func(counts *cleanupStoppedCounts) {
+		counts.Volumes++
+	},
 }
 
 type cleanupReport struct {
@@ -121,6 +126,7 @@ type cleanupStoppedCounts struct {
 	Containers  int `json:"containers"`
 	Executables int `json:"executables"`
 	Networks    int `json:"networks"`
+	Volumes     int `json:"volumes"`
 }
 
 type cleanupFailureEntry struct {
@@ -136,11 +142,14 @@ func NewCleanupCommand(log *logger.Logger) *cobra.Command {
 		Short: "Stops persistent resources associated with a workload ID.",
 		Long: fmt.Sprintf(`Stops persistent containers, executables, and networks associated with a workload ID.
 
+Persistent volumes are preserved by default. Use --%s to remove associated persistent volumes created by DCP after containers are removed.
+
 Using workload IDs is optional. Workload IDs are trimmed and must be no longer than %d bytes.
-See "run-controllers" command for information on how to associate resources with workload IDs.`, commonapi.MaxWorkloadIDLength),
+See "run-controllers" command for information on how to associate resources with workload IDs.`, cleanupVolumesFlagName, commonapi.MaxWorkloadIDLength),
 		RunE: cleanup(log.Logger),
 		Args: cobra.ExactArgs(1),
 	}
+	cleanupCmd.Flags().Bool(cleanupVolumesFlagName, false, "Remove DCP-created persistent volumes associated with the workload ID.")
 
 	return cleanupCmd
 }
@@ -154,6 +163,10 @@ func cleanup(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 		}
 		if workloadIDErr := workloadID.Validate(); workloadIDErr != nil {
 			return workloadIDErr
+		}
+		options, optionsErr := cleanupWorkloadOptionsFromCommand(cmd)
+		if optionsErr != nil {
+			return optionsErr
 		}
 
 		stateStore, stateStoreErr := statestore.Open(cmd.Context(), statestore.Options{Log: log})
@@ -178,7 +191,16 @@ func cleanup(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 			return runtimes.FindContainerRuntime(cmd.Context(), runtimeName, log.WithName("ContainerOrchestrator"), processExecutor)
 		}
 
-		report, cleanupErr := cleanupWorkloadResources(cmd.Context(), workloadID, stateStore, leaseOwner, getContainerOrchestrator, processExecutor, log)
+		report, cleanupErr := cleanupWorkloadResources(
+			cmd.Context(),
+			workloadID,
+			stateStore,
+			leaseOwner,
+			getContainerOrchestrator,
+			processExecutor,
+			options,
+			log,
+		)
 		encodeErr := json.NewEncoder(cmd.OutOrStdout()).Encode(report)
 		if encodeErr != nil {
 			return fmt.Errorf("could not write cleanup report: %w", encodeErr)
@@ -190,6 +212,18 @@ func cleanup(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 	}
 }
 
+type cleanupWorkloadOptions struct {
+	Volumes bool
+}
+
+func cleanupWorkloadOptionsFromCommand(cmd *cobra.Command) (cleanupWorkloadOptions, error) {
+	cleanupVolumes, cleanupVolumesErr := cmd.Flags().GetBool(cleanupVolumesFlagName)
+	if cleanupVolumesErr != nil {
+		return cleanupWorkloadOptions{}, cleanupVolumesErr
+	}
+	return cleanupWorkloadOptions{Volumes: cleanupVolumes}, nil
+}
+
 func cleanupWorkloadResources(
 	ctx context.Context,
 	workloadID commonapi.WorkloadID,
@@ -197,6 +231,7 @@ func cleanupWorkloadResources(
 	leaseOwner process.ProcessHandle,
 	getContainerOrchestrator containerOrchestratorProvider,
 	processExecutor process.Executor,
+	options cleanupWorkloadOptions,
 	log logr.Logger,
 ) (cleanupReport, error) {
 	report := cleanupReport{WorkloadID: workloadID}
@@ -213,6 +248,14 @@ func cleanupWorkloadResources(
 	networkRecords, networkListErr := stateStore.ListPersistentNetworksByWorkloadID(ctx, workloadID)
 	if networkListErr != nil {
 		return report, networkListErr
+	}
+	volumeRecords := []statestore.PersistentVolumeRecord{}
+	if options.Volumes {
+		var volumeListErr error
+		volumeRecords, volumeListErr = stateStore.ListPersistentVolumesByWorkloadID(ctx, workloadID)
+		if volumeListErr != nil {
+			return report, volumeListErr
+		}
 	}
 
 	processRunner := exerunners.NewProcessExecutableRunner(processExecutor)
@@ -252,6 +295,18 @@ func cleanupWorkloadResources(
 			},
 		})
 	}
+	volumeWorkItems := make([]cleanupWorkItem, 0, len(volumeRecords))
+	for _, record := range volumeRecords {
+		record := record
+		volumeWorkItems = append(volumeWorkItems, cleanupWorkItem{
+			gvr:                cleanupResourceVolumeGVR,
+			resourceKey:        record.ResourceKey,
+			fallbackResourceID: record.VolumeName,
+			clean: func() (string, bool, error) {
+				return cleanupPersistentVolumeRecord(ctx, workloadID, stateStore, leaseOwner, getContainerOrchestrator, record, log)
+			},
+		})
+	}
 
 	runCleanupErr := runCleanupResourceGroups(&report, []cleanupResourceGroup{
 		{
@@ -266,6 +321,11 @@ func cleanupWorkloadResources(
 			gvr:          cleanupResourceNetworkGVR,
 			cleanUpAfter: []schema.GroupVersionResource{cleanupResourceContainerGVR},
 			workItems:    networkWorkItems,
+		},
+		{
+			gvr:          cleanupResourceVolumeGVR,
+			cleanUpAfter: []schema.GroupVersionResource{cleanupResourceContainerGVR},
+			workItems:    volumeWorkItems,
 		},
 	})
 	if runCleanupErr != nil {
@@ -602,6 +662,67 @@ func withCurrentPersistentNetworkRecord(
 	return resourceID, found, cleanupErr
 }
 
+func cleanupPersistentVolumeRecord(
+	ctx context.Context,
+	workloadID commonapi.WorkloadID,
+	stateStore *statestore.Store,
+	leaseOwner process.ProcessHandle,
+	getContainerOrchestrator containerOrchestratorProvider,
+	record statestore.PersistentVolumeRecord,
+	log logr.Logger,
+) (string, bool, error) {
+	cleaned := false
+	resourceID, _, cleanupErr := withCurrentPersistentVolumeRecord(ctx, workloadID, stateStore, leaseOwner, record, func(ctx context.Context, currentRecord *statestore.PersistentVolumeRecord) error {
+		orchestrator, resolveErr := getContainerOrchestrator(currentRecord.RuntimeName)
+		if resolveErr != nil {
+			return fmt.Errorf("could not resolve container runtime %q: %w", currentRecord.RuntimeName, resolveErr)
+		}
+
+		removed, removeErr := removePersistentVolume(ctx, orchestrator, currentRecord.VolumeName, currentRecord.OwnershipToken)
+		if removeErr != nil {
+			return removeErr
+		}
+		if deleteErr := stateStore.DeletePersistentVolume(ctx, currentRecord.ResourceKey); deleteErr != nil {
+			log.Error(deleteErr, "Could not delete persistent ContainerVolume record", "ResourceKey", currentRecord.ResourceKey)
+			return deleteErr
+		}
+		cleaned = removed
+		return nil
+	})
+	return resourceID, cleaned, cleanupErr
+}
+
+func withCurrentPersistentVolumeRecord(
+	ctx context.Context,
+	workloadID commonapi.WorkloadID,
+	stateStore *statestore.Store,
+	leaseOwner process.ProcessHandle,
+	record statestore.PersistentVolumeRecord,
+	f func(context.Context, *statestore.PersistentVolumeRecord) error,
+) (string, bool, error) {
+	var resourceID string
+	found := false
+	cleanupErr := stateStore.WithResourceLeaseRetry(ctx, cleanupLeaseResource(record.ResourceKey), leaseOwner, workloadCleanupLeaseRevalidationInterval, workloadCleanupLeaseRetryInterval, func(ctx context.Context, _ *statestore.ResourceLease) error {
+		currentRecord, getErr := stateStore.GetPersistentVolume(ctx, record.ResourceKey)
+		if errors.Is(getErr, statestore.ErrPersistentVolumeNotFound) {
+			return nil
+		}
+		if getErr != nil {
+			return fmt.Errorf("could not reload persistent ContainerVolume record '%s': %w", record.ResourceKey, getErr)
+		}
+		if currentRecord.WorkloadID != workloadID {
+			return nil
+		}
+		resourceID = currentRecord.VolumeName
+		found = true
+		if f == nil {
+			return nil
+		}
+		return f(ctx, currentRecord)
+	})
+	return resourceID, found, cleanupErr
+}
+
 func removePersistentContainer(ctx context.Context, orchestrator containers.ContainerOrchestrator, containerID string) error {
 	if strings.TrimSpace(containerID) == "" {
 		return fmt.Errorf("container ID cannot be empty")
@@ -629,6 +750,50 @@ func removePersistentContainer(ctx context.Context, orchestrator containers.Cont
 		return inspectErr
 	}
 	return fmt.Errorf("container %s still exists after cleanup", containerID)
+}
+
+func removePersistentVolume(
+	ctx context.Context,
+	orchestrator containers.ContainerOrchestrator,
+	volumeName string,
+	ownershipToken string,
+) (bool, error) {
+	if strings.TrimSpace(volumeName) == "" {
+		return false, fmt.Errorf("volume name cannot be empty")
+	}
+
+	inspectedVolumes, initialInspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
+	if errors.Is(initialInspectErr, containers.ErrNotFound) {
+		return false, nil
+	}
+	if initialInspectErr != nil {
+		return false, initialInspectErr
+	}
+	if len(inspectedVolumes) == 0 {
+		return false, fmt.Errorf("volume %s could not be inspected before cleanup", volumeName)
+	}
+	if ownershipToken == "" || inspectedVolumes[0].Labels[containers.VolumeOwnershipTokenLabel] != ownershipToken {
+		return false, nil
+	}
+
+	_, removeErr := orchestrator.RemoveVolumes(ctx, containers.RemoveVolumesOptions{
+		Volumes: []string{volumeName},
+	})
+	if errors.Is(removeErr, containers.ErrNotFound) {
+		return false, nil
+	}
+	if removeErr != nil {
+		return false, removeErr
+	}
+
+	_, inspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		return true, nil
+	}
+	if inspectErr != nil {
+		return false, inspectErr
+	}
+	return false, fmt.Errorf("volume %s still exists after cleanup", volumeName)
 }
 
 func removePersistentNetwork(ctx context.Context, orchestrator containers.ContainerOrchestrator, networkID string) error {
