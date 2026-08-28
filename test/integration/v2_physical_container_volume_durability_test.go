@@ -10,6 +10,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -104,6 +105,172 @@ func (writer *failOncePhysicalContainerVolumeStatusWriter) Patch(
 		return statusErr
 	}
 	return writer.SubResourceWriter.Patch(ctx, obj, patch, opts...)
+}
+
+func TestV2PhysicalContainerVolumeControllerBoundsRemovalDuringNamespaceDeletion(t *testing.T) {
+	testCases := []struct {
+		name                 string
+		namespaceDeletionAge time.Duration
+		volumeDeletionAge    time.Duration
+	}{
+		{
+			name:                 "volume retry deadline",
+			namespaceDeletionAge: 10 * time.Second,
+			volumeDeletionAge:    31 * time.Second,
+		},
+		{
+			name:                 "namespace cleanup deadline",
+			namespaceDeletionAge: 91 * time.Second,
+			volumeDeletionAge:    time.Second,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, apiv2.AddToScheme(scheme))
+			namespace := durablePhysicalContainerVolumeNamespace("bounded-namespace-volume-cleanup")
+			namespace.Status.Phase = apiv2.NamespacePhaseTerminating
+			namespaceDeletionTime := metav1.NewTime(time.Now().Add(-testCase.namespaceDeletionAge))
+			namespace.DeletionTimestamp = &namespaceDeletionTime
+			volumeName := "bounded-namespace-volume-cleanup-runtime"
+			volume := durablePhysicalContainerVolume(namespace.Name, "bounded-namespace-volume-cleanup", volumeName)
+			volume.Status.Phase = apiv2.PhysicalContainerVolumePhaseReady
+			volume.Status.VolumeID = volumeName
+			volumeDeletionTime := metav1.NewTime(time.Now().Add(-testCase.volumeDeletionAge))
+			volume.DeletionTimestamp = &volumeDeletionTime
+			baseClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalContainerVolume{}).
+				WithObjects(namespace, volume).
+				Build()
+			orchestrator := newDurabilityTestContainerOrchestrator(t, ctx)
+			require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+			orchestrator.FailNextRemoveVolume(volumeName, errors.New("volume remains in use"))
+			reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
+			request := ctrl.Request{NamespacedName: volume.NamespacedName()}
+
+			currentVolume := waitPhysicalContainerVolumeConditionReason(
+				t,
+				ctx,
+				baseClient,
+				reconciler,
+				request,
+				apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned,
+			)
+			require.NotEmpty(t, currentVolume.Finalizers)
+
+			restartedReconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
+			_, finalizerReconcileErr := restartedReconciler.Reconcile(ctx, request)
+			require.NoError(t, finalizerReconcileErr)
+			getErr := baseClient.Get(ctx, volume.NamespacedName(), currentVolume)
+			require.True(t, apierrors.IsNotFound(getErr))
+			require.Equal(t, 1, orchestrator.RemoveVolumeCallCount(volumeName))
+
+			inspectedVolumes, inspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
+			require.NoError(t, inspectErr)
+			require.Len(t, inspectedVolumes, 1)
+		})
+	}
+}
+
+func TestV2PhysicalContainerVolumeControllerRetriesBeforeNamespaceRemovalDeadline(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	namespace := durablePhysicalContainerVolumeNamespace("recent-volume-namespace-cleanup")
+	namespace.Status.Phase = apiv2.NamespacePhaseTerminating
+	namespaceDeletionTime := metav1.NewTime(time.Now().Add(-10 * time.Second))
+	namespace.DeletionTimestamp = &namespaceDeletionTime
+	volumeName := "recent-volume-namespace-cleanup-runtime"
+	volume := durablePhysicalContainerVolume(namespace.Name, "recent-volume-namespace-cleanup", volumeName)
+	volume.Status.Phase = apiv2.PhysicalContainerVolumePhaseReady
+	volume.Status.VolumeID = volumeName
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalContainerVolume{}).
+		WithObjects(namespace, volume).
+		Build()
+	orchestrator := newDurabilityTestContainerOrchestrator(t, ctx)
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+	orchestrator.FailNextRemoveVolume(volumeName, errors.New("volume remains in use"))
+	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
+	request := ctrl.Request{NamespacedName: volume.NamespacedName()}
+
+	require.NoError(t, baseClient.Delete(ctx, volume))
+	currentVolume := waitPhysicalContainerVolumeConditionReason(
+		t,
+		ctx,
+		baseClient,
+		reconciler,
+		request,
+		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoveFailed,
+	)
+	require.NotEmpty(t, currentVolume.Finalizers)
+
+	_, retryReconcileErr := reconciler.Reconcile(ctx, request)
+	require.NoError(t, retryReconcileErr)
+	require.NoError(t, baseClient.Get(ctx, volume.NamespacedName(), currentVolume))
+	requireReadyCondition(
+		t,
+		currentVolume.Status.Conditions,
+		metav1.ConditionFalse,
+		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoveFailed,
+	)
+	require.NotEmpty(t, currentVolume.Finalizers)
+	require.Equal(t, 1, orchestrator.RemoveVolumeCallCount(volumeName))
+}
+
+func TestV2PhysicalContainerVolumeControllerDoesNotBoundDirectRemoval(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	namespace := durablePhysicalContainerVolumeNamespace("unbounded-direct-volume-cleanup")
+	volumeName := "unbounded-direct-volume-cleanup-runtime"
+	volume := durablePhysicalContainerVolume(namespace.Name, "unbounded-direct-volume-cleanup", volumeName)
+	volume.Status.Phase = apiv2.PhysicalContainerVolumePhaseReady
+	volume.Status.VolumeID = volumeName
+	volumeDeletionTime := metav1.NewTime(time.Now().Add(-24 * time.Hour))
+	volume.DeletionTimestamp = &volumeDeletionTime
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalContainerVolume{}).
+		WithObjects(namespace, volume).
+		Build()
+	orchestrator := newDurabilityTestContainerOrchestrator(t, ctx)
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+	orchestrator.FailNextRemoveVolume(volumeName, errors.New("volume remains in use"))
+	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
+	request := ctrl.Request{NamespacedName: volume.NamespacedName()}
+
+	currentVolume := waitPhysicalContainerVolumeConditionReason(
+		t,
+		ctx,
+		baseClient,
+		reconciler,
+		request,
+		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoveFailed,
+	)
+	require.NotEmpty(t, currentVolume.Finalizers)
+
+	_, reconcileErr := reconciler.Reconcile(ctx, request)
+	require.NoError(t, reconcileErr)
+	require.NoError(t, baseClient.Get(ctx, volume.NamespacedName(), currentVolume))
+	requireReadyCondition(
+		t,
+		currentVolume.Status.Conditions,
+		metav1.ConditionFalse,
+		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoveFailed,
+	)
+	require.NotEmpty(t, currentVolume.Finalizers)
+	require.Equal(t, 1, orchestrator.RemoveVolumeCallCount(volumeName))
 }
 
 func TestV2PhysicalContainerVolumeControllerRetriesUncertainCreateCleanup(t *testing.T) {
@@ -335,6 +502,33 @@ func durablePhysicalContainerVolume(namespace, name, volumeName string) *apiv2.P
 			Volume: &apiv2.PhysicalContainerVolumeConfig{VolumeName: volumeName},
 		},
 	}
+}
+
+func waitPhysicalContainerVolumeConditionReason(
+	t *testing.T,
+	ctx context.Context,
+	client ctrl_client.Client,
+	reconciler *controllers.PhysicalContainerVolumeReconciler,
+	request ctrl.Request,
+	reason apiv2.ConditionReason,
+) *apiv2.PhysicalContainerVolume {
+	t.Helper()
+
+	currentVolume := &apiv2.PhysicalContainerVolume{}
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+		if getErr := client.Get(ctx, request.NamespacedName, currentVolume); getErr != nil {
+			return false, getErr
+		}
+
+		readyCondition := apimeta.FindStatusCondition(currentVolume.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil && readyCondition.Reason == string(reason), nil
+	})
+	require.NoError(t, waitErr)
+	return currentVolume
 }
 
 func newDurabilityTestContainerOrchestrator(t *testing.T, ctx context.Context) *ctrl_testutil.TestContainerOrchestrator {

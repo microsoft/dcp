@@ -76,6 +76,9 @@ const (
 
 	// PhysicalContainerVolumeReasonRuntimeVolumeRemoved indicates that the runtime volume was removed.
 	PhysicalContainerVolumeReasonRuntimeVolumeRemoved ConditionReason = "RuntimeVolumeRemoved"
+
+	// PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned indicates that removal stopped so namespace deletion can complete.
+	PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned ConditionReason = "RuntimeVolumeRemovalAbandoned"
 )
 
 // PhysicalContainerVolumeSpec describes either an existing runtime volume or how to create one.
@@ -99,7 +102,7 @@ type PhysicalContainerVolumeConfig struct {
 	RetainRuntimeVolume bool `json:"retainRuntimeVolume,omitempty"`
 
 	// ReplaceExisting removes an existing runtime volume with volumeName before creating a new one.
-	// Replacement waits while the existing volume is in use and never removes attached containers.
+	// Replacement retries non-forced removal while the existing volume is in use and never removes attached containers.
 	ReplaceExisting bool `json:"replaceExisting,omitempty"`
 
 	// Labels contains labels to apply to a newly-created runtime volume.
@@ -119,9 +122,6 @@ type PhysicalContainerVolumeStatus struct {
 
 	// VolumeID is the runtime identifier being tracked.
 	VolumeID string `json:"volumeID,omitempty"`
-
-	// VolumeName is the runtime volume name.
-	VolumeName string `json:"volumeName,omitempty"`
 
 	// Driver is the runtime volume driver.
 	Driver string `json:"driver,omitempty"`

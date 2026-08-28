@@ -105,6 +105,9 @@ func (data *physicalContainerVolumeData) applyTo(volume *apiv2.PhysicalContainer
 	case apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoved:
 		change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhasePending)
 		change |= setCondition(&volume.Status.Conditions, apiv2.ConditionReady, volume.Generation, metav1.ConditionFalse, data.conditionReason, "Runtime volume removal completed.")
+	case apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned:
+		change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhasePending)
+		change |= setCondition(&volume.Status.Conditions, apiv2.ConditionReady, volume.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
 	}
 
 	return change

@@ -437,7 +437,7 @@ func (dco *DockerCliOrchestrator) ListVolumes(ctx context.Context, options conta
 		return nil, errors.Join(listErr, normalizeCliErrors(errBuf))
 	}
 
-	names := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
+	names := slices.NonEmpty[byte](slices.Map[[]byte, []byte](bytes.Split(outBuf.Bytes(), osutil.LF()), bytes.TrimSpace))
 	return slices.Map[containers.ListedVolume](names, func(name []byte) containers.ListedVolume {
 		return containers.ListedVolume{Name: string(name)}
 	}), nil

@@ -29,6 +29,11 @@ import (
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
+const (
+	physicalContainerVolumeRemovalRetryTimeout      = 30 * time.Second
+	physicalContainerVolumeNamespaceDeletionTimeout = 90 * time.Second
+)
+
 var (
 	physicalContainerVolumeFinalizer string = fmt.Sprintf("%s/physicalcontainervolume-reconciler", apiv2.GroupVersion.Group)
 
@@ -48,6 +53,7 @@ var (
 		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoving:           handlePhysicalContainerVolumeRemovalInProgress,
 		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoveFailed:       handlePhysicalContainerVolumeRemovalFailed,
 		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoved:            handlePhysicalContainerVolumeRemovalCompleted,
+		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned:   handlePhysicalContainerVolumeRemovalAbandoned,
 		"": handleUnknownPhysicalContainerVolumeDataReason,
 	}
 )
@@ -241,6 +247,7 @@ func (r *PhysicalContainerVolumeReconciler) managePhysicalContainerVolume(
 	return change | r.applyRuntimeVolumeStatus(ctx, volume, volumeID, log), nil
 }
 
+// Inspects the runtime volume and projects the result onto the resource status.
 func (r *PhysicalContainerVolumeReconciler) applyRuntimeVolumeStatus(
 	ctx context.Context,
 	volume *apiv2.PhysicalContainerVolume,
@@ -252,6 +259,8 @@ func (r *PhysicalContainerVolumeReconciler) applyRuntimeVolumeStatus(
 		change := setValue(&volume.Status.VolumeID, volumeID)
 		change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhaseUnknown)
 		change |= setCondition(&volume.Status.Conditions, apiv2.ConditionReady, volume.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonRuntimeVolumeMissing, "Runtime volume was not found.")
+		// Keep observing: a tracked volume may not have been created yet, and a runtime that is
+		// only reporting the volume as absent because it is unhealthy recovers on its own.
 		return change | additionalReconciliationNeeded
 	}
 	if inspectErr != nil {
@@ -259,6 +268,8 @@ func (r *PhysicalContainerVolumeReconciler) applyRuntimeVolumeStatus(
 		change := setValue(&volume.Status.VolumeID, volumeID)
 		change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhaseUnknown)
 		change |= setCondition(&volume.Status.Conditions, apiv2.ConditionReady, volume.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonRuntimeVolumeInspectFailed, fmt.Sprintf("Failed to inspect runtime volume: %v", inspectErr))
+		// Inspection failures are usually transient, and repeating an identical failure produces
+		// no status change, so retry explicitly rather than settling into a permanent failure.
 		return change | additionalReconciliationNeeded
 	}
 
@@ -569,6 +580,11 @@ func handleUnknownPhysicalContainerVolumeDataReason(
 func (r *PhysicalContainerVolumeReconciler) handleDeletionRequest(ctx context.Context, volume *apiv2.PhysicalContainerVolume, log logr.Logger) objectChange {
 	_, data := r.volumeData.BorrowByNamespacedName(volume.NamespacedName())
 	if data == nil {
+		readyCondition := apimeta.FindStatusCondition(volume.Status.Conditions, string(apiv2.ConditionReady))
+		if readyCondition != nil &&
+			readyCondition.Reason == string(apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned) {
+			return deleteFinalizer(volume, physicalContainerVolumeFinalizer, log)
+		}
 		return r.beginPhysicalContainerVolumeRemoval(volume, nil, log)
 	}
 
@@ -714,6 +730,26 @@ func handlePhysicalContainerVolumeRemovalFailed(
 		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, conditionReason, data, log)
 	}
 
+	if reconciler.namespaceDeletionVolumeRemovalTimeoutExpired(ctx, volume, log) {
+		data.conditionReason = apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned
+		data.progress = physicalContainerVolumeOperationCompleted
+		data.failureMessage = fmt.Sprintf(
+			"Stopped retrying runtime volume removal after reaching the namespace cleanup deadline; the runtime volume was retained. Last failure: %s",
+			data.failureMessage,
+		)
+		data.retryAfter = time.Time{}
+		stateKey, _ := reconciler.volumeData.BorrowByNamespacedName(volume.NamespacedName())
+		if reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data) {
+			log.Info(
+				"Stopped retrying runtime volume removal after namespace cleanup deadline",
+				"Namespace", volume.Namespace,
+				"VolumeID", data.volumeID,
+			)
+			return data.applyTo(volume) | additionalReconciliationNeeded
+		}
+		return additionalReconciliationNeeded
+	}
+
 	if time.Now().Before(data.retryAfter) {
 		return additionalReconciliationNeeded
 	}
@@ -734,6 +770,53 @@ func handlePhysicalContainerVolumeRemovalCompleted(
 
 	reconciler.volumeData.DeleteByNamespacedName(volume.NamespacedName())
 	return deleteFinalizer(volume, physicalContainerVolumeFinalizer, log)
+}
+
+func handlePhysicalContainerVolumeRemovalAbandoned(
+	ctx context.Context,
+	reconciler *PhysicalContainerVolumeReconciler,
+	volume *apiv2.PhysicalContainerVolume,
+	conditionReason apiv2.ConditionReason,
+	data *physicalContainerVolumeData,
+	log logr.Logger,
+) objectChange {
+	if data.progress != physicalContainerVolumeOperationCompleted {
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, conditionReason, data, log)
+	}
+
+	reconciler.volumeData.DeleteByNamespacedName(volume.NamespacedName())
+	return deleteFinalizer(volume, physicalContainerVolumeFinalizer, log)
+}
+
+func (r *PhysicalContainerVolumeReconciler) namespaceDeletionVolumeRemovalTimeoutExpired(
+	ctx context.Context,
+	volume *apiv2.PhysicalContainerVolume,
+	log logr.Logger,
+) bool {
+	namespace := apiv2.Namespace{}
+	namespaceGetErr := r.Client.Get(ctx, types.NamespacedName{Name: volume.Namespace}, &namespace)
+	if apierrors.IsNotFound(namespaceGetErr) {
+		// A namespace cannot normally disappear while a child finalizer remains. If its finalizer
+		// was removed manually, do not leave the orphaned child blocked on runtime cleanup.
+		log.Info("Namespace no longer exists; stopping runtime volume removal", "Namespace", volume.Namespace)
+		return true
+	}
+	if namespaceGetErr != nil {
+		log.Error(namespaceGetErr, "Failed to check namespace deletion deadline", "Namespace", volume.Namespace)
+		return false
+	}
+	if namespace.DeletionTimestamp == nil || namespace.DeletionTimestamp.IsZero() {
+		return false
+	}
+
+	removalDeadline := namespace.DeletionTimestamp.Add(physicalContainerVolumeNamespaceDeletionTimeout)
+	if volume.DeletionTimestamp != nil {
+		volumeRemovalDeadline := volume.DeletionTimestamp.Add(physicalContainerVolumeRemovalRetryTimeout)
+		if volumeRemovalDeadline.Before(removalDeadline) {
+			removalDeadline = volumeRemovalDeadline
+		}
+	}
+	return !time.Now().Before(removalDeadline)
 }
 
 func (r *PhysicalContainerVolumeReconciler) schedulePhysicalContainerVolumeRemoval(
@@ -847,6 +930,8 @@ func inspectPhysicalContainerVolume(
 	inspectedVolumes, inspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{
 		Volumes: []string{volume},
 	})
+	// Orchestrators report ErrIncomplete alongside successfully inspected volumes, so prefer the
+	// result over the error.
 	if len(inspectedVolumes) > 0 {
 		return &inspectedVolumes[0], nil
 	}
@@ -884,7 +969,6 @@ func applyReadyPhysicalContainerVolumeStatus(
 	inspectedVolume *containers.InspectedVolume,
 ) objectChange {
 	change := setValue(&volume.Status.VolumeID, inspectedVolume.Name)
-	change |= setValue(&volume.Status.VolumeName, inspectedVolume.Name)
 	change |= setValue(&volume.Status.Driver, inspectedVolume.Driver)
 	change |= setValue(&volume.Status.MountPoint, inspectedVolume.MountPoint)
 	change |= setValue(&volume.Status.Scope, inspectedVolume.Scope)

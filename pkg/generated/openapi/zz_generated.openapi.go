@@ -5851,7 +5851,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeConfig(ref common.Refere
 					},
 					"replaceExisting": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ReplaceExisting removes an existing runtime volume with volumeName before creating a new one. Replacement waits while the existing volume is in use and never removes attached containers.",
+							Description: "ReplaceExisting removes an existing runtime volume with volumeName before creating a new one. Replacement retries non-forced removal while the existing volume is in use and never removes attached containers.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -5980,13 +5980,6 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeStatus(ref common.Refere
 					"volumeID": {
 						SchemaProps: spec.SchemaProps{
 							Description: "VolumeID is the runtime identifier being tracked.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"volumeName": {
-						SchemaProps: spec.SchemaProps{
-							Description: "VolumeName is the runtime volume name.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

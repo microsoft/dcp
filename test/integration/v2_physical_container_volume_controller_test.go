@@ -56,7 +56,6 @@ func TestV2PhysicalContainerVolumeControllerCreatesVolume(t *testing.T) {
 	readyVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
 	require.Contains(t, readyVolume.Finalizers, apiv2.GroupName+"/physicalcontainervolume-reconciler")
 	require.Equal(t, volumeName, readyVolume.Status.VolumeID)
-	require.Equal(t, volumeName, readyVolume.Status.VolumeName)
 	require.Equal(t, "local", readyVolume.Status.Driver)
 	require.Equal(t, "local", readyVolume.Status.Scope)
 	require.False(t, readyVolume.Status.CreatedAt.IsZero())
