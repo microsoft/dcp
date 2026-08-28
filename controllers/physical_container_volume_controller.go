@@ -29,10 +29,7 @@ import (
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
-const (
-	physicalContainerVolumeRemovalRetryTimeout      = 30 * time.Second
-	physicalContainerVolumeNamespaceDeletionTimeout = 90 * time.Second
-)
+const physicalContainerVolumeRemovalRetryTimeout = 30 * time.Second
 
 var (
 	physicalContainerVolumeFinalizer string = fmt.Sprintf("%s/physicalcontainervolume-reconciler", apiv2.GroupVersion.Group)
@@ -809,13 +806,10 @@ func (r *PhysicalContainerVolumeReconciler) namespaceDeletionVolumeRemovalTimeou
 		return false
 	}
 
-	removalDeadline := namespace.DeletionTimestamp.Add(physicalContainerVolumeNamespaceDeletionTimeout)
-	if volume.DeletionTimestamp != nil {
-		volumeRemovalDeadline := volume.DeletionTimestamp.Add(physicalContainerVolumeRemovalRetryTimeout)
-		if volumeRemovalDeadline.Before(removalDeadline) {
-			removalDeadline = volumeRemovalDeadline
-		}
+	if volume.DeletionTimestamp == nil || volume.DeletionTimestamp.IsZero() {
+		return false
 	}
+	removalDeadline := volume.DeletionTimestamp.Add(physicalContainerVolumeRemovalRetryTimeout)
 	return !time.Now().Before(removalDeadline)
 }
 
