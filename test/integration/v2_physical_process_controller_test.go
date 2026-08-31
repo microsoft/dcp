@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -18,9 +19,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -83,6 +86,10 @@ func TestV2PhysicalProcessControllerObservesAndPreservesExistingProcess(t *testi
 }
 
 func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T) {
+	dcppaths.EnableTestPathProbing()
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+	require.NoError(t, dcpPathErr)
+
 	testCases := []struct {
 		name   string
 		retain bool
@@ -112,6 +119,16 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 			runningProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
 			pid, convertErr := process.Int64_ToPidT(*runningProcess.Status.PID)
 			require.NoError(t, convertErr)
+			monitorExecutions := testProcessExecutor.FindAll(
+				[]string{dcpPath, "monitor-process", "--child", strconv.FormatInt(int64(pid), 10)},
+				"",
+				nil,
+			)
+			if testCase.retain {
+				require.Empty(t, monitorExecutions)
+			} else {
+				require.Len(t, monitorExecutions, 1)
+			}
 
 			require.NoError(t, client.Delete(ctx, runningProcess))
 			ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, runningProcess)
@@ -175,6 +192,7 @@ func TestV2PhysicalProcessControllerReportsExitBeforeRunningStatus(t *testing.T)
 
 func TestV2PhysicalProcessControllerStopsProcessOnRequest(t *testing.T) {
 	t.Parallel()
+	dcppaths.EnableTestPathProbing()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
@@ -193,6 +211,16 @@ func TestV2PhysicalProcessControllerStopsProcessOnRequest(t *testing.T) {
 	execution, found := testProcessExecutor.FindByPid(pid)
 	require.True(t, found)
 	require.True(t, execution.Finished())
+	if osutil.IsWindows() {
+		dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+		require.NoError(t, dcpPathErr)
+		stopExecutions := testProcessExecutor.FindAll(
+			[]string{dcpPath, "stop-process-tree", "--pid", strconv.FormatInt(int64(pid), 10)},
+			"",
+			nil,
+		)
+		require.Len(t, stopExecutions, 1)
+	}
 }
 
 func TestV2PhysicalProcessControllerDoesNotLaunchStoppedProcess(t *testing.T) {

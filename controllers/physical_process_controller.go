@@ -28,10 +28,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
+
+const physicalProcessStopTimeout = 15 * time.Second
 
 var (
 	physicalProcessFinalizer = fmt.Sprintf("%s/physicalprocess-reconciler", apiv2.GroupVersion.Group)
@@ -476,6 +479,9 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 	data.progress = physicalProcessOperationCompleted
 	data.failureMessage = ""
 	data.retryAfter = time.Time{}
+	if !processConfig.RetainRuntimeProcess {
+		dcpproc.RunProcessWatcher(r.processExecutor, handle, log)
+	}
 	r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 	if startWaitForExit != nil {
 		startWaitForExit()
@@ -587,13 +593,20 @@ func (r *PhysicalProcessReconciler) schedulePhysicalProcessStop(
 }
 
 func (r *PhysicalProcessReconciler) stopPhysicalProcess(
-	_ context.Context,
+	ctx context.Context,
 	physicalProcess *apiv2.PhysicalProcess,
 	stateKey physicalProcessDataStateKey,
 	data *physicalProcessData,
 	log logr.Logger,
 ) {
-	stopErr := r.processExecutor.StopProcess(data.handle)
+	var stopErr error
+	if osutil.IsWindows() {
+		stopCtx, stopCtxCancel := context.WithTimeout(ctx, physicalProcessStopTimeout)
+		stopErr = dcpproc.StopProcessTree(stopCtx, r.processExecutor, data.handle, log)
+		stopCtxCancel()
+	} else {
+		stopErr = r.processExecutor.StopProcess(data.handle)
+	}
 	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
 		data.conditionReason = apiv2.PhysicalProcessReasonStopFailed
 		data.progress = physicalProcessOperationRetryPending
