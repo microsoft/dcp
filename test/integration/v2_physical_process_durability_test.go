@@ -23,7 +23,9 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
+	"github.com/microsoft/dcp/internal/dcpproc"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -204,6 +206,14 @@ func TestV2PhysicalProcessControllerStopsProcessWhenDeletedDuringLaunch(t *testi
 		WithObjects(namespace, physicalProcess).
 		Build()
 	testExecutor := internal_testutil.NewTestProcessExecutor(ctx)
+	if osutil.IsWindows() {
+		testExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+			Condition: internal_testutil.ProcessSearchCriteria{
+				Command: []string{"dcp", "stop-process-tree"},
+			},
+			RunCommand: dcpproc.SimulateStopProcessTreeCommand,
+		})
+	}
 	blockingExecutor := &blockingStartProcessExecutor{
 		Executor: testExecutor,
 		started:  make(chan struct{}),
