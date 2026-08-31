@@ -9,16 +9,25 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
+	ctrl "sigs.k8s.io/controller-runtime"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
@@ -27,6 +36,116 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+type failOncePhysicalProcessStatusClient struct {
+	ctrl_client.Client
+
+	lock      sync.Mutex
+	triggered bool
+}
+
+func (client *failOncePhysicalProcessStatusClient) Status() ctrl_client.SubResourceWriter {
+	return &failOncePhysicalProcessStatusWriter{
+		SubResourceWriter: client.Client.Status(),
+		client:            client,
+	}
+}
+
+func (client *failOncePhysicalProcessStatusClient) failStatusPatch(obj ctrl_client.Object) error {
+	physicalProcess, isPhysicalProcess := obj.(*apiv2.PhysicalProcess)
+	if !isPhysicalProcess || physicalProcess.Status.PID == nil {
+		return nil
+	}
+
+	client.lock.Lock()
+	defer client.lock.Unlock()
+	if client.triggered {
+		return nil
+	}
+	client.triggered = true
+	return apierrors.NewConflict(
+		schema.GroupResource{Group: apiv2.GroupVersion.Group, Resource: "physicalprocesses"},
+		physicalProcess.Name,
+		context.DeadlineExceeded,
+	)
+}
+
+func (client *failOncePhysicalProcessStatusClient) failureTriggered() bool {
+	client.lock.Lock()
+	defer client.lock.Unlock()
+	return client.triggered
+}
+
+type failOncePhysicalProcessStatusWriter struct {
+	ctrl_client.SubResourceWriter
+	client *failOncePhysicalProcessStatusClient
+}
+
+func (writer *failOncePhysicalProcessStatusWriter) Patch(
+	ctx context.Context,
+	obj ctrl_client.Object,
+	patch ctrl_client.Patch,
+	opts ...ctrl_client.SubResourcePatchOption,
+) error {
+	if statusErr := writer.client.failStatusPatch(obj); statusErr != nil {
+		return statusErr
+	}
+	return writer.SubResourceWriter.Patch(ctx, obj, patch, opts...)
+}
+
+type blockingStartProcessExecutor struct {
+	process.Executor
+
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+}
+
+func (executor *blockingStartProcessExecutor) StartProcess(
+	ctx context.Context,
+	cmd *exec.Cmd,
+	exitHandler process.ProcessExitHandler,
+	creationFlags process.ProcessCreationFlag,
+	sysCreateProcess process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	executor.startedOnce.Do(func() {
+		close(executor.started)
+	})
+	select {
+	case <-ctx.Done():
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, ctx.Err()
+	case <-executor.release:
+	}
+	return executor.Executor.StartProcess(ctx, cmd, exitHandler, creationFlags, sysCreateProcess)
+}
+
+type invalidIdentityOnceExecutor struct {
+	process.Executor
+
+	lock     sync.Mutex
+	returned bool
+}
+
+func (executor *invalidIdentityOnceExecutor) StartProcess(
+	ctx context.Context,
+	cmd *exec.Cmd,
+	exitHandler process.ProcessExitHandler,
+	creationFlags process.ProcessCreationFlag,
+	sysCreateProcess process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	handle, startWaitForExit, startErr := executor.Executor.StartProcess(ctx, cmd, exitHandler, creationFlags, sysCreateProcess)
+	if startErr != nil {
+		return handle, startWaitForExit, startErr
+	}
+
+	executor.lock.Lock()
+	defer executor.lock.Unlock()
+	if !executor.returned {
+		executor.returned = true
+		handle.IdentityTime = time.Time{}
+	}
+	return handle, startWaitForExit, nil
+}
 
 func TestV2PhysicalProcessControllerLaunchesProcess(t *testing.T) {
 	t.Parallel()
@@ -376,6 +495,153 @@ func TestV2PhysicalProcessControllerRetriesLaunchFailure(t *testing.T) {
 	testProcessExecutor.RemoveAutoExecution(criteria)
 	waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
 	require.Len(t, testProcessExecutor.FindAll([]string{executablePath}, "", nil), 2)
+}
+
+func TestV2PhysicalProcessControllerDoesNotRelaunchAfterStatusConflict(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "v2-pproc-status-conflict",
+			Finalizers: []string{apiv2.NamespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "conflict-process", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalProcessSpec{
+			Process: &apiv2.PhysicalProcessConfig{ExecutablePath: "v2-pproc-conflict-command"},
+		},
+	}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(client.Scheme()).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalProcess{}).
+		WithObjects(namespace, physicalProcess).
+		Build()
+	statusClient := &failOncePhysicalProcessStatusClient{Client: baseClient}
+	reconciler := controllers.NewPhysicalProcessReconciler(ctx, statusClient, baseClient, testutil.NewLogForTesting(t.Name()), testProcessExecutor)
+	request := ctrl.Request{NamespacedName: physicalProcess.NamespacedName()}
+
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+		current := apiv2.PhysicalProcess{}
+		getErr := baseClient.Get(ctx, request.NamespacedName, &current)
+		if getErr != nil {
+			return false, getErr
+		}
+		return current.Status.Phase == apiv2.PhysicalProcessPhaseRunning && statusClient.failureTriggered(), nil
+	})
+	require.NoError(t, waitErr)
+	require.Len(t, testProcessExecutor.FindAll([]string{physicalProcess.Spec.Process.ExecutablePath}, "", nil), 1)
+}
+
+func TestV2PhysicalProcessControllerStopsProcessWhenDeletedDuringLaunch(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "v2-pproc-delete-launch",
+			Finalizers: []string{apiv2.NamespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "deleting-process", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalProcessSpec{
+			Process: &apiv2.PhysicalProcessConfig{ExecutablePath: "v2-pproc-delete-launch-command"},
+		},
+	}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(client.Scheme()).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalProcess{}).
+		WithObjects(namespace, physicalProcess).
+		Build()
+	blockingExecutor := &blockingStartProcessExecutor{
+		Executor: testProcessExecutor,
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	reconciler := controllers.NewPhysicalProcessReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), blockingExecutor)
+	request := ctrl.Request{NamespacedName: physicalProcess.NamespacedName()}
+
+	_, firstReconcileErr := reconciler.Reconcile(ctx, request)
+	require.NoError(t, firstReconcileErr)
+	_, launchReconcileErr := reconciler.Reconcile(ctx, request)
+	require.NoError(t, launchReconcileErr)
+	select {
+	case <-blockingExecutor.started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	current := apiv2.PhysicalProcess{}
+	require.NoError(t, baseClient.Get(ctx, request.NamespacedName, &current))
+	require.NoError(t, baseClient.Delete(ctx, &current))
+	_, deletionReconcileErr := reconciler.Reconcile(ctx, request)
+	require.NoError(t, deletionReconcileErr)
+	close(blockingExecutor.release)
+
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+		getErr := baseClient.Get(ctx, request.NamespacedName, &apiv2.PhysicalProcess{})
+		return apierrors.IsNotFound(getErr), nil
+	})
+	require.NoError(t, waitErr)
+
+	executions := testProcessExecutor.FindAll([]string{physicalProcess.Spec.Process.ExecutablePath}, "", nil)
+	require.Len(t, executions, 1)
+	require.True(t, executions[0].Finished())
+}
+
+func TestV2PhysicalProcessControllerCleansInvalidLaunchIdentityBeforeRetry(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "v2-pproc-invalid-identity",
+			Finalizers: []string{apiv2.NamespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "invalid-identity-process", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalProcessSpec{
+			Process: &apiv2.PhysicalProcessConfig{ExecutablePath: "v2-pproc-invalid-identity-command"},
+		},
+	}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(client.Scheme()).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalProcess{}).
+		WithObjects(namespace, physicalProcess).
+		Build()
+	processExecutor := &invalidIdentityOnceExecutor{Executor: testProcessExecutor}
+	reconciler := controllers.NewPhysicalProcessReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), processExecutor)
+	request := ctrl.Request{NamespacedName: physicalProcess.NamespacedName()}
+
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+		current := apiv2.PhysicalProcess{}
+		getErr := baseClient.Get(ctx, request.NamespacedName, &current)
+		return current.Status.Phase == apiv2.PhysicalProcessPhaseRunning, getErr
+	})
+	require.NoError(t, waitErr)
+
+	executions := testProcessExecutor.FindAll([]string{physicalProcess.Spec.Process.ExecutablePath}, "", nil)
+	require.Len(t, executions, 2)
+	require.True(t, executions[0].Finished())
+	require.True(t, executions[1].Running())
 }
 
 func waitPhysicalProcessPhase(
