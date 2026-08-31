@@ -270,6 +270,22 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessData(
 
 	identityTime := physicalProcess.Status.IdentityTimestamp.Time
 	if identityTime.IsZero() {
+		readyCondition := apimeta.FindStatusCondition(physicalProcess.Status.Conditions, string(apiv2.ConditionReady))
+		if physicalProcess.Status.PID != nil &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalProcessReasonRuntimeProcessMissing {
+			change := setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseExited)
+			change |= setCondition(
+				&physicalProcess.Status.Conditions,
+				apiv2.ConditionReady,
+				physicalProcess.Generation,
+				metav1.ConditionFalse,
+				apiv2.PhysicalProcessReasonRuntimeProcessMissing,
+				"Runtime process was not found.",
+			)
+			return "", nil, change
+		}
+
 		probedHandle, probeErr := r.processExecutor.FindProcessHandle(pid)
 		if process.IsProcessGoneErr(probeErr) {
 			change := setPhysicalProcessPID(&physicalProcess.Status.PID, *pidValue)
@@ -302,6 +318,7 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessData(
 	owner, stored := r.processData.StoreIfStateKeyUnclaimed(physicalProcess.NamespacedName(), stateKey, data)
 	if !stored {
 		change := setPhysicalProcessPID(&physicalProcess.Status.PID, *pidValue)
+		change |= setTimestamp(&physicalProcess.Status.IdentityTimestamp, metav1.NewMicroTime(handle.IdentityTime))
 		change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhasePending)
 		change |= setCondition(
 			&physicalProcess.Status.Conditions,
@@ -542,7 +559,6 @@ func (r *PhysicalProcessReconciler) processExited(
 		r.ScheduleReconciliation(name)
 	}
 }
-
 
 func (r *PhysicalProcessReconciler) schedulePhysicalProcessStop(
 	physicalProcess *apiv2.PhysicalProcess,

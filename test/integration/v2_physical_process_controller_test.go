@@ -146,6 +146,66 @@ func (executor *invalidIdentityOnceExecutor) StartProcess(
 	return handle, startWaitForExit, nil
 }
 
+type replaceableProcessExecutor struct {
+	process.Executor
+
+	lock      sync.Mutex
+	handle    process.ProcessHandle
+	findCalls int
+	stopCalls int
+}
+
+func (executor *replaceableProcessExecutor) FindProcessHandle(pid process.Pid_t) (process.ProcessHandle, error) {
+	executor.lock.Lock()
+	defer executor.lock.Unlock()
+
+	executor.findCalls++
+	if executor.handle.Pid != pid {
+		return process.ProcessHandle{Pid: process.UnknownPID}, process.ErrorProcessNotFound
+	}
+	return executor.handle, nil
+}
+
+func (executor *replaceableProcessExecutor) CheckProcessRunning(handle process.ProcessHandle) error {
+	executor.lock.Lock()
+	defer executor.lock.Unlock()
+
+	if executor.handle.Pid != handle.Pid {
+		return process.ErrorProcessNotFound
+	}
+	if !osutil.Within(handle.IdentityTime, executor.handle.IdentityTime, process.ProcessIdentityTimeMaximumDifference) {
+		return process.ErrProcessIdentityMismatch
+	}
+	return nil
+}
+
+func (executor *replaceableProcessExecutor) StopProcess(handle process.ProcessHandle, _ ...process.ProcessStopOption) error {
+	executor.lock.Lock()
+	defer executor.lock.Unlock()
+
+	executor.stopCalls++
+	if executor.handle.Pid != handle.Pid {
+		return process.ErrorProcessNotFound
+	}
+	if !osutil.Within(handle.IdentityTime, executor.handle.IdentityTime, process.ProcessIdentityTimeMaximumDifference) {
+		return process.ErrProcessIdentityMismatch
+	}
+	executor.handle = process.ProcessHandle{}
+	return nil
+}
+
+func (executor *replaceableProcessExecutor) replace(handle process.ProcessHandle) {
+	executor.lock.Lock()
+	defer executor.lock.Unlock()
+	executor.handle = handle
+}
+
+func (executor *replaceableProcessExecutor) callCounts() (int, int) {
+	executor.lock.Lock()
+	defer executor.lock.Unlock()
+	return executor.findCalls, executor.stopCalls
+}
+
 func TestV2PhysicalProcessControllerLaunchesProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -226,6 +286,57 @@ func TestV2PhysicalProcessControllerReportsMissingExistingProcess(t *testing.T) 
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, exitedProcess)
 }
 
+func TestV2PhysicalProcessControllerDoesNotAdoptReplacementForMissingProcess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const pid process.Pid_t = 42001
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "v2-pproc-missing-replacement",
+			Finalizers: []string{apiv2.NamespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	pidValue := int64(pid)
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "missing-replacement", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalProcessSpec{PID: &pidValue},
+	}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(client.Scheme()).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalProcess{}).
+		WithObjects(namespace, physicalProcess).
+		Build()
+	executor := &replaceableProcessExecutor{Executor: testProcessExecutor}
+	reconciler := controllers.NewPhysicalProcessReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), executor)
+	request := ctrl.Request{NamespacedName: physicalProcess.NamespacedName()}
+
+	reconcilePhysicalProcess(t, ctx, reconciler, request)
+	reconcilePhysicalProcess(t, ctx, reconciler, request)
+
+	current := apiv2.PhysicalProcess{}
+	require.NoError(t, baseClient.Get(ctx, request.NamespacedName, &current))
+	requireReadyCondition(t, current.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessMissing)
+	require.True(t, current.Status.IdentityTimestamp.IsZero())
+
+	executor.replace(process.NewHandle(pid, time.Now()))
+	current.Spec.Stop = true
+	require.NoError(t, baseClient.Update(ctx, &current))
+	reconcilePhysicalProcess(t, ctx, reconciler, request)
+	reconcilePhysicalProcess(t, ctx, reconciler, request)
+
+	require.NoError(t, baseClient.Get(ctx, request.NamespacedName, &current))
+	requireReadyCondition(t, current.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessMissing)
+	require.True(t, current.Status.IdentityTimestamp.IsZero())
+	readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+	require.Equal(t, current.Generation, readyCondition.ObservedGeneration)
+	findCalls, stopCalls := executor.callCounts()
+	require.Equal(t, 1, findCalls, "a terminal missing result must prevent the reused PID from being resolved")
+	require.Zero(t, stopCalls, "the replacement process must not be stopped")
+}
+
 func TestV2PhysicalProcessControllerRejectsAlreadyTrackedProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -261,6 +372,71 @@ func TestV2PhysicalProcessControllerRejectsAlreadyTrackedProcess(t *testing.T) {
 	require.NoError(t, client.Delete(ctx, duplicate))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, duplicate)
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
+}
+
+func TestV2PhysicalProcessControllerDoesNotAdoptReplacementAfterTrackingConflict(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const pid process.Pid_t = 42002
+	originalHandle := process.NewHandle(pid, time.Now().Add(-time.Minute))
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "v2-pproc-tracked-replacement",
+			Finalizers: []string{apiv2.NamespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	pidValue := int64(pid)
+	owner := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "tracking-owner", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalProcessSpec{PID: &pidValue},
+	}
+	duplicate := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "tracking-duplicate", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalProcessSpec{PID: &pidValue},
+	}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(client.Scheme()).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalProcess{}).
+		WithObjects(namespace, owner, duplicate).
+		Build()
+	executor := &replaceableProcessExecutor{Executor: testProcessExecutor, handle: originalHandle}
+	reconciler := controllers.NewPhysicalProcessReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), executor)
+	ownerRequest := ctrl.Request{NamespacedName: owner.NamespacedName()}
+	duplicateRequest := ctrl.Request{NamespacedName: duplicate.NamespacedName()}
+
+	reconcilePhysicalProcess(t, ctx, reconciler, ownerRequest)
+	reconcilePhysicalProcess(t, ctx, reconciler, ownerRequest)
+	reconcilePhysicalProcess(t, ctx, reconciler, duplicateRequest)
+	reconcilePhysicalProcess(t, ctx, reconciler, duplicateRequest)
+
+	currentDuplicate := apiv2.PhysicalProcess{}
+	require.NoError(t, baseClient.Get(ctx, duplicateRequest.NamespacedName, &currentDuplicate))
+	requireReadyCondition(t, currentDuplicate.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessAlreadyTracked)
+	require.Equal(t, originalHandle.IdentityTime.UTC(), currentDuplicate.Status.IdentityTimestamp.Time.UTC())
+
+	currentOwner := apiv2.PhysicalProcess{}
+	require.NoError(t, baseClient.Get(ctx, ownerRequest.NamespacedName, &currentOwner))
+	require.NoError(t, baseClient.Delete(ctx, &currentOwner))
+	reconcilePhysicalProcess(t, ctx, reconciler, ownerRequest)
+
+	executor.replace(process.NewHandle(pid, time.Now()))
+	reconcilePhysicalProcess(t, ctx, reconciler, duplicateRequest)
+
+	require.NoError(t, baseClient.Get(ctx, duplicateRequest.NamespacedName, &currentDuplicate))
+	requireReadyCondition(t, currentDuplicate.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessMissing)
+	require.Equal(t, originalHandle.IdentityTime.UTC(), currentDuplicate.Status.IdentityTimestamp.Time.UTC())
+
+	currentDuplicate.Spec.Stop = true
+	require.NoError(t, baseClient.Update(ctx, &currentDuplicate))
+	reconcilePhysicalProcess(t, ctx, reconciler, duplicateRequest)
+	reconcilePhysicalProcess(t, ctx, reconciler, duplicateRequest)
+
+	findCalls, stopCalls := executor.callCounts()
+	require.Equal(t, 2, findCalls, "the duplicate must stay pinned to the original process identity")
+	require.Zero(t, stopCalls, "the replacement process must not be stopped")
 }
 
 func TestV2PhysicalProcessControllerStopsExistingProcessOnRequest(t *testing.T) {
@@ -752,6 +928,17 @@ func seedAdoptablePhysicalProcess(t *testing.T, ctx context.Context, executableP
 		_ = testProcessExecutor.StopProcess(handle)
 	})
 	return handle
+}
+
+func reconcilePhysicalProcess(
+	t *testing.T,
+	ctx context.Context,
+	reconciler *controllers.PhysicalProcessReconciler,
+	request ctrl.Request,
+) {
+	t.Helper()
+	_, reconcileErr := reconciler.Reconcile(ctx, request)
+	require.NoError(t, reconcileErr)
 }
 
 func waitPhysicalProcessPhase(
