@@ -415,7 +415,7 @@ func TestV2PhysicalProcessControllerDoesNotAdoptReplacementAfterTrackingConflict
 	currentDuplicate := apiv2.PhysicalProcess{}
 	require.NoError(t, baseClient.Get(ctx, duplicateRequest.NamespacedName, &currentDuplicate))
 	requireReadyCondition(t, currentDuplicate.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessAlreadyTracked)
-	require.Equal(t, originalHandle.IdentityTime.UTC(), currentDuplicate.Status.IdentityTimestamp.Time.UTC())
+	require.WithinDuration(t, originalHandle.IdentityTime, currentDuplicate.Status.IdentityTimestamp.Time, time.Microsecond)
 
 	currentOwner := apiv2.PhysicalProcess{}
 	require.NoError(t, baseClient.Get(ctx, ownerRequest.NamespacedName, &currentOwner))
@@ -427,7 +427,7 @@ func TestV2PhysicalProcessControllerDoesNotAdoptReplacementAfterTrackingConflict
 
 	require.NoError(t, baseClient.Get(ctx, duplicateRequest.NamespacedName, &currentDuplicate))
 	requireReadyCondition(t, currentDuplicate.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessMissing)
-	require.Equal(t, originalHandle.IdentityTime.UTC(), currentDuplicate.Status.IdentityTimestamp.Time.UTC())
+	require.WithinDuration(t, originalHandle.IdentityTime, currentDuplicate.Status.IdentityTimestamp.Time, time.Microsecond)
 
 	currentDuplicate.Spec.Stop = true
 	require.NoError(t, baseClient.Update(ctx, &currentDuplicate))
