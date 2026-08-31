@@ -69,6 +69,10 @@ func (*dummyProcessExecutor) CheckProcessRunning(_ process.ProcessHandle) error 
 	return fmt.Errorf("there is no process executor configured, no processes can be checked")
 }
 
+func (*dummyProcessExecutor) FindProcessHandle(_ process.Pid_t) (process.ProcessHandle, error) {
+	return process.ProcessHandle{Pid: process.UnknownPID}, fmt.Errorf("there is no process executor configured, no processes can be found")
+}
+
 func (*dummyProcessExecutor) StartAndForget(_ *exec.Cmd, _ process.ProcessCreationFlag) (process.ProcessHandle, error) {
 	return process.ProcessHandle{Pid: process.UnknownPID}, fmt.Errorf("there is no process executor configured, no processes can be started")
 }

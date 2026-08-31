@@ -212,7 +212,7 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(ctx context.Context, p
 		}
 	}
 
-	runningErr := r.checkPhysicalProcessRunning(data)
+	runningErr := r.processExecutor.CheckProcessRunning(data.handle)
 	if process.IsProcessGoneErr(runningErr) {
 		updatedData := data.Clone()
 		updatedData.conditionReason = apiv2.PhysicalProcessReasonRuntimeProcessMissing
@@ -270,10 +270,7 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessData(
 
 	identityTime := physicalProcess.Status.IdentityTimestamp.Time
 	if identityTime.IsZero() {
-		identityTime = process.ProcessIdentityTime(pid)
-	}
-	if identityTime.IsZero() {
-		probedProcess, probeErr := process.FindProcess(process.NewHandle(pid, time.Time{}))
+		probedHandle, probeErr := r.processExecutor.FindProcessHandle(pid)
 		if process.IsProcessGoneErr(probeErr) {
 			change := setPhysicalProcessPID(&physicalProcess.Status.PID, *pidValue)
 			change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseExited)
@@ -286,13 +283,9 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessData(
 			change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed, fmt.Sprintf("Failed to inspect runtime process: %v", probeErr))
 			return "", nil, change | additionalReconciliationNeeded
 		}
-		releaseErr := probedProcess.Release()
-		if releaseErr != nil {
-			change := setPhysicalProcessPID(&physicalProcess.Status.PID, *pidValue)
-			change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseUnknown)
-			change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed, fmt.Sprintf("Failed to release runtime process handle: %v", releaseErr))
-			return "", nil, change | additionalReconciliationNeeded
-		}
+		identityTime = probedHandle.IdentityTime
+	}
+	if identityTime.IsZero() {
 		change := setPhysicalProcessPID(&physicalProcess.Status.PID, *pidValue)
 		change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseUnknown)
 		change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed, "Failed to determine the runtime process identity timestamp.")
@@ -304,7 +297,6 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessData(
 		conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessRunning,
 		progress:        physicalProcessOperationCompleted,
 		handle:          handle,
-		created:         physicalProcess.Spec.Process != nil,
 	}
 	stateKey := physicalProcessHandleDataKey(handle)
 	owner, stored := r.processData.StoreIfStateKeyUnclaimed(physicalProcess.NamespacedName(), stateKey, data)
@@ -380,7 +372,6 @@ func (r *PhysicalProcessReconciler) schedulePhysicalProcessLaunch(
 		resourceUID:     physicalProcess.UID,
 		conditionReason: apiv2.PhysicalProcessReasonLaunching,
 		progress:        physicalProcessOperationInProgress,
-		created:         true,
 	}
 	if currentData == nil {
 		r.processData.Store(physicalProcess.NamespacedName(), stateKey, data)
@@ -422,15 +413,19 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 	processCtx := r.LifetimeCtx
 	var creationFlags process.ProcessCreationFlag = process.CreationFlagEnsureKillOnDispose
 
-	var handle process.ProcessHandle
-	var reportExit atomic.Bool
-	reportExit.Store(true)
+	// The executor may invoke the exit handler before StartProcess() returns, for example when the
+	// process context is already done, so the launched process identity is published atomically.
+	// Exits reported before the identity is published, or for a launch that is being abandoned,
+	// belong to no tracked process and are dropped.
+	var launchedHandle atomic.Pointer[process.ProcessHandle]
 	exitHandler := process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, exitErr error) {
-		if reportExit.Load() {
-			r.processExited(physicalProcess.NamespacedName(), physicalProcess.UID, handle, pid, exitCode, exitErr)
+		expectedHandle := launchedHandle.Load()
+		if expectedHandle == nil {
+			return
 		}
+		r.processExited(physicalProcess.NamespacedName(), physicalProcess.UID, *expectedHandle, pid, exitCode, exitErr)
 	})
-	var startedHandle process.ProcessHandle
+	var handle process.ProcessHandle
 	var startWaitForExit func()
 	var startErr error
 	if processConfig.RetainRuntimeProcess {
@@ -439,11 +434,10 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 		}
 		processCtx = context.WithoutCancel(r.LifetimeCtx)
 		creationFlags = process.CreationFlagsNone
-		startedHandle, startWaitForExit, startErr = r.processExecutor.StartProcess(processCtx, cmd, exitHandler, creationFlags, nil)
+		handle, startWaitForExit, startErr = r.processExecutor.StartProcess(processCtx, cmd, exitHandler, creationFlags, nil)
 	} else {
-		startedHandle, startWaitForExit, startErr = r.processExecutor.StartProcess(processCtx, cmd, exitHandler, creationFlags, nil)
+		handle, startWaitForExit, startErr = r.processExecutor.StartProcess(processCtx, cmd, exitHandler, creationFlags, nil)
 	}
-	handle = startedHandle
 	if startErr != nil {
 		data.conditionReason = apiv2.PhysicalProcessReasonLaunchFailed
 		data.progress = physicalProcessOperationRetryPending
@@ -453,7 +447,6 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 		return
 	}
 	if handle.Pid <= 0 || handle.IdentityTime.IsZero() {
-		reportExit.Store(false)
 		data.handle = handle
 		data.conditionReason = apiv2.PhysicalProcessReasonLaunchFailed
 		data.progress = physicalProcessOperationRetryPending
@@ -474,6 +467,8 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 		return
 	}
 
+	publishedHandle := handle
+	launchedHandle.Store(&publishedHandle)
 	data.handle = handle
 	data.conditionReason = apiv2.PhysicalProcessReasonRuntimeProcessRunning
 	data.progress = physicalProcessOperationCompleted
@@ -548,16 +543,6 @@ func (r *PhysicalProcessReconciler) processExited(
 	}
 }
 
-func (r *PhysicalProcessReconciler) checkPhysicalProcessRunning(data *physicalProcessData) error {
-	if data.created {
-		return r.processExecutor.CheckProcessRunning(data.handle)
-	}
-	osProcess, findErr := process.FindProcess(data.handle)
-	if findErr != nil {
-		return findErr
-	}
-	return osProcess.Release()
-}
 
 func (r *PhysicalProcessReconciler) schedulePhysicalProcessStop(
 	physicalProcess *apiv2.PhysicalProcess,
@@ -677,19 +662,32 @@ func (r *PhysicalProcessReconciler) cleanupInvalidPhysicalProcess(
 
 func (r *PhysicalProcessReconciler) handleDeletionRequest(physicalProcess *apiv2.PhysicalProcess, log logr.Logger) objectChange {
 	stateKey, data := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
-	if data == nil && physicalProcess.Status.PID != nil {
-		var establishChange objectChange
-		stateKey, data, establishChange = r.establishPhysicalProcessData(physicalProcess, log)
-		if data == nil {
-			return establishChange | additionalReconciliationNeeded
-		}
-	}
 	if data != nil && data.operationInProgress() {
 		return additionalReconciliationNeeded
 	}
 
-	retain := physicalProcess.Spec.Process == nil ||
-		(physicalProcess.Spec.Process != nil && physicalProcess.Spec.Process.RetainRuntimeProcess)
+	retain := physicalProcess.Spec.Process == nil || physicalProcess.Spec.Process.RetainRuntimeProcess
+	if data == nil && !retain {
+		// Tracking state is missing when the process was launched before a restart. Rebuild it from
+		// the recorded runtime identity so that the process is still stopped. Deletion must never be
+		// blocked on re-establishing state, so a process that cannot be identified, or that another
+		// PhysicalProcess owns, is simply left alone.
+		if handle, resolved := physicalProcessHandleFromStatus(physicalProcess); resolved {
+			restoredKey := physicalProcessHandleDataKey(handle)
+			restoredData := &physicalProcessData{
+				resourceUID:     physicalProcess.UID,
+				conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessRunning,
+				progress:        physicalProcessOperationCompleted,
+				handle:          handle,
+			}
+			if owner, stored := r.processData.StoreIfStateKeyUnclaimed(physicalProcess.NamespacedName(), restoredKey, restoredData); stored {
+				stateKey, data = restoredKey, restoredData
+			} else {
+				log.V(1).Info("Runtime process is tracked by another PhysicalProcess and will not be stopped", "PID", handle.Pid, "Owner", owner.String())
+			}
+		}
+	}
+
 	if data == nil || data.handle.Pid <= 0 || retain ||
 		data.conditionReason == apiv2.PhysicalProcessReasonRuntimeProcessExited ||
 		data.conditionReason == apiv2.PhysicalProcessReasonRuntimeProcessMissing {
@@ -698,6 +696,19 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(physicalProcess *apiv2
 	}
 
 	return r.schedulePhysicalProcessStop(physicalProcess, stateKey, data, log)
+}
+
+// physicalProcessHandleFromStatus rebuilds the runtime process handle recorded in the object status.
+// The second return value is false when the status does not identify a runtime process.
+func physicalProcessHandleFromStatus(physicalProcess *apiv2.PhysicalProcess) (process.ProcessHandle, bool) {
+	if physicalProcess.Status.PID == nil || physicalProcess.Status.IdentityTimestamp.IsZero() {
+		return process.ProcessHandle{}, false
+	}
+	pid, pidErr := process.Int64_ToPidT(*physicalProcess.Status.PID)
+	if pidErr != nil || pid <= 0 {
+		return process.ProcessHandle{}, false
+	}
+	return process.NewHandle(pid, physicalProcess.Status.IdentityTimestamp.Time), true
 }
 
 func handlePIDString(handle process.ProcessHandle) string {

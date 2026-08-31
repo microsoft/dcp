@@ -30,7 +30,6 @@ type physicalProcessData struct {
 	conditionReason apiv2.ConditionReason
 	progress        physicalProcessOperationProgress
 	handle          process.ProcessHandle
-	created         bool
 	exitCode        *int32
 	finishedAt      time.Time
 	failureMessage  string
@@ -43,7 +42,6 @@ func (data *physicalProcessData) Clone() *physicalProcessData {
 		conditionReason: data.conditionReason,
 		progress:        data.progress,
 		handle:          data.handle,
-		created:         data.created,
 		exitCode:        cloneInt32Pointer(data.exitCode),
 		finishedAt:      data.finishedAt,
 		failureMessage:  data.failureMessage,
@@ -60,7 +58,6 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 		data.conditionReason != other.conditionReason ||
 		data.progress != other.progress ||
 		data.handle != other.handle ||
-		data.created != other.created ||
 		!int32PointersEqual(data.exitCode, other.exitCode) ||
 		!data.finishedAt.Equal(other.finishedAt) ||
 		data.failureMessage != other.failureMessage ||

@@ -498,6 +498,23 @@ func (e *OSExecutor) CheckProcessRunning(handle ProcessHandle) error {
 	return nil
 }
 
+func (e *OSExecutor) FindProcessHandle(pid Pid_t) (ProcessHandle, error) {
+	if identityTime := ProcessIdentityTime(pid); !identityTime.IsZero() {
+		return NewHandle(pid, identityTime), nil
+	}
+
+	// ProcessIdentityTime() does not distinguish a missing process from a process whose start time
+	// could not be read, so confirm the process exists before reporting a handle with no identity time.
+	proc, findErr := FindProcess(NewHandle(pid, time.Time{}))
+	if findErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, findErr
+	}
+	if releaseErr := proc.Release(); releaseErr != nil {
+		e.log.Error(releaseErr, "Failed to release process handle", "PID", pid)
+	}
+	return NewHandle(pid, time.Time{}), nil
+}
+
 type processStoppingOpts uint16
 
 const (

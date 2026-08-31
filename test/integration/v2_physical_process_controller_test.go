@@ -8,7 +8,6 @@ package integration_test
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
 	"strconv"
 	"sync"
@@ -185,7 +184,8 @@ func TestV2PhysicalProcessControllerObservesAndPreservesExistingProcess(t *testi
 	defer cancel()
 
 	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-existing")
-	pid := int64(os.Getpid())
+	handle := seedAdoptablePhysicalProcess(t, ctx, "v2-pproc-existing-command")
+	pid := int64(handle.Pid)
 	physicalProcess := &apiv2.PhysicalProcess{
 		ObjectMeta: metav1.ObjectMeta{Name: "existing-process", Namespace: namespace.Name},
 		Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
@@ -194,14 +194,112 @@ func TestV2PhysicalProcessControllerObservesAndPreservesExistingProcess(t *testi
 
 	runningProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
 	require.Equal(t, pid, *runningProcess.Status.PID)
+	require.Equal(t, handle.IdentityTime.UTC().Truncate(time.Second), runningProcess.Status.IdentityTimestamp.Time.UTC().Truncate(time.Second))
 	require.NoError(t, client.Delete(ctx, runningProcess))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, runningProcess)
 
-	handlePID, convertErr := process.Int64_ToPidT(pid)
-	require.NoError(t, convertErr)
-	osProcess, findErr := process.FindProcess(process.NewHandle(handlePID, runningProcess.Status.IdentityTimestamp.Time))
-	require.NoError(t, findErr)
-	require.NoError(t, osProcess.Release())
+	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle), "adopted process must survive deletion of the PhysicalProcess")
+}
+
+func TestV2PhysicalProcessControllerReportsMissingExistingProcess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-missing")
+	handle := seedAdoptablePhysicalProcess(t, ctx, "v2-pproc-missing-command")
+	require.NoError(t, testProcessExecutor.StopProcess(handle), "could not retire the seeded process")
+
+	pid := int64(handle.Pid)
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "missing-process", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
+	}
+	require.NoError(t, client.Create(ctx, physicalProcess))
+
+	exitedProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseExited)
+	require.Equal(t, pid, *exitedProcess.Status.PID)
+	requireReadyCondition(t, exitedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessMissing)
+
+	// Deletion must not be blocked by the inability to identify the runtime process.
+	require.NoError(t, client.Delete(ctx, exitedProcess))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, exitedProcess)
+}
+
+func TestV2PhysicalProcessControllerRejectsAlreadyTrackedProcess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-tracked")
+	handle := seedAdoptablePhysicalProcess(t, ctx, "v2-pproc-tracked-command")
+	pid := int64(handle.Pid)
+
+	owner := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "tracking-owner", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
+	}
+	require.NoError(t, client.Create(ctx, owner))
+	waitPhysicalProcessPhase(t, ctx, owner.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
+
+	duplicate := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "tracking-duplicate", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
+	}
+	require.NoError(t, client.Create(ctx, duplicate))
+
+	pendingProcess := waitObjectAssumesState(t, ctx, duplicate.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return condition != nil && condition.Reason == string(apiv2.PhysicalProcessReasonRuntimeProcessAlreadyTracked), nil
+	})
+	require.Equal(t, apiv2.PhysicalProcessPhasePending, pendingProcess.Status.Phase)
+	readyCondition := apimeta.FindStatusCondition(pendingProcess.Status.Conditions, string(apiv2.ConditionReady))
+	require.Contains(t, readyCondition.Message, owner.Name, "diagnostics should name the owning PhysicalProcess")
+
+	// The duplicate must not disturb the process it failed to claim.
+	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
+	require.NoError(t, client.Delete(ctx, duplicate))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, duplicate)
+	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
+}
+
+func TestV2PhysicalProcessControllerStopsExistingProcessOnRequest(t *testing.T) {
+	t.Parallel()
+	dcppaths.EnableTestPathProbing()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-existing-stop")
+	handle := seedAdoptablePhysicalProcess(t, ctx, "v2-pproc-existing-stop-command")
+	pid := int64(handle.Pid)
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "existing-stopping-process", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
+	}
+	require.NoError(t, client.Create(ctx, physicalProcess))
+	waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
+
+	require.NoError(t, retryOnConflict[apiv2.PhysicalProcess](ctx, physicalProcess.NamespacedName(), func(ctx context.Context, current *apiv2.PhysicalProcess) error {
+		current.Spec.Stop = true
+		return client.Update(ctx, current)
+	}))
+
+	exitedProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseExited)
+	requireReadyCondition(t, exitedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessExited)
+
+	execution, found := testProcessExecutor.FindByPid(handle.Pid)
+	require.True(t, found)
+	require.True(t, execution.Finished(), "an adopted process must be terminated when a stop is requested")
+	if osutil.IsWindows() {
+		dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+		require.NoError(t, dcpPathErr)
+		stopExecutions := testProcessExecutor.FindAll(
+			[]string{dcpPath, "stop-process-tree", "--pid", strconv.FormatInt(int64(handle.Pid), 10)},
+			"",
+			nil,
+		)
+		require.Len(t, stopExecutions, 1)
+	}
 }
 
 func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T) {
@@ -642,6 +740,18 @@ func TestV2PhysicalProcessControllerCleansInvalidLaunchIdentityBeforeRetry(t *te
 	require.Len(t, executions, 2)
 	require.True(t, executions[0].Finished())
 	require.True(t, executions[1].Running())
+}
+
+// seedAdoptablePhysicalProcess registers a process execution with the shared test process executor so
+// that PhysicalProcess objects can adopt it the way they would adopt a process started outside of DCP.
+func seedAdoptablePhysicalProcess(t *testing.T, ctx context.Context, executablePath string) process.ProcessHandle {
+	t.Helper()
+	handle, _, startErr := testProcessExecutor.StartProcess(ctx, exec.Command(executablePath), nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startErr, "could not seed process execution")
+	t.Cleanup(func() {
+		_ = testProcessExecutor.StopProcess(handle)
+	})
+	return handle
 }
 
 func waitPhysicalProcessPhase(

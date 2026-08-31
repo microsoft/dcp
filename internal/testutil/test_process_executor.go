@@ -237,6 +237,25 @@ func (e *TestProcessExecutor) CheckProcessRunning(handle process.ProcessHandle) 
 	return nil
 }
 
+// FindProcessHandle resolves a PID into a handle for a process this executor knows about,
+// letting tests spoof discovery of processes that were not started by the code under test.
+func (e *TestProcessExecutor) FindProcessHandle(pid process.Pid_t) (process.ProcessHandle, error) {
+	e.m.RLock()
+	defer e.m.RUnlock()
+
+	i := e.findByPid(pid)
+	if i == NotFound {
+		return process.ProcessHandle{Pid: process.UnknownPID}, fmt.Errorf("no process with PID %d found: %w", pid, process.ErrorProcessNotFound)
+	}
+
+	execution := e.Executions[i]
+	if execution.Finished() {
+		return process.ProcessHandle{Pid: process.UnknownPID}, fmt.Errorf("process with PID %d is not running: %w", pid, process.ErrorProcessNotFound)
+	}
+
+	return process.NewHandle(pid, execution.StartedAt), nil
+}
+
 // Called by tests to simulate a process exit with specific exit code.
 func (e *TestProcessExecutor) SimulateProcessExit(t *testing.T, pid process.Pid_t, exitCode int32) {
 	err := e.stopProcessImpl(process.NewHandle(pid, time.Time{}), exitCode)

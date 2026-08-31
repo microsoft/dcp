@@ -185,6 +185,39 @@ func TestStartTimeForProcess(t *testing.T) {
 		creationTime, now)
 }
 
+func TestFindProcessHandle(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+
+	pe := process.NewOSExecutor(log)
+	defer pe.Dispose()
+
+	delayToolDir, dirErr := getDelayToolDir()
+	require.NoError(t, dirErr)
+
+	// The command returns on its own to prevent the test from leaking a process if it fails early.
+	cmd := exec.Command("./delay", "-d", "10s")
+	cmd.Dir = delayToolDir
+	handle, startWaitForExit, startErr := pe.StartProcess(ctx, cmd, nil, process.CreationFlagEnsureKillOnDispose, nil)
+	require.NoError(t, startErr, "could not start the 'delay' test program")
+	startWaitForExit()
+
+	foundHandle, findErr := pe.FindProcessHandle(handle.Pid)
+	require.NoError(t, findErr)
+	require.Equal(t, handle.Pid, foundHandle.Pid)
+	require.False(t, foundHandle.IdentityTime.IsZero(), "identity time should be resolved for a running process")
+	require.True(t, osutil.Within(foundHandle.IdentityTime, handle.IdentityTime, process.ProcessIdentityTimeMaximumDifference),
+		"resolved identity time %v should match the identity time reported at start %v", foundHandle.IdentityTime, handle.IdentityTime)
+
+	require.NoError(t, pe.StopProcess(handle))
+
+	_, goneErr := pe.FindProcessHandle(handle.Pid)
+	require.Error(t, goneErr)
+	require.True(t, process.IsProcessGoneErr(goneErr), "error for a terminated process should satisfy IsProcessGoneErr, got %v", goneErr)
+}
+
 // Tests that process is terminated when the context that was used to start the process is manually cancelled.
 func TestRunCancelled(t *testing.T) {
 	t.Parallel()
