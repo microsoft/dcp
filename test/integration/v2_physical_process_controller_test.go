@@ -261,6 +261,34 @@ func TestV2PhysicalProcessControllerObservesAndPreservesExistingProcess(t *testi
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle), "adopted process must survive deletion of the PhysicalProcess")
 }
 
+func TestV2PhysicalProcessControllerReportsAdoptedProcessExit(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-adopted-exit")
+	handle := seedAdoptablePhysicalProcess(t, ctx, "v2-pproc-adopted-exit-command")
+	pid := int64(handle.Pid)
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "adopted-process", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
+	}
+	require.NoError(t, client.Create(ctx, physicalProcess))
+	runningProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
+
+	testProcessExecutor.SimulateProcessExit(t, handle.Pid, 0)
+	require.NoError(t, retryOnConflict[apiv2.PhysicalProcess](ctx, runningProcess.NamespacedName(), func(ctx context.Context, current *apiv2.PhysicalProcess) error {
+		if current.Annotations == nil {
+			current.Annotations = map[string]string{}
+		}
+		current.Annotations["test"] = "reconcile"
+		return client.Update(ctx, current)
+	}))
+
+	exitedProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseExited)
+	requireReadyCondition(t, exitedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessMissing)
+}
+
 func TestV2PhysicalProcessControllerReportsMissingExistingProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -615,6 +643,51 @@ func TestV2PhysicalProcessControllerStopsProcessOnRequest(t *testing.T) {
 		)
 		require.Len(t, stopExecutions, 1)
 	}
+}
+
+func TestV2PhysicalProcessControllerReportsStopFailure(t *testing.T) {
+	t.Parallel()
+	dcppaths.EnableTestPathProbing()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-stop-failure")
+	executablePath := "v2-pproc-stop-failure-command"
+	criteria := internal_testutil.ProcessSearchCriteria{Command: []string{executablePath}}
+	finishExecution := make(chan struct{})
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: criteria,
+		RunCommand: func(*internal_testutil.ProcessExecution) int32 {
+			<-finishExecution
+			return 0
+		},
+		StopError: func(*internal_testutil.ProcessExecution) error {
+			return errors.New("simulated stop failure")
+		},
+	})
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			testProcessExecutor.RemoveAutoExecution(criteria)
+			close(finishExecution)
+		})
+	}
+	defer cleanup()
+
+	physicalProcess := createRunningPhysicalProcess(t, ctx, namespace.Name, "stop-failure-process", executablePath)
+	require.NoError(t, retryOnConflict[apiv2.PhysicalProcess](ctx, physicalProcess.NamespacedName(), func(ctx context.Context, current *apiv2.PhysicalProcess) error {
+		current.Spec.Stop = true
+		return client.Update(ctx, current)
+	}))
+
+	failedProcess := waitObjectAssumesState(t, ctx, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalProcessReasonStopFailed, nil
+	})
+	require.Equal(t, apiv2.PhysicalProcessPhaseUnknown, failedProcess.Status.Phase)
+	requireReadyCondition(t, failedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonStopFailed)
+	cleanup()
 }
 
 func TestV2PhysicalProcessControllerDoesNotLaunchStoppedProcess(t *testing.T) {

@@ -150,11 +150,11 @@ func physicalProcessReconcileDelay(physicalProcess *apiv2.PhysicalProcess) Addit
 }
 
 func (r *PhysicalProcessReconciler) managePhysicalProcess(ctx context.Context, physicalProcess *apiv2.PhysicalProcess, log logr.Logger) objectChange {
+	change := noChange
 	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, r.Client, physicalProcess.Namespace)
 	if !namespaceReady {
 		namespacePhase := apiv2.PhysicalProcessPhasePending
 		namespaceMessage := namespaceReadinessMessage(physicalProcess.Namespace, namespaceReason)
-		change := noChange
 		if namespaceErr != nil {
 			log.Error(namespaceErr, "Failed to get namespace", "Namespace", physicalProcess.Namespace)
 			namespacePhase = apiv2.PhysicalProcessPhaseUnknown
@@ -168,7 +168,7 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(ctx context.Context, p
 
 	stateKey, data := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
 	if data != nil {
-		change := data.applyTo(physicalProcess)
+		change |= data.applyTo(physicalProcess)
 		initializer, found := physicalProcessDataInitializers[data.conditionReason]
 		if !found {
 			r.processData.DeleteByNamespacedName(physicalProcess.NamespacedName())
@@ -187,10 +187,11 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(ctx context.Context, p
 	if data == nil {
 		var establishChange objectChange
 		stateKey, data, establishChange = r.establishPhysicalProcessTracking(physicalProcess, log)
+		change |= establishChange
 		// A nil result means that tracking could not or should not be established and the returned
 		// change fully describes the pending or terminal state for this reconciliation.
 		if data == nil {
-			return establishChange
+			return change
 		}
 	}
 
@@ -200,23 +201,23 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(ctx context.Context, p
 		data.progress = physicalProcessOperationCompleted
 		data.finishedAt = time.Now()
 		_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
-		return data.applyTo(physicalProcess)
+		return change | data.applyTo(physicalProcess)
 	}
 	if runningErr != nil {
 		log.Error(runningErr, "Failed to inspect runtime process", "PID", data.handle.Pid)
-		change := setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseUnknown)
+		change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseUnknown)
 		change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed, fmt.Sprintf("Failed to inspect runtime process: %v", runningErr))
 		return change | additionalReconciliationNeeded
 	}
 
 	if physicalProcess.Spec.Stop {
-		return r.schedulePhysicalProcessStop(physicalProcess, stateKey, data, log)
+		return change | r.schedulePhysicalProcessStop(physicalProcess, stateKey, data, log)
 	}
 
 	data.conditionReason = apiv2.PhysicalProcessReasonRuntimeProcessRunning
 	data.progress = physicalProcessOperationCompleted
 	_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
-	change := data.applyTo(physicalProcess)
+	change |= data.applyTo(physicalProcess)
 	change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseRunning)
 	change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionTrue, apiv2.PhysicalProcessReasonRuntimeProcessRunning, "Runtime process is running.")
 	return change | additionalReconciliationNeeded
