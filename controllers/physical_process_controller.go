@@ -314,7 +314,7 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 		)
 		return "", nil, change | additionalReconciliationNeeded
 	}
-	return stateKey, data.Clone(), data.applyTo(physicalProcess)
+	return "", nil, data.applyTo(physicalProcess) | additionalReconciliationNeeded
 }
 
 func handlePhysicalProcessOperationInProgress(

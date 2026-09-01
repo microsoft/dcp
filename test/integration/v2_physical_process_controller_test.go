@@ -424,6 +424,7 @@ func TestV2PhysicalProcessControllerDoesNotAdoptReplacementAfterTrackingConflict
 
 	executor.replace(process.NewHandle(pid, time.Now()))
 	reconcilePhysicalProcess(t, ctx, reconciler, duplicateRequest)
+	reconcilePhysicalProcess(t, ctx, reconciler, duplicateRequest)
 
 	require.NoError(t, baseClient.Get(ctx, duplicateRequest.NamespacedName, &currentDuplicate))
 	requireReadyCondition(t, currentDuplicate.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessMissing)
