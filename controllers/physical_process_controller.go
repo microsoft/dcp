@@ -229,19 +229,19 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 	physicalProcess *apiv2.PhysicalProcess,
 	log logr.Logger,
 ) (physicalProcessDataStateKey, *physicalProcessData, objectChange) {
-	if physicalProcess.Spec.Process != nil && physicalProcess.Status.PID == nil {
+	pidValue := physicalProcess.Spec.PID
+	if pidValue == nil {
+		// As with the other V2 physical resource controllers, controller-written status is the
+		// durable record of a completed create operation. In-memory state remains present until
+		// that status update succeeds, so falling back to Status.PID cannot duplicate an active
+		// or queued launch.
+		pidValue = physicalProcess.Status.PID
+	}
+	if pidValue == nil {
 		if physicalProcess.Spec.Stop {
 			return "", nil, applyPhysicalProcessLaunchSkippedStatus(physicalProcess)
 		}
 		return physicalProcessDataKey(physicalProcess), nil, r.schedulePhysicalProcessLaunch(physicalProcess, physicalProcessDataKey(physicalProcess), nil, log)
-	}
-
-	pidValue := physicalProcess.Status.PID
-	if pidValue == nil {
-		pidValue = physicalProcess.Spec.PID
-	}
-	if pidValue == nil {
-		return "", nil, additionalReconciliationNeeded
 	}
 
 	pid, pidErr := process.Int64_ToPidT(*pidValue)
