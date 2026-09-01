@@ -17,35 +17,38 @@ import (
 
 type physicalProcessDataStateKey string
 
-type physicalProcessOperationProgress int
+type physicalProcessState int
 
 const (
-	physicalProcessOperationInProgress physicalProcessOperationProgress = iota + 1
-	physicalProcessOperationCompleted
-	physicalProcessOperationRetryPending
+	physicalProcessStateNamespace physicalProcessState = iota + 1
+	physicalProcessStateResolve
+	physicalProcessStateLaunch
+	physicalProcessStateRuntime
+	physicalProcessStateStop
+	physicalProcessStateInvalid
 )
 
 type physicalProcessData struct {
-	resourceUID     types.UID
-	conditionReason apiv2.ConditionReason
-	progress        physicalProcessOperationProgress
-	handle          process.ProcessHandle
-	exitCode        *int32
-	finishedAt      time.Time
-	failureMessage  string
-	retryAfter      time.Time
+	resourceUID    types.UID
+	state          physicalProcessState
+	progress       physicalResourceProgress
+	handle         process.ProcessHandle
+	exitCode       *int32
+	finishedAt     time.Time
+	failureMessage string
+	retryAfter     time.Time
 }
 
 func (data *physicalProcessData) Clone() *physicalProcessData {
 	return &physicalProcessData{
-		resourceUID:     data.resourceUID,
-		conditionReason: data.conditionReason,
-		progress:        data.progress,
-		handle:          data.handle,
-		exitCode:        cloneInt32Pointer(data.exitCode),
-		finishedAt:      data.finishedAt,
-		failureMessage:  data.failureMessage,
-		retryAfter:      data.retryAfter,
+		resourceUID:    data.resourceUID,
+		state:          data.state,
+		progress:       data.progress,
+		handle:         data.handle,
+		exitCode:       cloneInt32Pointer(data.exitCode),
+		finishedAt:     data.finishedAt,
+		failureMessage: data.failureMessage,
+		retryAfter:     data.retryAfter,
 	}
 }
 
@@ -55,7 +58,7 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 	}
 
 	updated := data.resourceUID != other.resourceUID ||
-		data.conditionReason != other.conditionReason ||
+		data.state != other.state ||
 		data.progress != other.progress ||
 		data.handle != other.handle ||
 		!int32PointersEqual(data.exitCode, other.exitCode) ||
@@ -69,20 +72,12 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 }
 
 func (data *physicalProcessData) operationInProgress() bool {
-	return data.progress == physicalProcessOperationInProgress
+	return data.progress == physicalResourceProgressInProgress
 }
 
-func (data *physicalProcessData) shouldInspectRuntimeProcess() bool {
-	switch data.conditionReason {
-	case apiv2.PhysicalProcessReasonRuntimeProcessRunning,
-		apiv2.PhysicalProcessReasonStopFailed:
-		return true
-	default:
-		return false
-	}
-}
-
-func (data *physicalProcessData) applyTo(physicalProcess *apiv2.PhysicalProcess) objectChange {
+func (data *physicalProcessData) applyTo(
+	physicalProcess *apiv2.PhysicalProcess,
+) (objectChange, AdditionalReconciliationDelay, bool) {
 	change := noChange
 	if data.handle.Pid > 0 {
 		change |= setPhysicalProcessPID(&physicalProcess.Status.PID, int64(data.handle.Pid))
@@ -93,28 +88,102 @@ func (data *physicalProcessData) applyTo(physicalProcess *apiv2.PhysicalProcess)
 	}
 	change |= setPhysicalProcessExitCode(&physicalProcess.Status.ExitCode, data.exitCode)
 
-	switch data.conditionReason {
-	case apiv2.PhysicalProcessReasonLaunching:
-		change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhasePending)
-		change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionFalse, data.conditionReason, "Physical process launch is in progress.")
-	case apiv2.PhysicalProcessReasonLaunchFailed:
-		change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhasePending)
-		change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
-	case apiv2.PhysicalProcessReasonStopping:
-		change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhasePending)
-		change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionFalse, data.conditionReason, "Physical process termination is in progress.")
-	case apiv2.PhysicalProcessReasonStopFailed:
-		change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseUnknown)
-		change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
-	case apiv2.PhysicalProcessReasonRuntimeProcessExited:
-		change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseExited)
-		change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionFalse, data.conditionReason, "Runtime process has exited.")
-	case apiv2.PhysicalProcessReasonRuntimeProcessMissing:
-		change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseExited)
-		change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionFalse, data.conditionReason, "Runtime process was not found.")
-	}
+	stateChange, delay, valid := physicalProcessProjections.apply(
+		data.state,
+		data.progress,
+		data.failureMessage,
+		&physicalProcess.Status.Phase,
+		&physicalProcess.Status.Conditions,
+		physicalProcess.Generation,
+	)
+	return change | stateChange, delay, valid
+}
 
-	return change
+var physicalProcessProjections = physicalResourceProjectionTable[physicalProcessState, apiv2.PhysicalProcessPhase]{
+	invalidPhase: apiv2.PhysicalProcessPhaseUnknown,
+	projections: map[physicalResourceProjectionKey[physicalProcessState]]physicalResourceProjection[apiv2.PhysicalProcessPhase]{
+		{state: physicalProcessStateNamespace, progress: physicalResourceProgressNotFound}: {
+			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotFound,
+		},
+		{state: physicalProcessStateNamespace, progress: physicalResourceProgressNotReady}: {
+			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
+		},
+		{state: physicalProcessStateNamespace, progress: physicalResourceProgressTerminating}: {
+			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonNamespaceTerminating,
+		},
+		{state: physicalProcessStateNamespace, progress: physicalResourceProgressNotActive}: {
+			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotActive,
+		},
+		{state: physicalProcessStateNamespace, progress: physicalResourceProgressRetryPending}: {
+			phase: apiv2.PhysicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed,
+			requeue:         true, requeueDelay: LongDelay,
+		},
+		{state: physicalProcessStateLaunch, progress: physicalResourceProgressInProgress}: {
+			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalProcessReasonLaunching,
+			message:         "Physical process launch is in progress.",
+		},
+		{state: physicalProcessStateLaunch, progress: physicalResourceProgressRetryPending}: {
+			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalProcessReasonLaunchFailed,
+			requeue:         true, requeueDelay: LongDelay,
+		},
+		{state: physicalProcessStateRuntime, progress: physicalResourceProgressRunning}: {
+			phase: apiv2.PhysicalProcessPhaseRunning, conditionStatus: metav1.ConditionTrue,
+			conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessRunning,
+			message:         "Runtime process is running.",
+			requeue:         true, requeueDelay: MonitoringDelay,
+		},
+		{state: physicalProcessStateRuntime, progress: physicalResourceProgressExited}: {
+			phase: apiv2.PhysicalProcessPhaseExited, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessExited,
+			message:         "Runtime process has exited.",
+		},
+		{state: physicalProcessStateRuntime, progress: physicalResourceProgressMissing}: {
+			phase: apiv2.PhysicalProcessPhaseExited, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessMissing,
+			message:         "Runtime process was not found.",
+		},
+		{state: physicalProcessStateRuntime, progress: physicalResourceProgressRetryPending}: {
+			phase: apiv2.PhysicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed,
+			requeue:         true, requeueDelay: LongDelay,
+		},
+		{state: physicalProcessStateResolve, progress: physicalResourceProgressRetryPending}: {
+			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessAlreadyTracked,
+			requeue:         true, requeueDelay: LongDelay,
+		},
+		{state: physicalProcessStateStop, progress: physicalResourceProgressInProgress}: {
+			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalProcessReasonStopping,
+			message:         "Physical process termination is in progress.",
+		},
+		{state: physicalProcessStateStop, progress: physicalResourceProgressRetryPending}: {
+			phase: apiv2.PhysicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalProcessReasonStopFailed,
+			requeue:         true, requeueDelay: LongDelay,
+		},
+		{state: physicalProcessStateLaunch, progress: physicalResourceProgressSkipped}: {
+			phase: apiv2.PhysicalProcessPhaseExited, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalProcessReasonStopRequested,
+			message:         "Physical process was not launched because stop was requested.",
+		},
+		{state: physicalProcessStateResolve, progress: physicalResourceProgressFailed}: {
+			phase: apiv2.PhysicalProcessPhaseFailed, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
+		},
+		{state: physicalProcessStateInvalid, progress: physicalResourceProgressFailed}: {
+			phase: apiv2.PhysicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
+			requeue:         true, requeueDelay: LongDelay,
+		},
+	},
 }
 
 func physicalProcessDataKey(physicalProcess *apiv2.PhysicalProcess) physicalProcessDataStateKey {

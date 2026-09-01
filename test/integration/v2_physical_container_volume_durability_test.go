@@ -129,7 +129,12 @@ func TestV2PhysicalContainerVolumeControllerBoundsRemovalDuringNamespaceDeletion
 		WithObjects(namespace, volume).
 		Build()
 	orchestrator := newDurabilityTestContainerOrchestrator(t, ctx)
-	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name: volumeName,
+		Labels: map[string]string{
+			"com.microsoft.developer.usvc-dev.uid": string(volume.UID),
+		},
+	}))
 	orchestrator.FailNextRemoveVolume(volumeName, errors.New("volume remains in use"))
 	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
 	request := ctrl.Request{NamespacedName: volume.NamespacedName()}
@@ -144,8 +149,7 @@ func TestV2PhysicalContainerVolumeControllerBoundsRemovalDuringNamespaceDeletion
 	)
 	require.NotEmpty(t, currentVolume.Finalizers)
 
-	restartedReconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
-	_, finalizerReconcileErr := restartedReconciler.Reconcile(ctx, request)
+	_, finalizerReconcileErr := reconciler.Reconcile(ctx, request)
 	require.NoError(t, finalizerReconcileErr)
 	getErr := baseClient.Get(ctx, volume.NamespacedName(), currentVolume)
 	require.True(t, apierrors.IsNotFound(getErr))
@@ -176,7 +180,12 @@ func TestV2PhysicalContainerVolumeControllerRetriesBeforeNamespaceRemovalDeadlin
 		WithObjects(namespace, volume).
 		Build()
 	orchestrator := newDurabilityTestContainerOrchestrator(t, ctx)
-	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name: volumeName,
+		Labels: map[string]string{
+			"com.microsoft.developer.usvc-dev.uid": string(volume.UID),
+		},
+	}))
 	orchestrator.FailNextRemoveVolume(volumeName, errors.New("volume remains in use"))
 	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
 	request := ctrl.Request{NamespacedName: volume.NamespacedName()}
@@ -224,7 +233,12 @@ func TestV2PhysicalContainerVolumeControllerDoesNotBoundDirectRemoval(t *testing
 		WithObjects(namespace, volume).
 		Build()
 	orchestrator := newDurabilityTestContainerOrchestrator(t, ctx)
-	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name: volumeName,
+		Labels: map[string]string{
+			"com.microsoft.developer.usvc-dev.uid": string(volume.UID),
+		},
+	}))
 	orchestrator.FailNextRemoveVolume(volumeName, errors.New("volume remains in use"))
 	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
 	request := ctrl.Request{NamespacedName: volume.NamespacedName()}

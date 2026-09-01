@@ -255,7 +255,7 @@ type PReconcilerType[RT ReconcilerType] interface {
 	ctrl_client.Client
 }
 type KubernetesObjectStateType interface {
-	~string
+	comparable
 }
 
 // stateInitializerFunc is invoked when reconciliation handles a particular controller state.
@@ -292,7 +292,8 @@ func getStateInitializer[
 	}
 
 	log.Error(fmt.Errorf("could not find a handler for current object state, will use empty state handler instead"), "", "ObjectState", state)
-	handler, found = m[""]
+	var emptyState OS
+	handler, found = m[emptyState]
 	if found {
 		return handler
 	}
