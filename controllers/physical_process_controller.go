@@ -196,12 +196,11 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(ctx context.Context, p
 
 	runningErr := r.processExecutor.CheckProcessRunning(data.handle)
 	if process.IsProcessGoneErr(runningErr) {
-		updatedData := data.Clone()
-		updatedData.conditionReason = apiv2.PhysicalProcessReasonRuntimeProcessMissing
-		updatedData.progress = physicalProcessOperationCompleted
-		updatedData.finishedAt = time.Now()
-		_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, updatedData)
-		return updatedData.applyTo(physicalProcess)
+		data.conditionReason = apiv2.PhysicalProcessReasonRuntimeProcessMissing
+		data.progress = physicalProcessOperationCompleted
+		data.finishedAt = time.Now()
+		_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
+		return data.applyTo(physicalProcess)
 	}
 	if runningErr != nil {
 		log.Error(runningErr, "Failed to inspect runtime process", "PID", data.handle.Pid)
@@ -214,11 +213,10 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(ctx context.Context, p
 		return r.schedulePhysicalProcessStop(physicalProcess, stateKey, data, log)
 	}
 
-	updatedData := data.Clone()
-	updatedData.conditionReason = apiv2.PhysicalProcessReasonRuntimeProcessRunning
-	updatedData.progress = physicalProcessOperationCompleted
-	_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, updatedData)
-	change := updatedData.applyTo(physicalProcess)
+	data.conditionReason = apiv2.PhysicalProcessReasonRuntimeProcessRunning
+	data.progress = physicalProcessOperationCompleted
+	_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
+	change := data.applyTo(physicalProcess)
 	change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseRunning)
 	change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionTrue, apiv2.PhysicalProcessReasonRuntimeProcessRunning, "Runtime process is running.")
 	return change | additionalReconciliationNeeded
@@ -316,7 +314,7 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 		)
 		return "", nil, change | additionalReconciliationNeeded
 	}
-	return stateKey, data, data.applyTo(physicalProcess)
+	return stateKey, data.Clone(), data.applyTo(physicalProcess)
 }
 
 func handlePhysicalProcessOperationInProgress(
@@ -531,15 +529,14 @@ func (r *PhysicalProcessReconciler) processExited(
 			currentData.handle != expectedHandle || expectedHandle.Pid != pid {
 			return
 		}
-		updatedData := currentData.Clone()
-		updatedData.conditionReason = apiv2.PhysicalProcessReasonRuntimeProcessExited
-		updatedData.progress = physicalProcessOperationCompleted
-		updatedData.finishedAt = time.Now()
-		updatedData.failureMessage = ""
+		currentData.conditionReason = apiv2.PhysicalProcessReasonRuntimeProcessExited
+		currentData.progress = physicalProcessOperationCompleted
+		currentData.finishedAt = time.Now()
+		currentData.failureMessage = ""
 		if exitErr == nil && exitCode != process.UnknownExitCode {
-			updatedData.exitCode = &exitCode
+			currentData.exitCode = &exitCode
 		}
-		_ = r.processData.Update(currentName, currentStateKey, updatedData)
+		_ = r.processData.Update(currentName, currentStateKey, currentData)
 	})
 	if queued {
 		r.ScheduleReconciliation(name)
