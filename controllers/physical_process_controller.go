@@ -682,28 +682,9 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(physicalProcess *apiv2
 		return additionalReconciliationNeeded
 	}
 
+	// A resource that never took ownership of a running process has nothing to stop, so deletion
+	// only needs to drop the finalizer.
 	retain := physicalProcess.Spec.Process == nil || physicalProcess.Spec.Process.RetainRuntimeProcess
-	if data == nil && !retain {
-		// Tracking state is missing when the process was launched before a restart. Rebuild it from
-		// the recorded runtime identity so that the process is still stopped. Deletion must never be
-		// blocked on re-establishing state, so a process that cannot be identified, or that another
-		// PhysicalProcess owns, is simply left alone.
-		if handle, resolved := physicalProcessHandleFromStatus(physicalProcess); resolved {
-			restoredKey := physicalProcessHandleDataKey(handle)
-			restoredData := &physicalProcessData{
-				resourceUID:     physicalProcess.UID,
-				conditionReason: apiv2.PhysicalProcessReasonRuntimeProcessRunning,
-				progress:        physicalProcessOperationCompleted,
-				handle:          handle,
-			}
-			if owner, stored := r.processData.StoreIfStateKeyUnclaimed(physicalProcess.NamespacedName(), restoredKey, restoredData); stored {
-				stateKey, data = restoredKey, restoredData
-			} else {
-				log.V(1).Info("Runtime process is tracked by another PhysicalProcess and will not be stopped", "PID", handle.Pid, "Owner", owner.String())
-			}
-		}
-	}
-
 	if data == nil || data.handle.Pid <= 0 || retain ||
 		data.conditionReason == apiv2.PhysicalProcessReasonRuntimeProcessExited ||
 		data.conditionReason == apiv2.PhysicalProcessReasonRuntimeProcessMissing {
@@ -712,19 +693,6 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(physicalProcess *apiv2
 	}
 
 	return r.schedulePhysicalProcessStop(physicalProcess, stateKey, data, log)
-}
-
-// physicalProcessHandleFromStatus rebuilds the runtime process handle recorded in the object status.
-// The second return value is false when the status does not identify a runtime process.
-func physicalProcessHandleFromStatus(physicalProcess *apiv2.PhysicalProcess) (process.ProcessHandle, bool) {
-	if physicalProcess.Status.PID == nil || physicalProcess.Status.IdentityTimestamp.IsZero() {
-		return process.ProcessHandle{}, false
-	}
-	pid, pidErr := process.Int64_ToPidT(*physicalProcess.Status.PID)
-	if pidErr != nil || pid <= 0 {
-		return process.ProcessHandle{}, false
-	}
-	return process.NewHandle(pid, physicalProcess.Status.IdentityTimestamp.Time), true
 }
 
 func handlePIDString(handle process.ProcessHandle) string {
