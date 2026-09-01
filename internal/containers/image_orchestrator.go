@@ -71,6 +71,9 @@ type ContainerBuildContext struct {
 	// The path to the directory to be used as the root of the build context.
 	Context string `json:"context"`
 
+	// A tar archive to stream to the image builder as the build context.
+	ContextArchive *ContainerBuildContextArchive `json:"contextArchive,omitempty"`
+
 	// The path to a Dockerfile to use for the build.
 	Dockerfile string `json:"dockerfile,omitempty"`
 
@@ -91,6 +94,13 @@ type ContainerBuildContext struct {
 
 	// Optional target platform for the build (e.g. "linux/amd64").
 	Platform string `json:"platform,omitempty"`
+}
+
+type ContainerBuildContextArchive struct {
+	Digest      string `json:"digest"`
+	Source      string `json:"source,omitempty"`
+	SHA256      string `json:"sha256,omitempty"`
+	RawContents string `json:"rawContents,omitempty"`
 }
 
 type BuildImageOptions struct {

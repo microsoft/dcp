@@ -412,10 +412,23 @@ func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options contai
 		args = append(args, "--platform", options.Platform)
 	}
 
-	// Append the build context argument
-	args = append(args, options.Context)
+	buildContextArgument := options.Context
+	var buildContextArchive io.ReadCloser
+	if options.ContextArchive != nil {
+		var archiveErr error
+		buildContextArchive, archiveErr = containers.OpenBuildContextArchive(options.ContextArchive)
+		if archiveErr != nil {
+			return archiveErr
+		}
+		defer buildContextArchive.Close()
+		buildContextArgument = "-"
+	}
+	args = append(args, buildContextArgument)
 
 	cmd := makePodmanCommand(args...)
+	if buildContextArchive != nil {
+		cmd.Stdin = buildContextArchive
+	}
 
 	// Append secret environment
 	cmd.Env = os.Environ()

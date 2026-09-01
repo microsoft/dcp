@@ -7,7 +7,10 @@ package v2
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,6 +25,8 @@ import (
 
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
+
+var validSHA256HexRegexp = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
 // PhysicalContainerImagePhase describes the lifecycle phase of a PhysicalContainerImage.
 type PhysicalContainerImagePhase PhysicalResourcePhase
@@ -260,8 +265,44 @@ func (pci *PhysicalContainerImage) ValidateUpdate(ctx context.Context, old runti
 func validatePhysicalContainerImageBuild(build *ContainerBuildContext, buildPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	if build.Context == "" {
-		errorList = append(errorList, field.Required(buildPath.Child("context"), "context is required"))
+	if build.Context == "" && build.ContextArchive == nil {
+		errorList = append(errorList, field.Required(buildPath, "exactly one of context or contextArchive is required"))
+	}
+	if build.Context != "" && build.ContextArchive != nil {
+		errorList = append(errorList, field.Forbidden(buildPath.Child("contextArchive"), "contextArchive cannot be set when context is set"))
+	}
+	if build.ContextArchive != nil {
+		archive := build.ContextArchive
+		archivePath := buildPath.Child("contextArchive")
+		if archive.Digest == "" {
+			errorList = append(errorList, field.Required(archivePath.Child("digest"), "digest must be set to a non-empty value"))
+		}
+		if archive.Source == "" && archive.RawContents == "" {
+			errorList = append(errorList, field.Required(archivePath, "either source or rawContents must be set"))
+		}
+		if archive.Source != "" && archive.RawContents != "" {
+			errorList = append(errorList, field.Forbidden(archivePath.Child("rawContents"), "source and rawContents cannot be set at the same time"))
+		}
+		if archive.Source != "" && archive.SHA256 == "" {
+			errorList = append(errorList, field.Required(archivePath.Child("sha256"), "sha256 must be set when source is specified"))
+		}
+		if archive.SHA256 != "" && archive.Source == "" {
+			errorList = append(errorList, field.Forbidden(archivePath.Child("sha256"), "sha256 can only be set when source is specified"))
+		}
+		if archive.SHA256 != "" {
+			hexPart := archive.SHA256
+			if strings.HasPrefix(strings.ToLower(hexPart), "sha256:") {
+				hexPart = hexPart[7:]
+			}
+			if !validSHA256HexRegexp.MatchString(hexPart) {
+				errorList = append(errorList, field.Invalid(archivePath.Child("sha256"), archive.SHA256, "sha256 must be a 64-character hex string, optionally prefixed with 'sha256:'"))
+			}
+		}
+		if archive.RawContents != "" {
+			if _, decodeErr := base64.StdEncoding.DecodeString(archive.RawContents); decodeErr != nil {
+				errorList = append(errorList, field.Invalid(archivePath.Child("rawContents"), "<base64 data>", fmt.Sprintf("rawContents must be valid base64: %s", decodeErr.Error())))
+			}
+		}
 	}
 	for i, tag := range build.Tags {
 		if tag == "" || strings.ContainsAny(tag, "\r\n\t ") {

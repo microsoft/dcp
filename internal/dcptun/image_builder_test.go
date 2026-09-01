@@ -62,6 +62,35 @@ func TestClientProxyImageBuild(t *testing.T) {
 	require.Greater(t, len(img.Tags[0]), len(expectedTagPrefix), "Image tag should have a version suffix")
 }
 
+func TestPrepareClientProxyImageUsesCurrentImage(t *testing.T) {
+	t.Parallel()
+
+	const testTimeout = 20 * time.Second
+	ctx, cancel := testutil.GetTestContext(t, testTimeout)
+	defer cancel()
+
+	log := testutil.NewLogForTesting(t.Name())
+	co, coErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
+	require.NoError(t, coErr)
+
+	dcppaths.EnableTestPathProbing()
+
+	imageBuildsPath := filepath.Join(t.TempDir(), t.Name()+".imglist")
+	opts := dcptun.BuildClientProxyImageOptions{
+		TimeoutOption:                 containers.TimeoutOption{Timeout: testTimeout / 2},
+		MostRecentImageBuildsFilePath: imageBuildsPath,
+	}
+	imageName, buildErr := dcptun.EnsureClientProxyImage(ctx, opts, co, log)
+	require.NoError(t, buildErr)
+	require.Equal(t, 1, co.BuildImageCallCount(imageName))
+
+	plan, planErr := dcptun.PrepareClientProxyImage(ctx, opts, co, log)
+	require.NoError(t, planErr)
+	require.Equal(t, imageName, plan.Image)
+	require.Nil(t, plan.BuildContextArchive)
+	require.Equal(t, 1, co.BuildImageCallCount(imageName))
+}
+
 // Verifies that a pull failure for a locally available base image does not prevent building the client proxy image.
 func TestClientProxyImageBuildFallsBackToLocalBaseImageWhenPullFails(t *testing.T) {
 	t.Parallel()

@@ -545,10 +545,23 @@ func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options contai
 	// Enable plain output mode (Docker only)
 	args = append(args, "--progress", "plain")
 
-	// Append the build context argument
-	args = append(args, options.Context)
+	buildContextArgument := options.Context
+	var buildContextArchive io.ReadCloser
+	if options.ContextArchive != nil {
+		var archiveErr error
+		buildContextArchive, archiveErr = containers.OpenBuildContextArchive(options.ContextArchive)
+		if archiveErr != nil {
+			return archiveErr
+		}
+		defer buildContextArchive.Close()
+		buildContextArgument = "-"
+	}
+	args = append(args, buildContextArgument)
 
 	cmd := makeDockerCommand(args...)
+	if buildContextArchive != nil {
+		cmd.Stdin = buildContextArchive
+	}
 
 	// Append secret environment
 	cmd.Env = os.Environ()
