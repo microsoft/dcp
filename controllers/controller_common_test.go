@@ -20,9 +20,36 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+func TestRequestReconcileForNamespace(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv1.AddToScheme(scheme))
+	services := []ctrl_client.Object{
+		&apiv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "first", Namespace: "target"}},
+		&apiv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "second", Namespace: "target"}},
+		&apiv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "other"}},
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(services...).Build()
+	reconciler := NewReconcilerBase[apiv1.Service](client, client, logr.Discard(), context.Background())
+
+	requestReconcile := reconciler.requestReconcileForNamespace(&apiv1.ServiceList{})
+	requests := requestReconcile(context.Background(), &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target"}})
+
+	names := make([]types.NamespacedName, len(requests))
+	for i := range requests {
+		names[i] = requests[i].NamespacedName
+	}
+	require.ElementsMatch(t, []types.NamespacedName{
+		{Namespace: "target", Name: "first"},
+		{Namespace: "target", Name: "second"},
+	}, names)
+}
 
 // Verifies that callWithRetryAndVerification() can be stopped from retrying by returning a permanent error
 func TestCallWithRetryAndVerificationPermanentError(t *testing.T) {

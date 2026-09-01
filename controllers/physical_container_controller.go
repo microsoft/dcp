@@ -110,28 +110,10 @@ func (r *PhysicalContainerReconciler) SetupWithManager(mgr ctrl.Manager, name st
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.PhysicalContainer{}).
 		Watches(&apiv2.PhysicalContainerImage{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForImage), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
-		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace(&apiv2.PhysicalContainerList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
-}
-
-func (r *PhysicalContainerReconciler) requestReconcileForNamespace(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
-	namespace := obj.(*apiv2.Namespace)
-	var containerList apiv2.PhysicalContainerList
-	listErr := r.List(ctx, &containerList, ctrl_client.InNamespace(namespace.Name))
-	if listErr != nil {
-		r.Log.Error(listErr, "Failed to list PhysicalContainers for namespace", "Namespace", namespace.Name)
-		return nil
-	}
-
-	requests := make([]reconcile.Request, len(containerList.Items))
-	for i := range containerList.Items {
-		requests[i] = reconcile.Request{NamespacedName: containerList.Items[i].NamespacedName()}
-	}
-
-	r.Log.V(1).Info("Namespace updated, requesting PhysicalContainer reconciliation", "Namespace", namespace.Name, "Containers", len(requests))
-	return requests
 }
 
 func (r *PhysicalContainerReconciler) requestReconcileForImage(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {

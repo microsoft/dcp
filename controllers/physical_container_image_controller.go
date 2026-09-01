@@ -27,7 +27,6 @@ import (
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
@@ -120,28 +119,10 @@ func (r *PhysicalContainerImageReconciler) SetupWithManager(mgr ctrl.Manager, na
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.PhysicalContainerImage{}).
-		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace(&apiv2.PhysicalContainerImageList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
-}
-
-func (r *PhysicalContainerImageReconciler) requestReconcileForNamespace(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
-	namespace := obj.(*apiv2.Namespace)
-	var imageList apiv2.PhysicalContainerImageList
-	listErr := r.List(ctx, &imageList, ctrl_client.InNamespace(namespace.Name))
-	if listErr != nil {
-		r.Log.Error(listErr, "Failed to list PhysicalContainerImages for namespace", "Namespace", namespace.Name)
-		return nil
-	}
-
-	requests := make([]reconcile.Request, len(imageList.Items))
-	for i := range imageList.Items {
-		requests[i] = reconcile.Request{NamespacedName: imageList.Items[i].NamespacedName()}
-	}
-
-	r.Log.V(1).Info("Namespace updated, requesting PhysicalContainerImage reconciliation", "Namespace", namespace.Name, "Images", len(requests))
-	return requests
 }
 
 func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

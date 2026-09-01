@@ -72,6 +72,16 @@ func (data *physicalProcessData) operationInProgress() bool {
 	return data.progress == physicalProcessOperationInProgress
 }
 
+func (data *physicalProcessData) shouldInspectRuntimeProcess() bool {
+	switch data.conditionReason {
+	case apiv2.PhysicalProcessReasonRuntimeProcessRunning,
+		apiv2.PhysicalProcessReasonStopFailed:
+		return true
+	default:
+		return false
+	}
+}
+
 func (data *physicalProcessData) applyTo(physicalProcess *apiv2.PhysicalProcess) objectChange {
 	change := noChange
 	if data.handle.Pid > 0 {

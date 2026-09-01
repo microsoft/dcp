@@ -22,7 +22,6 @@ import (
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
@@ -89,28 +88,10 @@ func (r *PhysicalContainerVolumeReconciler) SetupWithManager(mgr ctrl.Manager, n
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.PhysicalContainerVolume{}).
-		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace(&apiv2.PhysicalContainerVolumeList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
-}
-
-func (r *PhysicalContainerVolumeReconciler) requestReconcileForNamespace(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
-	namespace := obj.(*apiv2.Namespace)
-	var volumeList apiv2.PhysicalContainerVolumeList
-	listErr := r.List(ctx, &volumeList, ctrl_client.InNamespace(namespace.Name))
-	if listErr != nil {
-		r.Log.Error(listErr, "Failed to list PhysicalContainerVolumes for namespace", "Namespace", namespace.Name)
-		return nil
-	}
-
-	requests := make([]reconcile.Request, len(volumeList.Items))
-	for i := range volumeList.Items {
-		requests[i] = reconcile.Request{NamespacedName: volumeList.Items[i].NamespacedName()}
-	}
-
-	r.Log.V(1).Info("Namespace updated, requesting PhysicalContainerVolume reconciliation", "Namespace", namespace.Name, "Volumes", len(requests))
-	return requests
 }
 
 func (r *PhysicalContainerVolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

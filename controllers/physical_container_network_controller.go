@@ -23,7 +23,6 @@ import (
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
@@ -89,28 +88,10 @@ func (r *PhysicalContainerNetworkReconciler) SetupWithManager(mgr ctrl.Manager, 
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.PhysicalContainerNetwork{}).
-		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace(&apiv2.PhysicalContainerNetworkList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
-}
-
-func (r *PhysicalContainerNetworkReconciler) requestReconcileForNamespace(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
-	namespace := obj.(*apiv2.Namespace)
-	var networkList apiv2.PhysicalContainerNetworkList
-	listErr := r.List(ctx, &networkList, ctrl_client.InNamespace(namespace.Name))
-	if listErr != nil {
-		r.Log.Error(listErr, "Failed to list PhysicalContainerNetworks for namespace", "Namespace", namespace.Name)
-		return nil
-	}
-
-	requests := make([]reconcile.Request, len(networkList.Items))
-	for i := range networkList.Items {
-		requests[i] = reconcile.Request{NamespacedName: networkList.Items[i].NamespacedName()}
-	}
-
-	r.Log.V(1).Info("Namespace updated, requesting PhysicalContainerNetwork reconciliation", "Namespace", namespace.Name, "Networks", len(requests))
-	return requests
 }
 
 func (r *PhysicalContainerNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

@@ -25,7 +25,6 @@ import (
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/dcpproc"
@@ -84,26 +83,10 @@ func (r *PhysicalProcessReconciler) SetupWithManager(mgr ctrl.Manager, name stri
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.PhysicalProcess{}).
-		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace(&apiv2.PhysicalProcessList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
-}
-
-func (r *PhysicalProcessReconciler) requestReconcileForNamespace(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
-	namespace := obj.(*apiv2.Namespace)
-	var processList apiv2.PhysicalProcessList
-	listErr := r.List(ctx, &processList, ctrl_client.InNamespace(namespace.Name))
-	if listErr != nil {
-		r.Log.Error(listErr, "Failed to list PhysicalProcesses for namespace", "Namespace", namespace.Name)
-		return nil
-	}
-
-	requests := make([]reconcile.Request, len(processList.Items))
-	for i := range processList.Items {
-		requests[i] = reconcile.Request{NamespacedName: processList.Items[i].NamespacedName()}
-	}
-	return requests
 }
 
 func (r *PhysicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -196,17 +179,16 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(ctx context.Context, p
 			return change | additionalReconciliationNeeded
 		}
 		change |= initializer(ctx, r, physicalProcess, stateKey, data, log)
-		if data.operationInProgress() ||
-			data.conditionReason == apiv2.PhysicalProcessReasonLaunchFailed ||
-			data.conditionReason == apiv2.PhysicalProcessReasonRuntimeProcessExited ||
-			data.conditionReason == apiv2.PhysicalProcessReasonRuntimeProcessMissing {
+		if !data.shouldInspectRuntimeProcess() {
 			return change
 		}
 	}
 
 	if data == nil {
 		var establishChange objectChange
-		stateKey, data, establishChange = r.establishPhysicalProcessData(physicalProcess, log)
+		stateKey, data, establishChange = r.establishPhysicalProcessTracking(physicalProcess, log)
+		// A nil result means that tracking could not or should not be established and the returned
+		// change fully describes the pending or terminal state for this reconciliation.
 		if data == nil {
 			return establishChange
 		}
@@ -242,7 +224,10 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(ctx context.Context, p
 	return change | additionalReconciliationNeeded
 }
 
-func (r *PhysicalProcessReconciler) establishPhysicalProcessData(
+// establishPhysicalProcessTracking claims and initializes tracking state for a runtime process.
+// A nil data result means that the returned change schedules work or applies the complete pending
+// or terminal status for this reconciliation.
+func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 	physicalProcess *apiv2.PhysicalProcess,
 	log logr.Logger,
 ) (physicalProcessDataStateKey, *physicalProcessData, objectChange) {
@@ -294,6 +279,7 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessData(
 			return "", nil, change
 		}
 		if probeErr != nil {
+			log.Error(probeErr, "Failed to inspect runtime process", "PID", pid)
 			change := setPhysicalProcessPID(&physicalProcess.Status.PID, *pidValue)
 			change |= setValue(&physicalProcess.Status.Phase, apiv2.PhysicalProcessPhaseUnknown)
 			change |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady, physicalProcess.Generation, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed, fmt.Sprintf("Failed to inspect runtime process: %v", probeErr))
