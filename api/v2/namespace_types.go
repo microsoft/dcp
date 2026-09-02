@@ -7,6 +7,7 @@ package v2
 
 import (
 	"context"
+	"slices"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -119,6 +120,12 @@ func (ns *Namespace) NamespacedName() types.NamespacedName {
 	}
 }
 
+func (ns *Namespace) PrepareForCreate(_ context.Context) {
+	if !slices.Contains(ns.Finalizers, NamespaceFinalizer) {
+		ns.Finalizers = append(ns.Finalizers, NamespaceFinalizer)
+	}
+}
+
 func (ns *Namespace) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 	metadataPath := field.NewPath("metadata")
@@ -209,5 +216,6 @@ var _ apiserver_resource.StatusSubResource = (*NamespaceStatus)(nil)
 var _ apiserver_resource.ObjectList = (*NamespaceList)(nil)
 var _ commonapi.ListWithObjectItems[Namespace, *Namespace] = (*NamespaceList)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Namespace)(nil)
+var _ apiserver_resourcestrategy.PrepareForCreater = (*Namespace)(nil)
 var _ apiserver_resourcestrategy.Validater = (*Namespace)(nil)
 var _ apiserver_resourcestrategy.ValidateUpdater = (*Namespace)(nil)

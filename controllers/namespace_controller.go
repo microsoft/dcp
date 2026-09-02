@@ -56,7 +56,7 @@ var namespaceCleanupResourceHandlers = map[schema.GroupVersionResource]namespace
 
 func (r *NamespaceReconciler) cleanupPhysicalProcesses(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
 	physicalProcesses := apiv2.PhysicalProcessList{}
-	listErr := r.Client.List(ctx, &physicalProcesses, ctrl_client.InNamespace(namespace.Name))
+	listErr := r.NoCacheClient.List(ctx, &physicalProcesses, ctrl_client.InNamespace(namespace.Name))
 	if listErr != nil {
 		return 0, fmt.Errorf("failed to list PhysicalProcesses in namespace %q: %w", namespace.Name, listErr)
 	}
@@ -291,7 +291,7 @@ func (r *NamespaceReconciler) cleanupNamespacedResources(
 
 func (r *NamespaceReconciler) cleanupPhysicalContainers(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
 	physicalContainers := apiv2.PhysicalContainerList{}
-	listErr := r.Client.List(ctx, &physicalContainers, ctrl_client.InNamespace(namespace.Name))
+	listErr := r.NoCacheClient.List(ctx, &physicalContainers, ctrl_client.InNamespace(namespace.Name))
 	if listErr != nil {
 		return 0, fmt.Errorf("failed to list PhysicalContainers in namespace %q: %w", namespace.Name, listErr)
 	}
@@ -318,7 +318,7 @@ func (r *NamespaceReconciler) cleanupPhysicalContainers(ctx context.Context, nam
 
 func (r *NamespaceReconciler) cleanupPhysicalContainerImages(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
 	physicalContainerImages := apiv2.PhysicalContainerImageList{}
-	listImagesErr := r.Client.List(ctx, &physicalContainerImages, ctrl_client.InNamespace(namespace.Name))
+	listImagesErr := r.NoCacheClient.List(ctx, &physicalContainerImages, ctrl_client.InNamespace(namespace.Name))
 	if listImagesErr != nil {
 		return 0, fmt.Errorf("failed to list PhysicalContainerImages in namespace %q: %w", namespace.Name, listImagesErr)
 	}
@@ -345,7 +345,7 @@ func (r *NamespaceReconciler) cleanupPhysicalContainerImages(ctx context.Context
 
 func (r *NamespaceReconciler) cleanupPhysicalContainerNetworks(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
 	physicalContainerNetworks := apiv2.PhysicalContainerNetworkList{}
-	listErr := r.Client.List(ctx, &physicalContainerNetworks, ctrl_client.InNamespace(namespace.Name))
+	listErr := r.NoCacheClient.List(ctx, &physicalContainerNetworks, ctrl_client.InNamespace(namespace.Name))
 	if listErr != nil {
 		return 0, fmt.Errorf("failed to list PhysicalContainerNetworks in namespace %q: %w", namespace.Name, listErr)
 	}
@@ -372,7 +372,7 @@ func (r *NamespaceReconciler) cleanupPhysicalContainerNetworks(ctx context.Conte
 
 func (r *NamespaceReconciler) cleanupPhysicalContainerVolumes(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
 	physicalContainerVolumes := apiv2.PhysicalContainerVolumeList{}
-	listErr := r.Client.List(ctx, &physicalContainerVolumes, ctrl_client.InNamespace(namespace.Name))
+	listErr := r.NoCacheClient.List(ctx, &physicalContainerVolumes, ctrl_client.InNamespace(namespace.Name))
 	if listErr != nil {
 		return 0, fmt.Errorf("failed to list PhysicalContainerVolumes in namespace %q: %w", namespace.Name, listErr)
 	}
