@@ -42,6 +42,8 @@ func TestNamespaceResourcesCleanPhysicalContainersFirst(t *testing.T) {
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerNetworkGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerVolumeGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalProcessGVR)
+	require.Empty(t, namespaceResourcesByGVR[physicalProcessGVR].CleanUpAfter)
+	require.Empty(t, namespaceResourcesByGVR[physicalContainerGVR].CleanUpAfter)
 	require.Contains(t, namespaceResourcesByGVR[physicalContainerImageGVR].CleanUpAfter, physicalContainerGVR)
 	// A network cannot be removed while containers are still attached to it.
 	require.Contains(t, namespaceResourcesByGVR[physicalContainerNetworkGVR].CleanUpAfter, physicalContainerGVR)

@@ -40,6 +40,12 @@ var (
 
 type namespaceCleanupResourceHandler func(*NamespaceReconciler, context.Context, *apiv2.Namespace, logr.Logger) (int, error)
 
+type namespaceCleanupResult struct {
+	gvr       schema.GroupVersionResource
+	remaining int
+	err       error
+}
+
 var namespaceCleanupResourceHandlers = map[schema.GroupVersionResource]namespaceCleanupResourceHandler{
 	(&apiv2.PhysicalProcess{}).GetGroupVersionResource():          (*NamespaceReconciler).cleanupPhysicalProcesses,
 	(&apiv2.PhysicalContainer{}).GetGroupVersionResource():        (*NamespaceReconciler).cleanupPhysicalContainers,
@@ -199,7 +205,8 @@ func (r *NamespaceReconciler) setNamespaceCleanupInProgress(namespace *apiv2.Nam
 	)
 }
 
-// Deletes the namespace-scoped resources owned by the namespace, in dependency order.
+// Deletes the namespace-scoped resources owned by the namespace, processing each dependency-ready
+// batch concurrently.
 // Returns a description of the resources still awaiting deletion, or an empty string once
 // cleanup is complete.
 func (r *NamespaceReconciler) cleanupNamespace(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (string, error) {
@@ -208,36 +215,58 @@ func (r *NamespaceReconciler) cleanupNamespace(ctx context.Context, namespace *a
 	}
 
 	cleaned := map[schema.GroupVersionResource]bool{}
-	for len(cleaned) < len(resourcecleanup.NamespaceResources) {
-		progress := false
-		pending := make([]string, 0)
-		for _, cleanupResource := range resourcecleanup.NamespaceResources {
-			if cleaned[cleanupResource.GVR] || !namespaceCleanupDependenciesComplete(cleanupResource, cleaned) {
-				continue
-			}
+	attempted := map[schema.GroupVersionResource]bool{}
+	pending := map[schema.GroupVersionResource]int{}
+	for {
+		ready := slices.Select(resourcecleanup.NamespaceResources, func(cleanupResource *resourcecleanup.CleanupResource) bool {
+			return !attempted[cleanupResource.GVR] &&
+				namespaceCleanupDependenciesComplete(cleanupResource, cleaned)
+		})
+		if len(ready) == 0 {
+			break
+		}
+		for _, cleanupResource := range ready {
+			attempted[cleanupResource.GVR] = true
+		}
 
+		results := slices.MapConcurrent[namespaceCleanupResult](ready, func(cleanupResource *resourcecleanup.CleanupResource) namespaceCleanupResult {
 			remaining, cleanupErr := r.cleanupNamespacedResources(ctx, namespace, cleanupResource.GVR, log)
-			if cleanupErr != nil {
-				return "", cleanupErr
+			return namespaceCleanupResult{
+				gvr:       cleanupResource.GVR,
+				remaining: remaining,
+				err:       cleanupErr,
 			}
-			if remaining > 0 {
-				pending = append(pending, fmt.Sprintf("%d %s", remaining, cleanupResource.GVR.Resource))
-				continue
+		}, 0)
+
+		cleanupErrors := slices.Map[error](results, func(result namespaceCleanupResult) error {
+			return result.err
+		})
+		if cleanupErr := errors.Join(cleanupErrors...); cleanupErr != nil {
+			return "", cleanupErr
+		}
+		for _, result := range results {
+			if result.remaining == 0 {
+				cleaned[result.gvr] = true
+			} else {
+				pending[result.gvr] = result.remaining
 			}
-
-			cleaned[cleanupResource.GVR] = true
-			progress = true
-		}
-
-		if len(pending) > 0 {
-			return strings.Join(pending, " and "), nil
-		}
-		if !progress {
-			return "", fmt.Errorf("namespace cleanup resource dependencies are not satisfiable")
 		}
 	}
 
-	return "", nil
+	if len(cleaned) == len(resourcecleanup.NamespaceResources) {
+		return "", nil
+	}
+	if len(pending) == 0 {
+		return "", fmt.Errorf("namespace cleanup resource dependencies are not satisfiable")
+	}
+
+	pendingDescriptions := make([]string, 0, len(pending))
+	for _, cleanupResource := range resourcecleanup.NamespaceResources {
+		if remaining := pending[cleanupResource.GVR]; remaining > 0 {
+			pendingDescriptions = append(pendingDescriptions, fmt.Sprintf("%d %s", remaining, cleanupResource.GVR.Resource))
+		}
+	}
+	return strings.Join(pendingDescriptions, " and "), nil
 }
 
 func namespaceCleanupDependenciesComplete(cleanupResource *resourcecleanup.CleanupResource, cleaned map[schema.GroupVersionResource]bool) bool {
