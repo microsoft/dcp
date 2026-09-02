@@ -35,6 +35,7 @@ type physicalProcessData struct {
 	handle         process.ProcessHandle
 	exitCode       *int32
 	finishedAt     time.Time
+	failureReason  apiv2.ConditionReason
 	failureMessage string
 	retryAfter     time.Time
 }
@@ -47,6 +48,7 @@ func (data *physicalProcessData) Clone() *physicalProcessData {
 		handle:         data.handle,
 		exitCode:       cloneInt32Pointer(data.exitCode),
 		finishedAt:     data.finishedAt,
+		failureReason:  data.failureReason,
 		failureMessage: data.failureMessage,
 		retryAfter:     data.retryAfter,
 	}
@@ -63,6 +65,7 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 		data.handle != other.handle ||
 		!int32PointersEqual(data.exitCode, other.exitCode) ||
 		!data.finishedAt.Equal(other.finishedAt) ||
+		data.failureReason != other.failureReason ||
 		data.failureMessage != other.failureMessage ||
 		!data.retryAfter.Equal(other.retryAfter)
 	if updated {
@@ -88,9 +91,10 @@ func (data *physicalProcessData) applyTo(
 	}
 	change |= setPhysicalProcessExitCode(&physicalProcess.Status.ExitCode, data.exitCode)
 
-	stateChange, delay, valid := physicalProcessProjections.apply(
+	stateChange, delay, valid := physicalProcessProjections.applyWithReason(
 		data.state,
 		data.progress,
+		data.failureReason,
 		data.failureMessage,
 		&physicalProcess.Status.Phase,
 		&physicalProcess.Status.Conditions,

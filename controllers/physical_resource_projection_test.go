@@ -60,6 +60,37 @@ func TestPhysicalResourceProjectionsRejectInvalidCombination(t *testing.T) {
 	require.NotEqual(t, noChange, change&additionalReconciliationNeeded)
 }
 
+func TestPhysicalResourceProjectionsOverrideConditionReason(t *testing.T) {
+	t.Parallel()
+
+	projections := physicalResourceProjectionTable[int, string]{
+		invalidPhase: "Unknown",
+		projections: map[physicalResourceProjectionKey[int]]physicalResourceProjection[string]{
+			{state: 1, progress: physicalResourceProgressRetryPending}: {
+				phase:           "Pending",
+				conditionStatus: metav1.ConditionFalse,
+				conditionReason: "DefaultReason",
+			},
+		},
+	}
+
+	phase := ""
+	conditions := []metav1.Condition{}
+	_, _, valid := projections.applyWithReason(
+		1,
+		physicalResourceProgressRetryPending,
+		"SpecificReason",
+		"",
+		&phase,
+		&conditions,
+		1,
+	)
+
+	require.True(t, valid)
+	require.Len(t, conditions, 1)
+	require.Equal(t, "SpecificReason", conditions[0].Reason)
+}
+
 func assertPhysicalResourceProjections[State comparable, Phase ~string](
 	t *testing.T,
 	projections physicalResourceProjectionTable[State, Phase],

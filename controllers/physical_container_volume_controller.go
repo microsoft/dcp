@@ -606,13 +606,7 @@ func (r *PhysicalContainerVolumeReconciler) beginPhysicalContainerVolumeRemoval(
 	if data != nil {
 		volumeID = data.volumeID
 	}
-	resolveOwnedVolumeByName := volumeID == "" &&
-		data != nil
-	if volumeID == "" && !resolveOwnedVolumeByName {
-		r.volumeData.DeleteByNamespacedName(volume.NamespacedName())
-		return deleteFinalizer(volume, physicalContainerVolumeFinalizer, log)
-	}
-
+	resolveOwnedVolumeByName := volumeID == ""
 	return r.schedulePhysicalContainerVolumeRemoval(volume, volumeID, resolveOwnedVolumeByName, log)
 }
 

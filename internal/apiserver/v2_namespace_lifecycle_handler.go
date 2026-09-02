@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/felixge/httpsnoop"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -189,7 +190,7 @@ func (handler *v2NamespaceLifecycleHandler) ServeHTTP(writer http.ResponseWriter
 	switch {
 	case handler.isNamespacedResourceCreate(request, info):
 		handler.handleNamespacedResourceCreate(writer, request, info)
-	case handler.isNamespaceDeleteCollection(info):
+	case handler.isDeleteCollection(info):
 		handler.writeError(
 			writer,
 			request,
@@ -239,8 +240,8 @@ func (*v2NamespaceLifecycleHandler) isNamespaceDelete(info *requestinfo.RequestI
 	return info.Verb == "delete" && info.Resource == "namespaces" && info.Name != ""
 }
 
-func (*v2NamespaceLifecycleHandler) isNamespaceDeleteCollection(info *requestinfo.RequestInfo) bool {
-	return info.Verb == "deletecollection" && info.Resource == "namespaces" && info.Name == ""
+func (*v2NamespaceLifecycleHandler) isDeleteCollection(info *requestinfo.RequestInfo) bool {
+	return info.Verb == "deletecollection"
 }
 
 func (handler *v2NamespaceLifecycleHandler) handleNamespacedResourceCreate(
@@ -281,12 +282,14 @@ func (handler *v2NamespaceLifecycleHandler) handleNamespaceDelete(
 		return
 	}
 
-	statusWriter := &responseStatusWriter{ResponseWriter: writer}
+	responseMetrics := httpsnoop.Metrics{}
 	completed := false
 	defer func() {
-		deleteLease.complete(!completed || statusWriter.succeeded())
+		deleteLease.complete(!completed || responseSucceeded(responseMetrics.Code))
 	}()
-	handler.inner.ServeHTTP(statusWriter, request)
+	responseMetrics.CaptureMetrics(writer, func(statusWriter http.ResponseWriter) {
+		handler.inner.ServeHTTP(statusWriter, request)
+	})
 	completed = true
 }
 
@@ -297,14 +300,16 @@ func (handler *v2NamespaceLifecycleHandler) handleNamespaceCreate(writer http.Re
 		return
 	}
 
-	statusWriter := &responseStatusWriter{ResponseWriter: writer}
+	responseMetrics := httpsnoop.Metrics{}
 	completed := false
 	defer func() {
-		if namespaceName != "" && statusWriter.succeeded() && (completed || statusWriter.statusCode != 0) {
+		if namespaceName != "" && responseSucceeded(responseMetrics.Code) && (completed || responseMetrics.Code != 0) {
 			handler.gate.open(namespaceName)
 		}
 	}()
-	handler.inner.ServeHTTP(statusWriter, request)
+	responseMetrics.CaptureMetrics(writer, func(statusWriter http.ResponseWriter) {
+		handler.inner.ServeHTTP(statusWriter, request)
+	})
 	completed = true
 }
 
@@ -375,28 +380,7 @@ func (handler *v2NamespaceLifecycleHandler) writeError(writer http.ResponseWrite
 	responsewriters.ErrorNegotiated(err, handler.serializer, handler.groupVersion, writer, request)
 }
 
-type responseStatusWriter struct {
-	http.ResponseWriter
-	statusCode int
-}
-
-func (writer *responseStatusWriter) WriteHeader(statusCode int) {
-	if writer.statusCode != 0 {
-		return
-	}
-	writer.statusCode = statusCode
-	writer.ResponseWriter.WriteHeader(statusCode)
-}
-
-func (writer *responseStatusWriter) Write(data []byte) (int, error) {
-	if writer.statusCode == 0 {
-		writer.statusCode = http.StatusOK
-	}
-	return writer.ResponseWriter.Write(data)
-}
-
-func (writer *responseStatusWriter) succeeded() bool {
-	statusCode := writer.statusCode
+func responseSucceeded(statusCode int) bool {
 	if statusCode == 0 {
 		statusCode = http.StatusOK
 	}

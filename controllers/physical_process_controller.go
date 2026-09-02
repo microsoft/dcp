@@ -201,6 +201,7 @@ func handlePhysicalProcessNamespace(
 
 	data.state = physicalProcessStateResolve
 	data.progress = physicalResourceProgressInProgress
+	data.failureReason = ""
 	data.failureMessage = ""
 	if !reconciler.processData.UpdateByNamespacedName(physicalProcess.NamespacedName(), data) {
 		return additionalReconciliationNeeded
@@ -413,6 +414,7 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 		log.Error(probeErr, "Failed to inspect runtime process", "PID", pid)
 		data.state = physicalProcessStateResolve
 		data.progress = physicalResourceProgressRetryPending
+		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime process: %v", probeErr)
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		_ = r.processData.UpdateByNamespacedName(physicalProcess.NamespacedName(), data)
@@ -421,6 +423,7 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 	if probedHandle.IdentityTime.IsZero() {
 		data.state = physicalProcessStateResolve
 		data.progress = physicalResourceProgressRetryPending
+		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed
 		data.failureMessage = "Failed to determine the runtime process identity timestamp."
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		_ = r.processData.UpdateByNamespacedName(physicalProcess.NamespacedName(), data)
@@ -448,6 +451,7 @@ func (r *PhysicalProcessReconciler) claimPhysicalProcessTracking(
 		data.state = physicalProcessStateResolve
 		data.progress = physicalResourceProgressRetryPending
 		data.handle = handle
+		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessAlreadyTracked
 		data.failureMessage = fmt.Sprintf("Runtime process is already tracked by PhysicalProcess %q.", owner.String())
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		_ = r.processData.UpdateByNamespacedName(physicalProcess.NamespacedName(), data)

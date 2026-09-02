@@ -196,6 +196,15 @@ func (executor *invalidIdentityCleanupFailureExecutor) calls() (int, int, bool) 
 	return executor.startCalls, executor.stopCalls, executor.replacementStopped
 }
 
+type findProcessHandleFailureExecutor struct {
+	process.Executor
+	err error
+}
+
+func (executor *findProcessHandleFailureExecutor) FindProcessHandle(process.Pid_t) (process.ProcessHandle, error) {
+	return process.ProcessHandle{Pid: process.UnknownPID}, executor.err
+}
+
 type replaceableProcessExecutor struct {
 	process.Executor
 
@@ -450,6 +459,44 @@ func TestV2PhysicalProcessControllerRejectsAlreadyTrackedProcess(t *testing.T) {
 	require.NoError(t, client.Delete(ctx, duplicate))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, duplicate)
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
+}
+
+func TestV2PhysicalProcessControllerReportsProcessInspectionFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "v2-pproc-inspection-failure",
+			Finalizers: []string{apiv2.NamespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	pid := int64(42003)
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "inspection-failure", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
+	}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(client.Scheme()).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalProcess{}).
+		WithObjects(namespace, physicalProcess).
+		Build()
+	inspectionErr := errors.New("simulated process inspection failure")
+	executor := &findProcessHandleFailureExecutor{Executor: testProcessExecutor, err: inspectionErr}
+	reconciler := controllers.NewPhysicalProcessReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), executor)
+	request := ctrl.Request{NamespacedName: physicalProcess.NamespacedName()}
+
+	reconcilePhysicalProcess(t, ctx, reconciler, request)
+	reconcilePhysicalProcess(t, ctx, reconciler, request)
+
+	current := apiv2.PhysicalProcess{}
+	require.NoError(t, baseClient.Get(ctx, request.NamespacedName, &current))
+	require.Equal(t, apiv2.PhysicalProcessPhasePending, current.Status.Phase)
+	requireReadyCondition(t, current.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed)
+	readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+	require.Contains(t, readyCondition.Message, inspectionErr.Error())
 }
 
 func TestV2PhysicalProcessControllerDoesNotAdoptReplacementAfterTrackingConflict(t *testing.T) {

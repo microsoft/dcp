@@ -396,26 +396,28 @@ func TestV2NamespaceLifecycleHandlerLimitsNamespaceCreateBody(t *testing.T) {
 	require.Zero(t, innerCalls.Load())
 }
 
-func TestV2NamespaceLifecycleHandlerRejectsNamespaceDeleteCollection(t *testing.T) {
+func TestV2NamespaceLifecycleHandlerRejectsDeleteCollection(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
 	defer cancel()
 
-	var innerCalls atomic.Int32
-	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		innerCalls.Add(1)
-	}), newV2NamespaceLifecycleGate())
-	request := httptest.NewRequestWithContext(
-		ctx,
-		http.MethodDelete,
-		"/apis/"+apiv2.GroupName+"/"+apiv2.Version+"/namespaces",
-		nil,
-	)
-	response := httptest.NewRecorder()
+	for _, requestPath := range []string{
+		"/apis/" + apiv2.GroupName + "/" + apiv2.Version + "/namespaces",
+		"/apis/" + apiv2.GroupName + "/" + apiv2.Version + "/namespaces/test/physicalprocesses",
+	} {
+		t.Run(requestPath, func(t *testing.T) {
+			var innerCalls atomic.Int32
+			handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				innerCalls.Add(1)
+			}), newV2NamespaceLifecycleGate())
+			request := httptest.NewRequestWithContext(ctx, http.MethodDelete, requestPath, nil)
+			response := httptest.NewRecorder()
 
-	handler.ServeHTTP(response, request)
+			handler.ServeHTTP(response, request)
 
-	require.Equal(t, http.StatusMethodNotAllowed, response.Code)
-	require.Zero(t, innerCalls.Load())
+			require.Equal(t, http.StatusMethodNotAllowed, response.Code)
+			require.Zero(t, innerCalls.Load())
+		})
+	}
 }
 
 func TestV2NamespaceLifecycleHandlerDoesNotGateOtherAPIVersions(t *testing.T) {

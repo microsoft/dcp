@@ -87,6 +87,18 @@ func (table physicalResourceProjectionTable[State, Phase]) apply(
 	conditions *[]metav1.Condition,
 	generation int64,
 ) (objectChange, AdditionalReconciliationDelay, bool) {
+	return table.applyWithReason(state, progress, "", message, phase, conditions, generation)
+}
+
+func (table physicalResourceProjectionTable[State, Phase]) applyWithReason(
+	state State,
+	progress physicalResourceProgress,
+	conditionReason apiv2.ConditionReason,
+	message string,
+	phase *Phase,
+	conditions *[]metav1.Condition,
+	generation int64,
+) (objectChange, AdditionalReconciliationDelay, bool) {
 	projection, valid := table.project(state, progress)
 	if !valid {
 		projection = physicalResourceProjection[Phase]{
@@ -97,8 +109,13 @@ func (table physicalResourceProjectionTable[State, Phase]) apply(
 			requeue:         true,
 			requeueDelay:    LongDelay,
 		}
-	} else if message != "" {
-		projection.message = message
+	} else {
+		if conditionReason != "" {
+			projection.conditionReason = conditionReason
+		}
+		if message != "" {
+			projection.message = message
+		}
 	}
 
 	change := setValue(phase, projection.phase)
