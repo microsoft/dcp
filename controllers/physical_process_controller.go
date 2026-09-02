@@ -283,6 +283,7 @@ func handlePhysicalProcessRuntime(
 		data.state = physicalProcessStateRuntime
 		data.progress = physicalResourceProgressMissing
 		data.finishedAt = time.Now()
+		data.failureMessage = ""
 		_ = reconciler.processData.UpdateByNamespacedName(physicalProcess.NamespacedName(), data)
 		return noChange
 	}
@@ -366,9 +367,8 @@ func handleUnknownPhysicalProcessState(
 	return additionalReconciliationNeeded
 }
 
-// establishPhysicalProcessTracking claims and initializes tracking state for a runtime process.
-// A nil data result means that the returned change schedules work or applies the complete pending
-// or terminal status for this reconciliation.
+// establishPhysicalProcessTracking claims a runtime process and updates data with the resulting
+// tracking state.
 func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 	physicalProcess *apiv2.PhysicalProcess,
 	data *physicalProcessData,
