@@ -146,6 +146,56 @@ func (executor *invalidIdentityOnceExecutor) StartProcess(
 	return handle, startWaitForExit, nil
 }
 
+type invalidIdentityCleanupFailureExecutor struct {
+	process.Executor
+
+	lock               sync.Mutex
+	startCalls         int
+	stopCalls          int
+	replacementExists  bool
+	replacementStopped bool
+}
+
+func (executor *invalidIdentityCleanupFailureExecutor) StartProcess(
+	_ context.Context,
+	_ *exec.Cmd,
+	_ process.ProcessExitHandler,
+	_ process.ProcessCreationFlag,
+	_ process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	executor.lock.Lock()
+	defer executor.lock.Unlock()
+	executor.startCalls++
+	return process.NewHandle(1234, time.Time{}), nil, nil
+}
+
+func (executor *invalidIdentityCleanupFailureExecutor) FindProcessHandle(pid process.Pid_t) (process.ProcessHandle, error) {
+	return process.NewHandle(pid, time.Time{}), nil
+}
+
+func (executor *invalidIdentityCleanupFailureExecutor) StopProcess(
+	_ process.ProcessHandle,
+	_ ...process.ProcessStopOption,
+) error {
+	executor.lock.Lock()
+	defer executor.lock.Unlock()
+	executor.stopCalls++
+	if executor.stopCalls == 1 {
+		executor.replacementExists = true
+		return errors.New("simulated cleanup failure and PID replacement")
+	}
+	if executor.replacementExists {
+		executor.replacementStopped = true
+	}
+	return nil
+}
+
+func (executor *invalidIdentityCleanupFailureExecutor) calls() (int, int, bool) {
+	executor.lock.Lock()
+	defer executor.lock.Unlock()
+	return executor.startCalls, executor.stopCalls, executor.replacementStopped
+}
+
 type replaceableProcessExecutor struct {
 	process.Executor
 
@@ -990,6 +1040,71 @@ func TestV2PhysicalProcessControllerCleansInvalidLaunchIdentityBeforeRetry(t *te
 	require.Len(t, executions, 2)
 	require.True(t, executions[0].Finished())
 	require.True(t, executions[1].Running())
+}
+
+func TestV2PhysicalProcessControllerDoesNotRetryUnpinnedCleanup(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "v2-pproc-unpinned-cleanup",
+			Finalizers: []string{apiv2.NamespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "unpinned-cleanup-process", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalProcessSpec{
+			Process: &apiv2.PhysicalProcessConfig{ExecutablePath: "v2-pproc-unpinned-cleanup-command"},
+		},
+	}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(client.Scheme()).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalProcess{}).
+		WithObjects(namespace, physicalProcess).
+		Build()
+	processExecutor := &invalidIdentityCleanupFailureExecutor{}
+	reconciler := controllers.NewPhysicalProcessReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), processExecutor)
+	request := ctrl.Request{NamespacedName: physicalProcess.NamespacedName()}
+
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+		current := apiv2.PhysicalProcess{}
+		getErr := baseClient.Get(ctx, request.NamespacedName, &current)
+		return current.Status.Phase == apiv2.PhysicalProcessPhaseFailed, getErr
+	})
+	require.NoError(t, waitErr)
+
+	for range 3 {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		require.NoError(t, reconcileErr)
+	}
+	startCalls, stopCalls, replacementStopped := processExecutor.calls()
+	require.Equal(t, 1, startCalls)
+	require.Equal(t, 1, stopCalls)
+	require.False(t, replacementStopped)
+
+	current := apiv2.PhysicalProcess{}
+	require.NoError(t, baseClient.Get(ctx, request.NamespacedName, &current))
+	require.NoError(t, baseClient.Delete(ctx, &current))
+	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+		getErr := baseClient.Get(ctx, request.NamespacedName, &apiv2.PhysicalProcess{})
+		return apierrors.IsNotFound(getErr), nil
+	})
+	require.NoError(t, waitErr)
+
+	startCalls, stopCalls, replacementStopped = processExecutor.calls()
+	require.Equal(t, 1, startCalls)
+	require.Equal(t, 1, stopCalls)
+	require.False(t, replacementStopped)
 }
 
 // seedAdoptablePhysicalProcess registers a process execution with the shared test process executor so

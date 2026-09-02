@@ -244,6 +244,9 @@ func handlePhysicalProcessLaunchState(
 	if data.progress == physicalResourceProgressSkipped {
 		return noChange
 	}
+	if data.progress == physicalResourceProgressFailed {
+		return noChange
+	}
 	if data.progress != physicalResourceProgressRetryPending {
 		return handleUnknownPhysicalProcessState(ctx, reconciler, physicalProcess, data.state, data, log)
 	}
@@ -460,12 +463,6 @@ func (r *PhysicalProcessReconciler) handlePhysicalProcessLaunchFailed(
 	data *physicalProcessData,
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
-	if data.handle.Pid > 0 {
-		if !physicalProcess.Spec.Stop && time.Now().Before(data.retryAfter) {
-			return additionalReconciliationNeeded, LongDelay
-		}
-		return r.scheduleInvalidPhysicalProcessCleanup(physicalProcess, stateKey, data, log)
-	}
 	if physicalProcess.Spec.Stop {
 		data.state = physicalProcessStateLaunch
 		data.progress = physicalResourceProgressSkipped
@@ -567,7 +564,6 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 		return
 	}
 	if handle.Pid <= 0 || handle.IdentityTime.IsZero() {
-		data.handle = handle
 		data.progress = physicalResourceProgressRetryPending
 		data.failureMessage = "Physical process launch returned an invalid process identity."
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
@@ -576,7 +572,15 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 			if cleanupErr == nil || process.IsProcessGoneErr(cleanupErr) {
 				data.handle = process.ProcessHandle{}
 			} else {
-				data.failureMessage = fmt.Sprintf("Physical process launch returned an invalid process identity and cleanup failed: %v", cleanupErr)
+				// A later stop cannot distinguish this process from a new process that reuses its PID.
+				data.handle = process.ProcessHandle{}
+				data.progress = physicalResourceProgressFailed
+				data.failureMessage = fmt.Sprintf(
+					"Physical process launch returned an invalid identity for PID %d and cleanup failed; launch will not be retried because the process cannot be stopped safely: %v",
+					handle.Pid,
+					cleanupErr,
+				)
+				data.retryAfter = time.Time{}
 			}
 		}
 		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
@@ -730,58 +734,6 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 	data.retryAfter = time.Time{}
 	r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 	log.V(1).Info("Physical process stopped", "PID", data.handle.Pid)
-}
-
-func (r *PhysicalProcessReconciler) scheduleInvalidPhysicalProcessCleanup(
-	physicalProcess *apiv2.PhysicalProcess,
-	stateKey physicalProcessDataStateKey,
-	data *physicalProcessData,
-	log logr.Logger,
-) (objectChange, AdditionalReconciliationDelay) {
-	cleanupData := data.Clone()
-	cleanupData.progress = physicalResourceProgressInProgress
-	if !r.processData.Update(physicalProcess.NamespacedName(), stateKey, cleanupData) {
-		return additionalReconciliationNeeded, StandardDelay
-	}
-
-	processSnapshot := physicalProcess.DeepCopy()
-	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
-		r.cleanupInvalidPhysicalProcess(operationCtx, processSnapshot, stateKey, cleanupData.Clone(), log)
-	})
-	if enqueueErr != nil {
-		cleanupData.progress = physicalResourceProgressRetryPending
-		cleanupData.failureMessage = fmt.Sprintf("Failed to queue invalid physical process cleanup: %v", enqueueErr)
-		cleanupData.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, cleanupData)
-		change, delay, _ := cleanupData.applyTo(physicalProcess)
-		return change, delay
-	}
-	change, delay, _ := cleanupData.applyTo(physicalProcess)
-	return change, delay
-}
-
-func (r *PhysicalProcessReconciler) cleanupInvalidPhysicalProcess(
-	_ context.Context,
-	physicalProcess *apiv2.PhysicalProcess,
-	stateKey physicalProcessDataStateKey,
-	data *physicalProcessData,
-	log logr.Logger,
-) {
-	cleanupErr := r.processExecutor.StopProcess(data.handle)
-	if cleanupErr != nil && !process.IsProcessGoneErr(cleanupErr) {
-		data.progress = physicalResourceProgressRetryPending
-		data.failureMessage = fmt.Sprintf("Failed to clean up process with an invalid identity: %v", cleanupErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
-		return
-	}
-
-	log.V(1).Info("Cleaned up process with invalid identity", "PID", data.handle.Pid)
-	data.handle = process.ProcessHandle{}
-	data.progress = physicalResourceProgressRetryPending
-	data.failureMessage = "Physical process launch returned an invalid process identity."
-	data.retryAfter = time.Time{}
-	r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 }
 
 func (r *PhysicalProcessReconciler) handleDeletionRequest(
