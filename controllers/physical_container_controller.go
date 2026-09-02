@@ -42,18 +42,20 @@ var (
 	physicalContainerFinalizer string = fmt.Sprintf("%s/physicalcontainer-reconciler", apiv2.GroupVersion.Group)
 
 	physicalContainerDataInitializers = map[physicalContainerState]physicalContainerDataInitializerFunc{
-		physicalContainerStateNamespace:   handlePhysicalContainerNamespace,
-		physicalContainerStateResolve:     handlePhysicalContainerResolve,
-		physicalContainerStateImage:       handlePhysicalContainerImage,
-		physicalContainerStateCreate:      handlePhysicalContainerCreate,
-		physicalContainerStateReplace:     handlePhysicalContainerCreateFailure,
-		physicalContainerStateCopyFiles:   handlePhysicalContainerCopyFiles,
-		physicalContainerStateStart:       handlePhysicalContainerStart,
-		physicalContainerStateCleanup:     handlePhysicalContainerCreateFailure,
+		physicalContainerStateNamespace: handlePhysicalContainerNamespace,
+		physicalContainerStateResolve:   handlePhysicalContainerResolve,
+		physicalContainerStateImage:     handlePhysicalContainerImage,
+		physicalContainerStateCreate:    handlePhysicalContainerCreate,
+		physicalContainerStateReplace:   handlePhysicalContainerCreateFailure,
+		physicalContainerStateCopyFiles: handlePhysicalContainerCopyFiles,
+		physicalContainerStateStart:     handlePhysicalContainerStart,
+		physicalContainerStateCleanup:   handlePhysicalContainerCreateFailure,
+		// A failed stop or port mapping resolution is a diagnostic flavor of the runtime
+		// observation concern: both recover by observing the container again.
 		physicalContainerStateRuntime:     handlePhysicalContainerRuntime,
 		physicalContainerStateStop:        handlePhysicalContainerRuntime,
-		physicalContainerStateRemove:      handlePhysicalContainerRuntime,
 		physicalContainerStatePortMapping: handlePhysicalContainerRuntime,
+		physicalContainerStateRemove:      handlePhysicalContainerRemove,
 		physicalContainerStateInvalid:     handleUnknownPhysicalContainerDataReason,
 		0:                                 handleUnknownPhysicalContainerDataReason,
 	}
@@ -190,8 +192,8 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 			progress:    physicalResourceProgressNotReady,
 		}
 		initialStateKey := physicalContainerDataKey(container)
-		r.containerData.Store(container.NamespacedName(), initialStateKey, data)
-		_, data = r.containerData.BorrowByNamespacedName(container.NamespacedName())
+		// Store() retains the supplied pointer, so keep an unaliased copy for this reconciliation.
+		r.containerData.Store(container.NamespacedName(), initialStateKey, data.Clone())
 	}
 
 	handler := getStateInitializer(physicalContainerDataInitializers, data.state, log)
@@ -236,16 +238,14 @@ func handlePhysicalContainerNamespace(
 			data.progress = physicalResourceProgressRetryPending
 			data.failureMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
 		}
-		stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
-		_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
+		_ = reconciler.containerData.UpdateByNamespacedName(container.NamespacedName(), data)
 		return noChange
 	}
 
 	data.state = physicalContainerStateResolve
 	data.progress = physicalResourceProgressInProgress
 	data.failureMessage = ""
-	stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
-	if !reconciler.containerData.Update(container.NamespacedName(), stateKey, data) {
+	if !reconciler.containerData.UpdateByNamespacedName(container.NamespacedName(), data) {
 		return additionalReconciliationNeeded
 	}
 	return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
@@ -263,6 +263,20 @@ func handlePhysicalContainerResolve(
 		return reconciler.handleDeletionRequest(ctx, container, log)
 	}
 
+	// An earlier attempt lost the race for the runtime container, so wait before claiming it again.
+	if data.progress == physicalResourceProgressRetryPending {
+		if time.Now().Before(data.retryAfter) {
+			return additionalReconciliationNeeded
+		}
+		data.progress = physicalResourceProgressInProgress
+		data.containerID = ""
+		data.failureMessage = ""
+		data.retryAfter = time.Time{}
+		if !reconciler.containerData.UpdateByNamespacedName(container.NamespacedName(), data) {
+			return additionalReconciliationNeeded
+		}
+	}
+
 	containerID := container.Spec.ContainerID
 	if containerID == "" {
 		containerID = data.containerID
@@ -272,18 +286,16 @@ func handlePhysicalContainerResolve(
 	}
 
 	if data.containerID == "" {
-		owner, stored := storeStartedPhysicalContainerData(reconciler.containerData, container, containerID)
+		owner, stored := storeStartedPhysicalContainerData(reconciler.containerData, container, containerID, data)
 		if !stored {
 			data.state = physicalContainerStateResolve
 			data.progress = physicalResourceProgressRetryPending
 			data.containerID = containerID
 			data.failureMessage = fmt.Sprintf("Runtime container is already tracked by PhysicalContainer %q.", owner.String())
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-			stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
-			_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
+			_ = reconciler.containerData.UpdateByNamespacedName(container.NamespacedName(), data)
 			return additionalReconciliationNeeded
 		}
-		_, data = reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
 	}
 
 	return handlePhysicalContainerRuntime(ctx, reconciler, container, data.state, data, log)
@@ -305,8 +317,7 @@ func handlePhysicalContainerImage(
 		data.state = physicalContainerStateImage
 		data.progress = imageProgress
 		data.failureMessage = imageMessage
-		stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
-		_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
+		_ = reconciler.containerData.UpdateByNamespacedName(container.NamespacedName(), data)
 		return imageChange
 	}
 
@@ -375,6 +386,8 @@ func handlePhysicalContainerStart(
 	return handlePhysicalContainerOperationInProgress(ctx, reconciler, container, state, data, log)
 }
 
+// Observes the runtime container and records what was seen. When the spec requests a stop, the
+// stop operation takes over before the observed state is applied.
 func handlePhysicalContainerRuntime(
 	ctx context.Context,
 	reconciler *PhysicalContainerReconciler,
@@ -386,28 +399,13 @@ func handlePhysicalContainerRuntime(
 	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
 		return reconciler.handleDeletionRequest(ctx, container, log)
 	}
-	if data.state == physicalContainerStateResolve &&
-		data.progress == physicalResourceProgressRetryPending {
-		if time.Now().Before(data.retryAfter) {
-			return additionalReconciliationNeeded
-		}
-		data.progress = physicalResourceProgressInProgress
-		data.containerID = ""
-		data.failureMessage = ""
-		data.retryAfter = time.Time{}
-		stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
-		if !reconciler.containerData.Update(container.NamespacedName(), stateKey, data) {
-			return additionalReconciliationNeeded
-		}
-		return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
-	}
 
 	containerID := data.containerID
 	if containerID == "" {
+		// The runtime identity has not been captured yet, so resolution owns this reconciliation.
 		data.state = physicalContainerStateResolve
 		data.progress = physicalResourceProgressInProgress
-		stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
-		_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
+		_ = reconciler.containerData.UpdateByNamespacedName(container.NamespacedName(), data)
 		return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
 	}
 
@@ -417,8 +415,7 @@ func handlePhysicalContainerRuntime(
 		data.state = physicalContainerStateRuntime
 		data.progress = physicalResourceProgressMissing
 		data.failureMessage = ""
-		stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
-		_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
+		_ = reconciler.containerData.UpdateByNamespacedName(container.NamespacedName(), data)
 		return noChange
 	}
 	if inspectErr != nil {
@@ -426,34 +423,59 @@ func handlePhysicalContainerRuntime(
 		data.state = physicalContainerStateRuntime
 		data.progress = physicalResourceProgressRetryPending
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime container: %v", inspectErr)
-		stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
-		_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
+		_ = reconciler.containerData.UpdateByNamespacedName(container.NamespacedName(), data)
 		return additionalReconciliationNeeded
 	}
 
 	if container.Spec.Stop {
-		stoppedContainer, stopErr := reconciler.stopPhysicalContainerIfNecessary(ctx, containerID, inspectedContainer)
-		if errors.Is(stopErr, containers.ErrNotFound) {
-			data.state = physicalContainerStateRuntime
-			data.progress = physicalResourceProgressMissing
-			data.failureMessage = ""
-			stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
-			_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
-			return noChange
-		}
-		if stopErr != nil {
-			log.Error(stopErr, "Failed to stop runtime container", "ContainerID", containerID)
-			data.state = physicalContainerStateStop
-			data.progress = physicalResourceProgressRetryPending
-			data.failureMessage = fmt.Sprintf("Failed to stop runtime container: %v", stopErr)
-			stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
-			_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
-			return applyInspectedPhysicalContainerDetails(container, inspectedContainer, log) | additionalReconciliationNeeded
-		}
-		inspectedContainer = stoppedContainer
+		return reconciler.stopPhysicalContainer(ctx, container, data, inspectedContainer, log)
 	}
 
 	return reconciler.applyInspectedPhysicalContainerStatus(container, data, inspectedContainer, log)
+}
+
+// Stops the runtime container when it is still active and records the resulting state.
+func (r *PhysicalContainerReconciler) stopPhysicalContainer(
+	ctx context.Context,
+	container *apiv2.PhysicalContainer,
+	data *physicalContainerData,
+	inspectedContainer *containers.InspectedContainer,
+	log logr.Logger,
+) objectChange {
+	containerID := data.containerID
+	stoppedContainer, stopErr := r.stopPhysicalContainerIfNecessary(ctx, containerID, inspectedContainer)
+	if errors.Is(stopErr, containers.ErrNotFound) {
+		data.state = physicalContainerStateRuntime
+		data.progress = physicalResourceProgressMissing
+		data.failureMessage = ""
+		_ = r.containerData.UpdateByNamespacedName(container.NamespacedName(), data)
+		return noChange
+	}
+	if stopErr != nil {
+		log.Error(stopErr, "Failed to stop runtime container", "ContainerID", containerID)
+		data.state = physicalContainerStateStop
+		data.progress = physicalResourceProgressRetryPending
+		data.failureMessage = fmt.Sprintf("Failed to stop runtime container: %v", stopErr)
+		_ = r.containerData.UpdateByNamespacedName(container.NamespacedName(), data)
+		return applyInspectedPhysicalContainerDetails(container, inspectedContainer, log) | additionalReconciliationNeeded
+	}
+
+	return r.applyInspectedPhysicalContainerStatus(container, data, stoppedContainer, log)
+}
+
+// Removal is only entered while the resource is being deleted, so it retries the deletion request.
+func handlePhysicalContainerRemove(
+	ctx context.Context,
+	reconciler *PhysicalContainerReconciler,
+	container *apiv2.PhysicalContainer,
+	state physicalContainerState,
+	data *physicalContainerData,
+	log logr.Logger,
+) objectChange {
+	if container.DeletionTimestamp == nil || container.DeletionTimestamp.IsZero() {
+		return handleUnknownPhysicalContainerDataReason(ctx, reconciler, container, state, data, log)
+	}
+	return reconciler.handleDeletionRequest(ctx, container, log)
 }
 
 func handlePhysicalContainerCreating(
@@ -653,8 +675,7 @@ func handleUnknownPhysicalContainerDataReason(
 	data.progress = physicalResourceProgressFailed
 	data.failureMessage = fmt.Sprintf("Physical container operation reached unknown state %d.", state)
 	log.Error(fmt.Errorf("unknown physical container state %d", state), "Physical container operation reached unknown state")
-	stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
-	_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
+	_ = reconciler.containerData.UpdateByNamespacedName(container.NamespacedName(), data)
 	return additionalReconciliationNeeded
 }
 
@@ -1043,8 +1064,7 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(ctx context.Context,
 				data.progress = physicalResourceProgressRetryPending
 				data.containerID = containerID
 				data.failureMessage = fmt.Sprintf("Failed to remove runtime container: %v", removeErr)
-				stateKey, _ := r.containerData.BorrowByNamespacedName(container.NamespacedName())
-				_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
+				_ = r.containerData.UpdateByNamespacedName(container.NamespacedName(), data)
 			}
 			return setValue(&container.Status.ContainerID, containerID) | additionalReconciliationNeeded
 		}
@@ -1213,8 +1233,7 @@ func (r *PhysicalContainerReconciler) applyInspectedPhysicalContainerStatus(
 		}
 	}
 
-	stateKey, _ := r.containerData.BorrowByNamespacedName(container.NamespacedName())
-	if !r.containerData.Update(container.NamespacedName(), stateKey, data) {
+	if !r.containerData.UpdateByNamespacedName(container.NamespacedName(), data) {
 		return change | additionalReconciliationNeeded
 	}
 	return change

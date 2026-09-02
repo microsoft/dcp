@@ -137,8 +137,8 @@ func (r *PhysicalContainerNetworkReconciler) managePhysicalContainerNetwork(
 			progress: physicalResourceProgressNotReady,
 		}
 		initialStateKey := physicalContainerNetworkDataKey(network)
-		r.networkData.Store(network.NamespacedName(), initialStateKey, data)
-		_, data = r.networkData.BorrowByNamespacedName(network.NamespacedName())
+		// Store() retains the supplied pointer, so keep an unaliased copy for this reconciliation.
+		r.networkData.Store(network.NamespacedName(), initialStateKey, data.Clone())
 	}
 
 	handler := getStateInitializer(physicalContainerNetworkDataInitializers, data.state, log)
@@ -183,16 +183,14 @@ func handlePhysicalContainerNetworkNamespace(
 			data.progress = physicalResourceProgressRetryPending
 			data.failureMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
 		}
-		stateKey, _ := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
-		_ = reconciler.networkData.Update(network.NamespacedName(), stateKey, data)
+		_ = reconciler.networkData.UpdateByNamespacedName(network.NamespacedName(), data)
 		return noChange
 	}
 
 	data.state = physicalContainerNetworkStateResolve
 	data.progress = physicalResourceProgressInProgress
 	data.failureMessage = ""
-	stateKey, _ := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
-	if !reconciler.networkData.Update(network.NamespacedName(), stateKey, data) {
+	if !reconciler.networkData.UpdateByNamespacedName(network.NamespacedName(), data) {
 		return additionalReconciliationNeeded
 	}
 	return handlePhysicalContainerNetworkResolve(ctx, reconciler, network, data.state, data, log)
@@ -248,8 +246,7 @@ func (r *PhysicalContainerNetworkReconciler) applyRuntimeNetworkStatus(
 		data.progress = physicalResourceProgressMissing
 		data.networkID = networkID
 		data.failureMessage = ""
-		stateKey, _ := r.networkData.BorrowByNamespacedName(network.NamespacedName())
-		_ = r.networkData.Update(network.NamespacedName(), stateKey, data)
+		_ = r.networkData.UpdateByNamespacedName(network.NamespacedName(), data)
 		return noChange
 	}
 	if inspectErr != nil {
@@ -258,8 +255,7 @@ func (r *PhysicalContainerNetworkReconciler) applyRuntimeNetworkStatus(
 		data.progress = physicalResourceProgressRetryPending
 		data.networkID = networkID
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime network: %v", inspectErr)
-		stateKey, _ := r.networkData.BorrowByNamespacedName(network.NamespacedName())
-		_ = r.networkData.Update(network.NamespacedName(), stateKey, data)
+		_ = r.networkData.UpdateByNamespacedName(network.NamespacedName(), data)
 		return noChange
 	}
 
@@ -267,8 +263,7 @@ func (r *PhysicalContainerNetworkReconciler) applyRuntimeNetworkStatus(
 	data.progress = physicalResourceProgressCompleted
 	data.networkID = inspectedNetwork.Id
 	data.failureMessage = ""
-	stateKey, _ := r.networkData.BorrowByNamespacedName(network.NamespacedName())
-	_ = r.networkData.Update(network.NamespacedName(), stateKey, data)
+	_ = r.networkData.UpdateByNamespacedName(network.NamespacedName(), data)
 	return applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)
 }
 
@@ -608,8 +603,7 @@ func handlePhysicalContainerNetworkRecoverableCreateFailed(
 				inspectedNetwork.Name,
 			)
 			data.retryAfter = time.Time{}
-			stateKey, _ := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
-			if reconciler.networkData.Update(network.NamespacedName(), stateKey, data) {
+			if reconciler.networkData.UpdateByNamespacedName(network.NamespacedName(), data) {
 				return data.applyTo(network)
 			}
 			return additionalReconciliationNeeded
@@ -621,8 +615,7 @@ func handlePhysicalContainerNetworkRecoverableCreateFailed(
 			data.progress = physicalContainerNetworkOperationFailed
 			data.failureMessage = fmt.Sprintf("Runtime network name %q is already in use.", networkConfig.NetworkName)
 			data.retryAfter = time.Time{}
-			stateKey, _ := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
-			if reconciler.networkData.Update(network.NamespacedName(), stateKey, data) {
+			if reconciler.networkData.UpdateByNamespacedName(network.NamespacedName(), data) {
 				return data.applyTo(network)
 			}
 			return additionalReconciliationNeeded
@@ -637,8 +630,7 @@ func handlePhysicalContainerNetworkRecoverableCreateFailed(
 		data.networkID = inspectedNetwork.Id
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
-		stateKey, _ := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
-		if reconciler.networkData.Update(network.NamespacedName(), stateKey, data) {
+		if reconciler.networkData.UpdateByNamespacedName(network.NamespacedName(), data) {
 			log.V(1).Info("Adopted runtime network created by an earlier attempt", "NetworkID", inspectedNetwork.Id)
 			return data.applyTo(network) | applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)
 		}
@@ -647,8 +639,7 @@ func handlePhysicalContainerNetworkRecoverableCreateFailed(
 	if !errors.Is(inspectErr, containers.ErrNotFound) {
 		data.failureMessage = fmt.Sprintf("Failed to verify whether runtime network creation succeeded: %v", inspectErr)
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		stateKey, _ := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
-		if reconciler.networkData.Update(network.NamespacedName(), stateKey, data) {
+		if reconciler.networkData.UpdateByNamespacedName(network.NamespacedName(), data) {
 			return data.applyTo(network) | additionalReconciliationNeeded
 		}
 		return additionalReconciliationNeeded

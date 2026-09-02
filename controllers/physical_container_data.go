@@ -287,10 +287,13 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 	},
 }
 
+// Claims the runtime container identity for the resource. On success the caller's reconciliation
+// state is replaced with the newly recorded state.
 func storeStartedPhysicalContainerData(
 	containerData *ObjectStateMap[physicalContainerDataStateKey, physicalContainerData, *physicalContainerData, *apiv2.PhysicalContainer],
 	container *apiv2.PhysicalContainer,
 	containerID string,
+	data *physicalContainerData,
 ) (types.NamespacedName, bool) {
 	startedData := &physicalContainerData{
 		resourceUID: container.UID,
@@ -298,7 +301,11 @@ func storeStartedPhysicalContainerData(
 		progress:    physicalResourceProgressCreated,
 		containerID: containerID,
 	}
-	return containerData.StoreIfStateKeyUnclaimed(container.NamespacedName(), physicalContainerDataContainerIDKey(containerID), startedData)
+	owner, stored := containerData.StoreIfStateKeyUnclaimed(container.NamespacedName(), physicalContainerDataContainerIDKey(containerID), startedData)
+	if stored {
+		*data = *startedData.Clone()
+	}
+	return owner, stored
 }
 
 func physicalContainerDataKey(container *apiv2.PhysicalContainer) physicalContainerDataStateKey {

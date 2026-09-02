@@ -140,6 +140,43 @@ func TestObjectStateMapUpdating(t *testing.T) {
 	require.Equal(t, 2, os.count)
 }
 
+func TestObjectStateMapUpdatingByNamespacedName(t *testing.T) {
+	t.Parallel()
+
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
+
+	name := types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}
+	m.Store(name, "one", &testObjectState{tag: "uno", count: 1})
+
+	// Updating a non-existing object should be a no-op
+	updated := m.UpdateByNamespacedName(types.NamespacedName{Name: "not-there", Namespace: metav1.NamespaceNone}, &testObjectState{tag: "uno", count: 2})
+	require.False(t, updated)
+
+	// Updating with no changes should be a no-op
+	updated = m.UpdateByNamespacedName(name, &testObjectState{tag: "uno", count: 1})
+	require.False(t, updated)
+
+	// Updating with changes should succeed and preserve the current state key
+	updated = m.UpdateByNamespacedName(name, &testObjectState{tag: "uno", count: 2})
+	require.True(t, updated)
+
+	key, os := m.BorrowByNamespacedName(name)
+	require.NotNil(t, os)
+	require.Equal(t, "one", key)
+	require.Equal(t, "uno", os.tag)
+	require.Equal(t, 2, os.count)
+
+	// The update should follow the object when its state key changes
+	require.True(t, m.UpdateChangingStateKey(name, "one", "two", &testObjectState{tag: "uno", count: 3}))
+	require.True(t, m.UpdateByNamespacedName(name, &testObjectState{tag: "dos", count: 3}))
+
+	key, os = m.BorrowByNamespacedName(name)
+	require.NotNil(t, os)
+	require.Equal(t, "two", key)
+	require.Equal(t, "dos", os.tag)
+	require.Equal(t, 3, os.count)
+}
+
 func TestObjectStateMapUpdatingChangingStateKey(t *testing.T) {
 	t.Parallel()
 

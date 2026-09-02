@@ -124,6 +124,27 @@ func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) Update(namespaceName types.Na
 	return true
 }
 
+// UpdateByNamespacedName() is like Update(), but applies the update under whichever state key the
+// object state is currently stored with. Use it when the caller has no state key of its own to
+// assert; callers that must detect a state key change should use Update() instead.
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) UpdateByNamespacedName(namespaceName types.NamespacedName, pos POS) bool {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	currentStateKey, current, found := m.inner.FindByFirstKey(namespaceName)
+	if !found {
+		return false
+	}
+
+	updated := POS(current.Clone())
+	if madeChanges := updated.UpdateFrom(pos); !madeChanges {
+		return false
+	}
+
+	m.inner.Store(namespaceName, currentStateKey, updated)
+	return true
+}
+
 // UpdateChangingStateKey() is like Update(), with the additional effect of changing the state key
 // the object state is stored under.
 func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) UpdateChangingStateKey(namespaceName types.NamespacedName, oldStateKey StateKeyT, newStateKey StateKeyT, pos POS) bool {

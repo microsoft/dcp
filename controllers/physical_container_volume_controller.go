@@ -136,8 +136,8 @@ func (r *PhysicalContainerVolumeReconciler) managePhysicalContainerVolume(
 			progress: physicalResourceProgressNotReady,
 		}
 		initialStateKey := physicalContainerVolumeDataKey(volume)
-		r.volumeData.Store(volume.NamespacedName(), initialStateKey, data)
-		_, data = r.volumeData.BorrowByNamespacedName(volume.NamespacedName())
+		// Store() retains the supplied pointer, so keep an unaliased copy for this reconciliation.
+		r.volumeData.Store(volume.NamespacedName(), initialStateKey, data.Clone())
 	}
 
 	handler := getStateInitializer(physicalContainerVolumeDataInitializers, data.state, log)
@@ -182,16 +182,14 @@ func handlePhysicalContainerVolumeNamespace(
 			data.progress = physicalResourceProgressRetryPending
 			data.failureMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
 		}
-		stateKey, _ := reconciler.volumeData.BorrowByNamespacedName(volume.NamespacedName())
-		_ = reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data)
+		_ = reconciler.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data)
 		return noChange
 	}
 
 	data.state = physicalContainerVolumeStateResolve
 	data.progress = physicalResourceProgressInProgress
 	data.failureMessage = ""
-	stateKey, _ := reconciler.volumeData.BorrowByNamespacedName(volume.NamespacedName())
-	if !reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data) {
+	if !reconciler.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data) {
 		return additionalReconciliationNeeded
 	}
 	return handlePhysicalContainerVolumeResolve(ctx, reconciler, volume, data.state, data, log)
@@ -247,8 +245,7 @@ func (r *PhysicalContainerVolumeReconciler) applyRuntimeVolumeStatus(
 		data.progress = physicalResourceProgressMissing
 		data.volumeID = volumeID
 		data.failureMessage = ""
-		stateKey, _ := r.volumeData.BorrowByNamespacedName(volume.NamespacedName())
-		_ = r.volumeData.Update(volume.NamespacedName(), stateKey, data)
+		_ = r.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data)
 		return noChange
 	}
 	if inspectErr != nil {
@@ -257,8 +254,7 @@ func (r *PhysicalContainerVolumeReconciler) applyRuntimeVolumeStatus(
 		data.progress = physicalResourceProgressRetryPending
 		data.volumeID = volumeID
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime volume: %v", inspectErr)
-		stateKey, _ := r.volumeData.BorrowByNamespacedName(volume.NamespacedName())
-		_ = r.volumeData.Update(volume.NamespacedName(), stateKey, data)
+		_ = r.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data)
 		return noChange
 	}
 
@@ -266,8 +262,7 @@ func (r *PhysicalContainerVolumeReconciler) applyRuntimeVolumeStatus(
 	data.progress = physicalResourceProgressCompleted
 	data.volumeID = inspectedVolume.Name
 	data.failureMessage = ""
-	stateKey, _ := r.volumeData.BorrowByNamespacedName(volume.NamespacedName())
-	_ = r.volumeData.Update(volume.NamespacedName(), stateKey, data)
+	_ = r.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data)
 	return applyReadyPhysicalContainerVolumeStatus(volume, inspectedVolume)
 }
 
@@ -543,8 +538,7 @@ func handlePhysicalContainerVolumeRecoverableCreateFailed(
 			data.progress = physicalContainerVolumeOperationFailed
 			data.failureMessage = fmt.Sprintf("Runtime volume name %q is already in use.", volumeConfig.VolumeName)
 			data.retryAfter = time.Time{}
-			stateKey, _ := reconciler.volumeData.BorrowByNamespacedName(volume.NamespacedName())
-			if reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data) {
+			if reconciler.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data) {
 				return data.applyTo(volume)
 			}
 			return additionalReconciliationNeeded
@@ -559,8 +553,7 @@ func handlePhysicalContainerVolumeRecoverableCreateFailed(
 		data.volumeID = inspectedVolume.Name
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
-		stateKey, _ := reconciler.volumeData.BorrowByNamespacedName(volume.NamespacedName())
-		if reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data) {
+		if reconciler.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data) {
 			log.V(1).Info("Adopted runtime volume created by an earlier attempt", "VolumeID", inspectedVolume.Name)
 			return data.applyTo(volume) | applyReadyPhysicalContainerVolumeStatus(volume, inspectedVolume)
 		}
@@ -569,8 +562,7 @@ func handlePhysicalContainerVolumeRecoverableCreateFailed(
 	if !errors.Is(inspectErr, containers.ErrNotFound) {
 		data.failureMessage = fmt.Sprintf("Failed to verify whether runtime volume creation succeeded: %v", inspectErr)
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		stateKey, _ := reconciler.volumeData.BorrowByNamespacedName(volume.NamespacedName())
-		if reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data) {
+		if reconciler.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data) {
 			return data.applyTo(volume) | additionalReconciliationNeeded
 		}
 		return additionalReconciliationNeeded
@@ -768,8 +760,7 @@ func handlePhysicalContainerVolumeRemovalFailed(
 			data.failureMessage,
 		)
 		data.retryAfter = time.Time{}
-		stateKey, _ := reconciler.volumeData.BorrowByNamespacedName(volume.NamespacedName())
-		if reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data) {
+		if reconciler.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data) {
 			log.Info(
 				"Stopped retrying runtime volume removal after namespace cleanup deadline",
 				"Namespace", volume.Namespace,
