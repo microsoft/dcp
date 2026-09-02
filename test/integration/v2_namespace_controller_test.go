@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -20,6 +21,8 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/dcppaths"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -87,6 +90,77 @@ func TestV2NamespaceControllerCleansUpPhysicalContainers(t *testing.T) {
 		ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, images[i])
 		waitContainerMissing(t, ctx, containerIDs[i])
 	}
+	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
+}
+
+func TestV2NamespaceControllerCleansUpContainersWhileProcessDeletionIsBlocked(t *testing.T) {
+	t.Parallel()
+	dcppaths.EnableTestPathProbing()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "v2-ns-independent-cleanup",
+		},
+	}
+	require.NoError(t, client.Create(ctx, namespace))
+	waitV2NamespaceActive(t, ctx, namespace.Name)
+
+	executablePath := "v2-ns-independent-cleanup-command"
+	criteria := internal_testutil.ProcessSearchCriteria{Command: []string{executablePath}}
+	finishExecution := make(chan struct{})
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: criteria,
+		RunCommand: func(*internal_testutil.ProcessExecution) int32 {
+			<-finishExecution
+			return 0
+		},
+		StopError: func(*internal_testutil.ProcessExecution) error {
+			return errors.New("simulated stop failure")
+		},
+	})
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			testProcessExecutor.RemoveAutoExecution(criteria)
+			close(finishExecution)
+		})
+	}
+	defer cleanup()
+
+	physicalProcess := createRunningPhysicalProcess(t, ctx, namespace.Name, "blocked-process", executablePath)
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "independent-image", "independent-image")
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "independent-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:      image.Name,
+				ContainerName: "v2-ns-independent-cleanup-container",
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	runningContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+
+	require.NoError(t, client.Delete(ctx, namespace))
+	waitObjectAssumesState(t, ctx, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalProcessReasonStopFailed, nil
+	})
+
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
+	waitContainerMissing(t, ctx, runningContainer.Status.ContainerID)
+
+	currentProcess := &apiv2.PhysicalProcess{}
+	require.NoError(t, client.Get(ctx, physicalProcess.NamespacedName(), currentProcess))
+
+	cleanup()
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
 }
 

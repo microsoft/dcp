@@ -80,7 +80,7 @@ const (
 // +k8s:openapi-gen=true
 type PhysicalProcessSpec struct {
 	// PID identifies an existing operating system process to track. Exactly one of pid or process must be set.
-	// The process is identified by PID initially and guarded against PID reuse by status.identityTimestamp.
+	// The controller resolves the PID once and guards against PID reuse with an in-memory process identity.
 	PID *int64 `json:"pid,omitempty"`
 
 	// Process describes an operating system process to launch. Exactly one of pid or process must be set.
@@ -126,7 +126,8 @@ type PhysicalProcessStatus struct {
 	// PID is the operating system process ID being tracked.
 	PID *int64 `json:"pid,omitempty"`
 
-	// IdentityTimestamp identifies the specific process instance and prevents PID reuse from targeting a different process.
+	// IdentityTimestamp reports the process identity captured by the controller for PID-reuse protection.
+	// This diagnostic value is not used to reconstruct controller state.
 	// On Linux this value represents elapsed time since boot rather than wall-clock time.
 	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
 

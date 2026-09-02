@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -209,6 +210,7 @@ func (r *NamespaceReconciler) cleanupNamespace(ctx context.Context, namespace *a
 	cleaned := map[schema.GroupVersionResource]bool{}
 	for len(cleaned) < len(resourcecleanup.NamespaceResources) {
 		progress := false
+		pending := make([]string, 0)
 		for _, cleanupResource := range resourcecleanup.NamespaceResources {
 			if cleaned[cleanupResource.GVR] || !namespaceCleanupDependenciesComplete(cleanupResource, cleaned) {
 				continue
@@ -219,13 +221,17 @@ func (r *NamespaceReconciler) cleanupNamespace(ctx context.Context, namespace *a
 				return "", cleanupErr
 			}
 			if remaining > 0 {
-				return fmt.Sprintf("%d %s", remaining, cleanupResource.GVR.Resource), nil
+				pending = append(pending, fmt.Sprintf("%d %s", remaining, cleanupResource.GVR.Resource))
+				continue
 			}
 
 			cleaned[cleanupResource.GVR] = true
 			progress = true
 		}
 
+		if len(pending) > 0 {
+			return strings.Join(pending, " and "), nil
+		}
 		if !progress {
 			return "", fmt.Errorf("namespace cleanup resource dependencies are not satisfiable")
 		}

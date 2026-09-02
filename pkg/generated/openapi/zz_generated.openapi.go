@@ -6238,7 +6238,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessSpec(ref common.ReferenceCallbac
 				Properties: map[string]spec.Schema{
 					"pid": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PID identifies an existing operating system process to track. Exactly one of pid or process must be set. The process is identified by PID initially and guarded against PID reuse by status.identityTimestamp.",
+							Description: "PID identifies an existing operating system process to track. Exactly one of pid or process must be set. The controller resolves the PID once and guards against PID reuse with an in-memory process identity.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},
@@ -6287,7 +6287,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref common.ReferenceCallb
 					},
 					"identityTimestamp": {
 						SchemaProps: spec.SchemaProps{
-							Description: "IdentityTimestamp identifies the specific process instance and prevents PID reuse from targeting a different process. On Linux this value represents elapsed time since boot rather than wall-clock time.",
+							Description: "IdentityTimestamp reports the process identity captured by the controller for PID-reuse protection. This diagnostic value is not used to reconstruct controller state. On Linux this value represents elapsed time since boot rather than wall-clock time.",
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
