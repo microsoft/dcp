@@ -34,14 +34,80 @@ type v2NamespaceLifecycleState struct {
 }
 
 type v2NamespaceLifecycleGate struct {
-	lock       sync.Mutex
-	namespaces map[string]*v2NamespaceLifecycleState
+	lock               sync.Mutex
+	namespaces         map[string]*v2NamespaceLifecycleState
+	namespaceMutations map[string]*v2NamespaceMutationState
 }
 
 func newV2NamespaceLifecycleGate() *v2NamespaceLifecycleGate {
 	return &v2NamespaceLifecycleGate{
-		namespaces: map[string]*v2NamespaceLifecycleState{},
+		namespaces:         map[string]*v2NamespaceLifecycleState{},
+		namespaceMutations: map[string]*v2NamespaceMutationState{},
 	}
+}
+
+type v2NamespaceMutationState struct {
+	available  chan struct{}
+	references int
+}
+
+type v2NamespaceMutationLease struct {
+	gate      *v2NamespaceLifecycleGate
+	namespace string
+	state     *v2NamespaceMutationState
+	once      sync.Once
+}
+
+func (gate *v2NamespaceLifecycleGate) beginNamespaceMutation(
+	ctx context.Context,
+	namespace string,
+) (*v2NamespaceMutationLease, error) {
+	gate.lock.Lock()
+	state := gate.namespaceMutations[namespace]
+	if state == nil {
+		state = &v2NamespaceMutationState{available: make(chan struct{}, 1)}
+		state.available <- struct{}{}
+		gate.namespaceMutations[namespace] = state
+	}
+	state.references++
+	gate.lock.Unlock()
+
+	select {
+	case <-state.available:
+		if ctx.Err() != nil {
+			state.available <- struct{}{}
+			gate.releaseNamespaceMutationReference(namespace, state)
+			return nil, ctx.Err()
+		}
+		return &v2NamespaceMutationLease{
+			gate:      gate,
+			namespace: namespace,
+			state:     state,
+		}, nil
+	case <-ctx.Done():
+		gate.releaseNamespaceMutationReference(namespace, state)
+		return nil, ctx.Err()
+	}
+}
+
+func (gate *v2NamespaceLifecycleGate) releaseNamespaceMutationReference(
+	namespace string,
+	state *v2NamespaceMutationState,
+) {
+	gate.lock.Lock()
+	defer gate.lock.Unlock()
+
+	state.references--
+	if state.references == 0 && gate.namespaceMutations[namespace] == state {
+		delete(gate.namespaceMutations, namespace)
+	}
+}
+
+func (lease *v2NamespaceMutationLease) complete() {
+	lease.once.Do(func() {
+		lease.state.available <- struct{}{}
+		lease.gate.releaseNamespaceMutationReference(lease.namespace, lease.state)
+	})
 }
 
 func (gate *v2NamespaceLifecycleGate) beginCreate(namespace string) (func(), bool) {
@@ -272,6 +338,17 @@ func (handler *v2NamespaceLifecycleHandler) handleNamespaceDelete(
 	request *http.Request,
 	info *requestinfo.RequestInfo,
 ) {
+	mutationLease, mutationWaitErr := handler.gate.beginNamespaceMutation(request.Context(), info.Name)
+	if mutationWaitErr != nil {
+		handler.writeError(
+			writer,
+			request,
+			apierrors.NewTimeoutError(fmt.Sprintf("timed out waiting to delete namespace %q", info.Name), 0),
+		)
+		return
+	}
+	defer mutationLease.complete()
+
 	deleteLease, waitErr := handler.gate.beginDelete(request.Context(), info.Name)
 	if waitErr != nil {
 		handler.writeError(
@@ -299,6 +376,17 @@ func (handler *v2NamespaceLifecycleHandler) handleNamespaceCreate(writer http.Re
 		handler.writeError(writer, request, nameErr)
 		return
 	}
+
+	mutationLease, mutationWaitErr := handler.gate.beginNamespaceMutation(request.Context(), namespaceName)
+	if mutationWaitErr != nil {
+		handler.writeError(
+			writer,
+			request,
+			apierrors.NewTimeoutError(fmt.Sprintf("timed out waiting to create namespace %q", namespaceName), 0),
+		)
+		return
+	}
+	defer mutationLease.complete()
 
 	responseMetrics := httpsnoop.Metrics{}
 	completed := false

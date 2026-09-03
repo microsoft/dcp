@@ -7,6 +7,7 @@ package apiserver
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	goruntime "runtime"
@@ -185,6 +186,135 @@ func TestV2NamespaceLifecycleHandlerReopensGateForReplacementNamespace(t *testin
 	require.Equal(t, int32(1), resourceCreateCalls.Load())
 }
 
+func TestV2NamespaceLifecycleHandlerSerializesNamespaceCreateBeforeDelete(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	createStarted := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	deleteStarted := make(chan struct{})
+	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodPost:
+			writer.WriteHeader(http.StatusCreated)
+			close(createStarted)
+			select {
+			case <-releaseCreate:
+			case <-request.Context().Done():
+			}
+		case http.MethodDelete:
+			close(deleteStarted)
+			writer.WriteHeader(http.StatusAccepted)
+		}
+	}), gate)
+
+	createResponse := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, newV2NamespaceCreateRequest(ctx, "create-first"))
+		createResponse <- response
+	}()
+	waitForSignal(t, ctx, createStarted)
+
+	deleteResponse := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, newV2NamespaceDeleteRequest(ctx, "create-first"))
+		deleteResponse <- response
+	}()
+	waitV2NamespaceMutationReferences(t, ctx, gate, "create-first", 2)
+	select {
+	case <-deleteStarted:
+		t.Fatal("namespace delete reached storage before namespace create completed")
+	default:
+	}
+
+	close(releaseCreate)
+	require.Equal(t, http.StatusCreated, waitForResponse(t, ctx, createResponse).Code)
+	require.Equal(t, http.StatusAccepted, waitForResponse(t, ctx, deleteResponse).Code)
+	_, allowed := gate.beginCreate("create-first")
+	require.False(t, allowed)
+}
+
+func TestV2NamespaceLifecycleHandlerSerializesNamespaceDeleteBeforeCreate(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	deleteStarted := make(chan struct{})
+	releaseDelete := make(chan struct{})
+	createStarted := make(chan struct{})
+	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.Method {
+		case http.MethodDelete:
+			writer.WriteHeader(http.StatusAccepted)
+			close(deleteStarted)
+			select {
+			case <-releaseDelete:
+			case <-request.Context().Done():
+			}
+		case http.MethodPost:
+			close(createStarted)
+			writer.WriteHeader(http.StatusCreated)
+		}
+	}), gate)
+
+	deleteResponse := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, newV2NamespaceDeleteRequest(ctx, "delete-first"))
+		deleteResponse <- response
+	}()
+	waitForSignal(t, ctx, deleteStarted)
+
+	createResponse := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, newV2NamespaceCreateRequest(ctx, "delete-first"))
+		createResponse <- response
+	}()
+	waitV2NamespaceMutationReferences(t, ctx, gate, "delete-first", 2)
+	select {
+	case <-createStarted:
+		t.Fatal("namespace create reached storage before namespace delete completed")
+	default:
+	}
+
+	close(releaseDelete)
+	require.Equal(t, http.StatusAccepted, waitForResponse(t, ctx, deleteResponse).Code)
+	require.Equal(t, http.StatusCreated, waitForResponse(t, ctx, createResponse).Code)
+	release, allowed := gate.beginCreate("delete-first")
+	require.True(t, allowed)
+	release()
+}
+
+func TestV2NamespaceLifecycleGateRemovesCancelledMutationWaiter(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	firstLease, firstLeaseErr := gate.beginNamespaceMutation(ctx, "test")
+	require.NoError(t, firstLeaseErr)
+	waitCtx, cancelWait := context.WithCancel(ctx)
+	waitResult := make(chan error, 1)
+	go func() {
+		_, waitErr := gate.beginNamespaceMutation(waitCtx, "test")
+		waitResult <- waitErr
+	}()
+	waitV2NamespaceMutationReferences(t, ctx, gate, "test", 2)
+
+	cancelWait()
+	require.ErrorIs(t, waitForError(t, ctx, waitResult), context.Canceled)
+	firstLease.complete()
+	requireNoV2NamespaceMutation(t, gate, "test")
+
+	nextLease, nextLeaseErr := gate.beginNamespaceMutation(ctx, "test")
+	require.NoError(t, nextLeaseErr)
+	nextLease.complete()
+	requireNoV2NamespaceMutation(t, gate, "test")
+}
+
 func TestV2NamespaceLifecycleHandlerReopensGateAfterFailedDelete(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
 	defer cancel()
@@ -239,6 +369,7 @@ func TestV2NamespaceLifecycleHandlerCompletesDeleteLeaseOnPanic(t *testing.T) {
 	require.Zero(t, state.activeDeletes)
 	require.True(t, state.closed)
 	gate.lock.Unlock()
+	requireNoV2NamespaceMutation(t, gate, "test")
 }
 
 func TestV2NamespaceLifecycleHandlerReopensGateWhenNamespaceCreatePanicsAfterSuccess(t *testing.T) {
@@ -269,6 +400,7 @@ func TestV2NamespaceLifecycleHandlerReopensGateWhenNamespaceCreatePanicsAfterSuc
 	release, allowed := gate.beginCreate("test")
 	require.True(t, allowed)
 	release()
+	requireNoV2NamespaceMutation(t, gate, "test")
 }
 
 func TestV2NamespaceLifecycleHandlerKeepsGateClosedWhenConcurrentDeleteSucceeds(t *testing.T) {
@@ -296,7 +428,8 @@ func TestV2NamespaceLifecycleHandlerKeepsGateClosedWhenConcurrentDeleteSucceeds(
 		writer.WriteHeader(http.StatusAccepted)
 		close(secondDeleteDone)
 	})
-	handler := newV2NamespaceLifecycleTestHandler(t, inner, newV2NamespaceLifecycleGate())
+	gate := newV2NamespaceLifecycleGate()
+	handler := newV2NamespaceLifecycleTestHandler(t, inner, gate)
 	deleteURL := "/apis/" + apiv2.GroupName + "/" + apiv2.Version + "/namespaces/test"
 
 	firstDeleteDone := make(chan struct{})
@@ -314,16 +447,20 @@ func TestV2NamespaceLifecycleHandlerKeepsGateClosedWhenConcurrentDeleteSucceeds(
 	}
 
 	secondDeleteResponse := httptest.NewRecorder()
-	handler.ServeHTTP(
-		secondDeleteResponse,
-		httptest.NewRequestWithContext(ctx, http.MethodDelete, deleteURL, nil),
-	)
+	secondDeleteRequestDone := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(
+			secondDeleteResponse,
+			httptest.NewRequestWithContext(ctx, http.MethodDelete, deleteURL, nil),
+		)
+		close(secondDeleteRequestDone)
+	}()
+	waitV2NamespaceMutationReferences(t, ctx, gate, "test", 2)
 	select {
 	case <-secondDeleteDone:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
+		t.Fatal("second namespace delete reached storage before the first delete completed")
+	default:
 	}
-	require.Equal(t, http.StatusAccepted, secondDeleteResponse.Code)
 
 	close(releaseFirstDelete)
 	select {
@@ -331,6 +468,8 @@ func TestV2NamespaceLifecycleHandlerKeepsGateClosedWhenConcurrentDeleteSucceeds(
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
+	waitForSignal(t, ctx, secondDeleteRequestDone)
+	require.Equal(t, http.StatusAccepted, secondDeleteResponse.Code)
 
 	createResponse := httptest.NewRecorder()
 	handler.ServeHTTP(
@@ -485,6 +624,105 @@ func newV2ResourceRequest(
 		"/apis/"+apiv2.GroupName+"/"+apiv2.Version+"/namespaces/"+namespace+"/"+resource,
 		nil,
 	)
+}
+
+func newV2NamespaceCreateRequest(ctx context.Context, namespace string) *http.Request {
+	body := fmt.Sprintf(`{"apiVersion":"%s","kind":"Namespace","metadata":{"name":%q}}`, apiv2.GroupVersion.String(), namespace)
+	request := httptest.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		"/apis/"+apiv2.GroupName+"/"+apiv2.Version+"/namespaces",
+		strings.NewReader(body),
+	)
+	request.Header.Set("Content-Type", runtime.ContentTypeJSON)
+	return request
+}
+
+func newV2NamespaceDeleteRequest(ctx context.Context, namespace string) *http.Request {
+	return httptest.NewRequestWithContext(
+		ctx,
+		http.MethodDelete,
+		"/apis/"+apiv2.GroupName+"/"+apiv2.Version+"/namespaces/"+namespace,
+		nil,
+	)
+}
+
+func waitForSignal(t *testing.T, ctx context.Context, signal <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-signal:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
+
+func waitForResponse(
+	t *testing.T,
+	ctx context.Context,
+	response <-chan *httptest.ResponseRecorder,
+) *httptest.ResponseRecorder {
+	t.Helper()
+
+	select {
+	case result := <-response:
+		return result
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+		return nil
+	}
+}
+
+func waitForError(t *testing.T, ctx context.Context, result <-chan error) error {
+	t.Helper()
+
+	select {
+	case resultErr := <-result:
+		return resultErr
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+		return nil
+	}
+}
+
+func requireNoV2NamespaceMutation(t *testing.T, gate *v2NamespaceLifecycleGate, namespace string) {
+	t.Helper()
+
+	gate.lock.Lock()
+	defer gate.lock.Unlock()
+
+	_, found := gate.namespaceMutations[namespace]
+	require.False(t, found)
+}
+
+func waitV2NamespaceMutationReferences(
+	t *testing.T,
+	ctx context.Context,
+	gate *v2NamespaceLifecycleGate,
+	namespace string,
+	references int,
+) {
+	t.Helper()
+
+	for {
+		gate.lock.Lock()
+		state := gate.namespaceMutations[namespace]
+		referenceCount := 0
+		if state != nil {
+			referenceCount = state.references
+		}
+		gate.lock.Unlock()
+		if referenceCount == references {
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		default:
+			goruntime.Gosched()
+		}
+	}
 }
 
 func waitV2NamespaceGateClosed(
