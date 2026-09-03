@@ -6,12 +6,31 @@
 package controllers
 
 import (
+	"context"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
+
+type physicalResourceStateHandlerFunc[
+	O commonapi.ObjectStruct, PO commonapi.PObjectWithStatusStruct[O],
+	R ReconcilerType, PR PReconcilerType[R],
+	OS KubernetesObjectStateType,
+	StateKey comparable,
+	IMOS any, PIMOS PInMemoryObjectState[IMOS],
+] func(
+	ctx context.Context,
+	reconciler PR,
+	obj PO,
+	state OS,
+	stateKey StateKey,
+	inMemoryState PIMOS,
+	log logr.Logger,
+) objectChange
 
 type physicalResourceProgress int
 

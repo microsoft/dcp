@@ -28,6 +28,10 @@ const (
 	physicalContainerImageStateInvalid
 )
 
+type physicalContainerImageOperation struct {
+	cancel context.CancelFunc
+}
+
 type physicalContainerImageData struct {
 	state          physicalContainerImageState
 	progress       physicalResourceProgress
@@ -37,18 +41,18 @@ type physicalContainerImageData struct {
 	retryAfter     time.Time
 
 	// Cancels the queued pull or build operation. Set for as long as the operation may still be running.
-	cancelOperation context.CancelFunc
+	operation *physicalContainerImageOperation
 }
 
 func (data *physicalContainerImageData) Clone() *physicalContainerImageData {
 	return &physicalContainerImageData{
-		state:           data.state,
-		progress:        data.progress,
-		image:           data.image,
-		imageID:         data.imageID,
-		failureMessage:  data.failureMessage,
-		retryAfter:      data.retryAfter,
-		cancelOperation: data.cancelOperation,
+		state:          data.state,
+		progress:       data.progress,
+		image:          data.image,
+		imageID:        data.imageID,
+		failureMessage: data.failureMessage,
+		retryAfter:     data.retryAfter,
+		operation:      data.operation,
 	}
 }
 
@@ -80,6 +84,10 @@ func (data *physicalContainerImageData) UpdateFrom(other *physicalContainerImage
 	}
 	if !data.retryAfter.Equal(other.retryAfter) {
 		data.retryAfter = other.retryAfter
+		updated = true
+	}
+	if data.operation != other.operation {
+		data.operation = other.operation
 		updated = true
 	}
 

@@ -292,6 +292,7 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 func storeStartedPhysicalContainerData(
 	containerData *ObjectStateMap[physicalContainerDataStateKey, physicalContainerData, *physicalContainerData, *apiv2.PhysicalContainer],
 	container *apiv2.PhysicalContainer,
+	oldStateKey physicalContainerDataStateKey,
 	containerID string,
 	data *physicalContainerData,
 ) (types.NamespacedName, bool) {
@@ -301,11 +302,16 @@ func storeStartedPhysicalContainerData(
 		progress:    physicalResourceProgressCreated,
 		containerID: containerID,
 	}
-	owner, stored := containerData.StoreIfStateKeyUnclaimed(container.NamespacedName(), physicalContainerDataContainerIDKey(containerID), startedData)
-	if stored {
+	owner, updated := containerData.UpdateChangingStateKeyIfUnclaimed(
+		container.NamespacedName(),
+		oldStateKey,
+		physicalContainerDataContainerIDKey(containerID),
+		startedData,
+	)
+	if updated {
 		*data = *startedData.Clone()
 	}
-	return owner, stored
+	return owner, updated
 }
 
 func physicalContainerDataKey(container *apiv2.PhysicalContainer) physicalContainerDataStateKey {

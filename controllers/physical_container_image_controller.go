@@ -51,10 +51,11 @@ var (
 	}
 )
 
-type physicalContainerImageDataHandlerFunc = stateInitializerFunc[
+type physicalContainerImageDataHandlerFunc = physicalResourceStateHandlerFunc[
 	apiv2.PhysicalContainerImage, *apiv2.PhysicalContainerImage,
 	PhysicalContainerImageReconciler, *PhysicalContainerImageReconciler,
 	physicalContainerImageState,
+	physicalContainerImageDataStateKey,
 	physicalContainerImageData, *physicalContainerImageData,
 ]
 
@@ -173,9 +174,9 @@ func (r *PhysicalContainerImageReconciler) discardPhysicalContainerImageData(nam
 		return
 	}
 
-	if data.operationInProgress() && data.cancelOperation != nil {
+	if data.operationInProgress() && data.operation != nil {
 		log.V(1).Info("Cancelling in-flight PhysicalContainerImage operation", "State", data.state)
-		data.cancelOperation()
+		data.operation.cancel()
 	}
 
 	r.imageData.DeleteByNamespacedName(name)
@@ -186,19 +187,20 @@ func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(
 	image *apiv2.PhysicalContainerImage,
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
-	_, data := r.imageData.BorrowByNamespacedName(image.NamespacedName())
+	stateKey, data := r.imageData.BorrowByNamespacedName(image.NamespacedName())
 	if data == nil {
 		data = &physicalContainerImageData{
 			state:    physicalContainerImageStateNamespace,
 			progress: physicalResourceProgressNotReady,
 		}
 		initialStateKey := physicalContainerImageDataKey(image)
+		stateKey = initialStateKey
 		// Store() retains the supplied pointer, so keep an unaliased copy for this reconciliation.
 		r.imageData.Store(image.NamespacedName(), initialStateKey, data.Clone())
 	}
 
-	handler := getStateInitializer(physicalContainerImageDataHandlers, data.state, log)
-	change := handler(ctx, r, image, data.state, data, log)
+	handler := getStateHandler(physicalContainerImageDataHandlers, data.state, log)
+	change := handler(ctx, r, image, data.state, stateKey, data, log)
 
 	_, currentData := r.imageData.BorrowByNamespacedName(image.NamespacedName())
 	if currentData == nil {
@@ -220,11 +222,12 @@ func handlePhysicalContainerImageNamespace(
 	reconciler *PhysicalContainerImageReconciler,
 	image *apiv2.PhysicalContainerImage,
 	_ physicalContainerImageState,
+	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
 	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
-		return beginPhysicalContainerImageDeletion(ctx, reconciler, image, data, log)
+		return beginPhysicalContainerImageDeletion(ctx, reconciler, image, stateKey, data, log)
 	}
 	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, image.Namespace)
 	if !namespaceReady {
@@ -245,17 +248,17 @@ func handlePhysicalContainerImageNamespace(
 			data.progress = physicalResourceProgressRetryPending
 			data.failureMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
 		}
-		_ = reconciler.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+		_ = reconciler.imageData.Update(image.NamespacedName(), stateKey, data)
 		return noChange
 	}
 
 	data.state = physicalContainerImageStateResolve
 	data.progress = physicalResourceProgressInProgress
 	data.failureMessage = ""
-	if !reconciler.imageData.UpdateByNamespacedName(image.NamespacedName(), data) {
+	if !reconciler.imageData.Update(image.NamespacedName(), stateKey, data) {
 		return additionalReconciliationNeeded
 	}
-	return handlePhysicalContainerImageResolve(ctx, reconciler, image, data.state, data, log)
+	return handlePhysicalContainerImageResolve(ctx, reconciler, image, data.state, stateKey, data, log)
 }
 
 func handlePhysicalContainerImageResolve(
@@ -263,21 +266,22 @@ func handlePhysicalContainerImageResolve(
 	reconciler *PhysicalContainerImageReconciler,
 	image *apiv2.PhysicalContainerImage,
 	_ physicalContainerImageState,
+	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
 	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
-		return beginPhysicalContainerImageDeletion(ctx, reconciler, image, data, log)
+		return beginPhysicalContainerImageDeletion(ctx, reconciler, image, stateKey, data, log)
 	}
 	if image.Spec.ImageID != "" {
-		change, _ := reconciler.ensureExistingImage(ctx, image, data, log)
+		change, _ := reconciler.ensureExistingImage(ctx, image, stateKey, data, log)
 		return change
 	}
 	if image.Spec.Image.Build != nil {
-		change, _ := reconciler.ensureBuiltImage(ctx, image, data, log)
+		change, _ := reconciler.ensureBuiltImage(ctx, image, stateKey, data, log)
 		return change
 	}
-	change, _ := reconciler.ensurePulledImage(ctx, image, data, log)
+	change, _ := reconciler.ensurePulledImage(ctx, image, stateKey, data, log)
 	return change
 }
 
@@ -286,11 +290,12 @@ func handlePhysicalContainerImageOperation(
 	reconciler *PhysicalContainerImageReconciler,
 	image *apiv2.PhysicalContainerImage,
 	state physicalContainerImageState,
+	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
 	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
-		return beginPhysicalContainerImageDeletion(ctx, reconciler, image, data, log)
+		return beginPhysicalContainerImageDeletion(ctx, reconciler, image, stateKey, data, log)
 	}
 	if data.progress == physicalResourceProgressInProgress ||
 		data.progress == physicalResourceProgressFailed ||
@@ -302,14 +307,14 @@ func handlePhysicalContainerImageOperation(
 		if time.Now().Before(data.retryAfter) {
 			return additionalReconciliationNeeded
 		}
-		change, _ := reconciler.schedulePhysicalContainerImagePull(image, image.Spec.Image.Image, log)
+		change, _ := reconciler.schedulePhysicalContainerImagePull(image, stateKey, image.Spec.Image.Image, log)
 		return change
 	}
 	if data.progress != physicalResourceProgressCompleted || data.imageID == "" {
-		return handleUnknownPhysicalContainerImageState(ctx, reconciler, image, state, data, log)
+		return handleUnknownPhysicalContainerImageState(ctx, reconciler, image, state, stateKey, data, log)
 	}
 
-	return reconciler.inspectPhysicalContainerImageOperationResult(ctx, image, data, log)
+	return reconciler.inspectPhysicalContainerImageOperationResult(ctx, image, stateKey, data, log)
 }
 
 func handlePhysicalContainerImageRuntime(
@@ -317,30 +322,32 @@ func handlePhysicalContainerImageRuntime(
 	reconciler *PhysicalContainerImageReconciler,
 	image *apiv2.PhysicalContainerImage,
 	_ physicalContainerImageState,
+	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
 	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
-		return beginPhysicalContainerImageDeletion(ctx, reconciler, image, data, log)
+		return beginPhysicalContainerImageDeletion(ctx, reconciler, image, stateKey, data, log)
 	}
 	if data.progress == physicalResourceProgressFailed {
 		return noChange
 	}
 	if data.imageID != "" {
-		return reconciler.inspectPhysicalContainerImageOperationResult(ctx, image, data, log)
+		return reconciler.inspectPhysicalContainerImageOperationResult(ctx, image, stateKey, data, log)
 	}
 
 	data.state = physicalContainerImageStateResolve
 	data.progress = physicalResourceProgressInProgress
-	if !reconciler.imageData.UpdateByNamespacedName(image.NamespacedName(), data) {
+	if !reconciler.imageData.Update(image.NamespacedName(), stateKey, data) {
 		return additionalReconciliationNeeded
 	}
-	return handlePhysicalContainerImageResolve(ctx, reconciler, image, data.state, data, log)
+	return handlePhysicalContainerImageResolve(ctx, reconciler, image, data.state, stateKey, data, log)
 }
 
 func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperationResult(
 	ctx context.Context,
 	image *apiv2.PhysicalContainerImage,
+	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
@@ -355,14 +362,14 @@ func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperatio
 			data.state = physicalContainerImageStateRuntime
 			data.progress = physicalResourceProgressFailed
 			data.failureMessage = fmt.Sprintf("Image %q is not available locally.", image.Spec.ImageID)
-			_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+			_ = r.imageData.Update(image.NamespacedName(), stateKey, data)
 			return clearPhysicalContainerImageRuntimeStatus(image)
 		}
 		if !runtimeImageWasAvailable {
 			data.state = physicalContainerImageStateRuntime
 			data.progress = physicalResourceProgressRetryPending
 			data.failureMessage = fmt.Sprintf("Image %q is not available after the runtime operation completed.", missingImageID)
-			_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+			_ = r.imageData.Update(image.NamespacedName(), stateKey, data)
 			return clearPhysicalContainerImageRuntimeStatus(image)
 		}
 
@@ -372,25 +379,25 @@ func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperatio
 		data.state = physicalContainerImageStateResolve
 		data.progress = physicalResourceProgressInProgress
 		data.failureMessage = ""
-		if !r.imageData.UpdateByNamespacedName(image.NamespacedName(), data) {
+		if !r.imageData.Update(image.NamespacedName(), stateKey, data) {
 			return clearPhysicalContainerImageRuntimeStatus(image) | additionalReconciliationNeeded
 		}
 		return clearPhysicalContainerImageRuntimeStatus(image) |
-			handlePhysicalContainerImageResolve(ctx, r, image, data.state, data, log)
+			handlePhysicalContainerImageResolve(ctx, r, image, data.state, stateKey, data, log)
 	}
 	if inspectErr != nil {
 		log.Error(inspectErr, "Failed to inspect completed PhysicalContainerImage operation", "ImageID", data.imageID)
 		data.state = physicalContainerImageStateRuntime
 		data.progress = physicalResourceProgressRetryPending
 		data.failureMessage = fmt.Sprintf("Failed to inspect image: %v", inspectErr)
-		_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+		_ = r.imageData.Update(image.NamespacedName(), stateKey, data)
 		return noChange
 	}
 
 	data.state = physicalContainerImageStateRuntime
 	data.progress = physicalResourceProgressCompleted
 	data.failureMessage = ""
-	_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+	_ = r.imageData.Update(image.NamespacedName(), stateKey, data)
 	log.V(1).Info("PhysicalContainerImage operation completed; saving image status", "ImageID", data.imageID)
 	change, _ := applyReadyPhysicalContainerImageStatus(image, data, inspectedImage)
 	return change
@@ -401,11 +408,12 @@ func handlePhysicalContainerImageTerminal(
 	reconciler *PhysicalContainerImageReconciler,
 	image *apiv2.PhysicalContainerImage,
 	_ physicalContainerImageState,
+	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
 	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
-		return beginPhysicalContainerImageDeletion(ctx, reconciler, image, data, log)
+		return beginPhysicalContainerImageDeletion(ctx, reconciler, image, stateKey, data, log)
 	}
 	return noChange
 }
@@ -414,13 +422,14 @@ func beginPhysicalContainerImageDeletion(
 	ctx context.Context,
 	reconciler *PhysicalContainerImageReconciler,
 	image *apiv2.PhysicalContainerImage,
+	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
 	data.state = physicalContainerImageStateDelete
 	data.progress = physicalResourceProgressInProgress
-	_ = reconciler.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
-	return handlePhysicalContainerImageDelete(ctx, reconciler, image, data.state, data, log)
+	_ = reconciler.imageData.Update(image.NamespacedName(), stateKey, data)
+	return handlePhysicalContainerImageDelete(ctx, reconciler, image, data.state, stateKey, data, log)
 }
 
 func handlePhysicalContainerImageDelete(
@@ -428,6 +437,7 @@ func handlePhysicalContainerImageDelete(
 	reconciler *PhysicalContainerImageReconciler,
 	image *apiv2.PhysicalContainerImage,
 	_ physicalContainerImageState,
+	_ physicalContainerImageDataStateKey,
 	_ *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
@@ -440,17 +450,18 @@ func handleUnknownPhysicalContainerImageState(
 	reconciler *PhysicalContainerImageReconciler,
 	image *apiv2.PhysicalContainerImage,
 	state physicalContainerImageState,
+	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
 	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
-		return beginPhysicalContainerImageDeletion(ctx, reconciler, image, data, log)
+		return beginPhysicalContainerImageDeletion(ctx, reconciler, image, stateKey, data, log)
 	}
 	invalidProgress := data.progress
 	data.state = physicalContainerImageStateInvalid
 	data.progress = physicalResourceProgressFailed
 	data.failureMessage = fmt.Sprintf("PhysicalContainerImage reached invalid reconciliation state %v with progress %v.", state, invalidProgress)
-	_ = reconciler.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+	_ = reconciler.imageData.Update(image.NamespacedName(), stateKey, data)
 	log.Error(fmt.Errorf("invalid PhysicalContainerImage state %v with progress %v", state, invalidProgress), "PhysicalContainerImage reached invalid reconciliation state")
 	return additionalReconciliationNeeded
 }
@@ -458,12 +469,13 @@ func handleUnknownPhysicalContainerImageState(
 func (r *PhysicalContainerImageReconciler) ensurePulledImage(
 	ctx context.Context,
 	image *apiv2.PhysicalContainerImage,
+	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
 	imageConfig := image.Spec.Image
 	if imageConfig.PullPolicy == apiv2.PullPolicyAlways {
-		return r.schedulePhysicalContainerImagePull(image, imageConfig.Image, log)
+		return r.schedulePhysicalContainerImagePull(image, stateKey, imageConfig.Image, log)
 	}
 
 	inspectedImage, inspectErr := inspectPhysicalContainerImage(ctx, r.orchestrator, imageConfig.Image)
@@ -473,7 +485,7 @@ func (r *PhysicalContainerImageReconciler) ensurePulledImage(
 		data.image = imageConfig.Image
 		data.imageID = inspectedImage.Id
 		data.failureMessage = ""
-		_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+		_ = r.imageData.Update(image.NamespacedName(), stateKey, data)
 		return applyReadyPhysicalContainerImageStatus(image, data, inspectedImage)
 	}
 	if !errors.Is(inspectErr, containers.ErrNotFound) {
@@ -481,23 +493,24 @@ func (r *PhysicalContainerImageReconciler) ensurePulledImage(
 		data.state = physicalContainerImageStateRuntime
 		data.progress = physicalResourceProgressRetryPending
 		data.failureMessage = fmt.Sprintf("Failed to inspect image: %v", inspectErr)
-		_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+		_ = r.imageData.Update(image.NamespacedName(), stateKey, data)
 		return noChange, LongDelay
 	}
 	if imageConfig.PullPolicy == apiv2.PullPolicyNever {
 		data.state = physicalContainerImageStateRuntime
 		data.progress = physicalResourceProgressFailed
 		data.failureMessage = fmt.Sprintf("Image %q is not available locally.", imageConfig.Image)
-		_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+		_ = r.imageData.Update(image.NamespacedName(), stateKey, data)
 		return noChange, StandardDelay
 	}
 
-	return r.schedulePhysicalContainerImagePull(image, imageConfig.Image, log)
+	return r.schedulePhysicalContainerImagePull(image, stateKey, imageConfig.Image, log)
 }
 
 func (r *PhysicalContainerImageReconciler) ensureBuiltImage(
 	ctx context.Context,
 	image *apiv2.PhysicalContainerImage,
+	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
@@ -510,12 +523,13 @@ func (r *PhysicalContainerImageReconciler) ensureBuiltImage(
 	buildContext.Labels = physicalResourceCreationLabels(buildContext.Labels, true, image.UID, log)
 	buildContext.Tags = physicalContainerImageBuildTags(buildContext.Tags, outputImage)
 
-	return r.schedulePhysicalContainerImageBuild(image, outputImage, &buildContext, log)
+	return r.schedulePhysicalContainerImageBuild(image, stateKey, outputImage, &buildContext, log)
 }
 
 func (r *PhysicalContainerImageReconciler) ensureExistingImage(
 	ctx context.Context,
 	image *apiv2.PhysicalContainerImage,
+	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
@@ -526,14 +540,14 @@ func (r *PhysicalContainerImageReconciler) ensureExistingImage(
 		data.image = image.Spec.ImageID
 		data.imageID = inspectedImage.Id
 		data.failureMessage = ""
-		_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+		_ = r.imageData.Update(image.NamespacedName(), stateKey, data)
 		return applyReadyPhysicalContainerImageStatus(image, data, inspectedImage)
 	}
 	if errors.Is(inspectErr, containers.ErrNotFound) {
 		data.state = physicalContainerImageStateRuntime
 		data.progress = physicalResourceProgressFailed
 		data.failureMessage = fmt.Sprintf("Image %q is not available locally.", image.Spec.ImageID)
-		_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+		_ = r.imageData.Update(image.NamespacedName(), stateKey, data)
 		return noChange, StandardDelay
 	}
 
@@ -541,24 +555,27 @@ func (r *PhysicalContainerImageReconciler) ensureExistingImage(
 	data.state = physicalContainerImageStateRuntime
 	data.progress = physicalResourceProgressRetryPending
 	data.failureMessage = fmt.Sprintf("Failed to inspect image: %v", inspectErr)
-	_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+	_ = r.imageData.Update(image.NamespacedName(), stateKey, data)
 	return noChange, LongDelay
 }
 
 func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImagePull(
 	image *apiv2.PhysicalContainerImage,
+	stateKey physicalContainerImageDataStateKey,
 	outputImage string,
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
-	stateKey := physicalContainerImageDataKey(image)
 	operationCtx, cancelOperation := context.WithCancel(r.LifetimeCtx)
 	data := &physicalContainerImageData{
-		state:           physicalContainerImageStatePull,
-		progress:        physicalResourceProgressInProgress,
-		image:           outputImage,
-		cancelOperation: cancelOperation,
+		state:     physicalContainerImageStatePull,
+		progress:  physicalResourceProgressInProgress,
+		image:     outputImage,
+		operation: &physicalContainerImageOperation{cancel: cancelOperation},
 	}
-	r.imageData.Store(image.NamespacedName(), stateKey, data)
+	if !r.imageData.Update(image.NamespacedName(), stateKey, data) {
+		cancelOperation()
+		return additionalReconciliationNeeded, StandardDelay
+	}
 	imageSnapshot := image.DeepCopy()
 	dataSnapshot := data.Clone()
 	// The work queue supplies the reconciler lifetime context; operationCtx derives from it and
@@ -584,19 +601,22 @@ func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImagePull(
 
 func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImageBuild(
 	image *apiv2.PhysicalContainerImage,
+	stateKey physicalContainerImageDataStateKey,
 	outputImage string,
 	buildContext *apiv2.ContainerBuildContext,
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
-	stateKey := physicalContainerImageDataKey(image)
 	operationCtx, cancelOperation := context.WithCancel(r.LifetimeCtx)
 	data := &physicalContainerImageData{
-		state:           physicalContainerImageStateBuild,
-		progress:        physicalResourceProgressInProgress,
-		image:           outputImage,
-		cancelOperation: cancelOperation,
+		state:     physicalContainerImageStateBuild,
+		progress:  physicalResourceProgressInProgress,
+		image:     outputImage,
+		operation: &physicalContainerImageOperation{cancel: cancelOperation},
 	}
-	r.imageData.Store(image.NamespacedName(), stateKey, data)
+	if !r.imageData.Update(image.NamespacedName(), stateKey, data) {
+		cancelOperation()
+		return additionalReconciliationNeeded, StandardDelay
+	}
 	imageSnapshot := image.DeepCopy()
 	dataSnapshot := data.Clone()
 	buildContextSnapshot := *buildContext

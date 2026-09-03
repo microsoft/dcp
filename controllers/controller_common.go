@@ -286,6 +286,14 @@ func getStateInitializer[
 	state OS,
 	log logr.Logger,
 ) stateInitializerFunc[O, PO, R, PR, OS, IMOS, PIMOS] {
+	return getStateHandler(m, state, log)
+}
+
+func getStateHandler[OS comparable, H any](
+	m map[OS]H,
+	state OS,
+	log logr.Logger,
+) H {
 	handler, found := m[state]
 	if found {
 		return handler

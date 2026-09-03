@@ -43,10 +43,11 @@ var (
 	}
 )
 
-type physicalContainerVolumeDataInitializerFunc = stateInitializerFunc[
+type physicalContainerVolumeDataInitializerFunc = physicalResourceStateHandlerFunc[
 	apiv2.PhysicalContainerVolume, *apiv2.PhysicalContainerVolume,
 	PhysicalContainerVolumeReconciler, *PhysicalContainerVolumeReconciler,
 	physicalContainerVolumeState,
+	physicalContainerVolumeDataStateKey,
 	physicalContainerVolumeData, *physicalContainerVolumeData,
 ]
 
@@ -129,19 +130,20 @@ func (r *PhysicalContainerVolumeReconciler) managePhysicalContainerVolume(
 	volume *apiv2.PhysicalContainerVolume,
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
-	_, data := r.volumeData.BorrowByNamespacedName(volume.NamespacedName())
+	stateKey, data := r.volumeData.BorrowByNamespacedName(volume.NamespacedName())
 	if data == nil {
 		data = &physicalContainerVolumeData{
 			state:    physicalContainerVolumeStateNamespace,
 			progress: physicalResourceProgressNotReady,
 		}
 		initialStateKey := physicalContainerVolumeDataKey(volume)
+		stateKey = initialStateKey
 		// Store() retains the supplied pointer, so keep an unaliased copy for this reconciliation.
 		r.volumeData.Store(volume.NamespacedName(), initialStateKey, data.Clone())
 	}
 
-	handler := getStateInitializer(physicalContainerVolumeDataInitializers, data.state, log)
-	change := handler(ctx, r, volume, data.state, data, log)
+	handler := getStateHandler(physicalContainerVolumeDataInitializers, data.state, log)
+	change := handler(ctx, r, volume, data.state, stateKey, data, log)
 
 	_, currentData := r.volumeData.BorrowByNamespacedName(volume.NamespacedName())
 	if currentData == nil {
@@ -157,11 +159,12 @@ func handlePhysicalContainerVolumeNamespace(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	_ physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if volume.DeletionTimestamp != nil && !volume.DeletionTimestamp.IsZero() {
-		return reconciler.beginPhysicalContainerVolumeRemoval(volume, data, log)
+		return reconciler.beginPhysicalContainerVolumeRemoval(volume, stateKey, data, log)
 	}
 	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, volume.Namespace)
 	if !namespaceReady {
@@ -182,17 +185,17 @@ func handlePhysicalContainerVolumeNamespace(
 			data.progress = physicalResourceProgressRetryPending
 			data.failureMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
 		}
-		_ = reconciler.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data)
+		_ = reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data)
 		return noChange
 	}
 
 	data.state = physicalContainerVolumeStateResolve
 	data.progress = physicalResourceProgressInProgress
 	data.failureMessage = ""
-	if !reconciler.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data) {
+	if !reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data) {
 		return additionalReconciliationNeeded
 	}
-	return handlePhysicalContainerVolumeResolve(ctx, reconciler, volume, data.state, data, log)
+	return handlePhysicalContainerVolumeResolve(ctx, reconciler, volume, data.state, stateKey, data, log)
 }
 
 func handlePhysicalContainerVolumeResolve(
@@ -200,11 +203,12 @@ func handlePhysicalContainerVolumeResolve(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	_ physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if volume.DeletionTimestamp != nil && !volume.DeletionTimestamp.IsZero() {
-		return reconciler.beginPhysicalContainerVolumeRemoval(volume, data, log)
+		return reconciler.beginPhysicalContainerVolumeRemoval(volume, stateKey, data, log)
 	}
 
 	volumeID := volume.Spec.VolumeID
@@ -212,9 +216,9 @@ func handlePhysicalContainerVolumeResolve(
 		volumeID = data.volumeID
 	}
 	if volumeID == "" {
-		return reconciler.schedulePhysicalContainerVolumeCreate(volume, log)
+		return reconciler.schedulePhysicalContainerVolumeCreate(volume, stateKey, log)
 	}
-	return reconciler.applyRuntimeVolumeStatus(ctx, volume, data, volumeID, log)
+	return reconciler.applyRuntimeVolumeStatus(ctx, volume, stateKey, data, volumeID, log)
 }
 
 func handlePhysicalContainerVolumeRuntime(
@@ -222,19 +226,21 @@ func handlePhysicalContainerVolumeRuntime(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	_ physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if volume.DeletionTimestamp != nil && !volume.DeletionTimestamp.IsZero() {
-		return reconciler.beginPhysicalContainerVolumeRemoval(volume, data, log)
+		return reconciler.beginPhysicalContainerVolumeRemoval(volume, stateKey, data, log)
 	}
-	return reconciler.applyRuntimeVolumeStatus(ctx, volume, data, data.volumeID, log)
+	return reconciler.applyRuntimeVolumeStatus(ctx, volume, stateKey, data, data.volumeID, log)
 }
 
 // Inspects the runtime volume and records the resulting reconciliation state.
 func (r *PhysicalContainerVolumeReconciler) applyRuntimeVolumeStatus(
 	ctx context.Context,
 	volume *apiv2.PhysicalContainerVolume,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	volumeID string,
 	log logr.Logger,
@@ -245,7 +251,7 @@ func (r *PhysicalContainerVolumeReconciler) applyRuntimeVolumeStatus(
 		data.progress = physicalResourceProgressMissing
 		data.volumeID = volumeID
 		data.failureMessage = ""
-		_ = r.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data)
+		_ = r.volumeData.Update(volume.NamespacedName(), stateKey, data)
 		return noChange
 	}
 	if inspectErr != nil {
@@ -254,7 +260,7 @@ func (r *PhysicalContainerVolumeReconciler) applyRuntimeVolumeStatus(
 		data.progress = physicalResourceProgressRetryPending
 		data.volumeID = volumeID
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime volume: %v", inspectErr)
-		_ = r.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data)
+		_ = r.volumeData.Update(volume.NamespacedName(), stateKey, data)
 		return noChange
 	}
 
@@ -262,16 +268,21 @@ func (r *PhysicalContainerVolumeReconciler) applyRuntimeVolumeStatus(
 	data.progress = physicalResourceProgressCompleted
 	data.volumeID = inspectedVolume.Name
 	data.failureMessage = ""
-	_ = r.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data)
+	_ = r.volumeData.Update(volume.NamespacedName(), stateKey, data)
 	return applyReadyPhysicalContainerVolumeStatus(volume, inspectedVolume)
 }
 
-func (r *PhysicalContainerVolumeReconciler) schedulePhysicalContainerVolumeCreate(volume *apiv2.PhysicalContainerVolume, log logr.Logger) objectChange {
+func (r *PhysicalContainerVolumeReconciler) schedulePhysicalContainerVolumeCreate(
+	volume *apiv2.PhysicalContainerVolume,
+	stateKey physicalContainerVolumeDataStateKey,
+	log logr.Logger,
+) objectChange {
 	volumeConfig := volume.Spec.Volume
-	stateKey := physicalContainerVolumeDataKey(volume)
 	data := &physicalContainerVolumeData{state: physicalContainerVolumeStateCreate}
 	data.progress = physicalContainerVolumeOperationInProgress
-	r.volumeData.Store(volume.NamespacedName(), stateKey, data)
+	if !r.volumeData.Update(volume.NamespacedName(), stateKey, data) {
+		return additionalReconciliationNeeded
+	}
 	volumeSnapshot := volume.DeepCopy()
 	dataSnapshot := data.Clone()
 	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
@@ -431,22 +442,23 @@ func handlePhysicalContainerVolumeCreateState(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if volume.DeletionTimestamp != nil && !volume.DeletionTimestamp.IsZero() {
-		return handlePhysicalContainerVolumeCreateStateDuringDeletion(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeCreateStateDuringDeletion(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 	switch data.progress {
 	case physicalContainerVolumeOperationInProgress:
-		return handlePhysicalContainerVolumeCreating(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeCreating(ctx, reconciler, volume, state, stateKey, data, log)
 	case physicalContainerVolumeOperationCompleted:
-		return handlePhysicalContainerVolumeCreated(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeCreated(ctx, reconciler, volume, state, stateKey, data, log)
 	case physicalContainerVolumeOperationRetryPending,
 		physicalContainerVolumeOperationFailed:
-		return handlePhysicalContainerVolumeCreateFailure(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeCreateFailure(ctx, reconciler, volume, state, stateKey, data, log)
 	default:
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 }
 
@@ -455,11 +467,12 @@ func handlePhysicalContainerVolumeCreating(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if data.progress != physicalContainerVolumeOperationInProgress {
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 
 	log.V(1).Info("Runtime volume creation is still in progress")
@@ -471,15 +484,16 @@ func handlePhysicalContainerVolumeCreated(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	_ physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if data.progress != physicalContainerVolumeOperationCompleted {
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, physicalContainerVolumeStateCreate, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, physicalContainerVolumeStateCreate, stateKey, data, log)
 	}
 
 	log.V(1).Info("Runtime volume created; saving volume status", "VolumeID", data.volumeID)
-	return reconciler.applyRuntimeVolumeStatus(ctx, volume, data, data.volumeID, log)
+	return reconciler.applyRuntimeVolumeStatus(ctx, volume, stateKey, data, data.volumeID, log)
 }
 
 func handlePhysicalContainerVolumeCreateFailure(
@@ -487,16 +501,17 @@ func handlePhysicalContainerVolumeCreateFailure(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	switch data.progress {
 	case physicalContainerVolumeOperationRetryPending:
-		return handlePhysicalContainerVolumeRecoverableCreateFailed(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeRecoverableCreateFailed(ctx, reconciler, volume, state, stateKey, data, log)
 	case physicalContainerVolumeOperationFailed:
-		return handlePhysicalContainerVolumeCreateFailed(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeCreateFailed(ctx, reconciler, volume, state, stateKey, data, log)
 	default:
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 }
 
@@ -505,6 +520,7 @@ func handlePhysicalContainerVolumeCreateFailed(
 	_ *PhysicalContainerVolumeReconciler,
 	_ *apiv2.PhysicalContainerVolume,
 	_ physicalContainerVolumeState,
+	_ physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
@@ -518,11 +534,12 @@ func handlePhysicalContainerVolumeRecoverableCreateFailed(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if data.progress != physicalContainerVolumeOperationRetryPending {
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 
 	volumeConfig := volume.Spec.Volume
@@ -538,14 +555,14 @@ func handlePhysicalContainerVolumeRecoverableCreateFailed(
 			data.progress = physicalContainerVolumeOperationFailed
 			data.failureMessage = fmt.Sprintf("Runtime volume name %q is already in use.", volumeConfig.VolumeName)
 			data.retryAfter = time.Time{}
-			if reconciler.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data) {
+			if reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data) {
 				return data.applyTo(volume)
 			}
 			return additionalReconciliationNeeded
 		}
 		if !belongsToResource {
 			log.V(1).Info("Retrying runtime volume replacement", "VolumeID", inspectedVolume.Name, "VolumeName", inspectedVolume.Name)
-			return reconciler.schedulePhysicalContainerVolumeCreate(volume, log)
+			return reconciler.schedulePhysicalContainerVolumeCreate(volume, stateKey, log)
 		}
 
 		data.state = physicalContainerVolumeStateRuntime
@@ -553,7 +570,7 @@ func handlePhysicalContainerVolumeRecoverableCreateFailed(
 		data.volumeID = inspectedVolume.Name
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
-		if reconciler.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data) {
+		if reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data) {
 			log.V(1).Info("Adopted runtime volume created by an earlier attempt", "VolumeID", inspectedVolume.Name)
 			return data.applyTo(volume) | applyReadyPhysicalContainerVolumeStatus(volume, inspectedVolume)
 		}
@@ -562,14 +579,14 @@ func handlePhysicalContainerVolumeRecoverableCreateFailed(
 	if !errors.Is(inspectErr, containers.ErrNotFound) {
 		data.failureMessage = fmt.Sprintf("Failed to verify whether runtime volume creation succeeded: %v", inspectErr)
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		if reconciler.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data) {
+		if reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data) {
 			return data.applyTo(volume) | additionalReconciliationNeeded
 		}
 		return additionalReconciliationNeeded
 	}
 
 	log.V(1).Info("Retrying runtime volume creation", "VolumeName", volumeConfig.VolumeName)
-	return reconciler.schedulePhysicalContainerVolumeCreate(volume, log)
+	return reconciler.schedulePhysicalContainerVolumeCreate(volume, stateKey, log)
 }
 
 func handleUnknownPhysicalContainerVolumeDataReason(
@@ -577,11 +594,12 @@ func handleUnknownPhysicalContainerVolumeDataReason(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if volume.DeletionTimestamp != nil && !volume.DeletionTimestamp.IsZero() {
-		return reconciler.beginPhysicalContainerVolumeRemoval(volume, data, log)
+		return reconciler.beginPhysicalContainerVolumeRemoval(volume, stateKey, data, log)
 	}
 	reconciler.volumeData.DeleteByNamespacedName(volume.NamespacedName())
 	message := fmt.Sprintf("Runtime volume operation reached invalid state %v with progress %v.", state, data.progress)
@@ -593,6 +611,7 @@ func handleUnknownPhysicalContainerVolumeDataReason(
 
 func (r *PhysicalContainerVolumeReconciler) beginPhysicalContainerVolumeRemoval(
 	volume *apiv2.PhysicalContainerVolume,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
@@ -607,7 +626,7 @@ func (r *PhysicalContainerVolumeReconciler) beginPhysicalContainerVolumeRemoval(
 		volumeID = data.volumeID
 	}
 	resolveOwnedVolumeByName := volumeID == ""
-	return r.schedulePhysicalContainerVolumeRemoval(volume, volumeID, resolveOwnedVolumeByName, log)
+	return r.schedulePhysicalContainerVolumeRemoval(volume, stateKey, volumeID, resolveOwnedVolumeByName, log)
 }
 
 func handlePhysicalContainerVolumeCreateInProgressDuringDeletion(
@@ -615,11 +634,12 @@ func handlePhysicalContainerVolumeCreateInProgressDuringDeletion(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if data.progress != physicalContainerVolumeOperationInProgress {
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 
 	// Waiting rather than cancelling: a cancelled create can still produce a runtime volume,
@@ -633,14 +653,15 @@ func handlePhysicalContainerVolumeCreatedDuringDeletion(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if data.progress != physicalContainerVolumeOperationCompleted {
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 
-	return reconciler.beginPhysicalContainerVolumeRemoval(volume, data, log)
+	return reconciler.beginPhysicalContainerVolumeRemoval(volume, stateKey, data, log)
 }
 
 func handlePhysicalContainerVolumeFailedCreateDuringDeletion(
@@ -648,11 +669,12 @@ func handlePhysicalContainerVolumeFailedCreateDuringDeletion(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if data.progress != physicalContainerVolumeOperationFailed {
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 
 	reconciler.volumeData.DeleteByNamespacedName(volume.NamespacedName())
@@ -664,20 +686,21 @@ func handlePhysicalContainerVolumeCreateStateDuringDeletion(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	switch data.progress {
 	case physicalContainerVolumeOperationInProgress:
-		return handlePhysicalContainerVolumeCreateInProgressDuringDeletion(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeCreateInProgressDuringDeletion(ctx, reconciler, volume, state, stateKey, data, log)
 	case physicalContainerVolumeOperationCompleted:
-		return handlePhysicalContainerVolumeCreatedDuringDeletion(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeCreatedDuringDeletion(ctx, reconciler, volume, state, stateKey, data, log)
 	case physicalContainerVolumeOperationRetryPending:
-		return handlePhysicalContainerVolumeRecoverableCreateFailureDuringDeletion(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeRecoverableCreateFailureDuringDeletion(ctx, reconciler, volume, state, stateKey, data, log)
 	case physicalContainerVolumeOperationFailed:
-		return handlePhysicalContainerVolumeFailedCreateDuringDeletion(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeFailedCreateDuringDeletion(ctx, reconciler, volume, state, stateKey, data, log)
 	default:
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 }
 
@@ -686,14 +709,15 @@ func handlePhysicalContainerVolumeRecoverableCreateFailureDuringDeletion(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if data.progress != physicalContainerVolumeOperationRetryPending {
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 
-	return reconciler.beginPhysicalContainerVolumeRemoval(volume, data, log)
+	return reconciler.beginPhysicalContainerVolumeRemoval(volume, stateKey, data, log)
 }
 
 func handlePhysicalContainerVolumeRemovalState(
@@ -701,20 +725,21 @@ func handlePhysicalContainerVolumeRemovalState(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	switch data.progress {
 	case physicalContainerVolumeOperationInProgress:
-		return handlePhysicalContainerVolumeRemovalInProgress(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeRemovalInProgress(ctx, reconciler, volume, state, stateKey, data, log)
 	case physicalContainerVolumeOperationRetryPending:
-		return handlePhysicalContainerVolumeRemovalFailed(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeRemovalFailed(ctx, reconciler, volume, state, stateKey, data, log)
 	case physicalContainerVolumeOperationCompleted:
-		return handlePhysicalContainerVolumeRemovalCompleted(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeRemovalCompleted(ctx, reconciler, volume, state, stateKey, data, log)
 	case physicalResourceProgressAbandoned:
-		return handlePhysicalContainerVolumeRemovalAbandoned(ctx, reconciler, volume, state, data, log)
+		return handlePhysicalContainerVolumeRemovalAbandoned(ctx, reconciler, volume, state, stateKey, data, log)
 	default:
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 }
 
@@ -723,11 +748,12 @@ func handlePhysicalContainerVolumeRemovalInProgress(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if data.progress != physicalContainerVolumeOperationInProgress {
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 
 	log.V(1).Info("Runtime volume removal is still in progress", "VolumeID", data.volumeID)
@@ -739,11 +765,12 @@ func handlePhysicalContainerVolumeRemovalFailed(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if data.progress != physicalContainerVolumeOperationRetryPending {
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 
 	if reconciler.namespaceDeletionVolumeRemovalTimeoutExpired(ctx, volume, log) {
@@ -754,7 +781,7 @@ func handlePhysicalContainerVolumeRemovalFailed(
 			data.failureMessage,
 		)
 		data.retryAfter = time.Time{}
-		if reconciler.volumeData.UpdateByNamespacedName(volume.NamespacedName(), data) {
+		if reconciler.volumeData.Update(volume.NamespacedName(), stateKey, data) {
 			log.Info(
 				"Stopped retrying runtime volume removal after namespace cleanup deadline",
 				"Namespace", volume.Namespace,
@@ -768,7 +795,7 @@ func handlePhysicalContainerVolumeRemovalFailed(
 	if time.Now().Before(data.retryAfter) {
 		return additionalReconciliationNeeded
 	}
-	return reconciler.schedulePhysicalContainerVolumeRemoval(volume, data.volumeID, data.resolveByName, log)
+	return reconciler.schedulePhysicalContainerVolumeRemoval(volume, stateKey, data.volumeID, data.resolveByName, log)
 }
 
 func handlePhysicalContainerVolumeRemovalCompleted(
@@ -776,11 +803,12 @@ func handlePhysicalContainerVolumeRemovalCompleted(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if data.progress != physicalContainerVolumeOperationCompleted {
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 
 	reconciler.volumeData.DeleteByNamespacedName(volume.NamespacedName())
@@ -792,11 +820,12 @@ func handlePhysicalContainerVolumeRemovalAbandoned(
 	reconciler *PhysicalContainerVolumeReconciler,
 	volume *apiv2.PhysicalContainerVolume,
 	state physicalContainerVolumeState,
+	stateKey physicalContainerVolumeDataStateKey,
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
 	if data.progress != physicalResourceProgressAbandoned {
-		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
+		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, stateKey, data, log)
 	}
 
 	reconciler.volumeData.DeleteByNamespacedName(volume.NamespacedName())
@@ -833,18 +862,20 @@ func (r *PhysicalContainerVolumeReconciler) namespaceDeletionVolumeRemovalTimeou
 
 func (r *PhysicalContainerVolumeReconciler) schedulePhysicalContainerVolumeRemoval(
 	volume *apiv2.PhysicalContainerVolume,
+	stateKey physicalContainerVolumeDataStateKey,
 	volumeID string,
 	resolveOwnedVolumeByName bool,
 	log logr.Logger,
 ) objectChange {
-	stateKey := physicalContainerVolumeDataKey(volume)
 	data := &physicalContainerVolumeData{
 		state:         physicalContainerVolumeStateRemove,
 		progress:      physicalContainerVolumeOperationInProgress,
 		volumeID:      volumeID,
 		resolveByName: resolveOwnedVolumeByName,
 	}
-	r.volumeData.Store(volume.NamespacedName(), stateKey, data)
+	if !r.volumeData.Update(volume.NamespacedName(), stateKey, data) {
+		return additionalReconciliationNeeded
+	}
 	volumeSnapshot := volume.DeepCopy()
 	dataSnapshot := data.Clone()
 	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
