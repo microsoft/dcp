@@ -392,7 +392,7 @@ func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperatio
 	data.failureMessage = ""
 	_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
 	log.V(1).Info("PhysicalContainerImage operation completed; saving image status", "ImageID", data.imageID)
-	change, _ := applyReadyPhysicalContainerImageStatus(image, data.image, inspectedImage)
+	change, _ := applyReadyPhysicalContainerImageStatus(image, data, inspectedImage)
 	return change
 }
 
@@ -474,7 +474,7 @@ func (r *PhysicalContainerImageReconciler) ensurePulledImage(
 		data.imageID = inspectedImage.Id
 		data.failureMessage = ""
 		_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
-		return applyReadyPhysicalContainerImageStatus(image, imageConfig.Image, inspectedImage)
+		return applyReadyPhysicalContainerImageStatus(image, data, inspectedImage)
 	}
 	if !errors.Is(inspectErr, containers.ErrNotFound) {
 		log.Error(inspectErr, "Failed to inspect PhysicalContainerImage source image", "Image", imageConfig.Image)
@@ -527,7 +527,7 @@ func (r *PhysicalContainerImageReconciler) ensureExistingImage(
 		data.imageID = inspectedImage.Id
 		data.failureMessage = ""
 		_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
-		return applyReadyPhysicalContainerImageStatus(image, image.Spec.ImageID, inspectedImage)
+		return applyReadyPhysicalContainerImageStatus(image, data, inspectedImage)
 	}
 	if errors.Is(inspectErr, containers.ErrNotFound) {
 		data.state = physicalContainerImageStateRuntime
@@ -807,12 +807,12 @@ func physicalContainerImageBuildTags(tags []string, outputImage string) []string
 
 func applyReadyPhysicalContainerImageStatus(
 	image *apiv2.PhysicalContainerImage,
-	outputImage string,
+	data *physicalContainerImageData,
 	inspectedImage *containers.InspectedImage,
 ) (objectChange, AdditionalReconciliationDelay) {
 	change := noChange
-	change |= setValue(&image.Status.Image, outputImage)
-	change |= setValue(&image.Status.ImageID, inspectedImage.Id)
+	change |= setValue(&image.Status.Image, data.image)
+	change |= setValue(&image.Status.ImageID, data.imageID)
 	change |= setValue(&image.Status.Digest, inspectedImage.Digest)
 	change |= setPhysicalContainerImageTags(image, inspectedImage.Tags)
 	stateChange, delay, _ := physicalContainerImageProjections.apply(

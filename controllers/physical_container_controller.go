@@ -667,11 +667,11 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(
 		log.Error(getErr, "Failed to get PhysicalContainerImage", "ImageRef", imageRef)
 		return false, "", physicalResourceProgressRetryPending, fmt.Sprintf("Failed to get PhysicalContainerImage: %v", getErr), additionalReconciliationNeeded
 	}
-	if image.Status.Phase != apiv2.PhysicalContainerImagePhaseReady || image.Status.Image == "" {
+	if image.Status.Phase != apiv2.PhysicalContainerImagePhaseReady || image.Status.ImageID == "" {
 		return false, "", physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerImage %q is not ready.", imageRef), noChange
 	}
 
-	return true, image.Status.Image, physicalResourceProgressCompleted, "", setValue(&container.Status.Image, image.Status.Image)
+	return true, image.Status.ImageID, physicalResourceProgressCompleted, "", setValue(&container.Status.Image, image.Status.ImageID)
 }
 
 func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreate(

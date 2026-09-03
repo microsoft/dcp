@@ -59,7 +59,7 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 	require.NotEmpty(t, updatedContainer.Finalizers)
 	require.NotEmpty(t, updatedContainer.Status.ContainerID)
 	require.Equal(t, "v2-pctr-created-container", updatedContainer.Status.ContainerName)
-	require.Equal(t, "created-image", updatedContainer.Status.Image)
+	require.Equal(t, image.Status.ImageID, updatedContainer.Status.Image)
 	requireReadyCondition(t, updatedContainer.Status.Conditions, metav1.ConditionTrue, "RuntimeContainerRunning")
 
 	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
@@ -67,7 +67,7 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 	})
 	require.NoError(t, inspectErr)
 	require.Len(t, inspectedContainers, 1)
-	require.Equal(t, "created-image", inspectedContainers[0].Image)
+	require.Equal(t, image.Status.ImageID, inspectedContainers[0].Image)
 	require.Equal(t, []string{"run"}, inspectedContainers[0].Args)
 	require.Equal(t, "test-value", inspectedContainers[0].Env["TEST_ENV"])
 	require.Equal(t, "logical-value", inspectedContainers[0].Labels["logical-label"])
@@ -153,7 +153,8 @@ func TestV2PhysicalContainerControllerReconcilesWhenReferencedImageBecomesReady(
 
 	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
 	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
-	require.Equal(t, sourceImage, updatedContainer.Status.Image)
+	updatedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, updatedImage.Status.ImageID, updatedContainer.Status.Image)
 	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
 }
 

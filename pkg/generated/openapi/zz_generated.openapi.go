@@ -5167,14 +5167,14 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerImageStatus(ref common.Referen
 					},
 					"image": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Image is the image reference that containers should use.",
+							Description: "Image is the source image reference or build output tag represented by this resource.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"imageID": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ImageID is the runtime image ID.",
+							Description: "ImageID is the immutable runtime image ID used by dependent physical containers.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
