@@ -55,7 +55,6 @@ var (
 		physicalContainerStateRuntime:     handlePhysicalContainerRuntime,
 		physicalContainerStateStop:        handlePhysicalContainerRuntime,
 		physicalContainerStatePortMapping: handlePhysicalContainerRuntime,
-		physicalContainerStateRemove:      handlePhysicalContainerRemove,
 		physicalContainerStateInvalid:     handleUnknownPhysicalContainerDataReason,
 		0:                                 handleUnknownPhysicalContainerDataReason,
 	}
@@ -169,7 +168,8 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
-		change, reconciliationDelay = r.managePhysicalContainer(ctx, &container, log)
+		change = r.handleDeletionRequest(ctx, &container, log)
+		change, reconciliationDelay = r.applyPhysicalContainerData(&container, change)
 	} else if change = ensureFinalizer(&container, physicalContainerFinalizer, log); change != noChange {
 		// Make additional changes during the next reconciliation.
 	} else {
@@ -199,6 +199,13 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 	handler := getStateInitializer(physicalContainerDataInitializers, data.state, log)
 	change := handler(ctx, r, container, data.state, data, log)
 
+	return r.applyPhysicalContainerData(container, change)
+}
+
+func (r *PhysicalContainerReconciler) applyPhysicalContainerData(
+	container *apiv2.PhysicalContainer,
+	change objectChange,
+) (objectChange, AdditionalReconciliationDelay) {
 	_, currentData := r.containerData.BorrowByNamespacedName(container.NamespacedName())
 	if currentData == nil {
 		return change, StandardDelay
@@ -216,9 +223,6 @@ func handlePhysicalContainerNamespace(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
-		return reconciler.handleDeletionRequest(ctx, container, log)
-	}
 	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, container.Namespace)
 	if !namespaceReady {
 		data.state = physicalContainerStateNamespace
@@ -259,10 +263,6 @@ func handlePhysicalContainerResolve(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
-		return reconciler.handleDeletionRequest(ctx, container, log)
-	}
-
 	// An earlier attempt lost the race for the runtime container, so wait before claiming it again.
 	if data.progress == physicalResourceProgressRetryPending {
 		if time.Now().Before(data.retryAfter) {
@@ -309,9 +309,6 @@ func handlePhysicalContainerImage(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
-		return reconciler.handleDeletionRequest(ctx, container, log)
-	}
 	imageReady, image, imageProgress, imageMessage, imageChange := reconciler.resolvePhysicalContainerImage(ctx, container, log)
 	if !imageReady {
 		data.state = physicalContainerStateImage
@@ -333,9 +330,6 @@ func handlePhysicalContainerCreate(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
-		return reconciler.handleDeletionRequest(ctx, container, log)
-	}
 	switch data.progress {
 	case physicalResourceProgressInProgress:
 		return handlePhysicalContainerCreating(ctx, reconciler, container, state, data, log)
@@ -354,9 +348,6 @@ func handlePhysicalContainerCopyFiles(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
-		return reconciler.handleDeletionRequest(ctx, container, log)
-	}
 	if data.progress == physicalResourceProgressCompleted {
 		return handlePhysicalContainerFilesCreated(ctx, reconciler, container, state, data, log)
 	}
@@ -374,9 +365,6 @@ func handlePhysicalContainerStart(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
-		return reconciler.handleDeletionRequest(ctx, container, log)
-	}
 	if data.progress == physicalResourceProgressCompleted {
 		return handlePhysicalContainerRuntime(ctx, reconciler, container, state, data, log)
 	}
@@ -396,10 +384,6 @@ func handlePhysicalContainerRuntime(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
-		return reconciler.handleDeletionRequest(ctx, container, log)
-	}
-
 	containerID := data.containerID
 	if containerID == "" {
 		// The runtime identity has not been captured yet, so resolution owns this reconciliation.
@@ -461,21 +445,6 @@ func (r *PhysicalContainerReconciler) stopPhysicalContainer(
 	}
 
 	return r.applyInspectedPhysicalContainerStatus(container, data, stoppedContainer, log)
-}
-
-// Removal is only entered while the resource is being deleted, so it retries the deletion request.
-func handlePhysicalContainerRemove(
-	ctx context.Context,
-	reconciler *PhysicalContainerReconciler,
-	container *apiv2.PhysicalContainer,
-	state physicalContainerState,
-	data *physicalContainerData,
-	log logr.Logger,
-) objectChange {
-	if container.DeletionTimestamp == nil || container.DeletionTimestamp.IsZero() {
-		return handleUnknownPhysicalContainerDataReason(ctx, reconciler, container, state, data, log)
-	}
-	return reconciler.handleDeletionRequest(ctx, container, log)
 }
 
 func handlePhysicalContainerCreating(
@@ -661,16 +630,13 @@ func (r *PhysicalContainerReconciler) removePartiallyCreatedPhysicalContainer(
 }
 
 func handleUnknownPhysicalContainerDataReason(
-	ctx context.Context,
+	_ context.Context,
 	reconciler *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
 	state physicalContainerState,
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
-		return reconciler.handleDeletionRequest(ctx, container, log)
-	}
 	data.state = physicalContainerStateInvalid
 	data.progress = physicalResourceProgressFailed
 	data.failureMessage = fmt.Sprintf("Physical container operation reached unknown state %d.", state)

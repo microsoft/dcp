@@ -918,6 +918,49 @@ func TestV2PhysicalContainerControllerReplacesExistingContainer(t *testing.T) {
 	waitContainerMissing(t, ctx, updatedContainer.Status.ContainerID)
 }
 
+func TestV2PhysicalContainerControllerDoesNotReplaceContainerDuringDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-delete-replace")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "delete-replacement-image", "delete-replacement-image")
+	containerName := "v2-pctr-delete-replace-runtime"
+	existingContainerID := runExistingTestContainer(t, ctx, containerName, "preserved-image")
+	containerOrchestrator.FailNextRemoveContainer(containerName, errors.New("replace failed once"))
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "delete-replacement-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:        image.Name,
+				ContainerName:   containerName,
+				ReplaceExisting: true,
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	retryPendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonExistingContainerReplacementFailed, nil
+	})
+	createCallCount := containerOrchestrator.CreateContainerCallCount(containerName)
+
+	require.NoError(t, client.Delete(ctx, retryPendingContainer))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
+
+	require.Equal(t, createCallCount, containerOrchestrator.CreateContainerCallCount(containerName))
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{existingContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+}
+
 func TestV2PhysicalContainerControllerStopsContainer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
