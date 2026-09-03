@@ -548,6 +548,17 @@ func TestV2PhysicalProcessControllerDoesNotAdoptReplacementAfterTrackingConflict
 	reconcilePhysicalProcess(t, ctx, reconciler, ownerRequest)
 
 	executor.replace(process.NewHandle(pid, time.Now()))
+	retryResult := reconcilePhysicalProcess(t, ctx, reconciler, duplicateRequest)
+	require.Positive(t, retryResult.RequeueAfter)
+
+	retryTimer := time.NewTimer(retryResult.RequeueAfter)
+	defer retryTimer.Stop()
+	select {
+	case <-ctx.Done():
+		require.FailNow(t, "test context expired while waiting for process tracking retry", ctx.Err())
+	case <-retryTimer.C:
+	}
+
 	reconcilePhysicalProcess(t, ctx, reconciler, duplicateRequest)
 	reconcilePhysicalProcess(t, ctx, reconciler, duplicateRequest)
 
@@ -1171,10 +1182,11 @@ func reconcilePhysicalProcess(
 	ctx context.Context,
 	reconciler *controllers.PhysicalProcessReconciler,
 	request ctrl.Request,
-) {
+) ctrl.Result {
 	t.Helper()
-	_, reconcileErr := reconciler.Reconcile(ctx, request)
+	result, reconcileErr := reconciler.Reconcile(ctx, request)
 	require.NoError(t, reconcileErr)
+	return result
 }
 
 func waitPhysicalProcessPhase(

@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,8 +24,62 @@ type missingPhysicalProcessExecutor struct {
 	process.Executor
 }
 
+type recordingPhysicalProcessExecutor struct {
+	process.Executor
+	findProcessHandleCalls atomic.Int32
+}
+
 func (*missingPhysicalProcessExecutor) CheckProcessRunning(process.ProcessHandle) error {
 	return process.ErrorProcessNotFound
+}
+
+func (e *recordingPhysicalProcessExecutor) FindProcessHandle(process.Pid_t) (process.ProcessHandle, error) {
+	e.findProcessHandleCalls.Add(1)
+	return process.ProcessHandle{}, process.ErrorProcessNotFound
+}
+
+func TestHandlePhysicalProcessResolveWaitsForRetryDeadline(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+
+	pid := int64(42)
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-process",
+			Namespace: "test",
+			UID:       types.UID("test-process"),
+		},
+		Spec: apiv2.PhysicalProcessSpec{
+			PID: &pid,
+		},
+	}
+	data := &physicalProcessData{
+		resourceUID: physicalProcess.UID,
+		state:       physicalProcessStateResolve,
+		progress:    physicalResourceProgressRetryPending,
+		retryAfter:  time.Now().Add(time.Minute),
+	}
+	executor := &recordingPhysicalProcessExecutor{}
+	reconciler := NewPhysicalProcessReconciler(
+		ctx,
+		nil,
+		nil,
+		logr.Discard(),
+		executor,
+	)
+
+	change := handlePhysicalProcessResolve(
+		ctx,
+		reconciler,
+		physicalProcess,
+		physicalProcessStateResolve,
+		data,
+		logr.Discard(),
+	)
+
+	require.Equal(t, additionalReconciliationNeeded, change)
+	require.Zero(t, executor.findProcessHandleCalls.Load())
 }
 
 func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testing.T) {

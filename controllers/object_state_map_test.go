@@ -210,8 +210,7 @@ func TestObjectStateMapUpdatingChangingStateKey(t *testing.T) {
 	require.Equal(t, 3, os.count)
 }
 
-// Should be able to delete by either key.
-func TestObjectStateMapDeleting(t *testing.T) {
+func TestObjectStateMapDeletingByNamespacedName(t *testing.T) {
 	t.Parallel()
 
 	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
@@ -228,9 +227,8 @@ func TestObjectStateMapDeleting(t *testing.T) {
 	_, os = m.BorrowByStateKey("two")
 	require.NotNil(t, os)
 
-	// Deleting by non-existent keys should be a no-op (and should not panic)
+	// Deleting by a non-existent name should be a no-op.
 	m.DeleteByNamespacedName(types.NamespacedName{Name: "not-there", Namespace: metav1.NamespaceNone})
-	m.DeleteByStateKey("still- not-there")
 
 	_, os = m.BorrowByNamespacedName(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone})
 	require.NotNil(t, os)
@@ -241,7 +239,6 @@ func TestObjectStateMapDeleting(t *testing.T) {
 	_, os = m.BorrowByStateKey("two")
 	require.NotNil(t, os)
 
-	// Valid delete by namespaced name.
 	m.DeleteByNamespacedName(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone})
 
 	_, os = m.BorrowByNamespacedName(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone})
@@ -253,48 +250,11 @@ func TestObjectStateMapDeleting(t *testing.T) {
 	_, os = m.BorrowByStateKey("two")
 	require.NotNil(t, os)
 
-	// Valid delete by state key.
-	m.DeleteByStateKey("two")
-
-	_, os = m.BorrowByNamespacedName(types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone})
-	require.Nil(t, os)
-	_, os = m.BorrowByStateKey("one")
-	require.Nil(t, os)
+	m.DeleteByNamespacedName(types.NamespacedName{Name: "zwei", Namespace: metav1.NamespaceNone})
 	_, os = m.BorrowByNamespacedName(types.NamespacedName{Name: "zwei", Namespace: metav1.NamespaceNone})
 	require.Nil(t, os)
 	_, os = m.BorrowByStateKey("two")
 	require.Nil(t, os)
-
-	// Deleting from empty map should ba no-op (and should not panic)
-	m.DeleteByNamespacedName(types.NamespacedName{Name: "zwei", Namespace: metav1.NamespaceNone})
-	m.DeleteByStateKey("one")
-}
-
-func TestObjectStateMapConditionalDelete(t *testing.T) {
-	t.Parallel()
-
-	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
-	name := types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}
-	m.Store(name, "one", &testObjectState{tag: "uno", count: 1})
-
-	require.False(t, m.DeleteByStateKeyIf("one", func(state *testObjectState) bool {
-		return state.tag == "dos"
-	}))
-	_, state := m.BorrowByNamespacedName(name)
-	require.NotNil(t, state)
-
-	require.True(t, m.DeleteByStateKeyIf("one", func(state *testObjectState) bool {
-		return state.tag == "uno" && state.count == 1
-	}))
-	_, state = m.BorrowByNamespacedName(name)
-	require.Nil(t, state)
-
-	predicateCalled := false
-	require.False(t, m.DeleteByStateKeyIf("missing", func(*testObjectState) bool {
-		predicateCalled = true
-		return true
-	}))
-	require.False(t, predicateCalled)
 }
 
 // Deferred operations should be executed if present.

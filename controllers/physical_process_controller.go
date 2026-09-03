@@ -224,6 +224,10 @@ func handlePhysicalProcessResolve(
 	if data.progress == physicalResourceProgressFailed {
 		return noChange
 	}
+	if data.progress == physicalResourceProgressRetryPending &&
+		time.Now().Before(data.retryAfter) {
+		return additionalReconciliationNeeded
+	}
 	return reconciler.establishPhysicalProcessTracking(physicalProcess, data, log)
 }
 
