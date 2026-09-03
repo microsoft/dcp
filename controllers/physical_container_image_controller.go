@@ -345,6 +345,39 @@ func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperatio
 	log logr.Logger,
 ) objectChange {
 	inspectedImage, inspectErr := inspectPhysicalContainerImage(ctx, r.orchestrator, data.imageID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		missingImageID := data.imageID
+		runtimeImageWasAvailable := data.state == physicalContainerImageStateRuntime &&
+			data.progress == physicalResourceProgressCompleted
+		if image.Spec.ImageID != "" {
+			data.imageID = ""
+			data.retryAfter = time.Time{}
+			data.state = physicalContainerImageStateRuntime
+			data.progress = physicalResourceProgressFailed
+			data.failureMessage = fmt.Sprintf("Image %q is not available locally.", image.Spec.ImageID)
+			_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+			return clearPhysicalContainerImageRuntimeStatus(image)
+		}
+		if !runtimeImageWasAvailable {
+			data.state = physicalContainerImageStateRuntime
+			data.progress = physicalResourceProgressRetryPending
+			data.failureMessage = fmt.Sprintf("Image %q is not available after the runtime operation completed.", missingImageID)
+			_ = r.imageData.UpdateByNamespacedName(image.NamespacedName(), data)
+			return clearPhysicalContainerImageRuntimeStatus(image)
+		}
+
+		log.V(1).Info("Runtime image is no longer available; resolving it again", "ImageID", missingImageID)
+		data.imageID = ""
+		data.retryAfter = time.Time{}
+		data.state = physicalContainerImageStateResolve
+		data.progress = physicalResourceProgressInProgress
+		data.failureMessage = ""
+		if !r.imageData.UpdateByNamespacedName(image.NamespacedName(), data) {
+			return clearPhysicalContainerImageRuntimeStatus(image) | additionalReconciliationNeeded
+		}
+		return clearPhysicalContainerImageRuntimeStatus(image) |
+			handlePhysicalContainerImageResolve(ctx, r, image, data.state, data, log)
+	}
 	if inspectErr != nil {
 		log.Error(inspectErr, "Failed to inspect completed PhysicalContainerImage operation", "ImageID", data.imageID)
 		data.state = physicalContainerImageStateRuntime
@@ -799,6 +832,13 @@ func setPhysicalContainerImageTags(image *apiv2.PhysicalContainerImage, tags []s
 	}
 	image.Status.Tags = append([]string{}, tags...)
 	return statusChanged
+}
+
+func clearPhysicalContainerImageRuntimeStatus(image *apiv2.PhysicalContainerImage) objectChange {
+	change := setValue(&image.Status.ImageID, "")
+	change |= setValue(&image.Status.Digest, "")
+	change |= setPhysicalContainerImageTags(image, nil)
+	return change
 }
 
 func v2BuildContextToContainerBuildContext(build *apiv2.ContainerBuildContext) *containers.ContainerBuildContext {

@@ -635,8 +635,19 @@ func (r *PhysicalProcessReconciler) queuePhysicalProcessDataResult(
 		if resultToStore.handle.Pid > 0 {
 			newStateKey = physicalProcessHandleDataKey(resultToStore.handle)
 		}
-		if newStateKey != currentStateKey {
-			_ = r.processData.UpdateChangingStateKey(name, currentStateKey, newStateKey, resultToStore)
+		if newStateKey != currentStateKey &&
+			resultToStore.state == physicalProcessStateRuntime &&
+			resultToStore.progress == physicalResourceProgressRunning {
+			owner, updated := r.processData.UpdateChangingStateKeyIfUnclaimed(name, currentStateKey, newStateKey, resultToStore)
+			if !updated && owner != (types.NamespacedName{}) && owner != name {
+				conflictedResult := resultToStore.Clone()
+				conflictedResult.state = physicalProcessStateResolve
+				conflictedResult.progress = physicalResourceProgressRetryPending
+				conflictedResult.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessAlreadyTracked
+				conflictedResult.failureMessage = fmt.Sprintf("Runtime process is already tracked by PhysicalProcess %q.", owner.String())
+				conflictedResult.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+				_ = r.processData.Update(name, currentStateKey, conflictedResult)
+			}
 		} else {
 			_ = r.processData.Update(name, currentStateKey, resultToStore)
 		}

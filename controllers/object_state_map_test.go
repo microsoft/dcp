@@ -210,6 +210,46 @@ func TestObjectStateMapUpdatingChangingStateKey(t *testing.T) {
 	require.Equal(t, 3, os.count)
 }
 
+func TestObjectStateMapUpdatingChangingStateKeyRequiresUnclaimedKey(t *testing.T) {
+	t.Parallel()
+
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
+	firstName := types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}
+	secondName := types.NamespacedName{Name: "zwei", Namespace: metav1.NamespaceNone}
+	m.Store(firstName, "one", &testObjectState{tag: "uno", count: 1})
+	m.Store(secondName, "two", &testObjectState{tag: "dos", count: 2})
+
+	owner, updated := m.UpdateChangingStateKeyIfUnclaimed(
+		firstName,
+		"one",
+		"two",
+		&testObjectState{tag: "uno", count: 3},
+	)
+	require.False(t, updated)
+	require.Equal(t, secondName, owner)
+
+	stateKey, state := m.BorrowByNamespacedName(firstName)
+	require.Equal(t, "one", stateKey)
+	require.Equal(t, &testObjectState{tag: "uno", count: 1}, state)
+	stateKey, state = m.BorrowByNamespacedName(secondName)
+	require.Equal(t, "two", stateKey)
+	require.Equal(t, &testObjectState{tag: "dos", count: 2}, state)
+
+	m.DeleteByNamespacedName(secondName)
+	owner, updated = m.UpdateChangingStateKeyIfUnclaimed(
+		firstName,
+		"one",
+		"two",
+		&testObjectState{tag: "uno", count: 1},
+	)
+	require.True(t, updated)
+	require.Equal(t, firstName, owner)
+
+	stateKey, state = m.BorrowByNamespacedName(firstName)
+	require.Equal(t, "two", stateKey)
+	require.Equal(t, &testObjectState{tag: "uno", count: 1}, state)
+}
+
 func TestObjectStateMapDeletingByNamespacedName(t *testing.T) {
 	t.Parallel()
 
