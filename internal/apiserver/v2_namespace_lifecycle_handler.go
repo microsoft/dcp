@@ -256,15 +256,15 @@ func (handler *v2NamespaceLifecycleHandler) ServeHTTP(writer http.ResponseWriter
 	switch {
 	case handler.isNamespacedResourceCreate(request, info):
 		handler.handleNamespacedResourceCreate(writer, request, info)
-	case handler.isDeleteCollection(info):
+	case handler.isNamespaceDeleteCollection(info):
 		handler.writeError(
 			writer,
 			request,
 			apierrors.NewMethodNotSupported(schema.GroupResource{Group: info.APIGroup, Resource: info.Resource}, "deletecollection"),
 		)
-	case handler.isNamespaceDelete(info):
+	case handler.isNamespaceDelete(info) && !isDryRun(request):
 		handler.handleNamespaceDelete(writer, request, info)
-	case handler.isNamespaceCreate(info):
+	case handler.isNamespaceCreate(info) && !isDryRun(request):
 		handler.handleNamespaceCreate(writer, request)
 	default:
 		handler.inner.ServeHTTP(writer, request)
@@ -306,8 +306,12 @@ func (*v2NamespaceLifecycleHandler) isNamespaceDelete(info *requestinfo.RequestI
 	return info.Verb == "delete" && info.Resource == "namespaces" && info.Name != ""
 }
 
-func (*v2NamespaceLifecycleHandler) isDeleteCollection(info *requestinfo.RequestInfo) bool {
-	return info.Verb == "deletecollection"
+func (*v2NamespaceLifecycleHandler) isNamespaceDeleteCollection(info *requestinfo.RequestInfo) bool {
+	return info.Verb == "deletecollection" && info.Resource == "namespaces"
+}
+
+func isDryRun(request *http.Request) bool {
+	return request.URL.Query().Has("dryRun")
 }
 
 func (handler *v2NamespaceLifecycleHandler) handleNamespacedResourceCreate(

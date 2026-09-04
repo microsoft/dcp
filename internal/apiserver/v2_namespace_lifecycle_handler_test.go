@@ -535,28 +535,111 @@ func TestV2NamespaceLifecycleHandlerLimitsNamespaceCreateBody(t *testing.T) {
 	require.Zero(t, innerCalls.Load())
 }
 
-func TestV2NamespaceLifecycleHandlerRejectsDeleteCollection(t *testing.T) {
+func TestV2NamespaceLifecycleHandlerDoesNotCloseGateForDryRunNamespaceDelete(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
 	defer cancel()
 
-	for _, requestPath := range []string{
-		"/apis/" + apiv2.GroupName + "/" + apiv2.Version + "/namespaces",
-		"/apis/" + apiv2.GroupName + "/" + apiv2.Version + "/namespaces/test/physicalprocesses",
-	} {
-		t.Run(requestPath, func(t *testing.T) {
-			var innerCalls atomic.Int32
-			handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-				innerCalls.Add(1)
-			}), newV2NamespaceLifecycleGate())
-			request := httptest.NewRequestWithContext(ctx, http.MethodDelete, requestPath, nil)
-			response := httptest.NewRecorder()
+	gate := newV2NamespaceLifecycleGate()
+	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	}), gate)
+	deleteRequest := newV2NamespaceDeleteRequest(ctx, "test")
+	deleteRequest.URL.RawQuery = "dryRun=All"
 
-			handler.ServeHTTP(response, request)
+	handler.ServeHTTP(httptest.NewRecorder(), deleteRequest)
 
-			require.Equal(t, http.StatusMethodNotAllowed, response.Code)
-			require.Zero(t, innerCalls.Load())
-		})
-	}
+	release, allowed := gate.beginCreate("test")
+	require.True(t, allowed)
+	release()
+	requireNoV2NamespaceMutation(t, gate, "test")
+}
+
+func TestV2NamespaceLifecycleHandlerDoesNotOpenGateForDryRunNamespaceCreate(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, deleteErr)
+	deleteLease.complete(true)
+	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusCreated)
+	}), gate)
+	createRequest := newV2NamespaceCreateRequest(ctx, "test")
+	createRequest.URL.RawQuery = "dryRun=All"
+
+	handler.ServeHTTP(httptest.NewRecorder(), createRequest)
+
+	_, allowed := gate.beginCreate("test")
+	require.False(t, allowed)
+	requireNoV2NamespaceMutation(t, gate, "test")
+}
+
+func TestV2NamespaceLifecycleHandlerStillGatesDryRunNamespacedResourceCreate(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, deleteErr)
+	deleteLease.complete(true)
+	var innerCalls atomic.Int32
+	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		innerCalls.Add(1)
+	}), gate)
+	request := newV2ResourceRequest(ctx, http.MethodPost, "test", "physicalprocesses")
+	request.URL.RawQuery = "dryRun=All"
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusForbidden, response.Code)
+	require.Zero(t, innerCalls.Load())
+}
+
+func TestV2NamespaceLifecycleHandlerRejectsNamespaceDeleteCollection(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	var innerCalls atomic.Int32
+	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		innerCalls.Add(1)
+	}), newV2NamespaceLifecycleGate())
+	request := httptest.NewRequestWithContext(
+		ctx,
+		http.MethodDelete,
+		"/apis/"+apiv2.GroupName+"/"+apiv2.Version+"/namespaces",
+		nil,
+	)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusMethodNotAllowed, response.Code)
+	require.Zero(t, innerCalls.Load())
+}
+
+func TestV2NamespaceLifecycleHandlerDelegatesNamespacedResourceDeleteCollection(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	var innerCalls atomic.Int32
+	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		innerCalls.Add(1)
+		writer.WriteHeader(http.StatusOK)
+	}), newV2NamespaceLifecycleGate())
+	request := httptest.NewRequestWithContext(
+		ctx,
+		http.MethodDelete,
+		"/apis/"+apiv2.GroupName+"/"+apiv2.Version+"/namespaces/test/physicalprocesses",
+		nil,
+	)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Equal(t, int32(1), innerCalls.Load())
 }
 
 func TestV2NamespaceLifecycleHandlerDoesNotGateOtherAPIVersions(t *testing.T) {
