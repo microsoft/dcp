@@ -712,7 +712,18 @@ func v2BuildContextToContainerBuildContext(build *apiv2.ContainerBuildContext) *
 	}
 
 	return &containers.ContainerBuildContext{
-		Context:    build.Context,
+		Context: build.Context,
+		ContextArchive: func() *containers.ContainerBuildContextArchive {
+			if build.ContextArchive == nil {
+				return nil
+			}
+			return &containers.ContainerBuildContextArchive{
+				Digest:      build.ContextArchive.Digest,
+				Source:      build.ContextArchive.Source,
+				SHA256:      build.ContextArchive.SHA256,
+				RawContents: build.ContextArchive.RawContents,
+			}
+		}(),
 		Dockerfile: build.Dockerfile,
 		Tags:       build.Tags,
 		Args:       build.Args,

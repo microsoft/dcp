@@ -27,6 +27,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/apiserver"
 	"github.com/microsoft/dcp/internal/containers"
@@ -243,6 +244,30 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.True(t, networking.IsValidPort(int(updatedTunnelProxy.Status.ClientProxyControlPort)), "Tunnel proxy should have a valid client proxy control port")
 	require.True(t, networking.IsValidPort(int(updatedTunnelProxy.Status.ClientProxyDataPort)), "Tunnel proxy should have a valid client proxy data port")
 
+	t.Log("Verifying V2 physical resources represent the client proxy...")
+	physicalImages := apiv2.PhysicalContainerImageList{}
+	listImagesErr := serverInfo.Client.List(ctx, &physicalImages, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listImagesErr)
+	require.Len(t, physicalImages.Items, 1)
+	require.Equal(t, updatedTunnelProxy.Status.ClientProxyContainerImage, physicalImages.Items[0].Spec.Image.Image)
+	require.NotNil(t, physicalImages.Items[0].Spec.Image.Build)
+	require.NotNil(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive)
+	require.NotEmpty(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.Digest)
+	require.NotEmpty(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source)
+	require.NotEmpty(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.SHA256)
+	require.FileExists(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source)
+	require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, physicalImages.Items[0].Status.Phase)
+	testContainerOrchestrator, ok := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, ok)
+	require.Equal(t, 1, testContainerOrchestrator.BuildImageCallCount(updatedTunnelProxy.Status.ClientProxyContainerImage))
+
+	physicalContainers := apiv2.PhysicalContainerList{}
+	listContainersErr := serverInfo.Client.List(ctx, &physicalContainers, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listContainersErr)
+	require.Len(t, physicalContainers.Items, 1)
+	require.Equal(t, updatedTunnelProxy.Status.ClientProxyContainerID, physicalContainers.Items[0].Status.ContainerID)
+	require.Equal(t, apiv2.PhysicalContainerPhaseRunning, physicalContainers.Items[0].Status.Phase)
+
 	t.Log("Verifying client proxy container exists...")
 	inspectedContainers, inspectErr := serverInfo.ContainerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
 		Containers: []string{updatedTunnelProxy.Status.ClientProxyContainerID},
@@ -291,8 +316,8 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-cleanup"
 
-	controllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, controllers, t.Name(), t.TempDir())
+	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -354,6 +379,21 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	require.Len(t, containerInfoList, 1, "Client proxy container should exist")
 	require.Equal(t, clientContainerID, containerInfoList[0].Id, "Container ID should match")
 
+	physicalContainers := apiv2.PhysicalContainerList{}
+	listContainersErr := serverInfo.Client.List(ctx, &physicalContainers, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listContainersErr)
+	require.Len(t, physicalContainers.Items, 1)
+	physicalContainer := physicalContainers.Items[0]
+
+	physicalImages := apiv2.PhysicalContainerImageList{}
+	listImagesErr := serverInfo.Client.List(ctx, &physicalImages, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listImagesErr)
+	require.Len(t, physicalImages.Items, 1)
+	physicalImage := physicalImages.Items[0]
+	require.NotNil(t, physicalImage.Spec.Image.Build)
+	require.NotNil(t, physicalImage.Spec.Image.Build.ContextArchive)
+	buildContextArchivePath := physicalImage.Spec.Image.Build.ContextArchive.Source
+
 	t.Logf("Deleting ContainerNetworkTunnelProxy object '%s'", tunnelProxy.ObjectMeta.Name)
 	err = retryOnConflictEx(ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(ctx context.Context, tp *apiv1.ContainerNetworkTunnelProxy) error {
 		return serverInfo.Client.Delete(ctx, tp)
@@ -364,6 +404,10 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &tunnelProxy)
 
 	t.Log("Verifying proxy resources are cleaned up...")
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &physicalContainer)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &physicalImage)
+	_, statArchiveErr := os.Stat(buildContextArchivePath)
+	require.ErrorIs(t, statArchiveErr, os.ErrNotExist)
 
 	// Verify the client container has been removed
 	_, inspectErrAfter := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
@@ -1062,8 +1106,8 @@ func TestTunnelProxyServerUnexpectedExit(t *testing.T) {
 	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateFailed)
 }
 
-// Verifies that ContainerNetworkTunnelProxy transitions to Failed state when client proxy container unexpectedly stops running.
-func TestTunnelProxyClientUnexpectedExit(t *testing.T) {
+// Verifies that ContainerNetworkTunnelProxy transitions to Failed state when its runtime client proxy container disappears.
+func TestTunnelProxyClientDestroyed(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -1142,11 +1186,13 @@ func TestTunnelProxyClientUnexpectedExit(t *testing.T) {
 	t.Log("Verifying all tunnels are in NotReady state...")
 	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateNotReady)
 
-	t.Logf("Simulating client proxy container exit with code 5 (container ID: %s)...", clientContainerID)
-	tco, isTCO := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
-	require.True(t, isTCO, "Container orchestrator should be a TestContainerOrchestrator")
-	simulateErr := tco.SimulateContainerExit(ctx, clientContainerID, 5)
-	require.NoError(t, simulateErr, "Should be able to simulate container exit")
+	t.Logf("Removing client proxy runtime container (container ID: %s)...", clientContainerID)
+	removedContainers, removeErr := serverInfo.ContainerOrchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
+		Containers: []string{clientContainerID},
+		Force:      true,
+	})
+	require.NoError(t, removeErr)
+	require.Equal(t, []string{clientContainerID}, removedContainers)
 
 	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Failed state...")
 	_ = waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {

@@ -62,6 +62,12 @@ func (ted tunnelExtraData) Equal(other tunnelExtraData) bool {
 type containerNetworkTunnelProxyData struct {
 	apiv1.ContainerNetworkTunnelProxyStatus
 
+	// Whether preparation of the client proxy image has been scheduled.
+	imagePreparationScheduled bool
+
+	// Source archive owned by this tunnel proxy, if its image build uses one.
+	imageBuildContextArchiveSource string
+
 	// Whether the startup of the proxy pair has been scheduled.
 	// This is checked and updated when we enter the starting state.
 	startupScheduled bool
@@ -101,6 +107,8 @@ func newContainerNetworkTunnelProxyData(state apiv1.ContainerNetworkTunnelProxyS
 func (tpd *containerNetworkTunnelProxyData) Clone() *containerNetworkTunnelProxyData {
 	clone := containerNetworkTunnelProxyData{
 		ContainerNetworkTunnelProxyStatus: *tpd.ContainerNetworkTunnelProxyStatus.DeepCopy(),
+		imagePreparationScheduled:         tpd.imagePreparationScheduled,
+		imageBuildContextArchiveSource:    tpd.imageBuildContextArchiveSource,
 		startupScheduled:                  tpd.startupScheduled,
 		cleanupScheduled:                  tpd.cleanupScheduled,
 		serverStdout:                      tpd.serverStdout,
@@ -186,6 +194,16 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 
 	if tpd.startupScheduled != other.startupScheduled {
 		tpd.startupScheduled = other.startupScheduled
+		updated = true
+	}
+
+	if tpd.imagePreparationScheduled != other.imagePreparationScheduled {
+		tpd.imagePreparationScheduled = other.imagePreparationScheduled
+		updated = true
+	}
+
+	if tpd.imageBuildContextArchiveSource != other.imageBuildContextArchiveSource {
+		tpd.imageBuildContextArchiveSource = other.imageBuildContextArchiveSource
 		updated = true
 	}
 

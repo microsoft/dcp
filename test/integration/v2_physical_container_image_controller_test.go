@@ -7,6 +7,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"testing"
 	"time"
@@ -23,6 +24,34 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+func TestV2PhysicalContainerImageControllerBuildsRawArchiveContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-raw-archive")
+	targetImage := "v2-pci-raw-archive-target"
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "raw-archive-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image: targetImage,
+			Build: &apiv2.ContainerBuildContext{
+				ContextArchive: &apiv2.ContainerBuildContextArchive{
+					Digest:      "empty-tar-v1",
+					RawContents: base64.StdEncoding.EncodeToString(make([]byte, 1024)),
+				},
+			},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+}
 
 func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {
 	t.Parallel()

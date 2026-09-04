@@ -15,6 +15,8 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
+const validArchiveSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
 func TestPhysicalContainerImageValidate(t *testing.T) {
 	testCases := []struct {
 		name          string
@@ -65,6 +67,37 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Context: "test-context",
 				}},
 				},
+			},
+		},
+		{
+			name: "valid build image with context archive",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					ContextArchive: &ContainerBuildContextArchive{
+						Digest: "archive-v1",
+						Source: "context.tar",
+						SHA256: validArchiveSHA256,
+					},
+				}}},
+			},
+		},
+		{
+			name: "valid build image with raw context archive",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					ContextArchive: &ContainerBuildContextArchive{
+						Digest:      "archive-v1",
+						RawContents: "dGVzdA==",
+					},
+				}}},
 			},
 		},
 		{
@@ -186,7 +219,132 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 				},
 				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{}}},
 			},
-			expectedError: "spec.image.build.context",
+			expectedError: "spec.image.build",
+		},
+		{
+			name: "build context conflicts with archive",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					Context: "test-context",
+					ContextArchive: &ContainerBuildContextArchive{
+						Digest: "archive-v1",
+						Source: "context.tar",
+						SHA256: validArchiveSHA256,
+					},
+				}}},
+			},
+			expectedError: "spec.image.build.contextArchive",
+		},
+		{
+			name: "build context archive missing content",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					ContextArchive: &ContainerBuildContextArchive{Digest: "archive-v1"},
+				}}},
+			},
+			expectedError: "spec.image.build.contextArchive",
+		},
+		{
+			name: "build context archive missing hash",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					ContextArchive: &ContainerBuildContextArchive{Digest: "archive-v1", Source: "context.tar"},
+				}}},
+			},
+			expectedError: "spec.image.build.contextArchive.sha256",
+		},
+		{
+			name: "build context archive missing digest",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					ContextArchive: &ContainerBuildContextArchive{RawContents: "dGVzdA=="},
+				}}},
+			},
+			expectedError: "spec.image.build.contextArchive.digest",
+		},
+		{
+			name: "build context archive source conflicts with raw contents",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					ContextArchive: &ContainerBuildContextArchive{
+						Digest:      "archive-v1",
+						Source:      "context.tar",
+						SHA256:      validArchiveSHA256,
+						RawContents: "dGVzdA==",
+					},
+				}}},
+			},
+			expectedError: "spec.image.build.contextArchive.rawContents",
+		},
+		{
+			name: "build context archive rejects invalid raw contents",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					ContextArchive: &ContainerBuildContextArchive{
+						Digest:      "archive-v1",
+						RawContents: "not-base64!!!",
+					},
+				}}},
+			},
+			expectedError: "spec.image.build.contextArchive.rawContents",
+		},
+		{
+			name: "build context archive rejects invalid hash",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					ContextArchive: &ContainerBuildContextArchive{
+						Digest: "archive-v1",
+						Source: "context.tar",
+						SHA256: "deadbeef",
+					},
+				}}},
+			},
+			expectedError: "spec.image.build.contextArchive.sha256",
+		},
+		{
+			name: "build context archive hash requires source",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					ContextArchive: &ContainerBuildContextArchive{
+						Digest:      "archive-v1",
+						SHA256:      validArchiveSHA256,
+						RawContents: "dGVzdA==",
+					},
+				}}},
+			},
+			expectedError: "spec.image.build.contextArchive.sha256",
 		},
 		{
 			name: "missing build file secret source",

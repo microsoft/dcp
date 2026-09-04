@@ -88,6 +88,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1.TunnelStatus{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_TunnelStatus(ref),
 		v1.VolumeMount{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_VolumeMount(ref),
 		v2.ContainerBuildContext{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_ContainerBuildContext(ref),
+		v2.ContainerBuildContextArchive{}.OpenAPIModelName():      schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref),
 		v2.ContainerBuildSecret{}.OpenAPIModelName():              schema_microsoft_dcp_api_v2_ContainerBuildSecret(ref),
 		v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName():  schema_microsoft_dcp_api_v2_ContainerNetworkConnectionConfig(ref),
 		v2.ContainerPort{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ContainerPort(ref),
@@ -4195,10 +4196,15 @@ func schema_microsoft_dcp_api_v2_ContainerBuildContext(ref common.ReferenceCallb
 				Properties: map[string]spec.Schema{
 					"context": {
 						SchemaProps: spec.SchemaProps{
-							Description: "The path to the directory to be used as the root of the build context.",
-							Default:     "",
+							Description: "The path to the directory to be used as the root of the build context. Exactly one of context or contextArchive must be set.",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"contextArchive": {
+						SchemaProps: spec.SchemaProps{
+							Description: "A tar archive to stream to the image builder as the build context. Exactly one of context or contextArchive must be set.",
+							Ref:         ref(v2.ContainerBuildContextArchive{}.OpenAPIModelName()),
 						},
 					},
 					"dockerfile": {
@@ -4303,11 +4309,53 @@ func schema_microsoft_dcp_api_v2_ContainerBuildContext(ref common.ReferenceCallb
 						},
 					},
 				},
-				Required: []string{"context"},
 			},
 		},
 		Dependencies: []string{
-			v2.ContainerBuildSecret{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName()},
+			v2.ContainerBuildContextArchive{}.OpenAPIModelName(), v2.ContainerBuildSecret{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerBuildContextArchive describes a tar archive containing an image build context.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"digest": {
+						SchemaProps: spec.SchemaProps{
+							Description: "An opaque identifier for this archive.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Path to a tar file on the host filesystem. Mutually exclusive with RawContents.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"sha256": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SHA256 hash of the tar file referenced by Source. Required when Source is set.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"rawContents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Base64-encoded tar file contents. Mutually exclusive with Source.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"digest"},
+			},
+		},
 	}
 }
 

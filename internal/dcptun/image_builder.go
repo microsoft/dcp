@@ -25,6 +25,7 @@ import (
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
 )
@@ -89,6 +90,24 @@ type BuildClientProxyImageOptions struct {
 	MostRecentImageBuildsFilePath string
 }
 
+type ClientProxyImagePlan struct {
+	Image               string
+	BuildContextArchive *containers.ContainerBuildContextArchive
+	Dockerfile          string
+	Labels              []containers.Label
+}
+
+func (p ClientProxyImagePlan) Cleanup() error {
+	if p.BuildContextArchive == nil || p.BuildContextArchive.Source == "" {
+		return nil
+	}
+	removeErr := os.Remove(p.BuildContextArchive.Source)
+	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return fmt.Errorf("remove client proxy image build context archive: %w", removeErr)
+	}
+	return nil
+}
+
 // EnsureClientProxyImage ensures that the client proxy image is built and available
 // for use by the client proxy container.
 // Returns full image name with tag, and error if any.
@@ -98,6 +117,42 @@ func EnsureClientProxyImage(
 	ior containers.ImageOrchestrator,
 	log logr.Logger,
 ) (string, error) {
+	plan, planErr := PrepareClientProxyImage(ctx, opts, ior, log)
+	if planErr != nil {
+		return "", planErr
+	}
+	defer func() { _ = plan.Cleanup() }()
+
+	if plan.BuildContextArchive == nil {
+		return plan.Image, nil
+	}
+
+	buildErr := ior.BuildImage(ctx, containers.BuildImageOptions{
+		ContainerBuildContext: &containers.ContainerBuildContext{
+			ContextArchive: plan.BuildContextArchive,
+			Dockerfile:     plan.Dockerfile,
+			Tags:           []string{plan.Image},
+			Labels:         plan.Labels,
+		},
+		TimeoutOption: containers.TimeoutOption{
+			Timeout: opts.TimeoutOption.Timeout,
+		},
+		StreamCommandOptions: opts.StreamCommandOptions,
+	})
+	if buildErr != nil {
+		return "", fmt.Errorf("failed to build client proxy image: %w", buildErr)
+	}
+
+	return plan.Image, nil
+}
+
+// PrepareClientProxyImage checks for a current client proxy image and prepares an archive build context when needed.
+func PrepareClientProxyImage(
+	ctx context.Context,
+	opts BuildClientProxyImageOptions,
+	ior containers.ImageOrchestrator,
+	log logr.Logger,
+) (ClientProxyImagePlan, error) {
 	if ctx == nil {
 		panic("context cannot be nil")
 	}
@@ -107,7 +162,7 @@ func EnsureClientProxyImage(
 
 	rtStat := ior.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
 	if !rtStat.IsHealthy() {
-		return "", &ErrContainerRuntimeUnhealthy{Reason: rtStat.Error}
+		return ClientProxyImagePlan{}, &ErrContainerRuntimeUnhealthy{Reason: rtStat.Error}
 	}
 
 	if opts.BaseImage == "" {
@@ -116,12 +171,12 @@ func EnsureClientProxyImage(
 
 	dcpTunClientPath, clientPathErr := dcptunClientBinaryPath()
 	if clientPathErr != nil {
-		return "", fmt.Errorf("failed to get path to dcptun client binary: %w", clientPathErr)
+		return ClientProxyImagePlan{}, fmt.Errorf("failed to get path to dcptun client binary: %w", clientPathErr)
 	}
 
 	imageName, imageErr := clientProxyImageName(dcpTunClientPath)
 	if imageErr != nil {
-		return "", fmt.Errorf("failed to determine client proxy image: %w", imageErr)
+		return ClientProxyImagePlan{}, fmt.Errorf("failed to determine client proxy image: %w", imageErr)
 	}
 
 	errKeepWaiting := errors.New("waiting for client proxy image to be built...")
@@ -137,49 +192,28 @@ func EnsureClientProxyImage(
 		return res, nil
 	})
 	if imageCheckErr != nil {
-		return "", fmt.Errorf("failed to check if client proxy image needs to be built: %w", imageCheckErr)
+		return ClientProxyImagePlan{}, fmt.Errorf("failed to check if client proxy image needs to be built: %w", imageCheckErr)
 	}
 	if need == proxyImageExists {
-		return imageName, nil
+		return ClientProxyImagePlan{Image: imageName}, nil
 	}
 
-	// Create build context with Dockerfile
-	buildContext, cleanup, contextErr := setupImageBuildContext(dcpTunClientPath, opts)
+	buildContextArchive, contextErr := setupImageBuildContextArchive(dcpTunClientPath, opts)
 	if contextErr != nil {
-		return "", fmt.Errorf("failed to create build context: %w", contextErr)
+		return ClientProxyImagePlan{}, fmt.Errorf("failed to create build context archive: %w", contextErr)
 	}
-	defer cleanup()
 
-	// Build the image
-	buildOptions := containers.BuildImageOptions{
-		ContainerBuildContext: &containers.ContainerBuildContext{
-			Context:    buildContext,
-			Dockerfile: filepath.Join(buildContext, dockerfileName),
-			Tags:       []string{imageName},
-			Labels: []containers.Label{
-				{
-					Key:   baseImageDigestLabel,
-					Value: string(baseImageDigests[opts.BaseImage]),
-				},
+	return ClientProxyImagePlan{
+		Image:               imageName,
+		BuildContextArchive: buildContextArchive,
+		Dockerfile:          dockerfileName,
+		Labels: []containers.Label{
+			{
+				Key:   baseImageDigestLabel,
+				Value: string(baseImageDigests[opts.BaseImage]),
 			},
 		},
-		TimeoutOption: containers.TimeoutOption{
-			Timeout: opts.TimeoutOption.Timeout,
-		},
-	}
-	if opts.StdOutStream != nil {
-		buildOptions.StdOutStream = opts.StdOutStream
-	}
-	if opts.StdErrStream != nil {
-		buildOptions.StdErrStream = opts.StdErrStream
-	}
-
-	buildErr := ior.BuildImage(ctx, buildOptions)
-	if buildErr != nil {
-		return "", fmt.Errorf("failed to build client proxy image: %w", buildErr)
-	}
-
-	return imageName, nil
+	}, nil
 }
 
 // clientProxyImageName() determines the name of the client proxy container image,
@@ -369,30 +403,26 @@ func inspectBaseImageDigest(
 	return "", fmt.Errorf("base image %s has no digest or ID", imageRef)
 }
 
-// setupImageBuildContext creates a temporary directory for building the client proxy image,
-// creates a Dockerfile, and makes the client binary appear in the build context.
-// Returns the path to the build context, a cleanup function to remove it, and an error if any.
-func setupImageBuildContext(dcpTunClientPath string, opts BuildClientProxyImageOptions) (string, func(), error) {
-	// Create temporary directory for build context
-	tempDir, tempDirErr := os.MkdirTemp(usvc_io.DcpTempDir(), "dcptun-build-*")
-	if tempDirErr != nil {
-		return "", nil, fmt.Errorf("failed to create temporary directory: %w", tempDirErr)
+func setupImageBuildContextArchive(
+	dcpTunClientPath string,
+	opts BuildClientProxyImageOptions,
+) (*containers.ContainerBuildContextArchive, error) {
+	randomSuffix, randomSuffixErr := randdata.MakeRandomString(12)
+	if randomSuffixErr != nil {
+		return nil, fmt.Errorf("create random build context archive suffix: %w", randomSuffixErr)
 	}
-
+	archiveFile, openArchiveErr := usvc_io.OpenTempFile(
+		fmt.Sprintf("dcptun-build-context-%s.tar", randomSuffix),
+		os.O_RDWR|os.O_CREATE|os.O_EXCL,
+		osutil.PermissionOnlyOwnerReadWrite,
+	)
+	if openArchiveErr != nil {
+		return nil, fmt.Errorf("create build context archive: %w", openArchiveErr)
+	}
+	archivePath := archiveFile.Name()
 	cleanup := func() {
-		_ = os.RemoveAll(tempDir) // best effort
-	}
-
-	// Make the client proxy binary appear the build context
-	// One would think that creating a symlink would be the right thing to do here,
-	// but Docker build does not follow symlinks outside the build context.
-	// So we have to copy the binary instead.
-	// If this turns to be a performance issue, we can look into using Docker buildkit
-	// with "additional", external context pointing to the bin folder.
-	destBinaryPath := filepath.Join(tempDir, ClientBinaryName)
-	if copyErr := copyFile(dcpTunClientPath, destBinaryPath, osutil.PermissionOnlyOwnerReadWriteExecute); copyErr != nil {
-		cleanup()
-		return "", nil, fmt.Errorf("failed to copy binary to build context: %w", copyErr)
+		_ = archiveFile.Close()
+		_ = os.Remove(archivePath)
 	}
 
 	dockerfileContent := fmt.Sprintf(`
@@ -405,35 +435,73 @@ COPY --chmod=0755 %s %[3]s
 ENTRYPOINT ["%[3]s"]
 `, opts.BaseImage, ClientBinaryName, ClientProxyBinaryPath)
 
-	// Write Dockerfile
-	dockerfilePath := filepath.Join(tempDir, dockerfileName)
-	if err := usvc_io.WriteFile(dockerfilePath, []byte(dockerfileContent), osutil.PermissionOnlyOwnerReadWrite); err != nil {
+	now := time.Now()
+	tarWriter := usvc_io.NewTarWriterTo(archiveFile)
+	if writeDockerfileErr := tarWriter.WriteFile(
+		[]byte(dockerfileContent),
+		dockerfileName,
+		0,
+		0,
+		osutil.PermissionOwnerReadWriteOthersRead,
+		now,
+		now,
+		now,
+	); writeDockerfileErr != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("failed to write Dockerfile: %w", err)
+		return nil, fmt.Errorf("write Dockerfile to build context archive: %w", writeDockerfileErr)
 	}
 
-	return tempDir, cleanup, nil
-}
-
-// copyFile copies a file from src to dst
-func copyFile(src, dst string, perm os.FileMode) error {
-	sourceFile, sourceErr := usvc_io.OpenFile(src, os.O_RDONLY, 0)
-	if sourceErr != nil {
-		return sourceErr
+	binaryFile, openBinaryErr := usvc_io.OpenFile(dcpTunClientPath, os.O_RDONLY, 0)
+	if openBinaryErr != nil {
+		cleanup()
+		return nil, fmt.Errorf("open dcptun client binary: %w", openBinaryErr)
 	}
-	defer func() { _ = sourceFile.Close() }()
-
-	destFile, destErr := usvc_io.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if destErr != nil {
-		return destErr
+	binaryInfo, statBinaryErr := binaryFile.Stat()
+	if statBinaryErr != nil {
+		_ = binaryFile.Close()
+		cleanup()
+		return nil, fmt.Errorf("stat dcptun client binary: %w", statBinaryErr)
+	}
+	copyBinaryErr := tarWriter.CopyFile(
+		binaryFile,
+		binaryInfo.Size(),
+		ClientBinaryName,
+		0,
+		0,
+		os.FileMode(0o755),
+		binaryInfo.ModTime(),
+		binaryInfo.ModTime(),
+		binaryInfo.ModTime(),
+	)
+	closeBinaryErr := binaryFile.Close()
+	if copyBinaryErr != nil {
+		cleanup()
+		return nil, fmt.Errorf("copy dcptun client binary to build context archive: %w", copyBinaryErr)
+	}
+	if closeBinaryErr != nil {
+		cleanup()
+		return nil, fmt.Errorf("close dcptun client binary: %w", closeBinaryErr)
+	}
+	if closeTarErr := tarWriter.Close(); closeTarErr != nil {
+		cleanup()
+		return nil, fmt.Errorf("finalize build context archive: %w", closeTarErr)
+	}
+	if closeArchiveErr := archiveFile.Close(); closeArchiveErr != nil {
+		cleanup()
+		return nil, fmt.Errorf("close build context archive: %w", closeArchiveErr)
 	}
 
-	if _, copyErr := io.Copy(destFile, sourceFile); copyErr != nil {
-		_ = destFile.Close()
-		return copyErr
+	archiveHash, hashErr := computeFileHash(archivePath)
+	if hashErr != nil {
+		cleanup()
+		return nil, fmt.Errorf("hash build context archive: %w", hashErr)
 	}
 
-	return destFile.Close()
+	return &containers.ContainerBuildContextArchive{
+		Digest: "sha256:" + archiveHash,
+		Source: archivePath,
+		SHA256: archiveHash,
+	}, nil
 }
 
 // Computes the SHA256 hash of a given binary file

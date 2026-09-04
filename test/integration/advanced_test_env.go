@@ -61,6 +61,10 @@ func StartAdvancedTestEnvironmentWithFlags(
 	*AdvancedTestEnvironmentInfo,
 	error,
 ) {
+	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
+		inclCtrl |= NamespaceController | PhysicalContainerImageController | PhysicalContainerController
+	}
+
 	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
 	if sessionFolderErr != nil {
 		return nil, nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)

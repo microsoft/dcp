@@ -75,6 +75,10 @@ func StartTestEnvironmentWithOptions(
 	*TestEnvironmentInfo,
 	error,
 ) {
+	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
+		inclCtrl |= NamespaceController | PhysicalContainerImageController | PhysicalContainerController
+	}
+
 	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
 	if sessionFolderErr != nil {
 		return nil, nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)
@@ -358,11 +362,10 @@ func StartTestEnvironmentWithOptions(
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
 		tcc = ctrl_testutil.NewTestTunnelControlClient()
 		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
-			Orchestrator:                    serverInfo.ContainerOrchestrator,
-			ProcessExecutor:                 pex,
-			MakeTunnelControlClient:         func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
-			MaxTunnelPreparationAttempts:    2,
-			ContainerStartupTimeoutOverride: 2 * time.Second,
+			Orchestrator:                 serverInfo.ContainerOrchestrator,
+			ProcessExecutor:              pex,
+			MakeTunnelControlClient:      func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
+			MaxTunnelPreparationAttempts: 2,
 		}
 
 		if testTempDir != NoSeparateWorkingDir {
