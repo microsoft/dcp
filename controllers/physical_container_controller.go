@@ -151,7 +151,7 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
 			log.V(1).Info("PhysicalContainer not found, nothing to do...")
-			r.discardPhysicalContainerData(req.NamespacedName, "", log)
+			r.discardPhysicalContainerData(req.NamespacedName, "", nil, log)
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		}
@@ -169,8 +169,7 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
-		change = r.handleDeletionRequest(ctx, &container, log)
-		change, reconciliationDelay = r.applyPhysicalContainerData(&container, change)
+		change, reconciliationDelay = r.managePhysicalContainer(ctx, &container, log)
 	} else if change = ensureFinalizer(&container, physicalContainerFinalizer, log); change != noChange {
 		// Make additional changes during the next reconciliation.
 	} else {
@@ -198,22 +197,20 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 		r.containerData.Store(container.NamespacedName(), initialStateKey, data.Clone())
 	}
 
-	handler := getStateHandler(physicalContainerDataInitializers, data.state, log)
-	change := handler(ctx, r, container, data.state, stateKey, data, log)
-
-	return r.applyPhysicalContainerData(container, change)
-}
-
-func (r *PhysicalContainerReconciler) applyPhysicalContainerData(
-	container *apiv2.PhysicalContainer,
-	change objectChange,
-) (objectChange, AdditionalReconciliationDelay) {
-	_, currentData := r.containerData.BorrowByNamespacedName(container.NamespacedName())
-	if currentData == nil {
+	var change objectChange
+	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
+		change = r.handleDeletionRequest(ctx, container, stateKey, data, log)
+	} else {
+		handler := getStateHandler(physicalContainerDataInitializers, data.state, log)
+		change = handler(ctx, r, container, data.state, stateKey, data, log)
+	}
+	if !hasFinalizer(container, physicalContainerFinalizer) {
 		return change, StandardDelay
 	}
-	change |= currentData.applyTo(container)
-	delay := physicalContainerProjections.reconciliationDelay(currentData.state, currentData.progress)
+
+	_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
+	change |= data.applyTo(container)
+	delay := physicalContainerProjections.reconciliationDelay(data.state, data.progress)
 	return change, delay
 }
 
@@ -245,16 +242,12 @@ func handlePhysicalContainerNamespace(
 			data.progress = physicalResourceProgressRetryPending
 			data.failureMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
 		}
-		_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
 		return noChange
 	}
 
 	data.state = physicalContainerStateResolve
 	data.progress = physicalResourceProgressInProgress
 	data.failureMessage = ""
-	if !reconciler.containerData.Update(container.NamespacedName(), stateKey, data) {
-		return additionalReconciliationNeeded
-	}
 	return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, stateKey, data, log)
 }
 
@@ -276,9 +269,6 @@ func handlePhysicalContainerResolve(
 		data.containerID = ""
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
-		if !reconciler.containerData.Update(container.NamespacedName(), stateKey, data) {
-			return additionalReconciliationNeeded
-		}
 	}
 
 	containerID := container.Spec.ContainerID
@@ -300,9 +290,9 @@ func handlePhysicalContainerResolve(
 			data.containerID = containerID
 			data.failureMessage = fmt.Sprintf("Runtime container is already tracked by PhysicalContainer %q.", owner.String())
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-			_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
 			return additionalReconciliationNeeded
 		}
+		return additionalReconciliationNeeded
 	}
 
 	return handlePhysicalContainerRuntime(ctx, reconciler, container, data.state, physicalContainerDataContainerIDKey(containerID), data, log)
@@ -322,7 +312,6 @@ func handlePhysicalContainerImage(
 		data.state = physicalContainerStateImage
 		data.progress = imageProgress
 		data.failureMessage = imageMessage
-		_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
 		return imageChange
 	}
 
@@ -401,7 +390,6 @@ func handlePhysicalContainerRuntime(
 		// The runtime identity has not been captured yet, so resolution owns this reconciliation.
 		data.state = physicalContainerStateResolve
 		data.progress = physicalResourceProgressInProgress
-		_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
 		return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, stateKey, data, log)
 	}
 
@@ -411,7 +399,6 @@ func handlePhysicalContainerRuntime(
 		data.state = physicalContainerStateRuntime
 		data.progress = physicalResourceProgressMissing
 		data.failureMessage = ""
-		_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
 		return noChange
 	}
 	if inspectErr != nil {
@@ -419,7 +406,6 @@ func handlePhysicalContainerRuntime(
 		data.state = physicalContainerStateRuntime
 		data.progress = physicalResourceProgressRetryPending
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime container: %v", inspectErr)
-		_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
 		return additionalReconciliationNeeded
 	}
 
@@ -445,7 +431,6 @@ func (r *PhysicalContainerReconciler) stopPhysicalContainer(
 		data.state = physicalContainerStateRuntime
 		data.progress = physicalResourceProgressMissing
 		data.failureMessage = ""
-		_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
 		return noChange
 	}
 	if stopErr != nil {
@@ -453,7 +438,6 @@ func (r *PhysicalContainerReconciler) stopPhysicalContainer(
 		data.state = physicalContainerStateStop
 		data.progress = physicalResourceProgressRetryPending
 		data.failureMessage = fmt.Sprintf("Failed to stop runtime container: %v", stopErr)
-		_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
 		return applyInspectedPhysicalContainerDetails(container, inspectedContainer, log) | additionalReconciliationNeeded
 	}
 
@@ -614,38 +598,19 @@ func (r *PhysicalContainerReconciler) removePartiallyCreatedPhysicalContainer(
 	})
 	if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
 		log.Error(removeErr, "Failed to remove partially created runtime container", "ContainerID", partialContainerID)
-		stateKey, currentData := r.containerData.BorrowByNamespacedName(container.NamespacedName())
-		if currentData == nil || currentData.containerID != partialContainerID {
-			return additionalReconciliationNeeded, false
-		}
-
-		updatedData := currentData.Clone()
-		updatedData.state = physicalContainerStateCleanup
-		updatedData.cleanupMessage = fmt.Sprintf("Failed to remove partially created runtime container: %v", removeErr)
-		updatedData.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		if !r.containerData.Update(container.NamespacedName(), stateKey, updatedData) {
-			return additionalReconciliationNeeded, false
-		}
-		data.UpdateFrom(updatedData)
-		return updatedData.applyTo(container) | additionalReconciliationNeeded, false
-	}
-
-	stateKey, currentData := r.containerData.BorrowByNamespacedName(container.NamespacedName())
-	if currentData == nil || currentData.containerID != partialContainerID {
+		data.state = physicalContainerStateCleanup
+		data.cleanupMessage = fmt.Sprintf("Failed to remove partially created runtime container: %v", removeErr)
+		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		return additionalReconciliationNeeded, false
 	}
-	updatedData := currentData.Clone()
-	updatedData.state = physicalContainerStateCreate
-	updatedData.containerID = ""
-	updatedData.cleanupMessage = ""
-	updatedData.retryAfter = time.Time{}
-	if !r.containerData.Update(container.NamespacedName(), stateKey, updatedData) {
-		return additionalReconciliationNeeded, false
-	}
-	data.UpdateFrom(updatedData)
+
+	data.state = physicalContainerStateCreate
+	data.containerID = ""
+	data.cleanupMessage = ""
+	data.retryAfter = time.Time{}
 
 	log.V(1).Info("Removed partially created runtime container", "ContainerID", partialContainerID)
-	return updatedData.applyTo(container) | setValue(&container.Status.ContainerID, ""), true
+	return setValue(&container.Status.ContainerID, ""), true
 }
 
 func handleUnknownPhysicalContainerDataReason(
@@ -661,7 +626,6 @@ func handleUnknownPhysicalContainerDataReason(
 	data.progress = physicalResourceProgressFailed
 	data.failureMessage = fmt.Sprintf("Physical container operation reached unknown state %d.", state)
 	log.Error(fmt.Errorf("unknown physical container state %d", state), "Physical container operation reached unknown state")
-	_ = reconciler.containerData.Update(container.NamespacedName(), stateKey, data)
 	return additionalReconciliationNeeded
 }
 
@@ -703,6 +667,7 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreate(
 	if !r.containerData.Update(container.NamespacedName(), stateKey, data) {
 		return additionalReconciliationNeeded
 	}
+	currentData.UpdateFrom(data)
 	containerSnapshot := container.DeepCopy()
 	dataSnapshot := data.Clone()
 	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
@@ -712,7 +677,7 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreate(
 		log.Error(enqueueErr, "Failed to queue PhysicalContainer create")
 		data.progress = physicalResourceProgressFailed
 		data.failureMessage = fmt.Sprintf("Failed to queue physical container create: %v", enqueueErr)
-		_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
+		currentData.UpdateFrom(data)
 		return noChange
 	}
 
@@ -814,15 +779,17 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreateFiles(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	data.state = physicalContainerStateCopyFiles
-	data.progress = physicalContainerOperationInProgress
-	data.failureMessage = ""
-	if !r.containerData.Update(container.NamespacedName(), stateKey, data) {
+	scheduledData := data.Clone()
+	scheduledData.state = physicalContainerStateCopyFiles
+	scheduledData.progress = physicalContainerOperationInProgress
+	scheduledData.failureMessage = ""
+	if !r.containerData.Update(container.NamespacedName(), stateKey, scheduledData) {
 		return setValue(&container.Status.ContainerID, data.containerID) | additionalReconciliationNeeded
 	}
+	data.UpdateFrom(scheduledData)
 
 	containerSnapshot := container.DeepCopy()
-	dataSnapshot := data.Clone()
+	dataSnapshot := scheduledData.Clone()
 	fileModTime := time.Now()
 	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
 		r.copyPhysicalContainerCreateFiles(operationCtx, containerSnapshot, stateKey, dataSnapshot, fileModTime, log)
@@ -831,7 +798,6 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreateFiles(
 		data.state = physicalContainerStateCopyFiles
 		data.progress = physicalContainerOperationFailed
 		data.failureMessage = fmt.Sprintf("Failed to queue physical container file copy: %v", enqueueErr)
-		_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
 		log.Error(enqueueErr, "Failed to queue PhysicalContainer file copy", "ContainerID", data.containerID)
 		return noChange
 	}
@@ -889,15 +855,17 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerStart(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	data.state = physicalContainerStateStart
-	data.progress = physicalContainerOperationInProgress
-	data.failureMessage = ""
-	if !r.containerData.Update(container.NamespacedName(), stateKey, data) {
+	scheduledData := data.Clone()
+	scheduledData.state = physicalContainerStateStart
+	scheduledData.progress = physicalContainerOperationInProgress
+	scheduledData.failureMessage = ""
+	if !r.containerData.Update(container.NamespacedName(), stateKey, scheduledData) {
 		return setValue(&container.Status.ContainerID, data.containerID) | additionalReconciliationNeeded
 	}
+	data.UpdateFrom(scheduledData)
 
 	containerSnapshot := container.DeepCopy()
-	dataSnapshot := data.Clone()
+	dataSnapshot := scheduledData.Clone()
 	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
 		r.startPhysicalContainer(operationCtx, containerSnapshot, stateKey, dataSnapshot, log)
 	})
@@ -905,7 +873,6 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerStart(
 		data.state = physicalContainerStateStart
 		data.progress = physicalContainerOperationFailed
 		data.failureMessage = fmt.Sprintf("Failed to queue physical container start: %v", enqueueErr)
-		_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
 		log.Error(enqueueErr, "Failed to queue PhysicalContainer start", "ContainerID", data.containerID)
 		return noChange
 	}
@@ -920,15 +887,9 @@ func (r *PhysicalContainerReconciler) skipPhysicalContainerStart(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	updatedData := data.Clone()
-	updatedData.state = physicalContainerStateStart
-	updatedData.progress = physicalContainerOperationCompleted
-	updatedData.failureMessage = ""
-	if !r.containerData.Update(container.NamespacedName(), stateKey, updatedData) {
-		return setValue(&container.Status.ContainerID, data.containerID) | additionalReconciliationNeeded
-	}
-
-	data.UpdateFrom(updatedData)
+	data.state = physicalContainerStateStart
+	data.progress = physicalContainerOperationCompleted
+	data.failureMessage = ""
 	log.V(1).Info("Skipping PhysicalContainer start because stop is requested", "ContainerID", data.containerID)
 	return setValue(&container.Status.ContainerID, data.containerID)
 }
@@ -1026,17 +987,19 @@ func physicalContainerNeedsStopping(inspectedContainer *containers.InspectedCont
 		inspectedContainer.Status == containers.ContainerStatusRestarting
 }
 
-func (r *PhysicalContainerReconciler) handleDeletionRequest(ctx context.Context, container *apiv2.PhysicalContainer, log logr.Logger) objectChange {
-	stateKey, data := r.containerData.BorrowByNamespacedName(container.NamespacedName())
-	if data != nil && data.operationInProgress() {
+func (r *PhysicalContainerReconciler) handleDeletionRequest(
+	ctx context.Context,
+	container *apiv2.PhysicalContainer,
+	stateKey physicalContainerDataStateKey,
+	data *physicalContainerData,
+	log logr.Logger,
+) objectChange {
+	if data.operationInProgress() {
 		log.V(1).Info("Physical container is being deleted while an operation is in progress", "State", data.state)
 		return additionalReconciliationNeeded
 	}
 
-	containerID := ""
-	if data != nil {
-		containerID = data.containerID
-	}
+	containerID := data.containerID
 	if containerID == "" {
 		containerID = container.Spec.ContainerID
 	}
@@ -1048,18 +1011,15 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(ctx context.Context,
 		})
 		if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
 			log.Error(removeErr, "Failed to remove runtime container", "ContainerID", containerID)
-			if data != nil {
-				data.state = physicalContainerStateRemove
-				data.progress = physicalResourceProgressRetryPending
-				data.containerID = containerID
-				data.failureMessage = fmt.Sprintf("Failed to remove runtime container: %v", removeErr)
-				_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
-			}
+			data.state = physicalContainerStateRemove
+			data.progress = physicalResourceProgressRetryPending
+			data.containerID = containerID
+			data.failureMessage = fmt.Sprintf("Failed to remove runtime container: %v", removeErr)
 			return setValue(&container.Status.ContainerID, containerID) | additionalReconciliationNeeded
 		}
 	}
 
-	r.discardPhysicalContainerData(container.NamespacedName(), container.UID, log)
+	r.discardPhysicalContainerData(container.NamespacedName(), container.UID, data, log)
 	return deleteFinalizer(container, physicalContainerFinalizer, log)
 }
 
@@ -1095,8 +1055,15 @@ func (r *PhysicalContainerReconciler) ensurePhysicalContainerWatch(container *ap
 }
 
 // Removes in-memory state and releases the runtime event watch for a PhysicalContainer.
-func (r *PhysicalContainerReconciler) discardPhysicalContainerData(name types.NamespacedName, resourceUID types.UID, log logr.Logger) {
-	_, data := r.containerData.BorrowByNamespacedName(name)
+func (r *PhysicalContainerReconciler) discardPhysicalContainerData(
+	name types.NamespacedName,
+	resourceUID types.UID,
+	data *physicalContainerData,
+	log logr.Logger,
+) {
+	if data == nil {
+		_, data = r.containerData.BorrowByNamespacedName(name)
+	}
 	if data != nil && data.resourceUID != "" {
 		resourceUID = data.resourceUID
 	}
@@ -1223,9 +1190,6 @@ func (r *PhysicalContainerReconciler) applyInspectedPhysicalContainerStatus(
 		}
 	}
 
-	if !r.containerData.Update(container.NamespacedName(), stateKey, data) {
-		return change | additionalReconciliationNeeded
-	}
 	return change
 }
 

@@ -148,6 +148,10 @@ func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 	return metadataChanged
 }
 
+func hasFinalizer(obj metav1.Object, finalizer string) bool {
+	return usvc_slices.Contains(obj.GetFinalizers(), finalizer)
+}
+
 func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
 	finalizers := obj.GetFinalizers()
 	i := usvc_slices.Index(finalizers, finalizer)

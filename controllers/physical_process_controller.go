@@ -148,18 +148,24 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(
 		r.processData.Store(physicalProcess.NamespacedName(), initialStateKey, data.Clone())
 	}
 
-	handler := getStateHandler(physicalProcessDataHandlers, data.state, log)
-	change := handler(ctx, r, physicalProcess, data.state, stateKey, data, log)
+	var change objectChange
+	if physicalProcess.DeletionTimestamp != nil && !physicalProcess.DeletionTimestamp.IsZero() {
+		change, _ = r.handleDeletionRequest(physicalProcess, stateKey, data, log)
+	} else {
+		handler := getStateHandler(physicalProcessDataHandlers, data.state, log)
+		change = handler(ctx, r, physicalProcess, data.state, stateKey, data, log)
+	}
 
-	_, currentData := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
-	if currentData == nil {
+	if !hasFinalizer(physicalProcess, physicalProcessFinalizer) {
 		return change, StandardDelay
 	}
-	dataChange, delay, valid := currentData.applyTo(physicalProcess)
+
+	_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
+	dataChange, delay, valid := data.applyTo(physicalProcess)
 	change |= dataChange
 	if !valid {
 		log.Error(
-			fmt.Errorf("invalid physical process state %v with progress %v", currentData.state, currentData.progress),
+			fmt.Errorf("invalid physical process state %v with progress %v", data.state, data.progress),
 			"Physical process reached invalid reconciliation state",
 		)
 	}
@@ -176,7 +182,7 @@ func handlePhysicalProcessNamespace(
 	log logr.Logger,
 ) objectChange {
 	if physicalProcess.DeletionTimestamp != nil && !physicalProcess.DeletionTimestamp.IsZero() {
-		change, _ := reconciler.handleDeletionRequest(physicalProcess, log)
+		change, _ := reconciler.handleDeletionRequest(physicalProcess, stateKey, data, log)
 		return change
 	}
 	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, physicalProcess.Namespace)
@@ -198,7 +204,6 @@ func handlePhysicalProcessNamespace(
 			data.progress = physicalResourceProgressRetryPending
 			data.failureMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
 		}
-		_ = reconciler.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
 		return noChange
 	}
 
@@ -206,9 +211,6 @@ func handlePhysicalProcessNamespace(
 	data.progress = physicalResourceProgressInProgress
 	data.failureReason = ""
 	data.failureMessage = ""
-	if !reconciler.processData.Update(physicalProcess.NamespacedName(), stateKey, data) {
-		return additionalReconciliationNeeded
-	}
 	return handlePhysicalProcessResolve(ctx, reconciler, physicalProcess, data.state, stateKey, data, log)
 }
 
@@ -222,7 +224,7 @@ func handlePhysicalProcessResolve(
 	log logr.Logger,
 ) objectChange {
 	if physicalProcess.DeletionTimestamp != nil && !physicalProcess.DeletionTimestamp.IsZero() {
-		change, _ := reconciler.handleDeletionRequest(physicalProcess, log)
+		change, _ := reconciler.handleDeletionRequest(physicalProcess, stateKey, data, log)
 		return change
 	}
 	if data.progress == physicalResourceProgressFailed {
@@ -245,7 +247,7 @@ func handlePhysicalProcessLaunchState(
 	log logr.Logger,
 ) objectChange {
 	if physicalProcess.DeletionTimestamp != nil && !physicalProcess.DeletionTimestamp.IsZero() {
-		change, _ := reconciler.handleDeletionRequest(physicalProcess, log)
+		change, _ := reconciler.handleDeletionRequest(physicalProcess, stateKey, data, log)
 		return change
 	}
 	if data.progress == physicalResourceProgressInProgress {
@@ -274,7 +276,7 @@ func handlePhysicalProcessRuntime(
 	log logr.Logger,
 ) objectChange {
 	if physicalProcess.DeletionTimestamp != nil && !physicalProcess.DeletionTimestamp.IsZero() {
-		change, _ := reconciler.handleDeletionRequest(physicalProcess, log)
+		change, _ := reconciler.handleDeletionRequest(physicalProcess, stateKey, data, log)
 		return change
 	}
 	if data.progress == physicalResourceProgressExited ||
@@ -293,7 +295,6 @@ func handlePhysicalProcessRuntime(
 		data.progress = physicalResourceProgressMissing
 		data.finishedAt = time.Now()
 		data.failureMessage = ""
-		_ = reconciler.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
 		return noChange
 	}
 	if runningErr != nil {
@@ -302,7 +303,6 @@ func handlePhysicalProcessRuntime(
 		data.progress = physicalResourceProgressRetryPending
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime process: %v", runningErr)
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		_ = reconciler.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
 		return noChange
 	}
 
@@ -314,7 +314,6 @@ func handlePhysicalProcessRuntime(
 	data.state = physicalProcessStateRuntime
 	data.progress = physicalResourceProgressRunning
 	data.failureMessage = ""
-	_ = reconciler.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
 	return noChange
 }
 
@@ -328,7 +327,7 @@ func handlePhysicalProcessStopState(
 	log logr.Logger,
 ) objectChange {
 	if physicalProcess.DeletionTimestamp != nil && !physicalProcess.DeletionTimestamp.IsZero() {
-		change, _ := reconciler.handleDeletionRequest(physicalProcess, log)
+		change, _ := reconciler.handleDeletionRequest(physicalProcess, stateKey, data, log)
 		return change
 	}
 	if data.progress == physicalResourceProgressInProgress {
@@ -345,14 +344,14 @@ func handlePhysicalProcessTerminal(
 	reconciler *PhysicalProcessReconciler,
 	physicalProcess *apiv2.PhysicalProcess,
 	_ physicalProcessState,
-	_ physicalProcessDataStateKey,
-	_ *physicalProcessData,
+	stateKey physicalProcessDataStateKey,
+	data *physicalProcessData,
 	log logr.Logger,
 ) objectChange {
 	if physicalProcess.DeletionTimestamp == nil || physicalProcess.DeletionTimestamp.IsZero() {
 		return noChange
 	}
-	change, _ := reconciler.handleDeletionRequest(physicalProcess, log)
+	change, _ := reconciler.handleDeletionRequest(physicalProcess, stateKey, data, log)
 	return change
 }
 
@@ -366,7 +365,7 @@ func handleUnknownPhysicalProcessState(
 	log logr.Logger,
 ) objectChange {
 	if physicalProcess.DeletionTimestamp != nil && !physicalProcess.DeletionTimestamp.IsZero() {
-		change, _ := reconciler.handleDeletionRequest(physicalProcess, log)
+		change, _ := reconciler.handleDeletionRequest(physicalProcess, stateKey, data, log)
 		return change
 	}
 	invalidState := data.state
@@ -374,7 +373,6 @@ func handleUnknownPhysicalProcessState(
 	data.state = physicalProcessStateInvalid
 	data.progress = physicalResourceProgressFailed
 	data.failureMessage = fmt.Sprintf("Physical process reached invalid reconciliation state %v with progress %v.", invalidState, invalidProgress)
-	_ = reconciler.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
 	return additionalReconciliationNeeded
 }
 
@@ -394,10 +392,9 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 			data.state = physicalProcessStateLaunch
 			data.progress = physicalResourceProgressSkipped
 			data.failureMessage = ""
-			_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
 			return noChange
 		}
-		change, _ := r.schedulePhysicalProcessLaunch(physicalProcess, stateKey, log)
+		change, _ := r.schedulePhysicalProcessLaunch(physicalProcess, stateKey, data, log)
 		return change
 	}
 
@@ -406,7 +403,6 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 		data.state = physicalProcessStateResolve
 		data.progress = physicalResourceProgressFailed
 		data.failureMessage = fmt.Sprintf("Invalid process ID: %v", pidErr)
-		_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
 		return noChange
 	}
 	probedHandle, probeErr := r.processExecutor.FindProcessHandle(pid)
@@ -419,7 +415,6 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 			finishedAt:  time.Now(),
 		}
 		// The runtime identity was never claimed, so the state stays keyed by the resource UID.
-		_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
 		return noChange
 	}
 	if probeErr != nil {
@@ -429,7 +424,6 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime process: %v", probeErr)
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
 		return noChange
 	}
 	if probedHandle.IdentityTime.IsZero() {
@@ -438,7 +432,6 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed
 		data.failureMessage = "Failed to determine the runtime process identity timestamp."
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
 		return noChange
 	}
 	return r.claimPhysicalProcessTracking(physicalProcess, stateKey, data, probedHandle)
@@ -475,7 +468,6 @@ func (r *PhysicalProcessReconciler) claimPhysicalProcessTracking(
 		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessAlreadyTracked
 		data.failureMessage = fmt.Sprintf("Runtime process is already tracked by PhysicalProcess %q.", owner.String())
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		_ = r.processData.Update(physicalProcess.NamespacedName(), oldStateKey, data)
 		return noChange
 	}
 	*data = *claimedData.Clone()
@@ -494,19 +486,18 @@ func (r *PhysicalProcessReconciler) handlePhysicalProcessLaunchFailed(
 		data.handle = process.ProcessHandle{}
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
-		_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
-		change, delay, _ := data.applyTo(physicalProcess)
-		return change, delay
+		return noChange, StandardDelay
 	}
 	if time.Now().Before(data.retryAfter) {
 		return additionalReconciliationNeeded, LongDelay
 	}
-	return r.schedulePhysicalProcessLaunch(physicalProcess, stateKey, log)
+	return r.schedulePhysicalProcessLaunch(physicalProcess, stateKey, data, log)
 }
 
 func (r *PhysicalProcessReconciler) schedulePhysicalProcessLaunch(
 	physicalProcess *apiv2.PhysicalProcess,
 	stateKey physicalProcessDataStateKey,
+	currentData *physicalProcessData,
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
 	data := &physicalProcessData{
@@ -517,6 +508,7 @@ func (r *PhysicalProcessReconciler) schedulePhysicalProcessLaunch(
 	if !r.processData.Update(physicalProcess.NamespacedName(), stateKey, data) {
 		return additionalReconciliationNeeded, StandardDelay
 	}
+	currentData.UpdateFrom(data)
 
 	processSnapshot := physicalProcess.DeepCopy()
 	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
@@ -527,12 +519,10 @@ func (r *PhysicalProcessReconciler) schedulePhysicalProcessLaunch(
 		failedData.progress = physicalResourceProgressRetryPending
 		failedData.failureMessage = fmt.Sprintf("Failed to queue physical process launch: %v", enqueueErr)
 		failedData.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, failedData)
-		change, delay, _ := failedData.applyTo(physicalProcess)
-		return change, delay
+		currentData.UpdateFrom(failedData)
+		return noChange, StandardDelay
 	}
-	change, delay, _ := data.applyTo(physicalProcess)
-	return change, delay
+	return noChange, StandardDelay
 }
 
 func (r *PhysicalProcessReconciler) launchPhysicalProcess(
@@ -708,8 +698,7 @@ func (r *PhysicalProcessReconciler) schedulePhysicalProcessStop(
 	if data.state == physicalProcessStateStop &&
 		data.progress == physicalResourceProgressRetryPending &&
 		time.Now().Before(data.retryAfter) {
-		change, delay, _ := data.applyTo(physicalProcess)
-		return change, delay
+		return additionalReconciliationNeeded, LongDelay
 	}
 
 	stoppingData := data.Clone()
@@ -719,6 +708,7 @@ func (r *PhysicalProcessReconciler) schedulePhysicalProcessStop(
 	if !r.processData.Update(physicalProcess.NamespacedName(), stateKey, stoppingData) {
 		return additionalReconciliationNeeded, StandardDelay
 	}
+	data.UpdateFrom(stoppingData)
 
 	processSnapshot := physicalProcess.DeepCopy()
 	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
@@ -728,12 +718,10 @@ func (r *PhysicalProcessReconciler) schedulePhysicalProcessStop(
 		stoppingData.progress = physicalResourceProgressRetryPending
 		stoppingData.failureMessage = fmt.Sprintf("Failed to queue physical process termination: %v", enqueueErr)
 		stoppingData.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, stoppingData)
-		change, delay, _ := stoppingData.applyTo(physicalProcess)
-		return change, delay
+		data.UpdateFrom(stoppingData)
+		return noChange, StandardDelay
 	}
-	change, delay, _ := stoppingData.applyTo(physicalProcess)
-	return change, delay
+	return noChange, StandardDelay
 }
 
 func (r *PhysicalProcessReconciler) stopPhysicalProcess(
@@ -771,9 +759,10 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 
 func (r *PhysicalProcessReconciler) handleDeletionRequest(
 	physicalProcess *apiv2.PhysicalProcess,
+	stateKey physicalProcessDataStateKey,
+	data *physicalProcessData,
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
-	stateKey, data := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
 	if data != nil && data.operationInProgress() {
 		return additionalReconciliationNeeded, StandardDelay
 	}

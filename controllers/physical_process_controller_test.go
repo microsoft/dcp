@@ -255,8 +255,6 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 	)
 
 	require.Equal(t, noChange, change)
-	_, currentData := reconciler.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
-	require.NotNil(t, currentData)
-	require.Equal(t, physicalResourceProgressMissing, currentData.progress)
-	require.Empty(t, currentData.failureMessage)
+	require.Equal(t, physicalResourceProgressMissing, data.progress)
+	require.Empty(t, data.failureMessage)
 }
