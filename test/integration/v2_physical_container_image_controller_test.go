@@ -46,6 +46,76 @@ func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {
 	require.True(t, containerOrchestrator.HasImage(updatedImage.Status.Image))
 }
 
+func TestV2PhysicalContainerImageControllerRepullsRemovedRuntimeImage(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-repull-removed")
+	sourceImage := "v2-pci-repull-removed-source"
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "repull-removed-image", sourceImage)
+	releasePull := containerOrchestrator.BlockPullImage(sourceImage)
+	defer releasePull()
+	restoreMissing := containerOrchestrator.FailInspectImage(sourceImage, containers.ErrNotFound)
+	defer restoreMissing()
+
+	require.NoError(t, retryOnConflict[apiv2.PhysicalContainerImage](ctx, image.NamespacedName(), func(ctx context.Context, currentImage *apiv2.PhysicalContainerImage) error {
+		if currentImage.Annotations == nil {
+			currentImage.Annotations = map[string]string{}
+		}
+		currentImage.Annotations["test.dcp.microsoft.com/reconcile"] = "runtime-image-removed"
+		return client.Update(ctx, currentImage)
+	}))
+
+	waitPullImageCallCount(t, ctx, sourceImage, 2)
+	waitObjectAssumesState(t, ctx, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerImageReasonPulling, nil
+	})
+
+	restoreMissing()
+	releasePull()
+	readyImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.NotEmpty(t, readyImage.Status.ImageID)
+	require.Equal(t, 2, containerOrchestrator.PullImageCallCount(sourceImage))
+}
+
+func TestV2PhysicalContainerImageControllerRetriesMissingPullResultWithoutRepulling(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-pull-inspect-missing")
+	sourceImage := "v2-pci-pull-inspect-missing-source"
+	restoreInspection := containerOrchestrator.FailInspectImage(sourceImage, containers.ErrNotFound)
+	defer restoreInspection()
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pull-inspect-missing-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{
+			Image: &apiv2.PhysicalContainerImageConfig{
+				Image:      sourceImage,
+				PullPolicy: apiv2.PullPolicyAlways,
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	unknownImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
+	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed)
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
+	require.Never(t, func() bool {
+		return containerOrchestrator.PullImageCallCount(sourceImage) > 1
+	}, 2*time.Second, 250*time.Millisecond)
+
+	restoreInspection()
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
+}
+
 func TestV2PhysicalContainerImageControllerTracksExistingImage(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -69,6 +139,43 @@ func TestV2PhysicalContainerImageControllerTracksExistingImage(t *testing.T) {
 	require.Equal(t, imageID, updatedImage.Status.Image)
 	require.Equal(t, imageID, updatedImage.Status.ImageID)
 	requireReadyCondition(t, updatedImage.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerImageReasonImageAvailable)
+}
+
+func TestV2PhysicalContainerImageControllerReportsRemovedExistingImage(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-removed-existing")
+	imageID, pullErr := containerOrchestrator.PullImage(ctx, containers.PullImageOptions{Image: "v2-pci-removed-existing-source"})
+	require.NoError(t, pullErr)
+	require.NotEmpty(t, imageID)
+
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "removed-existing-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{ImageID: imageID},
+	}
+	require.NoError(t, client.Create(ctx, image))
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+
+	restoreMissing := containerOrchestrator.FailInspectImage(imageID, containers.ErrNotFound)
+	defer restoreMissing()
+	require.NoError(t, retryOnConflict[apiv2.PhysicalContainerImage](ctx, image.NamespacedName(), func(ctx context.Context, currentImage *apiv2.PhysicalContainerImage) error {
+		if currentImage.Annotations == nil {
+			currentImage.Annotations = map[string]string{}
+		}
+		currentImage.Annotations["test.dcp.microsoft.com/reconcile"] = "runtime-image-removed"
+		return client.Update(ctx, currentImage)
+	}))
+
+	failedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
+	require.Empty(t, failedImage.Status.ImageID)
+	require.Empty(t, failedImage.Status.Digest)
+	require.Empty(t, failedImage.Status.Tags)
+	requireReadyCondition(t, failedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound)
 }
 
 func TestV2PhysicalContainerImageControllerReportsMissingExistingImage(t *testing.T) {

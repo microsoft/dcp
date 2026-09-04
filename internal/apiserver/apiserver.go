@@ -352,7 +352,15 @@ func disableOpenApiForLogsSubresource(config *kubeapiserver.RecommendedConfig, o
 
 func addDcpHttpHandlers(config *tiltapiserver.Config, ctx context.Context, log logr.Logger) {
 	originalChainBuilder := config.GenericConfig.BuildHandlerChainFunc
+	namespaceLifecycleGate := newV2NamespaceLifecycleGate()
 	config.GenericConfig.BuildHandlerChainFunc = func(handler http.Handler, c *kubeapiserver.Config) http.Handler {
+		handler = withV2NamespaceLifecycle(
+			handler,
+			namespaceLifecycleGate,
+			c.RequestInfoResolver,
+			c.Serializer,
+			c.MaxRequestBodyBytes,
+		)
 		handler = originalChainBuilder(handler, c)
 		handler = withDcpContextValues(handler, ctx, log)
 		return handler

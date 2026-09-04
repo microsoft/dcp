@@ -10,9 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -20,6 +22,8 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/dcppaths"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -87,6 +91,148 @@ func TestV2NamespaceControllerCleansUpPhysicalContainers(t *testing.T) {
 		ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, images[i])
 		waitContainerMissing(t, ctx, containerIDs[i])
 	}
+	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
+}
+
+func TestV2NamespaceControllerCleansUpContainersWhileProcessDeletionIsBlocked(t *testing.T) {
+	t.Parallel()
+	dcppaths.EnableTestPathProbing()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "v2-ns-independent-cleanup",
+		},
+	}
+	require.NoError(t, client.Create(ctx, namespace))
+	waitV2NamespaceActive(t, ctx, namespace.Name)
+
+	executablePath := "v2-ns-independent-cleanup-command"
+	criteria := internal_testutil.ProcessSearchCriteria{Command: []string{executablePath}}
+	finishExecution := make(chan struct{})
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: criteria,
+		RunCommand: func(*internal_testutil.ProcessExecution) int32 {
+			<-finishExecution
+			return 0
+		},
+		StopError: func(*internal_testutil.ProcessExecution) error {
+			return errors.New("simulated stop failure")
+		},
+	})
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			testProcessExecutor.RemoveAutoExecution(criteria)
+			close(finishExecution)
+		})
+	}
+	defer cleanup()
+
+	physicalProcess := createRunningPhysicalProcess(t, ctx, namespace.Name, "blocked-process", executablePath)
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "independent-image", "independent-image")
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "independent-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:      image.Name,
+				ContainerName: "v2-ns-independent-cleanup-container",
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	runningContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+
+	require.NoError(t, client.Delete(ctx, namespace))
+	waitObjectAssumesState(t, ctx, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalProcessReasonStopFailed, nil
+	})
+
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
+	waitContainerMissing(t, ctx, runningContainer.Status.ContainerID)
+
+	currentProcess := &apiv2.PhysicalProcess{}
+	require.NoError(t, client.Get(ctx, physicalProcess.NamespacedName(), currentProcess))
+
+	cleanup()
+	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
+}
+
+func TestV2NamespaceRejectsResourceCreationAfterDeletionStarts(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespaceName := "v2-ns-create-gate"
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: namespaceName},
+	}
+	require.NoError(t, client.Create(ctx, namespace))
+	waitV2NamespaceActive(t, ctx, namespace.Name)
+
+	pid := int64(2147483647)
+	require.NoError(t, client.Delete(ctx, namespace))
+
+	blockedProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "blocked-process", Namespace: namespaceName},
+		Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
+	}
+	createErr := client.Create(ctx, blockedProcess)
+	require.Error(t, createErr)
+	require.True(t, apierrors.IsForbidden(createErr), "expected forbidden error, got %v", createErr)
+
+	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
+
+	stillBlockedProcess := blockedProcess.DeepCopy()
+	stillBlockedProcess.Name = "still-blocked-process"
+	createAfterDeletionErr := client.Create(ctx, stillBlockedProcess)
+	require.Error(t, createAfterDeletionErr)
+	require.True(t, apierrors.IsForbidden(createAfterDeletionErr), "expected forbidden error, got %v", createAfterDeletionErr)
+
+	replacementNamespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: namespaceName},
+	}
+	require.NoError(t, client.Create(ctx, replacementNamespace))
+	waitV2NamespaceActive(t, ctx, replacementNamespace.Name)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), defaultIntegrationTestTimeout)
+		defer cleanupCancel()
+		_ = client.Delete(cleanupCtx, replacementNamespace)
+	})
+
+	allowedProcess := blockedProcess.DeepCopy()
+	allowedProcess.Name = "allowed-process"
+	require.NoError(t, client.Create(ctx, allowedProcess))
+}
+
+func TestV2NamespaceImmediateDeletionCleansPrecreatedResources(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespaceName := "v2-ns-immediate-delete"
+	pid := int64(2147483647)
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "precreated-process", Namespace: namespaceName},
+		Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
+	}
+	require.NoError(t, client.Create(ctx, physicalProcess))
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: namespaceName},
+	}
+	require.NoError(t, client.Create(ctx, namespace))
+	require.Contains(t, namespace.Finalizers, apiv2.NamespaceFinalizer)
+	require.NoError(t, client.Delete(ctx, namespace))
+
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, physicalProcess)
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
 }
 

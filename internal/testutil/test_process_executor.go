@@ -219,22 +219,42 @@ func (e *TestProcessExecutor) CheckProcessRunning(handle process.ProcessHandle) 
 
 	i := e.findByPid(handle.Pid)
 	if i == NotFound {
-		return fmt.Errorf("no process with PID %d found", handle.Pid)
+		return fmt.Errorf("no process with PID %d found: %w", handle.Pid, process.ErrorProcessNotFound)
 	}
 
 	execution := e.Executions[i]
 	if !handle.IdentityTime.IsZero() && !osutil.Within(handle.IdentityTime, execution.StartedAt, process.ProcessIdentityTimeMaximumDifference) {
-		return fmt.Errorf("process start time mismatch for PID %d: expected %s, actual %s",
+		return fmt.Errorf("%w for PID %d: expected %s, actual %s",
+			process.ErrProcessIdentityMismatch,
 			handle.Pid,
 			handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			execution.StartedAt.Format(osutil.RFC3339MiliTimestampFormat),
 		)
 	}
 	if execution.Finished() {
-		return fmt.Errorf("process with PID %d is not running", handle.Pid)
+		return fmt.Errorf("process with PID %d is not running: %w", handle.Pid, process.ErrorProcessNotFound)
 	}
 
 	return nil
+}
+
+// FindProcessHandle resolves a PID into a handle for a process this executor knows about,
+// letting tests spoof discovery of processes that were not started by the code under test.
+func (e *TestProcessExecutor) FindProcessHandle(pid process.Pid_t) (process.ProcessHandle, error) {
+	e.m.RLock()
+	defer e.m.RUnlock()
+
+	i := e.findByPid(pid)
+	if i == NotFound {
+		return process.ProcessHandle{Pid: process.UnknownPID}, fmt.Errorf("no process with PID %d found: %w", pid, process.ErrorProcessNotFound)
+	}
+
+	execution := e.Executions[i]
+	if execution.Finished() {
+		return process.ProcessHandle{Pid: process.UnknownPID}, fmt.Errorf("process with PID %d is not running: %w", pid, process.ErrorProcessNotFound)
+	}
+
+	return process.NewHandle(pid, execution.StartedAt), nil
 }
 
 // Called by tests to simulate a process exit with specific exit code.

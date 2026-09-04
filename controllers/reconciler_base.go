@@ -22,6 +22,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
 	ctrl_handler "sigs.k8s.io/controller-runtime/pkg/handler"
+	ctrl_reconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/microsoft/dcp/internal/telemetry"
@@ -79,6 +80,35 @@ func NewReconcilerBase[T commonapi.ObjectStruct, PT commonapi.PCopyableObjectStr
 		rb.doScheduleReconciliation(name)
 	})
 	return rb
+}
+
+func (rb *ReconcilerBase[T, PT]) requestReconcileForNamespace(
+	listPrototype commonapi.ListWithObjectItems[T, PT],
+) ctrl_handler.MapFunc {
+	return func(ctx context.Context, obj ctrl_client.Object) []ctrl_reconcile.Request {
+		namespace := obj.GetName()
+		objectList, validList := listPrototype.DeepCopyObject().(commonapi.ListWithObjectItems[T, PT])
+		if !validList {
+			listErr := fmt.Errorf("list prototype %T returned an incompatible deep copy", listPrototype)
+			rb.Log.Error(listErr, "Failed to create object list for namespace", "Namespace", namespace, "Kind", rb.kind)
+			return nil
+		}
+
+		listErr := rb.List(ctx, objectList, ctrl_client.InNamespace(namespace))
+		if listErr != nil {
+			rb.Log.Error(listErr, "Failed to list objects for namespace", "Namespace", namespace, "Kind", rb.kind)
+			return nil
+		}
+
+		items := objectList.GetItems()
+		requests := make([]ctrl_reconcile.Request, len(items))
+		for i := range items {
+			requests[i] = ctrl_reconcile.Request{NamespacedName: items[i].NamespacedName()}
+		}
+
+		rb.Log.V(1).Info("Namespace updated, requesting object reconciliation", "Namespace", namespace, "Kind", rb.kind, "Objects", len(requests))
+		return requests
+	}
 }
 
 // Marks the startup of another reconciliation.

@@ -15,32 +15,41 @@ import (
 
 type physicalContainerNetworkDataStateKey string
 
-type physicalContainerNetworkOperationProgress int
+type physicalContainerNetworkState int
 
 const (
-	physicalContainerNetworkOperationInProgress physicalContainerNetworkOperationProgress = iota + 1
-	physicalContainerNetworkOperationCompleted
-	physicalContainerNetworkOperationRetryPending
-	physicalContainerNetworkOperationFailed
+	physicalContainerNetworkStateNamespace physicalContainerNetworkState = iota + 1
+	physicalContainerNetworkStateResolve
+	physicalContainerNetworkStateCreate
+	physicalContainerNetworkStateReplace
+	physicalContainerNetworkStateRuntime
+	physicalContainerNetworkStateRemove
+)
+
+const (
+	physicalContainerNetworkOperationInProgress   = physicalResourceProgressInProgress
+	physicalContainerNetworkOperationCompleted    = physicalResourceProgressCompleted
+	physicalContainerNetworkOperationRetryPending = physicalResourceProgressRetryPending
+	physicalContainerNetworkOperationFailed       = physicalResourceProgressFailed
 )
 
 type physicalContainerNetworkData struct {
-	conditionReason apiv2.ConditionReason
-	progress        physicalContainerNetworkOperationProgress
-	networkID       string
-	failureMessage  string
-	retryAfter      time.Time
-	resolveByName   bool
+	state          physicalContainerNetworkState
+	progress       physicalResourceProgress
+	networkID      string
+	failureMessage string
+	retryAfter     time.Time
+	resolveByName  bool
 }
 
 func (data *physicalContainerNetworkData) Clone() *physicalContainerNetworkData {
 	return &physicalContainerNetworkData{
-		conditionReason: data.conditionReason,
-		progress:        data.progress,
-		networkID:       data.networkID,
-		failureMessage:  data.failureMessage,
-		retryAfter:      data.retryAfter,
-		resolveByName:   data.resolveByName,
+		state:          data.state,
+		progress:       data.progress,
+		networkID:      data.networkID,
+		failureMessage: data.failureMessage,
+		retryAfter:     data.retryAfter,
+		resolveByName:  data.resolveByName,
 	}
 }
 
@@ -50,8 +59,8 @@ func (data *physicalContainerNetworkData) UpdateFrom(other *physicalContainerNet
 	}
 
 	updated := false
-	if data.conditionReason != other.conditionReason {
-		data.conditionReason = other.conditionReason
+	if data.state != other.state {
+		data.state = other.state
 		updated = true
 	}
 	if data.progress != other.progress {
@@ -84,39 +93,102 @@ func (data *physicalContainerNetworkData) applyTo(network *apiv2.PhysicalContain
 		change |= setValue(&network.Status.NetworkID, data.networkID)
 	}
 
-	switch data.conditionReason {
-	case apiv2.PhysicalContainerNetworkReasonCreating:
-		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhasePending)
-		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonCreating, "Runtime network creation is in progress.")
-		return change
-	case apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoving:
-		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhasePending)
-		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoving, "Runtime network removal is in progress.")
-		return change
-	case apiv2.PhysicalContainerNetworkReasonCreateFailed,
-		apiv2.PhysicalContainerNetworkReasonExistingNetworkReplacementFailed:
-		if data.progress == physicalContainerNetworkOperationRetryPending {
-			change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhasePending)
-		} else {
-			change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
-		}
-		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
-		return change
-	case apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable:
-		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
-		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
-		return change
-	case apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed:
-		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhasePending)
-		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
-		return change
-	case apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoved:
-		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhasePending)
-		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, data.conditionReason, "Runtime network removal completed.")
-		return change
-	default:
-		return change
-	}
+	stateChange, _, _ := physicalContainerNetworkProjections.apply(
+		data.state,
+		data.progress,
+		data.failureMessage,
+		&network.Status.Phase,
+		&network.Status.Conditions,
+		network.Generation,
+	)
+	return change | stateChange
+}
+
+var physicalContainerNetworkProjections = physicalResourceProjectionTable[physicalContainerNetworkState, apiv2.PhysicalContainerNetworkPhase]{
+	invalidPhase: apiv2.PhysicalContainerNetworkPhaseUnknown,
+	projections: map[physicalResourceProjectionKey[physicalContainerNetworkState]]physicalResourceProjection[apiv2.PhysicalContainerNetworkPhase]{
+		{state: physicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotFound}: {
+			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotFound,
+		},
+		{state: physicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotReady}: {
+			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
+		},
+		{state: physicalContainerNetworkStateNamespace, progress: physicalResourceProgressTerminating}: {
+			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonNamespaceTerminating,
+		},
+		{state: physicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotActive}: {
+			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotActive,
+		},
+		{state: physicalContainerNetworkStateNamespace, progress: physicalResourceProgressRetryPending}: {
+			phase: apiv2.PhysicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed,
+			requeue:         true, requeueDelay: LongDelay,
+		},
+		{state: physicalContainerNetworkStateCreate, progress: physicalResourceProgressInProgress}: {
+			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerNetworkReasonCreating,
+			message:         "Runtime network creation is in progress.",
+		},
+		{state: physicalContainerNetworkStateCreate, progress: physicalResourceProgressCompleted}: {
+			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerNetworkReasonCreated,
+			message:         "Runtime network creation completed.",
+		},
+		{state: physicalContainerNetworkStateCreate, progress: physicalResourceProgressRetryPending}: {
+			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerNetworkReasonCreateFailed,
+			requeue:         true, requeueDelay: LongDelay,
+		},
+		{state: physicalContainerNetworkStateCreate, progress: physicalResourceProgressFailed}: {
+			phase: apiv2.PhysicalContainerNetworkPhaseFailed, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerNetworkReasonCreateFailed,
+		},
+		{state: physicalContainerNetworkStateReplace, progress: physicalResourceProgressRetryPending}: {
+			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerNetworkReasonExistingNetworkReplacementFailed,
+			requeue:         true, requeueDelay: LongDelay,
+		},
+		{state: physicalContainerNetworkStateRuntime, progress: physicalResourceProgressCompleted}: {
+			phase: apiv2.PhysicalContainerNetworkPhaseReady, conditionStatus: metav1.ConditionTrue,
+			conditionReason: apiv2.PhysicalContainerNetworkReasonNetworkAvailable,
+			message:         "Runtime network is available.",
+			requeue:         true, requeueDelay: MonitoringDelay,
+		},
+		{state: physicalContainerNetworkStateRuntime, progress: physicalResourceProgressMissing}: {
+			phase: apiv2.PhysicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing,
+			message:         "Runtime network was not found.",
+			requeue:         true, requeueDelay: MonitoringDelay,
+		},
+		{state: physicalContainerNetworkStateRuntime, progress: physicalResourceProgressRetryPending}: {
+			phase: apiv2.PhysicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerNetworkReasonRuntimeNetworkInspectFailed,
+			requeue:         true, requeueDelay: LongDelay,
+		},
+		{state: physicalContainerNetworkStateRemove, progress: physicalResourceProgressInProgress}: {
+			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoving,
+			message:         "Runtime network removal is in progress.",
+		},
+		{state: physicalContainerNetworkStateRemove, progress: physicalResourceProgressRetryPending}: {
+			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed,
+			requeue:         true, requeueDelay: LongDelay,
+		},
+		{state: physicalContainerNetworkStateRemove, progress: physicalResourceProgressCompleted}: {
+			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoved,
+			message:         "Runtime network removal completed.",
+		},
+		{state: physicalContainerNetworkStateReplace, progress: physicalResourceProgressFailed}: {
+			phase: apiv2.PhysicalContainerNetworkPhaseFailed, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
+		},
+	},
 }
 
 func physicalContainerNetworkDataKey(network *apiv2.PhysicalContainerNetwork) physicalContainerNetworkDataStateKey {

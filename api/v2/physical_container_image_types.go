@@ -114,10 +114,10 @@ type PhysicalContainerImageStatus struct {
 	// +optional
 	Phase PhysicalContainerImagePhase `json:"phase,omitempty"`
 
-	// Image is the image reference that containers should use.
+	// Image is the source image reference or build output tag represented by this resource.
 	Image string `json:"image,omitempty"`
 
-	// ImageID is the runtime image ID.
+	// ImageID is the immutable runtime image ID used by dependent physical containers.
 	ImageID string `json:"imageID,omitempty"`
 
 	// Digest is the runtime image digest, when available.
