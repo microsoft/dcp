@@ -1222,7 +1222,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		}
 	}()
 
-	stdoutFile, stdoutErr := usvc_io.OpenTempFile(fmt.Sprintf("%s_out_%s", tunnelProxy.Name, tunnelProxy.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdoutFile, stdoutErr := usvc_io.CreateNewTempFile(fmt.Sprintf("%s_out_%s", tunnelProxy.Name, tunnelProxy.UID), osutil.PermissionOnlyOwnerReadWrite)
 	if stdoutErr != nil {
 		startFailed = true
 		log.Error(stdoutErr, "Failed to create stdout temp file for container tunnel server proxy")
@@ -1234,7 +1234,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		pd.serverStdout = stdoutFile
 	}
 
-	stderrFile, stderrErr := usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", tunnelProxy.Name, tunnelProxy.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stderrFile, stderrErr := usvc_io.CreateNewTempFile(fmt.Sprintf("%s_err_%s", tunnelProxy.Name, tunnelProxy.UID), osutil.PermissionOnlyOwnerReadWrite)
 	if stderrErr != nil {
 		startFailed = true
 		log.Error(stderrErr, "Failed to create stderr temp file for container tunnel server proxy")
@@ -1303,7 +1303,7 @@ func readServerProxyConfig(ctx context.Context, path string) (dcptun.TunnelProxy
 	defer configCtxCancel()
 
 	config, err := resiliency.RetryGet(configCtx, backoff.NewConstantBackOff(200*time.Millisecond), func() (dcptun.TunnelProxyConfig, error) {
-		f, fErr := usvc_io.OpenFile(path, os.O_RDONLY, 0)
+		f, fErr := usvc_io.OpenFileForReading(path, osutil.PermissionOnlyOwnerReadWrite)
 		if fErr != nil {
 			return dcptun.TunnelProxyConfig{}, fErr
 		}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
@@ -50,7 +52,7 @@ func TestResourceSink(t *testing.T) {
 
 	// logger.flush() does not guarantee that subsequent reads will see all the data immediately
 	require.EventuallyWithTf(t, func(c *assert.CollectT) {
-		file, fileErr := usvc_io.OpenFile(expectedResourceFilePath, os.O_RDONLY, 0)
+		file, fileErr := usvc_io.OpenFileForReading(expectedResourceFilePath, osutil.PermissionOnlyOwnerReadWrite)
 		require.NoError(c, fileErr)
 		if fileErr != nil {
 			return
@@ -103,7 +105,7 @@ func TestResourceSinkNoResourceId(t *testing.T) {
 
 	// logger.flush() does not guarantee that subsequent reads will see all the data immediately
 	require.EventuallyWithTf(t, func(c *assert.CollectT) {
-		file, fileErr := usvc_io.OpenFile(expectedResourceFilePath, os.O_RDONLY, 0)
+		file, fileErr := usvc_io.OpenFileForReading(expectedResourceFilePath, osutil.PermissionOnlyOwnerReadWrite)
 		require.NoError(c, fileErr)
 		if fileErr != nil {
 			return
@@ -155,4 +157,31 @@ func TestReleaseResourceLogsInFolder(t *testing.T) {
 	require.NoError(t, readErr)
 	require.Contains(t, string(contents), "keep this resource log")
 	require.Contains(t, string(contents), "resource logging is still enabled")
+}
+
+func TestResourceSinkResolvesRelativeFolder(t *testing.T) {
+	t.Parallel()
+
+	workingDir, workingDirErr := os.Getwd()
+	require.NoError(t, workingDirErr)
+	outputDir, outputDirErr := os.MkdirTemp(workingDir, "resource-sink-relative-folder-*")
+	require.NoError(t, outputDirErr)
+	defer func() {
+		require.NoError(t, os.RemoveAll(outputDir))
+	}()
+	relativeOutputDir, relativePathErr := filepath.Rel(workingDir, outputDir)
+	require.NoError(t, relativePathErr)
+	resourceIdSuffix, suffixErr := randdata.MakeRandomString(8)
+	require.NoError(t, suffixErr)
+	resourceId := "resource-sink-relative-folder-" + string(resourceIdSuffix)
+
+	log := New("resource-sink-relative-folder").WithResourceSinkInto(relativeOutputDir)
+	log.Logger.WithValues(RESOURCE_LOG_STREAM_ID, resourceId).Info("relative resource log")
+	log.Flush()
+	defer ReleaseResourceLog(resourceId)
+
+	expectedPath := makeResourceLogPath(resourceId, outputDir)
+	require.EventuallyWithTf(t, func(c *assert.CollectT) {
+		require.FileExists(c, expectedPath)
+	}, 10*time.Second, 200*time.Millisecond, "Expected relative resource log path to be resolved")
 }

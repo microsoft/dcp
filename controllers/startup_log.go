@@ -22,7 +22,7 @@ import (
 // Having a shared writer enables separation of logs from multiple startup activities
 // (image build, container creation, container start, network configuration).
 type startupLog struct {
-	file        *os.File
+	file        *usvc_io.AppendFile
 	writer      usvc_io.ParagraphWriter
 	closeOnce   func() error
 	disposeOnce func() error
@@ -39,7 +39,7 @@ func newStartupLog(ctr *apiv1.Container, logSource apiv1.LogStreamSource) (*star
 		return nil, fmt.Errorf("unknown log source %v", logSource) // Should never happen
 	}
 
-	file, err := usvc_io.OpenTempFile(fmt.Sprintf(fileNameTemplate, ctr.Name, ctr.UID), os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
+	file, err := usvc_io.OpenOrCreateTempFileForAppending(fmt.Sprintf(fileNameTemplate, ctr.Name, ctr.UID), osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		return nil, err
 	}

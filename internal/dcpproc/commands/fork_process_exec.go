@@ -26,6 +26,13 @@ const (
 	// the arguments so that the child keeps the argv[0] the caller asked for.
 	execPathFlagName = "exec-path"
 
+	// The flag carrying the caller's effective GODEBUG value. Its presence distinguishes an
+	// explicitly empty value from an unset variable.
+	targetGoDebugFlagName = "target-godebug"
+
+	goDebugEnvVar              = "GODEBUG"
+	asyncPreemptionGoDebugName = "asyncpreemptoff"
+
 	// The descriptor 'fork-process' passes as the only extra file, on which this command reports
 	// whether the exec succeeded. It is the first descriptor after the standard streams.
 	execStatusFd = 3
@@ -36,7 +43,10 @@ const (
 	execFailedExitCode = 127
 )
 
-var execPath string
+var (
+	execPath      string
+	targetGoDebug string
+)
 
 // NewForkProcessExecCommand creates the 'fork-process-exec' command, which replaces itself with
 // the requested image after clearing the signal dispositions inherited from the Go runtime.
@@ -54,6 +64,7 @@ func NewForkProcessExecCommand(log logr.Logger) (*cobra.Command, error) {
 	}
 
 	forkProcessExecCmd.Flags().StringVar(&execPath, execPathFlagName, "", "Resolved path of the program to execute")
+	forkProcessExecCmd.Flags().StringVar(&targetGoDebug, targetGoDebugFlagName, "", "GODEBUG value to restore for the requested program")
 
 	return forkProcessExecCmd, nil
 }
@@ -67,7 +78,7 @@ func validateForkProcessExecArgs(_ *cobra.Command, args []string) error {
 }
 
 func forkProcessExec(log logr.Logger) func(cmd *cobra.Command, args []string) error {
-	return func(_ *cobra.Command, args []string) error {
+	return func(cmd *cobra.Command, args []string) error {
 		args = trimForkProcessArgSeparator(args)
 
 		if execPath == "" {
@@ -77,6 +88,13 @@ func forkProcessExec(log logr.Logger) func(cmd *cobra.Command, args []string) er
 		log = log.WithName("ForkProcessExec").WithValues(
 			"Path", execPath,
 			"Args", args[1:],
+		)
+
+		targetEnv := setEnvironmentVariable(
+			os.Environ(),
+			goDebugEnvVar,
+			targetGoDebug,
+			cmd.Flags().Changed(targetGoDebugFlagName),
 		)
 
 		// 'fork-process' waits for this descriptor to close, which is how a successful execve is
@@ -90,7 +108,7 @@ func forkProcessExec(log logr.Logger) func(cmd *cobra.Command, args []string) er
 		process.ResetSignalDispositions()
 
 		// Exec only returns when it fails; on success this process becomes the requested program.
-		execErr := syscall.Exec(execPath, args, os.Environ())
+		execErr := syscall.Exec(execPath, args, targetEnv)
 
 		var execErrno syscall.Errno
 		if !errors.As(execErr, &execErrno) {

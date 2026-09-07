@@ -11,188 +11,459 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"unsafe"
 
 	"github.com/microsoft/dcp/pkg/osutil"
 	"golang.org/x/sys/windows"
 )
 
-// Open a file on Windows. If the process is running as an administrator, we want to ensure that
-// the file is only readable by other elevated processes. If not running as administrator, we
-// simply use the standard os.OpenFile function.
-func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
-	if flag == os.O_RDONLY {
-		// If we are only reading the file, we don't need to do anything special
-		return os.OpenFile(name, flag, perm)
+type restrictedFileOpenMode uint8
+
+const (
+	restrictedFileRead restrictedFileOpenMode = iota
+	restrictedFileCreateNew
+	restrictedFileOpenOrCreate
+	restrictedFileCreateOrTruncate
+	restrictedFileWriteOrTruncate
+	restrictedFileAppend
+
+	ntFileOpened  = 1
+	ntFileCreated = 2
+)
+
+type restrictedFileAccessEntry struct {
+	sid  *windows.SID
+	mask windows.ACCESS_MASK
+}
+
+func openFileForReading(name string, perm os.FileMode) (*os.File, error) {
+	return openFile(name, restrictedFileRead, perm)
+}
+
+func createNewFile(name string, perm os.FileMode) (*os.File, error) {
+	return openFile(name, restrictedFileCreateNew, perm)
+}
+
+func ensureFile(name string, perm os.FileMode) (*os.File, error) {
+	return openFile(name, restrictedFileOpenOrCreate, perm)
+}
+
+func ensureEmptyFile(name string, perm os.FileMode) (*os.File, error) {
+	return openFile(name, restrictedFileCreateOrTruncate, perm)
+}
+
+func ensureEmptyFileForWriting(name string, perm os.FileMode) (*os.File, error) {
+	return openFile(name, restrictedFileWriteOrTruncate, perm)
+}
+
+func openOrCreateFileForAppending(name string, perm os.FileMode) (*AppendFile, error) {
+	file, openErr := openFile(name, restrictedFileAppend, perm)
+	if openErr != nil {
+		return nil, openErr
+	}
+	return newAppendFile(file), nil
+}
+
+func openFile(name string, mode restrictedFileOpenMode, perm os.FileMode) (*os.File, error) {
+	isElevated, elevationErr := osutil.IsAdmin()
+	if elevationErr != nil {
+		return nil, elevationErr
+	}
+	if !isElevated {
+		return os.OpenFile(name, standardFileFlags(mode), perm)
 	}
 
-	// Get the actual token for the process
-	var processToken windows.Token
-	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &processToken); err != nil {
-		return nil, err
+	principals, principalErr := currentRestrictedDirectoryPrincipals()
+	if principalErr != nil {
+		return nil, principalErr
 	}
-	defer processToken.Close()
+	return openRestrictedFile(name, mode, perm, principals)
+}
 
-	// Get the SID for the Administrators group
-	adminSid, err := osutil.GetBuiltInSid(windows.DOMAIN_ALIAS_RID_ADMINS)
-	if err != nil {
-		return nil, err
+func standardFileFlags(mode restrictedFileOpenMode) int {
+	switch mode {
+	case restrictedFileRead:
+		return os.O_RDONLY
+	case restrictedFileCreateNew:
+		return os.O_RDWR | os.O_CREATE | os.O_EXCL
+	case restrictedFileOpenOrCreate:
+		return os.O_RDWR | os.O_CREATE
+	case restrictedFileCreateOrTruncate:
+		return os.O_RDWR | os.O_CREATE | os.O_TRUNC
+	case restrictedFileWriteOrTruncate:
+		return os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	case restrictedFileAppend:
+		return os.O_WRONLY | os.O_CREATE | os.O_APPEND
+	default:
+		panic(fmt.Sprintf("unsupported file open mode %d", mode))
 	}
+}
+
+func openRestrictedFile(
+	name string,
+	mode restrictedFileOpenMode,
+	perm os.FileMode,
+	principals restrictedDirectoryPrincipals,
+) (*os.File, error) {
+	if !filepath.IsAbs(name) {
+		return nil, fmt.Errorf("restricted files require an absolute path on a fixed local drive: %q", name)
+	}
+	absoluteName := filepath.Clean(name)
+	volumeName := filepath.VolumeName(absoluteName)
+	if len(volumeName) != 2 || volumeName[1] != ':' {
+		return nil, fmt.Errorf("restricted files require an absolute path on a fixed local drive: %q", name)
+	}
+	if strings.Contains(strings.TrimPrefix(absoluteName, volumeName), ":") {
+		return nil, fmt.Errorf("alternate data streams are not supported: %q", name)
+	}
+	if componentErr := validateRestrictedFilePathComponents(
+		strings.TrimPrefix(absoluteName, volumeName+`\`),
+	); componentErr != nil {
+		return nil, fmt.Errorf("invalid restricted file path %q: %w", name, componentErr)
+	}
+	driveRoot, driveRootErr := windows.UTF16PtrFromString(volumeName + `\`)
+	if driveRootErr != nil {
+		return nil, fmt.Errorf("creating drive root path %q: %w", volumeName, driveRootErr)
+	}
+	if driveType := windows.GetDriveType(driveRoot); driveType != windows.DRIVE_FIXED {
+		return nil, fmt.Errorf("restricted files require a fixed local drive, got drive type %d: %q", driveType, name)
+	}
+	var fileSystemFlags uint32
+	if volumeErr := windows.GetVolumeInformation(
+		driveRoot,
+		nil,
+		0,
+		nil,
+		nil,
+		&fileSystemFlags,
+		nil,
+		0,
+	); volumeErr != nil {
+		return nil, fmt.Errorf("getting file system capabilities for %q: %w", volumeName, volumeErr)
+	}
+	if fileSystemFlags&windows.FILE_PERSISTENT_ACLS == 0 {
+		return nil, fmt.Errorf("restricted files require a file system with persistent ACLs: %q", name)
+	}
+
+	objectName, objectNameErr := windows.NewNTUnicodeString(`\??\` + absoluteName)
+	if objectNameErr != nil {
+		return nil, fmt.Errorf("creating native file path %q: %w", name, objectNameErr)
+	}
+	securityDescriptor, securityDescriptorErr := restrictedFileSecurityDescriptor(principals, perm)
+	if securityDescriptorErr != nil {
+		return nil, securityDescriptorErr
+	}
+
+	objectAttributes := windows.OBJECT_ATTRIBUTES{
+		Length:             uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
+		ObjectName:         objectName,
+		Attributes:         windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE,
+		SecurityDescriptor: securityDescriptor,
+	}
+	var ioStatus windows.IO_STATUS_BLOCK
+	var handle windows.Handle
+	openErr := windows.NtCreateFile(
+		&handle,
+		restrictedFileAccess(mode),
+		&objectAttributes,
+		&ioStatus,
+		nil,
+		windows.FILE_ATTRIBUTE_NORMAL,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		restrictedFileDisposition(mode),
+		windows.FILE_NON_DIRECTORY_FILE|windows.FILE_SYNCHRONOUS_IO_NONALERT,
+		0,
+		0,
+	)
+	runtime.KeepAlive(objectName)
+	runtime.KeepAlive(securityDescriptor)
+	runtime.KeepAlive(principals)
+	if openErr != nil {
+		return nil, restrictedFilePathError(name, openErr)
+	}
+
+	closeHandle := true
 	defer func() {
-		if freeSidErr := windows.FreeSid(adminSid); err != nil {
-			fmt.Fprintln(os.Stderr, fmt.Errorf("could not free sid: %w", freeSidErr))
+		if closeHandle {
+			_ = windows.CloseHandle(handle)
 		}
 	}()
 
-	// Get a virtual token for the process (not the actual token) to determine if the user is an admin
-	adminToken := windows.Token(0)
-	isAdmin, err := adminToken.IsMember(adminSid)
-	if err != nil {
-		return nil, err
+	switch ioStatus.Information {
+	case ntFileOpened, ntFileCreated:
+	default:
+		return nil, fmt.Errorf("opening restricted file %q returned unexpected status %d", name, ioStatus.Information)
 	}
 
-	if !isAdmin {
-		return os.OpenFile(name, flag, perm)
+	if validationErr := validateRestrictedFile(handle, perm, principals); validationErr != nil {
+		return nil, fmt.Errorf("validating restricted file %q: %w", name, validationErr)
+	}
+	if mode == restrictedFileCreateOrTruncate || mode == restrictedFileWriteOrTruncate {
+		if truncateErr := windows.Ftruncate(handle, 0); truncateErr != nil {
+			return nil, fmt.Errorf("truncating restricted file %q: %w", name, truncateErr)
+		}
 	}
 
-	// Get the user who ran the process so we can get the SID
-	tokenUser, err := processToken.GetTokenUser()
-	if err != nil {
-		return nil, err
+	file := os.NewFile(uintptr(handle), name)
+	if file == nil {
+		return nil, fmt.Errorf("creating Go file for restricted file %q", name)
 	}
-
-	// Get the SID for the Local System account
-	systemSid, err := windows.CreateWellKnownSid(windows.WinLocalSystemSid)
-	if err != nil {
-		return nil, err
-	}
-
-	var standardUserAccessPermissions windows.ACCESS_MASK = windows.READ_CONTROL | windows.DELETE | windows.FILE_READ_ATTRIBUTES | windows.FILE_READ_EA
-
-	// You can use "everyone read (0004)" permission to enable read access to the file
-	// for the same user when the user is running in non-elevated mode.
-	if perm&osutil.PermissionCheckEveryoneRead == osutil.PermissionCheckEveryoneRead {
-		standardUserAccessPermissions |= windows.FILE_GENERIC_READ
-	}
-
-	// You can use "everyone write (0002)" permission to enable write access to the file
-	// for the same user when the user is running in non-elevated mode.
-	if perm&osutil.PermissionCheckEveryoneWrite == osutil.PermissionCheckEveryoneWrite {
-		standardUserAccessPermissions |= windows.FILE_GENERIC_WRITE
-	}
-
-	// You can use "everyone execute (0001)" permission to enable execute access tot he file
-	// for the same user when the user is running in non-elevated mode.
-	if perm&osutil.PermissionCheckEveryoneExecute == osutil.PermissionCheckEveryoneExecute {
-		standardUserAccessPermissions |= windows.FILE_GENERIC_EXECUTE
-
-	}
-
-	var explicitEntries []windows.EXPLICIT_ACCESS
-	// Add an ACL entry for the user running the process
-	explicitEntries = append(
-		explicitEntries,
-		windows.EXPLICIT_ACCESS{
-			// Grant the user permission to read the ACL list for the file, read attributes, and delete the file
-			// DO NOT grant read permission as we want to limit access to the file to elevated processes only
-			AccessPermissions: standardUserAccessPermissions,
-			AccessMode:        windows.GRANT_ACCESS,
-			Inheritance:       windows.NO_INHERITANCE,
-			Trustee: windows.TRUSTEE{
-				TrusteeForm:  windows.TRUSTEE_IS_SID,
-				TrusteeType:  windows.TRUSTEE_IS_USER,
-				TrusteeValue: windows.TrusteeValueFromSID(tokenUser.User.Sid),
-			},
-		},
-	)
-
-	// Add an ACL entry for the System account
-	explicitEntries = append(
-		explicitEntries,
-		windows.EXPLICIT_ACCESS{
-			// Grant the System SID standard permissions to the file
-			AccessPermissions: windows.STANDARD_RIGHTS_ALL | windows.GENERIC_ALL,
-			AccessMode:        windows.GRANT_ACCESS,
-			Inheritance:       windows.NO_INHERITANCE,
-			Trustee: windows.TRUSTEE{
-				TrusteeForm:  windows.TRUSTEE_IS_SID,
-				TrusteeType:  windows.TRUSTEE_IS_GROUP,
-				TrusteeValue: windows.TrusteeValueFromSID(systemSid),
-			},
-		},
-	)
-
-	// And an ACL entry for the Administrators group
-	explicitEntries = append(
-		explicitEntries,
-		windows.EXPLICIT_ACCESS{
-			// Grant the Administrators SID standard permissions to the file
-			AccessPermissions: windows.STANDARD_RIGHTS_ALL | windows.GENERIC_ALL,
-			AccessMode:        windows.GRANT_ACCESS,
-			Inheritance:       windows.NO_INHERITANCE,
-			Trustee: windows.TRUSTEE{
-				TrusteeForm:  windows.TRUSTEE_IS_SID,
-				TrusteeType:  windows.TRUSTEE_IS_GROUP,
-				TrusteeValue: windows.TrusteeValueFromSID(adminSid),
-			},
-		},
-	)
-
-	acl, err := windows.ACLFromEntries(explicitEntries, nil)
-	if err != nil {
-		return nil, fmt.Errorf("could not create acl: %w", err)
-	}
-
-	sd, err := windows.NewSecurityDescriptor()
-	if err != nil {
-		return nil, fmt.Errorf("could not create security descriptor: %w", err)
-	}
-
-	if err = sd.SetDACL(acl, true, false); err != nil {
-		return nil, fmt.Errorf("could not set dacl: %w", err)
-	}
-
-	// Ensure that the Security Descriptor applies the ACL and does not inherit permissions from the parent directory
-	if err = sd.SetControl(windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED); err != nil {
-		return nil, fmt.Errorf("could not set control flag: %w", err)
-	}
-
-	sa := &windows.SecurityAttributes{
-		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
-		SecurityDescriptor: sd,
-	}
-
-	pathHandle, pathErr := windows.UTF16PtrFromString(name)
-	if pathErr != nil {
-		return nil, fmt.Errorf("could not create path handle: %w", pathErr)
-	}
-
-	// Create the new file with the given ACL rules
-	var access uint32 = windows.GENERIC_WRITE
-	if flag&os.O_RDWR == os.O_RDWR {
-		access |= windows.GENERIC_READ
-	}
-	fileHandle, fileCreateErr := windows.CreateFile(pathHandle, access, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, sa, windows.CREATE_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL, 0)
-	if fileCreateErr != nil {
-		return nil, fmt.Errorf("could not create file: %w", fileCreateErr)
-	}
-
-	return os.NewFile(uintptr(fileHandle), name), nil
+	closeHandle = false
+	return file, nil
 }
 
-// Write to a file on Windows. If the process is running as an administrator, we want to ensure that
-// the file is only readable by other elevated processes. If not running as administrator, we
-// simply use the standard os.WriteFile function.
-func WriteFile(name string, data []byte, perm os.FileMode) error {
-	file, err := OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
+func validateRestrictedFilePathComponents(relativePath string) error {
+	for _, component := range strings.Split(relativePath, `\`) {
+		if component == "" {
+			return fmt.Errorf("path contains an empty component")
+		}
+		if strings.HasSuffix(component, ".") || strings.HasSuffix(component, " ") {
+			return fmt.Errorf("path component %q ends with a space or period", component)
+		}
+		if strings.ContainsAny(component, `<>:"/|?*`) {
+			return fmt.Errorf("path component %q contains a reserved character", component)
+		}
+		for _, character := range component {
+			if character < 32 {
+				return fmt.Errorf("path component %q contains a control character", component)
+			}
+		}
 
-	_, err = file.Write(data)
-	if err1 := file.Close(); err1 != nil || err != nil {
-		return errors.Join(err, err1)
+		baseName := component
+		if extensionIndex := strings.IndexByte(baseName, '.'); extensionIndex >= 0 {
+			baseName = baseName[:extensionIndex]
+		}
+		switch strings.ToUpper(baseName) {
+		case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
+			"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+			"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+			"COM\u00B9", "COM\u00B2", "COM\u00B3", "LPT\u00B9", "LPT\u00B2", "LPT\u00B3":
+			return fmt.Errorf("path component %q uses a reserved device name", component)
+		}
 	}
-
 	return nil
+}
+
+func restrictedFileAccess(mode restrictedFileOpenMode) uint32 {
+	access := uint32(windows.READ_CONTROL | windows.SYNCHRONIZE)
+	if mode == restrictedFileRead {
+		return windows.FILE_GENERIC_READ | windows.READ_CONTROL
+	}
+	if mode == restrictedFileWriteOrTruncate {
+		return access | windows.FILE_GENERIC_WRITE | windows.FILE_READ_ATTRIBUTES
+	}
+	if mode == restrictedFileAppend {
+		return access |
+			windows.FILE_APPEND_DATA |
+			windows.FILE_READ_ATTRIBUTES |
+			windows.FILE_WRITE_ATTRIBUTES |
+			windows.FILE_WRITE_EA |
+			windows.STANDARD_RIGHTS_WRITE
+	}
+	return access | windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE
+}
+
+func restrictedFileDisposition(mode restrictedFileOpenMode) uint32 {
+	if mode == restrictedFileRead {
+		return windows.FILE_OPEN
+	}
+	if mode == restrictedFileCreateNew {
+		return windows.FILE_CREATE
+	}
+	return windows.FILE_OPEN_IF
+}
+
+func restrictedFileSecurityDescriptor(
+	principals restrictedDirectoryPrincipals,
+	perm os.FileMode,
+) (*windows.SECURITY_DESCRIPTOR, error) {
+	entries := restrictedFileAccessEntries(principals, perm)
+	explicitEntries := make([]windows.EXPLICIT_ACCESS, 0, len(entries))
+	for _, entry := range entries {
+		explicitEntries = append(explicitEntries, windows.EXPLICIT_ACCESS{
+			AccessPermissions: entry.mask,
+			AccessMode:        windows.GRANT_ACCESS,
+			Inheritance:       windows.NO_INHERITANCE,
+			Trustee: windows.TRUSTEE{
+				TrusteeForm:  windows.TRUSTEE_IS_SID,
+				TrusteeType:  windows.TRUSTEE_IS_UNKNOWN,
+				TrusteeValue: windows.TrusteeValueFromSID(entry.sid),
+			},
+		})
+	}
+
+	acl, aclErr := windows.ACLFromEntries(explicitEntries, nil)
+	if aclErr != nil {
+		return nil, fmt.Errorf("creating restricted file dacl: %w", aclErr)
+	}
+	securityDescriptor, descriptorErr := windows.NewSecurityDescriptor()
+	if descriptorErr != nil {
+		return nil, fmt.Errorf("creating restricted file security descriptor: %w", descriptorErr)
+	}
+	if ownerErr := securityDescriptor.SetOwner(principals.admins, false); ownerErr != nil {
+		return nil, fmt.Errorf("setting restricted file owner: %w", ownerErr)
+	}
+	if daclErr := securityDescriptor.SetDACL(acl, true, false); daclErr != nil {
+		return nil, fmt.Errorf("setting restricted file dacl: %w", daclErr)
+	}
+	if controlErr := securityDescriptor.SetControl(
+		windows.SE_DACL_PROTECTED,
+		windows.SE_DACL_PROTECTED,
+	); controlErr != nil {
+		return nil, fmt.Errorf("protecting restricted file dacl: %w", controlErr)
+	}
+	return securityDescriptor, nil
+}
+
+func restrictedFileAccessEntries(
+	principals restrictedDirectoryPrincipals,
+	perm os.FileMode,
+) []restrictedFileAccessEntry {
+	var entries []restrictedFileAccessEntry
+	addEntry := func(sid *windows.SID, mask windows.ACCESS_MASK) {
+		for entryIndex := range entries {
+			if windows.EqualSid(entries[entryIndex].sid, sid) {
+				entries[entryIndex].mask |= mask
+				return
+			}
+		}
+		entries = append(entries, restrictedFileAccessEntry{sid: sid, mask: mask})
+	}
+
+	addEntry(principals.tokenUser, restrictedFileUserAccess(perm))
+	const fileSpecificRightsAll = 0x1ff
+	fullAccess := windows.ACCESS_MASK(
+		windows.STANDARD_RIGHTS_REQUIRED |
+			windows.SYNCHRONIZE |
+			fileSpecificRightsAll,
+	)
+	addEntry(principals.system, fullAccess)
+	addEntry(principals.admins, fullAccess)
+	return entries
+}
+
+func restrictedFileUserAccess(perm os.FileMode) windows.ACCESS_MASK {
+	access := windows.ACCESS_MASK(
+		windows.READ_CONTROL |
+			windows.DELETE |
+			windows.FILE_READ_ATTRIBUTES |
+			windows.FILE_READ_EA,
+	)
+	if perm&osutil.PermissionCheckEveryoneRead != 0 {
+		access |= windows.FILE_GENERIC_READ
+	}
+	if perm&osutil.PermissionCheckEveryoneWrite != 0 {
+		access |= windows.FILE_GENERIC_WRITE
+	}
+	if perm&osutil.PermissionCheckEveryoneExecute != 0 {
+		access |= windows.FILE_GENERIC_EXECUTE
+	}
+	return access
+}
+
+func validateRestrictedFile(
+	handle windows.Handle,
+	perm os.FileMode,
+	principals restrictedDirectoryPrincipals,
+) error {
+	var fileInfo windows.ByHandleFileInformation
+	if infoErr := windows.GetFileInformationByHandle(handle, &fileInfo); infoErr != nil {
+		return fmt.Errorf("getting file information: %w", infoErr)
+	}
+	if fileInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return fmt.Errorf("file is a reparse point")
+	}
+	if fileInfo.NumberOfLinks != 1 {
+		return fmt.Errorf("file has %d hard links", fileInfo.NumberOfLinks)
+	}
+
+	securityDescriptor, securityDescriptorErr := windows.GetSecurityInfo(
+		handle,
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION,
+	)
+	if securityDescriptorErr != nil {
+		return fmt.Errorf("getting file security descriptor: %w", securityDescriptorErr)
+	}
+	owner, _, ownerErr := securityDescriptor.Owner()
+	if ownerErr != nil {
+		return fmt.Errorf("getting file owner: %w", ownerErr)
+	}
+	if !windows.EqualSid(owner, principals.admins) {
+		return fmt.Errorf("file owner is not the administrators group")
+	}
+	control, _, controlErr := securityDescriptor.Control()
+	if controlErr != nil {
+		return fmt.Errorf("getting file security descriptor control: %w", controlErr)
+	}
+	if control&windows.SE_DACL_PROTECTED == 0 {
+		return fmt.Errorf("file dacl is not protected")
+	}
+
+	dacl, _, daclErr := securityDescriptor.DACL()
+	if daclErr != nil {
+		return fmt.Errorf("getting file dacl: %w", daclErr)
+	}
+	if dacl == nil {
+		return fmt.Errorf("file dacl is empty")
+	}
+
+	expectedEntries := restrictedFileAccessEntries(principals, perm)
+	if int(dacl.AceCount) != len(expectedEntries) {
+		return fmt.Errorf("file dacl contains %d entries, expected %d", dacl.AceCount, len(expectedEntries))
+	}
+	seenEntries := make([]bool, len(expectedEntries))
+	for aceIndex := uint16(0); aceIndex < dacl.AceCount; aceIndex++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if aceErr := windows.GetAce(dacl, uint32(aceIndex), &ace); aceErr != nil {
+			return fmt.Errorf("getting file dacl entry %d: %w", aceIndex, aceErr)
+		}
+		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+			return fmt.Errorf("file dacl entry %d has unsupported type %d", aceIndex, ace.Header.AceType)
+		}
+		if ace.Header.AceFlags != windows.NO_INHERITANCE {
+			return fmt.Errorf("file dacl entry %d is inheritable", aceIndex)
+		}
+
+		aceSID := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		matched := false
+		for expectedIndex, expectedEntry := range expectedEntries {
+			if windows.EqualSid(aceSID, expectedEntry.sid) {
+				if seenEntries[expectedIndex] {
+					return fmt.Errorf("file dacl contains duplicate entry for %s", aceSID.String())
+				}
+				if ace.Mask != expectedEntry.mask {
+					return fmt.Errorf(
+						"file dacl entry for %s has access %#x, expected %#x",
+						aceSID.String(),
+						ace.Mask,
+						expectedEntry.mask,
+					)
+				}
+				seenEntries[expectedIndex] = true
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("file dacl grants access to unexpected principal %s", aceSID.String())
+		}
+	}
+	for expectedIndex, seen := range seenEntries {
+		if !seen {
+			return fmt.Errorf("file dacl is missing entry for %s", expectedEntries[expectedIndex].sid.String())
+		}
+	}
+	return nil
+}
+
+func restrictedFilePathError(name string, openErr error) error {
+	var ntStatus windows.NTStatus
+	if errors.As(openErr, &ntStatus) {
+		openErr = ntStatus.Errno()
+	}
+	return &os.PathError{Op: "open", Path: name, Err: openErr}
 }

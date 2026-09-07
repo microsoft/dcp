@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -74,7 +75,7 @@ func TestLogFollowingDelayWithinBounds(t *testing.T) {
 	const numWrites = 8
 	const writeDelay = 4 * logReadRetryInterval / numWrites
 
-	stdOutFile, stdOutErr := io.OpenFile(stdOutPath, os.O_RDONLY, 0)
+	stdOutFile, stdOutErr := io.OpenFileForReading(stdOutPath, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, stdOutErr)
 
 	follow := io.NewFollowWriter(ctx, stdOutFile, buf, io.WithCloseSourceOnCancel())

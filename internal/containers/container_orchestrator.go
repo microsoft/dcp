@@ -704,6 +704,7 @@ const (
 	EventActionKill         EventAction = "kill"
 	EventActionOom          EventAction = "oom"
 	EventActionPause        EventAction = "pause"
+	EventActionRemove       EventAction = "remove" // Podman-specific - normalized before events reach consumers
 	EventActionRename       EventAction = "rename"
 	EventActionResize       EventAction = "resize"
 	EventActionRestart      EventAction = "restart"

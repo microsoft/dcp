@@ -7,7 +7,6 @@ package logger
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	stdslices "slices"
@@ -38,7 +37,7 @@ var (
 )
 
 type resourceFileSink struct {
-	file   *os.File
+	file   *usvc_io.AppendFile
 	logger logr.Logger
 	flush  func()
 }
@@ -277,6 +276,8 @@ func (s *resourceSink) getSink(resourceId string) *resourceFileSink {
 		sink, sinkErr = s.newResourceFileSink(resourceId)
 		if sinkErr == nil {
 			resourceSinks[resourceId] = sink
+		} else {
+			s.innerSink.Error(sinkErr, "Could not create resource log file", "ResourceID", resourceId)
 		}
 	}
 
@@ -284,8 +285,11 @@ func (s *resourceSink) getSink(resourceId string) *resourceFileSink {
 }
 
 func (s *resourceSink) newResourceFileSink(resourceId string) (*resourceFileSink, error) {
-	resourceLogPath := makeResourceLogPath(resourceId, s.resourceLogFolderOverride)
-	file, err := usvc_io.OpenFile(resourceLogPath, os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
+	resourceLogPath, absolutePathErr := filepath.Abs(makeResourceLogPath(resourceId, s.resourceLogFolderOverride))
+	if absolutePathErr != nil {
+		return nil, fmt.Errorf("could not resolve resource log path: %w", absolutePathErr)
+	}
+	file, err := usvc_io.OpenOrCreateFileForAppending(resourceLogPath, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		return nil, err
 	}

@@ -14,7 +14,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -24,6 +23,9 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 // fakeCLICommandRunner implements CLICommandRunner for testing.
@@ -221,7 +223,7 @@ func TestApplyImageLayersImpl_SourceLayerWithSHA256Prefix(t *testing.T) {
 
 	tempDir := t.TempDir()
 	layerPath := filepath.Join(tempDir, "layer.tar")
-	require.NoError(t, os.WriteFile(layerPath, layerContent, 0644))
+	require.NoError(t, usvc_io.WriteFile(layerPath, layerContent, osutil.PermissionOwnerReadWriteOthersRead))
 
 	result := &fakeBuildResult{}
 	options := ApplyImageLayersOptions{
@@ -255,7 +257,7 @@ func TestApplyImageLayersImpl_SourceLayerWithUppercaseSHA256(t *testing.T) {
 
 	tempDir := t.TempDir()
 	layerPath := filepath.Join(tempDir, "layer.tar")
-	require.NoError(t, os.WriteFile(layerPath, layerContent, 0644))
+	require.NoError(t, usvc_io.WriteFile(layerPath, layerContent, osutil.PermissionOwnerReadWriteOthersRead))
 
 	result := &fakeBuildResult{}
 	options := ApplyImageLayersOptions{
@@ -283,7 +285,7 @@ func TestApplyImageLayersImpl_SourceLayerHashMismatch(t *testing.T) {
 
 	tempDir := t.TempDir()
 	layerPath := filepath.Join(tempDir, "layer.tar")
-	require.NoError(t, os.WriteFile(layerPath, layerContent, 0644))
+	require.NoError(t, usvc_io.WriteFile(layerPath, layerContent, osutil.PermissionOwnerReadWriteOthersRead))
 
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},

@@ -104,7 +104,7 @@ func StartProfiling(ctx context.Context, ctxCancel context.CancelFunc, pt Profil
 
 	// The profile name is <programName>-<profileType>-<timestamp>-<pid>.pprof
 	profileFileName := fmt.Sprintf("%s-%s-%d-%d.pprof", programName, pt, time.Now().Unix(), os.Getpid())
-	profileOutput, err := usvc_io.OpenFile(filepath.Join(profileFolder, profileFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
+	profileOutput, err := usvc_io.CreateNewFile(filepath.Join(profileFolder, profileFileName), osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		return fmt.Errorf("failed to create profile file '%s': %w", profileFileName, err)
 	}

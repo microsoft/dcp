@@ -28,6 +28,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/maps"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -219,7 +220,7 @@ func (c *containerLogStreamer) StreamLogs(
 		return apiv1.ResourceStreamStatusNotReady, nil, nil
 	}
 
-	logFile, fileErr := usvc_io.OpenFile(logFilePath, os.O_RDONLY, 0)
+	logFile, fileErr := usvc_io.OpenFileForReading(logFilePath, osutil.PermissionOnlyOwnerReadWrite)
 	if fileErr != nil {
 		if os.IsNotExist(fileErr) {
 			streamLog.V(1).Info("Log file does not exist yet")

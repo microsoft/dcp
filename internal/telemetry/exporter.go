@@ -9,7 +9,6 @@ package telemetry
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
@@ -34,7 +33,7 @@ func newTraceExporter(logName string) (sdktrace.SpanExporter, error) {
 		}
 
 		telemetryFileName := fmt.Sprintf("%s-%s-telemetry-%s.json", logger.SessionId(), logName, logger.ProcessMomentHash(logger.PlainHash))
-		telemetryFile, logFileErr := usvc_io.OpenFile(filepath.Join(logFolder, telemetryFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
+		telemetryFile, logFileErr := usvc_io.CreateNewFile(filepath.Join(logFolder, telemetryFileName), osutil.PermissionOnlyOwnerReadWrite)
 
 		if logFileErr != nil {
 			return nil, logFileErr

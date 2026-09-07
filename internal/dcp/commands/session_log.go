@@ -52,7 +52,7 @@ func getSessionLog(log logr.Logger) func(cmd *cobra.Command, args []string) erro
 
 		outputWriter := os.Stdout
 		if outputFileName != "" {
-			outputFile, outputFileErr := usvc_io.OpenFile(outputFileName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
+			outputFile, outputFileErr := createSessionLogOutputFile(outputFileName)
 			if outputFileErr != nil {
 				log.Error(outputFileErr, "Error opening output file", "File", outputFileName)
 				return outputFileErr
@@ -139,6 +139,14 @@ func (lt *logTime) UnmarshalJSON(data []byte) error {
 // We only care about the timestamp field in the log line
 type timestampedLogLine struct {
 	Timestamp logTime `json:"ts"`
+}
+
+func createSessionLogOutputFile(name string) (*os.File, error) {
+	outputPath, outputPathErr := filepath.Abs(name)
+	if outputPathErr != nil {
+		return nil, fmt.Errorf("could not resolve output file path %q: %w", name, outputPathErr)
+	}
+	return usvc_io.EnsureEmptyFile(outputPath, osutil.PermissionOnlyOwnerReadWrite)
 }
 
 // logSynchronizer helps read lines from a log file and keeps track of the most recently read line and its timestamp

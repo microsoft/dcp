@@ -425,14 +425,14 @@ parrot-tool: $(PARROT_TOOL)
 $(PARROT_TOOL): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
 	$(GO_BIN) build -o $(PARROT_TOOL) github.com/microsoft/dcp/test/parrot
 
-# Builds parrot tool binary suitable for use inside containers
+# Builds a static parrot binary suitable for the scratch-based test container image.
 .PHONY: parrot-tool-containerexe
 parrot-tool-containerexe: $(PARROT_TOOL_CONTAINER_BINARY)
-$(PARROT_TOOL_CONTAINER_BINARY): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
+$(PARROT_TOOL_CONTAINER_BINARY): Makefile $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	$$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
+	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
 else
-	GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
+	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
 endif
 
 .PHONY: httpcontent-stream-repro

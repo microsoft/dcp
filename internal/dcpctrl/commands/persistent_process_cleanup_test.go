@@ -242,7 +242,7 @@ func createPersistentProcessCleanupLog(t *testing.T, dir string, name string) st
 	t.Helper()
 
 	path := filepath.Join(dir, name)
-	file, openErr := usvc_io.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	file, openErr := usvc_io.CreateNewFile(path, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, openErr)
 	require.NoError(t, file.Close())
 	t.Cleanup(func() {

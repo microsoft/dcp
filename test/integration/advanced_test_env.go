@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
+	"github.com/microsoft/dcp/internal/containers"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/statestore"
@@ -32,6 +33,12 @@ type AdvancedTestEnvironmentInfo struct {
 	Log logr.Logger
 }
 
+// AdvancedTestEnvironmentOptions customizes the API server and container orchestrator used by an advanced test environment.
+type AdvancedTestEnvironmentOptions struct {
+	ApiServerFlags        ctrl_testutil.ApiServerFlag
+	ContainerOrchestrator containers.ContainerOrchestrator
+}
+
 // Starts an test environment for advanced tests that use real process executor and true container orchestrator (Docker or Podman).
 // Note that the Executable controller (if included in the mix) only supports process execution (no IDE execution).
 func StartAdvancedTestEnvironment(
@@ -44,7 +51,9 @@ func StartAdvancedTestEnvironment(
 	*AdvancedTestEnvironmentInfo,
 	error,
 ) {
-	return StartAdvancedTestEnvironmentWithFlags(ctx, inclCtrl, instanceTag, testTempDir, ctrl_testutil.ApiServerUseTrueContainerOrchestrator)
+	return StartAdvancedTestEnvironmentWithOptions(ctx, inclCtrl, instanceTag, testTempDir, AdvancedTestEnvironmentOptions{
+		ApiServerFlags: ctrl_testutil.ApiServerUseTrueContainerOrchestrator,
+	})
 }
 
 // StartAdvancedTestEnvironmentWithFlags is the same as StartAdvancedTestEnvironment but allows callers to customize the
@@ -61,6 +70,23 @@ func StartAdvancedTestEnvironmentWithFlags(
 	*AdvancedTestEnvironmentInfo,
 	error,
 ) {
+	return StartAdvancedTestEnvironmentWithOptions(ctx, inclCtrl, instanceTag, testTempDir, AdvancedTestEnvironmentOptions{
+		ApiServerFlags: apiServerFlags,
+	})
+}
+
+// StartAdvancedTestEnvironmentWithOptions starts an advanced test environment with explicit options.
+func StartAdvancedTestEnvironmentWithOptions(
+	ctx context.Context,
+	inclCtrl IncludedController,
+	instanceTag string,
+	testTempDir string,
+	options AdvancedTestEnvironmentOptions,
+) (
+	*ctrl_testutil.ApiServerInfo,
+	*AdvancedTestEnvironmentInfo,
+	error,
+) {
 	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
 	if sessionFolderErr != nil {
 		return nil, nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)
@@ -69,7 +95,10 @@ func StartAdvancedTestEnvironmentWithFlags(
 	log := testutil.NewLogWithResourceSinkForTesting(instanceTag, sessionFolder)
 	ctrl.SetLogger(log)
 
-	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, apiServerFlags, log, sessionFolder)
+	serverInfo, serverErr := ctrl_testutil.StartApiServerWithOptions(ctx, ctrl_testutil.ApiServerOptions{
+		Flags:                 options.ApiServerFlags,
+		ContainerOrchestrator: options.ContainerOrchestrator,
+	}, log, sessionFolder)
 	if serverErr != nil {
 		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
 	}

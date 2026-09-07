@@ -138,20 +138,26 @@ function Invoke-GoBuild {
     param(
         [Parameter(Mandatory)][string]$Output,
         [Parameter(Mandatory)][string]$Package,
-        [string]$TargetGoos
+        [string]$TargetGoos,
+        [string]$CgoEnabled
     )
 
     $savedGoos = $env:GOOS
+    $savedCgoEnabled = $env:CGO_ENABLED
     try {
         if ($TargetGoos) {
             $env:GOOS = $TargetGoos
         }
-        Write-Host "go build -> $Output ($Package, GOOS=$(if ($TargetGoos) { $TargetGoos } else { 'host' }))"
+        if ($CgoEnabled -ne '') {
+            $env:CGO_ENABLED = $CgoEnabled
+        }
+        Write-Host "go build -> $Output ($Package, GOOS=$(if ($TargetGoos) { $TargetGoos } else { 'host' }), CGO_ENABLED=$(if ($CgoEnabled -ne '') { $CgoEnabled } else { 'ambient' }))"
         Invoke-Native -Description "go build $Package" -Script {
             & go build -o $Output $Package
         }
     } finally {
         $env:GOOS = $savedGoos
+        $env:CGO_ENABLED = $savedCgoEnabled
     }
 }
 
@@ -170,8 +176,8 @@ function Build-TestPrereqs {
     Invoke-GoBuild -Output (Join-Path $ToolBin 'lfwriter.exe') -Package 'github.com/microsoft/dcp/test/lfwriter'
     Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot.exe') -Package 'github.com/microsoft/dcp/test/parrot'
     Invoke-GoBuild -Output (Join-Path $ToolBin 'termchild.exe') -Package 'github.com/microsoft/dcp/test/termchild'
-    # parrot-tool-containerexe (Linux binary)
-    Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot_c') -Package 'github.com/microsoft/dcp/test/parrot' -TargetGoos 'linux'
+    # parrot-tool-containerexe (static Linux binary for the scratch-based test image)
+    Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot_c') -Package 'github.com/microsoft/dcp/test/parrot' -TargetGoos 'linux' -CgoEnabled '0'
 }
 
 function Invoke-Tests {

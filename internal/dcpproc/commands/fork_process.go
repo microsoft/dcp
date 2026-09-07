@@ -215,12 +215,27 @@ func useExecShim(childCmd *exec.Cmd) (*execShimHandshake, error) {
 		return nil, fmt.Errorf("could not determine the path of the current executable: %w", dcpPathErr)
 	}
 
+	// syscall.Exec waits for pending Darwin SIGURG preemption signals. The shim resets SIGURG
+	// first, so it must start with asynchronous preemption disabled to avoid an unobservable signal.
+	effectiveEnv := childCmd.Environ()
+	originalGoDebug, originalGoDebugSet := environmentVariable(effectiveEnv, goDebugEnvVar)
+	childCmd.Env = setEnvironmentVariable(
+		effectiveEnv,
+		goDebugEnvVar,
+		goDebugWithAsyncPreemptionDisabled(originalGoDebug),
+		true,
+	)
+
 	statusR, statusW, pipeErr := os.Pipe()
 	if pipeErr != nil {
 		return nil, fmt.Errorf("could not create the exec status pipe: %w", pipeErr)
 	}
 
-	shimArgs := []string{dcpPath, ForkProcessExecCmdName, "--" + execPathFlagName, childCmd.Path, "--"}
+	shimArgs := []string{dcpPath, ForkProcessExecCmdName, "--" + execPathFlagName, childCmd.Path}
+	if originalGoDebugSet {
+		shimArgs = append(shimArgs, fmt.Sprintf("--%s=%s", targetGoDebugFlagName, originalGoDebug))
+	}
+	shimArgs = append(shimArgs, "--")
 	childCmd.Args = append(shimArgs, childCmd.Args...)
 	childCmd.Path = dcpPath
 
@@ -229,6 +244,44 @@ func useExecShim(childCmd *exec.Cmd) (*execShimHandshake, error) {
 	childCmd.ExtraFiles = append(childCmd.ExtraFiles, statusW)
 
 	return &execShimHandshake{statusR: statusR, statusW: statusW}, nil
+}
+
+func goDebugWithAsyncPreemptionDisabled(goDebug string) string {
+	settings := strings.Split(goDebug, ",")
+	filteredSettings := make([]string, 0, len(settings)+1)
+	for _, setting := range settings {
+		settingName, _, _ := strings.Cut(setting, "=")
+		if setting == "" || settingName == asyncPreemptionGoDebugName {
+			continue
+		}
+		filteredSettings = append(filteredSettings, setting)
+	}
+	filteredSettings = append(filteredSettings, asyncPreemptionGoDebugName+"=1")
+	return strings.Join(filteredSettings, ",")
+}
+
+func environmentVariable(env []string, name string) (string, bool) {
+	prefix := name + "="
+	for index := len(env) - 1; index >= 0; index-- {
+		if strings.HasPrefix(env[index], prefix) {
+			return strings.TrimPrefix(env[index], prefix), true
+		}
+	}
+	return "", false
+}
+
+func setEnvironmentVariable(env []string, name string, value string, set bool) []string {
+	prefix := name + "="
+	updatedEnv := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			updatedEnv = append(updatedEnv, entry)
+		}
+	}
+	if set {
+		updatedEnv = append(updatedEnv, prefix+value)
+	}
+	return updatedEnv
 }
 
 // execShimHandshake reports whether the shim managed to exec the requested program. Starting the

@@ -132,7 +132,11 @@ func getKubeConfigPath(fs *pflag.FlagSet) (string, error) {
 		// If path is empty, this means the user did not pass the --kubeconfig parameter,
 		// so fall back to the "check default location" case.
 		if path != "" {
-			return path, nil
+			absolutePath, absolutePathErr := filepath.Abs(path)
+			if absolutePathErr != nil {
+				return "", fmt.Errorf("could not resolve kubeconfig path %q: %w", path, absolutePathErr)
+			}
+			return absolutePath, nil
 		}
 	}
 
