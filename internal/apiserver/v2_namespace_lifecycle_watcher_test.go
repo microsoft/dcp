@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/watch"
@@ -80,10 +81,69 @@ func TestV2NamespaceLifecycleWatcherRelistsAfterErrorEvent(t *testing.T) {
 	waitForV2NamespaceGateRemoval(t, ctx, gate, "test")
 }
 
+func TestV2NamespaceLifecycleWatcherObservesDeletionStartedDuringList(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	source := newFakeV2NamespaceWatchSource("test")
+	listStarted := make(chan struct{})
+	continueList := make(chan struct{})
+	var blockFirstList sync.Once
+	source.beforeList = func() {
+		blockFirstList.Do(func() {
+			close(listStarted)
+			<-continueList
+		})
+	}
+	go runV2NamespaceLifecycleWatcher(ctx, source, gate, logr.Discard(), time.Hour, time.Millisecond)
+
+	namespaceWatcher := waitForFakeV2NamespaceWatcher(t, ctx, source.watchers)
+	waitForV2NamespaceWatcherSignal(t, ctx, listStarted)
+
+	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, deleteErr)
+	deleteLease.complete(true)
+	source.setNamespaces()
+	go namespaceWatcher.Delete(v2NamespaceObject("test"))
+	close(continueList)
+
+	waitForV2NamespaceGateRemoval(t, ctx, gate, "test")
+}
+
+func TestV2NamespaceLifecycleWatcherObservesDeletionCompletedAfterList(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := closedV2NamespaceLifecycleGate(t, ctx, "test")
+	source := newFakeV2NamespaceWatchSource("test")
+	listCompleted := make(chan struct{})
+	returnList := make(chan struct{})
+	var blockFirstList sync.Once
+	source.afterList = func() {
+		blockFirstList.Do(func() {
+			close(listCompleted)
+			<-returnList
+		})
+	}
+	go runV2NamespaceLifecycleWatcher(ctx, source, gate, logr.Discard(), time.Hour, time.Millisecond)
+
+	namespaceWatcher := waitForFakeV2NamespaceWatcher(t, ctx, source.watchers)
+	waitForV2NamespaceWatcherSignal(t, ctx, listCompleted)
+
+	source.setNamespaces()
+	go namespaceWatcher.Delete(v2NamespaceObject("test"))
+	close(returnList)
+
+	waitForV2NamespaceGateRemoval(t, ctx, gate, "test")
+}
+
 type fakeV2NamespaceWatchSource struct {
 	lock       sync.Mutex
 	namespaces map[string]struct{}
 	watchers   chan *watch.RaceFreeFakeWatcher
+	beforeList func()
+	afterList  func()
 }
 
 func newFakeV2NamespaceWatchSource(namespaces ...string) *fakeV2NamespaceWatchSource {
@@ -99,12 +159,19 @@ func (source *fakeV2NamespaceWatchSource) List(
 	_ context.Context,
 	_ metav1.ListOptions,
 ) (*unstructured.UnstructuredList, error) {
-	source.lock.Lock()
-	defer source.lock.Unlock()
+	if source.beforeList != nil {
+		source.beforeList()
+	}
 
+	source.lock.Lock()
 	namespaceList := &unstructured.UnstructuredList{}
 	for namespace := range source.namespaces {
 		namespaceList.Items = append(namespaceList.Items, *v2NamespaceObject(namespace))
+	}
+	source.lock.Unlock()
+
+	if source.afterList != nil {
+		source.afterList()
 	}
 	return namespaceList, nil
 }
@@ -189,5 +256,19 @@ func waitForV2NamespaceGateRemoval(
 			t.Fatal(ctx.Err())
 		case <-ticker.C:
 		}
+	}
+}
+
+func waitForV2NamespaceWatcherSignal(
+	t *testing.T,
+	ctx context.Context,
+	signal <-chan struct{},
+) {
+	t.Helper()
+
+	select {
+	case <-signal:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 }

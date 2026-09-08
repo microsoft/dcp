@@ -55,18 +55,8 @@ func runV2NamespaceLifecycleWatcher(
 			return
 		}
 
-		closedStates := gate.closedNamespaceStates()
-		namespaceList, listErr := source.List(ctx, metav1.ListOptions{})
-		if listErr != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			log.Error(listErr, "Failed to list V2 Namespaces while refreshing lifecycle state")
-			restartDelay = retryInterval
-			continue
-		}
-		gate.observeNamespaces(v2NamespaceNames(namespaceList), closedStates)
-
+		// Tilt registers the watcher before taking its initial storage snapshot. Starting the
+		// watch first ensures a deletion is either absent from the list below or delivered here.
 		namespaceWatcher, watchErr := source.Watch(ctx, metav1.ListOptions{})
 		if watchErr != nil {
 			if ctx.Err() != nil {
@@ -76,6 +66,19 @@ func runV2NamespaceLifecycleWatcher(
 			restartDelay = retryInterval
 			continue
 		}
+
+		closedStates := gate.closedNamespaceStates()
+		namespaceList, listErr := source.List(ctx, metav1.ListOptions{})
+		if listErr != nil {
+			stopV2NamespaceWatcher(namespaceWatcher)
+			if ctx.Err() != nil {
+				return
+			}
+			log.Error(listErr, "Failed to list V2 Namespaces while refreshing lifecycle state")
+			restartDelay = retryInterval
+			continue
+		}
+		gate.observeNamespaces(v2NamespaceNames(namespaceList), closedStates)
 
 		restartTimer := time.NewTimer(restartInterval)
 		restartDelay = time.Duration(0)
