@@ -290,24 +290,16 @@ func getStateInitializer[
 	state OS,
 	log logr.Logger,
 ) stateInitializerFunc[O, PO, R, PR, OS, IMOS, PIMOS] {
-	return getStateHandler(m, state, log)
-}
-
-func getStateHandler[OS comparable, H any](
-	m map[OS]H,
-	state OS,
-	log logr.Logger,
-) H {
-	handler, found := m[state]
+	initializer, found := m[state]
 	if found {
-		return handler
+		return initializer
 	}
 
 	log.Error(fmt.Errorf("could not find a handler for current object state, will use empty state handler instead"), "", "ObjectState", state)
 	var emptyState OS
-	handler, found = m[emptyState]
+	initializer, found = m[emptyState]
 	if found {
-		return handler
+		return initializer
 	}
 
 	panic("the state handler map has no empty state handler")

@@ -74,7 +74,6 @@ func TestHandlePhysicalProcessResolveWaitsForRetryDeadline(t *testing.T) {
 		reconciler,
 		physicalProcess,
 		physicalProcessStateResolve,
-		physicalProcessDataKey(physicalProcess),
 		data,
 		logr.Discard(),
 	)
@@ -249,7 +248,6 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 		reconciler,
 		physicalProcess,
 		physicalProcessStateRuntime,
-		physicalProcessHandleDataKey(handle),
 		data,
 		logr.Discard(),
 	)
