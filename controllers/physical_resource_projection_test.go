@@ -28,10 +28,10 @@ func TestPhysicalResourceProjections(t *testing.T) {
 func TestPhysicalResourceProjectionsRejectInvalidCombination(t *testing.T) {
 	t.Parallel()
 
-	projections := physicalResourceProjectionTable[int, string]{
+	projections := physicalResourceProjectionTable[physicalProcessState, string]{
 		invalidPhase: "Unknown",
-		projections: map[physicalResourceProjectionKey[int]]physicalResourceProjection[string]{
-			{state: 1, progress: physicalResourceProgressCompleted}: {
+		projections: map[physicalResourceProjectionKey[physicalProcessState]]physicalResourceProjection[string]{
+			{state: physicalProcessStateResolve, progress: physicalResourceProgressCompleted}: {
 				phase:           "Ready",
 				conditionStatus: metav1.ConditionTrue,
 				conditionReason: "Completed",
@@ -42,7 +42,7 @@ func TestPhysicalResourceProjectionsRejectInvalidCombination(t *testing.T) {
 	phase := ""
 	conditions := []metav1.Condition{}
 	change, delay, valid := projections.apply(
-		1,
+		physicalProcessStateResolve,
 		physicalResourceProgressFailed,
 		"",
 		&phase,
@@ -56,6 +56,7 @@ func TestPhysicalResourceProjectionsRejectInvalidCombination(t *testing.T) {
 	require.Len(t, conditions, 1)
 	require.Equal(t, metav1.ConditionFalse, conditions[0].Status)
 	require.Equal(t, string(apiv2.PhysicalResourceReasonOperationStateInvalid), conditions[0].Reason)
+	require.Equal(t, "Physical resource reached invalid reconciliation state Resolve with progress Failed.", conditions[0].Message)
 	require.NotEqual(t, noChange, change&statusChanged)
 	require.NotEqual(t, noChange, change&additionalReconciliationNeeded)
 }

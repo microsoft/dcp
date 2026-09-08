@@ -124,6 +124,28 @@ func TestHandlePhysicalProcessResolveWaitsForRetryDeadline(t *testing.T) {
 	require.Zero(t, executor.findProcessHandleCalls.Load())
 }
 
+func TestHandleUnknownPhysicalProcessStateUsesReadableMessage(t *testing.T) {
+	t.Parallel()
+
+	physicalProcess := &apiv2.PhysicalProcess{}
+	data := &physicalProcessData{
+		state:    physicalProcessStateStop,
+		progress: physicalResourceProgressCompleted,
+	}
+
+	change := handleUnknownPhysicalProcessState(
+		t.Context(),
+		nil,
+		physicalProcess,
+		data.state,
+		data,
+		logr.Discard(),
+	)
+
+	require.Equal(t, additionalReconciliationNeeded, change)
+	require.Equal(t, "Physical process reached invalid reconciliation state Stop with progress Completed.", data.failureMessage)
+}
+
 func TestPhysicalProcessLaunchResultDoesNotReplaceExistingOwner(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
