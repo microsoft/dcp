@@ -106,8 +106,9 @@ type PhysicalProcessConfig struct {
 	// WorkingDirectory is the process working directory. The controller process working directory is used when omitted.
 	WorkingDirectory string `json:"workingDirectory,omitempty"`
 
-	// InheritEnvironment includes the controller process environment when true.
-	InheritEnvironment bool `json:"inheritEnvironment,omitempty"`
+	// InheritEnvironment controls whether the controller process environment is included. Defaults to true.
+	// +kubebuilder:default:=true
+	InheritEnvironment *bool `json:"inheritEnvironment,omitempty"`
 
 	// Env contains process environment variables. These values override inherited variables with the same name.
 	// +listType=map

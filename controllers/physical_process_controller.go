@@ -774,10 +774,12 @@ func handlePIDString(handle process.ProcessHandle) string {
 }
 
 func physicalProcessEnvironment(processConfig *apiv2.PhysicalProcessConfig) []string {
-	environment := make([]string, 0, len(processConfig.Env))
-	if processConfig.InheritEnvironment {
-		environment = append(environment, os.Environ()...)
+	inheritedEnvironment := []string(nil)
+	if processConfig.InheritEnvironment == nil || *processConfig.InheritEnvironment {
+		inheritedEnvironment = os.Environ()
 	}
+	environment := make([]string, 0, len(inheritedEnvironment)+len(processConfig.Env))
+	environment = append(environment, inheritedEnvironment...)
 	for _, envVar := range processConfig.Env {
 		environment = append(environment, envVar.Name+"="+envVar.Value)
 	}

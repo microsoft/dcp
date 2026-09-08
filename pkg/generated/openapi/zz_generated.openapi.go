@@ -6144,7 +6144,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 					},
 					"inheritEnvironment": {
 						SchemaProps: spec.SchemaProps{
-							Description: "InheritEnvironment includes the controller process environment when true.",
+							Description: "InheritEnvironment controls whether the controller process environment is included. Defaults to true.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},

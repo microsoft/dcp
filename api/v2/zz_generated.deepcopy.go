@@ -843,6 +843,11 @@ func (in *PhysicalProcessConfig) DeepCopyInto(out *PhysicalProcessConfig) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.InheritEnvironment != nil {
+		in, out := &in.InheritEnvironment, &out.InheritEnvironment
+		*out = new(bool)
+		**out = **in
+	}
 	if in.Env != nil {
 		in, out := &in.Env, &out.Env
 		*out = make([]commonapi.EnvVar, len(*in))

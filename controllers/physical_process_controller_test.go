@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -27,6 +29,46 @@ type missingPhysicalProcessExecutor struct {
 type recordingPhysicalProcessExecutor struct {
 	process.Executor
 	findProcessHandleCalls atomic.Int32
+}
+
+func TestPhysicalProcessEnvironment(t *testing.T) {
+	t.Setenv("DCP_PHYSICAL_PROCESS_ENV_TEST", "inherited")
+
+	inheritEnvironment := true
+	doNotInheritEnvironment := false
+	explicitEnvironment := []commonapi.EnvVar{{Name: "EXPLICIT", Value: "configured"}}
+	testCases := []struct {
+		name               string
+		inheritEnvironment *bool
+		expected           []string
+	}{
+		{
+			name:     "defaults to inherited environment",
+			expected: append(os.Environ(), "EXPLICIT=configured"),
+		},
+		{
+			name:               "inherits environment explicitly",
+			inheritEnvironment: &inheritEnvironment,
+			expected:           append(os.Environ(), "EXPLICIT=configured"),
+		},
+		{
+			name:               "does not inherit environment explicitly",
+			inheritEnvironment: &doNotInheritEnvironment,
+			expected:           []string{"EXPLICIT=configured"},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			environment := physicalProcessEnvironment(&apiv2.PhysicalProcessConfig{
+				InheritEnvironment: testCase.inheritEnvironment,
+				Env:                explicitEnvironment,
+			})
+
+			require.Equal(t, testCase.expected, environment)
+			require.Equal(t, len(environment), cap(environment))
+		})
+	}
 }
 
 func (*missingPhysicalProcessExecutor) CheckProcessRunning(process.ProcessHandle) error {
