@@ -6,7 +6,9 @@
 package controllers
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,6 +31,7 @@ type missingPhysicalProcessExecutor struct {
 type recordingPhysicalProcessExecutor struct {
 	process.Executor
 	findProcessHandleCalls atomic.Int32
+	startProcessCalls      atomic.Int32
 }
 
 func TestPhysicalProcessEnvironment(t *testing.T) {
@@ -78,6 +81,92 @@ func (*missingPhysicalProcessExecutor) CheckProcessRunning(process.ProcessHandle
 func (e *recordingPhysicalProcessExecutor) FindProcessHandle(process.Pid_t) (process.ProcessHandle, error) {
 	e.findProcessHandleCalls.Add(1)
 	return process.ProcessHandle{}, process.ErrorProcessNotFound
+}
+
+func (e *recordingPhysicalProcessExecutor) StartProcess(
+	context.Context,
+	*exec.Cmd,
+	process.ProcessExitHandler,
+	process.ProcessCreationFlag,
+	process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	e.startProcessCalls.Add(1)
+	return process.ProcessHandle{}, nil, nil
+}
+
+func TestPhysicalProcessLaunchCanceledBeforeStart(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name                 string
+		retainRuntimeProcess bool
+	}{
+		{
+			name: "managed process",
+		},
+		{
+			name:                 "retained process",
+			retainRuntimeProcess: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			lifetimeCtx, cancelLifetime := testutil.GetTestContext(t, 30*time.Second)
+			defer cancelLifetime()
+			operationCtx, cancelOperation := context.WithCancel(lifetimeCtx)
+			cancelOperation()
+
+			physicalProcess := &apiv2.PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-process",
+					Namespace: "test",
+					UID:       types.UID("test-process"),
+				},
+				Spec: apiv2.PhysicalProcessSpec{
+					Process: &apiv2.PhysicalProcessConfig{
+						ExecutablePath:       "test-executable",
+						RetainRuntimeProcess: testCase.retainRuntimeProcess,
+					},
+				},
+			}
+			stateKey := physicalProcessDataKey(physicalProcess)
+			initialData := &physicalProcessData{
+				resourceUID: physicalProcess.UID,
+				state:       physicalProcessStateLaunch,
+				progress:    physicalResourceProgressInProgress,
+			}
+			executor := &recordingPhysicalProcessExecutor{}
+			reconciler := NewPhysicalProcessReconciler(
+				lifetimeCtx,
+				nil,
+				nil,
+				logr.Discard(),
+				executor,
+			)
+			reconciler.processData.Store(physicalProcess.NamespacedName(), stateKey, initialData)
+
+			reconciler.launchPhysicalProcess(
+				operationCtx,
+				physicalProcess,
+				stateKey,
+				initialData.Clone(),
+				logr.Discard(),
+			)
+
+			require.Zero(t, executor.startProcessCalls.Load())
+			reconciler.processData.RunDeferredOps(physicalProcess.NamespacedName(), physicalProcess)
+			currentStateKey, currentData := reconciler.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
+			require.Equal(t, stateKey, currentStateKey)
+			require.NotNil(t, currentData)
+			require.Equal(t, physicalProcessStateLaunch, currentData.state)
+			require.Equal(t, physicalResourceProgressRetryPending, currentData.progress)
+			require.Contains(t, currentData.failureMessage, context.Canceled.Error())
+			require.False(t, currentData.retryAfter.IsZero())
+		})
+	}
 }
 
 func TestHandlePhysicalProcessResolveWaitsForRetryDeadline(t *testing.T) {

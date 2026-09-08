@@ -528,6 +528,14 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 	log logr.Logger,
 ) {
 	processConfig := physicalProcess.Spec.Process
+	if operationErr := operationCtx.Err(); operationErr != nil {
+		data.progress = physicalResourceProgressRetryPending
+		data.failureMessage = fmt.Sprintf("Physical process launch canceled before starting: %v", operationErr)
+		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
+		return
+	}
+
 	cmd := exec.Command(processConfig.ExecutablePath, processConfig.Args...)
 	cmd.Dir = processConfig.WorkingDirectory
 	cmd.Env = physicalProcessEnvironment(processConfig)
@@ -535,8 +543,12 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 		process.ForkFromParent(cmd)
 	}
 
-	processCtx := r.LifetimeCtx
+	processCtx := operationCtx
 	var creationFlags process.ProcessCreationFlag = process.CreationFlagEnsureKillOnDispose
+	if processConfig.RetainRuntimeProcess {
+		processCtx = context.WithoutCancel(operationCtx)
+		creationFlags = process.CreationFlagsNone
+	}
 
 	// The executor may invoke the exit handler before StartProcess() returns, for example when the
 	// process context is already done, so the launched process identity is published atomically.
@@ -550,19 +562,7 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 		}
 		r.processExited(physicalProcess.NamespacedName(), physicalProcess.UID, *expectedHandle, pid, exitCode, exitErr)
 	})
-	var handle process.ProcessHandle
-	var startWaitForExit func()
-	var startErr error
-	if processConfig.RetainRuntimeProcess {
-		if operationCtx.Err() != nil {
-			return
-		}
-		processCtx = context.WithoutCancel(r.LifetimeCtx)
-		creationFlags = process.CreationFlagsNone
-		handle, startWaitForExit, startErr = r.processExecutor.StartProcess(processCtx, cmd, exitHandler, creationFlags, nil)
-	} else {
-		handle, startWaitForExit, startErr = r.processExecutor.StartProcess(processCtx, cmd, exitHandler, creationFlags, nil)
-	}
+	handle, startWaitForExit, startErr := r.processExecutor.StartProcess(processCtx, cmd, exitHandler, creationFlags, nil)
 	if startErr != nil {
 		data.progress = physicalResourceProgressRetryPending
 		data.failureMessage = fmt.Sprintf("Failed to launch physical process: %v", startErr)
