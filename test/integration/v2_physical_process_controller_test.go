@@ -272,14 +272,16 @@ func TestV2PhysicalProcessControllerLaunchesProcess(t *testing.T) {
 
 	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-launch")
 	executablePath := "v2-pproc-launch-command"
+	inheritEnvironment := false
 	physicalProcess := &apiv2.PhysicalProcess{
 		ObjectMeta: metav1.ObjectMeta{Name: "launched-process", Namespace: namespace.Name},
 		Spec: apiv2.PhysicalProcessSpec{
 			Process: &apiv2.PhysicalProcessConfig{
-				ExecutablePath:   executablePath,
-				Args:             []string{"one", "two"},
-				WorkingDirectory: "/tmp",
-				Env:              []commonapi.EnvVar{{Name: "TEST_VALUE", Value: "expected"}},
+				ExecutablePath:     executablePath,
+				Args:               []string{"one", "two"},
+				WorkingDirectory:   "/tmp",
+				InheritEnvironment: &inheritEnvironment,
+				Env:                []commonapi.EnvVar{{Name: "TEST_VALUE", Value: "expected"}},
 			},
 		},
 	}

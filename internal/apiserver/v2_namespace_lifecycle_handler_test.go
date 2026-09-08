@@ -65,6 +65,53 @@ func TestV2NamespaceLifecycleGateWaitsForActiveCreates(t *testing.T) {
 	}
 }
 
+func TestV2NamespaceLifecycleGateRemovesAcceptedDeleteAfterStorageDeletion(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, deleteErr)
+	deleteLease.complete(true)
+
+	requireV2NamespaceGateState(t, gate, "test")
+	gate.observeNamespaces(map[string]struct{}{}, gate.closedNamespaceStates())
+	requireNoV2NamespaceGateState(t, gate, "test")
+}
+
+func TestV2NamespaceLifecycleGateWaitsForDeleteRequestAfterStorageDeletion(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, deleteErr)
+
+	gate.observeNamespaces(map[string]struct{}{}, gate.closedNamespaceStates())
+	requireV2NamespaceGateState(t, gate, "test")
+	deleteLease.complete(true)
+	requireNoV2NamespaceGateState(t, gate, "test")
+}
+
+func TestV2NamespaceLifecycleGateIgnoresDeletionObservedForReplacedState(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	firstDeleteLease, firstDeleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, firstDeleteErr)
+	firstDeleteLease.complete(true)
+	closedStates := gate.closedNamespaceStates()
+
+	gate.open("test")
+	secondDeleteLease, secondDeleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, secondDeleteErr)
+	secondDeleteLease.complete(true)
+
+	gate.observeNamespaces(map[string]struct{}{}, closedStates)
+	requireV2NamespaceGateState(t, gate, "test")
+}
+
 func TestV2NamespaceLifecycleHandlerSerializesCreateAndDelete(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
 	defer cancel()
@@ -776,6 +823,24 @@ func requireNoV2NamespaceMutation(t *testing.T, gate *v2NamespaceLifecycleGate, 
 
 	_, found := gate.namespaceMutations[namespace]
 	require.False(t, found)
+}
+
+func requireV2NamespaceGateState(t *testing.T, gate *v2NamespaceLifecycleGate, namespace string) {
+	t.Helper()
+
+	gate.lock.Lock()
+	defer gate.lock.Unlock()
+
+	require.Contains(t, gate.namespaces, namespace)
+}
+
+func requireNoV2NamespaceGateState(t *testing.T, gate *v2NamespaceLifecycleGate, namespace string) {
+	t.Helper()
+
+	gate.lock.Lock()
+	defer gate.lock.Unlock()
+
+	require.NotContains(t, gate.namespaces, namespace)
 }
 
 func waitV2NamespaceMutationReferences(

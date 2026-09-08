@@ -165,7 +165,7 @@ func TestV2NamespaceControllerCleansUpContainersWhileProcessDeletionIsBlocked(t 
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
 }
 
-func TestV2NamespaceRejectsResourceCreationAfterDeletionStarts(t *testing.T) {
+func TestV2NamespaceRejectsResourceCreationUntilDeletionCompletes(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -190,11 +190,16 @@ func TestV2NamespaceRejectsResourceCreationAfterDeletionStarts(t *testing.T) {
 
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
 
-	stillBlockedProcess := blockedProcess.DeepCopy()
-	stillBlockedProcess.Name = "still-blocked-process"
-	createAfterDeletionErr := client.Create(ctx, stillBlockedProcess)
-	require.Error(t, createAfterDeletionErr)
-	require.True(t, apierrors.IsForbidden(createAfterDeletionErr), "expected forbidden error, got %v", createAfterDeletionErr)
+	precreatedProcess := blockedProcess.DeepCopy()
+	precreatedProcess.Name = "precreated-process"
+	createAfterDeletionErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		createProcessErr := client.Create(ctx, precreatedProcess)
+		if apierrors.IsForbidden(createProcessErr) {
+			return false, nil
+		}
+		return createProcessErr == nil, createProcessErr
+	})
+	require.NoError(t, createAfterDeletionErr)
 
 	replacementNamespace := &apiv2.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: namespaceName},

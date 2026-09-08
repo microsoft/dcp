@@ -26,11 +26,12 @@ import (
 )
 
 type v2NamespaceLifecycleState struct {
-	activeCreates  int
-	activeDeletes  int
-	closed         bool
-	deleteAccepted bool
-	drained        chan struct{}
+	activeCreates    int
+	activeDeletes    int
+	closed           bool
+	deleteAccepted   bool
+	deletionObserved bool
+	drained          chan struct{}
 }
 
 type v2NamespaceLifecycleGate struct {
@@ -195,6 +196,9 @@ func (lease *v2NamespaceDeleteLease) complete(accepted bool) {
 			lease.state.closed = true
 		}
 		lease.state.activeDeletes--
+		if lease.gate.removeObservedNamespaceDeletion(lease.namespace, lease.state) {
+			return
+		}
 		if lease.state.activeDeletes == 0 && !lease.state.deleteAccepted {
 			lease.state.closed = false
 		}
@@ -203,6 +207,52 @@ func (lease *v2NamespaceDeleteLease) complete(accepted bool) {
 			delete(lease.gate.namespaces, lease.namespace)
 		}
 	})
+}
+
+func (gate *v2NamespaceLifecycleGate) closedNamespaceStates() map[string]*v2NamespaceLifecycleState {
+	gate.lock.Lock()
+	defer gate.lock.Unlock()
+
+	states := make(map[string]*v2NamespaceLifecycleState)
+	for namespace, state := range gate.namespaces {
+		if state.closed {
+			states[namespace] = state
+		}
+	}
+	return states
+}
+
+func (gate *v2NamespaceLifecycleGate) observeNamespaces(
+	namespaces map[string]struct{},
+	closedStates map[string]*v2NamespaceLifecycleState,
+) {
+	gate.lock.Lock()
+	defer gate.lock.Unlock()
+
+	for namespace, state := range closedStates {
+		if gate.namespaces[namespace] != state || !state.closed {
+			continue
+		}
+		if _, found := namespaces[namespace]; found {
+			continue
+		}
+		state.deletionObserved = true
+		gate.removeObservedNamespaceDeletion(namespace, state)
+	}
+}
+
+// removeObservedNamespaceDeletion removes a closed lifecycle state after storage confirms that
+// the Namespace is gone and all requests using the state have completed. The gate lock must be held.
+func (gate *v2NamespaceLifecycleGate) removeObservedNamespaceDeletion(
+	namespace string,
+	state *v2NamespaceLifecycleState,
+) bool {
+	if !state.deletionObserved || state.activeCreates != 0 || state.activeDeletes != 0 ||
+		gate.namespaces[namespace] != state {
+		return false
+	}
+	delete(gate.namespaces, namespace)
+	return true
 }
 
 func (gate *v2NamespaceLifecycleGate) open(namespace string) {
@@ -215,6 +265,7 @@ func (gate *v2NamespaceLifecycleGate) open(namespace string) {
 	}
 	state.closed = false
 	state.deleteAccepted = false
+	state.deletionObserved = false
 	if state.activeCreates == 0 && state.activeDeletes == 0 {
 		delete(gate.namespaces, namespace)
 	}
