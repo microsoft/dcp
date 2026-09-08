@@ -364,8 +364,13 @@ func handleUnknownPhysicalProcessState(
 	invalidProgress := data.progress
 	data.state = physicalProcessStateInvalid
 	data.progress = physicalResourceProgressFailed
+	data.failureReason = ""
 	data.failureMessage = fmt.Sprintf("Physical process reached invalid reconciliation state %v with progress %v.", invalidState, invalidProgress)
-	return additionalReconciliationNeeded
+	log.Error(
+		fmt.Errorf("invalid physical process state %v with progress %v", invalidState, invalidProgress),
+		"Physical process reached invalid reconciliation state",
+	)
+	return noChange
 }
 
 // establishPhysicalProcessTracking claims a runtime process and updates data with the resulting

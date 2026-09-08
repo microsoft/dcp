@@ -189,7 +189,6 @@ var physicalProcessProjections = physicalResourceProjectionTable[physicalProcess
 		{state: physicalProcessStateInvalid, progress: physicalResourceProgressFailed}: {
 			phase: apiv2.PhysicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
-			requeue:         true, requeueDelay: LongDelay,
 		},
 	},
 }

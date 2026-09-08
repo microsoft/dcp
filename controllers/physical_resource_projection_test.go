@@ -51,14 +51,24 @@ func TestPhysicalResourceProjectionsRejectInvalidCombination(t *testing.T) {
 	)
 
 	require.False(t, valid)
-	require.Equal(t, LongDelay, delay)
+	require.Equal(t, StandardDelay, delay)
 	require.Equal(t, "Unknown", phase)
 	require.Len(t, conditions, 1)
 	require.Equal(t, metav1.ConditionFalse, conditions[0].Status)
 	require.Equal(t, string(apiv2.PhysicalResourceReasonOperationStateInvalid), conditions[0].Reason)
 	require.Equal(t, "Physical resource reached invalid reconciliation state Resolve with progress Failed.", conditions[0].Message)
 	require.NotEqual(t, noChange, change&statusChanged)
-	require.NotEqual(t, noChange, change&additionalReconciliationNeeded)
+	require.Equal(t, noChange, change&additionalReconciliationNeeded)
+}
+
+func TestPhysicalResourceInvalidProjectionsAreTerminal(t *testing.T) {
+	t.Parallel()
+
+	assertTerminalPhysicalResourceProjection(t, physicalContainerProjections, physicalContainerStateInvalid)
+	assertTerminalPhysicalResourceProjection(t, physicalContainerImageProjections, physicalContainerImageStateInvalid)
+	assertTerminalPhysicalResourceProjection(t, physicalContainerNetworkProjections, physicalContainerNetworkStateInvalid)
+	assertTerminalPhysicalResourceProjection(t, physicalContainerVolumeProjections, physicalContainerVolumeStateInvalid)
+	assertTerminalPhysicalResourceProjection(t, physicalProcessProjections, physicalProcessStateInvalid)
 }
 
 func TestPhysicalResourceProjectionsOverrideConditionReason(t *testing.T) {
@@ -124,4 +134,18 @@ func assertPhysicalResourceProjections[State comparable, Phase ~string](
 			require.Equal(t, noChange, change&additionalReconciliationNeeded, "state %v, progress %v", key.state, key.progress)
 		}
 	}
+}
+
+func assertTerminalPhysicalResourceProjection[State comparable, Phase ~string](
+	t *testing.T,
+	projections physicalResourceProjectionTable[State, Phase],
+	invalidState State,
+) {
+	t.Helper()
+
+	projection, found := projections.project(invalidState, physicalResourceProgressFailed)
+	require.True(t, found)
+	require.False(t, projection.requeue)
+	require.Equal(t, StandardDelay, projection.requeueDelay)
+	require.Equal(t, apiv2.PhysicalResourceReasonOperationStateInvalid, projection.conditionReason)
 }

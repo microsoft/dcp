@@ -74,7 +74,7 @@ func (table physicalResourceProjectionTable[State, Phase]) reconciliationDelay(
 ) AdditionalReconciliationDelay {
 	projection, valid := table.project(state, progress)
 	if !valid {
-		return LongDelay
+		return StandardDelay
 	}
 	return projection.requeueDelay
 }
@@ -106,8 +106,6 @@ func (table physicalResourceProjectionTable[State, Phase]) applyWithReason(
 			conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 			message:         fmt.Sprintf("Physical resource reached invalid reconciliation state %v with progress %v.", state, progress),
-			requeue:         true,
-			requeueDelay:    LongDelay,
 		}
 	} else {
 		if conditionReason != "" {

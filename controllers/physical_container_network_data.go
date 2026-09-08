@@ -24,6 +24,7 @@ const (
 	physicalContainerNetworkStateReplace
 	physicalContainerNetworkStateRuntime
 	physicalContainerNetworkStateRemove
+	physicalContainerNetworkStateInvalid
 )
 
 const (
@@ -187,6 +188,10 @@ var physicalContainerNetworkProjections = physicalResourceProjectionTable[physic
 		{state: physicalContainerNetworkStateReplace, progress: physicalResourceProgressFailed}: {
 			phase: apiv2.PhysicalContainerNetworkPhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
+		},
+		{state: physicalContainerNetworkStateInvalid, progress: physicalResourceProgressFailed}: {
+			phase: apiv2.PhysicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},
 	},
 }

@@ -55,7 +55,7 @@ var (
 		physicalContainerStateRuntime:     handlePhysicalContainerRuntime,
 		physicalContainerStateStop:        handlePhysicalContainerRuntime,
 		physicalContainerStatePortMapping: handlePhysicalContainerRuntime,
-		physicalContainerStateInvalid:     handleUnknownPhysicalContainerDataReason,
+		physicalContainerStateInvalid:     handlePhysicalContainerTerminal,
 		0:                                 handleUnknownPhysicalContainerDataReason,
 	}
 )
@@ -604,17 +604,30 @@ func (r *PhysicalContainerReconciler) removePartiallyCreatedPhysicalContainer(
 
 func handleUnknownPhysicalContainerDataReason(
 	_ context.Context,
-	reconciler *PhysicalContainerReconciler,
-	container *apiv2.PhysicalContainer,
+	_ *PhysicalContainerReconciler,
+	_ *apiv2.PhysicalContainer,
 	state physicalContainerState,
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
+	invalidProgress := data.progress
 	data.state = physicalContainerStateInvalid
 	data.progress = physicalResourceProgressFailed
-	data.failureMessage = fmt.Sprintf("Physical container operation reached unknown state %d.", state)
-	log.Error(fmt.Errorf("unknown physical container state %d", state), "Physical container operation reached unknown state")
-	return additionalReconciliationNeeded
+	data.failureMessage = fmt.Sprintf("Physical container reached invalid reconciliation state %v with progress %v.", state, invalidProgress)
+	data.cleanupMessage = ""
+	log.Error(fmt.Errorf("invalid physical container state %v with progress %v", state, invalidProgress), "Physical container reached invalid reconciliation state")
+	return noChange
+}
+
+func handlePhysicalContainerTerminal(
+	_ context.Context,
+	_ *PhysicalContainerReconciler,
+	_ *apiv2.PhysicalContainer,
+	_ physicalContainerState,
+	_ *physicalContainerData,
+	_ logr.Logger,
+) objectChange {
+	return noChange
 }
 
 func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(

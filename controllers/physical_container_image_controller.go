@@ -444,7 +444,7 @@ func handleUnknownPhysicalContainerImageState(
 	data.progress = physicalResourceProgressFailed
 	data.failureMessage = fmt.Sprintf("PhysicalContainerImage reached invalid reconciliation state %v with progress %v.", state, invalidProgress)
 	log.Error(fmt.Errorf("invalid PhysicalContainerImage state %v with progress %v", state, invalidProgress), "PhysicalContainerImage reached invalid reconciliation state")
-	return additionalReconciliationNeeded
+	return noChange
 }
 
 func (r *PhysicalContainerImageReconciler) ensurePulledImage(

@@ -198,7 +198,6 @@ var physicalContainerImageProjections = physicalResourceProjectionTable[physical
 		{state: physicalContainerImageStateInvalid, progress: physicalResourceProgressFailed}: {
 			phase: apiv2.PhysicalContainerImagePhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
-			requeue:         true, requeueDelay: LongDelay,
 		},
 	},
 }

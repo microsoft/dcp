@@ -120,6 +120,8 @@ func (state physicalContainerNetworkState) String() string {
 		return "Runtime"
 	case physicalContainerNetworkStateRemove:
 		return "Remove"
+	case physicalContainerNetworkStateInvalid:
+		return "Invalid"
 	default:
 		return "Unknown"
 	}
@@ -139,6 +141,8 @@ func (state physicalContainerVolumeState) String() string {
 		return "Runtime"
 	case physicalContainerVolumeStateRemove:
 		return "Remove"
+	case physicalContainerVolumeStateInvalid:
+		return "Invalid"
 	default:
 		return "Unknown"
 	}

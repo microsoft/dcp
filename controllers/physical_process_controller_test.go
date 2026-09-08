@@ -129,8 +129,10 @@ func TestHandleUnknownPhysicalProcessStateUsesReadableMessage(t *testing.T) {
 
 	physicalProcess := &apiv2.PhysicalProcess{}
 	data := &physicalProcessData{
-		state:    physicalProcessStateStop,
-		progress: physicalResourceProgressCompleted,
+		state:          physicalProcessStateStop,
+		progress:       physicalResourceProgressCompleted,
+		failureReason:  apiv2.PhysicalProcessReasonStopFailed,
+		failureMessage: "old failure",
 	}
 
 	change := handleUnknownPhysicalProcessState(
@@ -142,7 +144,10 @@ func TestHandleUnknownPhysicalProcessStateUsesReadableMessage(t *testing.T) {
 		logr.Discard(),
 	)
 
-	require.Equal(t, additionalReconciliationNeeded, change)
+	require.Equal(t, noChange, change)
+	require.Equal(t, physicalProcessStateInvalid, data.state)
+	require.Equal(t, physicalResourceProgressFailed, data.progress)
+	require.Empty(t, data.failureReason)
 	require.Equal(t, "Physical process reached invalid reconciliation state Stop with progress Completed.", data.failureMessage)
 }
 

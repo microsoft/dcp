@@ -24,6 +24,7 @@ const (
 	physicalContainerVolumeStateReplace
 	physicalContainerVolumeStateRuntime
 	physicalContainerVolumeStateRemove
+	physicalContainerVolumeStateInvalid
 )
 
 const (
@@ -187,6 +188,10 @@ var physicalContainerVolumeProjections = physicalResourceProjectionTable[physica
 		{state: physicalContainerVolumeStateRemove, progress: physicalResourceProgressAbandoned}: {
 			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned,
+		},
+		{state: physicalContainerVolumeStateInvalid, progress: physicalResourceProgressFailed}: {
+			phase: apiv2.PhysicalContainerVolumePhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},
 	},
 }

@@ -38,6 +38,7 @@ var (
 		physicalContainerNetworkStateReplace:   handlePhysicalContainerNetworkCreateState,
 		physicalContainerNetworkStateRuntime:   handlePhysicalContainerNetworkRuntime,
 		physicalContainerNetworkStateRemove:    handlePhysicalContainerNetworkRemovalState,
+		physicalContainerNetworkStateInvalid:   handlePhysicalContainerNetworkTerminal,
 		0:                                      handleUnknownPhysicalContainerNetworkDataReason,
 	}
 )
@@ -649,8 +650,26 @@ func handleUnknownPhysicalContainerNetworkDataReason(
 	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
 		return reconciler.beginPhysicalContainerNetworkRemoval(network, data, log)
 	}
-	log.Error(fmt.Errorf("invalid physical network state %v with progress %v", state, data.progress), "Runtime network operation reached invalid state")
-	return additionalReconciliationNeeded
+	invalidProgress := data.progress
+	data.state = physicalContainerNetworkStateInvalid
+	data.progress = physicalResourceProgressFailed
+	data.failureMessage = fmt.Sprintf("Physical container network reached invalid reconciliation state %v with progress %v.", state, invalidProgress)
+	log.Error(fmt.Errorf("invalid physical network state %v with progress %v", state, invalidProgress), "Runtime network operation reached invalid state")
+	return noChange
+}
+
+func handlePhysicalContainerNetworkTerminal(
+	_ context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	_ physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
+		return reconciler.beginPhysicalContainerNetworkRemoval(network, data, log)
+	}
+	return noChange
 }
 
 func (r *PhysicalContainerNetworkReconciler) beginPhysicalContainerNetworkRemoval(

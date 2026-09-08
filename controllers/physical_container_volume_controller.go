@@ -39,6 +39,7 @@ var (
 		physicalContainerVolumeStateReplace:   handlePhysicalContainerVolumeCreateState,
 		physicalContainerVolumeStateRuntime:   handlePhysicalContainerVolumeRuntime,
 		physicalContainerVolumeStateRemove:    handlePhysicalContainerVolumeRemovalState,
+		physicalContainerVolumeStateInvalid:   handlePhysicalContainerVolumeTerminal,
 		0:                                     handleUnknownPhysicalContainerVolumeDataReason,
 	}
 )
@@ -576,8 +577,26 @@ func handleUnknownPhysicalContainerVolumeDataReason(
 	if volume.DeletionTimestamp != nil && !volume.DeletionTimestamp.IsZero() {
 		return reconciler.beginPhysicalContainerVolumeRemoval(volume, data, log)
 	}
-	log.Error(fmt.Errorf("invalid physical volume state %v with progress %v", state, data.progress), "Runtime volume operation reached invalid state")
-	return additionalReconciliationNeeded
+	invalidProgress := data.progress
+	data.state = physicalContainerVolumeStateInvalid
+	data.progress = physicalResourceProgressFailed
+	data.failureMessage = fmt.Sprintf("Physical container volume reached invalid reconciliation state %v with progress %v.", state, invalidProgress)
+	log.Error(fmt.Errorf("invalid physical volume state %v with progress %v", state, invalidProgress), "Runtime volume operation reached invalid state")
+	return noChange
+}
+
+func handlePhysicalContainerVolumeTerminal(
+	_ context.Context,
+	reconciler *PhysicalContainerVolumeReconciler,
+	volume *apiv2.PhysicalContainerVolume,
+	_ physicalContainerVolumeState,
+	data *physicalContainerVolumeData,
+	log logr.Logger,
+) objectChange {
+	if volume.DeletionTimestamp != nil && !volume.DeletionTimestamp.IsZero() {
+		return reconciler.beginPhysicalContainerVolumeRemoval(volume, data, log)
+	}
+	return noChange
 }
 
 func (r *PhysicalContainerVolumeReconciler) beginPhysicalContainerVolumeRemoval(
