@@ -48,7 +48,8 @@ const (
 	// PhysicalProcessReasonLaunching indicates that process launch is in progress.
 	PhysicalProcessReasonLaunching ConditionReason = "Launching"
 
-	// PhysicalProcessReasonLaunchFailed indicates that process launch failed and will be retried.
+	// PhysicalProcessReasonLaunchFailed indicates that process launch failed.
+	// The phase distinguishes whether the launch will be retried.
 	PhysicalProcessReasonLaunchFailed ConditionReason = "LaunchFailed"
 
 	// PhysicalProcessReasonRuntimeProcessRunning indicates that the operating system process is running.
