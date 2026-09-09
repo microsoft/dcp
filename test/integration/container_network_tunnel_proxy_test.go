@@ -275,7 +275,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.NoError(t, inspectErr, "Should be able to inspect client proxy container")
 	require.Len(t, inspectedContainers, 1, "Should find exactly one container")
 	clientContainer := inspectedContainers[0]
-	require.Equal(t, updatedTunnelProxy.Status.ClientProxyContainerImage, clientContainer.Image, "Container should have the expected image")
+	require.Equal(t, physicalImages.Items[0].Status.ImageID, clientContainer.Image, "Container should use the physical image ID")
 	require.Equal(t, containers.ContainerStatusRunning, clientContainer.Status, "Container should be running")
 	require.Len(t, clientContainer.Networks, 1, "Client proxy container should only be attached to the target network")
 	require.Equal(t, updatedNetwork.Status.NetworkName, clientContainer.Networks[0].Name, "Client proxy container should be attached to the target network during creation")

@@ -110,6 +110,12 @@ type Executor interface {
 	// Checks that the process identified by the given ProcessHandle is running.
 	CheckProcessRunning(handle ProcessHandle) error
 
+	// Resolves a process ID into a handle for a currently running process.
+	// The returned handle carries the process identity time when it can be determined; callers that
+	// need to guard against PID reuse must check whether the returned IdentityTime is zero.
+	// If the process does not exist, the returned error satisfies IsProcessGoneErr().
+	FindProcessHandle(pid Pid_t) (ProcessHandle, error)
+
 	// Starts a process that does not need to be tracked (the caller is not interested in its exit code),
 	// minimizing resource usage. An error is returned if the process could not be started.
 	StartAndForget(cmd *exec.Cmd, creationFlags ProcessCreationFlag) (handle ProcessHandle, err error)

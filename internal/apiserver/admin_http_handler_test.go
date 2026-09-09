@@ -536,6 +536,29 @@ func TestCanCreateV2PhysicalContainer(t *testing.T) {
 	require.NoError(t, listErr, "Failed to list V2 PhysicalContainers")
 	require.Len(t, list.Items, 1)
 	require.Equal(t, pc.Name, list.Items[0].Name)
+
+	pid := int64(os.Getpid())
+	pp := apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-v2-physical-process",
+			Namespace: ns.Name,
+		},
+		Spec: apiv2.PhysicalProcessSpec{PID: &pid},
+	}
+	createErr = serverInfo.Client.Create(ctx, &pp)
+	require.NoError(t, createErr, "Failed to create V2 PhysicalProcess")
+
+	var gotProcess apiv2.PhysicalProcess
+	getErr = serverInfo.Client.Get(ctx, pp.NamespacedName(), &gotProcess)
+	require.NoError(t, getErr, "Failed to get V2 PhysicalProcess")
+	require.Equal(t, pp.Name, gotProcess.Name)
+	require.Equal(t, pid, *gotProcess.Spec.PID)
+
+	var processList apiv2.PhysicalProcessList
+	listErr = serverInfo.Client.List(ctx, &processList, ctrl_client.InNamespace(ns.Name))
+	require.NoError(t, listErr, "Failed to list V2 PhysicalProcesses")
+	require.Len(t, processList.Items, 1)
+	require.Equal(t, pp.Name, processList.Items[0].Name)
 }
 
 func TestCanCapturePerfTrace(t *testing.T) {

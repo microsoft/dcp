@@ -148,6 +148,10 @@ func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 	return metadataChanged
 }
 
+func hasFinalizer(obj metav1.Object, finalizer string) bool {
+	return usvc_slices.Contains(obj.GetFinalizers(), finalizer)
+}
+
 func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
 	finalizers := obj.GetFinalizers()
 	i := usvc_slices.Index(finalizers, finalizer)
@@ -255,7 +259,7 @@ type PReconcilerType[RT ReconcilerType] interface {
 	ctrl_client.Client
 }
 type KubernetesObjectStateType interface {
-	~string
+	comparable
 }
 
 // stateInitializerFunc is invoked when reconciliation handles a particular controller state.
@@ -286,15 +290,16 @@ func getStateInitializer[
 	state OS,
 	log logr.Logger,
 ) stateInitializerFunc[O, PO, R, PR, OS, IMOS, PIMOS] {
-	handler, found := m[state]
+	initializer, found := m[state]
 	if found {
-		return handler
+		return initializer
 	}
 
 	log.Error(fmt.Errorf("could not find a handler for current object state, will use empty state handler instead"), "", "ObjectState", state)
-	handler, found = m[""]
+	var emptyState OS
+	initializer, found = m[emptyState]
 	if found {
-		return handler
+		return initializer
 	}
 
 	panic("the state handler map has no empty state handler")

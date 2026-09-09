@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -39,11 +40,45 @@ var (
 
 type namespaceCleanupResourceHandler func(*NamespaceReconciler, context.Context, *apiv2.Namespace, logr.Logger) (int, error)
 
+type namespaceCleanupResult struct {
+	gvr       schema.GroupVersionResource
+	remaining int
+	err       error
+}
+
 var namespaceCleanupResourceHandlers = map[schema.GroupVersionResource]namespaceCleanupResourceHandler{
+	(&apiv2.PhysicalProcess{}).GetGroupVersionResource():          (*NamespaceReconciler).cleanupPhysicalProcesses,
 	(&apiv2.PhysicalContainer{}).GetGroupVersionResource():        (*NamespaceReconciler).cleanupPhysicalContainers,
 	(&apiv2.PhysicalContainerImage{}).GetGroupVersionResource():   (*NamespaceReconciler).cleanupPhysicalContainerImages,
 	(&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource(): (*NamespaceReconciler).cleanupPhysicalContainerNetworks,
 	(&apiv2.PhysicalContainerVolume{}).GetGroupVersionResource():  (*NamespaceReconciler).cleanupPhysicalContainerVolumes,
+}
+
+func (r *NamespaceReconciler) cleanupPhysicalProcesses(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
+	physicalProcesses := apiv2.PhysicalProcessList{}
+	listErr := r.NoCacheClient.List(ctx, &physicalProcesses, ctrl_client.InNamespace(namespace.Name))
+	if listErr != nil {
+		return 0, fmt.Errorf("failed to list PhysicalProcesses in namespace %q: %w", namespace.Name, listErr)
+	}
+
+	deleteErrors := slices.MapConcurrent[error](physicalProcesses.Items, func(physicalProcess apiv2.PhysicalProcess) error {
+		if physicalProcess.DeletionTimestamp != nil && !physicalProcess.DeletionTimestamp.IsZero() {
+			return nil
+		}
+
+		log.V(1).Info("Deleting PhysicalProcess during namespace cleanup", "Namespace", namespace.Name, "PhysicalProcess", physicalProcess.Name)
+		deletePhysicalProcessErr := r.Client.Delete(ctx, &physicalProcess)
+		if deletePhysicalProcessErr != nil && !apierrors.IsNotFound(deletePhysicalProcessErr) {
+			return fmt.Errorf("failed to delete PhysicalProcess %q in namespace %q: %w", physicalProcess.Name, namespace.Name, deletePhysicalProcessErr)
+		}
+		return nil
+	}, namespaceCleanupMaxConcurrentDeletes)
+	deleteErr := errors.Join(deleteErrors...)
+	if deleteErr != nil {
+		return 0, deleteErr
+	}
+
+	return len(physicalProcesses.Items), nil
 }
 
 type NamespaceReconciler struct {
@@ -170,7 +205,8 @@ func (r *NamespaceReconciler) setNamespaceCleanupInProgress(namespace *apiv2.Nam
 	)
 }
 
-// Deletes the namespace-scoped resources owned by the namespace, in dependency order.
+// Deletes the namespace-scoped resources owned by the namespace, processing each dependency-ready
+// batch concurrently.
 // Returns a description of the resources still awaiting deletion, or an empty string once
 // cleanup is complete.
 func (r *NamespaceReconciler) cleanupNamespace(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (string, error) {
@@ -179,31 +215,58 @@ func (r *NamespaceReconciler) cleanupNamespace(ctx context.Context, namespace *a
 	}
 
 	cleaned := map[schema.GroupVersionResource]bool{}
-	for len(cleaned) < len(resourcecleanup.NamespaceResources) {
-		progress := false
-		for _, cleanupResource := range resourcecleanup.NamespaceResources {
-			if cleaned[cleanupResource.GVR] || !namespaceCleanupDependenciesComplete(cleanupResource, cleaned) {
-				continue
-			}
-
-			remaining, cleanupErr := r.cleanupNamespacedResources(ctx, namespace, cleanupResource.GVR, log)
-			if cleanupErr != nil {
-				return "", cleanupErr
-			}
-			if remaining > 0 {
-				return fmt.Sprintf("%d %s", remaining, cleanupResource.GVR.Resource), nil
-			}
-
-			cleaned[cleanupResource.GVR] = true
-			progress = true
+	attempted := map[schema.GroupVersionResource]bool{}
+	pending := map[schema.GroupVersionResource]int{}
+	for {
+		ready := slices.Select(resourcecleanup.NamespaceResources, func(cleanupResource *resourcecleanup.CleanupResource) bool {
+			return !attempted[cleanupResource.GVR] &&
+				namespaceCleanupDependenciesComplete(cleanupResource, cleaned)
+		})
+		if len(ready) == 0 {
+			break
+		}
+		for _, cleanupResource := range ready {
+			attempted[cleanupResource.GVR] = true
 		}
 
-		if !progress {
-			return "", fmt.Errorf("namespace cleanup resource dependencies are not satisfiable")
+		results := slices.MapConcurrent[namespaceCleanupResult](ready, func(cleanupResource *resourcecleanup.CleanupResource) namespaceCleanupResult {
+			remaining, cleanupErr := r.cleanupNamespacedResources(ctx, namespace, cleanupResource.GVR, log)
+			return namespaceCleanupResult{
+				gvr:       cleanupResource.GVR,
+				remaining: remaining,
+				err:       cleanupErr,
+			}
+		}, 0)
+
+		cleanupErrors := slices.Map[error](results, func(result namespaceCleanupResult) error {
+			return result.err
+		})
+		if cleanupErr := errors.Join(cleanupErrors...); cleanupErr != nil {
+			return "", cleanupErr
+		}
+		for _, result := range results {
+			if result.remaining == 0 {
+				cleaned[result.gvr] = true
+			} else {
+				pending[result.gvr] = result.remaining
+			}
 		}
 	}
 
-	return "", nil
+	if len(cleaned) == len(resourcecleanup.NamespaceResources) {
+		return "", nil
+	}
+	if len(pending) == 0 {
+		return "", fmt.Errorf("namespace cleanup resource dependencies are not satisfiable")
+	}
+
+	pendingDescriptions := make([]string, 0, len(pending))
+	for _, cleanupResource := range resourcecleanup.NamespaceResources {
+		if remaining := pending[cleanupResource.GVR]; remaining > 0 {
+			pendingDescriptions = append(pendingDescriptions, fmt.Sprintf("%d %s", remaining, cleanupResource.GVR.Resource))
+		}
+	}
+	return strings.Join(pendingDescriptions, " and "), nil
 }
 
 func namespaceCleanupDependenciesComplete(cleanupResource *resourcecleanup.CleanupResource, cleaned map[schema.GroupVersionResource]bool) bool {
@@ -228,7 +291,7 @@ func (r *NamespaceReconciler) cleanupNamespacedResources(
 
 func (r *NamespaceReconciler) cleanupPhysicalContainers(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
 	physicalContainers := apiv2.PhysicalContainerList{}
-	listErr := r.Client.List(ctx, &physicalContainers, ctrl_client.InNamespace(namespace.Name))
+	listErr := r.NoCacheClient.List(ctx, &physicalContainers, ctrl_client.InNamespace(namespace.Name))
 	if listErr != nil {
 		return 0, fmt.Errorf("failed to list PhysicalContainers in namespace %q: %w", namespace.Name, listErr)
 	}
@@ -255,7 +318,7 @@ func (r *NamespaceReconciler) cleanupPhysicalContainers(ctx context.Context, nam
 
 func (r *NamespaceReconciler) cleanupPhysicalContainerImages(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
 	physicalContainerImages := apiv2.PhysicalContainerImageList{}
-	listImagesErr := r.Client.List(ctx, &physicalContainerImages, ctrl_client.InNamespace(namespace.Name))
+	listImagesErr := r.NoCacheClient.List(ctx, &physicalContainerImages, ctrl_client.InNamespace(namespace.Name))
 	if listImagesErr != nil {
 		return 0, fmt.Errorf("failed to list PhysicalContainerImages in namespace %q: %w", namespace.Name, listImagesErr)
 	}
@@ -282,7 +345,7 @@ func (r *NamespaceReconciler) cleanupPhysicalContainerImages(ctx context.Context
 
 func (r *NamespaceReconciler) cleanupPhysicalContainerNetworks(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
 	physicalContainerNetworks := apiv2.PhysicalContainerNetworkList{}
-	listErr := r.Client.List(ctx, &physicalContainerNetworks, ctrl_client.InNamespace(namespace.Name))
+	listErr := r.NoCacheClient.List(ctx, &physicalContainerNetworks, ctrl_client.InNamespace(namespace.Name))
 	if listErr != nil {
 		return 0, fmt.Errorf("failed to list PhysicalContainerNetworks in namespace %q: %w", namespace.Name, listErr)
 	}
@@ -309,7 +372,7 @@ func (r *NamespaceReconciler) cleanupPhysicalContainerNetworks(ctx context.Conte
 
 func (r *NamespaceReconciler) cleanupPhysicalContainerVolumes(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
 	physicalContainerVolumes := apiv2.PhysicalContainerVolumeList{}
-	listErr := r.Client.List(ctx, &physicalContainerVolumes, ctrl_client.InNamespace(namespace.Name))
+	listErr := r.NoCacheClient.List(ctx, &physicalContainerVolumes, ctrl_client.InNamespace(namespace.Name))
 	if listErr != nil {
 		return 0, fmt.Errorf("failed to list PhysicalContainerVolumes in namespace %q: %w", namespace.Name, listErr)
 	}
