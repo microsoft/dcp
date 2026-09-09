@@ -100,4 +100,13 @@ func TestPhysicalContainerPortMappingFailurePreservesRuntimePhase(t *testing.T) 
 	require.Equal(t, string(apiv2.PhysicalContainerReasonPortMappingResolutionFailed), readyCondition.Reason)
 	require.Equal(t, LongDelay, delay)
 	require.NotEqual(t, noChange, change&additionalReconciliationNeeded)
+
+	firstTransition := readyCondition.LastTransitionTime
+	secondChange, secondDelay, secondValid := data.applyTo(container)
+	require.True(t, secondValid)
+	require.Equal(t, LongDelay, secondDelay)
+	require.Equal(t, noChange, secondChange&statusChanged)
+	readyCondition = apimeta.FindStatusCondition(container.Status.Conditions, string(apiv2.ConditionReady))
+	require.NotNil(t, readyCondition)
+	require.Equal(t, firstTransition, readyCondition.LastTransitionTime)
 }

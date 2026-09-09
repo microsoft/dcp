@@ -144,15 +144,21 @@ func (data *physicalContainerData) applyTo(
 	if data.state == physicalContainerStateCleanup || data.cleanupMessage != "" {
 		message = data.cleanupMessage
 	}
-	stateChange, delay, valid := physicalContainerProjections.apply(
-		data.state,
-		data.progress,
-		message,
-		&container.Status.Phase,
-		&container.Status.Conditions,
-		container.Generation,
-	)
 	if data.portMappingFailureMessage != "" {
+		projection, valid := physicalContainerProjections.project(data.state, data.progress)
+		if !valid {
+			stateChange, delay, _ := physicalContainerProjections.apply(
+				data.state,
+				data.progress,
+				message,
+				&container.Status.Phase,
+				&container.Status.Conditions,
+				container.Generation,
+			)
+			return change | stateChange, delay, false
+		}
+
+		stateChange := setValue(&container.Status.Phase, projection.phase)
 		stateChange |= setCondition(
 			&container.Status.Conditions,
 			apiv2.ConditionReady,
@@ -162,8 +168,17 @@ func (data *physicalContainerData) applyTo(
 			data.portMappingFailureMessage,
 		)
 		stateChange |= additionalReconciliationNeeded
-		delay = LongDelay
+		return change | stateChange, LongDelay, true
 	}
+
+	stateChange, delay, valid := physicalContainerProjections.apply(
+		data.state,
+		data.progress,
+		message,
+		&container.Status.Phase,
+		&container.Status.Conditions,
+		container.Generation,
+	)
 	return change | stateChange, delay, valid
 }
 

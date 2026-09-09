@@ -372,18 +372,14 @@ func addDcpHttpHandlers(
 ) error {
 	originalChainBuilder := config.GenericConfig.BuildHandlerChainFunc
 	namespaceLifecycleGate := newV2NamespaceLifecycleGate()
+	if storageErr := decorateV2NamespaceStorageProviders(config, namespaceLifecycleGate); storageErr != nil {
+		return storageErr
+	}
 	namespaceWatchSource, namespaceWatchSourceErr := newV2NamespaceWatchSource(namespaceWatchClientConfig)
 	if namespaceWatchSourceErr != nil {
 		return namespaceWatchSourceErr
 	}
 	config.GenericConfig.BuildHandlerChainFunc = func(handler http.Handler, c *kubeapiserver.Config) http.Handler {
-		handler = withV2NamespaceLifecycle(
-			handler,
-			namespaceLifecycleGate,
-			c.RequestInfoResolver,
-			c.Serializer,
-			c.MaxRequestBodyBytes,
-		)
 		handler = originalChainBuilder(handler, c)
 		handler = withDcpContextValues(handler, ctx, log)
 		return handler

@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -120,6 +121,13 @@ func TestV2NamespaceLifecycleWatcherKeepsUncertainTerminatingNamespaceClosed(t *
 	waitForFakeV2NamespaceWatcher(t, ctx, source.watchers)
 	waitForV2NamespaceWatcherSignal(t, ctx, source.lists)
 
+	observeErr := wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(context.Context) (bool, error) {
+		gate.lock.Lock()
+		defer gate.lock.Unlock()
+		current := gate.namespaces["test"]
+		return current != nil && current.deleteAccepted && current.uncertainMutation == v2NamespaceMutationNone, nil
+	})
+	require.NoError(t, observeErr)
 	gate.lock.Lock()
 	state := gate.namespaces["test"]
 	require.NotNil(t, state)
@@ -127,6 +135,30 @@ func TestV2NamespaceLifecycleWatcherKeepsUncertainTerminatingNamespaceClosed(t *
 	require.True(t, state.deleteAccepted)
 	require.Equal(t, v2NamespaceMutationNone, state.uncertainMutation)
 	gate.lock.Unlock()
+}
+
+func TestV2NamespaceLifecycleWatcherRefreshesAfterMutationLeaseCompletes(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+	gate := newV2NamespaceLifecycleGate()
+	source := newFakeV2NamespaceWatchSource("test")
+	go runV2NamespaceLifecycleWatcher(ctx, source, gate, logr.Discard(), time.Hour, time.Millisecond)
+	waitForFakeV2NamespaceWatcher(t, ctx, source.watchers)
+	waitForV2NamespaceWatcherSignal(t, ctx, source.lists)
+
+	mutationLease, mutationErr := gate.beginNamespaceMutation(ctx, "test")
+	require.NoError(t, mutationErr)
+	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, deleteErr)
+	deleteLease.complete(v2NamespaceMutationUncertain)
+	waitForFakeV2NamespaceWatcher(t, ctx, source.watchers)
+	waitForV2NamespaceWatcherSignal(t, ctx, source.lists)
+	requireV2NamespaceGateState(t, gate, "test")
+
+	mutationLease.complete()
+	waitForFakeV2NamespaceWatcher(t, ctx, source.watchers)
+	waitForV2NamespaceWatcherSignal(t, ctx, source.lists)
+	waitForV2NamespaceGateRemoval(t, ctx, gate, "test")
 }
 
 func TestV2NamespaceLifecycleWatcherObservesDeletionStartedDuringList(t *testing.T) {
