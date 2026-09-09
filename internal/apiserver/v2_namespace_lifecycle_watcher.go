@@ -78,7 +78,7 @@ func runV2NamespaceLifecycleWatcher(
 			restartDelay = retryInterval
 			continue
 		}
-		gate.observeNamespaces(v2NamespaceNames(namespaceList), closedStates)
+		gate.observeNamespaces(v2NamespaceStates(namespaceList), closedStates)
 
 		restartTimer := time.NewTimer(restartInterval)
 		restartDelay = time.Duration(0)
@@ -92,6 +92,9 @@ func runV2NamespaceLifecycleWatcher(
 				return
 			case <-restartTimer.C:
 				log.V(1).Info("Restarting V2 Namespace lifecycle watcher")
+				break watchLoop
+			case <-gate.refreshRequested:
+				log.V(1).Info("Refreshing V2 Namespace lifecycle state")
 				break watchLoop
 			case event, open := <-namespaceWatcher.ResultChan():
 				if !open {
@@ -124,10 +127,13 @@ func runV2NamespaceLifecycleWatcher(
 	}
 }
 
-func v2NamespaceNames(namespaceList *unstructured.UnstructuredList) map[string]struct{} {
-	namespaces := make(map[string]struct{}, len(namespaceList.Items))
+func v2NamespaceStates(namespaceList *unstructured.UnstructuredList) map[string]v2NamespaceStorageState {
+	namespaces := make(map[string]v2NamespaceStorageState, len(namespaceList.Items))
 	for index := range namespaceList.Items {
-		namespaces[namespaceList.Items[index].GetName()] = struct{}{}
+		namespace := &namespaceList.Items[index]
+		namespaces[namespace.GetName()] = v2NamespaceStorageState{
+			terminating: namespace.GetDeletionTimestamp() != nil,
+		}
 	}
 	return namespaces
 }

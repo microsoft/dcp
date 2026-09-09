@@ -82,7 +82,9 @@ func NewReconcilerBase[T commonapi.ObjectStruct, PT commonapi.PCopyableObjectStr
 	return rb
 }
 
-func (rb *ReconcilerBase[T, PT]) requestReconcileForNamespace(
+// mapNamespaceToReconcileRequests maps a Namespace event to every object of this
+// reconciler's type in that Namespace.
+func (rb *ReconcilerBase[T, PT]) mapNamespaceToReconcileRequests(
 	listPrototype commonapi.ListWithObjectItems[T, PT],
 ) ctrl_handler.MapFunc {
 	return func(ctx context.Context, obj ctrl_client.Object) []ctrl_reconcile.Request {

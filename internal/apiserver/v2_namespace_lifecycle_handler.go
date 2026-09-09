@@ -27,26 +27,46 @@ import (
 )
 
 type v2NamespaceLifecycleState struct {
-	activeCreates    int
-	activeDeletes    int
-	closed           bool
-	deleteAccepted   bool
-	deletionObserved bool
-	drained          chan struct{}
+	activeCreates      int
+	activeDeletes      int
+	closed             bool
+	deleteAccepted     bool
+	deletionObserved   bool
+	uncertainMutation  v2NamespaceMutationKind
+	uncertaintyVersion uint64
+	drained            chan struct{}
 }
 
 type v2NamespaceLifecycleGate struct {
 	lock               sync.Mutex
 	namespaces         map[string]*v2NamespaceLifecycleState
 	namespaceMutations map[string]*v2NamespaceMutationState
+	refreshRequested   chan struct{}
 }
 
 func newV2NamespaceLifecycleGate() *v2NamespaceLifecycleGate {
 	return &v2NamespaceLifecycleGate{
 		namespaces:         map[string]*v2NamespaceLifecycleState{},
 		namespaceMutations: map[string]*v2NamespaceMutationState{},
+		refreshRequested:   make(chan struct{}, 1),
 	}
 }
+
+type v2NamespaceMutationKind uint8
+
+const (
+	v2NamespaceMutationNone v2NamespaceMutationKind = iota
+	v2NamespaceMutationCreate
+	v2NamespaceMutationDelete
+)
+
+type v2NamespaceMutationOutcome uint8
+
+const (
+	v2NamespaceMutationRejected v2NamespaceMutationOutcome = iota
+	v2NamespaceMutationAccepted
+	v2NamespaceMutationUncertain
+)
 
 type v2NamespaceMutationState struct {
 	available  chan struct{}
@@ -182,63 +202,129 @@ func (gate *v2NamespaceLifecycleGate) beginDelete(ctx context.Context, namespace
 	case <-drained:
 		return lease, nil
 	case <-ctx.Done():
-		lease.complete(false)
+		lease.complete(v2NamespaceMutationRejected)
 		return nil, ctx.Err()
 	}
 }
 
-func (lease *v2NamespaceDeleteLease) complete(accepted bool) {
+func (lease *v2NamespaceDeleteLease) complete(outcome v2NamespaceMutationOutcome) {
 	lease.once.Do(func() {
 		lease.gate.lock.Lock()
-		defer lease.gate.lock.Unlock()
 
-		if accepted {
+		refreshNeeded := false
+		switch outcome {
+		case v2NamespaceMutationAccepted:
 			lease.state.deleteAccepted = true
 			lease.state.closed = true
+			lease.state.uncertainMutation = v2NamespaceMutationNone
+		case v2NamespaceMutationUncertain:
+			lease.state.closed = true
+			lease.state.uncertainMutation = v2NamespaceMutationDelete
+			lease.state.uncertaintyVersion++
+			refreshNeeded = true
 		}
 		lease.state.activeDeletes--
 		if lease.gate.removeObservedNamespaceDeletion(lease.namespace, lease.state) {
+			lease.gate.lock.Unlock()
 			return
 		}
-		if lease.state.activeDeletes == 0 && !lease.state.deleteAccepted {
+		if lease.state.activeDeletes == 0 && !lease.state.deleteAccepted &&
+			lease.state.uncertainMutation == v2NamespaceMutationNone {
 			lease.state.closed = false
 		}
 		if !lease.state.closed && lease.state.activeCreates == 0 &&
 			lease.gate.namespaces[lease.namespace] == lease.state {
 			delete(lease.gate.namespaces, lease.namespace)
 		}
+		lease.gate.lock.Unlock()
+
+		if refreshNeeded {
+			lease.gate.requestRefresh()
+		}
 	})
 }
 
-func (gate *v2NamespaceLifecycleGate) closedNamespaceStates() map[string]*v2NamespaceLifecycleState {
+type v2NamespaceLifecycleSnapshot struct {
+	state              *v2NamespaceLifecycleState
+	uncertaintyVersion uint64
+}
+
+func (gate *v2NamespaceLifecycleGate) closedNamespaceStates() map[string]v2NamespaceLifecycleSnapshot {
 	gate.lock.Lock()
 	defer gate.lock.Unlock()
 
-	states := make(map[string]*v2NamespaceLifecycleState)
+	states := make(map[string]v2NamespaceLifecycleSnapshot)
 	for namespace, state := range gate.namespaces {
 		if state.closed {
-			states[namespace] = state
+			states[namespace] = v2NamespaceLifecycleSnapshot{
+				state:              state,
+				uncertaintyVersion: state.uncertaintyVersion,
+			}
 		}
 	}
 	return states
 }
 
+type v2NamespaceStorageState struct {
+	terminating bool
+}
+
 func (gate *v2NamespaceLifecycleGate) observeNamespaces(
-	namespaces map[string]struct{},
-	closedStates map[string]*v2NamespaceLifecycleState,
+	namespaces map[string]v2NamespaceStorageState,
+	closedStates map[string]v2NamespaceLifecycleSnapshot,
 ) {
 	gate.lock.Lock()
 	defer gate.lock.Unlock()
 
-	for namespace, state := range closedStates {
+	for namespace, snapshot := range closedStates {
+		state := snapshot.state
 		if gate.namespaces[namespace] != state || !state.closed {
 			continue
 		}
-		if _, found := namespaces[namespace]; found {
+		storageState, found := namespaces[namespace]
+		if !found {
+			state.deletionObserved = true
+			gate.removeObservedNamespaceDeletion(namespace, state)
 			continue
 		}
-		state.deletionObserved = true
-		gate.removeObservedNamespaceDeletion(namespace, state)
+		if state.uncertainMutation == v2NamespaceMutationNone ||
+			state.uncertaintyVersion != snapshot.uncertaintyVersion {
+			continue
+		}
+
+		state.uncertainMutation = v2NamespaceMutationNone
+		if storageState.terminating {
+			state.deleteAccepted = true
+			continue
+		}
+
+		state.closed = false
+		state.deleteAccepted = false
+		state.deletionObserved = false
+		if state.activeCreates == 0 && state.activeDeletes == 0 {
+			delete(gate.namespaces, namespace)
+		}
+	}
+}
+
+func (gate *v2NamespaceLifecycleGate) markCreateUncertain(namespace string) {
+	gate.lock.Lock()
+	state := gate.namespaces[namespace]
+	if state == nil || !state.closed {
+		gate.lock.Unlock()
+		return
+	}
+	state.uncertainMutation = v2NamespaceMutationCreate
+	state.uncertaintyVersion++
+	gate.lock.Unlock()
+
+	gate.requestRefresh()
+}
+
+func (gate *v2NamespaceLifecycleGate) requestRefresh() {
+	select {
+	case gate.refreshRequested <- struct{}{}:
+	default:
 	}
 }
 
@@ -267,6 +353,7 @@ func (gate *v2NamespaceLifecycleGate) open(namespace string) {
 	state.closed = false
 	state.deleteAccepted = false
 	state.deletionObserved = false
+	state.uncertainMutation = v2NamespaceMutationNone
 	if state.activeCreates == 0 && state.activeDeletes == 0 {
 		delete(gate.namespaces, namespace)
 	}
@@ -432,7 +519,13 @@ func (handler *v2NamespaceLifecycleHandler) handleNamespaceDelete(
 	responseMetrics := httpsnoop.Metrics{}
 	completed := false
 	defer func() {
-		deleteLease.complete(!completed || responseSucceeded(responseMetrics.Code))
+		outcome := v2NamespaceMutationRejected
+		if !completed {
+			outcome = v2NamespaceMutationUncertain
+		} else if responseSucceeded(responseMetrics.Code) {
+			outcome = v2NamespaceMutationAccepted
+		}
+		deleteLease.complete(outcome)
 	}()
 	responseMetrics.CaptureMetrics(writer, func(statusWriter http.ResponseWriter) {
 		handler.inner.ServeHTTP(statusWriter, request)
@@ -461,7 +554,12 @@ func (handler *v2NamespaceLifecycleHandler) handleNamespaceCreate(writer http.Re
 	responseMetrics := httpsnoop.Metrics{}
 	completed := false
 	defer func() {
-		if namespaceName != "" && responseSucceeded(responseMetrics.Code) && (completed || responseMetrics.Code != 0) {
+		if namespaceName == "" {
+			return
+		}
+		if !completed {
+			handler.gate.markCreateUncertain(namespaceName)
+		} else if responseSucceeded(responseMetrics.Code) {
 			handler.gate.open(namespaceName)
 		}
 	}()

@@ -25,7 +25,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-func TestRequestReconcileForNamespace(t *testing.T) {
+func TestMapNamespaceToReconcileRequests(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -38,7 +38,7 @@ func TestRequestReconcileForNamespace(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(services...).Build()
 	reconciler := NewReconcilerBase[apiv1.Service](client, client, logr.Discard(), context.Background())
 
-	requestReconcile := reconciler.requestReconcileForNamespace(&apiv1.ServiceList{})
+	requestReconcile := reconciler.mapNamespaceToReconcileRequests(&apiv1.ServiceList{})
 	requests := requestReconcile(context.Background(), &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "target"}})
 
 	names := make([]types.NamespacedName, len(requests))

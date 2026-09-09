@@ -42,7 +42,7 @@ func TestV2NamespaceLifecycleGateWaitsForActiveCreates(t *testing.T) {
 	go func() {
 		deleteLease, closeErr := gate.beginDelete(ctx, "test")
 		if closeErr == nil {
-			deleteLease.complete(true)
+			deleteLease.complete(v2NamespaceMutationAccepted)
 		}
 		closeResult <- closeErr
 	}()
@@ -72,10 +72,10 @@ func TestV2NamespaceLifecycleGateRemovesAcceptedDeleteAfterStorageDeletion(t *te
 	gate := newV2NamespaceLifecycleGate()
 	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
 	require.NoError(t, deleteErr)
-	deleteLease.complete(true)
+	deleteLease.complete(v2NamespaceMutationAccepted)
 
 	requireV2NamespaceGateState(t, gate, "test")
-	gate.observeNamespaces(map[string]struct{}{}, gate.closedNamespaceStates())
+	gate.observeNamespaces(map[string]v2NamespaceStorageState{}, gate.closedNamespaceStates())
 	requireNoV2NamespaceGateState(t, gate, "test")
 }
 
@@ -87,9 +87,9 @@ func TestV2NamespaceLifecycleGateWaitsForDeleteRequestAfterStorageDeletion(t *te
 	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
 	require.NoError(t, deleteErr)
 
-	gate.observeNamespaces(map[string]struct{}{}, gate.closedNamespaceStates())
+	gate.observeNamespaces(map[string]v2NamespaceStorageState{}, gate.closedNamespaceStates())
 	requireV2NamespaceGateState(t, gate, "test")
-	deleteLease.complete(true)
+	deleteLease.complete(v2NamespaceMutationAccepted)
 	requireNoV2NamespaceGateState(t, gate, "test")
 }
 
@@ -100,16 +100,82 @@ func TestV2NamespaceLifecycleGateIgnoresDeletionObservedForReplacedState(t *test
 	gate := newV2NamespaceLifecycleGate()
 	firstDeleteLease, firstDeleteErr := gate.beginDelete(ctx, "test")
 	require.NoError(t, firstDeleteErr)
-	firstDeleteLease.complete(true)
+	firstDeleteLease.complete(v2NamespaceMutationAccepted)
 	closedStates := gate.closedNamespaceStates()
 
 	gate.open("test")
 	secondDeleteLease, secondDeleteErr := gate.beginDelete(ctx, "test")
 	require.NoError(t, secondDeleteErr)
-	secondDeleteLease.complete(true)
+	secondDeleteLease.complete(v2NamespaceMutationAccepted)
 
-	gate.observeNamespaces(map[string]struct{}{}, closedStates)
+	gate.observeNamespaces(map[string]v2NamespaceStorageState{}, closedStates)
 	requireV2NamespaceGateState(t, gate, "test")
+}
+
+func TestV2NamespaceLifecycleGateReopensUncertainDeleteForActiveNamespace(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, deleteErr)
+	deleteLease.complete(v2NamespaceMutationUncertain)
+	closedStates := gate.closedNamespaceStates()
+
+	gate.observeNamespaces(
+		map[string]v2NamespaceStorageState{"test": {}},
+		closedStates,
+	)
+
+	requireNoV2NamespaceGateState(t, gate, "test")
+}
+
+func TestV2NamespaceLifecycleGateKeepsUncertainDeleteClosedForTerminatingNamespace(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, deleteErr)
+	deleteLease.complete(v2NamespaceMutationUncertain)
+	closedStates := gate.closedNamespaceStates()
+
+	gate.observeNamespaces(
+		map[string]v2NamespaceStorageState{"test": {terminating: true}},
+		closedStates,
+	)
+
+	gate.lock.Lock()
+	state := gate.namespaces["test"]
+	require.NotNil(t, state)
+	require.True(t, state.closed)
+	require.True(t, state.deleteAccepted)
+	require.Equal(t, v2NamespaceMutationNone, state.uncertainMutation)
+	gate.lock.Unlock()
+}
+
+func TestV2NamespaceLifecycleGateDoesNotResolveNewerUncertaintyFromOlderSnapshot(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, deleteErr)
+	deleteLease.complete(v2NamespaceMutationUncertain)
+	closedStates := gate.closedNamespaceStates()
+	gate.markCreateUncertain("test")
+
+	gate.observeNamespaces(
+		map[string]v2NamespaceStorageState{"test": {}},
+		closedStates,
+	)
+
+	gate.lock.Lock()
+	state := gate.namespaces["test"]
+	require.NotNil(t, state)
+	require.True(t, state.closed)
+	require.Equal(t, v2NamespaceMutationCreate, state.uncertainMutation)
+	gate.lock.Unlock()
 }
 
 func TestV2NamespaceLifecycleHandlerSerializesCreateAndDelete(t *testing.T) {
@@ -206,7 +272,7 @@ func TestV2NamespaceLifecycleHandlerReopensGateForReplacementNamespace(t *testin
 	gate := newV2NamespaceLifecycleGate()
 	deleteLease, closeErr := gate.beginDelete(ctx, "test")
 	require.NoError(t, closeErr)
-	deleteLease.complete(true)
+	deleteLease.complete(v2NamespaceMutationAccepted)
 	handler := newV2NamespaceLifecycleTestHandler(t, inner, gate)
 
 	blockedRequest := newV2ResourceRequest(ctx, http.MethodPost, "test", "physicalprocesses")
@@ -415,18 +481,24 @@ func TestV2NamespaceLifecycleHandlerCompletesDeleteLeaseOnPanic(t *testing.T) {
 	require.NotNil(t, state)
 	require.Zero(t, state.activeDeletes)
 	require.True(t, state.closed)
+	require.Equal(t, v2NamespaceMutationDelete, state.uncertainMutation)
 	gate.lock.Unlock()
 	requireNoV2NamespaceMutation(t, gate, "test")
+	select {
+	case <-gate.refreshRequested:
+	default:
+		t.Fatal("namespace refresh was not requested")
+	}
 }
 
-func TestV2NamespaceLifecycleHandlerReopensGateWhenNamespaceCreatePanicsAfterSuccess(t *testing.T) {
+func TestV2NamespaceLifecycleHandlerRequestsRefreshWhenNamespaceCreatePanics(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
 	defer cancel()
 
 	gate := newV2NamespaceLifecycleGate()
 	deleteLease, closeErr := gate.beginDelete(ctx, "test")
 	require.NoError(t, closeErr)
-	deleteLease.complete(true)
+	deleteLease.complete(v2NamespaceMutationAccepted)
 	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusCreated)
 		panic("test panic")
@@ -444,10 +516,18 @@ func TestV2NamespaceLifecycleHandlerReopensGateWhenNamespaceCreatePanicsAfterSuc
 		handler.ServeHTTP(httptest.NewRecorder(), namespaceRequest)
 	})
 
-	release, allowed := gate.beginCreate("test")
-	require.True(t, allowed)
-	release()
+	gate.lock.Lock()
+	state := gate.namespaces["test"]
+	require.NotNil(t, state)
+	require.True(t, state.closed)
+	require.Equal(t, v2NamespaceMutationCreate, state.uncertainMutation)
+	gate.lock.Unlock()
 	requireNoV2NamespaceMutation(t, gate, "test")
+	select {
+	case <-gate.refreshRequested:
+	default:
+		t.Fatal("namespace refresh was not requested")
+	}
 }
 
 func TestV2NamespaceLifecycleHandlerKeepsGateClosedWhenConcurrentDeleteSucceeds(t *testing.T) {
@@ -534,7 +614,7 @@ func TestV2NamespaceLifecycleHandlerRejectsServerSideApplyDuringTermination(t *t
 	gate := newV2NamespaceLifecycleGate()
 	deleteLease, closeErr := gate.beginDelete(ctx, "test")
 	require.NoError(t, closeErr)
-	deleteLease.complete(true)
+	deleteLease.complete(v2NamespaceMutationAccepted)
 	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		innerCalls.Add(1)
 		writer.WriteHeader(http.StatusOK)
@@ -582,7 +662,7 @@ func TestV2NamespaceLifecycleHandlerAllowsUpdatesDuringTermination(t *testing.T)
 			gate := newV2NamespaceLifecycleGate()
 			deleteLease, closeErr := gate.beginDelete(ctx, "test")
 			require.NoError(t, closeErr)
-			deleteLease.complete(true)
+			deleteLease.complete(v2NamespaceMutationAccepted)
 			handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 				innerCalls.Add(1)
 				writer.WriteHeader(http.StatusOK)
@@ -660,7 +740,7 @@ func TestV2NamespaceLifecycleHandlerDoesNotOpenGateForDryRunNamespaceCreate(t *t
 	gate := newV2NamespaceLifecycleGate()
 	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
 	require.NoError(t, deleteErr)
-	deleteLease.complete(true)
+	deleteLease.complete(v2NamespaceMutationAccepted)
 	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusCreated)
 	}), gate)
@@ -681,7 +761,7 @@ func TestV2NamespaceLifecycleHandlerStillGatesDryRunNamespacedResourceCreate(t *
 	gate := newV2NamespaceLifecycleGate()
 	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
 	require.NoError(t, deleteErr)
-	deleteLease.complete(true)
+	deleteLease.complete(v2NamespaceMutationAccepted)
 	var innerCalls atomic.Int32
 	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		innerCalls.Add(1)
@@ -748,7 +828,7 @@ func TestV2NamespaceLifecycleHandlerDoesNotGateOtherAPIVersions(t *testing.T) {
 	gate := newV2NamespaceLifecycleGate()
 	deleteLease, closeErr := gate.beginDelete(ctx, "test")
 	require.NoError(t, closeErr)
-	deleteLease.complete(true)
+	deleteLease.complete(v2NamespaceMutationAccepted)
 	handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusCreated)
 	}), gate)

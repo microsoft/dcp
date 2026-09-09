@@ -50,8 +50,7 @@ var (
 		physicalContainerStateCopyFiles: handlePhysicalContainerCopyFiles,
 		physicalContainerStateStart:     handlePhysicalContainerStart,
 		physicalContainerStateCleanup:   handlePhysicalContainerCreateFailure,
-		// A failed stop or port mapping resolution is a diagnostic flavor of the runtime
-		// observation concern: both recover by observing the container again.
+		// Stop and port-mapping failures recover by observing the runtime container again.
 		physicalContainerStateRuntime:     handlePhysicalContainerRuntime,
 		physicalContainerStateStop:        handlePhysicalContainerRuntime,
 		physicalContainerStatePortMapping: handlePhysicalContainerRuntime,
@@ -112,7 +111,7 @@ func (r *PhysicalContainerReconciler) SetupWithManager(mgr ctrl.Manager, name st
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.PhysicalContainer{}).
 		Watches(&apiv2.PhysicalContainerImage{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForImage), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
-		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace(&apiv2.PhysicalContainerList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.PhysicalContainerList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)

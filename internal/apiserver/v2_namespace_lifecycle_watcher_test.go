@@ -81,6 +81,54 @@ func TestV2NamespaceLifecycleWatcherRelistsAfterErrorEvent(t *testing.T) {
 	waitForV2NamespaceGateRemoval(t, ctx, gate, "test")
 }
 
+func TestV2NamespaceLifecycleWatcherImmediatelyRefreshesUncertainDelete(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	source := newFakeV2NamespaceWatchSource("test")
+	go runV2NamespaceLifecycleWatcher(ctx, source, gate, logr.Discard(), time.Hour, time.Millisecond)
+
+	waitForFakeV2NamespaceWatcher(t, ctx, source.watchers)
+	waitForV2NamespaceWatcherSignal(t, ctx, source.lists)
+
+	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, deleteErr)
+	deleteLease.complete(v2NamespaceMutationUncertain)
+
+	waitForFakeV2NamespaceWatcher(t, ctx, source.watchers)
+	waitForV2NamespaceWatcherSignal(t, ctx, source.lists)
+	waitForV2NamespaceGateRemoval(t, ctx, gate, "test")
+}
+
+func TestV2NamespaceLifecycleWatcherKeepsUncertainTerminatingNamespaceClosed(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	gate := newV2NamespaceLifecycleGate()
+	source := newFakeV2NamespaceWatchSource()
+	source.setTerminatingNamespaces("test")
+	go runV2NamespaceLifecycleWatcher(ctx, source, gate, logr.Discard(), time.Hour, time.Millisecond)
+
+	waitForFakeV2NamespaceWatcher(t, ctx, source.watchers)
+	waitForV2NamespaceWatcherSignal(t, ctx, source.lists)
+
+	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
+	require.NoError(t, deleteErr)
+	deleteLease.complete(v2NamespaceMutationUncertain)
+
+	waitForFakeV2NamespaceWatcher(t, ctx, source.watchers)
+	waitForV2NamespaceWatcherSignal(t, ctx, source.lists)
+
+	gate.lock.Lock()
+	state := gate.namespaces["test"]
+	require.NotNil(t, state)
+	require.True(t, state.closed)
+	require.True(t, state.deleteAccepted)
+	require.Equal(t, v2NamespaceMutationNone, state.uncertainMutation)
+	gate.lock.Unlock()
+}
+
 func TestV2NamespaceLifecycleWatcherObservesDeletionStartedDuringList(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
 	defer cancel()
@@ -103,7 +151,7 @@ func TestV2NamespaceLifecycleWatcherObservesDeletionStartedDuringList(t *testing
 
 	deleteLease, deleteErr := gate.beginDelete(ctx, "test")
 	require.NoError(t, deleteErr)
-	deleteLease.complete(true)
+	deleteLease.complete(v2NamespaceMutationAccepted)
 	source.setNamespaces()
 	go namespaceWatcher.Delete(v2NamespaceObject("test"))
 	close(continueList)
@@ -140,16 +188,18 @@ func TestV2NamespaceLifecycleWatcherObservesDeletionCompletedAfterList(t *testin
 
 type fakeV2NamespaceWatchSource struct {
 	lock       sync.Mutex
-	namespaces map[string]struct{}
+	namespaces map[string]bool
 	watchers   chan *watch.RaceFreeFakeWatcher
+	lists      chan struct{}
 	beforeList func()
 	afterList  func()
 }
 
 func newFakeV2NamespaceWatchSource(namespaces ...string) *fakeV2NamespaceWatchSource {
 	source := &fakeV2NamespaceWatchSource{
-		namespaces: map[string]struct{}{},
+		namespaces: map[string]bool{},
 		watchers:   make(chan *watch.RaceFreeFakeWatcher, 10),
+		lists:      make(chan struct{}, 10),
 	}
 	source.setNamespaces(namespaces...)
 	return source
@@ -165,14 +215,20 @@ func (source *fakeV2NamespaceWatchSource) List(
 
 	source.lock.Lock()
 	namespaceList := &unstructured.UnstructuredList{}
-	for namespace := range source.namespaces {
-		namespaceList.Items = append(namespaceList.Items, *v2NamespaceObject(namespace))
+	for namespace, terminating := range source.namespaces {
+		namespaceObject := v2NamespaceObject(namespace)
+		if terminating {
+			deletionTimestamp := metav1.Now()
+			namespaceObject.SetDeletionTimestamp(&deletionTimestamp)
+		}
+		namespaceList.Items = append(namespaceList.Items, *namespaceObject)
 	}
 	source.lock.Unlock()
 
 	if source.afterList != nil {
 		source.afterList()
 	}
+	source.lists <- struct{}{}
 	return namespaceList, nil
 }
 
@@ -189,9 +245,19 @@ func (source *fakeV2NamespaceWatchSource) setNamespaces(namespaces ...string) {
 	source.lock.Lock()
 	defer source.lock.Unlock()
 
-	source.namespaces = make(map[string]struct{}, len(namespaces))
+	source.namespaces = make(map[string]bool, len(namespaces))
 	for _, namespace := range namespaces {
-		source.namespaces[namespace] = struct{}{}
+		source.namespaces[namespace] = false
+	}
+}
+
+func (source *fakeV2NamespaceWatchSource) setTerminatingNamespaces(namespaces ...string) {
+	source.lock.Lock()
+	defer source.lock.Unlock()
+
+	source.namespaces = make(map[string]bool, len(namespaces))
+	for _, namespace := range namespaces {
+		source.namespaces[namespace] = true
 	}
 }
 
@@ -207,7 +273,7 @@ func closedV2NamespaceLifecycleGate(
 	if deleteErr != nil {
 		t.Fatal(deleteErr)
 	}
-	deleteLease.complete(true)
+	deleteLease.complete(v2NamespaceMutationAccepted)
 	return gate
 }
 
