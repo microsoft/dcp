@@ -526,7 +526,7 @@ func TestV2NamespaceLifecycleHandlerKeepsGateClosedWhenConcurrentDeleteSucceeds(
 	require.Equal(t, http.StatusForbidden, createResponse.Code)
 }
 
-func TestV2NamespaceLifecycleHandlerGatesServerSideApplyCreation(t *testing.T) {
+func TestV2NamespaceLifecycleHandlerRejectsServerSideApplyDuringTermination(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
 	defer cancel()
 
@@ -551,7 +551,59 @@ func TestV2NamespaceLifecycleHandlerGatesServerSideApplyCreation(t *testing.T) {
 	handler.ServeHTTP(response, request)
 
 	require.Equal(t, http.StatusForbidden, response.Code)
+	require.Contains(t, response.Body.String(), "cannot use server-side apply in terminating namespace")
+	require.Contains(t, response.Body.String(), "use update or a non-apply patch")
 	require.Zero(t, innerCalls.Load())
+}
+
+func TestV2NamespaceLifecycleHandlerAllowsUpdatesDuringTermination(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, v2NamespaceLifecycleTestTimeout)
+	defer cancel()
+
+	testCases := []struct {
+		name        string
+		method      string
+		contentType string
+	}{
+		{
+			name:   "update",
+			method: http.MethodPut,
+		},
+		{
+			name:        "merge patch",
+			method:      http.MethodPatch,
+			contentType: string(types.MergePatchType),
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var innerCalls atomic.Int32
+			gate := newV2NamespaceLifecycleGate()
+			deleteLease, closeErr := gate.beginDelete(ctx, "test")
+			require.NoError(t, closeErr)
+			deleteLease.complete(true)
+			handler := newV2NamespaceLifecycleTestHandler(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				innerCalls.Add(1)
+				writer.WriteHeader(http.StatusOK)
+			}), gate)
+			request := httptest.NewRequestWithContext(
+				ctx,
+				testCase.method,
+				"/apis/"+apiv2.GroupName+"/"+apiv2.Version+"/namespaces/test/futurewidgets/existing",
+				strings.NewReader(`{"metadata":{"finalizers":[]}}`),
+			)
+			if testCase.contentType != "" {
+				request.Header.Set("Content-Type", testCase.contentType)
+			}
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			require.Equal(t, http.StatusOK, response.Code)
+			require.Equal(t, int32(1), innerCalls.Load())
+		})
+	}
 }
 
 func TestV2NamespaceLifecycleHandlerLimitsNamespaceCreateBody(t *testing.T) {

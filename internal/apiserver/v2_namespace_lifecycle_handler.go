@@ -8,6 +8,7 @@ package apiserver
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -342,6 +343,13 @@ func (*v2NamespaceLifecycleHandler) isNamespacedResourceCreate(
 		return false
 	}
 
+	// Server-side apply can create a missing object. At this HTTP boundary storage has not
+	// determined whether the request is a create or update, so gate both to prevent a new
+	// child from racing Namespace cleanup.
+	return isServerSideApply(request)
+}
+
+func isServerSideApply(request *http.Request) bool {
 	mediaType, _, mediaTypeErr := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if mediaTypeErr != nil {
 		return false
@@ -372,13 +380,20 @@ func (handler *v2NamespaceLifecycleHandler) handleNamespacedResourceCreate(
 ) {
 	release, allowed := handler.gate.beginCreate(info.Namespace)
 	if !allowed {
+		rejectionMessage := fmt.Sprintf("cannot create resources in terminating namespace %q", info.Namespace)
+		if isServerSideApply(request) {
+			rejectionMessage = fmt.Sprintf(
+				"cannot use server-side apply in terminating namespace %q because apply may create a missing resource; use update or a non-apply patch to modify an existing resource",
+				info.Namespace,
+			)
+		}
 		handler.writeError(
 			writer,
 			request,
 			apierrors.NewForbidden(
 				schema.GroupResource{Group: info.APIGroup, Resource: info.Resource},
 				"",
-				fmt.Errorf("cannot create resources in terminating namespace %q", info.Namespace),
+				errors.New(rejectionMessage),
 			),
 		)
 		return
