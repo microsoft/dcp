@@ -251,6 +251,19 @@ func StartAdvancedTestEnvironmentWithFlags(
 		}
 	}
 
+	if inclCtrl&PhysicalProcessController != 0 {
+		physicalProcessR := controllers.NewPhysicalProcessReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalProcessReconciler"),
+			pe,
+		)
+		if err = physicalProcessR.SetupWithManager(mgr, instanceTag+"-PhysicalProcessReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalProcess reconciler: %w", err)
+		}
+	}
+
 	if inclCtrl&ContainerExecController != 0 {
 		containerExecR := controllers.NewContainerExecReconciler(
 			ctx,

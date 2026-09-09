@@ -161,6 +161,31 @@ func (in PhysicalContainerVolumeStatus) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalProcess) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalProcess"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalProcessConfig) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalProcessConfig"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalProcessList) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalProcessList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalProcessSpec) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalProcessSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalProcessStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalProcessStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in VolumeMount) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.VolumeMount"
 }

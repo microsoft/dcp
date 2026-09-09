@@ -1,0 +1,170 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+package controllers
+
+import (
+	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/stretchr/testify/require"
+
+	apiv2 "github.com/microsoft/dcp/api/v2"
+)
+
+func TestPhysicalResourceProjections(t *testing.T) {
+	t.Parallel()
+
+	assertPhysicalResourceProjections(t, physicalContainerProjections)
+	assertPhysicalResourceProjections(t, physicalContainerImageProjections)
+	assertPhysicalResourceProjections(t, physicalContainerNetworkProjections)
+	assertPhysicalResourceProjections(t, physicalContainerVolumeProjections)
+	assertPhysicalResourceProjections(t, physicalProcessProjections)
+}
+
+func TestPhysicalResourceStateStringsDistinguishUnsetAndInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "Unset", physicalResourceProgress(0).String())
+	require.Equal(t, "Unknown", physicalResourceProgressUnknown.String())
+	require.Equal(t, "physicalResourceProgress(999)", physicalResourceProgress(999).String())
+
+	require.Equal(t, "Unset", physicalContainerState(0).String())
+	require.Equal(t, "physicalContainerState(999)", physicalContainerState(999).String())
+	require.Equal(t, "Unset", physicalContainerImageState(0).String())
+	require.Equal(t, "physicalContainerImageState(999)", physicalContainerImageState(999).String())
+	require.Equal(t, "Unset", physicalContainerNetworkState(0).String())
+	require.Equal(t, "physicalContainerNetworkState(999)", physicalContainerNetworkState(999).String())
+	require.Equal(t, "Unset", physicalContainerVolumeState(0).String())
+	require.Equal(t, "physicalContainerVolumeState(999)", physicalContainerVolumeState(999).String())
+	require.Equal(t, "Unset", physicalProcessState(0).String())
+	require.Equal(t, "physicalProcessState(999)", physicalProcessState(999).String())
+}
+
+func TestPhysicalResourceProjectionsRejectInvalidCombination(t *testing.T) {
+	t.Parallel()
+
+	projections := physicalResourceProjectionTable[physicalProcessState, string]{
+		invalidPhase: "Unknown",
+		projections: map[physicalResourceProjectionKey[physicalProcessState]]physicalResourceProjection[string]{
+			{state: physicalProcessStateResolve, progress: physicalResourceProgressCompleted}: {
+				phase:           "Ready",
+				conditionStatus: metav1.ConditionTrue,
+				conditionReason: "Completed",
+			},
+		},
+	}
+
+	phase := ""
+	conditions := []metav1.Condition{}
+	change, delay, valid := projections.apply(
+		physicalProcessStateResolve,
+		physicalResourceProgressFailed,
+		"",
+		&phase,
+		&conditions,
+		1,
+	)
+
+	require.False(t, valid)
+	require.Equal(t, StandardDelay, delay)
+	require.Equal(t, "Unknown", phase)
+	require.Len(t, conditions, 1)
+	require.Equal(t, metav1.ConditionFalse, conditions[0].Status)
+	require.Equal(t, string(apiv2.PhysicalResourceReasonOperationStateInvalid), conditions[0].Reason)
+	require.Equal(t, "Physical resource reached invalid reconciliation state Resolve with progress Failed.", conditions[0].Message)
+	require.NotEqual(t, noChange, change&statusChanged)
+	require.Equal(t, noChange, change&additionalReconciliationNeeded)
+}
+
+func TestPhysicalResourceInvalidProjectionsAreTerminal(t *testing.T) {
+	t.Parallel()
+
+	assertTerminalPhysicalResourceProjection(t, physicalContainerProjections, physicalContainerStateInvalid)
+	assertTerminalPhysicalResourceProjection(t, physicalContainerImageProjections, physicalContainerImageStateInvalid)
+	assertTerminalPhysicalResourceProjection(t, physicalContainerNetworkProjections, physicalContainerNetworkStateInvalid)
+	assertTerminalPhysicalResourceProjection(t, physicalContainerVolumeProjections, physicalContainerVolumeStateInvalid)
+	assertTerminalPhysicalResourceProjection(t, physicalProcessProjections, physicalProcessStateInvalid)
+}
+
+func TestPhysicalResourceProjectionsOverrideConditionReason(t *testing.T) {
+	t.Parallel()
+
+	projections := physicalResourceProjectionTable[int, string]{
+		invalidPhase: "Unknown",
+		projections: map[physicalResourceProjectionKey[int]]physicalResourceProjection[string]{
+			{state: 1, progress: physicalResourceProgressRetryPending}: {
+				phase:           "Pending",
+				conditionStatus: metav1.ConditionFalse,
+				conditionReason: "DefaultReason",
+			},
+		},
+	}
+
+	phase := ""
+	conditions := []metav1.Condition{}
+	_, _, valid := projections.applyWithReason(
+		1,
+		physicalResourceProgressRetryPending,
+		"SpecificReason",
+		"",
+		&phase,
+		&conditions,
+		1,
+	)
+
+	require.True(t, valid)
+	require.Len(t, conditions, 1)
+	require.Equal(t, "SpecificReason", conditions[0].Reason)
+}
+
+func assertPhysicalResourceProjections[State comparable, Phase ~string](
+	t *testing.T,
+	projections physicalResourceProjectionTable[State, Phase],
+) {
+	t.Helper()
+
+	require.NotEmpty(t, projections.projections)
+	for key, expected := range projections.projections {
+		phase := Phase("")
+		conditions := []metav1.Condition{}
+		change, delay, valid := projections.apply(
+			key.state,
+			key.progress,
+			"",
+			&phase,
+			&conditions,
+			1,
+		)
+
+		require.True(t, valid, "state %v, progress %v", key.state, key.progress)
+		require.Equal(t, expected.phase, phase, "state %v, progress %v", key.state, key.progress)
+		require.Equal(t, expected.requeueDelay, delay, "state %v, progress %v", key.state, key.progress)
+		require.Len(t, conditions, 1, "state %v, progress %v", key.state, key.progress)
+		require.Equal(t, expected.conditionStatus, conditions[0].Status, "state %v, progress %v", key.state, key.progress)
+		require.Equal(t, string(expected.conditionReason), conditions[0].Reason, "state %v, progress %v", key.state, key.progress)
+		require.NotEqual(t, noChange, change&statusChanged, "state %v, progress %v", key.state, key.progress)
+		if expected.requeue {
+			require.NotEqual(t, noChange, change&additionalReconciliationNeeded, "state %v, progress %v", key.state, key.progress)
+		} else {
+			require.Equal(t, noChange, change&additionalReconciliationNeeded, "state %v, progress %v", key.state, key.progress)
+		}
+	}
+}
+
+func assertTerminalPhysicalResourceProjection[State comparable, Phase ~string](
+	t *testing.T,
+	projections physicalResourceProjectionTable[State, Phase],
+	invalidState State,
+) {
+	t.Helper()
+
+	projection, found := projections.project(invalidState, physicalResourceProgressFailed)
+	require.True(t, found)
+	require.False(t, projection.requeue)
+	require.Equal(t, StandardDelay, projection.requeueDelay)
+	require.Equal(t, apiv2.PhysicalResourceReasonOperationStateInvalid, projection.conditionReason)
+}

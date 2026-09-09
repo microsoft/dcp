@@ -310,6 +310,18 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return err
 		}
 
+		physicalProcessCtrl := controllers.NewPhysicalProcessReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalProcessReconciler"),
+			processExecutor,
+		)
+		if err = physicalProcessCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "Unable to set up PhysicalProcess controller")
+			return err
+		}
+
 		containerExecCtrl := controllers.NewContainerExecReconciler(
 			ctrlCtx,
 			mgr.GetClient(),

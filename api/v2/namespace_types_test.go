@@ -130,3 +130,12 @@ func TestNamespaceValidateUpdateAllowsStatusUpdateDuringShutdown(t *testing.T) {
 
 	require.Empty(t, errorList)
 }
+
+func TestNamespacePrepareForCreateAddsFinalizer(t *testing.T) {
+	namespace := &Namespace{}
+
+	namespace.PrepareForCreate(context.Background())
+	namespace.PrepareForCreate(context.Background())
+
+	require.Equal(t, []string{NamespaceFinalizer}, namespace.Finalizers)
+}

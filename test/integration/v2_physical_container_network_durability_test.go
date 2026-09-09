@@ -136,7 +136,12 @@ func TestV2PhysicalContainerNetworkControllerQueuesDeletionBeforeRemovingFinaliz
 		require.NoError(t, baseOrchestrator.Close())
 	}()
 	networkName := "queued-network-deletion-runtime"
-	networkID, createErr := baseOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
+	networkID, createErr := baseOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: networkName,
+		Labels: map[string]string{
+			"com.microsoft.developer.usvc-dev.uid": "queued-network-deletion",
+		},
+	})
 	require.NoError(t, createErr)
 
 	orchestrator := &blockingNetworkInspectionOrchestrator{

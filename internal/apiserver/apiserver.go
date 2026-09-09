@@ -24,6 +24,7 @@ import (
 	"k8s.io/apiserver/pkg/server/dynamiccertificates"
 	kubeserverfilters "k8s.io/apiserver/pkg/server/filters"
 	clientgorest "k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 
 	tiltapiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	tiltserverbuilder "github.com/tilt-dev/tilt-apiserver/pkg/server/builder"
@@ -32,6 +33,7 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/logs/containerlogs"
 	"github.com/microsoft/dcp/internal/logs/stdiologs"
 	"github.com/microsoft/dcp/internal/networking"
@@ -161,7 +163,19 @@ func (s *ApiServer) Run(runCtx context.Context, runConfig ApiServerRunConfig) (<
 		config.GenericConfig.MinRequestTimeout = watchTimeout
 	}
 
-	addDcpHttpHandlers(config, runCtx, log)
+	namespaceWatchClientConfig, namespaceWatchClientConfigErr := clientcmd.NewDefaultClientConfig(
+		*s.config.Config,
+		&clientcmd.ConfigOverrides{},
+	).ClientConfig()
+	if namespaceWatchClientConfigErr != nil {
+		return nil, fmt.Errorf("create V2 Namespace watch client configuration: %w", namespaceWatchClientConfigErr)
+	}
+	dcpclient.ApplyDcpOptions(namespaceWatchClientConfig)
+
+	handlerConfigErr := addDcpHttpHandlers(config, runCtx, namespaceWatchClientConfig, log)
+	if handlerConfigErr != nil {
+		return nil, handlerConfigErr
+	}
 
 	err = configureForLogServing(config, log)
 	if err != nil {
@@ -350,13 +364,45 @@ func disableOpenApiForLogsSubresource(config *kubeapiserver.RecommendedConfig, o
 	}
 }
 
-func addDcpHttpHandlers(config *tiltapiserver.Config, ctx context.Context, log logr.Logger) {
+func addDcpHttpHandlers(
+	config *tiltapiserver.Config,
+	ctx context.Context,
+	namespaceWatchClientConfig *clientgorest.Config,
+	log logr.Logger,
+) error {
 	originalChainBuilder := config.GenericConfig.BuildHandlerChainFunc
+	namespaceLifecycleGate := newV2NamespaceLifecycleGate()
+	if storageErr := decorateV2NamespaceStorageProviders(config, namespaceLifecycleGate); storageErr != nil {
+		return storageErr
+	}
+	namespaceWatchSource, namespaceWatchSourceErr := newV2NamespaceWatchSource(namespaceWatchClientConfig)
+	if namespaceWatchSourceErr != nil {
+		return namespaceWatchSourceErr
+	}
 	config.GenericConfig.BuildHandlerChainFunc = func(handler http.Handler, c *kubeapiserver.Config) http.Handler {
 		handler = originalChainBuilder(handler, c)
 		handler = withDcpContextValues(handler, ctx, log)
 		return handler
 	}
+
+	hookErr := config.GenericConfig.AddPostStartHook(
+		"watch-v2-namespace-finalization",
+		func(hookContext kubeapiserver.PostStartHookContext) error {
+			go runV2NamespaceLifecycleWatcher(
+				hookContext,
+				namespaceWatchSource,
+				namespaceLifecycleGate,
+				log.WithName("V2NamespaceLifecycleWatcher"),
+				v2NamespaceWatcherRestartInterval,
+				v2NamespaceWatcherRetryInterval,
+			)
+			return nil
+		},
+	)
+	if hookErr != nil {
+		return fmt.Errorf("register V2 Namespace lifecycle watcher: %w", hookErr)
+	}
+	return nil
 }
 
 func runServerFromCompletedConfig(
