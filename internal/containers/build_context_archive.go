@@ -7,13 +7,10 @@ package containers
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
@@ -32,7 +29,7 @@ func OpenBuildContextArchive(archive *ContainerBuildContextArchive) (io.ReadClos
 		}
 		contents, decodeErr := base64.StdEncoding.DecodeString(archive.RawContents)
 		if decodeErr != nil {
-			return nil, fmt.Errorf("decode build context archive raw contents: %w", decodeErr)
+			return nil, fmt.Errorf("decode build context archive %q raw contents: %w", archive.Digest, decodeErr)
 		}
 		return io.NopCloser(bytes.NewReader(contents)), nil
 	}
@@ -42,17 +39,9 @@ func OpenBuildContextArchive(archive *ContainerBuildContextArchive) (io.ReadClos
 		return nil, fmt.Errorf("open build context archive %q: %w", archive.Source, openErr)
 	}
 
-	hash := sha256.New()
-	if _, copyErr := io.Copy(hash, archiveFile); copyErr != nil {
+	if verifyErr := verifySHA256(archiveFile, archive.SHA256); verifyErr != nil {
 		_ = archiveFile.Close()
-		return nil, fmt.Errorf("hash build context archive %q: %w", archive.Source, copyErr)
-	}
-
-	expectedHash := strings.TrimPrefix(strings.ToLower(archive.SHA256), "sha256:")
-	actualHash := hex.EncodeToString(hash.Sum(nil))
-	if actualHash != expectedHash {
-		_ = archiveFile.Close()
-		return nil, fmt.Errorf("build context archive %q SHA256 mismatch: expected %s, got %s", archive.Source, expectedHash, actualHash)
+		return nil, fmt.Errorf("verifying build context archive %q: %w", archive.Source, verifyErr)
 	}
 
 	if _, seekErr := archiveFile.Seek(0, io.SeekStart); seekErr != nil {

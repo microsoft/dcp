@@ -434,6 +434,30 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 	}
 }
 
+func TestArchiveRelativePath(t *testing.T) {
+	t.Parallel()
+
+	testCases := map[string]struct {
+		path  string
+		valid bool
+	}{
+		"file at archive root":         {path: "Dockerfile", valid: true},
+		"file in archive directory":    {path: "docker/Dockerfile", valid: true},
+		"parent traversal":             {path: "../Dockerfile"},
+		"backslash parent traversal":   {path: `..\Dockerfile`},
+		"absolute path":                {path: "/Dockerfile"},
+		"drive-qualified path":         {path: `C:\Dockerfile`},
+		"backslash root-relative path": {path: `\Dockerfile`},
+	}
+
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, testCase.valid, isArchiveRelativePath(testCase.path))
+		})
+	}
+}
+
 func TestPhysicalContainerImageValidateUpdateRejectsSpecChanges(t *testing.T) {
 	oldImage := &PhysicalContainerImage{
 		ObjectMeta: metav1.ObjectMeta{

@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"path"
 	"reflect"
 	"regexp"
 	"strings"
@@ -27,6 +28,21 @@ import (
 )
 
 var validSHA256HexRegexp = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+
+// isArchiveRelativePath reports whether p addresses an entry inside an archive,
+// that is, it is relative, does not escape the archive root, and carries no volume name.
+func isArchiveRelativePath(p string) bool {
+	normalized := strings.ReplaceAll(p, `\`, "/")
+	hasDrivePrefix := len(normalized) >= 2 &&
+		((normalized[0] >= 'A' && normalized[0] <= 'Z') || (normalized[0] >= 'a' && normalized[0] <= 'z')) &&
+		normalized[1] == ':'
+	if path.IsAbs(normalized) || hasDrivePrefix {
+		return false
+	}
+
+	cleaned := path.Clean(normalized)
+	return cleaned != ".." && !strings.HasPrefix(cleaned, "../")
+}
 
 // PhysicalContainerImagePhase describes the lifecycle phase of a PhysicalContainerImage.
 type PhysicalContainerImagePhase PhysicalResourcePhase
@@ -302,6 +318,11 @@ func validatePhysicalContainerImageBuild(build *ContainerBuildContext, buildPath
 			if _, decodeErr := base64.StdEncoding.DecodeString(archive.RawContents); decodeErr != nil {
 				errorList = append(errorList, field.Invalid(archivePath.Child("rawContents"), "<base64 data>", fmt.Sprintf("rawContents must be valid base64: %s", decodeErr.Error())))
 			}
+		}
+		// The build context is streamed to the container runtime, so the Dockerfile has to be
+		// addressable relative to the root of the archive.
+		if build.Dockerfile != "" && !isArchiveRelativePath(build.Dockerfile) {
+			errorList = append(errorList, field.Invalid(buildPath.Child("dockerfile"), build.Dockerfile, "dockerfile must be a relative path inside the build context archive"))
 		}
 	}
 	for i, tag := range build.Tags {

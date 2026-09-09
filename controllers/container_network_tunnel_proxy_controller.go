@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	stdproto "google.golang.org/protobuf/proto"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -340,7 +341,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) handleDeletionRequest(ctx contex
 		log.V(1).Info("ContainerNetworkTunnelProxy is being deleted; waiting for it to exit transient state...")
 		change = r.manageTunnelProxy(ctx, tunnelProxy, log)
 
-	case pd.cleanupScheduled && pd.ServerProxyProcessID == nil && pd.ClientProxyContainerID == "":
+	case pd.cleanupScheduled && pd.ServerProxyProcessID == nil && pd.ClientProxyContainerID == "" && !pd.physicalResourcesCreated:
 		log.V(1).Info("ContainerNetworkTunnelProxy is being deleted (resource cleanup finished, deleting finalizer)...")
 		change = deleteFinalizer(tunnelProxy, tunnelProxyFinalizer, log)
 
@@ -981,6 +982,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureContainerProxyImage(
 				} else {
 					log.V(1).Info("Created PhysicalContainerImage for container network tunnel", "Image", imagePlan.Image)
 					pd.ClientProxyContainerImage = imagePlan.Image
+					pd.physicalResourcesCreated = true
 				}
 			}
 		}
@@ -1294,21 +1296,19 @@ func physicalContainerHostPort(portMappings []apiv2.PhysicalContainerPortMapping
 }
 
 func physicalResourceStatusMessage(conditions []metav1.Condition) string {
-	for i := len(conditions) - 1; i >= 0; i-- {
-		if conditions[i].Type == string(apiv2.ConditionReady) && conditions[i].Message != "" {
-			return conditions[i].Message
-		}
+	readyCondition := apimeta.FindStatusCondition(conditions, string(apiv2.ConditionReady))
+	if readyCondition != nil && readyCondition.Message != "" {
+		return readyCondition.Message
 	}
 	return "the physical resource did not report an error message"
 }
 
 func physicalResourceReadyConditionReason(conditions []metav1.Condition) apiv2.ConditionReason {
-	for i := len(conditions) - 1; i >= 0; i-- {
-		if conditions[i].Type == string(apiv2.ConditionReady) {
-			return apiv2.ConditionReason(conditions[i].Reason)
-		}
+	readyCondition := apimeta.FindStatusCondition(conditions, string(apiv2.ConditionReady))
+	if readyCondition == nil {
+		return ""
 	}
-	return ""
+	return apiv2.ConditionReason(readyCondition.Reason)
 }
 
 // Starts the server proxy as an OS process.
@@ -1483,23 +1483,19 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 	proxyObjectID types.UID,
 	log logr.Logger,
 ) {
-	if pd.ClientProxyContainerID != "" {
-		log.V(1).Info("Removing client proxy PhysicalContainer...")
-	}
+	if pd.physicalResourcesCreated {
+		log.V(1).Info("Removing client proxy physical resources...")
 
-	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, clientProxyContainerCleanupTimeout)
-	defer cleanupCancel()
-
-	removeErr := r.cleanupClientPhysicalResources(cleanupCtx, proxyObjectID, pd.imageBuildContextArchiveSource)
-	if removeErr != nil {
-		log.Error(removeErr, "Failed to remove client proxy physical resources")
-		pd.cleanupScheduled = false
-	} else {
-		if pd.ClientProxyContainerID != "" {
+		removeErr := r.removeClientPhysicalResourcesWithTimeout(ctx, proxyObjectID, pd.imageBuildContextArchiveSource)
+		if removeErr != nil {
+			log.Error(removeErr, "Failed to remove client proxy physical resources")
+			pd.cleanupScheduled = false
+		} else {
 			log.V(1).Info("Successfully removed client proxy physical resources")
+			pd.physicalResourcesCreated = false
+			pd.ClientProxyContainerID = ""
+			pd.imageBuildContextArchiveSource = ""
 		}
-		pd.ClientProxyContainerID = ""
-		pd.imageBuildContextArchiveSource = ""
 	}
 
 	if pd.ServerProxyProcessID != nil && *pd.ServerProxyProcessID > 0 {
@@ -1533,6 +1529,17 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 		}
 		pd.serverStderr = nil
 	}
+}
+
+func (r *ContainerNetworkTunnelProxyReconciler) removeClientPhysicalResourcesWithTimeout(
+	ctx context.Context,
+	proxyObjectID types.UID,
+	buildContextArchiveSource string,
+) error {
+	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, clientProxyContainerCleanupTimeout)
+	defer cleanupCancel()
+
+	return r.cleanupClientPhysicalResources(cleanupCtx, proxyObjectID, buildContextArchiveSource)
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) cleanupClientPhysicalResources(

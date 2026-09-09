@@ -68,6 +68,9 @@ type containerNetworkTunnelProxyData struct {
 	// Source archive owned by this tunnel proxy, if its image build uses one.
 	imageBuildContextArchiveSource string
 
+	// Whether physical resources representing the client proxy have been created and may still need cleanup.
+	physicalResourcesCreated bool
+
 	// Whether the startup of the proxy pair has been scheduled.
 	// This is checked and updated when we enter the starting state.
 	startupScheduled bool
@@ -109,6 +112,7 @@ func (tpd *containerNetworkTunnelProxyData) Clone() *containerNetworkTunnelProxy
 		ContainerNetworkTunnelProxyStatus: *tpd.ContainerNetworkTunnelProxyStatus.DeepCopy(),
 		imagePreparationScheduled:         tpd.imagePreparationScheduled,
 		imageBuildContextArchiveSource:    tpd.imageBuildContextArchiveSource,
+		physicalResourcesCreated:          tpd.physicalResourcesCreated,
 		startupScheduled:                  tpd.startupScheduled,
 		cleanupScheduled:                  tpd.cleanupScheduled,
 		serverStdout:                      tpd.serverStdout,
@@ -204,6 +208,11 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 
 	if tpd.imageBuildContextArchiveSource != other.imageBuildContextArchiveSource {
 		tpd.imageBuildContextArchiveSource = other.imageBuildContextArchiveSource
+		updated = true
+	}
+
+	if tpd.physicalResourcesCreated != other.physicalResourcesCreated {
+		tpd.physicalResourcesCreated = other.physicalResourcesCreated
 		updated = true
 	}
 

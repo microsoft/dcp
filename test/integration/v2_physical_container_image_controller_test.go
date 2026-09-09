@@ -20,18 +20,59 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+type recordingBuildImageOrchestrator struct {
+	containers.ContainerOrchestrator
+	buildOptions chan containers.BuildImageOptions
+}
+
+func (r *recordingBuildImageOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
+	select {
+	case r.buildOptions <- options:
+	default:
+	}
+	return r.ContainerOrchestrator.BuildImage(ctx, options)
+}
+
 func TestV2PhysicalContainerImageControllerBuildsRawArchiveContext(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pci-raw-archive")
+	var recordingOrchestrator *recordingBuildImageOrchestrator
+	serverInfo, _, startErr := StartTestEnvironmentWithOptions(
+		ctx,
+		NamespaceController|PhysicalContainerImageController,
+		t.Name(),
+		t.TempDir(),
+		TestEnvironmentOptions{
+			DecorateContainerOrchestrator: func(
+				orchestrator containers.ContainerOrchestrator,
+				_ *statestore.Store,
+			) containers.ContainerOrchestrator {
+				recordingOrchestrator = &recordingBuildImageOrchestrator{
+					ContainerOrchestrator: orchestrator,
+					buildOptions:          make(chan containers.BuildImageOptions, 1),
+				}
+				return recordingOrchestrator
+			},
+		},
+	)
+	require.NoError(t, startErr)
+	defer shutdownTestEnvironment(serverInfo, cancel)
+
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-pci-raw-archive"}}
+	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(currentNamespace *apiv2.Namespace) (bool, error) {
+		return currentNamespace.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+
 	targetImage := "v2-pci-raw-archive-target"
+	rawContents := base64.StdEncoding.EncodeToString(make([]byte, 1024))
 	image := &apiv2.PhysicalContainerImage{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "raw-archive-image",
@@ -42,15 +83,21 @@ func TestV2PhysicalContainerImageControllerBuildsRawArchiveContext(t *testing.T)
 			Build: &apiv2.ContainerBuildContext{
 				ContextArchive: &apiv2.ContainerBuildContextArchive{
 					Digest:      "empty-tar-v1",
-					RawContents: base64.StdEncoding.EncodeToString(make([]byte, 1024)),
+					RawContents: rawContents,
 				},
 			},
 		}},
 	}
-	require.NoError(t, client.Create(ctx, image))
+	require.NoError(t, serverInfo.Client.Create(ctx, image))
 
-	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
-	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, image.NamespacedName(), func(currentImage *apiv2.PhysicalContainerImage) (bool, error) {
+		return currentImage.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+	})
+
+	buildOptions := <-recordingOrchestrator.buildOptions
+	require.NotNil(t, buildOptions.ContextArchive)
+	require.Equal(t, "empty-tar-v1", buildOptions.ContextArchive.Digest)
+	require.Equal(t, rawContents, buildOptions.ContextArchive.RawContents)
 }
 
 func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {

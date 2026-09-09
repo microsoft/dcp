@@ -438,7 +438,11 @@ func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImageBuild(
 		return change
 	}
 
-	log.V(1).Info("Queued PhysicalContainerImage build", "Context", buildContext.Context, "Dockerfile", buildContext.Dockerfile, "Image", outputImage)
+	buildContextArchiveDigest := ""
+	if buildContext.ContextArchive != nil {
+		buildContextArchiveDigest = buildContext.ContextArchive.Digest
+	}
+	log.V(1).Info("Queued PhysicalContainerImage build", "Context", buildContext.Context, "ContextArchiveDigest", buildContextArchiveDigest, "Dockerfile", buildContext.Dockerfile, "Image", outputImage)
 	return data.applyTo(image)
 }
 

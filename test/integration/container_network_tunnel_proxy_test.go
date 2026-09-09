@@ -1106,13 +1106,48 @@ func TestTunnelProxyServerUnexpectedExit(t *testing.T) {
 	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateFailed)
 }
 
-// Verifies that ContainerNetworkTunnelProxy transitions to Failed state when its runtime client proxy container disappears.
+func TestTunnelProxyClientExited(t *testing.T) {
+	t.Parallel()
+	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-unexpected-exit", func(
+		ctx context.Context,
+		orchestrator *ctrl_testutil.TestContainerOrchestrator,
+		containerID string,
+	) error {
+		return orchestrator.SimulateContainerExit(ctx, containerID, 5)
+	})
+}
+
 func TestTunnelProxyClientDestroyed(t *testing.T) {
 	t.Parallel()
+	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-destroyed", func(
+		ctx context.Context,
+		orchestrator *ctrl_testutil.TestContainerOrchestrator,
+		containerID string,
+	) error {
+		removedContainers, removeErr := orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
+			Containers: []string{containerID},
+			Force:      true,
+		})
+		if removeErr != nil {
+			return removeErr
+		}
+		if !std_slices.Equal(removedContainers, []string{containerID}) {
+			return fmt.Errorf("unexpected removed containers: %v", removedContainers)
+		}
+		return nil
+	})
+}
+
+// Verifies that ContainerNetworkTunnelProxy transitions to Failed state when its runtime client proxy container stops or disappears.
+func testTunnelProxyClientFailure(
+	t *testing.T,
+	testName string,
+	terminateContainer func(context.Context, *ctrl_testutil.TestContainerOrchestrator, string) error,
+) {
+	t.Helper()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
-	const testName = "test-tunnel-proxy-client-unexpected-exit"
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
@@ -1186,13 +1221,10 @@ func TestTunnelProxyClientDestroyed(t *testing.T) {
 	t.Log("Verifying all tunnels are in NotReady state...")
 	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateNotReady)
 
-	t.Logf("Removing client proxy runtime container (container ID: %s)...", clientContainerID)
-	removedContainers, removeErr := serverInfo.ContainerOrchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
-		Containers: []string{clientContainerID},
-		Force:      true,
-	})
-	require.NoError(t, removeErr)
-	require.Equal(t, []string{clientContainerID}, removedContainers)
+	testContainerOrchestrator, isTestContainerOrchestrator := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTestContainerOrchestrator)
+	t.Logf("Terminating client proxy runtime container (container ID: %s)...", clientContainerID)
+	require.NoError(t, terminateContainer(ctx, testContainerOrchestrator, clientContainerID))
 
 	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Failed state...")
 	_ = waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {

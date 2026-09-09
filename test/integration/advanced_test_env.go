@@ -223,6 +223,7 @@ func StartAdvancedTestEnvironmentWithFlags(
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerReconciler"),
 			serverInfo.ContainerOrchestrator,
+			pe,
 		)
 		if err = physicalContainerR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainer reconciler: %w", err)

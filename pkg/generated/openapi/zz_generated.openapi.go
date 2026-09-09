@@ -4325,7 +4325,7 @@ func schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref common.Referen
 				Properties: map[string]spec.Schema{
 					"digest": {
 						SchemaProps: spec.SchemaProps{
-							Description: "An opaque identifier for this archive.",
+							Description: "An opaque identifier for the logical contents of this archive. This allows a client to track whether the build context has meaningfully changed independently of the raw binary content (which may vary due to timestamps or other materially unimportant differences in the tar file), and is reported by the controller for diagnostic purposes.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
