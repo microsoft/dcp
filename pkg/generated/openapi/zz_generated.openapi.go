@@ -5174,7 +5174,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerImageStatus(ref common.Referen
 					},
 					"imageID": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ImageID is the immutable runtime image ID used by dependent physical containers.",
+							Description: "ImageID is the immutable runtime image ID used by dependent physical containers. Once published, it remains pinned for the resource lifetime even if the runtime image becomes unavailable. Delete and recreate the resource to select a different image.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

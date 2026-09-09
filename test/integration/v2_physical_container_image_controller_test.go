@@ -46,17 +46,18 @@ func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {
 	require.True(t, containerOrchestrator.HasImage(updatedImage.Status.Image))
 }
 
-func TestV2PhysicalContainerImageControllerRepullsRemovedRuntimeImage(t *testing.T) {
+func TestV2PhysicalContainerImageControllerPreservesRemovedRuntimeImageIdentity(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pci-repull-removed")
-	sourceImage := "v2-pci-repull-removed-source"
-	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "repull-removed-image", sourceImage)
-	releasePull := containerOrchestrator.BlockPullImage(sourceImage)
-	defer releasePull()
-	restoreMissing := containerOrchestrator.FailInspectImage(sourceImage, containers.ErrNotFound)
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-preserve-removed")
+	sourceImage := "v2-pci-preserve-removed-source"
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "preserve-removed-image", sourceImage)
+	originalImageID := image.Status.ImageID
+	originalDigest := image.Status.Digest
+	originalTags := append([]string{}, image.Status.Tags...)
+	restoreMissing := containerOrchestrator.FailInspectImage(originalImageID, containers.ErrNotFound)
 	defer restoreMissing()
 
 	require.NoError(t, retryOnConflict[apiv2.PhysicalContainerImage](ctx, image.NamespacedName(), func(ctx context.Context, currentImage *apiv2.PhysicalContainerImage) error {
@@ -67,18 +68,45 @@ func TestV2PhysicalContainerImageControllerRepullsRemovedRuntimeImage(t *testing
 		return client.Update(ctx, currentImage)
 	}))
 
-	waitPullImageCallCount(t, ctx, sourceImage, 2)
-	waitObjectAssumesState(t, ctx, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
-		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return readyCondition != nil &&
-			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerImageReasonPulling, nil
-	})
+	unavailableImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
+	require.Equal(t, originalImageID, unavailableImage.Status.ImageID)
+	require.Equal(t, originalDigest, unavailableImage.Status.Digest)
+	require.Equal(t, originalTags, unavailableImage.Status.Tags)
+	requireReadyCondition(t, unavailableImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound)
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
 
 	restoreMissing()
-	releasePull()
 	readyImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
-	require.NotEmpty(t, readyImage.Status.ImageID)
-	require.Equal(t, 2, containerOrchestrator.PullImageCallCount(sourceImage))
+	require.Equal(t, originalImageID, readyImage.Status.ImageID)
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
+}
+
+func TestV2PhysicalContainerImageControllerRepairsStatusFromAuthoritativeData(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-repair-status")
+	sourceImage := "v2-pci-repair-status-source"
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "repair-status-image", sourceImage)
+	expectedImageID := image.Status.ImageID
+	expectedDigest := image.Status.Digest
+	expectedTags := append([]string{}, image.Status.Tags...)
+
+	require.NoError(t, retryOnConflict[apiv2.PhysicalContainerImage](ctx, image.NamespacedName(), func(ctx context.Context, currentImage *apiv2.PhysicalContainerImage) error {
+		currentImage.Status.ImageID = "stale-image-id"
+		currentImage.Status.Digest = "stale-digest"
+		currentImage.Status.Tags = []string{"stale-tag"}
+		currentImage.Status.Phase = apiv2.PhysicalContainerImagePhasePending
+		currentImage.Status.Conditions = nil
+		return client.Status().Update(ctx, currentImage)
+	}))
+
+	repairedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, expectedImageID, repairedImage.Status.ImageID)
+	require.Equal(t, expectedDigest, repairedImage.Status.Digest)
+	require.Equal(t, expectedTags, repairedImage.Status.Tags)
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
 }
 
 func TestV2PhysicalContainerImageControllerRetriesMissingPullResultWithoutRepulling(t *testing.T) {
@@ -105,14 +133,16 @@ func TestV2PhysicalContainerImageControllerRetriesMissingPullResultWithoutRepull
 	require.NoError(t, client.Create(ctx, image))
 
 	unknownImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
-	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed)
+	require.Empty(t, unknownImage.Status.ImageID)
+	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound)
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
 	require.Never(t, func() bool {
 		return containerOrchestrator.PullImageCallCount(sourceImage) > 1
 	}, 2*time.Second, 250*time.Millisecond)
 
 	restoreInspection()
-	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	readyImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.NotEmpty(t, readyImage.Status.ImageID)
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
 }
 
@@ -171,11 +201,13 @@ func TestV2PhysicalContainerImageControllerReportsRemovedExistingImage(t *testin
 		return client.Update(ctx, currentImage)
 	}))
 
-	failedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
-	require.Empty(t, failedImage.Status.ImageID)
-	require.Empty(t, failedImage.Status.Digest)
-	require.Empty(t, failedImage.Status.Tags)
-	requireReadyCondition(t, failedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound)
+	unavailableImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
+	require.Equal(t, imageID, unavailableImage.Status.ImageID)
+	requireReadyCondition(t, unavailableImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound)
+
+	restoreMissing()
+	readyImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, imageID, readyImage.Status.ImageID)
 }
 
 func TestV2PhysicalContainerImageControllerReportsMissingExistingImage(t *testing.T) {

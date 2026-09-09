@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,12 +34,15 @@ type physicalContainerImageOperation struct {
 }
 
 type physicalContainerImageData struct {
-	state          physicalContainerImageState
-	progress       physicalResourceProgress
-	image          string
-	imageID        string
-	failureMessage string
-	retryAfter     time.Time
+	state           physicalContainerImageState
+	progress        physicalResourceProgress
+	image           string
+	imageID         string
+	imageIDVerified bool
+	digest          string
+	tags            []string
+	failureMessage  string
+	retryAfter      time.Time
 
 	// Cancels the queued pull or build operation. Set for as long as the operation may still be running.
 	operation *physicalContainerImageOperation
@@ -46,13 +50,16 @@ type physicalContainerImageData struct {
 
 func (data *physicalContainerImageData) Clone() *physicalContainerImageData {
 	return &physicalContainerImageData{
-		state:          data.state,
-		progress:       data.progress,
-		image:          data.image,
-		imageID:        data.imageID,
-		failureMessage: data.failureMessage,
-		retryAfter:     data.retryAfter,
-		operation:      data.operation,
+		state:           data.state,
+		progress:        data.progress,
+		image:           data.image,
+		imageID:         data.imageID,
+		imageIDVerified: data.imageIDVerified,
+		digest:          data.digest,
+		tags:            slices.Clone(data.tags),
+		failureMessage:  data.failureMessage,
+		retryAfter:      data.retryAfter,
+		operation:       data.operation,
 	}
 }
 
@@ -72,6 +79,18 @@ func (data *physicalContainerImageData) UpdateFrom(other *physicalContainerImage
 	}
 	if data.imageID != other.imageID {
 		data.imageID = other.imageID
+		updated = true
+	}
+	if data.imageIDVerified != other.imageIDVerified {
+		data.imageIDVerified = other.imageIDVerified
+		updated = true
+	}
+	if data.digest != other.digest {
+		data.digest = other.digest
+		updated = true
+	}
+	if !slices.Equal(data.tags, other.tags) {
+		data.tags = slices.Clone(other.tags)
 		updated = true
 	}
 	if data.image != other.image {
@@ -102,8 +121,14 @@ func (data *physicalContainerImageData) applyTo(
 	image *apiv2.PhysicalContainerImage,
 ) (objectChange, AdditionalReconciliationDelay, bool) {
 	change := noChange
-	if data.imageID != "" {
+	if data.imageID != "" && data.imageIDVerified {
 		change |= setValue(&image.Status.ImageID, data.imageID)
+		change |= setValue(&image.Status.Digest, data.digest)
+		change |= setPhysicalContainerImageTags(image, data.tags)
+	} else {
+		change |= setValue(&image.Status.ImageID, "")
+		change |= setValue(&image.Status.Digest, "")
+		change |= setPhysicalContainerImageTags(image, nil)
 	}
 	if data.image != "" {
 		change |= setValue(&image.Status.Image, data.image)
@@ -181,6 +206,11 @@ var physicalContainerImageProjections = physicalResourceProjectionTable[physical
 			phase: apiv2.PhysicalContainerImagePhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed,
 			requeue:         true, requeueDelay: LongDelay,
+		},
+		{state: physicalContainerImageStateRuntime, progress: physicalResourceProgressMissing}: {
+			phase: apiv2.PhysicalContainerImagePhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerImageReasonLocalImageNotFound,
+			requeue:         true, requeueDelay: MonitoringDelay,
 		},
 		{state: physicalContainerImageStateRuntime, progress: physicalResourceProgressFailed}: {
 			phase: apiv2.PhysicalContainerImagePhaseFailed, conditionStatus: metav1.ConditionFalse,

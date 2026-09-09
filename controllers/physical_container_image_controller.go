@@ -313,7 +313,7 @@ func handlePhysicalContainerImageOperation(
 		return handleUnknownPhysicalContainerImageState(ctx, reconciler, image, state, data, log)
 	}
 
-	return reconciler.inspectPhysicalContainerImageOperationResult(ctx, image, data, log)
+	return reconciler.inspectPhysicalContainerImageOperationResult(ctx, data, log)
 }
 
 func handlePhysicalContainerImageRuntime(
@@ -331,7 +331,7 @@ func handlePhysicalContainerImageRuntime(
 		return noChange
 	}
 	if data.imageID != "" {
-		return reconciler.inspectPhysicalContainerImageOperationResult(ctx, image, data, log)
+		return reconciler.inspectPhysicalContainerImageOperationResult(ctx, data, log)
 	}
 
 	data.state = physicalContainerImageStateResolve
@@ -341,38 +341,21 @@ func handlePhysicalContainerImageRuntime(
 
 func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperationResult(
 	ctx context.Context,
-	image *apiv2.PhysicalContainerImage,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
 	inspectedImage, inspectErr := inspectPhysicalContainerImage(ctx, r.orchestrator, data.imageID)
 	if errors.Is(inspectErr, containers.ErrNotFound) {
-		missingImageID := data.imageID
-		runtimeImageWasAvailable := data.state == physicalContainerImageStateRuntime &&
-			data.progress == physicalResourceProgressCompleted
-		if image.Spec.ImageID != "" {
-			data.imageID = ""
-			data.retryAfter = time.Time{}
-			data.state = physicalContainerImageStateRuntime
-			data.progress = physicalResourceProgressFailed
-			data.failureMessage = fmt.Sprintf("Image %q is not available locally.", image.Spec.ImageID)
-			return clearPhysicalContainerImageRuntimeStatus(image)
-		}
-		if !runtimeImageWasAvailable {
-			data.state = physicalContainerImageStateRuntime
-			data.progress = physicalResourceProgressRetryPending
-			data.failureMessage = fmt.Sprintf("Image %q is not available after the runtime operation completed.", missingImageID)
-			return clearPhysicalContainerImageRuntimeStatus(image)
-		}
-
-		log.V(1).Info("Runtime image is no longer available; resolving it again", "ImageID", missingImageID)
-		data.imageID = ""
+		wasVerified := data.imageIDVerified
 		data.retryAfter = time.Time{}
-		data.state = physicalContainerImageStateResolve
-		data.progress = physicalResourceProgressInProgress
-		data.failureMessage = ""
-		return clearPhysicalContainerImageRuntimeStatus(image) |
-			handlePhysicalContainerImageResolve(ctx, r, image, data.state, data, log)
+		data.state = physicalContainerImageStateRuntime
+		data.progress = physicalResourceProgressMissing
+		if wasVerified {
+			data.failureMessage = fmt.Sprintf("Runtime image %q is no longer available.", data.imageID)
+		} else {
+			data.failureMessage = fmt.Sprintf("Image %q is not available after the runtime operation completed.", data.imageID)
+		}
+		return noChange
 	}
 	if inspectErr != nil {
 		log.Error(inspectErr, "Failed to inspect completed PhysicalContainerImage operation", "ImageID", data.imageID)
@@ -384,10 +367,12 @@ func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperatio
 
 	data.state = physicalContainerImageStateRuntime
 	data.progress = physicalResourceProgressCompleted
+	data.imageIDVerified = true
+	data.digest = inspectedImage.Digest
+	data.tags = slices.Clone(inspectedImage.Tags)
 	data.failureMessage = ""
 	log.V(1).Info("PhysicalContainerImage operation completed; saving image status", "ImageID", data.imageID)
-	change, _ := applyReadyPhysicalContainerImageStatus(image, data, inspectedImage)
-	return change
+	return noChange
 }
 
 func handlePhysicalContainerImageTerminal(
@@ -464,8 +449,11 @@ func (r *PhysicalContainerImageReconciler) ensurePulledImage(
 		data.progress = physicalResourceProgressCompleted
 		data.image = imageConfig.Image
 		data.imageID = inspectedImage.Id
+		data.imageIDVerified = true
+		data.digest = inspectedImage.Digest
+		data.tags = slices.Clone(inspectedImage.Tags)
 		data.failureMessage = ""
-		return applyReadyPhysicalContainerImageStatus(image, data, inspectedImage)
+		return noChange, StandardDelay
 	}
 	if !errors.Is(inspectErr, containers.ErrNotFound) {
 		log.Error(inspectErr, "Failed to inspect PhysicalContainerImage source image", "Image", imageConfig.Image)
@@ -514,8 +502,11 @@ func (r *PhysicalContainerImageReconciler) ensureExistingImage(
 		data.progress = physicalResourceProgressCompleted
 		data.image = image.Spec.ImageID
 		data.imageID = inspectedImage.Id
+		data.imageIDVerified = true
+		data.digest = inspectedImage.Digest
+		data.tags = slices.Clone(inspectedImage.Tags)
 		data.failureMessage = ""
-		return applyReadyPhysicalContainerImageStatus(image, data, inspectedImage)
+		return noChange, StandardDelay
 	}
 	if errors.Is(inspectErr, containers.ErrNotFound) {
 		data.state = physicalContainerImageStateRuntime
@@ -797,40 +788,12 @@ func physicalContainerImageBuildTags(tags []string, outputImage string) []string
 	return buildTags
 }
 
-func applyReadyPhysicalContainerImageStatus(
-	image *apiv2.PhysicalContainerImage,
-	data *physicalContainerImageData,
-	inspectedImage *containers.InspectedImage,
-) (objectChange, AdditionalReconciliationDelay) {
-	change := noChange
-	change |= setValue(&image.Status.Image, data.image)
-	change |= setValue(&image.Status.ImageID, data.imageID)
-	change |= setValue(&image.Status.Digest, inspectedImage.Digest)
-	change |= setPhysicalContainerImageTags(image, inspectedImage.Tags)
-	stateChange, delay, _ := physicalContainerImageProjections.apply(
-		physicalContainerImageStateRuntime,
-		physicalResourceProgressCompleted,
-		"",
-		&image.Status.Phase,
-		&image.Status.Conditions,
-		image.Generation,
-	)
-	return change | stateChange, delay
-}
-
 func setPhysicalContainerImageTags(image *apiv2.PhysicalContainerImage, tags []string) objectChange {
 	if slices.Equal(image.Status.Tags, tags) {
 		return noChange
 	}
 	image.Status.Tags = append([]string{}, tags...)
 	return statusChanged
-}
-
-func clearPhysicalContainerImageRuntimeStatus(image *apiv2.PhysicalContainerImage) objectChange {
-	change := setValue(&image.Status.ImageID, "")
-	change |= setValue(&image.Status.Digest, "")
-	change |= setPhysicalContainerImageTags(image, nil)
-	return change
 }
 
 func v2BuildContextToContainerBuildContext(build *apiv2.ContainerBuildContext) *containers.ContainerBuildContext {

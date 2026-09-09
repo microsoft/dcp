@@ -118,6 +118,8 @@ type PhysicalContainerImageStatus struct {
 	Image string `json:"image,omitempty"`
 
 	// ImageID is the immutable runtime image ID used by dependent physical containers.
+	// Once published, it remains pinned for the resource lifetime even if the runtime image
+	// becomes unavailable. Delete and recreate the resource to select a different image.
 	ImageID string `json:"imageID,omitempty"`
 
 	// Digest is the runtime image digest, when available.
