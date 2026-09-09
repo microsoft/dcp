@@ -68,17 +68,6 @@ func (table physicalResourceProjectionTable[State, Phase]) project(
 	return projection, found
 }
 
-func (table physicalResourceProjectionTable[State, Phase]) reconciliationDelay(
-	state State,
-	progress physicalResourceProgress,
-) AdditionalReconciliationDelay {
-	projection, valid := table.project(state, progress)
-	if !valid {
-		return StandardDelay
-	}
-	return projection.requeueDelay
-}
-
 func (table physicalResourceProjectionTable[State, Phase]) apply(
 	state State,
 	progress physicalResourceProgress,

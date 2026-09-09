@@ -151,8 +151,14 @@ func (r *PhysicalContainerNetworkReconciler) managePhysicalContainerNetwork(
 	}
 
 	_ = r.networkData.Update(network.NamespacedName(), stateKey, data)
-	change |= data.applyTo(network)
-	delay := physicalContainerNetworkProjections.reconciliationDelay(data.state, data.progress)
+	dataChange, delay, valid := data.applyTo(network)
+	change |= dataChange
+	if !valid {
+		log.Error(
+			fmt.Errorf("invalid physical container network state %v with progress %v", data.state, data.progress),
+			"PhysicalContainerNetwork reached invalid reconciliation state",
+		)
+	}
 	return change, delay
 }
 
@@ -682,24 +688,14 @@ func (r *PhysicalContainerNetworkReconciler) beginPhysicalContainerNetworkRemova
 		r.networkData.DeleteByNamespacedName(network.NamespacedName())
 		return deleteFinalizer(network, physicalContainerNetworkFinalizer, log)
 	}
-	if data != nil &&
-		data.state == physicalContainerNetworkStateReplace &&
+	if data.state == physicalContainerNetworkStateReplace &&
 		data.progress == physicalContainerNetworkOperationFailed {
 		r.networkData.DeleteByNamespacedName(network.NamespacedName())
 		return deleteFinalizer(network, physicalContainerNetworkFinalizer, log)
 	}
 
-	networkID := ""
-	if data != nil {
-		networkID = data.networkID
-	}
-	resolveOwnedNetworkByName := networkID == "" &&
-		data != nil
-	if networkID == "" && !resolveOwnedNetworkByName {
-		r.networkData.DeleteByNamespacedName(network.NamespacedName())
-		return deleteFinalizer(network, physicalContainerNetworkFinalizer, log)
-	}
-
+	networkID := data.networkID
+	resolveOwnedNetworkByName := networkID == ""
 	return r.schedulePhysicalContainerNetworkRemoval(network, data, networkID, resolveOwnedNetworkByName, log)
 }
 

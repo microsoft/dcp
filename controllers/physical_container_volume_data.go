@@ -88,13 +88,15 @@ func (data *physicalContainerVolumeData) UpdateFrom(other *physicalContainerVolu
 	return updated
 }
 
-func (data *physicalContainerVolumeData) applyTo(volume *apiv2.PhysicalContainerVolume) objectChange {
+func (data *physicalContainerVolumeData) applyTo(
+	volume *apiv2.PhysicalContainerVolume,
+) (objectChange, AdditionalReconciliationDelay, bool) {
 	change := noChange
 	if data.volumeID != "" {
 		change |= setValue(&volume.Status.VolumeID, data.volumeID)
 	}
 
-	stateChange, _, _ := physicalContainerVolumeProjections.apply(
+	stateChange, delay, valid := physicalContainerVolumeProjections.apply(
 		data.state,
 		data.progress,
 		data.failureMessage,
@@ -102,7 +104,7 @@ func (data *physicalContainerVolumeData) applyTo(volume *apiv2.PhysicalContainer
 		&volume.Status.Conditions,
 		volume.Generation,
 	)
-	return change | stateChange
+	return change | stateChange, delay, valid
 }
 
 var physicalContainerVolumeProjections = physicalResourceProjectionTable[physicalContainerVolumeState, apiv2.PhysicalContainerVolumePhase]{

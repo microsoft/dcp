@@ -88,13 +88,15 @@ func (data *physicalContainerNetworkData) UpdateFrom(other *physicalContainerNet
 	return updated
 }
 
-func (data *physicalContainerNetworkData) applyTo(network *apiv2.PhysicalContainerNetwork) objectChange {
+func (data *physicalContainerNetworkData) applyTo(
+	network *apiv2.PhysicalContainerNetwork,
+) (objectChange, AdditionalReconciliationDelay, bool) {
 	change := noChange
 	if data.networkID != "" {
 		change |= setValue(&network.Status.NetworkID, data.networkID)
 	}
 
-	stateChange, _, _ := physicalContainerNetworkProjections.apply(
+	stateChange, delay, valid := physicalContainerNetworkProjections.apply(
 		data.state,
 		data.progress,
 		data.failureMessage,
@@ -102,7 +104,7 @@ func (data *physicalContainerNetworkData) applyTo(network *apiv2.PhysicalContain
 		&network.Status.Conditions,
 		network.Generation,
 	)
-	return change | stateChange
+	return change | stateChange, delay, valid
 }
 
 var physicalContainerNetworkProjections = physicalResourceProjectionTable[physicalContainerNetworkState, apiv2.PhysicalContainerNetworkPhase]{

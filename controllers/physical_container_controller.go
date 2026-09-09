@@ -50,12 +50,11 @@ var (
 		physicalContainerStateCopyFiles: handlePhysicalContainerCopyFiles,
 		physicalContainerStateStart:     handlePhysicalContainerStart,
 		physicalContainerStateCleanup:   handlePhysicalContainerCreateFailure,
-		// Stop and port-mapping failures recover by observing the runtime container again.
-		physicalContainerStateRuntime:     handlePhysicalContainerRuntime,
-		physicalContainerStateStop:        handlePhysicalContainerRuntime,
-		physicalContainerStatePortMapping: handlePhysicalContainerRuntime,
-		physicalContainerStateInvalid:     handlePhysicalContainerTerminal,
-		0:                                 handleUnknownPhysicalContainerDataReason,
+		// Stop failures recover by observing the runtime container again.
+		physicalContainerStateRuntime: handlePhysicalContainerRuntime,
+		physicalContainerStateStop:    handlePhysicalContainerRuntime,
+		physicalContainerStateInvalid: handlePhysicalContainerTerminal,
+		0:                             handleUnknownPhysicalContainerDataReason,
 	}
 )
 
@@ -207,8 +206,14 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 	}
 
 	_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
-	change |= data.applyTo(container)
-	delay := physicalContainerProjections.reconciliationDelay(data.state, data.progress)
+	dataChange, delay, valid := data.applyTo(container)
+	change |= dataChange
+	if !valid {
+		log.Error(
+			fmt.Errorf("invalid physical container state %v with progress %v", data.state, data.progress),
+			"PhysicalContainer reached invalid reconciliation state",
+		)
+	}
 	return change, delay
 }
 
@@ -391,6 +396,7 @@ func handlePhysicalContainerRuntime(
 	}
 
 	reconciler.ensurePhysicalContainerWatch(container, log)
+	data.portMappingFailureMessage = ""
 	inspectedContainer, inspectErr := reconciler.inspectPhysicalContainer(ctx, containerID)
 	if errors.Is(inspectErr, containers.ErrNotFound) {
 		data.state = physicalContainerStateRuntime
@@ -1150,43 +1156,35 @@ func (r *PhysicalContainerReconciler) applyInspectedPhysicalContainerStatus(
 	log logr.Logger,
 ) objectChange {
 	change := applyInspectedPhysicalContainerDetails(container, inspectedContainer, log)
+	data.state = physicalContainerStateRuntime
+	data.failureMessage = ""
+	switch inspectedContainer.Status {
+	case containers.ContainerStatusRunning:
+		data.progress = physicalResourceProgressRunning
+	case containers.ContainerStatusPaused:
+		data.progress = physicalResourceProgressPaused
+	case containers.ContainerStatusRestarting:
+		data.progress = physicalResourceProgressRestarting
+	case containers.ContainerStatusCreated:
+		data.progress = physicalResourceProgressCreated
+	case containers.ContainerStatusRemoving:
+		data.progress = physicalResourceProgressRemoving
+	case containers.ContainerStatusExited:
+		data.progress = physicalResourceProgressExited
+	case containers.ContainerStatusDead:
+		data.progress = physicalResourceProgressDead
+	default:
+		data.progress = physicalResourceProgressUnknown
+		data.failureMessage = fmt.Sprintf("Runtime container returned unrecognized status %q.", inspectedContainer.Status)
+	}
+
 	portMappings, portMappingErr := physicalContainerPortMappingsFromInspected(inspectedContainer.Ports)
 	if portMappingErr != nil {
 		log.Error(portMappingErr, "Failed to resolve physical container port mappings", "ContainerID", inspectedContainer.Id)
-		data.state = physicalContainerStatePortMapping
-		data.progress = physicalResourceProgressRetryPending
-		data.failureMessage = fmt.Sprintf("Failed to resolve physical container port mappings: %v", portMappingErr)
+		data.portMappingFailureMessage = fmt.Sprintf("Failed to resolve physical container port mappings: %v", portMappingErr)
 	} else {
 		change |= setPhysicalContainerPortMappings(container, portMappings)
-		data.progress = physicalResourceProgressCompleted
-		data.failureMessage = ""
-		switch inspectedContainer.Status {
-		case containers.ContainerStatusRunning:
-			data.state = physicalContainerStateRuntime
-			data.progress = physicalResourceProgressRunning
-		case containers.ContainerStatusPaused:
-			data.state = physicalContainerStateRuntime
-			data.progress = physicalResourceProgressPaused
-		case containers.ContainerStatusRestarting:
-			data.state = physicalContainerStateRuntime
-			data.progress = physicalResourceProgressRestarting
-		case containers.ContainerStatusCreated:
-			data.state = physicalContainerStateRuntime
-			data.progress = physicalResourceProgressCreated
-		case containers.ContainerStatusRemoving:
-			data.state = physicalContainerStateRuntime
-			data.progress = physicalResourceProgressRemoving
-		case containers.ContainerStatusExited:
-			data.state = physicalContainerStateRuntime
-			data.progress = physicalResourceProgressExited
-		case containers.ContainerStatusDead:
-			data.state = physicalContainerStateRuntime
-			data.progress = physicalResourceProgressDead
-		default:
-			data.state = physicalContainerStateRuntime
-			data.progress = physicalResourceProgressUnknown
-			data.failureMessage = fmt.Sprintf("Runtime container returned unrecognized status %q.", inspectedContainer.Status)
-		}
+		data.portMappingFailureMessage = ""
 	}
 
 	return change

@@ -82,8 +82,8 @@ func NewReconcilerBase[T commonapi.ObjectStruct, PT commonapi.PCopyableObjectStr
 	return rb
 }
 
-// mapNamespaceToReconcileRequests maps a Namespace event to every object of this
-// reconciler's type in that Namespace.
+// mapNamespaceToReconcileRequests maps a Namespace object to reconciliation
+// requests for every object of this reconciler's type in that Namespace.
 func (rb *ReconcilerBase[T, PT]) mapNamespaceToReconcileRequests(
 	listPrototype commonapi.ListWithObjectItems[T, PT],
 ) ctrl_handler.MapFunc {

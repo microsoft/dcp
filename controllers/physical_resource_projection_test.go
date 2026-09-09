@@ -25,6 +25,25 @@ func TestPhysicalResourceProjections(t *testing.T) {
 	assertPhysicalResourceProjections(t, physicalProcessProjections)
 }
 
+func TestPhysicalResourceStateStringsDistinguishUnsetAndInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "Unset", physicalResourceProgress(0).String())
+	require.Equal(t, "Unknown", physicalResourceProgressUnknown.String())
+	require.Equal(t, "physicalResourceProgress(999)", physicalResourceProgress(999).String())
+
+	require.Equal(t, "Unset", physicalContainerState(0).String())
+	require.Equal(t, "physicalContainerState(999)", physicalContainerState(999).String())
+	require.Equal(t, "Unset", physicalContainerImageState(0).String())
+	require.Equal(t, "physicalContainerImageState(999)", physicalContainerImageState(999).String())
+	require.Equal(t, "Unset", physicalContainerNetworkState(0).String())
+	require.Equal(t, "physicalContainerNetworkState(999)", physicalContainerNetworkState(999).String())
+	require.Equal(t, "Unset", physicalContainerVolumeState(0).String())
+	require.Equal(t, "physicalContainerVolumeState(999)", physicalContainerVolumeState(999).String())
+	require.Equal(t, "Unset", physicalProcessState(0).String())
+	require.Equal(t, "physicalProcessState(999)", physicalProcessState(999).String())
+}
+
 func TestPhysicalResourceProjectionsRejectInvalidCombination(t *testing.T) {
 	t.Parallel()
 

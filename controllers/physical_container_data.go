@@ -30,7 +30,6 @@ const (
 	physicalContainerStateRuntime
 	physicalContainerStateStop
 	physicalContainerStateRemove
-	physicalContainerStatePortMapping
 	physicalContainerStateInvalid
 )
 
@@ -60,6 +59,9 @@ type physicalContainerData struct {
 	// Diagnostic message from the current failed runtime operation.
 	failureMessage string
 
+	// Diagnostic from the latest port-mapping projection failure.
+	portMappingFailureMessage string
+
 	// Diagnostic message from the latest partial-container cleanup failure.
 	cleanupMessage string
 
@@ -69,14 +71,15 @@ type physicalContainerData struct {
 
 func (data *physicalContainerData) Clone() *physicalContainerData {
 	return &physicalContainerData{
-		resourceUID:    data.resourceUID,
-		state:          data.state,
-		progress:       data.progress,
-		containerID:    data.containerID,
-		image:          data.image,
-		failureMessage: data.failureMessage,
-		cleanupMessage: data.cleanupMessage,
-		retryAfter:     data.retryAfter,
+		resourceUID:               data.resourceUID,
+		state:                     data.state,
+		progress:                  data.progress,
+		containerID:               data.containerID,
+		image:                     data.image,
+		failureMessage:            data.failureMessage,
+		portMappingFailureMessage: data.portMappingFailureMessage,
+		cleanupMessage:            data.cleanupMessage,
+		retryAfter:                data.retryAfter,
 	}
 }
 
@@ -106,6 +109,10 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 		data.failureMessage = other.failureMessage
 		updated = true
 	}
+	if data.portMappingFailureMessage != other.portMappingFailureMessage {
+		data.portMappingFailureMessage = other.portMappingFailureMessage
+		updated = true
+	}
 	if data.cleanupMessage != other.cleanupMessage {
 		data.cleanupMessage = other.cleanupMessage
 		updated = true
@@ -122,7 +129,9 @@ func (data *physicalContainerData) operationInProgress() bool {
 	return data.progress == physicalContainerOperationInProgress
 }
 
-func (data *physicalContainerData) applyTo(container *apiv2.PhysicalContainer) objectChange {
+func (data *physicalContainerData) applyTo(
+	container *apiv2.PhysicalContainer,
+) (objectChange, AdditionalReconciliationDelay, bool) {
 	change := noChange
 	if data.containerID != "" {
 		change |= setValue(&container.Status.ContainerID, data.containerID)
@@ -135,7 +144,7 @@ func (data *physicalContainerData) applyTo(container *apiv2.PhysicalContainer) o
 	if data.state == physicalContainerStateCleanup || data.cleanupMessage != "" {
 		message = data.cleanupMessage
 	}
-	stateChange, _, _ := physicalContainerProjections.apply(
+	stateChange, delay, valid := physicalContainerProjections.apply(
 		data.state,
 		data.progress,
 		message,
@@ -143,7 +152,19 @@ func (data *physicalContainerData) applyTo(container *apiv2.PhysicalContainer) o
 		&container.Status.Conditions,
 		container.Generation,
 	)
-	return change | stateChange
+	if data.portMappingFailureMessage != "" {
+		stateChange |= setCondition(
+			&container.Status.Conditions,
+			apiv2.ConditionReady,
+			container.Generation,
+			metav1.ConditionFalse,
+			apiv2.PhysicalContainerReasonPortMappingResolutionFailed,
+			data.portMappingFailureMessage,
+		)
+		stateChange |= additionalReconciliationNeeded
+		delay = LongDelay
+	}
+	return change | stateChange, delay, valid
 }
 
 var physicalContainerProjections = physicalResourceProjectionTable[physicalContainerState, apiv2.PhysicalContainerPhase]{
@@ -274,10 +295,6 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 		},
 		{state: physicalContainerStateResolve, progress: physicalResourceProgressRetryPending}: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerAlreadyTracked,
-			requeue: true, requeueDelay: LongDelay,
-		},
-		{state: physicalContainerStatePortMapping, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonPortMappingResolutionFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
 		{state: physicalContainerStateInvalid, progress: physicalResourceProgressFailed}: {

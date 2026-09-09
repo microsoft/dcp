@@ -5,8 +5,12 @@
 
 package controllers
 
+import "fmt"
+
 func (progress physicalResourceProgress) String() string {
 	switch progress {
+	case 0:
+		return "Unset"
 	case physicalResourceProgressInProgress:
 		return "InProgress"
 	case physicalResourceProgressCompleted:
@@ -48,12 +52,14 @@ func (progress physicalResourceProgress) String() string {
 	case physicalResourceProgressResultMissing:
 		return "ResultMissing"
 	default:
-		return "Unknown"
+		return fmt.Sprintf("physicalResourceProgress(%d)", int(progress))
 	}
 }
 
 func (state physicalContainerState) String() string {
 	switch state {
+	case 0:
+		return "Unset"
 	case physicalContainerStateNamespace:
 		return "Namespace"
 	case physicalContainerStateResolve:
@@ -76,17 +82,17 @@ func (state physicalContainerState) String() string {
 		return "Stop"
 	case physicalContainerStateRemove:
 		return "Remove"
-	case physicalContainerStatePortMapping:
-		return "PortMapping"
 	case physicalContainerStateInvalid:
 		return "Invalid"
 	default:
-		return "Unknown"
+		return fmt.Sprintf("physicalContainerState(%d)", int(state))
 	}
 }
 
 func (state physicalContainerImageState) String() string {
 	switch state {
+	case 0:
+		return "Unset"
 	case physicalContainerImageStateNamespace:
 		return "Namespace"
 	case physicalContainerImageStateResolve:
@@ -102,12 +108,14 @@ func (state physicalContainerImageState) String() string {
 	case physicalContainerImageStateInvalid:
 		return "Invalid"
 	default:
-		return "Unknown"
+		return fmt.Sprintf("physicalContainerImageState(%d)", int(state))
 	}
 }
 
 func (state physicalContainerNetworkState) String() string {
 	switch state {
+	case 0:
+		return "Unset"
 	case physicalContainerNetworkStateNamespace:
 		return "Namespace"
 	case physicalContainerNetworkStateResolve:
@@ -123,12 +131,14 @@ func (state physicalContainerNetworkState) String() string {
 	case physicalContainerNetworkStateInvalid:
 		return "Invalid"
 	default:
-		return "Unknown"
+		return fmt.Sprintf("physicalContainerNetworkState(%d)", int(state))
 	}
 }
 
 func (state physicalContainerVolumeState) String() string {
 	switch state {
+	case 0:
+		return "Unset"
 	case physicalContainerVolumeStateNamespace:
 		return "Namespace"
 	case physicalContainerVolumeStateResolve:
@@ -144,12 +154,14 @@ func (state physicalContainerVolumeState) String() string {
 	case physicalContainerVolumeStateInvalid:
 		return "Invalid"
 	default:
-		return "Unknown"
+		return fmt.Sprintf("physicalContainerVolumeState(%d)", int(state))
 	}
 }
 
 func (state physicalProcessState) String() string {
 	switch state {
+	case 0:
+		return "Unset"
 	case physicalProcessStateNamespace:
 		return "Namespace"
 	case physicalProcessStateResolve:
@@ -163,6 +175,6 @@ func (state physicalProcessState) String() string {
 	case physicalProcessStateInvalid:
 		return "Invalid"
 	default:
-		return "Unknown"
+		return fmt.Sprintf("physicalProcessState(%d)", int(state))
 	}
 }

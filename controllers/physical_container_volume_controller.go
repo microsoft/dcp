@@ -150,8 +150,14 @@ func (r *PhysicalContainerVolumeReconciler) managePhysicalContainerVolume(
 	}
 
 	_ = r.volumeData.Update(volume.NamespacedName(), stateKey, data)
-	change |= data.applyTo(volume)
-	delay := physicalContainerVolumeProjections.reconciliationDelay(data.state, data.progress)
+	dataChange, delay, valid := data.applyTo(volume)
+	change |= dataChange
+	if !valid {
+		log.Error(
+			fmt.Errorf("invalid physical container volume state %v with progress %v", data.state, data.progress),
+			"PhysicalContainerVolume reached invalid reconciliation state",
+		)
+	}
 	return change, delay
 }
 
