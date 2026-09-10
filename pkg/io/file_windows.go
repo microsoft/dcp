@@ -102,27 +102,54 @@ func openRestrictedFile(
 	principals restrictedDirectoryPrincipals,
 ) (*os.File, error) {
 	if !filepath.IsAbs(name) {
-		return nil, fmt.Errorf("restricted files require an absolute path on a fixed local drive: %q", name)
+		return nil, fmt.Errorf(
+			"%w: %w: restricted files require an absolute path on a fixed local drive: %q",
+			ErrRestrictedFilePolicy,
+			ErrRestrictedFileUnsupportedPath,
+			name,
+		)
 	}
 	absoluteName := filepath.Clean(name)
 	volumeName := filepath.VolumeName(absoluteName)
 	if len(volumeName) != 2 || volumeName[1] != ':' {
-		return nil, fmt.Errorf("restricted files require an absolute path on a fixed local drive: %q", name)
+		return nil, fmt.Errorf(
+			"%w: %w: restricted files require an absolute path on a fixed local drive: %q",
+			ErrRestrictedFilePolicy,
+			ErrRestrictedFileUnsupportedPath,
+			name,
+		)
 	}
 	if strings.Contains(strings.TrimPrefix(absoluteName, volumeName), ":") {
-		return nil, fmt.Errorf("alternate data streams are not supported: %q", name)
+		return nil, fmt.Errorf(
+			"%w: %w: alternate data streams are not supported: %q",
+			ErrRestrictedFilePolicy,
+			ErrRestrictedFileUnsupportedPath,
+			name,
+		)
 	}
 	if componentErr := validateRestrictedFilePathComponents(
 		strings.TrimPrefix(absoluteName, volumeName+`\`),
 	); componentErr != nil {
-		return nil, fmt.Errorf("invalid restricted file path %q: %w", name, componentErr)
+		return nil, fmt.Errorf(
+			"%w: %w: invalid restricted file path %q: %w",
+			ErrRestrictedFilePolicy,
+			ErrRestrictedFileUnsupportedPath,
+			name,
+			componentErr,
+		)
 	}
 	driveRoot, driveRootErr := windows.UTF16PtrFromString(volumeName + `\`)
 	if driveRootErr != nil {
 		return nil, fmt.Errorf("creating drive root path %q: %w", volumeName, driveRootErr)
 	}
 	if driveType := windows.GetDriveType(driveRoot); driveType != windows.DRIVE_FIXED {
-		return nil, fmt.Errorf("restricted files require a fixed local drive, got drive type %d: %q", driveType, name)
+		return nil, fmt.Errorf(
+			"%w: %w: restricted files require a fixed local drive, got drive type %d: %q",
+			ErrRestrictedFilePolicy,
+			ErrRestrictedFileNonFixedDrive,
+			driveType,
+			name,
+		)
 	}
 	var fileSystemFlags uint32
 	if volumeErr := windows.GetVolumeInformation(
@@ -138,7 +165,12 @@ func openRestrictedFile(
 		return nil, fmt.Errorf("getting file system capabilities for %q: %w", volumeName, volumeErr)
 	}
 	if fileSystemFlags&windows.FILE_PERSISTENT_ACLS == 0 {
-		return nil, fmt.Errorf("restricted files require a file system with persistent ACLs: %q", name)
+		return nil, fmt.Errorf(
+			"%w: %w: restricted files require a file system with persistent ACLs: %q",
+			ErrRestrictedFilePolicy,
+			ErrRestrictedFileNoPersistentACLs,
+			name,
+		)
 	}
 
 	objectName, objectNameErr := windows.NewNTUnicodeString(`\??\` + absoluteName)
@@ -175,7 +207,7 @@ func openRestrictedFile(
 	runtime.KeepAlive(securityDescriptor)
 	runtime.KeepAlive(principals)
 	if openErr != nil {
-		return nil, restrictedFilePathError(name, openErr)
+		return nil, restrictedFileOpenError(name, openErr)
 	}
 
 	closeHandle := true
@@ -192,7 +224,17 @@ func openRestrictedFile(
 	}
 
 	if validationErr := validateRestrictedFile(handle, perm, principals); validationErr != nil {
-		return nil, fmt.Errorf("validating restricted file %q: %w", name, validationErr)
+		validationKind := ErrRestrictedFileInvalidSecurity
+		if errors.Is(validationErr, ErrRestrictedFileReparsePoint) {
+			validationKind = ErrRestrictedFileReparsePoint
+		}
+		return nil, fmt.Errorf(
+			"%w: %w: validating restricted file %q: %w",
+			ErrRestrictedFilePolicy,
+			validationKind,
+			name,
+			validationErr,
+		)
 	}
 	if mode == restrictedFileCreateOrTruncate || mode == restrictedFileWriteOrTruncate {
 		if truncateErr := windows.Ftruncate(handle, 0); truncateErr != nil {
@@ -361,7 +403,7 @@ func validateRestrictedFile(
 		return fmt.Errorf("getting file information: %w", infoErr)
 	}
 	if fileInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		return fmt.Errorf("file is a reparse point")
+		return fmt.Errorf("%w: file is a reparse point", ErrRestrictedFileReparsePoint)
 	}
 	if fileInfo.NumberOfLinks != 1 {
 		return fmt.Errorf("file has %d hard links", fileInfo.NumberOfLinks)
@@ -447,10 +489,20 @@ func validateRestrictedFile(
 	return nil
 }
 
-func restrictedFilePathError(name string, openErr error) error {
+func restrictedFileOpenError(name string, openErr error) error {
 	var ntStatus windows.NTStatus
 	if errors.As(openErr, &ntStatus) {
 		openErr = ntStatus.Errno()
 	}
-	return &os.PathError{Op: "open", Path: name, Err: openErr}
+	pathErr := &os.PathError{Op: "open", Path: name, Err: openErr}
+	if errors.Is(openErr, windows.ERROR_REPARSE_POINT_ENCOUNTERED) ||
+		errors.Is(openErr, windows.ERROR_CANT_ACCESS_FILE) {
+		return fmt.Errorf(
+			"%w: %w: restricted file path traverses a reparse point: %w",
+			ErrRestrictedFilePolicy,
+			ErrRestrictedFileReparsePoint,
+			pathErr,
+		)
+	}
+	return pathErr
 }

@@ -57,7 +57,7 @@ func TestVolumeMethods(t *testing.T) {
 			CreateContainerOptions: containers.CreateContainerOptions{
 				Name:       containerName,
 				Image:      ensureBaseImage(t, ctx, runtime),
-				Command:    []string{"sh", "-c", `printf "volume-content" > /data/value; exec sleep 120`},
+				Command:    []string{"sh", "-c", `printf "volume-content" > /data/value; exec sleep 600`},
 				Labels:     tracker.Labels(),
 				PullPolicy: containers.PullPolicyNever,
 				VolumeMounts: []containers.CreateContainerVolumeMount{{

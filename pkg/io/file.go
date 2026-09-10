@@ -10,9 +10,31 @@ import (
 	"os"
 )
 
+var (
+	// ErrRestrictedFilePolicy identifies an elevated Windows restricted-file policy rejection.
+	ErrRestrictedFilePolicy = errors.New("restricted file policy")
+	// ErrRestrictedFileUnsupportedPath identifies a path form unsupported by the restricted-file policy.
+	ErrRestrictedFileUnsupportedPath = errors.New("unsupported restricted file path")
+	// ErrRestrictedFileNonFixedDrive identifies storage that is not a fixed local drive.
+	ErrRestrictedFileNonFixedDrive = errors.New("restricted file drive is not fixed local storage")
+	// ErrRestrictedFileNoPersistentACLs identifies storage that cannot persist Windows ACLs.
+	ErrRestrictedFileNoPersistentACLs = errors.New("restricted file system does not support persistent ACLs")
+	// ErrRestrictedFileReparsePoint identifies a path that traverses or targets a reparse point.
+	ErrRestrictedFileReparsePoint = errors.New("restricted file path contains a reparse point")
+	// ErrRestrictedFileInvalidSecurity identifies an existing file with an unacceptable owner, DACL, or link count.
+	ErrRestrictedFileInvalidSecurity = errors.New("restricted file security descriptor is invalid")
+)
+
 // OpenFileReadOnly opens an existing file for reading using standard operating-system path semantics.
 func OpenFileReadOnly(name string) (*os.File, error) {
 	return os.Open(name)
+}
+
+// CreateOrTruncateExportFile creates or truncates a user-selected export destination using
+// standard operating-system path semantics. It does not provide the elevated Windows
+// restricted-file guarantee and must not be used for DCP-managed sensitive files.
+func CreateOrTruncateExportFile(name string, perm os.FileMode) (*os.File, error) {
+	return os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 }
 
 // CreateNewFile creates a new read-write file and fails if the path already exists.

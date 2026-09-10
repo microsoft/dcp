@@ -12,6 +12,7 @@ import (
 	stdslices "slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
@@ -27,14 +28,23 @@ const (
 	// sink will track the resource ID value and use it to route a copy of log entries to a separate log file named based on the resource ID (i.e. resource-<resource_id>.log).
 	// This log file will contain only the log entries pertaining to that specific resource ID, allowing system logs pertaining to a given resource to be retrieved in isolation.
 	RESOURCE_LOG_STREAM_ID = "resource_log_stream_id"
+
+	resourceSinkRetryInterval = time.Minute
 )
 
 var (
 	resourceLoggerLock     = &sync.Mutex{}
 	resourceLoggerDisabled = &atomic.Bool{}
 	resourceSinks          = map[string]*resourceFileSink{}
+	resourceSinkFailures   = map[string]resourceFileSinkFailure{}
+	resourceSinkNow        = time.Now
 	tempDir                = usvc_io.DcpTempDir()
 )
+
+type resourceFileSinkFailure struct {
+	folder     string
+	retryAfter time.Time
+}
 
 type resourceFileSink struct {
 	file   *usvc_io.AppendFile
@@ -64,6 +74,7 @@ func ReleaseResourceLog(resourceId string) {
 	if found {
 		delete(resourceSinks, resourceId)
 	}
+	delete(resourceSinkFailures, resourceId)
 	resourceLoggerLock.Unlock()
 
 	if found {
@@ -86,6 +97,11 @@ func ReleaseResourceLogsInFolder(folder string) {
 			delete(resourceSinks, resourceId)
 		}
 	}
+	for resourceId, failure := range resourceSinkFailures {
+		if osutil.SameCleanPath(failure.folder, folder) {
+			delete(resourceSinkFailures, resourceId)
+		}
+	}
 	resourceLoggerLock.Unlock()
 
 	for _, sink := range sinksToRelease {
@@ -106,6 +122,7 @@ func ReleaseAllResourceLogs() {
 
 	// Clear out all resource sinks
 	resourceSinks = map[string]*resourceFileSink{}
+	resourceSinkFailures = map[string]resourceFileSinkFailure{}
 	resourceLoggerLock.Unlock()
 
 	wg := &sync.WaitGroup{}
@@ -272,11 +289,20 @@ func (s *resourceSink) getSink(resourceId string) *resourceFileSink {
 	sink, found := resourceSinks[resourceId]
 	var sinkErr error
 	if !found {
+		if failure, failed := resourceSinkFailures[resourceId]; failed && resourceSinkNow().Before(failure.retryAfter) {
+			return nil
+		}
+
 		// Create a new sink if one doesn't exist
 		sink, sinkErr = s.newResourceFileSink(resourceId)
 		if sinkErr == nil {
 			resourceSinks[resourceId] = sink
+			delete(resourceSinkFailures, resourceId)
 		} else {
+			resourceSinkFailures[resourceId] = resourceFileSinkFailure{
+				folder:     absoluteResourceLogFolder(s.resourceLogFolderOverride),
+				retryAfter: resourceSinkNow().Add(resourceSinkRetryInterval),
+			}
 			s.innerSink.Error(sinkErr, "Could not create resource log file", "ResourceID", resourceId)
 		}
 	}
@@ -310,6 +336,17 @@ func (s *resourceSink) newResourceFileSink(resourceId string) (*resourceFileSink
 		logger: zapr.NewLogger(zapLogger).WithName(s.resourceName),
 		flush:  func() { _ = zapLogger.Sync() },
 	}, nil
+}
+
+func absoluteResourceLogFolder(folder string) string {
+	if folder == "" {
+		folder = tempDir
+	}
+	absoluteFolder, absoluteFolderErr := filepath.Abs(folder)
+	if absoluteFolderErr != nil {
+		return filepath.Clean(folder)
+	}
+	return absoluteFolder
 }
 
 var _ logr.LogSink = (*resourceSink)(nil)

@@ -74,7 +74,7 @@ func (k *Kubeconfig) Save() error {
 	}
 
 	if writeErr := usvc_io.WriteFile(k.path+string(suffix), contents, osutil.PermissionOnlyOwnerReadWrite); writeErr != nil {
-		return fmt.Errorf("could not write Kubeconfig file: %w", writeErr)
+		return kubeconfigWriteError(k.path, writeErr)
 	}
 
 	if renameErr := os.Rename(k.path+string(suffix), k.path); renameErr != nil {
@@ -82,6 +82,17 @@ func (k *Kubeconfig) Save() error {
 	}
 
 	return nil
+}
+
+func kubeconfigWriteError(path string, writeErr error) error {
+	if errors.Is(writeErr, usvc_io.ErrRestrictedFilePolicy) {
+		return fmt.Errorf(
+			"could not write kubeconfig file %q: %w; choose an absolute path on a fixed local ACL-capable drive without junction or symlink ancestors",
+			path,
+			writeErr,
+		)
+	}
+	return fmt.Errorf("could not write kubeconfig file: %w", writeErr)
 }
 
 // Reads Kubeconfig data and returns the address, port and security token of the current context,

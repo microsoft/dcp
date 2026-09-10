@@ -20,7 +20,10 @@ import (
 	"github.com/microsoft/dcp/pkg/concurrency"
 )
 
-const eventWatcherWarmupTimeout = 10 * time.Second
+const (
+	eventWatcherWarmupTimeout = 10 * time.Second
+	eventCollectionTimeout    = 30 * time.Second
+)
 
 func TestContainerLifecycleMethods(t *testing.T) {
 	t.Parallel()
@@ -263,7 +266,9 @@ func TestWatchContainersMethod(t *testing.T) {
 		})
 		require.NoError(t, removeErr)
 
-		actions := collectContainerActions(t, ctx, events.Out, containerID)
+		collectionCtx, collectionCancel := context.WithTimeout(ctx, eventCollectionTimeout)
+		actions, collectionErr := collectContainerActions(collectionCtx, events.Out, containerID)
+		collectionCancel()
 		require.Contains(t, actions, containers.EventActionCreate)
 		require.Contains(t, actions, containers.EventActionStart)
 		require.True(t,
@@ -274,6 +279,7 @@ func TestWatchContainersMethod(t *testing.T) {
 			"expected a stop, die, died, or destroy event; got %v",
 			actions,
 		)
+		require.NoError(t, collectionErr, "received container actions: %v", actions)
 
 		subscription.Cancel()
 		waitForEventChannelClosed(t, ctx, events.Out)
@@ -318,13 +324,10 @@ func warmContainerWatcher(
 }
 
 func collectContainerActions(
-	t *testing.T,
 	ctx context.Context,
 	events <-chan containers.EventMessage,
 	containerID string,
-) map[containers.EventAction]bool {
-	t.Helper()
-
+) (map[containers.EventAction]bool, error) {
 	actions := map[containers.EventAction]bool{}
 	for {
 		if actions[containers.EventActionCreate] &&
@@ -333,15 +336,35 @@ func collectContainerActions(
 				actions[containers.EventActionDie] ||
 				actions[containers.EventActionDied] ||
 				actions[containers.EventActionDestroy]) {
-			return actions
+			return actions, nil
 		}
 
 		event, eventErr := waitForEvent(ctx, events, func(event containers.EventMessage) bool {
 			return event.Source == containers.EventSourceContainer && event.Actor.ID == containerID
 		})
-		require.NoError(t, eventErr)
+		if eventErr != nil {
+			return actions, eventErr
+		}
 		actions[event.Action] = true
 	}
+}
+
+func TestCollectContainerActionsReturnsPartialResult(t *testing.T) {
+	t.Parallel()
+
+	events := make(chan containers.EventMessage, 1)
+	events <- containers.EventMessage{
+		Source: containers.EventSourceContainer,
+		Action: containers.EventActionCreate,
+		Actor:  containers.EventActor{ID: "container"},
+	}
+	close(events)
+
+	actions, collectionErr := collectContainerActions(t.Context(), events, "container")
+
+	require.Error(t, collectionErr)
+	require.True(t, actions[containers.EventActionCreate])
+	require.False(t, actions[containers.EventActionStart])
 }
 
 func waitForEvent(

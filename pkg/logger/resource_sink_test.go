@@ -13,13 +13,40 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
+
+type countingLogSink struct {
+	errorCount int
+}
+
+func (*countingLogSink) Init(logr.RuntimeInfo) {}
+
+func (*countingLogSink) Enabled(int) bool {
+	return true
+}
+
+func (*countingLogSink) Info(int, string, ...any) {}
+
+func (sink *countingLogSink) Error(error, string, ...any) {
+	sink.errorCount++
+}
+
+func (sink *countingLogSink) WithValues(...any) logr.LogSink {
+	return sink
+}
+
+func (sink *countingLogSink) WithName(string) logr.LogSink {
+	return sink
+}
 
 func TestResourceSink(t *testing.T) {
 	t.Parallel()
@@ -183,4 +210,44 @@ func TestResourceSinkResolvesRelativeFolder(t *testing.T) {
 	require.EventuallyWithTf(t, func(c *assert.CollectT) {
 		require.FileExists(c, expectedPath)
 	}, 10*time.Second, 200*time.Millisecond, "Expected relative resource log path to be resolved")
+}
+
+func TestResourceSinkBacksOffAfterFileCreationFailure(t *testing.T) {
+	resourceId := "resource-sink-backoff"
+	invalidFolder := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, usvc_io.WriteFile(invalidFolder, []byte("content"), osutil.PermissionOnlyOwnerReadWrite))
+	validFolder := t.TempDir()
+
+	innerSink := &countingLogSink{}
+	sink := newResourceSink(zap.NewAtomicLevel(), innerSink, invalidFolder)
+	now := time.Date(2026, time.September, 10, 12, 0, 0, 0, time.UTC)
+	originalNow := resourceSinkNow
+	resourceSinkNow = func() time.Time {
+		return now
+	}
+	t.Cleanup(func() {
+		resourceSinkNow = originalNow
+		ReleaseResourceLog(resourceId)
+	})
+
+	require.Nil(t, sink.getSink(resourceId))
+	require.Equal(t, 1, innerSink.errorCount)
+
+	sink.resourceLogFolderOverride = validFolder
+	require.Nil(t, sink.getSink(resourceId))
+	require.Equal(t, 1, innerSink.errorCount)
+	require.NoFileExists(t, makeResourceLogPath(resourceId, validFolder))
+
+	now = now.Add(resourceSinkRetryInterval)
+	require.NotNil(t, sink.getSink(resourceId))
+	require.Equal(t, 1, innerSink.errorCount)
+	require.FileExists(t, makeResourceLogPath(resourceId, validFolder))
+
+	ReleaseResourceLog(resourceId)
+	resourceLoggerLock.Lock()
+	_, sinkFound := resourceSinks[resourceId]
+	_, failureFound := resourceSinkFailures[resourceId]
+	resourceLoggerLock.Unlock()
+	require.False(t, sinkFound)
+	require.False(t, failureFound)
 }

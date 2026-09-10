@@ -602,6 +602,9 @@ type ApplyImageLayersOptions struct {
 	// The image layers to apply (tar files)
 	Layers []ImageLayer
 
+	// Labels to apply to the derived image
+	Labels []Label
+
 	// Tag to apply to the derived image
 	Tag string
 

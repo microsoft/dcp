@@ -142,9 +142,12 @@ func TestWatchNetworksMethod(t *testing.T) {
 		})
 		require.NoError(t, removeErr)
 
-		actions := collectNetworkActions(t, ctx, events.Out, networkID, containerID)
+		collectionCtx, collectionCancel := context.WithTimeout(ctx, eventCollectionTimeout)
+		actions, collectionErr := collectNetworkActions(collectionCtx, events.Out, networkID, containerID)
+		collectionCancel()
 		require.Contains(t, actions, containers.EventActionConnect)
 		require.Contains(t, actions, containers.EventActionDisconnect)
+		require.NoError(t, collectionErr, "received network actions: %v", actions)
 
 		subscription.Cancel()
 		waitForEventChannelClosed(t, ctx, events.Out)
@@ -228,26 +231,46 @@ func warmNetworkWatcher(
 }
 
 func collectNetworkActions(
-	t *testing.T,
 	ctx context.Context,
 	events <-chan containers.EventMessage,
 	networkID string,
 	containerID string,
-) map[containers.EventAction]bool {
-	t.Helper()
-
+) (map[containers.EventAction]bool, error) {
 	actions := map[containers.EventAction]bool{}
 	for {
 		if actions[containers.EventActionConnect] && actions[containers.EventActionDisconnect] {
-			return actions
+			return actions, nil
 		}
 
 		event, eventErr := waitForEvent(ctx, events, func(event containers.EventMessage) bool {
 			return networkEventMatches(event, networkID, containerID)
 		})
-		require.NoError(t, eventErr)
+		if eventErr != nil {
+			return actions, eventErr
+		}
 		actions[event.Action] = true
 	}
+}
+
+func TestCollectNetworkActionsReturnsPartialResult(t *testing.T) {
+	t.Parallel()
+
+	events := make(chan containers.EventMessage, 1)
+	events <- containers.EventMessage{
+		Source: containers.EventSourceNetwork,
+		Action: containers.EventActionConnect,
+		Actor:  containers.EventActor{ID: "network"},
+		Attributes: map[string]string{
+			"container": "container",
+		},
+	}
+	close(events)
+
+	actions, collectionErr := collectNetworkActions(t.Context(), events, "network", "container")
+
+	require.Error(t, collectionErr)
+	require.True(t, actions[containers.EventActionConnect])
+	require.False(t, actions[containers.EventActionDisconnect])
 }
 
 func networkEventMatches(event containers.EventMessage, networkID string, containerID string) bool {

@@ -68,17 +68,24 @@ type Resource struct {
 	Identifier string       `json:"identifier"`
 }
 
+type cleanupJournal interface {
+	io.Writer
+	Sync() error
+	Close() error
+}
+
 // ResourceTracker durably records physical runtime objects and removes them in dependency order.
 type ResourceTracker struct {
 	runtimeName string
 	header      journalHeader
 
-	lock        sync.Mutex
-	cleanupLock sync.Mutex
-	journalPath string
-	journalFile *usvc_io.AppendFile
-	resources   []Resource
-	closed      bool
+	lock            sync.Mutex
+	cleanupLock     sync.Mutex
+	journalPath     string
+	journalFile     cleanupJournal
+	resources       []Resource
+	trackingClosed  bool
+	cleanupComplete bool
 }
 
 var activeTrackers sync.Map
@@ -133,14 +140,7 @@ func (tracker *ResourceTracker) RunID() string {
 }
 
 func (tracker *ResourceTracker) MapLabels() map[string]string {
-	return map[string]string{
-		TestRunLabel:                      tracker.header.RunID,
-		controllers.PersistentLabel:       "false",
-		controllers.CreatorProcessIdLabel: fmt.Sprintf("%d", tracker.header.ProcessID),
-		controllers.CreatorProcessStartTimeLabel: tracker.header.ProcessStartTime.Format(
-			osutil.RFC3339MiliTimestampFormat,
-		),
-	}
+	return resourceOwnershipLabels(tracker.header)
 }
 
 func (tracker *ResourceTracker) Labels() []commonapi.Label {
@@ -173,7 +173,7 @@ func (tracker *ResourceTracker) Track(kind ResourceKind, identifier string) erro
 	tracker.lock.Lock()
 	defer tracker.lock.Unlock()
 
-	if tracker.closed {
+	if tracker.trackingClosed {
 		return fmt.Errorf("resource tracker is closed")
 	}
 	if identifier == "" {
@@ -258,39 +258,55 @@ func (tracker *ResourceTracker) Cleanup(ctx context.Context, orchestrator contai
 	defer tracker.cleanupLock.Unlock()
 
 	tracker.lock.Lock()
-	if tracker.closed {
+	if tracker.cleanupComplete {
 		tracker.lock.Unlock()
 		return nil
 	}
-	if tracker.journalFile != nil {
-		closeErr := tracker.journalFile.Close()
-		tracker.journalFile = nil
-		if closeErr != nil {
-			tracker.lock.Unlock()
-			return fmt.Errorf("closing cleanup journal: %w", closeErr)
-		}
-	}
+	tracker.trackingClosed = true
+	journalFile := tracker.journalFile
+	tracker.journalFile = nil
 	resources := append([]Resource(nil), tracker.resources...)
 	journalPath := tracker.journalPath
+	header := tracker.header
 	tracker.lock.Unlock()
 
-	cleanupErr := cleanupResources(ctx, orchestrator, resources)
-	if cleanupErr != nil {
-		return cleanupErr
-	}
-
-	tracker.lock.Lock()
-	defer tracker.lock.Unlock()
-	tracker.closed = true
-	if journalPath != "" {
-		if removeErr := os.Remove(journalPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			tracker.closed = false
-			return fmt.Errorf("removing cleanup journal: %w", removeErr)
+	var closeJournalErr error
+	if journalFile != nil {
+		if closeErr := journalFile.Close(); closeErr != nil {
+			closeJournalErr = fmt.Errorf("closing cleanup journal: %w", closeErr)
 		}
-		activeTrackers.Delete(journalPath)
 	}
 
-	return nil
+	cleanupErr := cleanupResources(ctx, orchestrator, header, resources)
+
+	var removeJournalErr error
+	if cleanupErr == nil && journalPath != "" {
+		if removeErr := os.Remove(journalPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			removeJournalErr = fmt.Errorf("removing cleanup journal: %w", removeErr)
+		}
+	}
+
+	if cleanupErr == nil && removeJournalErr == nil {
+		tracker.lock.Lock()
+		tracker.cleanupComplete = true
+		tracker.lock.Unlock()
+		if journalPath != "" {
+			activeTrackers.Delete(journalPath)
+		}
+	}
+
+	return errors.Join(closeJournalErr, cleanupErr, removeJournalErr)
+}
+
+func resourceOwnershipLabels(header journalHeader) map[string]string {
+	return map[string]string{
+		TestRunLabel:                      header.RunID,
+		controllers.PersistentLabel:       "false",
+		controllers.CreatorProcessIdLabel: fmt.Sprintf("%d", header.ProcessID),
+		controllers.CreatorProcessStartTimeLabel: header.ProcessStartTime.Format(
+			osutil.RFC3339MiliTimestampFormat,
+		),
+	}
 }
 
 // CleanupActiveResources retries cleanup for all journals created by the current test process.
@@ -387,12 +403,13 @@ func recoverStaleJournal(
 		return fmt.Errorf("checking cleanup journal owner %d: %w", header.ProcessID, findErr)
 	}
 
-	return recoverStaleJournalResources(ctx, orchestrator, journalPath)
+	return recoverStaleJournalResources(ctx, orchestrator, header, journalPath)
 }
 
 func recoverStaleJournalResources(
 	ctx context.Context,
 	orchestrator containers.ContainerOrchestrator,
+	header journalHeader,
 	journalPath string,
 ) error {
 	resources, resourcesErr := readJournalResources(journalPath, true)
@@ -402,7 +419,7 @@ func recoverStaleJournalResources(
 	if resourcesErr != nil {
 		return fmt.Errorf("reading cleanup journal resources %q: %w", journalPath, resourcesErr)
 	}
-	if cleanupErr := cleanupResources(ctx, orchestrator, resources); cleanupErr != nil {
+	if cleanupErr := cleanupResources(ctx, orchestrator, header, resources); cleanupErr != nil {
 		return fmt.Errorf("cleaning resources from %q: %w", journalPath, cleanupErr)
 	}
 	if removeErr := os.Remove(journalPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
@@ -445,6 +462,18 @@ func readJournalHeader(path string) (journalHeader, error) {
 	}
 	if header.Version != journalVersion {
 		return journalHeader{}, fmt.Errorf("unsupported cleanup journal version %d", header.Version)
+	}
+	if header.Runtime == "" {
+		return journalHeader{}, fmt.Errorf("cleanup journal runtime cannot be empty")
+	}
+	if header.ProcessID <= 0 {
+		return journalHeader{}, fmt.Errorf("cleanup journal process ID must be positive")
+	}
+	if header.ProcessStartTime.IsZero() {
+		return journalHeader{}, fmt.Errorf("cleanup journal process start time cannot be zero")
+	}
+	if header.RunID == "" {
+		return journalHeader{}, fmt.Errorf("cleanup journal run ID cannot be empty")
 	}
 
 	return header, nil
@@ -493,7 +522,12 @@ func readJournalResources(path string, allowIncompleteFinalRecord bool) ([]Resou
 	return resources, nil
 }
 
-func cleanupResources(ctx context.Context, orchestrator containers.ContainerOrchestrator, resources []Resource) error {
+func cleanupResources(
+	ctx context.Context,
+	orchestrator containers.ContainerOrchestrator,
+	header journalHeader,
+	resources []Resource,
+) error {
 	resources = append([]Resource(nil), resources...)
 	std_slices.SortStableFunc(resources, func(left, right Resource) int {
 		return resourceCleanupPriority(left.Kind) - resourceCleanupPriority(right.Kind)
@@ -502,7 +536,7 @@ func cleanupResources(ctx context.Context, orchestrator containers.ContainerOrch
 	var cleanupErrors error
 	for resourceIndex, resource := range resources {
 		resourceCtx, resourceCancel := nextCleanupContext(ctx, len(resources)-resourceIndex)
-		if cleanupErr := cleanupResource(resourceCtx, orchestrator, resource); cleanupErr != nil {
+		if cleanupErr := cleanupResource(resourceCtx, orchestrator, header, resource); cleanupErr != nil {
 			cleanupErrors = errors.Join(cleanupErrors, cleanupErr)
 		}
 		resourceCancel()
@@ -523,7 +557,38 @@ func nextCleanupContext(ctx context.Context, remainingItems int) (context.Contex
 	return context.WithTimeout(ctx, cleanupBudget)
 }
 
-func cleanupResource(ctx context.Context, orchestrator containers.ContainerOrchestrator, resource Resource) error {
+type cleanupResourceState uint8
+
+const (
+	cleanupResourceAbsent cleanupResourceState = iota
+	cleanupResourceOwned
+	cleanupResourceUnowned
+)
+
+func cleanupResource(
+	ctx context.Context,
+	orchestrator containers.ContainerOrchestrator,
+	header journalHeader,
+	resource Resource,
+) error {
+	resourceState, inspectErr := inspectCleanupResource(ctx, orchestrator, header, resource)
+	if inspectErr != nil {
+		return fmt.Errorf("inspecting %s %q before cleanup: %w", resource.Kind, resource.Identifier, inspectErr)
+	}
+	switch resourceState {
+	case cleanupResourceAbsent:
+		return nil
+	case cleanupResourceUnowned:
+		return fmt.Errorf(
+			"refusing to remove %s %q because its ownership labels do not match the cleanup journal",
+			resource.Kind,
+			resource.Identifier,
+		)
+	case cleanupResourceOwned:
+	default:
+		return fmt.Errorf("unsupported cleanup state %d for %s %q", resourceState, resource.Kind, resource.Identifier)
+	}
+
 	var removeErr error
 	switch resource.Kind {
 	case ResourceContainer:
@@ -562,6 +627,75 @@ func cleanupResource(ctx context.Context, orchestrator containers.ContainerOrche
 		return verificationErr
 	}
 	return errors.Join(fmt.Errorf("removing %s %q: %w", resource.Kind, resource.Identifier, removeErr), verificationErr)
+}
+
+func inspectCleanupResource(
+	ctx context.Context,
+	orchestrator containers.ContainerOrchestrator,
+	header journalHeader,
+	resource Resource,
+) (cleanupResourceState, error) {
+	var labels map[string]string
+	var count int
+	var inspectErr error
+
+	switch resource.Kind {
+	case ResourceContainer:
+		var inspected []containers.InspectedContainer
+		inspected, inspectErr = orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+			Containers: []string{resource.Identifier},
+		})
+		count = len(inspected)
+		if count == 1 {
+			labels = inspected[0].Labels
+		}
+	case ResourceNetwork:
+		var inspected []containers.InspectedNetwork
+		inspected, inspectErr = orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+			Networks: []string{resource.Identifier},
+		})
+		count = len(inspected)
+		if count == 1 {
+			labels = inspected[0].Labels
+		}
+	case ResourceVolume:
+		var inspected []containers.InspectedVolume
+		inspected, inspectErr = orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{
+			Volumes: []string{resource.Identifier},
+		})
+		count = len(inspected)
+		if count == 1 {
+			labels = inspected[0].Labels
+		}
+	case ResourceImage:
+		var inspected []containers.InspectedImage
+		inspected, inspectErr = orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
+			Images: []string{resource.Identifier},
+		})
+		count = len(inspected)
+		if count == 1 {
+			labels = inspected[0].Labels
+		}
+	default:
+		return cleanupResourceUnowned, fmt.Errorf("unsupported cleanup resource kind %q", resource.Kind)
+	}
+
+	if count == 0 && (inspectErr == nil || errors.Is(inspectErr, containers.ErrNotFound)) {
+		return cleanupResourceAbsent, nil
+	}
+	if inspectErr != nil {
+		return cleanupResourceUnowned, inspectErr
+	}
+	if count != 1 {
+		return cleanupResourceUnowned, fmt.Errorf("runtime returned %d matching objects", count)
+	}
+
+	for key, expectedValue := range resourceOwnershipLabels(header) {
+		if labels[key] != expectedValue {
+			return cleanupResourceUnowned, nil
+		}
+	}
+	return cleanupResourceOwned, nil
 }
 
 func resourceAbsent(ctx context.Context, orchestrator containers.ContainerOrchestrator, resource Resource) (bool, error) {

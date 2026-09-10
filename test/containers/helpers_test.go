@@ -50,7 +50,7 @@ func longRunningContainerOptions(
 	return containers.CreateContainerOptions{
 		Name:       name,
 		Image:      image,
-		Command:    []string{"sh", "-c", "sleep 120"},
+		Command:    []string{"sh", "-c", "sleep 600"},
 		Labels:     labels,
 		PullPolicy: containers.PullPolicyNever,
 	}

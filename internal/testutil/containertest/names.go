@@ -8,7 +8,6 @@ package containertest
 import (
 	"strings"
 	"testing"
-	"unicode"
 
 	"github.com/microsoft/dcp/pkg/randdata"
 )
@@ -24,8 +23,11 @@ func UniqueName(t testing.TB, prefix string) string {
 
 	normalized := strings.Map(func(character rune) rune {
 		switch {
-		case unicode.IsLetter(character), unicode.IsDigit(character):
-			return unicode.ToLower(character)
+		case character >= 'A' && character <= 'Z':
+			return character + ('a' - 'A')
+		case character >= 'a' && character <= 'z',
+			character >= '0' && character <= '9':
+			return character
 		default:
 			return '-'
 		}

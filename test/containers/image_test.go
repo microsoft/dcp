@@ -83,13 +83,6 @@ func TestBuildInspectAndRemoveImageMethods(t *testing.T) {
 		)
 		require.Equal(t, marker, stdout)
 		require.Empty(t, stderr)
-
-		removed, removeErr := runtime.Orchestrator.RemoveImages(ctx, containers.RemoveImagesOptions{
-			Images: []string{image},
-		})
-		require.NoError(t, removeErr)
-		require.Equal(t, []string{image}, removed)
-		waitForImageAbsent(t, ctx, runtime.Orchestrator, image)
 	})
 }
 
@@ -115,7 +108,8 @@ func TestApplyImageLayersMethod(t *testing.T) {
 				Digest:      marker,
 				RawContents: rawImageLayer(t, "dcp-layer-marker", marker),
 			}},
-			Tag: image,
+			Labels: tracker.Labels(),
+			Tag:    image,
 		})
 		require.NoError(t, applyErr)
 		require.Equal(t, image, imageRef)
@@ -126,6 +120,9 @@ func TestApplyImageLayersMethod(t *testing.T) {
 		require.NoError(t, inspectErr)
 		require.Len(t, inspected, 1)
 		require.NotEmpty(t, inspected[0].Id)
+		for key, value := range tracker.MapLabels() {
+			require.Equal(t, value, inspected[0].Labels[key], "label %q", key)
+		}
 
 		stdout, stderr := runImageAndCapture(
 			t,

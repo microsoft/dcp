@@ -317,7 +317,11 @@ func TestApplyImageLayersImpl_BuildCommandArgs(t *testing.T) {
 		options := ApplyImageLayersOptions{
 			BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
 			Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
-			Tag:       "myimage:dcp-abc",
+			Labels: []Label{
+				{Key: "test.label", Value: "value with spaces"},
+				{Key: "another.label", Value: "second-value"},
+			},
+			Tag: "myimage:dcp-abc",
 		}
 
 		_, applyErr := ApplyImageLayersImpl(
@@ -330,6 +334,8 @@ func TestApplyImageLayersImpl_BuildCommandArgs(t *testing.T) {
 		assert.Contains(t, result.args, "--quiet")
 		assert.Contains(t, result.args, "-t")
 		assert.Contains(t, result.args, "myimage:dcp-abc")
+		assert.Contains(t, result.args, "test.label=value with spaces")
+		assert.Contains(t, result.args, "another.label=second-value")
 		assert.Equal(t, "-", result.args[len(result.args)-1])
 	})
 

@@ -31,6 +31,37 @@ func TestOpenFileReadOnlyReadsFile(t *testing.T) {
 	require.Equal(t, "content", string(contents))
 }
 
+func TestCreateOrTruncateExportFileUsesStandardPathSemantics(t *testing.T) {
+	t.Parallel()
+
+	workingDirectory, workingDirectoryErr := os.Getwd()
+	require.NoError(t, workingDirectoryErr)
+	tempDirectory, tempDirectoryErr := os.MkdirTemp(workingDirectory, "export-file-test-*")
+	require.NoError(t, tempDirectoryErr)
+	t.Cleanup(func() {
+		require.NoError(t, os.RemoveAll(tempDirectory))
+	})
+	absolutePath := filepath.Join(tempDirectory, "export.txt")
+	path, relativePathErr := filepath.Rel(workingDirectory, absolutePath)
+	require.NoError(t, relativePathErr)
+
+	file, createErr := usvc_io.CreateOrTruncateExportFile(path, osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, createErr)
+	_, writeErr := file.WriteString("existing")
+	require.NoError(t, writeErr)
+	require.NoError(t, file.Close())
+
+	replacement, replacementErr := usvc_io.CreateOrTruncateExportFile(path, osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, replacementErr)
+	_, replacementWriteErr := replacement.WriteString("replacement")
+	require.NoError(t, replacementWriteErr)
+	require.NoError(t, replacement.Close())
+
+	contents, readErr := os.ReadFile(absolutePath)
+	require.NoError(t, readErr)
+	require.Equal(t, "replacement", string(contents))
+}
+
 func TestOpenOrCreateFileForAppendingPreservesExistingContents(t *testing.T) {
 	t.Parallel()
 
