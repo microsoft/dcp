@@ -26,13 +26,6 @@ const (
 	// the arguments so that the child keeps the argv[0] the caller asked for.
 	execPathFlagName = "exec-path"
 
-	// The flag carrying the caller's effective GODEBUG value. Its presence distinguishes an
-	// explicitly empty value from an unset variable.
-	targetGoDebugFlagName = "target-godebug"
-
-	goDebugEnvVar              = "GODEBUG"
-	asyncPreemptionGoDebugName = "asyncpreemptoff"
-
 	// The descriptor 'fork-process' passes as the only extra file, on which this command reports
 	// whether the exec succeeded. It is the first descriptor after the standard streams.
 	execStatusFd = 3
@@ -43,19 +36,16 @@ const (
 	execFailedExitCode = 127
 )
 
-var (
-	execPath      string
-	targetGoDebug string
-)
+var execPath string
 
 // NewForkProcessExecCommand creates the 'fork-process-exec' command, which replaces itself with
-// the requested image after clearing the signal dispositions inherited from the Go runtime.
+// the requested image after cleaning the SIGUSR1 disposition inherited from the Go runtime.
 // It is an implementation detail of 'fork-process' and is not meant to be invoked directly.
 func NewForkProcessExecCommand(log logr.Logger) (*cobra.Command, error) {
 	forkProcessExecCmd := &cobra.Command{
 		Use:   ForkProcessExecCmdName + " --" + execPathFlagName + " path -- command [args...]",
 		Short: "Replaces this process with another program.",
-		Long:  "Clears the signal dispositions this process inherited from the Go runtime and then replaces it with the requested program, keeping the same process ID. Used internally by 'fork-process' so that children do not inherit signal handler flags that confuse other language runtimes.",
+		Long:  "Cleans the SIGUSR1 disposition this process inherited from the Go runtime and then replaces it with the requested program, keeping the same process ID. Used internally by 'fork-process' so that children do not inherit signal handler flags that confuse other language runtimes.",
 		RunE:  forkProcessExec(log),
 		Args:  validateForkProcessExecArgs,
 
@@ -64,7 +54,6 @@ func NewForkProcessExecCommand(log logr.Logger) (*cobra.Command, error) {
 	}
 
 	forkProcessExecCmd.Flags().StringVar(&execPath, execPathFlagName, "", "Resolved path of the program to execute")
-	forkProcessExecCmd.Flags().StringVar(&targetGoDebug, targetGoDebugFlagName, "", "GODEBUG value to restore for the requested program")
 
 	return forkProcessExecCmd, nil
 }
@@ -78,7 +67,7 @@ func validateForkProcessExecArgs(_ *cobra.Command, args []string) error {
 }
 
 func forkProcessExec(log logr.Logger) func(cmd *cobra.Command, args []string) error {
-	return func(cmd *cobra.Command, args []string) error {
+	return func(_ *cobra.Command, args []string) error {
 		args = trimForkProcessArgSeparator(args)
 
 		if execPath == "" {
@@ -90,38 +79,41 @@ func forkProcessExec(log logr.Logger) func(cmd *cobra.Command, args []string) er
 			"Args", args[1:],
 		)
 
-		targetEnv := setEnvironmentVariable(
-			os.Environ(),
-			goDebugEnvVar,
-			targetGoDebug,
-			cmd.Flags().Changed(targetGoDebugFlagName),
-		)
-
 		// 'fork-process' waits for this descriptor to close, which is how a successful execve is
 		// reported, so it must not survive into the new program. It is always supplied, because
 		// this command is only ever started by 'fork-process'.
 		statusFile := os.NewFile(execStatusFd, "exec-status")
 		syscall.CloseOnExec(execStatusFd)
 
-		// From this point on the process must not rely on the Go runtime's signal handling,
-		// which the reset disables. The only remaining step is the exec.
-		process.ResetSignalDispositions()
+		targetEnv := os.Environ()
 
-		// Exec only returns when it fails; on success this process becomes the requested program.
-		execErr := syscall.Exec(execPath, args, targetEnv)
-
-		var execErrno syscall.Errno
-		if !errors.As(execErr, &execErrno) {
-			// Report something the parent can still parse; the message below stays accurate.
-			execErrno = syscall.EINVAL
+		prepareErr := process.PrepareSIGUSR1ForExec()
+		if prepareErr != nil {
+			writeForkProcessExecFailure(statusFile, prepareErr)
+			log.Error(prepareErr, "Could not prepare SIGUSR1 disposition for executed program")
+			return cmds.NewExitCodeError(
+				fmt.Errorf("could not prepare SIGUSR1 disposition for %q: %w", execPath, prepareErr),
+				execFailedExitCode,
+			)
 		}
 
-		_, _ = fmt.Fprintf(statusFile, "%d", int(execErrno))
-		_ = statusFile.Close()
+		// Exec must immediately follow the signal change. It only returns when it fails; on
+		// success this process becomes the requested program.
+		execErr := syscall.Exec(execPath, args, targetEnv)
 
-		exitCode := execFailedExitCode
+		writeForkProcessExecFailure(statusFile, execErr)
 
 		log.Error(execErr, "Could not execute the requested program")
-		return cmds.NewExitCodeError(fmt.Errorf("could not execute %q: %w", execPath, execErr), exitCode)
+		return cmds.NewExitCodeError(fmt.Errorf("could not execute %q: %w", execPath, execErr), execFailedExitCode)
 	}
+}
+
+func writeForkProcessExecFailure(statusFile *os.File, failureErr error) {
+	var failureErrno syscall.Errno
+	if !errors.As(failureErr, &failureErrno) {
+		failureErrno = syscall.EINVAL
+	}
+
+	_, _ = fmt.Fprintf(statusFile, "%d", int(failureErrno))
+	_ = statusFile.Close()
 }

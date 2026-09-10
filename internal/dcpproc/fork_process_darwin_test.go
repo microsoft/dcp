@@ -23,7 +23,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-func TestForkProcessExecShimRestoresTargetGoDebug(t *testing.T) {
+func TestForkProcessExecShimPreservesTargetGoDebug(t *testing.T) {
 	t.Parallel()
 
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
