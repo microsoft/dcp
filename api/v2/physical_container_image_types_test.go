@@ -443,6 +443,9 @@ func TestArchiveRelativePath(t *testing.T) {
 	}{
 		"file at archive root":         {path: "Dockerfile", valid: true},
 		"file in archive directory":    {path: "docker/Dockerfile", valid: true},
+		"archive root":                 {path: "."},
+		"archive root with separator":  {path: "./"},
+		"path collapsing to root":      {path: "docker/.."},
 		"parent traversal":             {path: "../Dockerfile"},
 		"backslash parent traversal":   {path: `..\Dockerfile`},
 		"absolute path":                {path: "/Dockerfile"},

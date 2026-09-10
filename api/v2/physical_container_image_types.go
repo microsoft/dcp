@@ -41,7 +41,7 @@ func isArchiveRelativePath(p string) bool {
 	}
 
 	cleaned := path.Clean(normalized)
-	return cleaned != ".." && !strings.HasPrefix(cleaned, "../")
+	return cleaned != "." && cleaned != ".." && !strings.HasPrefix(cleaned, "../")
 }
 
 // PhysicalContainerImagePhase describes the lifecycle phase of a PhysicalContainerImage.
