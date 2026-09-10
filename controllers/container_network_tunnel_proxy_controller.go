@@ -970,7 +970,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureContainerProxyImage(
 				pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 				pd.Message = fmt.Sprintf("Failed to ensure V1 physical resources namespace: %v", namespaceErr)
 			} else {
-				imageResourceErr := r.ensureTunnelProxyPhysicalContainerImage(ctx, tunnelProxy, imagePlan)
+				imageResourceErr := r.ensureTunnelProxyPhysicalContainerImage(ctx, tunnelProxy, imagePlan, log)
 				if imageResourceErr != nil {
 					cleanupErr := imagePlan.Cleanup()
 					if cleanupErr != nil {
@@ -1185,6 +1185,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 	ctx context.Context,
 	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
 	imagePlan dcptun.ClientProxyImagePlan,
+	log logr.Logger,
 ) error {
 	imageName := tunnelProxyPhysicalResourceName(tunnelProxy)
 	imageConfig := &apiv2.PhysicalContainerImageConfig{
@@ -1217,7 +1218,11 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 
 	createErr := r.Client.Create(ctx, physicalImage)
 	if apimachinery_errors.IsAlreadyExists(createErr) {
-		return imagePlan.Cleanup()
+		cleanupErr := imagePlan.Cleanup()
+		if cleanupErr != nil {
+			log.Error(cleanupErr, "Failed to clean up unused tunnel proxy image build context")
+		}
+		return nil
 	}
 	if createErr != nil {
 		return fmt.Errorf("create PhysicalContainerImage %q: %w", imageName.String(), createErr)
