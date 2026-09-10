@@ -24,6 +24,16 @@ func BuildImageImpl(
 	runner CLICommandRunner,
 	additionalArgs ...string,
 ) (*bytes.Buffer, error) {
+	if options.ContainerBuildContext == nil {
+		return nil, fmt.Errorf("container build context is required")
+	}
+	if options.Context == "" && options.ContextArchive == nil {
+		return nil, fmt.Errorf("build context path or build context archive is required")
+	}
+	if options.Context != "" && options.ContextArchive != nil {
+		return nil, fmt.Errorf("build context path and build context archive are mutually exclusive")
+	}
+
 	args := []string{"build"}
 
 	if options.Dockerfile != "" {
@@ -84,10 +94,6 @@ func BuildImageImpl(
 	buildContextArgument := options.Context
 	var buildContextArchive io.ReadCloser
 	if options.ContextArchive != nil {
-		if options.Context != "" {
-			return nil, fmt.Errorf("build context path and build context archive are mutually exclusive")
-		}
-
 		var archiveErr error
 		buildContextArchive, archiveErr = OpenBuildContextArchive(options.ContextArchive)
 		if archiveErr != nil {

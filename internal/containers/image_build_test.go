@@ -120,6 +120,42 @@ func TestBuildImageImplRejectsPathAndArchive(t *testing.T) {
 	assert.Empty(t, result.args)
 }
 
+func TestBuildImageImplRejectsMissingContext(t *testing.T) {
+	t.Parallel()
+
+	testCases := map[string]struct {
+		options       BuildImageOptions
+		expectedError string
+	}{
+		"missing container build context": {
+			options:       BuildImageOptions{},
+			expectedError: "container build context is required",
+		},
+		"missing build context source": {
+			options: BuildImageOptions{
+				ContainerBuildContext: &ContainerBuildContext{},
+			},
+			expectedError: "build context path or build context archive is required",
+		},
+	}
+
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			result := &fakeBuildResult{}
+
+			_, buildErr := BuildImageImpl(
+				t.Context(),
+				testCase.options,
+				newFakeRunner(result, "", "", nil),
+			)
+
+			require.EqualError(t, buildErr, testCase.expectedError)
+			assert.Empty(t, result.args)
+		})
+	}
+}
+
 func TestBuildImageImplReturnsStderrOnFailure(t *testing.T) {
 	result := &fakeBuildResult{}
 	expectedErr := errors.New("build failed")
