@@ -1303,7 +1303,7 @@ func readServerProxyConfig(ctx context.Context, path string) (dcptun.TunnelProxy
 	defer configCtxCancel()
 
 	config, err := resiliency.RetryGet(configCtx, backoff.NewConstantBackOff(200*time.Millisecond), func() (dcptun.TunnelProxyConfig, error) {
-		f, fErr := usvc_io.OpenFileForReading(path, osutil.PermissionOnlyOwnerReadWrite)
+		f, fErr := usvc_io.OpenFileReadOnly(path)
 		if fErr != nil {
 			return dcptun.TunnelProxyConfig{}, fErr
 		}

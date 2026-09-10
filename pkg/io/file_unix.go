@@ -11,10 +11,6 @@ import (
 	"os"
 )
 
-func openFileForReading(name string, _ os.FileMode) (*os.File, error) {
-	return os.Open(name)
-}
-
 func createNewFile(name string, perm os.FileMode) (*os.File, error) {
 	return os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
 }

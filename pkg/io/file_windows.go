@@ -23,8 +23,7 @@ import (
 type restrictedFileOpenMode uint8
 
 const (
-	restrictedFileRead restrictedFileOpenMode = iota
-	restrictedFileCreateNew
+	restrictedFileCreateNew restrictedFileOpenMode = iota
 	restrictedFileOpenOrCreate
 	restrictedFileCreateOrTruncate
 	restrictedFileWriteOrTruncate
@@ -37,10 +36,6 @@ const (
 type restrictedFileAccessEntry struct {
 	sid  *windows.SID
 	mask windows.ACCESS_MASK
-}
-
-func openFileForReading(name string, perm os.FileMode) (*os.File, error) {
-	return openFile(name, restrictedFileRead, perm)
 }
 
 func createNewFile(name string, perm os.FileMode) (*os.File, error) {
@@ -85,8 +80,6 @@ func openFile(name string, mode restrictedFileOpenMode, perm os.FileMode) (*os.F
 
 func standardFileFlags(mode restrictedFileOpenMode) int {
 	switch mode {
-	case restrictedFileRead:
-		return os.O_RDONLY
 	case restrictedFileCreateNew:
 		return os.O_RDWR | os.O_CREATE | os.O_EXCL
 	case restrictedFileOpenOrCreate:
@@ -249,9 +242,6 @@ func validateRestrictedFilePathComponents(relativePath string) error {
 
 func restrictedFileAccess(mode restrictedFileOpenMode) uint32 {
 	access := uint32(windows.READ_CONTROL | windows.SYNCHRONIZE)
-	if mode == restrictedFileRead {
-		return windows.FILE_GENERIC_READ | windows.READ_CONTROL
-	}
 	if mode == restrictedFileWriteOrTruncate {
 		return access | windows.FILE_GENERIC_WRITE | windows.FILE_READ_ATTRIBUTES
 	}
@@ -267,9 +257,6 @@ func restrictedFileAccess(mode restrictedFileOpenMode) uint32 {
 }
 
 func restrictedFileDisposition(mode restrictedFileOpenMode) uint32 {
-	if mode == restrictedFileRead {
-		return windows.FILE_OPEN
-	}
 	if mode == restrictedFileCreateNew {
 		return windows.FILE_CREATE
 	}

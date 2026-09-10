@@ -17,13 +17,13 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
-func TestOpenFileForReadingReadsManagedFile(t *testing.T) {
+func TestOpenFileReadOnlyReadsFile(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "read.txt")
-	require.NoError(t, usvc_io.WriteFile(path, []byte("content"), osutil.PermissionOnlyOwnerReadWrite))
+	require.NoError(t, os.WriteFile(path, []byte("content"), osutil.PermissionOnlyOwnerReadWrite))
 
-	file, openErr := usvc_io.OpenFileForReading(path, osutil.PermissionOnlyOwnerReadWrite)
+	file, openErr := usvc_io.OpenFileReadOnly(path)
 	require.NoError(t, openErr)
 	contents, readErr := io.ReadAll(file)
 	require.NoError(t, readErr)

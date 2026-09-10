@@ -52,7 +52,7 @@ func TestForkProcessExecShimRestoresTargetGoDebug(t *testing.T) {
 	require.NoError(t, runErr, "dcp fork-process should exit cleanly; stderr: %s", stderr.String())
 	_ = parseForkedPid(t, stdout.String())
 
-	outputFile, openErr := usvc_io.OpenExternalFileForReading(outputPath)
+	outputFile, openErr := usvc_io.OpenFileReadOnly(outputPath)
 	require.NoError(t, openErr)
 	output, readErr := io.ReadAll(outputFile)
 	closeErr := outputFile.Close()

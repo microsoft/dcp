@@ -425,7 +425,7 @@ func readJournal(path string) (journalHeader, []Resource, error) {
 }
 
 func readJournalHeader(path string) (journalHeader, error) {
-	file, openErr := usvc_io.OpenFileForReading(path, osutil.PermissionOnlyOwnerReadWrite)
+	file, openErr := usvc_io.OpenFileReadOnly(path)
 	if openErr != nil {
 		return journalHeader{}, openErr
 	}
@@ -451,7 +451,7 @@ func readJournalHeader(path string) (journalHeader, error) {
 }
 
 func readJournalResources(path string, allowIncompleteFinalRecord bool) ([]Resource, error) {
-	file, openErr := usvc_io.OpenFileForReading(path, osutil.PermissionOnlyOwnerReadWrite)
+	file, openErr := usvc_io.OpenFileReadOnly(path)
 	if openErr != nil {
 		return nil, openErr
 	}

@@ -17,7 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
-	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
@@ -52,7 +51,7 @@ func TestResourceSink(t *testing.T) {
 
 	// logger.flush() does not guarantee that subsequent reads will see all the data immediately
 	require.EventuallyWithTf(t, func(c *assert.CollectT) {
-		file, fileErr := usvc_io.OpenFileForReading(expectedResourceFilePath, osutil.PermissionOnlyOwnerReadWrite)
+		file, fileErr := usvc_io.OpenFileReadOnly(expectedResourceFilePath)
 		require.NoError(c, fileErr)
 		if fileErr != nil {
 			return
@@ -105,7 +104,7 @@ func TestResourceSinkNoResourceId(t *testing.T) {
 
 	// logger.flush() does not guarantee that subsequent reads will see all the data immediately
 	require.EventuallyWithTf(t, func(c *assert.CollectT) {
-		file, fileErr := usvc_io.OpenFileForReading(expectedResourceFilePath, osutil.PermissionOnlyOwnerReadWrite)
+		file, fileErr := usvc_io.OpenFileReadOnly(expectedResourceFilePath)
 		require.NoError(c, fileErr)
 		if fileErr != nil {
 			return

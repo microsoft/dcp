@@ -54,51 +54,6 @@ func TestRestrictedFileRejectsUntrustedExistingFile(t *testing.T) {
 	require.Equal(t, "existing", string(contents))
 }
 
-func TestRestrictedReadRejectsUntrustedExistingFile(t *testing.T) {
-	principals := restrictedTestPrincipals(t)
-	path := filepath.Join(t.TempDir(), "untrusted-read.txt")
-	require.NoError(t, os.WriteFile(path, []byte("existing"), 0600))
-
-	file, openErr := openRestrictedFile(
-		path,
-		restrictedFileRead,
-		osutil.PermissionOnlyOwnerReadWrite,
-		principals,
-	)
-	if file != nil {
-		require.NoError(t, file.Close())
-	}
-	require.Error(t, openErr)
-}
-
-func TestRestrictedReadOpensManagedFileWhileWriterIsOpen(t *testing.T) {
-	principals := restrictedTestPrincipals(t)
-	path := filepath.Join(t.TempDir(), "managed-read.txt")
-	writer, createErr := openRestrictedFile(
-		path,
-		restrictedFileCreateNew,
-		osutil.PermissionOnlyOwnerReadWrite,
-		principals,
-	)
-	require.NoError(t, createErr)
-	defer writer.Close()
-	_, writeErr := writer.WriteString("content")
-	require.NoError(t, writeErr)
-	require.NoError(t, writer.Sync())
-
-	reader, openErr := openRestrictedFile(
-		path,
-		restrictedFileRead,
-		osutil.PermissionOnlyOwnerReadWrite,
-		principals,
-	)
-	require.NoError(t, openErr)
-	contents, readErr := io.ReadAll(reader)
-	require.NoError(t, readErr)
-	require.NoError(t, reader.Close())
-	require.Equal(t, "content", string(contents))
-}
-
 func TestRestrictedFileCreateRejectsExistingFile(t *testing.T) {
 	principals := restrictedTestPrincipals(t)
 	path := filepath.Join(t.TempDir(), "existing.txt")

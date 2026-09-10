@@ -720,7 +720,7 @@ func (r *PhysicalContainerImageReconciler) queuePhysicalContainerImageDataResult
 }
 
 func readPhysicalContainerImageIDFile(name string) (string, error) {
-	file, openErr := usvc_io.OpenFileForReading(name, osutil.PermissionOnlyOwnerReadWrite)
+	file, openErr := usvc_io.OpenFileReadOnly(name)
 	if openErr != nil {
 		return "", fmt.Errorf("open image ID file: %w", openErr)
 	}

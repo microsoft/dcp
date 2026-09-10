@@ -417,7 +417,7 @@ ENTRYPOINT ["%[3]s"]
 
 // copyFile copies a file from src to dst
 func copyFile(src, dst string, perm os.FileMode) error {
-	sourceFile, sourceErr := usvc_io.OpenExternalFileForReading(src)
+	sourceFile, sourceErr := usvc_io.OpenFileReadOnly(src)
 	if sourceErr != nil {
 		return sourceErr
 	}

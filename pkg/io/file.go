@@ -10,16 +10,9 @@ import (
 	"os"
 )
 
-// OpenExternalFileForReading opens a caller-supplied file using standard operating-system path semantics.
-// Use this only for inputs that are intentionally allowed to be outside DCP-managed storage.
-func OpenExternalFileForReading(name string) (*os.File, error) {
+// OpenFileReadOnly opens an existing file for reading using standard operating-system path semantics.
+func OpenFileReadOnly(name string) (*os.File, error) {
 	return os.Open(name)
-}
-
-// OpenFileForReading opens an existing DCP-managed file for reading.
-// Elevated Windows opens apply the same path, ownership, ACL, and hard-link validation as write operations.
-func OpenFileForReading(name string, perm os.FileMode) (*os.File, error) {
-	return openFileForReading(name, perm)
 }
 
 // CreateNewFile creates a new read-write file and fails if the path already exists.

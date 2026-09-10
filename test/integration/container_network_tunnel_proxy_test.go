@@ -1728,7 +1728,7 @@ func ensureParrotContainerImage(
 
 // copyFileForImageBuild copies a file from src to dst for image building purposes
 func copyFileForImageBuild(src, dst string) error {
-	sourceFile, sourceErr := usvc_io.OpenExternalFileForReading(src)
+	sourceFile, sourceErr := usvc_io.OpenFileReadOnly(src)
 	if sourceErr != nil {
 		return sourceErr
 	}

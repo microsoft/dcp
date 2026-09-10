@@ -98,7 +98,7 @@ func LoadCertificateAuthorityFile(caFile string) ([]byte, error) {
 }
 
 func readPEMFile(path string, description string) ([]byte, error) {
-	file, openErr := usvc_io.OpenExternalFileForReading(path)
+	file, openErr := usvc_io.OpenFileReadOnly(path)
 	if openErr != nil {
 		return nil, fmt.Errorf("unable to open %s %q: %w", description, path, openErr)
 	}

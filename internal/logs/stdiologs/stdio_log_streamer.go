@@ -23,7 +23,6 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/maps"
-	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -127,7 +126,7 @@ func (sls stdIoLogStreamer) StreamLogs(
 		return status, nil, nil
 	}
 
-	logFile, fileErr := usvc_io.OpenFileForReading(logFilePath, osutil.PermissionOnlyOwnerReadWrite)
+	logFile, fileErr := usvc_io.OpenFileReadOnly(logFilePath)
 	if fileErr != nil {
 		if os.IsNotExist(fileErr) {
 			log.V(1).Info("Log file does not exist yet", "Path", logFilePath)
