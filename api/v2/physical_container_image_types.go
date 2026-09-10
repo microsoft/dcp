@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io/fs"
 	"path"
 	"reflect"
 	"regexp"
@@ -29,19 +30,11 @@ import (
 
 var validSHA256HexRegexp = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
-// isArchiveRelativePath reports whether p addresses an entry inside an archive,
-// that is, it is relative, does not escape the archive root, and carries no volume name.
-func isArchiveRelativePath(p string) bool {
-	normalized := strings.ReplaceAll(p, `\`, "/")
-	hasDrivePrefix := len(normalized) >= 2 &&
-		((normalized[0] >= 'A' && normalized[0] <= 'Z') || (normalized[0] >= 'a' && normalized[0] <= 'z')) &&
-		normalized[1] == ':'
-	if path.IsAbs(normalized) || hasDrivePrefix {
-		return false
-	}
-
-	cleaned := path.Clean(normalized)
-	return cleaned != "." && cleaned != ".." && !strings.HasPrefix(cleaned, "../")
+// isArchiveRelativePath reports whether archivePath addresses an entry inside an archive,
+// that is, it uses archive separators, is relative, and does not escape the archive root.
+func isArchiveRelativePath(archivePath string) bool {
+	cleaned := path.Clean(archivePath)
+	return cleaned != "." && fs.ValidPath(cleaned)
 }
 
 // PhysicalContainerImagePhase describes the lifecycle phase of a PhysicalContainerImage.
@@ -115,8 +108,9 @@ type PhysicalContainerImageConfig struct {
 	// Build describes how to build the image locally.
 	Build *ContainerBuildContext `json:"build,omitempty"`
 
-	// PullPolicy controls source image pulling. If omitted, missing is used.
-	// Never is not supported for image builds.
+	// PullPolicy controls source image pulling. For builds, missing reuses an existing output
+	// image and always rebuilds while pulling newer base images. If omitted, missing is used.
+	// Never is not supported for builds.
 	PullPolicy ImagePullPolicy `json:"pullPolicy,omitempty"`
 
 	// PullRetryLimit is how many times a failed source image pull is retried, with exponential

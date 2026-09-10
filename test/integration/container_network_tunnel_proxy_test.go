@@ -188,6 +188,13 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
+	testContainerOrchestrator, ok := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, ok)
+	imagePlan, imagePlanErr := dcptun.PrepareClientProxyImageBuild()
+	require.NoError(t, imagePlanErr)
+	require.NoError(t, os.Remove(imagePlan.BuildContextArchive.Source))
+	releaseImageBuild := testContainerOrchestrator.BlockBuildImage(imagePlan.Image)
+	defer releaseImageBuild()
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -233,8 +240,36 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	err = serverInfo.Client.Create(ctx, &tunnelProxy)
 	require.NoError(t, err, "Could not create a ContainerNetworkTunnelProxy object")
 
+	secondTunnelProxy := apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-second",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.ObjectMeta.Name,
+		},
+	}
+	err = serverInfo.Client.Create(ctx, &secondTunnelProxy)
+	require.NoError(t, err, "Could not create a second ContainerNetworkTunnelProxy object")
+
+	t.Log("Waiting for physical containers to be created while the shared image build is blocked...")
+	waitContainersErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		physicalContainers := apiv2.PhysicalContainerList{}
+		listErr := serverInfo.Client.List(ctx, &physicalContainers, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+		return len(physicalContainers.Items) == 2, listErr
+	})
+	require.NoError(t, waitContainersErr)
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateBuildingImage, nil
+	})
+	require.Equal(t, 1, testContainerOrchestrator.BuildImageCallCount(imagePlan.Image))
+	releaseImageBuild()
+
 	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Running state...")
 	updatedTunnelProxy := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning, nil
+	})
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, secondTunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
 		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning, nil
 	})
 
@@ -249,24 +284,34 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	listImagesErr := serverInfo.Client.List(ctx, &physicalImages, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
 	require.NoError(t, listImagesErr)
 	require.Len(t, physicalImages.Items, 1)
+	require.Equal(t, controllers.V1TunnelProxyPhysicalContainerImageName, physicalImages.Items[0].Name)
 	require.Equal(t, updatedTunnelProxy.Status.ClientProxyContainerImage, physicalImages.Items[0].Spec.Image.Image)
 	require.NotNil(t, physicalImages.Items[0].Spec.Image.Build)
 	require.NotNil(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive)
 	require.NotEmpty(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.Digest)
 	require.NotEmpty(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source)
 	require.NotEmpty(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.SHA256)
+	require.Empty(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.RawContents)
 	require.FileExists(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source)
+	t.Cleanup(func() {
+		require.NoError(t, os.Remove(physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source))
+	})
 	require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, physicalImages.Items[0].Status.Phase)
-	testContainerOrchestrator, ok := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
-	require.True(t, ok)
 	require.Equal(t, 1, testContainerOrchestrator.BuildImageCallCount(updatedTunnelProxy.Status.ClientProxyContainerImage))
 
 	physicalContainers := apiv2.PhysicalContainerList{}
 	listContainersErr := serverInfo.Client.List(ctx, &physicalContainers, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
 	require.NoError(t, listContainersErr)
-	require.Len(t, physicalContainers.Items, 1)
-	require.Equal(t, updatedTunnelProxy.Status.ClientProxyContainerID, physicalContainers.Items[0].Status.ContainerID)
-	require.Equal(t, apiv2.PhysicalContainerPhaseRunning, physicalContainers.Items[0].Status.Phase)
+	require.Len(t, physicalContainers.Items, 2)
+	foundClientPhysicalContainer := false
+	for _, physicalContainer := range physicalContainers.Items {
+		require.Equal(t, controllers.V1TunnelProxyPhysicalContainerImageName, physicalContainer.Spec.Container.ImageRef)
+		require.Equal(t, apiv2.PhysicalContainerPhaseRunning, physicalContainer.Status.Phase)
+		if physicalContainer.Status.ContainerID == updatedTunnelProxy.Status.ClientProxyContainerID {
+			foundClientPhysicalContainer = true
+		}
+	}
+	require.True(t, foundClientPhysicalContainer)
 
 	t.Log("Verifying client proxy container exists...")
 	inspectedContainers, inspectErr := serverInfo.ContainerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
@@ -306,6 +351,12 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.Equal(t, fmt.Sprintf("%d", updatedTunnelProxy.Status.ClientProxyControlPort), pe.Cmd.Args[3], "Third argument should be client control port")
 	require.Equal(t, networking.IPv4LocalhostDefaultAddress, pe.Cmd.Args[4], "Fourth argument should be client data address")
 	require.Equal(t, fmt.Sprintf("%d", updatedTunnelProxy.Status.ClientProxyDataPort), pe.Cmd.Args[5], "Fifth argument should be client data port")
+
+	sharedPhysicalImages := apiv2.PhysicalContainerImageList{}
+	require.NoError(t, serverInfo.Client.List(ctx, &sharedPhysicalImages, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName)))
+	require.Len(t, sharedPhysicalImages.Items, 1)
+	require.Equal(t, controllers.V1TunnelProxyPhysicalContainerImageName, sharedPhysicalImages.Items[0].Name)
+	require.Equal(t, 1, testContainerOrchestrator.BuildImageCallCount(updatedTunnelProxy.Status.ClientProxyContainerImage))
 }
 
 // Verifies that ContainerNetworkTunnelProxy proxy pair cleanup works correctly during object deletion.
@@ -392,7 +443,12 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	physicalImage := physicalImages.Items[0]
 	require.NotNil(t, physicalImage.Spec.Image.Build)
 	require.NotNil(t, physicalImage.Spec.Image.Build.ContextArchive)
-	buildContextArchivePath := physicalImage.Spec.Image.Build.ContextArchive.Source
+	require.NotEmpty(t, physicalImage.Spec.Image.Build.ContextArchive.Source)
+	require.Empty(t, physicalImage.Spec.Image.Build.ContextArchive.RawContents)
+	require.FileExists(t, physicalImage.Spec.Image.Build.ContextArchive.Source)
+	t.Cleanup(func() {
+		require.NoError(t, os.Remove(physicalImage.Spec.Image.Build.ContextArchive.Source))
+	})
 
 	t.Logf("Deleting ContainerNetworkTunnelProxy object '%s'", tunnelProxy.ObjectMeta.Name)
 	err = retryOnConflictEx(ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(ctx context.Context, tp *apiv1.ContainerNetworkTunnelProxy) error {
@@ -405,9 +461,10 @@ func TestTunnelProxyCleanup(t *testing.T) {
 
 	t.Log("Verifying proxy resources are cleaned up...")
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &physicalContainer)
-	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &physicalImage)
-	_, statArchiveErr := os.Stat(buildContextArchivePath)
-	require.ErrorIs(t, statArchiveErr, os.ErrNotExist)
+	retainedPhysicalImage := apiv2.PhysicalContainerImage{}
+	require.NoError(t, serverInfo.Client.Get(ctx, physicalImage.NamespacedName(), &retainedPhysicalImage))
+	require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, retainedPhysicalImage.Status.Phase)
+	require.FileExists(t, retainedPhysicalImage.Spec.Image.Build.ContextArchive.Source)
 
 	// Verify the client container has been removed
 	_, inspectErrAfter := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{

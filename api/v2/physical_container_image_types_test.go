@@ -441,16 +441,17 @@ func TestArchiveRelativePath(t *testing.T) {
 		path  string
 		valid bool
 	}{
-		"file at archive root":         {path: "Dockerfile", valid: true},
-		"file in archive directory":    {path: "docker/Dockerfile", valid: true},
-		"archive root":                 {path: "."},
-		"archive root with separator":  {path: "./"},
-		"path collapsing to root":      {path: "docker/.."},
-		"parent traversal":             {path: "../Dockerfile"},
-		"backslash parent traversal":   {path: `..\Dockerfile`},
-		"absolute path":                {path: "/Dockerfile"},
-		"drive-qualified path":         {path: `C:\Dockerfile`},
-		"backslash root-relative path": {path: `\Dockerfile`},
+		"file at archive root":        {path: "Dockerfile", valid: true},
+		"file in archive directory":   {path: "docker/Dockerfile", valid: true},
+		"archive root":                {path: "."},
+		"archive root with separator": {path: "./"},
+		"path collapsing to root":     {path: "docker/.."},
+		"parent traversal":            {path: "../Dockerfile"},
+		"backslash in path element":   {path: `..\Dockerfile`, valid: true},
+		"absolute path":               {path: "/Dockerfile"},
+		"colon in path element":       {path: "C:/Dockerfile", valid: true},
+		"backslash in file name":      {path: `docker\Dockerfile`, valid: true},
+		"leading backslash":           {path: `\Dockerfile`, valid: true},
 	}
 
 	for name, testCase := range testCases {

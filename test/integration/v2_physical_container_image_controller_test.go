@@ -518,6 +518,47 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 	require.Contains(t, inspectedImages[0].Tags, "v2-pci-built-target-image")
 }
 
+func TestV2PhysicalContainerImageControllerUsesExistingBuildOutputWhenPullPolicyIsMissing(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	targetImage := "v2-pci-existing-build-target"
+	seedErr := containerOrchestrator.BuildImage(ctx, containers.BuildImageOptions{
+		ContainerBuildContext: &containers.ContainerBuildContext{
+			Context: "seed-context",
+			Tags:    []string{targetImage},
+		},
+	})
+	require.NoError(t, seedErr)
+	seededImages, inspectErr := containerOrchestrator.InspectImages(ctx, containers.InspectImagesOptions{
+		Images: []string{targetImage},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, seededImages, 1)
+	buildCount := containerOrchestrator.BuildImageCallCount(targetImage)
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-existing-build")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "existing-build-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image:      targetImage,
+			PullPolicy: apiv2.PullPolicyMissing,
+			Build: &apiv2.ContainerBuildContext{
+				Context: "unused-build-context",
+			},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	updatedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, seededImages[0].Id, updatedImage.Status.ImageID)
+	require.Equal(t, buildCount, containerOrchestrator.BuildImageCallCount(targetImage))
+}
+
 func TestV2PhysicalContainerImageControllerReportsMissingBuildImageID(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

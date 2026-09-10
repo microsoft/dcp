@@ -53,6 +53,11 @@ const (
 	CreatorProcessStartTimeLabel = "com.microsoft.developer.usvc-dev.creatorProcessStartTime"
 	ContainerIdLabel             = "com.microsoft.developer.usvc-dev.containerId"
 
+	// V1PhysicalResourcesNamespaceName is the shared V2 namespace for physical resources created by V1 controllers.
+	V1PhysicalResourcesNamespaceName = "v1-compatibility"
+	// V1TunnelProxyPhysicalContainerImageName is the shared tunnel proxy image resource created by the V1 tunnel controller.
+	V1TunnelProxyPhysicalContainerImageName = "tunnel-proxy"
+
 	MaxConcurrentReconciles = 6
 
 	numPostfixBytes = 6
@@ -163,6 +168,21 @@ func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 	obj.SetFinalizers(finalizers)
 	log.V(1).Info("Removed finalizer", "Finalizer", finalizer)
 	return metadataChanged
+}
+
+// EnsureV1PhysicalResourcesNamespace creates the shared V2 namespace used by V1 controllers.
+func EnsureV1PhysicalResourcesNamespace(ctx context.Context, client ctrl_client.Client) error {
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: V1PhysicalResourcesNamespaceName,
+		},
+	}
+	createErr := client.Create(ctx, namespace)
+	if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+		return fmt.Errorf("create V1 physical resources namespace: %w", createErr)
+	}
+
+	return nil
 }
 
 // checkNamespaceReady reports whether a namespace permits a V2 resource to perform runtime work.

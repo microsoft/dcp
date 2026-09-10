@@ -51,6 +51,22 @@ func TestMapNamespaceToReconcileRequests(t *testing.T) {
 	}, names)
 }
 
+func TestEnsureV1PhysicalResourcesNamespace(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	require.NoError(t, EnsureV1PhysicalResourcesNamespace(context.Background(), client))
+	require.NoError(t, EnsureV1PhysicalResourcesNamespace(context.Background(), client))
+
+	namespace := apiv2.Namespace{}
+	getErr := client.Get(context.Background(), types.NamespacedName{Name: V1PhysicalResourcesNamespaceName}, &namespace)
+	require.NoError(t, getErr)
+	require.Equal(t, V1PhysicalResourcesNamespaceName, namespace.Name)
+}
+
 // Verifies that callWithRetryAndVerification() can be stopped from retrying by returning a permanent error
 func TestCallWithRetryAndVerificationPermanentError(t *testing.T) {
 	t.Parallel()

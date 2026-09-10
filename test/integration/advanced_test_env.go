@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"path/filepath"
 
 	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -61,9 +60,7 @@ func StartAdvancedTestEnvironmentWithFlags(
 	*AdvancedTestEnvironmentInfo,
 	error,
 ) {
-	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
-		inclCtrl |= NamespaceController | PhysicalContainerImageController | PhysicalContainerController
-	}
+	inclCtrl |= NamespaceController | PhysicalContainerImageController | PhysicalContainerController
 
 	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
 	if sessionFolderErr != nil {
@@ -317,14 +314,9 @@ func StartAdvancedTestEnvironmentWithFlags(
 
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
 		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
-			Orchestrator:                 serverInfo.ContainerOrchestrator,
 			ProcessExecutor:              pe,
 			MakeTunnelControlClient:      dcptunproto.NewTunnelControlClient,
 			MaxTunnelPreparationAttempts: 2,
-		}
-
-		if testTempDir != NoSeparateWorkingDir {
-			tprOpts.MostRecentImageBuildsFilePath = filepath.Join(testTempDir, instanceTag+".imglist")
 		}
 
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(

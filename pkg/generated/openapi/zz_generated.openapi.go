@@ -5102,7 +5102,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerImageConfig(ref common.Referen
 					},
 					"pullPolicy": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PullPolicy controls source image pulling. If omitted, missing is used. Never is not supported for image builds.",
+							Description: "PullPolicy controls source image pulling. For builds, missing reuses an existing output image and always rebuilds while pulling newer base images. If omitted, missing is used. Never is not supported for builds.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

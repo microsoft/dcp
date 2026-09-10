@@ -36,7 +36,6 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
-	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/dcptun"
@@ -97,17 +96,12 @@ var (
 )
 
 type ContainerNetworkTunnelProxyReconcilerConfig struct {
-	Orchestrator    containers.ContainerOrchestrator // Mandatory
-	ProcessExecutor process.Executor                 // Mandatory
+	ProcessExecutor process.Executor // Mandatory
 
 	// The factory function to create a TunnelControlClient used to control the proxy pair.
 	// Normal execution uses "real" gRPC client, tests use a stub since most tests do not run real tunnels.
 	// Mandatory.
 	MakeTunnelControlClient func(grpc.ClientConnInterface) dcptunproto.TunnelControlClient
-
-	// Overrides the most recent image builds file path.
-	// Used primarily for testing purposes.
-	MostRecentImageBuildsFilePath string
 
 	// Specifies how many attempts to prepare a tunnel will be made before giving up and marking the tunnel as failed.
 	// Defaults to defaultMaxTunnelPreparationAttempts, but much lower value is used for tests to simulate failures quickly.
@@ -133,9 +127,6 @@ func NewContainerNetworkTunnelProxyReconciler(
 	config ContainerNetworkTunnelProxyReconcilerConfig,
 	log logr.Logger,
 ) *ContainerNetworkTunnelProxyReconciler {
-	if config.Orchestrator == nil {
-		panic("ContainerNetworkTunnelProxyReconcilerConfig.Orchestrator must not be nil")
-	}
 	if config.ProcessExecutor == nil {
 		panic("ContainerNetworkTunnelProxyReconcilerConfig.ProcessExecutor must not be nil")
 	}
@@ -204,9 +195,25 @@ func (r *ContainerNetworkTunnelProxyReconciler) SetupWithManager(mgr ctrl.Manage
 		Complete(r)
 }
 
-func (r *ContainerNetworkTunnelProxyReconciler) reconcileProxyForPhysicalResource(_ context.Context, obj ctrl_client.Object) []reconcile.Request {
+func (r *ContainerNetworkTunnelProxyReconciler) reconcileProxyForPhysicalResource(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
 	if obj.GetNamespace() != V1PhysicalResourcesNamespaceName {
 		return nil
+	}
+
+	if _, isImage := obj.(*apiv2.PhysicalContainerImage); isImage {
+		if obj.GetName() != V1TunnelProxyPhysicalContainerImageName {
+			return nil
+		}
+
+		tunnelProxies := apiv1.ContainerNetworkTunnelProxyList{}
+		if listErr := r.List(ctx, &tunnelProxies); listErr != nil {
+			r.Log.Error(listErr, "Failed to list ContainerNetworkTunnelProxies for shared PhysicalContainerImage")
+			return nil
+		}
+
+		return slices.Map[reconcile.Request](tunnelProxies.Items, func(tunnelProxy apiv1.ContainerNetworkTunnelProxy) reconcile.Request {
+			return reconcile.Request{NamespacedName: tunnelProxy.NamespacedName()}
+		})
 	}
 
 	annotations := obj.GetAnnotations()
@@ -337,17 +344,18 @@ func (r *ContainerNetworkTunnelProxyReconciler) handleDeletionRequest(ctx contex
 	var change objectChange = noChange
 
 	switch {
-	case pd.State == apiv1.ContainerNetworkTunnelProxyStateBuildingImage || pd.State == apiv1.ContainerNetworkTunnelProxyStateStarting:
-		log.V(1).Info("ContainerNetworkTunnelProxy is being deleted; waiting for it to exit transient state...")
-		change = r.manageTunnelProxy(ctx, tunnelProxy, log)
+	case pd.startupScheduled:
+		log.V(1).Info("ContainerNetworkTunnelProxy is being deleted; waiting for scheduled startup work to finish...")
+		change = additionalReconciliationNeeded
 
-	case pd.cleanupScheduled && pd.ServerProxyProcessID == nil && pd.ClientProxyContainerID == "" && !pd.physicalResourcesCreated:
+	case pd.cleanupCompleted && pd.ServerProxyProcessID == nil && pd.ClientProxyContainerID == "":
 		log.V(1).Info("ContainerNetworkTunnelProxy is being deleted (resource cleanup finished, deleting finalizer)...")
 		change = deleteFinalizer(tunnelProxy, tunnelProxyFinalizer, log)
 
 	default:
 		if !pd.cleanupScheduled {
 			pd.cleanupScheduled = true
+			pd.cleanupCompleted = false
 			r.proxyData.Update(namespacedName, namespacedName, pd)
 
 			log.V(1).Info("ContainerNetworkTunnelProxy is being deleted (scheduling resource cleanup)...")
@@ -446,62 +454,62 @@ func ensureTunnelProxyBuildingImageState(
 	change := noChange
 
 	if pd == nil {
-		log.V(1).Info("Making sure the container proxy image is up to date...")
+		log.V(1).Info("Ensuring the shared tunnel proxy PhysicalContainerImage exists...")
 		pd = newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateBuildingImage)
 		r.proxyData.Store(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd)
 	}
 
-	if pd.ClientProxyContainerImage == "" && !pd.imagePreparationScheduled {
-		pd.imagePreparationScheduled = true
-		r.proxyData.Update(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd)
-		startImgCheckErr := r.workQueue.Enqueue(r.ensureContainerProxyImage(tunnelProxy, pd.Clone(), log))
-		if startImgCheckErr != nil {
-			log.Error(startImgCheckErr, "Container image check for container network tunnel could not be queued, possibly because the workload is shutting down")
-			pd.imagePreparationScheduled = false
-			r.proxyData.Update(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd)
+	physicalImage := apiv2.PhysicalContainerImage{}
+	getImageErr := r.Get(ctx, tunnelProxyPhysicalImageName(), &physicalImage)
+	imageReady := false
+	switch {
+	case apimachinery_errors.IsNotFound(getImageErr):
+		namespaceErr := EnsureV1PhysicalResourcesNamespace(ctx, r.Client)
+		if namespaceErr != nil {
+			log.Error(namespaceErr, "Failed to ensure V1 physical resources namespace")
+			change |= additionalReconciliationNeeded
+			break
+		}
+		imageResourceErr := r.ensureTunnelProxyPhysicalContainerImage(ctx, log)
+		if imageResourceErr != nil {
+			log.Error(imageResourceErr, "Failed to ensure shared tunnel proxy PhysicalContainerImage")
+			change |= additionalReconciliationNeeded
+			break
+		}
+		change |= additionalReconciliationNeeded
+	case getImageErr != nil:
+		log.Error(getImageErr, "Failed to get shared tunnel proxy PhysicalContainerImage")
+		change |= additionalReconciliationNeeded
+	default:
+		switch physicalImage.Status.Phase {
+		case apiv2.PhysicalContainerImagePhaseFailed:
+			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+			pd.Message = fmt.Sprintf("PhysicalContainerImage for container network tunnel failed: %s", physicalResourceStatusMessage(physicalImage.Status.Conditions))
+		case apiv2.PhysicalContainerImagePhaseReady:
+			pd.ClientProxyContainerImage = physicalImage.Status.Image
+			imageReady = true
+		default:
 			change |= additionalReconciliationNeeded
 		}
 	}
 
-	if pd.ClientProxyContainerImage != "" {
-		physicalImage := apiv2.PhysicalContainerImage{}
-		getImageErr := r.Get(ctx, tunnelProxyPhysicalResourceName(tunnelProxy), &physicalImage)
-		switch {
-		case apimachinery_errors.IsNotFound(getImageErr):
-			if pd.imageBuildContextArchiveSource != "" {
-				removeArchiveErr := os.Remove(pd.imageBuildContextArchiveSource)
-				if removeArchiveErr != nil && !errors.Is(removeArchiveErr, os.ErrNotExist) {
-					log.Error(removeArchiveErr, "Failed to remove orphaned tunnel proxy image build context archive", "Path", pd.imageBuildContextArchiveSource)
-					change |= additionalReconciliationNeeded
-					break
-				}
-				pd.imageBuildContextArchiveSource = ""
-			}
-			pd.ClientProxyContainerImage = ""
-			change |= additionalReconciliationNeeded
-		case getImageErr != nil:
-			log.Error(getImageErr, "Failed to get tunnel proxy PhysicalContainerImage")
-			change |= additionalReconciliationNeeded
-		default:
-			if physicalImage.Spec.Image != nil &&
-				physicalImage.Spec.Image.Build != nil &&
-				physicalImage.Spec.Image.Build.ContextArchive != nil {
-				pd.imageBuildContextArchiveSource = physicalImage.Spec.Image.Build.ContextArchive.Source
-			}
-			switch physicalImage.Status.Phase {
-			case apiv2.PhysicalContainerImagePhaseFailed:
-				pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-				pd.Message = fmt.Sprintf("PhysicalContainerImage for container network tunnel failed: %s", physicalResourceStatusMessage(physicalImage.Status.Conditions))
-			case apiv2.PhysicalContainerImagePhaseReady:
-				pd.State = apiv1.ContainerNetworkTunnelProxyStateStarting
-			default:
+	if pd.State != apiv1.ContainerNetworkTunnelProxyStateFailed {
+		certErr := r.createProxyConnectionCertificates(pd, log)
+		if certErr != nil {
+			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+			pd.Message = fmt.Sprintf("Failed to create tunnel proxy connection certificates: %v", certErr)
+		} else {
+			_, containerDelay := r.startClientProxy(ctx, tunnelProxy, pd, log)
+			if containerDelay != NoDelay {
 				change |= additionalReconciliationNeeded
 			}
+			if pd.State != apiv1.ContainerNetworkTunnelProxyStateFailed && imageReady {
+				pd.State = apiv1.ContainerNetworkTunnelProxyStateStarting
+			}
 		}
 	}
 
-	// Regardless whether we just scheduled an image check, or it has been going for a while,
-	// we need to ensure that the object state is correct.
+	// Ensure the object reflects the latest physical resource state.
 	return change | pd.applyTo(tunnelProxy)
 }
 
@@ -932,71 +940,6 @@ func (r *ContainerNetworkTunnelProxyReconciler) createProxyClient(
 
 // INITIALIZATION AND SHUTDOWN HELPER METHODS
 
-// Returns a function that ensures the container proxy image is up to date.
-// The method is called as part of the reconciliation loop, but the returned function is executed asynchronously.
-// The passed proxy data is a clone independent from what is stored in r.proxyData map.
-func (r *ContainerNetworkTunnelProxyReconciler) ensureContainerProxyImage(
-	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
-	pd *containerNetworkTunnelProxyData,
-	log logr.Logger,
-) func(context.Context) {
-	return func(ctx context.Context) {
-		reconciliationDelay := NoDelay
-		opts := dcptun.BuildClientProxyImageOptions{
-			// TODO: set StreamCommandOptions here to capture the logs of the image build process
-			MostRecentImageBuildsFilePath: r.config.MostRecentImageBuildsFilePath,
-		}
-
-		imagePlan, imageCheckErr := dcptun.PrepareClientProxyImage(ctx, opts, r.config.Orchestrator, log)
-
-		if imageCheckErr != nil {
-			var rtUnhealthyErr *dcptun.ErrContainerRuntimeUnhealthy
-			if errors.As(imageCheckErr, &rtUnhealthyErr) {
-				log.V(1).Info("Container runtime is unhealthy, will retry client proxy image check later")
-				reconciliationDelay = LongDelay
-			} else {
-				log.Error(imageCheckErr, "Container image for container network tunnel could not be built, or its presence could not be verified")
-				pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-				pd.Message = fmt.Sprintf("Container image for container network tunnel could not be built, or its presence could not be verified: %v", imageCheckErr)
-			}
-		} else {
-			namespaceErr := EnsureV1PhysicalResourcesNamespace(ctx, r.Client)
-			if namespaceErr != nil {
-				cleanupErr := imagePlan.Cleanup()
-				if cleanupErr != nil {
-					log.Error(cleanupErr, "Failed to clean up tunnel proxy image build context")
-				}
-				log.Error(namespaceErr, "Failed to ensure V1 physical resources namespace")
-				pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-				pd.Message = fmt.Sprintf("Failed to ensure V1 physical resources namespace: %v", namespaceErr)
-			} else {
-				imageResourceErr := r.ensureTunnelProxyPhysicalContainerImage(ctx, tunnelProxy, imagePlan, log)
-				if imageResourceErr != nil {
-					cleanupErr := imagePlan.Cleanup()
-					if cleanupErr != nil {
-						log.Error(cleanupErr, "Failed to clean up tunnel proxy image build context")
-					}
-					log.Error(imageResourceErr, "Failed to create tunnel proxy PhysicalContainerImage")
-					pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-					pd.Message = fmt.Sprintf("Failed to create tunnel proxy PhysicalContainerImage: %v", imageResourceErr)
-				} else {
-					log.V(1).Info("Created PhysicalContainerImage for container network tunnel", "Image", imagePlan.Image)
-					pd.ClientProxyContainerImage = imagePlan.Image
-					pd.physicalResourcesCreated = true
-				}
-			}
-		}
-
-		pd.imagePreparationScheduled = false
-		nn := tunnelProxy.NamespacedName()
-		pdMap := r.proxyData
-		pdMap.QueueDeferredOp(nn, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
-			pdMap.Update(nn, nn, pd)
-		})
-		r.ScheduleReconciliationWithDelay(nn, reconciliationDelay)
-	}
-}
-
 // Returns a function that starts the tunnel proxy pair.
 // The method is called as part of the reconciliation loop, but the returned function is executed asynchronously.
 // The passed proxy data is a clone independent from what is stored in r.proxyData map.
@@ -1109,7 +1052,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		return false, StandardDelay
 	}
 
-	physicalContainerName := tunnelProxyPhysicalResourceName(tunnelProxy)
+	physicalContainerName := tunnelProxyPhysicalContainerName(tunnelProxy)
 	physicalContainer := apiv2.PhysicalContainer{}
 	getContainerErr := r.Get(ctx, physicalContainerName, &physicalContainer)
 	if apimachinery_errors.IsNotFound(getContainerErr) {
@@ -1121,7 +1064,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 			},
 			Spec: apiv2.PhysicalContainerSpec{
 				Container: &apiv2.PhysicalContainerConfig{
-					ImageRef:      physicalContainerName.Name,
+					ImageRef:      V1TunnelProxyPhysicalContainerImageName,
 					ContainerName: physicalContainerName.Name,
 					Entrypoint:    dcptun.ClientProxyBinaryPath,
 					Command: append([]string{
@@ -1163,11 +1106,18 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	return r.updateClientProxyContainerStatus(ctx, tunnelProxy, pd, log)
 }
 
-func tunnelProxyPhysicalResourceName(tunnelProxy *apiv1.ContainerNetworkTunnelProxy) types.NamespacedName {
-	return tunnelProxyPhysicalResourceNameForUID(tunnelProxy.UID)
+func tunnelProxyPhysicalImageName() types.NamespacedName {
+	return types.NamespacedName{
+		Namespace: V1PhysicalResourcesNamespaceName,
+		Name:      V1TunnelProxyPhysicalContainerImageName,
+	}
 }
 
-func tunnelProxyPhysicalResourceNameForUID(tunnelProxyUID types.UID) types.NamespacedName {
+func tunnelProxyPhysicalContainerName(tunnelProxy *apiv1.ContainerNetworkTunnelProxy) types.NamespacedName {
+	return tunnelProxyPhysicalContainerNameForUID(tunnelProxy.UID)
+}
+
+func tunnelProxyPhysicalContainerNameForUID(tunnelProxyUID types.UID) types.NamespacedName {
 	return types.NamespacedName{
 		Namespace: V1PhysicalResourcesNamespaceName,
 		Name:      fmt.Sprintf("tunnel-proxy-%s", tunnelProxyUID),
@@ -1183,18 +1133,26 @@ func tunnelProxyPhysicalResourceAnnotations(tunnelProxy *apiv1.ContainerNetworkT
 
 func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContainerImage(
 	ctx context.Context,
-	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
-	imagePlan dcptun.ClientProxyImagePlan,
 	log logr.Logger,
 ) error {
-	imageName := tunnelProxyPhysicalResourceName(tunnelProxy)
+	imageName := tunnelProxyPhysicalImageName()
+	existingImage := apiv2.PhysicalContainerImage{}
+	getErr := r.NoCacheClient.Get(ctx, imageName, &existingImage)
+	if getErr == nil {
+		return nil
+	}
+	if !apimachinery_errors.IsNotFound(getErr) {
+		return fmt.Errorf("get PhysicalContainerImage %q: %w", imageName.String(), getErr)
+	}
+
+	imagePlan, prepareErr := dcptun.PrepareClientProxyImageBuild()
+	if prepareErr != nil {
+		return prepareErr
+	}
 	imageConfig := &apiv2.PhysicalContainerImageConfig{
 		Image:      imagePlan.Image,
-		PullPolicy: apiv2.PullPolicyNever,
-	}
-	if imagePlan.BuildContextArchive != nil {
-		imageConfig.PullPolicy = apiv2.PullPolicyMissing
-		imageConfig.Build = &apiv2.ContainerBuildContext{
+		PullPolicy: apiv2.PullPolicyMissing,
+		Build: &apiv2.ContainerBuildContext{
 			ContextArchive: &apiv2.ContainerBuildContextArchive{
 				Digest:      imagePlan.BuildContextArchive.Digest,
 				Source:      imagePlan.BuildContextArchive.Source,
@@ -1202,14 +1160,12 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 				RawContents: imagePlan.BuildContextArchive.RawContents,
 			},
 			Dockerfile: imagePlan.Dockerfile,
-			Labels:     imagePlan.Labels,
-		}
+		},
 	}
 	physicalImage := &apiv2.PhysicalContainerImage{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        imageName.Name,
-			Namespace:   imageName.Namespace,
-			Annotations: tunnelProxyPhysicalResourceAnnotations(tunnelProxy),
+			Name:      imageName.Name,
+			Namespace: imageName.Namespace,
 		},
 		Spec: apiv2.PhysicalContainerImageSpec{
 			Image: imageConfig,
@@ -1218,16 +1174,19 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 
 	createErr := r.Client.Create(ctx, physicalImage)
 	if apimachinery_errors.IsAlreadyExists(createErr) {
-		cleanupErr := imagePlan.Cleanup()
-		if cleanupErr != nil {
-			log.Error(cleanupErr, "Failed to clean up unused tunnel proxy image build context")
-		}
 		return nil
 	}
 	if createErr != nil {
+		currentImage := apiv2.PhysicalContainerImage{}
+		lookupErr := r.NoCacheClient.Get(ctx, imageName, &currentImage)
+		if lookupErr == nil {
+			return nil
+		}
+
 		return fmt.Errorf("create PhysicalContainerImage %q: %w", imageName.String(), createErr)
 	}
 
+	log.V(1).Info("Created shared tunnel proxy PhysicalContainerImage", "PhysicalContainerImage", imageName)
 	return nil
 }
 
@@ -1237,7 +1196,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) updateClientProxyContainerStatus
 	pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) (bool, AdditionalReconciliationDelay) {
-	containerName := tunnelProxyPhysicalResourceName(tunnelProxy)
+	containerName := tunnelProxyPhysicalContainerName(tunnelProxy)
 	physicalContainer := apiv2.PhysicalContainer{}
 	getContainerErr := r.Get(ctx, containerName, &physicalContainer)
 	if apimachinery_errors.IsNotFound(getContainerErr) {
@@ -1488,19 +1447,16 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 	proxyObjectID types.UID,
 	log logr.Logger,
 ) {
-	if pd.physicalResourcesCreated {
-		log.V(1).Info("Removing client proxy physical resources...")
-
-		removeErr := r.removeClientPhysicalResourcesWithTimeout(ctx, proxyObjectID, pd.imageBuildContextArchiveSource)
-		if removeErr != nil {
-			log.Error(removeErr, "Failed to remove client proxy physical resources")
-			pd.cleanupScheduled = false
-		} else {
-			log.V(1).Info("Successfully removed client proxy physical resources")
-			pd.physicalResourcesCreated = false
-			pd.ClientProxyContainerID = ""
-			pd.imageBuildContextArchiveSource = ""
-		}
+	cleanupCompleted := true
+	log.V(1).Info("Removing client proxy PhysicalContainer...")
+	removeErr := r.removeClientPhysicalResourcesWithTimeout(ctx, proxyObjectID)
+	if removeErr != nil {
+		log.Error(removeErr, "Failed to remove client proxy PhysicalContainer")
+		pd.cleanupScheduled = false
+		cleanupCompleted = false
+	} else {
+		log.V(1).Info("Successfully removed client proxy PhysicalContainer")
+		pd.ClientProxyContainerID = ""
 	}
 
 	if pd.ServerProxyProcessID != nil && *pd.ServerProxyProcessID > 0 {
@@ -1514,12 +1470,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 		stopErr := r.config.ProcessExecutor.StopProcess(process.NewHandle(pid, startTime))
 		if stopErr != nil && !errors.Is(stopErr, process.ErrorProcessNotFound) {
 			log.Error(stopErr, "Failed to stop server proxy process")
+			pd.cleanupScheduled = false
+			cleanupCompleted = false
 		} else {
 			log.V(1).Info("Successfully stopped server proxy process")
+			pd.ServerProxyProcessID = nil
+			pd.ServerProxyStartupTimestamp = metav1.MicroTime{} // Zero value
 		}
-
-		pd.ServerProxyProcessID = nil
-		pd.ServerProxyStartupTimestamp = metav1.MicroTime{} // Zero value
 	}
 
 	if pd.serverStdout != nil {
@@ -1534,25 +1491,25 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 		}
 		pd.serverStderr = nil
 	}
+
+	pd.cleanupCompleted = cleanupCompleted
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) removeClientPhysicalResourcesWithTimeout(
 	ctx context.Context,
 	proxyObjectID types.UID,
-	buildContextArchiveSource string,
 ) error {
 	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, clientProxyContainerCleanupTimeout)
 	defer cleanupCancel()
 
-	return r.cleanupClientPhysicalResources(cleanupCtx, proxyObjectID, buildContextArchiveSource)
+	return r.cleanupClientPhysicalResources(cleanupCtx, proxyObjectID)
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) cleanupClientPhysicalResources(
 	ctx context.Context,
 	proxyObjectID types.UID,
-	buildContextArchiveSource string,
 ) error {
-	resourceName := tunnelProxyPhysicalResourceNameForUID(proxyObjectID)
+	resourceName := tunnelProxyPhysicalContainerNameForUID(proxyObjectID)
 	physicalContainer := &apiv2.PhysicalContainer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      resourceName.Name,
@@ -1576,49 +1533,6 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupClientPhysicalResources(
 	})
 	if waitContainerErr != nil {
 		return waitContainerErr
-	}
-
-	physicalImage := &apiv2.PhysicalContainerImage{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      resourceName.Name,
-			Namespace: resourceName.Namespace,
-		},
-	}
-	currentPhysicalImage := &apiv2.PhysicalContainerImage{}
-	getImageErr := r.Client.Get(ctx, resourceName, currentPhysicalImage)
-	if getImageErr != nil && !apimachinery_errors.IsNotFound(getImageErr) {
-		return fmt.Errorf("get PhysicalContainerImage %q before deletion: %w", resourceName.String(), getImageErr)
-	}
-	if getImageErr == nil &&
-		currentPhysicalImage.Spec.Image != nil &&
-		currentPhysicalImage.Spec.Image.Build != nil &&
-		currentPhysicalImage.Spec.Image.Build.ContextArchive != nil &&
-		currentPhysicalImage.Spec.Image.Build.ContextArchive.Source != "" {
-		buildContextArchiveSource = currentPhysicalImage.Spec.Image.Build.ContextArchive.Source
-	}
-	deleteImageErr := r.Client.Delete(ctx, physicalImage)
-	if deleteImageErr != nil && !apimachinery_errors.IsNotFound(deleteImageErr) {
-		return fmt.Errorf("delete PhysicalContainerImage %q: %w", resourceName.String(), deleteImageErr)
-	}
-
-	waitImageErr := resiliency.RetryExponential(ctx, func() error {
-		waitGetImageErr := r.Client.Get(ctx, resourceName, &apiv2.PhysicalContainerImage{})
-		if apimachinery_errors.IsNotFound(waitGetImageErr) {
-			return nil
-		}
-		if waitGetImageErr != nil {
-			return fmt.Errorf("get deleting PhysicalContainerImage %q: %w", resourceName.String(), waitGetImageErr)
-		}
-		return fmt.Errorf("PhysicalContainerImage %q still exists", resourceName.String())
-	})
-	if waitImageErr != nil {
-		return waitImageErr
-	}
-	if buildContextArchiveSource != "" {
-		removeArchiveErr := os.Remove(buildContextArchiveSource)
-		if removeArchiveErr != nil && !errors.Is(removeArchiveErr, os.ErrNotExist) {
-			return fmt.Errorf("remove PhysicalContainerImage build context archive %q: %w", buildContextArchiveSource, removeArchiveErr)
-		}
 	}
 	return nil
 }

@@ -62,15 +62,6 @@ func (ted tunnelExtraData) Equal(other tunnelExtraData) bool {
 type containerNetworkTunnelProxyData struct {
 	apiv1.ContainerNetworkTunnelProxyStatus
 
-	// Whether preparation of the client proxy image has been scheduled.
-	imagePreparationScheduled bool
-
-	// Source archive owned by this tunnel proxy, if its image build uses one.
-	imageBuildContextArchiveSource string
-
-	// Whether physical resources representing the client proxy have been created and may still need cleanup.
-	physicalResourcesCreated bool
-
 	// Whether the startup of the proxy pair has been scheduled.
 	// This is checked and updated when we enter the starting state.
 	startupScheduled bool
@@ -79,6 +70,9 @@ type containerNetworkTunnelProxyData struct {
 	// Graceful shutdown of the client proxy container and the server proxy process
 	// can take a while, so we do it asynchronously.
 	cleanupScheduled bool
+
+	// Whether cleanup completed successfully.
+	cleanupCompleted bool
 
 	// Standard output file for the server proxy process.
 	// Note: this is a file descriptor, and is not "cloned" when Clone() is called.
@@ -110,11 +104,9 @@ func newContainerNetworkTunnelProxyData(state apiv1.ContainerNetworkTunnelProxyS
 func (tpd *containerNetworkTunnelProxyData) Clone() *containerNetworkTunnelProxyData {
 	clone := containerNetworkTunnelProxyData{
 		ContainerNetworkTunnelProxyStatus: *tpd.ContainerNetworkTunnelProxyStatus.DeepCopy(),
-		imagePreparationScheduled:         tpd.imagePreparationScheduled,
-		imageBuildContextArchiveSource:    tpd.imageBuildContextArchiveSource,
-		physicalResourcesCreated:          tpd.physicalResourcesCreated,
 		startupScheduled:                  tpd.startupScheduled,
 		cleanupScheduled:                  tpd.cleanupScheduled,
+		cleanupCompleted:                  tpd.cleanupCompleted,
 		serverStdout:                      tpd.serverStdout,
 		serverStderr:                      tpd.serverStderr,
 		tunnelExtra:                       maps.Map[string, tunnelExtraData, tunnelExtraData](tpd.tunnelExtra, tunnelExtraData.Clone),
@@ -201,23 +193,13 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 		updated = true
 	}
 
-	if tpd.imagePreparationScheduled != other.imagePreparationScheduled {
-		tpd.imagePreparationScheduled = other.imagePreparationScheduled
-		updated = true
-	}
-
-	if tpd.imageBuildContextArchiveSource != other.imageBuildContextArchiveSource {
-		tpd.imageBuildContextArchiveSource = other.imageBuildContextArchiveSource
-		updated = true
-	}
-
-	if tpd.physicalResourcesCreated != other.physicalResourcesCreated {
-		tpd.physicalResourcesCreated = other.physicalResourcesCreated
-		updated = true
-	}
-
 	if tpd.cleanupScheduled != other.cleanupScheduled {
 		tpd.cleanupScheduled = other.cleanupScheduled
+		updated = true
+	}
+
+	if tpd.cleanupCompleted != other.cleanupCompleted {
+		tpd.cleanupCompleted = other.cleanupCompleted
 		updated = true
 	}
 

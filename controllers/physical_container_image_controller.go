@@ -480,6 +480,28 @@ func (r *PhysicalContainerImageReconciler) ensureBuiltImage(
 ) (objectChange, AdditionalReconciliationDelay) {
 	imageConfig := image.Spec.Image
 	outputImage := physicalContainerImageOutputTag(image)
+	if imageConfig.PullPolicy == "" || imageConfig.PullPolicy == apiv2.PullPolicyMissing {
+		inspectedImage, inspectErr := inspectPhysicalContainerImage(ctx, r.orchestrator, outputImage)
+		if inspectErr == nil {
+			data.state = physicalContainerImageStateRuntime
+			data.progress = physicalResourceProgressCompleted
+			data.image = outputImage
+			data.imageID = inspectedImage.Id
+			data.imageIDVerified = true
+			data.digest = inspectedImage.Digest
+			data.tags = slices.Clone(inspectedImage.Tags)
+			data.failureMessage = ""
+			return noChange, StandardDelay
+		}
+		if !errors.Is(inspectErr, containers.ErrNotFound) {
+			log.Error(inspectErr, "Failed to inspect PhysicalContainerImage build output", "Image", outputImage)
+			data.state = physicalContainerImageStateRuntime
+			data.progress = physicalResourceProgressRetryPending
+			data.failureMessage = fmt.Sprintf("Failed to inspect image: %v", inspectErr)
+			return noChange, LongDelay
+		}
+	}
+
 	buildContext := *imageConfig.Build
 	buildContext.Tags = append([]string{}, buildContext.Tags...)
 	buildContext.Args = append([]commonapi.EnvVar{}, buildContext.Args...)

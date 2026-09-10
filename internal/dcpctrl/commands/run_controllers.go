@@ -375,7 +375,6 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			controllers.ContainerNetworkTunnelProxyReconcilerConfig{
-				Orchestrator:            containerOrchestrator,
 				ProcessExecutor:         processExecutor,
 				MakeTunnelControlClient: dcptunproto.NewTunnelControlClient,
 			},
