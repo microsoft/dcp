@@ -16,7 +16,7 @@ DCP integrates with development tools such as [Microsoft Aspire](https://learn.m
 - **Process & Container Lifecycle Management**: Automatically manage the lifecycle and cleanup of executed processes and containers
 - **Network management**: DCP has several facilities to help with service-to-service and service-to-container communication such as dynamic port allocation, injecting port information into services and containers via command-line arguments and environment variables, stable ports for clients of  multi-replica services, isolated container networks, and a tunnel for container-to-host communication 
 
-DCP is implemented as a single binary (`dcp`) that can run in one of several modes depending on how it is invoked. The main modes of operation are:
+DCP's main executable (`dcp`) can run in one of several modes depending on how it is invoked. The main modes of operation are:
 - `dcp start-apiserver` - runs the DCP API server that holds the workload model and exposes a Kubernetes-compatible API for managing workloads using the [Tilt API server library](https://github.com/tilt-dev/tilt-apiserver). The API server is Kubernetes-compatible but using custom resource definitions. This is the main entry point for DCP; users or other tools such as Aspire invoke DCP in this mode to launch the API server and controllers.
 - `dcp run-controllers` - runs the core DCP controllers that implement the standard behavior for DCP workload models. This mode is typically invoked as a child process of the API server.
 - `dcp monitor-process` - monitors a given process and ensures that it's cleaned up properly when a DCP session ends. This mode is typically invoked as a child process of the controllers.
@@ -24,6 +24,22 @@ DCP is implemented as a single binary (`dcp`) that can run in one of several mod
 - `dcp stop-process-tree` - stops a given process and all its child processes. Attempts to gracefully terminate the process tree first via signals and then forcibly terminates it if the graceful termination does not complete within a timeout.
 - `dcp version` - displays version information about the DCP installation.
 - `dcp info` - displays information about the current DCP installation and identified container runtime.
+
+### Windows native dependency
+
+Windows builds require the bundled `conpty.dll` and native console hosts from the MIT-licensed [Microsoft.Windows.Console.ConPTY](https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY/1.24.260710001) package, pinned to **1.24.260710001**. The DLL stays beside `dcp.exe`; `OpenConsole.exe` stays in architecture subdirectories so ConPTY selects the host matching the native Windows OS, including when DCP runs under emulation. Do not place `OpenConsole.exe` beside the DLL: that overrides native-host selection. There is no fallback to the Windows-provided ConPTY implementation.
+
+| `GOARCH` | DLL architecture | Required host paths relative to `dcp.exe` |
+| --- | --- | --- |
+| `amd64` | x64 | `x64/OpenConsole.exe`, `arm64/OpenConsole.exe` |
+| `arm64` | arm64 | `arm64/OpenConsole.exe` |
+| `386` | x86 | `x86/OpenConsole.exe`, `x64/OpenConsole.exe`, `arm64/OpenConsole.exe` |
+
+`make build-dcp`, `make compile`, `make release`, and `make test-prereqs` stage this layout beside `DCP_BINARY` (by default in `OUTPUT_BIN`, which defaults to `bin/`), together with `LICENSE-ConPTY.txt`, including when cross-compiling with `GOOS=windows`. Downloads are cached under `.toolbin/conpty/<version>/<DLL architecture>/`; incomplete restores are retried, and every build refreshes the required hosts and removes stale root or architecture-specific hosts. `make install` preserves the layout; `make uninstall` removes all bundled files. Release archives and NuGet packages preserve these subdirectories through their existing build-output globs.
+
+Windows CI uses `scripts/test-ci.ps1`, which performs the same restore and staging without make. Keep its ConPTY version and restore logic in sync with the Makefile. Restoring uses the public NuGet feed and requires `curl` plus `unzip` on Unix build hosts, or PowerShell's `Expand-Archive` on Windows. Non-Windows targets do not restore or stage ConPTY.
+
+Direct `go build` does not copy native dependencies. When building a Windows executable directly, also run `make stage-conpty` with the same `GOOS`, `GOARCH`, and `DCP_BINARY`, or manually reproduce the layout above and include `LICENSE-ConPTY.txt`.
 
 ### Environment variables affecting DCP behavior
 

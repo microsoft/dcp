@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 
+	"github.com/microsoft/dcp/internal/dcppaths"
 	int_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -31,24 +32,33 @@ import (
 
 const internalTestTimeout = 20 * time.Second
 
+func TestMain(m *testing.M) {
+	dcppaths.EnableTestPathProbing()
+	os.Exit(m.Run())
+}
+
 // newOpenedWindowsPTY allocates a fresh ConPTY (pseudo-console + I/O pipes)
 // and registers a t.Cleanup that closes it. No child process is spawned;
 // the test only needs the PTY object itself.
 func newOpenedWindowsPTY(t *testing.T) *windowsPTY {
 	t.Helper()
 
+	consoleAPI, loadErr := getConPTY()
+	require.NoError(t, loadErr)
+
 	var inputRead, inputWrite, outputRead, outputWrite windows.Handle
 	require.NoError(t, windows.CreatePipe(&inputRead, &inputWrite, nil, 0))
 	require.NoError(t, windows.CreatePipe(&outputRead, &outputWrite, nil, 0))
 
 	var hConsole windows.Handle
-	err := windows.CreatePseudoConsole(
+	err := consoleAPI.createPseudoConsole(
 		windowsConsoleSize(0, 0),
-		inputRead, outputWrite, 0, &hConsole,
+		inputRead, outputWrite, &hConsole,
 	)
 	require.NoError(t, err, "CreatePseudoConsole failed")
 
 	p := &windowsPTY{
+		conpty:       consoleAPI,
 		hConsole:     hConsole,
 		outputRead:   outputRead,
 		inputWrite:   inputWrite,

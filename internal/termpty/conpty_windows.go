@@ -30,6 +30,7 @@ import (
 // The Close() method is also goroutine-safe, but invoking Close() while other methods are in progress
 // may lead to an I/O error.
 type windowsPTY struct {
+	conpty       *conPTY
 	hConsole     windows.Handle
 	outputRead   windows.Handle
 	inputWrite   windows.Handle
@@ -71,18 +72,15 @@ func (wp *windowsPTY) Resize(cols, rows uint16) error {
 	}
 
 	wp.lock.Lock()
+	defer wp.lock.Unlock()
 	if wp.hConsole == 0 || wp.hConsole == windows.InvalidHandle {
-		wp.lock.Unlock()
 		return os.ErrClosed
 	}
-
-	hConsole := wp.hConsole
-	wp.lock.Unlock()
 
 	// windowsConsoleSize/normalizeTerminalDimensions substitutes defaults for
 	// zero dimensions; we reject zeros above so only the upper-bound clamp matters here.
 	consoleSize := windowsConsoleSize(cols, rows)
-	return windows.ResizePseudoConsole(hConsole, consoleSize)
+	return wp.conpty.resizePseudoConsole(wp.hConsole, consoleSize)
 }
 
 func (wp *windowsPTY) Close() error {
@@ -90,7 +88,7 @@ func (wp *windowsPTY) Close() error {
 	defer wp.lock.Unlock()
 
 	if wp.hConsole != 0 && wp.hConsole != windows.InvalidHandle {
-		windows.ClosePseudoConsole(wp.hConsole)
+		wp.conpty.closePseudoConsole(wp.hConsole)
 		wp.hConsole = windows.InvalidHandle
 	}
 
@@ -106,6 +104,11 @@ var _ = PTY((*windowsPTY)(nil))
 
 // startProcessWithTerminal allocates a new Windows console and starts a process attached to it.
 func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *CommandSpec) (*PseudoTerminalProcess, error) {
+	consoleAPI, loadErr := getConPTY()
+	if loadErr != nil {
+		return nil, loadErr
+	}
+
 	var inputRead, inputWrite, outputRead, outputWrite windows.Handle
 	inputPipeErr := windows.CreatePipe(&inputRead, &inputWrite, nil, 0)
 	if inputPipeErr != nil {
@@ -120,7 +123,7 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 	initialCols, initialRows := NormalizeTerminalDimensions(spec.Cols, spec.Rows)
 	var hConsole windows.Handle
 	consoleSize := windowsConsoleSize(initialCols, initialRows)
-	createConsoleErr := windows.CreatePseudoConsole(consoleSize, inputRead, outputWrite, 0, &hConsole)
+	createConsoleErr := consoleAPI.createPseudoConsole(consoleSize, inputRead, outputWrite, &hConsole)
 	if createConsoleErr != nil {
 		_ = closeHandles(inputRead, inputWrite, outputRead, outputWrite)
 		return nil, fmt.Errorf("failed to create Windows console: %w", createConsoleErr)
@@ -136,13 +139,14 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 			return createProcessWithConsole(cmd, hConsole, spec.CreationFlags)
 		})
 	if startErr != nil {
-		windows.ClosePseudoConsole(hConsole)
+		consoleAPI.closePseudoConsole(hConsole)
 		_ = closeHandles(inputRead, inputWrite, outputRead, outputWrite)
 		return nil, fmt.Errorf("failed to start process: %w", startErr)
 	}
 
 	ptp := &PseudoTerminalProcess{
 		PTY: &windowsPTY{
+			conpty:       consoleAPI,
 			hConsole:     hConsole,
 			outputRead:   outputRead,
 			inputWrite:   inputWrite,
