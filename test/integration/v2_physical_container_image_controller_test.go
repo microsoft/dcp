@@ -7,6 +7,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"testing"
 	"time"
@@ -19,10 +20,85 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+type recordingBuildImageOrchestrator struct {
+	containers.ContainerOrchestrator
+	buildOptions chan containers.BuildImageOptions
+}
+
+func (r *recordingBuildImageOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
+	select {
+	case r.buildOptions <- options:
+	default:
+	}
+	return r.ContainerOrchestrator.BuildImage(ctx, options)
+}
+
+func TestV2PhysicalContainerImageControllerBuildsRawArchiveContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+
+	var recordingOrchestrator *recordingBuildImageOrchestrator
+	serverInfo, _, startErr := StartTestEnvironmentWithOptions(
+		ctx,
+		NamespaceController|PhysicalContainerImageController,
+		t.Name(),
+		t.TempDir(),
+		TestEnvironmentOptions{
+			DecorateContainerOrchestrator: func(
+				orchestrator containers.ContainerOrchestrator,
+				_ *statestore.Store,
+			) containers.ContainerOrchestrator {
+				recordingOrchestrator = &recordingBuildImageOrchestrator{
+					ContainerOrchestrator: orchestrator,
+					buildOptions:          make(chan containers.BuildImageOptions, 1),
+				}
+				return recordingOrchestrator
+			},
+		},
+	)
+	require.NoError(t, startErr)
+	defer shutdownTestEnvironment(serverInfo, cancel)
+
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-pci-raw-archive"}}
+	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(currentNamespace *apiv2.Namespace) (bool, error) {
+		return currentNamespace.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+
+	targetImage := "v2-pci-raw-archive-target"
+	rawContents := base64.StdEncoding.EncodeToString(make([]byte, 1024))
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "raw-archive-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image: targetImage,
+			Build: &apiv2.ContainerBuildContext{
+				ContextArchive: &apiv2.ContainerBuildContextArchive{
+					Digest:      "empty-tar-v1",
+					RawContents: rawContents,
+				},
+			},
+		}},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, image))
+
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, image.NamespacedName(), func(currentImage *apiv2.PhysicalContainerImage) (bool, error) {
+		return currentImage.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+	})
+
+	buildOptions := <-recordingOrchestrator.buildOptions
+	require.NotNil(t, buildOptions.ContextArchive)
+	require.Equal(t, "empty-tar-v1", buildOptions.ContextArchive.Digest)
+	require.Equal(t, rawContents, buildOptions.ContextArchive.RawContents)
+}
 
 func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {
 	t.Parallel()
@@ -44,6 +120,36 @@ func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {
 	require.NotEmpty(t, updatedImage.Status.ImageID)
 	requireReadyCondition(t, updatedImage.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerImageReasonImageAvailable)
 	require.True(t, containerOrchestrator.HasImage(updatedImage.Status.Image))
+}
+
+func TestV2PhysicalContainerImageControllerUsesLocalBestEffortSourceAfterPullFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	sourceImage := "v2-pci-best-effort-local-source"
+	imageID, pullErr := containerOrchestrator.PullImage(ctx, containers.PullImageOptions{Image: sourceImage})
+	require.NoError(t, pullErr)
+	containerOrchestrator.FailNextPullImage(sourceImage, errors.New("pull unavailable"))
+	noRetries := int32(0)
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-best-effort-source")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "best-effort-source-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image:          sourceImage,
+			PullPolicy:     apiv2.PullPolicyBestEffort,
+			PullRetryLimit: &noRetries,
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	updatedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, imageID, updatedImage.Status.ImageID)
+	require.Equal(t, 2, containerOrchestrator.PullImageCallCount(sourceImage))
 }
 
 func TestV2PhysicalContainerImageControllerPreservesRemovedRuntimeImageIdentity(t *testing.T) {
@@ -440,6 +546,173 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 	require.NotEqual(t, "caller-value", inspectedImages[0].Labels[controllers.CreatorProcessStartTimeLabel])
 	require.Contains(t, inspectedImages[0].Tags, "v2-pci-built-image")
 	require.Contains(t, inspectedImages[0].Tags, "v2-pci-built-target-image")
+}
+
+func TestV2PhysicalContainerImageControllerReusesBuildOutputWhenInputsMatch(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	targetImage := "v2-pci-existing-build-target"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-existing-build")
+	createImage := func(name, digest, labelValue string) *apiv2.PhysicalContainerImage {
+		image := &apiv2.PhysicalContainerImage{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace.Name,
+			},
+			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+				Image:      targetImage,
+				PullPolicy: apiv2.PullPolicyMissing,
+				Build: &apiv2.ContainerBuildContext{
+					ContextArchive: &apiv2.ContainerBuildContextArchive{
+						Digest:      digest,
+						RawContents: "dGVzdA==",
+					},
+					Labels: []commonapi.Label{{Key: "material-label", Value: labelValue}},
+				},
+			}},
+		}
+		require.NoError(t, client.Create(ctx, image))
+		return waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	}
+
+	firstImage := createImage("first-build-image", "context-v1", "label-v1")
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	secondImage := createImage("second-build-image", "context-v1", "label-v1")
+	require.Equal(t, firstImage.Status.ImageID, secondImage.Status.ImageID)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	thirdImage := createImage("third-build-image", "context-v2", "label-v1")
+	require.NotEqual(t, secondImage.Status.ImageID, thirdImage.Status.ImageID)
+	require.Equal(t, 2, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	fourthImage := createImage("fourth-build-image", "context-v2", "label-v2")
+	require.NotEqual(t, thirdImage.Status.ImageID, fourthImage.Status.ImageID)
+	require.Equal(t, 3, containerOrchestrator.BuildImageCallCount(targetImage))
+}
+
+func TestV2PhysicalContainerImageControllerRebuildsWhenBestEffortBaseImageChanges(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	baseImage := "v2-pci-best-effort-base"
+	targetImage := "v2-pci-best-effort-target"
+	buildBaseImage := func() {
+		require.NoError(t, containerOrchestrator.BuildImage(ctx, containers.BuildImageOptions{
+			ContainerBuildContext: &containers.ContainerBuildContext{
+				Context: "base-context",
+				Tags:    []string{baseImage},
+			},
+		}))
+	}
+	buildBaseImage()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-best-effort-build")
+	createImage := func(name string) *apiv2.PhysicalContainerImage {
+		image := &apiv2.PhysicalContainerImage{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace.Name,
+			},
+			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+				Image:      targetImage,
+				PullPolicy: apiv2.PullPolicyBestEffort,
+				Build: &apiv2.ContainerBuildContext{
+					ContextArchive: &apiv2.ContainerBuildContextArchive{
+						Digest:      "context-v1",
+						RawContents: "dGVzdA==",
+					},
+					BaseImages: []string{baseImage},
+				},
+			}},
+		}
+		require.NoError(t, client.Create(ctx, image))
+		return waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	}
+
+	firstImage := createImage("first-best-effort-build")
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	secondImage := createImage("second-best-effort-build")
+	require.Equal(t, firstImage.Status.ImageID, secondImage.Status.ImageID)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	buildBaseImage()
+	thirdImage := createImage("third-best-effort-build")
+	require.NotEqual(t, secondImage.Status.ImageID, thirdImage.Status.ImageID)
+	require.Equal(t, 2, containerOrchestrator.BuildImageCallCount(targetImage))
+	require.Equal(t, 3, containerOrchestrator.PullImageCallCount(baseImage))
+}
+
+func TestV2PhysicalContainerImageControllerUsesLocalBestEffortBaseImageAfterPullFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	baseImage := "v2-pci-best-effort-local-base"
+	targetImage := "v2-pci-best-effort-local-target"
+	_, pullErr := containerOrchestrator.PullImage(ctx, containers.PullImageOptions{Image: baseImage})
+	require.NoError(t, pullErr)
+	containerOrchestrator.FailNextPullImage(baseImage, errors.New("pull unavailable"))
+	noRetries := int32(0)
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-best-effort-local")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "best-effort-local-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image:          targetImage,
+			PullPolicy:     apiv2.PullPolicyBestEffort,
+			PullRetryLimit: &noRetries,
+			Build: &apiv2.ContainerBuildContext{
+				Context:    "test-context",
+				BaseImages: []string{baseImage},
+			},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+	require.Equal(t, 2, containerOrchestrator.PullImageCallCount(baseImage))
+}
+
+func TestV2PhysicalContainerImageControllerFailsWhenBestEffortBaseImageIsUnavailable(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	baseImage := "v2-pci-best-effort-missing-base"
+	targetImage := "v2-pci-best-effort-missing-target"
+	containerOrchestrator.FailNextPullImage(baseImage, errors.New("pull unavailable"))
+	noRetries := int32(0)
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-best-effort-missing")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "best-effort-missing-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image:          targetImage,
+			PullPolicy:     apiv2.PullPolicyBestEffort,
+			PullRetryLimit: &noRetries,
+			Build: &apiv2.ContainerBuildContext{
+				Context:    "test-context",
+				BaseImages: []string{baseImage},
+			},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
+	require.Equal(t, 0, containerOrchestrator.BuildImageCallCount(targetImage))
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(baseImage))
 }
 
 func TestV2PhysicalContainerImageControllerReportsMissingBuildImageID(t *testing.T) {

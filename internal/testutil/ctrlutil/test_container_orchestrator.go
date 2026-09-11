@@ -1584,6 +1584,16 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 		return errRuntimeUnhealthy
 	}
 
+	for _, existingImage := range to.images {
+		remainingTags := existingImage.tags[:0]
+		for _, existingTag := range existingImage.tags {
+			if !slices.Contains(options.Tags, existingTag) {
+				remainingTags = append(remainingTags, existingTag)
+			}
+		}
+		existingImage.tags = remainingTags
+	}
+
 	guid := uuid.New().String()
 	omitImageID := slices.Any(options.Tags, func(tag string) bool {
 		key := testContainerOperationKey{operation: operationBuildImage, resourceID: tag}
@@ -1776,6 +1786,17 @@ func (to *TestContainerOrchestrator) findImage(id string) (*testImage, bool) {
 	} else {
 		return nil, false
 	}
+}
+
+func (to *TestContainerOrchestrator) containerMatches(container *testContainer, name string) bool {
+	if container.matches(name) || strings.HasPrefix(container.Image, name) {
+		return true
+	}
+
+	image, found := to.findImage(container.Image)
+	return found && slices.Any(image.tags, func(tag string) bool {
+		return strings.HasPrefix(tag, name)
+	})
 }
 
 func toDigest(sha [32]byte) string {
@@ -2072,13 +2093,13 @@ func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, conta
 	}
 
 	for name, exit := range to.containersToFail {
-		if container.matches(name) || strings.HasPrefix(container.Image, name) {
+		if to.containerMatches(container, name) {
 			return container.ID, nil, streamIfPossible(fmt.Errorf("container failed to start: %s", exit.stdErr))
 		}
 	}
 
 	for name, containerStartupLogs := range to.startupLogs {
-		if container.matches(name) || strings.HasPrefix(container.Image, name) {
+		if to.containerMatches(container, name) {
 			var startupLogsWriteErrors error
 
 			if len(containerStartupLogs.stdout) > 0 && streamOptions.StdOutStream != nil {

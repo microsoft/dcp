@@ -8,6 +8,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	std_slices "slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -77,6 +79,7 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 	require.NotEqual(t, "caller-value", inspectedContainers[0].Labels[controllers.CreatorProcessIdLabel])
 	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
 	require.NotEqual(t, "caller-value", inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
+	require.Len(t, physicalContainerMonitorProcesses(updatedContainer.Status.ContainerID), 1)
 }
 
 func TestV2PhysicalContainerControllerReconcilesWhenNamespaceBecomesActive(t *testing.T) {
@@ -607,6 +610,7 @@ func TestV2PhysicalContainerControllerTracksExistingContainer(t *testing.T) {
 	require.NoError(t, inspectErr)
 	require.Len(t, inspectedContainers, 1)
 	require.NotContains(t, inspectedContainers[0].Labels, controllers.CreatorProcessIdLabel)
+	require.Empty(t, physicalContainerMonitorProcesses(existingContainerID))
 }
 
 func TestV2PhysicalContainerControllerRejectsDuplicateRuntimeContainerOwnership(t *testing.T) {
@@ -812,6 +816,13 @@ func TestV2PhysicalContainerControllerPreservesCreatedContainerOnDeletion(t *tes
 	require.NoError(t, inspectErr)
 	require.Len(t, inspectedContainers, 1)
 	require.Equal(t, "true", inspectedContainers[0].Labels[controllers.PersistentLabel])
+	require.Empty(t, physicalContainerMonitorProcesses(containerID))
+}
+
+func physicalContainerMonitorProcesses(containerID string) []*internal_testutil.ProcessExecution {
+	return testProcessExecutor.FindAll([]string{"dcp", "monitor-container"}, "", func(processExecution *internal_testutil.ProcessExecution) bool {
+		return std_slices.Contains(processExecution.Cmd.Args, containerID)
+	})
 }
 
 func TestV2PhysicalContainerControllerPreservesExistingContainerOnDeletion(t *testing.T) {

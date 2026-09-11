@@ -30,8 +30,10 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
 )
@@ -69,9 +71,10 @@ type PhysicalContainerReconciler struct {
 	*ReconcilerBase[apiv2.PhysicalContainer, *apiv2.PhysicalContainer]
 	*ContainerWatcher[apiv2.PhysicalContainer]
 
-	orchestrator   containers.ContainerOrchestrator
-	containerData  *ObjectStateMap[physicalContainerDataStateKey, physicalContainerData, *physicalContainerData, *apiv2.PhysicalContainer]
-	operationQueue *resiliency.WorkQueue
+	orchestrator    containers.ContainerOrchestrator
+	processExecutor process.Executor
+	containerData   *ObjectStateMap[physicalContainerDataStateKey, physicalContainerData, *physicalContainerData, *apiv2.PhysicalContainer]
+	operationQueue  *resiliency.WorkQueue
 }
 
 func NewPhysicalContainerReconciler(
@@ -80,12 +83,14 @@ func NewPhysicalContainerReconciler(
 	noCacheClient ctrl_client.Reader,
 	log logr.Logger,
 	orchestrator containers.ContainerOrchestrator,
+	processExecutor process.Executor,
 ) *PhysicalContainerReconciler {
 	lock := &sync.Mutex{}
 	reconciler := PhysicalContainerReconciler{
 		ReconcilerBase:   NewReconcilerBase[apiv2.PhysicalContainer](client, noCacheClient, log, lifetimeCtx),
 		ContainerWatcher: NewContainerWatcher[apiv2.PhysicalContainer](orchestrator, lock, lifetimeCtx),
 		orchestrator:     orchestrator,
+		processExecutor:  processExecutor,
 		containerData:    NewObjectStateMap[physicalContainerDataStateKey, physicalContainerData, *physicalContainerData, *apiv2.PhysicalContainer](),
 		operationQueue:   resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
 	}
@@ -750,9 +755,27 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		data.progress = physicalContainerOperationCompleted
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
+		r.runPhysicalContainerLifecycleMonitor(container, containerID, log)
 	}
 
 	r.queuePhysicalContainerDataResult(container, stateKey, data)
+}
+
+// Starts a container monitor process that removes the runtime container if this DCP instance terminates unexpectedly.
+// Containers the resource does not own past its own lifetime (RetainRuntimeContainer) are left alone.
+// Failures are logged but not surfaced, because the monitor is a best-effort reliability enhancement;
+// the container harvester reclaims orphaned containers in a later session.
+func (r *PhysicalContainerReconciler) runPhysicalContainerLifecycleMonitor(container *apiv2.PhysicalContainer, containerID string, log logr.Logger) {
+	if container.Spec.Container == nil || container.Spec.Container.RetainRuntimeContainer || containerID == "" {
+		return
+	}
+
+	if r.processExecutor == nil {
+		log.Error(errors.New("process executor is not configured"), "Could not start PhysicalContainer cleanup monitor")
+		return
+	}
+
+	dcpproc.RunContainerWatcher(r.processExecutor, containerID, log)
 }
 
 func (r *PhysicalContainerReconciler) removePhysicalContainerForReplacement(ctx context.Context, containerName string, log logr.Logger) error {

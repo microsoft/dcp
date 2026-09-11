@@ -7,7 +7,12 @@ package v2
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
+	"io/fs"
+	"path"
 	"reflect"
+	"regexp"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,6 +27,15 @@ import (
 
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
+
+var validSHA256HexRegexp = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+
+// isArchiveRelativePath reports whether archivePath addresses an entry inside an archive,
+// that is, it uses archive separators, is relative, and does not escape the archive root.
+func isArchiveRelativePath(archivePath string) bool {
+	cleaned := path.Clean(archivePath)
+	return cleaned != "." && fs.ValidPath(cleaned)
+}
 
 // PhysicalContainerImagePhase describes the lifecycle phase of a PhysicalContainerImage.
 type PhysicalContainerImagePhase PhysicalResourcePhase
@@ -94,8 +108,11 @@ type PhysicalContainerImageConfig struct {
 	// Build describes how to build the image locally.
 	Build *ContainerBuildContext `json:"build,omitempty"`
 
-	// PullPolicy controls source image pulling. If omitted, missing is used.
-	// Never is not supported for image builds.
+	// PullPolicy controls source image pulling. For builds, missing reuses an existing output when
+	// its material build inputs match; best-effort additionally resolves declared base images and
+	// rebuilds when their identities change while tolerating pull failures when local copies are
+	// available; and always rebuilds while pulling newer base images.
+	// If omitted, missing is used. Never is not supported for builds.
 	PullPolicy ImagePullPolicy `json:"pullPolicy,omitempty"`
 
 	// PullRetryLimit is how many times a failed source image pull is retried, with exponential
@@ -225,10 +242,11 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 	}
 
 	switch image.PullPolicy {
-	case "", PullPolicyAlways, PullPolicyMissing, PullPolicyNever:
+	case "", PullPolicyAlways, PullPolicyBestEffort, PullPolicyMissing, PullPolicyNever:
 	default:
 		errorList = append(errorList, field.NotSupported(imagePath.Child("pullPolicy"), image.PullPolicy, []string{
 			string(PullPolicyAlways),
+			string(PullPolicyBestEffort),
 			string(PullPolicyMissing),
 			string(PullPolicyNever),
 		}))
@@ -241,6 +259,9 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 	if image.Build != nil {
 		if image.PullPolicy == PullPolicyNever {
 			errorList = append(errorList, field.Invalid(imagePath.Child("pullPolicy"), image.PullPolicy, "pullPolicy never is not supported for image builds"))
+		}
+		if image.PullPolicy == PullPolicyBestEffort && len(image.Build.BaseImages) == 0 {
+			errorList = append(errorList, field.Required(imagePath.Child("build", "baseImages"), "baseImages must be set when pullPolicy is best-effort"))
 		}
 		errorList = append(errorList, validatePhysicalContainerImageBuild(image.Build, imagePath.Child("build"))...)
 	}
@@ -262,12 +283,58 @@ func (pci *PhysicalContainerImage) ValidateUpdate(ctx context.Context, old runti
 func validatePhysicalContainerImageBuild(build *ContainerBuildContext, buildPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	if build.Context == "" {
-		errorList = append(errorList, field.Required(buildPath.Child("context"), "context is required"))
+	if build.Context == "" && build.ContextArchive == nil {
+		errorList = append(errorList, field.Required(buildPath, "exactly one of context or contextArchive is required"))
+	}
+	if build.Context != "" && build.ContextArchive != nil {
+		errorList = append(errorList, field.Forbidden(buildPath.Child("contextArchive"), "contextArchive cannot be set when context is set"))
+	}
+	if build.ContextArchive != nil {
+		archive := build.ContextArchive
+		archivePath := buildPath.Child("contextArchive")
+		if archive.Digest == "" {
+			errorList = append(errorList, field.Required(archivePath.Child("digest"), "digest must be set to a non-empty value"))
+		}
+		if archive.Source == "" && archive.RawContents == "" {
+			errorList = append(errorList, field.Required(archivePath, "either source or rawContents must be set"))
+		}
+		if archive.Source != "" && archive.RawContents != "" {
+			errorList = append(errorList, field.Forbidden(archivePath.Child("rawContents"), "source and rawContents cannot be set at the same time"))
+		}
+		if archive.Source != "" && archive.SHA256 == "" {
+			errorList = append(errorList, field.Required(archivePath.Child("sha256"), "sha256 must be set when source is specified"))
+		}
+		if archive.SHA256 != "" && archive.Source == "" {
+			errorList = append(errorList, field.Forbidden(archivePath.Child("sha256"), "sha256 can only be set when source is specified"))
+		}
+		if archive.SHA256 != "" {
+			hexPart := archive.SHA256
+			if strings.HasPrefix(strings.ToLower(hexPart), "sha256:") {
+				hexPart = hexPart[7:]
+			}
+			if !validSHA256HexRegexp.MatchString(hexPart) {
+				errorList = append(errorList, field.Invalid(archivePath.Child("sha256"), archive.SHA256, "sha256 must be a 64-character hex string, optionally prefixed with 'sha256:'"))
+			}
+		}
+		if archive.RawContents != "" {
+			if _, decodeErr := base64.StdEncoding.DecodeString(archive.RawContents); decodeErr != nil {
+				errorList = append(errorList, field.Invalid(archivePath.Child("rawContents"), "<base64 data>", fmt.Sprintf("rawContents must be valid base64: %s", decodeErr.Error())))
+			}
+		}
+		// The build context is streamed to the container runtime, so the Dockerfile has to be
+		// addressable relative to the root of the archive.
+		if build.Dockerfile != "" && !isArchiveRelativePath(build.Dockerfile) {
+			errorList = append(errorList, field.Invalid(buildPath.Child("dockerfile"), build.Dockerfile, "dockerfile must be a relative path inside the build context archive"))
+		}
 	}
 	for i, tag := range build.Tags {
 		if tag == "" || strings.ContainsAny(tag, "\r\n\t ") {
 			errorList = append(errorList, field.Invalid(buildPath.Child("tags").Index(i), tag, "tag must be non-empty and must not contain whitespace or control characters"))
+		}
+	}
+	for i, baseImage := range build.BaseImages {
+		if baseImage == "" || strings.ContainsAny(baseImage, "\r\n\t ") {
+			errorList = append(errorList, field.Invalid(buildPath.Child("baseImages").Index(i), baseImage, "base image must be non-empty and must not contain whitespace or control characters"))
 		}
 	}
 	for i, secret := range build.Secrets {

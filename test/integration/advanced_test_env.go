@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"path/filepath"
 
 	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -87,6 +86,8 @@ func StartAdvancedTestEnvironmentWithOptions(
 	*AdvancedTestEnvironmentInfo,
 	error,
 ) {
+	inclCtrl |= NamespaceController | PhysicalContainerImageController | PhysicalContainerController
+
 	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
 	if sessionFolderErr != nil {
 		return nil, nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)
@@ -248,6 +249,7 @@ func StartAdvancedTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerReconciler"),
 			serverInfo.ContainerOrchestrator,
+			pe,
 		)
 		if err = physicalContainerR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainer reconciler: %w", err)
@@ -341,14 +343,9 @@ func StartAdvancedTestEnvironmentWithOptions(
 
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
 		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
-			Orchestrator:                 serverInfo.ContainerOrchestrator,
 			ProcessExecutor:              pe,
 			MakeTunnelControlClient:      dcptunproto.NewTunnelControlClient,
 			MaxTunnelPreparationAttempts: 2,
-		}
-
-		if testTempDir != NoSeparateWorkingDir {
-			tprOpts.MostRecentImageBuildsFilePath = filepath.Join(testTempDir, instanceTag+".imglist")
 		}
 
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(

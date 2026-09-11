@@ -35,7 +35,7 @@ func TestPhysicalContainerCreateResultDoesNotReplaceExistingOwner(t *testing.T) 
 			UID:       types.UID("contender"),
 		},
 	}
-	reconciler := NewPhysicalContainerReconciler(ctx, nil, nil, logr.Discard(), nil)
+	reconciler := NewPhysicalContainerReconciler(ctx, nil, nil, logr.Discard(), nil, nil)
 	reconciler.containerData.Store(existingOwner, physicalContainerDataContainerIDKey(containerID), &physicalContainerData{
 		resourceUID: types.UID("existing"),
 		state:       physicalContainerStateRuntime,
