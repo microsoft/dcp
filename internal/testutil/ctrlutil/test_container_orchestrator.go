@@ -1583,6 +1583,16 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 		return errRuntimeUnhealthy
 	}
 
+	for _, existingImage := range to.images {
+		remainingTags := existingImage.tags[:0]
+		for _, existingTag := range existingImage.tags {
+			if !slices.Contains(options.Tags, existingTag) {
+				remainingTags = append(remainingTags, existingTag)
+			}
+		}
+		existingImage.tags = remainingTags
+	}
+
 	guid := uuid.New().String()
 	image := &testImage{
 		id:      guid,

@@ -1151,7 +1151,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 	}
 	imageConfig := &apiv2.PhysicalContainerImageConfig{
 		Image:      imagePlan.Image,
-		PullPolicy: apiv2.PullPolicyMissing,
+		PullPolicy: apiv2.PullPolicyBestEffort,
 		Build: &apiv2.ContainerBuildContext{
 			ContextArchive: &apiv2.ContainerBuildContextArchive{
 				Digest:      imagePlan.BuildContextArchive.Digest,
@@ -1160,6 +1160,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 				RawContents: imagePlan.BuildContextArchive.RawContents,
 			},
 			Dockerfile: imagePlan.Dockerfile,
+			BaseImages: []string{
+				dcptun.DefaultBaseImage,
+			},
 		},
 	}
 	physicalImage := &apiv2.PhysicalContainerImage{

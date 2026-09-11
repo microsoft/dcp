@@ -44,6 +44,19 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 			},
 		},
 		{
+			name: "valid best effort source image",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{
+					Image:      "test-source-image",
+					PullPolicy: PullPolicyBestEffort,
+				}},
+			},
+		},
+		{
 			name: "valid build image without explicit target tag",
 			image: PhysicalContainerImage{
 				ObjectMeta: metav1.ObjectMeta{
@@ -83,6 +96,22 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 						SHA256: validArchiveSHA256,
 					},
 				}}},
+			},
+		},
+		{
+			name: "valid best effort build image",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{
+					PullPolicy: PullPolicyBestEffort,
+					Build: &ContainerBuildContext{
+						Context:    "test-context",
+						BaseImages: []string{"test-base-image"},
+					},
+				}},
 			},
 		},
 		{
@@ -209,6 +238,38 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 				},
 			},
 			expectedError: "spec.image.pullPolicy",
+		},
+		{
+			name: "best effort build missing base image",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{
+					PullPolicy: PullPolicyBestEffort,
+					Build: &ContainerBuildContext{
+						Context: "test-context",
+					},
+				}},
+			},
+			expectedError: "spec.image.build.baseImages",
+		},
+		{
+			name: "build rejects invalid base image",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{
+					Build: &ContainerBuildContext{
+						Context:    "test-context",
+						BaseImages: []string{"invalid base"},
+					},
+				}},
+			},
+			expectedError: "spec.image.build.baseImages[0]",
 		},
 		{
 			name: "missing build context",

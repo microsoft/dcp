@@ -108,9 +108,11 @@ type PhysicalContainerImageConfig struct {
 	// Build describes how to build the image locally.
 	Build *ContainerBuildContext `json:"build,omitempty"`
 
-	// PullPolicy controls source image pulling. For builds, missing reuses an existing output
-	// image and always rebuilds while pulling newer base images. If omitted, missing is used.
-	// Never is not supported for builds.
+	// PullPolicy controls source image pulling. For builds, missing reuses an existing output when
+	// its material build inputs match; best-effort additionally resolves declared base images and
+	// rebuilds when their identities change while tolerating pull failures when local copies are
+	// available; and always rebuilds while pulling newer base images.
+	// If omitted, missing is used. Never is not supported for builds.
 	PullPolicy ImagePullPolicy `json:"pullPolicy,omitempty"`
 
 	// PullRetryLimit is how many times a failed source image pull is retried, with exponential
@@ -240,10 +242,11 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 	}
 
 	switch image.PullPolicy {
-	case "", PullPolicyAlways, PullPolicyMissing, PullPolicyNever:
+	case "", PullPolicyAlways, PullPolicyBestEffort, PullPolicyMissing, PullPolicyNever:
 	default:
 		errorList = append(errorList, field.NotSupported(imagePath.Child("pullPolicy"), image.PullPolicy, []string{
 			string(PullPolicyAlways),
+			string(PullPolicyBestEffort),
 			string(PullPolicyMissing),
 			string(PullPolicyNever),
 		}))
@@ -256,6 +259,9 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 	if image.Build != nil {
 		if image.PullPolicy == PullPolicyNever {
 			errorList = append(errorList, field.Invalid(imagePath.Child("pullPolicy"), image.PullPolicy, "pullPolicy never is not supported for image builds"))
+		}
+		if image.PullPolicy == PullPolicyBestEffort && len(image.Build.BaseImages) == 0 {
+			errorList = append(errorList, field.Required(imagePath.Child("build", "baseImages"), "baseImages must be set when pullPolicy is best-effort"))
 		}
 		errorList = append(errorList, validatePhysicalContainerImageBuild(image.Build, imagePath.Child("build"))...)
 	}
@@ -324,6 +330,11 @@ func validatePhysicalContainerImageBuild(build *ContainerBuildContext, buildPath
 	for i, tag := range build.Tags {
 		if tag == "" || strings.ContainsAny(tag, "\r\n\t ") {
 			errorList = append(errorList, field.Invalid(buildPath.Child("tags").Index(i), tag, "tag must be non-empty and must not contain whitespace or control characters"))
+		}
+	}
+	for i, baseImage := range build.BaseImages {
+		if baseImage == "" || strings.ContainsAny(baseImage, "\r\n\t ") {
+			errorList = append(errorList, field.Invalid(buildPath.Child("baseImages").Index(i), baseImage, "base image must be non-empty and must not contain whitespace or control characters"))
 		}
 	}
 	for i, secret := range build.Secrets {

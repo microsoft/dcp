@@ -4313,6 +4313,26 @@ func schema_microsoft_dcp_api_v2_ContainerBuildContext(ref common.ReferenceCallb
 							Format:      "",
 						},
 					},
+					"baseImages": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "BaseImages identifies image references whose resolved identities determine whether an existing build output is current when using the best-effort pull policy.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
@@ -4330,7 +4350,7 @@ func schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref common.Referen
 				Properties: map[string]spec.Schema{
 					"digest": {
 						SchemaProps: spec.SchemaProps{
-							Description: "An opaque identifier for the logical contents of this archive. This allows a client to track whether the build context has meaningfully changed independently of the raw binary content (which may vary due to timestamps or other materially unimportant differences in the tar file), and is reported by the controller for diagnostic purposes.",
+							Description: "An opaque identifier for the logical contents of this archive. This allows a client to track whether the build context has meaningfully changed independently of the raw binary content (which may vary due to timestamps or other materially unimportant differences in the tar file). PhysicalContainerImage includes it in the material build-input identity used to decide whether an existing output image can be reused.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -5102,7 +5122,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerImageConfig(ref common.Referen
 					},
 					"pullPolicy": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PullPolicy controls source image pulling. For builds, missing reuses an existing output image and always rebuilds while pulling newer base images. If omitted, missing is used. Never is not supported for builds.",
+							Description: "PullPolicy controls source image pulling. For builds, missing reuses an existing output when its material build inputs match; best-effort additionally resolves declared base images and rebuilds when their identities change while tolerating pull failures when local copies are available; and always rebuilds while pulling newer base images. If omitted, missing is used. Never is not supported for builds.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

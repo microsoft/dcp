@@ -229,6 +229,12 @@ type ContainerBuildContext struct {
 	// Optional target platform for the build (e.g. "linux/amd64").
 	// +optional
 	Platform string `json:"platform,omitempty"`
+
+	// BaseImages identifies image references whose resolved identities determine whether an
+	// existing build output is current when using the best-effort pull policy.
+	// +listType=set
+	// +optional
+	BaseImages []string `json:"baseImages,omitempty"`
 }
 
 // ContainerBuildContextArchive describes a tar archive containing an image build context.
@@ -237,7 +243,8 @@ type ContainerBuildContextArchive struct {
 	// An opaque identifier for the logical contents of this archive.
 	// This allows a client to track whether the build context has meaningfully changed independently
 	// of the raw binary content (which may vary due to timestamps or other materially unimportant
-	// differences in the tar file), and is reported by the controller for diagnostic purposes.
+	// differences in the tar file). PhysicalContainerImage includes it in the material build-input
+	// identity used to decide whether an existing output image can be reused.
 	Digest string `json:"digest"`
 
 	// Path to a tar file on the host filesystem. Mutually exclusive with RawContents.
@@ -255,6 +262,11 @@ type ImagePullPolicy string
 const (
 	// Always pull the container image.
 	PullPolicyAlways ImagePullPolicy = "always"
+
+	// Attempt to pull a source image, but use an existing local image if pulling fails.
+	// For builds, declared base images are resolved this way and their immutable identities
+	// participate in deciding whether an existing build output can be reused.
+	PullPolicyBestEffort ImagePullPolicy = "best-effort"
 
 	// Pull the container image only if it is not present.
 	PullPolicyMissing ImagePullPolicy = "missing"
