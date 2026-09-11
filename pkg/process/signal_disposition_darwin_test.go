@@ -10,6 +10,7 @@ package process
 import (
 	"os"
 	"os/exec"
+	"os/signal"
 	"syscall"
 	"testing"
 	"time"
@@ -20,18 +21,20 @@ import (
 )
 
 const (
-	prepareSIGUSR1ForExecHelperEnvVar = "DCP_TEST_PREPARE_SIGUSR1_FOR_EXEC_HELPER"
-	prepareSIGUSR1DefaultMode         = "default"
-	prepareSIGUSR1IgnoredMode         = "ignored"
+	prepareSIGUSR1ForExecHelperEnvVar        = "DCP_TEST_PREPARE_SIGUSR1_FOR_EXEC_HELPER"
+	prepareSIGUSR1DefaultMode                = "default"
+	prepareSIGUSR1IgnoredMode                = "ignored"
+	darwinTestSARestart               int32  = 0x2
+	dirtySignalMask                   uint32 = 1
 )
 
-func TestPrepareSIGUSR1ForExec(t *testing.T) {
+func TestPrepareSIGUSR1ForExecUsesDefaultDisposition(t *testing.T) {
 	t.Parallel()
 
 	runPrepareSIGUSR1ForExecHelper(t, prepareSIGUSR1DefaultMode)
 }
 
-func TestPrepareSIGUSR1ForExecPreservesIgnoredDisposition(t *testing.T) {
+func TestPrepareSIGUSR1ForExecUsesIgnoredDisposition(t *testing.T) {
 	t.Parallel()
 
 	runPrepareSIGUSR1ForExecHelper(t, prepareSIGUSR1IgnoredMode)
@@ -69,45 +72,85 @@ func TestPrepareSIGUSR1ForExecHelper(t *testing.T) {
 func testPrepareSIGUSR1ForExecDefault(t *testing.T) {
 	t.Helper()
 
+	initiallyIgnored, ignoredErr := IsSIGUSR1Ignored()
+	require.NoError(t, ignoredErr)
+	require.False(t, initiallyIgnored, "the Go test process should not start with SIGUSR1 ignored")
+
+	// The requested target disposition, rather than the shim's current disposition, must win.
+	setDirtySIGUSR1Disposition(t, darwinSigIgn)
 	before := readSignalDispositions(t)
 	beforeSIGUSR1 := before[int(syscall.SIGUSR1)]
-	require.NotEqual(t, darwinSigIgn, beforeSIGUSR1.handler, "the Go runtime should not ignore SIGUSR1")
-	require.NotZero(t, beforeSIGUSR1.flags, "the Go runtime should have left flags set on SIGUSR1")
+	require.Equal(t, darwinSigIgn, beforeSIGUSR1.handler)
+	require.NotZero(t, beforeSIGUSR1.flags)
+	require.NotZero(t, beforeSIGUSR1.mask)
 
-	require.NoError(t, PrepareSIGUSR1ForExec())
+	require.NoError(t, PrepareSIGUSR1ForExec(false))
 
-	after := readSignalDispositions(t)
-	for sig := 1; sig < darwinNumSignals; sig++ {
-		if sig == int(syscall.SIGKILL) || sig == int(syscall.SIGSTOP) {
-			continue
-		}
-
-		if sig == int(syscall.SIGUSR1) {
-			require.Equal(t, darwinSigDfl, after[sig].handler, "SIGUSR1 should be reset to SIG_DFL")
-			require.Zero(t, after[sig].flags, "SIGUSR1 should have no flags")
-			require.Zero(t, after[sig].mask, "SIGUSR1 should have an empty mask")
-			continue
-		}
-
-		require.Equal(t, before[sig], after[sig], "signal %d disposition should remain unchanged", sig)
-	}
+	assertPreparedSIGUSR1Disposition(t, before, darwinSigDfl)
 }
 
 func testPrepareSIGUSR1ForExecIgnored(t *testing.T) {
 	t.Helper()
 
-	ignoredAction := darwinSigactionNew{handler: darwinSigIgn}
-	require.NoError(t, setSignalDisposition(int(syscall.SIGUSR1), &ignoredAction))
+	signal.Ignore(syscall.SIGUSR1)
+	ignored, ignoredErr := IsSIGUSR1Ignored()
+	require.NoError(t, ignoredErr)
+	require.True(t, ignored, "SIGUSR1 should be reported as ignored")
 
-	before, beforeErr := signalDisposition(int(syscall.SIGUSR1))
-	require.NoError(t, beforeErr)
-	require.Equal(t, darwinSigIgn, before.handler)
+	// The requested target disposition, rather than the shim's current disposition, must win.
+	setDirtySIGUSR1Disposition(t, darwinSigDfl)
+	before := readSignalDispositions(t)
+	beforeSIGUSR1 := before[int(syscall.SIGUSR1)]
+	require.Equal(t, darwinSigDfl, beforeSIGUSR1.handler)
+	require.NotZero(t, beforeSIGUSR1.flags)
+	require.NotZero(t, beforeSIGUSR1.mask)
 
-	require.NoError(t, PrepareSIGUSR1ForExec())
+	require.NoError(t, PrepareSIGUSR1ForExec(true))
 
-	after, afterErr := signalDisposition(int(syscall.SIGUSR1))
-	require.NoError(t, afterErr)
-	require.Equal(t, before, after, "an ignored SIGUSR1 disposition should remain unchanged")
+	assertPreparedSIGUSR1Disposition(t, before, darwinSigIgn)
+}
+
+func setDirtySIGUSR1Disposition(t *testing.T, handler uintptr) {
+	t.Helper()
+
+	dirtyAction := darwinSigactionNew{
+		handler: handler,
+		mask:    dirtySignalMask,
+		flags:   darwinTestSARestart,
+	}
+	setErr := setSignalDisposition(int(syscall.SIGUSR1), &dirtyAction)
+	require.NoError(t, setErr)
+}
+
+func assertPreparedSIGUSR1Disposition(
+	t *testing.T,
+	before map[int]darwinSigactionOld,
+	expectedHandler uintptr,
+) {
+	t.Helper()
+
+	after := readSignalDispositions(t)
+	afterSIGUSR1 := after[int(syscall.SIGUSR1)]
+	require.Equal(t, expectedHandler, afterSIGUSR1.handler, "SIGUSR1 should have the requested handler")
+	require.Zero(t, afterSIGUSR1.flags, "SIGUSR1 should have no flags")
+	require.Zero(t, afterSIGUSR1.mask, "SIGUSR1 should have an empty mask")
+	require.Equal(
+		t,
+		before[int(syscall.SIGURG)],
+		after[int(syscall.SIGURG)],
+		"SIGURG disposition should remain unchanged",
+	)
+
+	for sig := 1; sig < darwinNumSignals; sig++ {
+		if sig == int(syscall.SIGKILL) ||
+			sig == int(syscall.SIGSTOP) ||
+			sig == int(syscall.SIGUSR1) ||
+			sig == int(syscall.SIGURG) {
+			continue
+		}
+
+		require.Equal(t, before[sig], after[sig], "signal %d disposition should remain unchanged", sig)
+	}
 }
 
 func readSignalDispositions(t *testing.T) map[int]darwinSigactionOld {

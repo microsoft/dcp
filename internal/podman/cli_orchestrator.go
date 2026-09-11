@@ -482,6 +482,9 @@ func (pco *PodmanCliOrchestrator) PullImage(ctx context.Context, options contain
 	}
 
 	args := []string{"image", "pull", "--quiet"}
+	if options.AllowInsecureRegistry {
+		args = append(args, "--tls-verify=false")
+	}
 	if options.Digest != "" {
 		args = append(args, options.Image+"@"+options.Digest)
 	} else {

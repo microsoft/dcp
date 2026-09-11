@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"testing"
 
@@ -46,12 +47,16 @@ func TestUseExecShim(t *testing.T) {
 	dcpPath, dcpPathErr := os.Executable()
 	require.NoError(t, dcpPathErr)
 
+	ignoredByCaller, dispositionErr := process.IsSIGUSR1Ignored()
+	require.NoError(t, dispositionErr)
+
 	expectedArgs := append(
 		[]string{
 			dcpPath,
 			ForkProcessExecCmdName,
 			"--" + execPathFlagName,
 			originalPath,
+			"--" + callerSIGUSR1IgnoredFlagName + "=" + strconv.FormatBool(ignoredByCaller),
 			"--",
 		},
 		originalArgs...,

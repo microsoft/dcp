@@ -210,6 +210,11 @@ func useExecShim(childCmd *exec.Cmd) (*execShimHandshake, error) {
 		return nil, nil
 	}
 
+	callerSIGUSR1Ignored, dispositionErr := process.IsSIGUSR1Ignored()
+	if dispositionErr != nil {
+		return nil, fmt.Errorf("could not determine the caller's SIGUSR1 disposition: %w", dispositionErr)
+	}
+
 	dcpPath, dcpPathErr := os.Executable()
 	if dcpPathErr != nil {
 		return nil, fmt.Errorf("could not determine the path of the current executable: %w", dcpPathErr)
@@ -220,7 +225,12 @@ func useExecShim(childCmd *exec.Cmd) (*execShimHandshake, error) {
 		return nil, fmt.Errorf("could not create the exec status pipe: %w", pipeErr)
 	}
 
-	shimArgs := []string{dcpPath, ForkProcessExecCmdName, "--" + execPathFlagName, childCmd.Path}
+	shimArgs := []string{
+		dcpPath,
+		ForkProcessExecCmdName,
+		"--" + execPathFlagName, childCmd.Path,
+		"--" + callerSIGUSR1IgnoredFlagName + "=" + strconv.FormatBool(callerSIGUSR1Ignored),
+	}
 	shimArgs = append(shimArgs, "--")
 	childCmd.Args = append(shimArgs, childCmd.Args...)
 	childCmd.Path = dcpPath

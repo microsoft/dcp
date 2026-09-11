@@ -33,10 +33,11 @@ func TestContainerLifecycleMethods(t *testing.T) {
 
 		containerName := containertest.UniqueName(t, "container-lifecycle")
 		require.NoError(t, tracker.TrackContainer(containerName))
+		image := ensureTestImage(t, ctx, runtime)
 
 		containerID, createErr := runtime.Orchestrator.CreateContainer(ctx, longRunningContainerOptions(
 			containerName,
-			ensureBaseImage(t, ctx, runtime),
+			image,
 			tracker.Labels(),
 		))
 		require.NoError(t, createErr)
@@ -44,7 +45,7 @@ func TestContainerLifecycleMethods(t *testing.T) {
 
 		created := waitForContainerStatus(t, ctx, runtime.Orchestrator, containerID, containers.ContainerStatusCreated)
 		require.Equal(t, containerName, created.Name)
-		require.Equal(t, baseImageReference, created.Image)
+		require.Equal(t, image, created.Image)
 		require.Equal(t, tracker.RunID(), created.Labels[containertest.TestRunLabel])
 
 		listed, listErr := runtime.Orchestrator.ListContainers(ctx, containers.ListContainersOptions{
@@ -99,10 +100,11 @@ func TestRunAndExecContainerMethods(t *testing.T) {
 				Name:  "DCP_TEST_VALUE",
 				Value: "exec-value",
 			}},
-			Command: "sh",
+			Command: containerProbePath,
 			Args: []string{
-				"-c",
-				`printf "%s:%s" "$DCP_TEST_VALUE" "$PWD"; printf "exec-stderr" >&2`,
+				"report",
+				"DCP_TEST_VALUE",
+				"exec-stderr",
 			},
 		})
 
@@ -140,10 +142,12 @@ func TestCreateFilesMethod(t *testing.T) {
 
 		exitCode, stdout, stderr := execContainer(t, ctx, runtime.Orchestrator, containers.ExecContainerOptions{
 			Container: containerID,
-			Command:   "sh",
+			Command:   containerProbePath,
 			Args: []string{
-				"-c",
-				`printf "%s|%s|%s" "$(cat /tmp/dcp-files/plain.txt)" "$(cat /tmp/dcp-files/raw.txt)" "$(readlink /tmp/dcp-files/plain-link)"`,
+				"inspect-files",
+				"/tmp/dcp-files/plain.txt",
+				"/tmp/dcp-files/raw.txt",
+				"/tmp/dcp-files/plain-link",
 			},
 		})
 		require.Equal(t, int32(0), exitCode)
@@ -164,7 +168,7 @@ func TestCaptureContainerLogsMethod(t *testing.T) {
 			runtime,
 			tracker,
 			"container-logs",
-			[]string{"sh", "-c", `printf "stdout-marker\n"; printf "stderr-marker\n" >&2`},
+			[]string{"emit", "stdout-marker\n", "stderr-marker\n"},
 		)
 		require.Equal(t, "stdout-marker\n", stdout)
 		require.Equal(t, "stderr-marker\n", stderr)
@@ -182,8 +186,8 @@ func TestAttachContainerMethod(t *testing.T) {
 
 		containerID, createErr := runtime.Orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 			Name:           containerName,
-			Image:          ensureBaseImage(t, ctx, runtime),
-			Command:        []string{"sh", "-i"},
+			Image:          ensureTestImage(t, ctx, runtime),
+			Command:        []string{"interactive"},
 			Labels:         tracker.Labels(),
 			PullPolicy:     containers.PullPolicyNever,
 			AttachTerminal: true,
@@ -212,9 +216,9 @@ func TestAttachContainerMethod(t *testing.T) {
 		terminalProcess.StartWaitForExit()
 		require.NoError(t, terminalProcess.PTY.Resize(120, 40))
 
-		_, writeErr := terminalProcess.PTY.Write([]byte("printf 'attach-%s\\n' success\n"))
+		_, writeErr := terminalProcess.PTY.Write([]byte("attach-success\n"))
 		require.NoError(t, writeErr)
-		output, readErr := readUntil(ctx, terminalProcess.PTY, "attach-success")
+		output, readErr := readUntil(ctx, terminalProcess.PTY, "probe:attach-success")
 		require.NoError(t, readErr, "terminal output: %q", output)
 
 		_, writeErr = terminalProcess.PTY.Write([]byte("exit\n"))
@@ -248,7 +252,7 @@ func TestWatchContainersMethod(t *testing.T) {
 		require.NoError(t, tracker.TrackContainer(containerName))
 		containerID, createErr := runtime.Orchestrator.CreateContainer(ctx, longRunningContainerOptions(
 			containerName,
-			ensureBaseImage(t, ctx, runtime),
+			ensureTestImage(t, ctx, runtime),
 			tracker.Labels(),
 		))
 		require.NoError(t, createErr)
@@ -302,8 +306,8 @@ func warmContainerWatcher(
 		containerID, runErr := runtime.Orchestrator.RunContainer(ctx, containers.RunContainerOptions{
 			CreateContainerOptions: containers.CreateContainerOptions{
 				Name:       containerName,
-				Image:      ensureBaseImage(t, ctx, runtime),
-				Command:    []string{"sh", "-c", "exit 0"},
+				Image:      ensureTestImage(t, ctx, runtime),
+				Command:    []string{"exit"},
 				Labels:     tracker.Labels(),
 				PullPolicy: containers.PullPolicyNever,
 			},

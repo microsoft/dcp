@@ -17,8 +17,14 @@ func NeedsExecSignalDispositionWorkaround() bool {
 	return false
 }
 
+// IsSIGUSR1Ignored reports whether SIGUSR1 currently has the SIG_IGN disposition. It reports
+// false on platforms that do not need the Darwin exec signal disposition workaround.
+func IsSIGUSR1Ignored() (bool, error) {
+	return false, nil
+}
+
 // PrepareSIGUSR1ForExec gives SIGUSR1 a disposition that is safe for an exec'd child. It is a
 // no-op wherever NeedsExecSignalDispositionWorkaround reports false.
-func PrepareSIGUSR1ForExec() error {
+func PrepareSIGUSR1ForExec(_ bool) error {
 	return nil
 }

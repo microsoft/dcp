@@ -15,33 +15,6 @@ import (
 	"github.com/microsoft/dcp/internal/testutil/containertest"
 )
 
-func TestPullAndInspectImageMethods(t *testing.T) {
-	t.Parallel()
-
-	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
-		// Fixed image references can be shared by overlapping test runs, so leave this cached.
-		imageID, pullErr := runtime.Orchestrator.PullImage(ctx, containers.PullImageOptions{
-			Image: pullImageReference,
-		})
-		require.NoError(t, pullErr)
-		require.NotEmpty(t, imageID)
-
-		byName, inspectNameErr := runtime.Orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
-			Images: []string{pullImageReference},
-		})
-		require.NoError(t, inspectNameErr)
-		require.Len(t, byName, 1)
-		require.NotEmpty(t, byName[0].Id)
-
-		byID, inspectIDErr := runtime.Orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
-			Images: []string{imageID},
-		})
-		require.NoError(t, inspectIDErr)
-		require.Len(t, byID, 1)
-		require.Equal(t, byName[0].Id, byID[0].Id)
-	})
-}
-
 func TestBuildInspectAndRemoveImageMethods(t *testing.T) {
 	t.Parallel()
 
@@ -51,7 +24,7 @@ func TestBuildInspectAndRemoveImageMethods(t *testing.T) {
 		image := imageReference(t, "build-image")
 		require.NoError(t, tracker.TrackImage(image))
 		marker := containertest.UniqueName(t, "build-marker")
-		contextDir, dockerfilePath := writeBuildContext(t, ensureBaseImage(t, ctx, runtime), marker)
+		contextDir, dockerfilePath := writeBuildContext(t, ensureTestImage(t, ctx, runtime), marker)
 
 		buildErr := runtime.Orchestrator.BuildImage(ctx, containers.BuildImageOptions{
 			ContainerBuildContext: &containers.ContainerBuildContext{
@@ -92,7 +65,7 @@ func TestApplyImageLayersMethod(t *testing.T) {
 	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
 		tracker := containertest.NewResourceTracker(t, runtime)
 
-		baseImage := ensureBaseImage(t, ctx, runtime)
+		baseImage := ensureTestImage(t, ctx, runtime)
 		inspectedBase, inspectBaseErr := runtime.Orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
 			Images: []string{baseImage},
 		})

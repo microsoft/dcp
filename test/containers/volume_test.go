@@ -56,8 +56,8 @@ func TestVolumeMethods(t *testing.T) {
 		containerID, runErr := runtime.Orchestrator.RunContainer(ctx, containers.RunContainerOptions{
 			CreateContainerOptions: containers.CreateContainerOptions{
 				Name:       containerName,
-				Image:      ensureBaseImage(t, ctx, runtime),
-				Command:    []string{"sh", "-c", `printf "volume-content" > /data/value; exec sleep 600`},
+				Image:      ensureTestImage(t, ctx, runtime),
+				Command:    []string{"write-and-wait", "/data/value", "volume-content", "10m"},
 				Labels:     tracker.Labels(),
 				PullPolicy: containers.PullPolicyNever,
 				VolumeMounts: []containers.CreateContainerVolumeMount{{
@@ -72,8 +72,8 @@ func TestVolumeMethods(t *testing.T) {
 
 		exitCode, stdout, stderr := execContainer(t, ctx, runtime.Orchestrator, containers.ExecContainerOptions{
 			Container: containerID,
-			Command:   "sh",
-			Args:      []string{"-c", `while [ ! -f /data/value ]; do sleep 1; done; cat /data/value`},
+			Command:   containerProbePath,
+			Args:      []string{"wait-read", "/data/value", "30s"},
 		})
 		require.Equal(t, int32(0), exitCode)
 		require.Equal(t, "volume-content", stdout)

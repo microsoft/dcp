@@ -569,6 +569,40 @@ func TestBuildImageUsesIIDFile(t *testing.T) {
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 
+func TestPullImageAllowsInsecureLoopbackRegistryWithoutUnsupportedFlag(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, executor.Close())
+	})
+	expectedCommand := []string{
+		"docker", "image", "pull", "--quiet", "127.0.0.1:5000/test/image:latest",
+	}
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: expectedCommand,
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			_, writeErr := execution.Cmd.Stdout.Write([]byte("sha256:image-id\n"))
+			require.NoError(t, writeErr)
+			return 0
+		},
+	})
+
+	orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
+	imageID, pullErr := orchestrator.PullImage(ctx, ct.PullImageOptions{
+		Image:                 "127.0.0.1:5000/test/image:latest",
+		AllowInsecureRegistry: true,
+	})
+
+	require.NoError(t, pullErr)
+	require.Equal(t, "sha256:image-id", imageID)
+	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
+}
+
 func TestListNetworksUsesFullIdentifiers(t *testing.T) {
 	t.Parallel()
 

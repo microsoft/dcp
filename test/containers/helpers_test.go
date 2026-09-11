@@ -50,7 +50,7 @@ func longRunningContainerOptions(
 	return containers.CreateContainerOptions{
 		Name:       name,
 		Image:      image,
-		Command:    []string{"sh", "-c", "sleep 600"},
+		Command:    []string{"wait", "10m"},
 		Labels:     labels,
 		PullPolicy: containers.PullPolicyNever,
 	}
@@ -65,7 +65,7 @@ func runLongLivedContainer(
 ) (name string, id string) {
 	t.Helper()
 
-	image := ensureBaseImage(t, ctx, runtime)
+	image := ensureTestImage(t, ctx, runtime)
 	name = containertest.UniqueName(t, prefix)
 	require.NoError(t, tracker.TrackContainer(name))
 
@@ -244,7 +244,7 @@ func runAndCapture(
 		runtime,
 		tracker,
 		prefix,
-		ensureBaseImage(t, ctx, runtime),
+		ensureTestImage(t, ctx, runtime),
 		command,
 	)
 }
@@ -297,9 +297,30 @@ func writeBuildContext(t *testing.T, baseImage string, marker string) (contextDi
 
 	contextDir = t.TempDir()
 	dockerfilePath = filepath.Join(contextDir, "Dockerfile")
-	dockerfile := fmt.Sprintf("FROM %s\nRUN printf '%%s' '%s' > /dcp-build-marker\n", baseImage, marker)
+	markerPath := filepath.Join(contextDir, "dcp-build-marker")
+	require.NoError(t, usvc_io.WriteFile(markerPath, []byte(marker), osutil.PermissionOnlyOwnerReadWrite))
+	dockerfile := fmt.Sprintf("FROM %s\nCOPY dcp-build-marker /dcp-build-marker\n", baseImage)
 	require.NoError(t, usvc_io.WriteFile(dockerfilePath, []byte(dockerfile), osutil.PermissionOnlyOwnerReadWrite))
 	return contextDir, dockerfilePath
+}
+
+func copyTestTool(source string, destination string) error {
+	sourceFile, sourceErr := usvc_io.OpenFileReadOnly(source)
+	if sourceErr != nil {
+		return sourceErr
+	}
+	defer sourceFile.Close()
+
+	destinationFile, destinationErr := usvc_io.CreateNewFile(destination, osutil.PermissionOnlyOwnerReadWriteExecute)
+	if destinationErr != nil {
+		return destinationErr
+	}
+
+	if _, copyErr := io.Copy(destinationFile, sourceFile); copyErr != nil {
+		_ = destinationFile.Close()
+		return copyErr
+	}
+	return destinationFile.Close()
 }
 
 func rawImageLayer(t *testing.T, path string, content string) string {

@@ -26,6 +26,9 @@ const (
 	// the arguments so that the child keeps the argv[0] the caller asked for.
 	execPathFlagName = "exec-path"
 
+	// The hidden flag carrying the SIGUSR1 disposition captured before this Go process started.
+	callerSIGUSR1IgnoredFlagName = "caller-sigusr1-ignored"
+
 	// The descriptor 'fork-process' passes as the only extra file, on which this command reports
 	// whether the exec succeeded. It is the first descriptor after the standard streams.
 	execStatusFd = 3
@@ -36,16 +39,19 @@ const (
 	execFailedExitCode = 127
 )
 
-var execPath string
+var (
+	execPath             string
+	callerSIGUSR1Ignored bool
+)
 
-// NewForkProcessExecCommand creates the 'fork-process-exec' command, which replaces itself with
-// the requested image after cleaning the SIGUSR1 disposition inherited from the Go runtime.
-// It is an implementation detail of 'fork-process' and is not meant to be invoked directly.
+// NewForkProcessExecCommand creates the 'fork-process-exec' command, which installs the clean
+// SIGUSR1 disposition requested by 'fork-process' and replaces itself with the requested image.
+// It is an implementation detail and is not meant to be invoked directly.
 func NewForkProcessExecCommand(log logr.Logger) (*cobra.Command, error) {
 	forkProcessExecCmd := &cobra.Command{
 		Use:   ForkProcessExecCmdName + " --" + execPathFlagName + " path -- command [args...]",
 		Short: "Replaces this process with another program.",
-		Long:  "Cleans the SIGUSR1 disposition this process inherited from the Go runtime and then replaces it with the requested program, keeping the same process ID. Used internally by 'fork-process' so that children do not inherit signal handler flags that confuse other language runtimes.",
+		Long:  "Installs a clean SIGUSR1 disposition captured by 'fork-process' and then replaces this process with the requested program, keeping the same process ID. This prevents children from inheriting signal handler flags that confuse other language runtimes.",
 		RunE:  forkProcessExec(log),
 		Args:  validateForkProcessExecArgs,
 
@@ -54,6 +60,16 @@ func NewForkProcessExecCommand(log logr.Logger) (*cobra.Command, error) {
 	}
 
 	forkProcessExecCmd.Flags().StringVar(&execPath, execPathFlagName, "", "Resolved path of the program to execute")
+	forkProcessExecCmd.Flags().BoolVar(
+		&callerSIGUSR1Ignored,
+		callerSIGUSR1IgnoredFlagName,
+		false,
+		"Whether the caller ignored SIGUSR1 before starting the exec shim",
+	)
+	hideDispositionFlagErr := forkProcessExecCmd.Flags().MarkHidden(callerSIGUSR1IgnoredFlagName)
+	if hideDispositionFlagErr != nil {
+		return nil, fmt.Errorf("could not hide --%s: %w", callerSIGUSR1IgnoredFlagName, hideDispositionFlagErr)
+	}
 
 	return forkProcessExecCmd, nil
 }
@@ -87,7 +103,7 @@ func forkProcessExec(log logr.Logger) func(cmd *cobra.Command, args []string) er
 
 		targetEnv := os.Environ()
 
-		prepareErr := process.PrepareSIGUSR1ForExec()
+		prepareErr := process.PrepareSIGUSR1ForExec(callerSIGUSR1Ignored)
 		if prepareErr != nil {
 			writeForkProcessExecFailure(statusFile, prepareErr)
 			log.Error(prepareErr, "Could not prepare SIGUSR1 disposition for executed program")

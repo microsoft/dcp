@@ -51,9 +51,19 @@ func NeedsExecSignalDispositionWorkaround() bool {
 	return true
 }
 
-// PrepareSIGUSR1ForExec gives SIGUSR1 a disposition that is safe for an exec'd child. An ignored
-// disposition remains ignored; every other disposition becomes SIG_DFL with no trampoline,
-// flags, or mask.
+// IsSIGUSR1Ignored reports whether SIGUSR1 currently has the SIG_IGN disposition.
+func IsSIGUSR1Ignored() (bool, error) {
+	current, currentErr := signalDisposition(int(syscall.SIGUSR1))
+	if currentErr != nil {
+		return false, fmt.Errorf("reading SIGUSR1 disposition: %w", currentErr)
+	}
+
+	return current.handler == darwinSigIgn, nil
+}
+
+// PrepareSIGUSR1ForExec gives SIGUSR1 the requested disposition with no trampoline, flags, or
+// mask. The requested disposition must be captured before starting this Go process because the
+// Go runtime may replace the inherited disposition during startup.
 //
 // Affected Go releases install handlers with SA_SIGINFO|SA_ONSTACK|SA_RESTART and restore them
 // to SIG_DFL before exec without clearing those flags. Because Darwin's execve(2) preserves
@@ -65,24 +75,21 @@ func NeedsExecSignalDispositionWorkaround() bool {
 // own dispositions in the forked child before it reaches execve. The reset has to happen in the
 // process that calls exec, which is what the 'fork-process-exec' command exists to do. This
 // workaround can be removed once DCP requires a Go release containing golang/go#81009.
-func PrepareSIGUSR1ForExec() error {
-	current, currentErr := signalDisposition(int(syscall.SIGUSR1))
-	if currentErr != nil {
-		return fmt.Errorf("reading SIGUSR1 disposition: %w", currentErr)
-	}
-	if current.handler == darwinSigIgn {
-		return nil
+func PrepareSIGUSR1ForExec(ignoredByCaller bool) error {
+	targetHandler := darwinSigDfl
+	if ignoredByCaller {
+		targetHandler = darwinSigIgn
 	}
 
 	act := darwinSigactionNew{
-		handler: darwinSigDfl,
+		handler: targetHandler,
 		tramp:   0,
 		mask:    0,
 		flags:   0,
 	}
 
 	if setErr := setSignalDisposition(int(syscall.SIGUSR1), &act); setErr != nil {
-		return fmt.Errorf("resetting SIGUSR1 disposition: %w", setErr)
+		return fmt.Errorf("setting SIGUSR1 disposition for exec: %w", setErr)
 	}
 
 	return nil
