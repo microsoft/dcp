@@ -65,6 +65,8 @@ func loadConPTY(directory string) (*conPTY, error) {
 		return nil, hostErr
 	}
 
+	// Load the exact bundled DLL and restrict its dependency search to this directory and System32.
+	// NewLazyDLL does not expose the required LoadLibraryEx search flags.
 	module, loadErr := windows.LoadLibraryEx(dllPath, 0,
 		windows.LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|windows.LOAD_LIBRARY_SEARCH_SYSTEM32)
 	if loadErr != nil {

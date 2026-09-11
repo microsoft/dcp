@@ -100,6 +100,7 @@ endif
 OUTPUT_BIN ?= $(repo_dir)/bin
 DCP_DIR ?= $(home_dir)/.dcp
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
+# The native ConPTY payload must be staged beside the executable, including when DCP_BINARY is overridden.
 DCP_BINARY_DIR := $(abspath $(dir $(DCP_BINARY)))
 DCPTUN_CLIENT_BINARY ?= $(OUTPUT_BIN)/dcptun_c
 
@@ -310,13 +311,12 @@ build-ci: generate-ci release ## Runs codegen, including license/notice files, t
 
 .PHONY: build-dcp
 build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
-$(DCP_BINARY): $(GO_SOURCES) go.mod | ${DCP_BINARY_DIR}
-	$(GO_BIN) build -o $(DCP_BINARY) $(BUILD_ARGS) ./cmd/dcp
-
 ifeq ($(build_os),windows)
 # Rebuild with the selected GOARCH when reusing output from another Windows architecture.
-$(DCP_BINARY): stage-conpty
+DCP_BINARY_PREREQUISITES := stage-conpty
 endif
+$(DCP_BINARY): $(GO_SOURCES) go.mod $(DCP_BINARY_PREREQUISITES) | ${DCP_BINARY_DIR}
+	$(GO_BIN) build -o $(DCP_BINARY) $(BUILD_ARGS) ./cmd/dcp
 
 .PHONY: build-dcptun-containerexe
 build-dcptun-containerexe: $(DCPTUN_CLIENT_BINARY) ## Builds DCP reverse network tunnel client binary for Linux (to be used in containers)
