@@ -48,6 +48,32 @@ func TestStartProcessWithTerminal_StdoutFromChild(t *testing.T) {
 	require.Equal(t, int32(0), ei.ExitCode)
 }
 
+func TestStartProcessWithTerminal_GraphicsPassthrough(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		sequence string
+	}{
+		{"kitty", "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\"},
+		{"sixel", "\x1bPq\"1;1;1;1#0;2;100;0;0#0@\x1b\\"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+			defer cancel()
+
+			sp := startTermchildWithPTY(t, ctx, "--print", tc.sequence)
+			out, readErr := readUntil(ctx, sp.PTY, tc.sequence)
+			require.NoError(t, readErr, "graphics sequence was not passed through: %q", out)
+
+			exitInfo := awaitExit(t, ctx, sp.ExitHandler)
+			require.NoError(t, exitInfo.Err)
+			require.Equal(t, int32(0), exitInfo.ExitCode)
+		})
+	}
+}
+
 // TestStartProcessWithTerminal_StderrFromChild verifies that the child's
 // stderr is multiplexed onto the same PTY master as stdout. (ConPTY merges
 // stdout and stderr into a single pseudo-console output stream.)

@@ -7,7 +7,7 @@
 # IMPORTANT: This script must be kept in sync with the Makefile targets
 # `test-ci`, `test-ci-prereqs`, and the `TEST_PREREQS` variable. If you change
 # any of those (add/remove a prerequisite, change build flags, change the final
-# `go test` invocation, change the protoc version, etc.) you MUST update this
+# `go test` invocation, change the protoc or ConPTY version, etc.) you MUST update this
 # script to match. See also the comments above those targets in the Makefile.
 #
 # The sequence implemented here mirrors, for the non-make-4.4 TEST_PREREQS:
@@ -27,6 +27,8 @@ $ProgressPreference = 'SilentlyContinue' # Makes Invoke-WebRequest / Expand-Arch
 
 # Keep in sync with Makefile: PROTOC_VERSION.
 $ProtocVersion = '33.5'
+# Keep in sync with Makefile: CONPTY_VERSION and stage-conpty.
+$ConPtyVersion = '1.24.260710001'
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $OutputBin = Join-Path $RepoRoot 'bin'
@@ -69,6 +71,69 @@ function Install-Protoc {
 
     if (-not (Test-Path -LiteralPath $ProtocExe)) {
         throw "protoc extraction did not produce expected binary at $ProtocExe"
+    }
+}
+
+function Install-ConPty {
+    $goarch = & go env GOARCH
+    if ($LASTEXITCODE -ne 0) {
+        throw "go env GOARCH failed with exit code $LASTEXITCODE"
+    }
+    $dllArch = switch ($goarch.Trim()) {
+        'amd64' { 'x64' }
+        'arm64' { 'arm64' }
+        '386' { 'x86' }
+        default { throw "Unsupported Windows ConPTY GOARCH: $goarch" }
+    }
+    $hostArches = switch ($dllArch) {
+        'x64' { 'x64', 'arm64' }
+        'arm64' { 'arm64' }
+        'x86' { 'x86', 'x64', 'arm64' }
+    }
+
+    $conPtyDir = Join-Path $ToolBin "conpty/$ConPtyVersion/$dllArch"
+    $completePath = Join-Path $conPtyDir '.complete'
+    $dllPath = Join-Path $conPtyDir "runtimes/win-$dllArch/native/conpty.dll"
+    $binaries = @($dllPath)
+    foreach ($arch in $hostArches) {
+        $binaries += Join-Path $conPtyDir "build/native/runtimes/$arch/OpenConsole.exe"
+    }
+    $complete = Test-Path -LiteralPath $completePath -PathType Leaf
+    foreach ($binary in $binaries) {
+        $complete = $complete -and (Test-Path -LiteralPath $binary -PathType Leaf) -and ((Get-Item -LiteralPath $binary).Length -gt 0)
+    }
+
+    if (-not $complete) {
+        if (Test-Path -LiteralPath $conPtyDir) {
+            Remove-Item -LiteralPath $conPtyDir -Recurse -Force
+        }
+        New-DirectoryIfMissing $conPtyDir
+        $zipPath = Join-Path $conPtyDir 'package.zip'
+        $url = "https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/$ConPtyVersion/microsoft.windows.console.conpty.$ConPtyVersion.nupkg"
+
+        Write-Host "Downloading $url"
+        Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+        Expand-Archive -LiteralPath $zipPath -DestinationPath $conPtyDir -Force
+        foreach ($binary in $binaries) {
+            if (-not (Test-Path -LiteralPath $binary -PathType Leaf) -or (Get-Item -LiteralPath $binary).Length -eq 0) {
+                throw "ConPTY extraction did not produce $binary"
+            }
+        }
+        # Only a successful download and extraction can make this cache reusable.
+        New-Item -ItemType File -Path $completePath -Force | Out-Null
+    }
+
+    # A root host overrides OS-native host selection; remove it and stale architecture payloads.
+    foreach ($name in @('OpenConsole.exe', 'x86/OpenConsole.exe', 'x64/OpenConsole.exe', 'arm64/OpenConsole.exe')) {
+        $path = Join-Path $OutputBin $name
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Force
+        }
+    }
+    Copy-Item -LiteralPath $dllPath, (Join-Path $RepoRoot 'LICENSE-ConPTY.txt') -Destination $OutputBin -Force
+    foreach ($arch in $hostArches) {
+        New-DirectoryIfMissing (Join-Path $OutputBin $arch)
+        Copy-Item -LiteralPath (Join-Path $conPtyDir "build/native/runtimes/$arch/OpenConsole.exe") -Destination (Join-Path $OutputBin "$arch/OpenConsole.exe") -Force
     }
 }
 
@@ -162,6 +227,7 @@ function Build-TestPrereqs {
     Invoke-GenerateGrpc
 
     # build-dcp
+    Install-ConPty
     Invoke-GoBuild -Output (Join-Path $OutputBin 'dcp.exe') -Package './cmd/dcp'
     # build-dcptun-containerexe (Linux binary, used inside containers)
     Invoke-GoBuild -Output (Join-Path $OutputBin 'dcptun_c') -Package './cmd/dcptun' -TargetGoos 'linux'

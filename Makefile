@@ -122,6 +122,23 @@ PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
 PROTOC_VERSION ?= 33.5
 GO_LICENSES_VERSION ?= a8e910054a1e8bc3104cbe074fb7b2251b377a28
 
+# Bundled Windows dependency. Keep the version and restore logic in scripts/test-ci.ps1 in sync.
+CONPTY_VERSION := 1.24.260710001
+ifeq ($(build_os),windows)
+CONPTY_GOARCH := $(if $(GOARCH),$(GOARCH),$(shell $(GO_BIN) env GOARCH))
+CONPTY_ARCH_amd64 := x64
+CONPTY_ARCH_arm64 := arm64
+CONPTY_ARCH_386 := x86
+CONPTY_ARCH := $(CONPTY_ARCH_$(CONPTY_GOARCH))
+CONPTY_HOST_ARCHES_amd64 := x64 arm64
+CONPTY_HOST_ARCHES_arm64 := arm64
+CONPTY_HOST_ARCHES_386 := x86 x64 arm64
+CONPTY_HOST_ARCHES := $(CONPTY_HOST_ARCHES_$(CONPTY_GOARCH))
+CONPTY_DIR := $(TOOL_BIN)/conpty/$(CONPTY_VERSION)/$(CONPTY_ARCH)
+CONPTY_DLL := $(CONPTY_DIR)/runtimes/win-$(CONPTY_ARCH)/native/conpty.dll
+CONPTY_URL := https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/$(CONPTY_VERSION)/microsoft.windows.console.conpty.$(CONPTY_VERSION).nupkg
+endif
+
 # DCP Version information
 VERSION ?= dev
 VERSION_MAJOR ?= 0
@@ -295,6 +312,11 @@ build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
 $(DCP_BINARY): $(GO_SOURCES) go.mod | ${OUTPUT_BIN}
 	$(GO_BIN) build -o $(DCP_BINARY) $(BUILD_ARGS) ./cmd/dcp
 
+ifeq ($(build_os),windows)
+# Rebuild with the selected GOARCH when reusing output from another Windows architecture.
+$(DCP_BINARY): stage-conpty
+endif
+
 .PHONY: build-dcptun-containerexe
 build-dcptun-containerexe: $(DCPTUN_CLIENT_BINARY) ## Builds DCP reverse network tunnel client binary for Linux (to be used in containers)
 $(DCPTUN_CLIENT_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
@@ -313,15 +335,51 @@ clean: | ${OUTPUT_BIN} ${TOOL_BIN} ## Deletes build output (all binaries), and a
 lint: golangci-lint generate-grpc ## Runs the linter
 	$(CLEAR_GOARGS) $(GOLANGCI_LINT) run --timeout 10m
 
+ifeq ($(build_os).$(detected_OS),windows.windows)
+# Variable continuations keep PowerShell commands on one shell line.
+define install-conpty-windows
+$$ErrorActionPreference = 'Stop'; \
+	foreach ($$name in @('OpenConsole.exe', 'x86/OpenConsole.exe', 'x64/OpenConsole.exe', 'arm64/OpenConsole.exe')) { \
+		$$path = Join-Path "$(DCP_DIR)" $$name; \
+		if (Test-Path -LiteralPath $$path) { Remove-Item -LiteralPath $$path -Force }; \
+	}; \
+	Copy-Item -LiteralPath "$(OUTPUT_BIN)/conpty.dll", "$(OUTPUT_BIN)/LICENSE-ConPTY.txt" -Destination "$(DCP_DIR)" -Force; \
+	foreach ($$arch in "$(CONPTY_HOST_ARCHES)".Split(' ')) { \
+		New-Item -ItemType Directory -Path "$(DCP_DIR)/$$arch" -Force | Out-Null; \
+		Copy-Item -LiteralPath "$(OUTPUT_BIN)/$$arch/OpenConsole.exe" -Destination "$(DCP_DIR)/$$arch/OpenConsole.exe" -Force; \
+	}
+endef
+endif
+
 .PHONY: install
 install: compile | $(DCP_DIR) ## Installs all binaries to their destinations
 	$(install) $(DCP_BINARY) $(DCP_DIR)
 	$(install) $(DCPTUN_CLIENT_BINARY) $(DCP_DIR)
+ifeq ($(build_os),windows)
+ifeq ($(detected_OS),windows)
+	@$(install-conpty-windows)
+else
+	$(rm_f) "$(DCP_DIR)/OpenConsole.exe" "$(DCP_DIR)/x86/OpenConsole.exe" "$(DCP_DIR)/x64/OpenConsole.exe" "$(DCP_DIR)/arm64/OpenConsole.exe"
+	$(install) "$(OUTPUT_BIN)/conpty.dll" "$(DCP_DIR)"
+	$(install) -m 0644 "$(OUTPUT_BIN)/LICENSE-ConPTY.txt" "$(DCP_DIR)"
+	@set -e; for arch in $(CONPTY_HOST_ARCHES); do \
+		mkdir -p "$(DCP_DIR)/$$arch"; \
+		$(install) "$(OUTPUT_BIN)/$$arch/OpenConsole.exe" "$(DCP_DIR)/$$arch/OpenConsole.exe"; \
+	done
+endif
+endif
 
 .PHONY: uninstall
 uninstall: ## Uninstalls all binaries from their destinations
 	$(rm_f) $(DCP_DIR)/dcp$(bin_exe_suffix)
 	$(rm_f) $(DCP_DIR)/dcptun_c
+ifeq ($(build_os),windows)
+ifeq ($(detected_OS),windows)
+	$$ErrorActionPreference = 'Stop'; foreach ($$name in @('conpty.dll', 'OpenConsole.exe', 'LICENSE-ConPTY.txt', 'x86/OpenConsole.exe', 'x64/OpenConsole.exe', 'arm64/OpenConsole.exe')) { $$path = Join-Path "$(DCP_DIR)" $$name; if (Test-Path -LiteralPath $$path) { Remove-Item -LiteralPath $$path -Force } }
+else
+	$(rm_f) "$(DCP_DIR)/conpty.dll" "$(DCP_DIR)/OpenConsole.exe" "$(DCP_DIR)/LICENSE-ConPTY.txt" "$(DCP_DIR)/x86/OpenConsole.exe" "$(DCP_DIR)/x64/OpenConsole.exe" "$(DCP_DIR)/arm64/OpenConsole.exe"
+endif
+endif
 
 ifneq ($(detected_OS),windows)
 .PHONY: link-dcp
@@ -399,6 +457,76 @@ $(PROTOC): | $(TOOL_BIN)
 		curl -sSfL --output '$(TOOL_BIN)/$(PROTOC_ZIP)' https://github.com/protocolbuffers/protobuf/releases/download/v$(PROTOC_VERSION)/$(PROTOC_ZIP) \
 		&& unzip -q -o -DD '$(TOOL_BIN)/$(PROTOC_ZIP)' -d '$(TOOL_BIN)/protoc'; \
 	}
+endif
+
+.PHONY: stage-conpty
+stage-conpty: ## Restores and stages the required ConPTY binaries and license for Windows targets.
+ifeq ($(build_os),windows)
+stage-conpty: | $(OUTPUT_BIN)
+ifeq ($(CONPTY_ARCH),)
+	$(error Unsupported Windows ConPTY GOARCH: $(CONPTY_GOARCH))
+else ifeq ($(detected_OS),windows)
+define stage-conpty-windows
+$$ErrorActionPreference = 'Stop'; \
+	$$hostArches = "$(CONPTY_HOST_ARCHES)".Split(' '); \
+	$$binaries = @("$(CONPTY_DLL)"); \
+	foreach ($$arch in $$hostArches) { $$binaries += "$(CONPTY_DIR)/build/native/runtimes/$$arch/OpenConsole.exe" }; \
+	$$complete = Test-Path -LiteralPath "$(CONPTY_DIR)/.complete" -PathType Leaf; \
+	foreach ($$binary in $$binaries) { \
+		$$complete = $$complete -and (Test-Path -LiteralPath $$binary -PathType Leaf) -and ((Get-Item -LiteralPath $$binary).Length -gt 0); \
+	}; \
+	if (-not $$complete) { \
+		if (Test-Path -LiteralPath "$(CONPTY_DIR)") { Remove-Item -LiteralPath "$(CONPTY_DIR)" -Recurse -Force }; \
+		New-Item -ItemType Directory -Path "$(CONPTY_DIR)" -Force | Out-Null; \
+		curl -sSfL --output "$(CONPTY_DIR)/package.zip" "$(CONPTY_URL)"; \
+		if ($$LASTEXITCODE -ne 0) { throw "ConPTY download failed with exit code $$LASTEXITCODE" }; \
+		Expand-Archive -LiteralPath "$(CONPTY_DIR)/package.zip" -DestinationPath "$(CONPTY_DIR)" -Force; \
+		foreach ($$binary in $$binaries) { \
+			if (-not (Test-Path -LiteralPath $$binary -PathType Leaf) -or (Get-Item -LiteralPath $$binary).Length -eq 0) { throw "ConPTY extraction did not produce $$binary" }; \
+		}; \
+		New-Item -ItemType File -Path "$(CONPTY_DIR)/.complete" -Force | Out-Null; \
+	}; \
+	foreach ($$name in @('OpenConsole.exe', 'x86/OpenConsole.exe', 'x64/OpenConsole.exe', 'arm64/OpenConsole.exe')) { \
+		$$path = Join-Path "$(OUTPUT_BIN)" $$name; \
+		if (Test-Path -LiteralPath $$path) { Remove-Item -LiteralPath $$path -Force }; \
+	}; \
+	Copy-Item -LiteralPath "$(CONPTY_DLL)", "$(repo_dir)/LICENSE-ConPTY.txt" -Destination "$(OUTPUT_BIN)" -Force; \
+	foreach ($$arch in $$hostArches) { \
+		New-Item -ItemType Directory -Path "$(OUTPUT_BIN)/$$arch" -Force | Out-Null; \
+		Copy-Item -LiteralPath "$(CONPTY_DIR)/build/native/runtimes/$$arch/OpenConsole.exe" -Destination "$(OUTPUT_BIN)/$$arch/OpenConsole.exe" -Force; \
+	}
+endef
+stage-conpty:
+	@$(stage-conpty-windows)
+else
+	@set -e; \
+		binaries=("$(CONPTY_DLL)"); \
+		for arch in $(CONPTY_HOST_ARCHES); do binaries+=("$(CONPTY_DIR)/build/native/runtimes/$$arch/OpenConsole.exe"); done; \
+		complete=true; \
+		[[ -f "$(CONPTY_DIR)/.complete" ]] || complete=false; \
+		for binary in "$${binaries[@]}"; do \
+			if [[ ! -f "$$binary" || ! -s "$$binary" ]]; then complete=false; fi; \
+		done; \
+		if [[ "$$complete" != true ]]; then \
+			rm -rf "$(CONPTY_DIR)"; \
+			mkdir -p "$(CONPTY_DIR)"; \
+			curl -sSfL --output "$(CONPTY_DIR)/package.zip" "$(CONPTY_URL)"; \
+			unzip -q -o -DD "$(CONPTY_DIR)/package.zip" -d "$(CONPTY_DIR)"; \
+			for binary in "$${binaries[@]}"; do \
+				if [[ ! -f "$$binary" || ! -s "$$binary" ]]; then \
+					echo "ConPTY extraction did not produce $$binary" >&2; \
+					exit 1; \
+				fi; \
+			done; \
+			touch "$(CONPTY_DIR)/.complete"; \
+		fi; \
+		rm -f "$(OUTPUT_BIN)/OpenConsole.exe" "$(OUTPUT_BIN)/x86/OpenConsole.exe" "$(OUTPUT_BIN)/x64/OpenConsole.exe" "$(OUTPUT_BIN)/arm64/OpenConsole.exe"; \
+		cp -f "$(CONPTY_DLL)" "$(repo_dir)/LICENSE-ConPTY.txt" "$(OUTPUT_BIN)/"; \
+		for arch in $(CONPTY_HOST_ARCHES); do \
+			mkdir -p "$(OUTPUT_BIN)/$$arch"; \
+			cp -f "$(CONPTY_DIR)/build/native/runtimes/$$arch/OpenConsole.exe" "$(OUTPUT_BIN)/$$arch/OpenConsole.exe"; \
+		done
+endif
 endif
 
 # delay-tool is used for process package testing
