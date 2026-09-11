@@ -25,10 +25,8 @@ import (
 )
 
 const (
-	useExecShimIgnoredHelperEnvVar   = "DCP_TEST_USE_EXEC_SHIM_IGNORED_HELPER"
-	execShimIgnoredEndToEndEnvVar    = "DCP_TEST_EXEC_SHIM_IGNORED_END_TO_END_HELPER"
-	execShimIgnoredEndToEndTestName  = "TestExecShimPreservesIgnoredSIGUSR1Helper"
-	useExecShimIgnoredHelperTestName = "TestUseExecShimPropagatesIgnoredSIGUSR1Helper"
+	execShimIgnoredEndToEndEnvVar   = "DCP_TEST_EXEC_SHIM_IGNORED_END_TO_END_HELPER"
+	execShimIgnoredEndToEndTestName = "TestExecShimPreservesIgnoredSIGUSR1Helper"
 )
 
 func TestMain(m *testing.M) {
@@ -56,24 +54,11 @@ func runForkProcessExecTestCommand() int {
 	return 0
 }
 
-func TestUseExecShimPropagatesIgnoredSIGUSR1(t *testing.T) {
+func TestUseExecShimCarriesIgnoredSIGUSR1(t *testing.T) {
 	t.Parallel()
 
-	runExecShimTestHelper(t, useExecShimIgnoredHelperTestName, useExecShimIgnoredHelperEnvVar)
-}
-
-func TestUseExecShimPropagatesIgnoredSIGUSR1Helper(t *testing.T) {
-	if os.Getenv(useExecShimIgnoredHelperEnvVar) == "" {
-		t.Skip("helper for TestUseExecShimPropagatesIgnoredSIGUSR1")
-	}
-
-	signal.Ignore(syscall.SIGUSR1)
-	ignoredByCaller, dispositionErr := process.IsSIGUSR1Ignored()
-	require.NoError(t, dispositionErr)
-	require.True(t, ignoredByCaller, "the isolated helper should ignore SIGUSR1")
-
 	childCmd := exec.Command("/bin/sh", "-c", "exit 0")
-	execShim, shimErr := useExecShim(childCmd)
+	execShim, shimErr := useExecShimWithDisposition(childCmd, true)
 	require.NoError(t, shimErr)
 	require.NotNil(t, execShim)
 	t.Cleanup(execShim.close)
@@ -108,7 +93,7 @@ func TestExecShimPreservesIgnoredSIGUSR1Helper(t *testing.T) {
 	childCmd.Stdout = &childOutput
 	childCmd.Stderr = &childOutput
 
-	execShim, shimErr := useExecShim(childCmd)
+	execShim, shimErr := useExecShimWithDisposition(childCmd, true)
 	require.NoError(t, shimErr)
 	require.NotNil(t, execShim)
 	t.Cleanup(execShim.close)

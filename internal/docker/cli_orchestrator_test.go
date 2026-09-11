@@ -569,7 +569,7 @@ func TestBuildImageUsesIIDFile(t *testing.T) {
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 
-func TestPullImageAllowsInsecureLoopbackRegistryWithoutUnsupportedFlag(t *testing.T) {
+func TestPullImage(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
@@ -579,7 +579,7 @@ func TestPullImageAllowsInsecureLoopbackRegistryWithoutUnsupportedFlag(t *testin
 		require.NoError(t, executor.Close())
 	})
 	expectedCommand := []string{
-		"docker", "image", "pull", "--quiet", "127.0.0.1:5000/test/image:latest",
+		"docker", "image", "pull", "--quiet", "example.test/test/image:latest",
 	}
 	executor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
@@ -591,11 +591,9 @@ func TestPullImageAllowsInsecureLoopbackRegistryWithoutUnsupportedFlag(t *testin
 			return 0
 		},
 	})
-
 	orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
 	imageID, pullErr := orchestrator.PullImage(ctx, ct.PullImageOptions{
-		Image:                 "127.0.0.1:5000/test/image:latest",
-		AllowInsecureRegistry: true,
+		Image: "example.test/test/image:latest",
 	})
 
 	require.NoError(t, pullErr)

@@ -210,11 +210,18 @@ func useExecShim(childCmd *exec.Cmd) (*execShimHandshake, error) {
 		return nil, nil
 	}
 
-	callerSIGUSR1Ignored, dispositionErr := process.IsSIGUSR1Ignored()
+	callerSIGUSR1Ignored, dispositionErr := process.InheritedSIGUSR1Ignored()
 	if dispositionErr != nil {
-		return nil, fmt.Errorf("could not determine the caller's SIGUSR1 disposition: %w", dispositionErr)
+		return nil, fmt.Errorf("could not determine the inherited SIGUSR1 disposition: %w", dispositionErr)
 	}
 
+	return useExecShimWithDisposition(childCmd, callerSIGUSR1Ignored)
+}
+
+func useExecShimWithDisposition(
+	childCmd *exec.Cmd,
+	callerSIGUSR1Ignored bool,
+) (*execShimHandshake, error) {
 	dcpPath, dcpPathErr := os.Executable()
 	if dcpPathErr != nil {
 		return nil, fmt.Errorf("could not determine the path of the current executable: %w", dcpPathErr)

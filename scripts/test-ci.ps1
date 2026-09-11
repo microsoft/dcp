@@ -13,7 +13,7 @@
 # The sequence implemented here mirrors, for the non-make-4.4 TEST_PREREQS:
 #   generate-grpc build-dcp build-dcptun-containerexe
 #   container-probe-tool-containerexe delay-tool lfwriter-tool
-#   oci-registry-tool-containerexe parrot-tool parrot-tool-containerexe termchild-tool
+#   parrot-tool parrot-tool-containerexe termchild-tool
 # followed by `go test ./... -coverprofile cover.out -count 1`.
 #
 # The Windows CI job runs with CGO_ENABLED=0, so no C toolchain (mingw/gcc) is
@@ -179,8 +179,6 @@ function Build-TestPrereqs {
     Invoke-GoBuild -Output (Join-Path $ToolBin 'lfwriter.exe') -Package 'github.com/microsoft/dcp/test/lfwriter'
     Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot.exe') -Package 'github.com/microsoft/dcp/test/parrot'
     Invoke-GoBuild -Output (Join-Path $ToolBin 'termchild.exe') -Package 'github.com/microsoft/dcp/test/termchild'
-    # oci-registry-tool-containerexe (static Linux binary for the local test registry)
-    Invoke-GoBuild -Output (Join-Path $ToolBin 'oci_registry_c') -Package 'github.com/microsoft/dcp/test/ociregistry' -TargetGoos 'linux' -CgoEnabled '0'
     # parrot-tool-containerexe (static Linux binary for the scratch-based test image)
     Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot_c') -Package 'github.com/microsoft/dcp/test/parrot' -TargetGoos 'linux' -CgoEnabled '0'
 }

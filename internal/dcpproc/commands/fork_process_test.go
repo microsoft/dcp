@@ -47,7 +47,7 @@ func TestUseExecShim(t *testing.T) {
 	dcpPath, dcpPathErr := os.Executable()
 	require.NoError(t, dcpPathErr)
 
-	ignoredByCaller, dispositionErr := process.IsSIGUSR1Ignored()
+	ignoredByCaller, dispositionErr := process.InheritedSIGUSR1Ignored()
 	require.NoError(t, dispositionErr)
 
 	expectedArgs := append(

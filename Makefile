@@ -115,7 +115,6 @@ LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
 PARROT_TOOL ?= $(TOOL_BIN)/parrot$(exe_suffix)
 PARROT_TOOL_CONTAINER_BINARY ?= $(TOOL_BIN)/parrot_c
 CONTAINER_PROBE_TOOL_CONTAINER_BINARY ?= $(TOOL_BIN)/container_probe_c
-OCI_REGISTRY_TOOL_CONTAINER_BINARY ?= $(TOOL_BIN)/oci_registry_c
 TERMCHILD_TOOL ?= $(TOOL_BIN)/termchild$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
@@ -341,9 +340,9 @@ endif
 # mirrored there.
 
 ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
-TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe container-probe-tool-containerexe delay-tool lfwriter-tool oci-registry-tool-containerexe parrot-tool parrot-tool-containerexe termchild-tool
+TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe container-probe-tool-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe termchild-tool
 else
-TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe container-probe-tool-containerexe delay-tool lfwriter-tool oci-registry-tool-containerexe parrot-tool parrot-tool-containerexe termchild-tool
+TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe container-probe-tool-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe termchild-tool
 endif
 
 .PHONY: test-prereqs
@@ -445,16 +444,6 @@ ifeq ($(detected_OS),windows)
 	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/containerprobe
 else
 	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/containerprobe
-endif
-
-# Builds the static read-only OCI registry used by container conformance tests.
-.PHONY: oci-registry-tool-containerexe
-oci-registry-tool-containerexe: $(OCI_REGISTRY_TOOL_CONTAINER_BINARY)
-$(OCI_REGISTRY_TOOL_CONTAINER_BINARY): Makefile $(wildcard ./test/ociregistry/*.go) | $(TOOL_BIN)
-ifeq ($(detected_OS),windows)
-	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(OCI_REGISTRY_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/ociregistry
-else
-	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(OCI_REGISTRY_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/ociregistry
 endif
 
 .PHONY: httpcontent-stream-repro

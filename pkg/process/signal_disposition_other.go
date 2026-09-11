@@ -17,6 +17,12 @@ func NeedsExecSignalDispositionWorkaround() bool {
 	return false
 }
 
+// InheritedSIGUSR1Ignored reports whether SIGUSR1 was ignored when this process started. It
+// reports false on platforms that do not need the Darwin exec signal disposition workaround.
+func InheritedSIGUSR1Ignored() (bool, error) {
+	return false, nil
+}
+
 // IsSIGUSR1Ignored reports whether SIGUSR1 currently has the SIG_IGN disposition. It reports
 // false on platforms that do not need the Darwin exec signal disposition workaround.
 func IsSIGUSR1Ignored() (bool, error) {

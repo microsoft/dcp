@@ -23,6 +23,46 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+func TestForkProcessPreservesInheritedIgnoredSIGUSR1(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	t.Cleanup(testCancel)
+
+	dcpProc, dcpProcErr := getDcpProcExecutablePath()
+	require.NoError(t, dcpProcErr)
+
+	outputPath := filepath.Join(t.TempDir(), "target-sigusr1")
+	cmdArgs := forkProcessArgsForCurrentProcess(
+		t,
+		"/bin/sh",
+		"-c",
+		`kill -USR1 $$; printf ignored > "$1"`,
+		"sh",
+		outputPath,
+	)
+	launcherArgs := append(
+		[]string{"-c", `trap '' USR1; "$@"; status=$?; exit "$status"`, "sh", dcpProc},
+		cmdArgs...,
+	)
+	dcpProcCmd := exec.CommandContext(testCtx, "/bin/sh", launcherArgs...)
+	var stdout, stderr bytes.Buffer
+	dcpProcCmd.Stdout = &stdout
+	dcpProcCmd.Stderr = &stderr
+
+	runErr := dcpProcCmd.Run()
+	require.NoError(t, runErr, "dcp fork-process should preserve ignored SIGUSR1; stderr: %s", stderr.String())
+	_ = parseForkedPid(t, stdout.String())
+
+	outputFile, openErr := usvc_io.OpenFileReadOnly(outputPath)
+	require.NoError(t, openErr)
+	output, readErr := io.ReadAll(outputFile)
+	closeErr := outputFile.Close()
+	require.NoError(t, readErr)
+	require.NoError(t, closeErr)
+	require.Equal(t, "ignored", string(output))
+}
+
 func TestForkProcessExecShimPreservesTargetGoDebug(t *testing.T) {
 	t.Parallel()
 

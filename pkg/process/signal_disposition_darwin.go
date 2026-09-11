@@ -9,8 +9,11 @@ package process
 
 import (
 	"fmt"
+	"os"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -21,6 +24,41 @@ const (
 	darwinSigDfl = uintptr(0)
 	darwinSigIgn = uintptr(1)
 )
+
+// InheritedSIGUSR1Ignored reports whether SIGUSR1 was ignored when this process started.
+//
+// The Go runtime replaces an inherited SIG_IGN disposition for SIGUSR1 during startup, so the
+// original state is recovered from the live launcher process that supplied it.
+func InheritedSIGUSR1Ignored() (bool, error) {
+	parentPID := os.Getppid()
+	if parentPID <= 0 {
+		return false, fmt.Errorf("invalid launcher process ID %d", parentPID)
+	}
+
+	parentInfo, parentInfoErr := unix.SysctlKinfoProc("kern.proc.pid", parentPID)
+	if parentInfoErr != nil {
+		return false, fmt.Errorf("reading launcher process %d signal dispositions: %w", parentPID, parentInfoErr)
+	}
+	if parentInfo == nil {
+		return false, fmt.Errorf("launcher process %d returned no process information", parentPID)
+	}
+	if parentInfo.Proc.P_pid != int32(parentPID) {
+		return false, fmt.Errorf(
+			"launcher process query returned process %d instead of %d",
+			parentInfo.Proc.P_pid,
+			parentPID,
+		)
+	}
+
+	signalNumber := uint32(syscall.SIGUSR1)
+	if signalNumber == 0 || signalNumber >= darwinNumSignals {
+		return false, fmt.Errorf("SIGUSR1 number %d cannot be represented in Darwin sigset_t", signalNumber)
+	}
+
+	// Darwin's sigmask macro assigns signal N to bit N-1.
+	signalMask := uint32(1) << (signalNumber - 1)
+	return parentInfo.Proc.P_sigignore&signalMask != 0, nil
+}
 
 // darwinSigactionNew mirrors Darwin's `struct __sigaction`, which is the layout the
 // sigaction(2) system call expects for the new disposition. It differs from the userspace

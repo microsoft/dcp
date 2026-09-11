@@ -119,9 +119,6 @@ type PullImageOptions struct {
 	// Digest of the image to pull (optional)
 	Digest string `json:"Digest,omitempty"`
 
-	// AllowInsecureRegistry permits runtime-specific insecure registry access.
-	AllowInsecureRegistry bool `json:"allowInsecureRegistry,omitempty"`
-
 	TimeoutOption
 }
 

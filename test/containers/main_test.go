@@ -70,7 +70,7 @@ func ensureTestImage(t *testing.T, ctx context.Context, runtime containertest.Ru
 	baseImageStatesLock.Unlock()
 
 	state.once.Do(func() {
-		probeBinaryPath, probePathErr := internal_testutil.GetTestToolPath("container_probe_c")
+		probeBinaryPath, probePathErr := internal_testutil.GetTestContainerToolPath("container_probe_c")
 		if probePathErr != nil {
 			state.err = fmt.Errorf("finding container probe binary: %w", probePathErr)
 			return

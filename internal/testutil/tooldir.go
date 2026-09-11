@@ -44,3 +44,18 @@ func GetTestToolPath(exeName string) (string, error) {
 
 	return filepath.Join(dir, exeName), nil
 }
+
+// GetTestContainerToolPath returns the path to a test tool built for execution inside a
+// container. The exact filename is preserved instead of applying the host executable suffix.
+func GetTestContainerToolPath(exeName string) (string, error) {
+	if len(exeName) == 0 {
+		return "", fmt.Errorf("empty test tool name")
+	}
+
+	rootDir, findRootErr := osutil.FindRootFor(osutil.FileTarget, ".toolbin", exeName)
+	if findRootErr != nil {
+		return "", fmt.Errorf("could not find '%s' test container tool: %w", exeName, findRootErr)
+	}
+
+	return filepath.Join(rootDir, ".toolbin", exeName), nil
+}
