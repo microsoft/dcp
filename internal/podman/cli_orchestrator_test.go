@@ -317,6 +317,119 @@ func TestListNetworksRemembersIDs(t *testing.T) {
 	require.Equal(t, "network-id", cachedNetworkID)
 }
 
+func TestInspectNetworksDoesNotOverwriteNewerCacheEntry(t *testing.T) {
+	t.Parallel()
+
+	testDelayedNetworkLookupDoesNotOverwriteNewerCacheEntry(
+		t,
+		[]string{"podman", "network", "inspect", "--format", "json", "network-name"},
+		`[{"name":"network-name","id":"old-network-id"}]`,
+		func(ctx context.Context, orchestrator *PodmanCliOrchestrator) error {
+			_, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+				Networks: []string{"network-name"},
+			})
+			return inspectErr
+		},
+	)
+}
+
+func TestListNetworksDoesNotOverwriteNewerCacheEntry(t *testing.T) {
+	t.Parallel()
+
+	testDelayedNetworkLookupDoesNotOverwriteNewerCacheEntry(
+		t,
+		[]string{"podman", "network", "ls", "--format", "json"},
+		`[{"name":"network-name","id":"old-network-id"}]`,
+		func(ctx context.Context, orchestrator *PodmanCliOrchestrator) error {
+			_, listErr := orchestrator.ListNetworks(ctx, containers.ListNetworksOptions{})
+			return listErr
+		},
+	)
+}
+
+func testDelayedNetworkLookupDoesNotOverwriteNewerCacheEntry(
+	t *testing.T,
+	command []string,
+	output string,
+	lookup func(context.Context, *PodmanCliOrchestrator) error,
+) {
+	t.Helper()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, executor.Close())
+	})
+
+	lookupEntered := make(chan struct{})
+	releaseLookup := make(chan struct{})
+	var releaseLookupOnce sync.Once
+	releaseLookupFunc := func() {
+		releaseLookupOnce.Do(func() {
+			close(releaseLookup)
+		})
+	}
+	t.Cleanup(releaseLookupFunc)
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: command,
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			close(lookupEntered)
+			<-releaseLookup
+			_, writeErr := execution.Cmd.Stdout.Write([]byte(output))
+			require.NoError(t, writeErr)
+			return 0
+		},
+	})
+
+	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor).(*PodmanCliOrchestrator)
+	orchestrator.rememberNetworkID("network-name", "old-network-id")
+
+	lookupResults := make(chan error, 1)
+	go func() {
+		lookupResults <- lookup(ctx, orchestrator)
+	}()
+
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case <-lookupEntered:
+	}
+
+	destroyed, destroyErr := orchestrator.toNetworkEventMessage(&podmanEventMessage{
+		Source: containers.EventSourceNetwork,
+		ID:     "old-network-id",
+		Name:   "network-name",
+		Action: containers.EventActionRemove,
+	})
+	require.NoError(t, destroyErr)
+	require.Equal(t, "old-network-id", destroyed.Actor.ID)
+
+	created, createErr := orchestrator.toNetworkEventMessage(&podmanEventMessage{
+		Source: containers.EventSourceNetwork,
+		ID:     "new-network-id",
+		Name:   "network-name",
+		Action: containers.EventActionCreate,
+	})
+	require.NoError(t, createErr)
+	require.Equal(t, "new-network-id", created.Actor.ID)
+
+	releaseLookupFunc()
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case lookupErr := <-lookupResults:
+		require.NoError(t, lookupErr)
+	}
+
+	cachedNetworkID, found := orchestrator.cachedNetworkID("network-name")
+	require.True(t, found)
+	require.Equal(t, "new-network-id", cachedNetworkID)
+	require.Len(t, executor.FindAll(command, "", nil), 1)
+}
+
 func TestBuildImageUsesIIDFile(t *testing.T) {
 	t.Parallel()
 

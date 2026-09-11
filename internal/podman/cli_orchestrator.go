@@ -91,8 +91,10 @@ type PodmanCliOrchestrator struct {
 	backgroundStatusUpdates atomic.Int32
 
 	// Podman connect/disconnect events identify networks by name, while DCP tracks them by ID.
-	networkIDsLock sync.Mutex
-	networkIDs     map[string]networkIDCacheEntry
+	networkIDsLock       sync.Mutex
+	networkIDs           map[string]networkIDCacheEntry
+	networkIDsGeneration uint64
+	networkIDLookups     map[uint64]uint32
 
 	// Limits asynchronous cache-miss resolution without blocking the event scanner.
 	networkEventResolutionSlots chan struct{}
@@ -110,6 +112,7 @@ func NewPodmanCliOrchestrator(log logr.Logger, executor process.Executor) contai
 		executor:                    executor,
 		checkStatusLock:             concurrency.NewContextAwareLock(),
 		networkIDs:                  make(map[string]networkIDCacheEntry),
+		networkIDLookups:            make(map[uint64]uint32),
 		networkEventResolutionSlots: make(chan struct{}, networkEventResolutionConcurrency),
 	}
 
@@ -1089,6 +1092,18 @@ func (pco *PodmanCliOrchestrator) inspectNetworks(
 		return nil, fmt.Errorf("must specify at least one network")
 	}
 
+	var lookup networkIDLookup
+	lookupActive := false
+	if rememberIDs {
+		lookup = pco.beginNetworkIDLookup()
+		lookupActive = true
+		defer func() {
+			if lookupActive {
+				pco.cancelNetworkIDLookup(lookup)
+			}
+		}()
+	}
+
 	args := []string{"network", "inspect", "--format", "json"}
 	args = append(args, options.Networks...)
 
@@ -1106,7 +1121,8 @@ func (pco *PodmanCliOrchestrator) inspectNetworks(
 	}
 
 	if rememberIDs {
-		pco.rememberNetworkIDs(inspectedNetworks)
+		pco.rememberNetworkIDs(lookup, inspectedNetworks)
+		lookupActive = false
 	}
 	return inspectedNetworks, err
 }
@@ -1148,6 +1164,14 @@ func (pco *PodmanCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 }
 
 func (pco *PodmanCliOrchestrator) ListNetworks(ctx context.Context, options containers.ListNetworksOptions) ([]containers.ListedNetwork, error) {
+	lookup := pco.beginNetworkIDLookup()
+	lookupActive := true
+	defer func() {
+		if lookupActive {
+			pco.cancelNetworkIDLookup(lookup)
+		}
+	}()
+
 	args := []string{"network", "ls"}
 
 	for _, label := range options.Filters.LabelFilters {
@@ -1170,7 +1194,8 @@ func (pco *PodmanCliOrchestrator) ListNetworks(ctx context.Context, options cont
 	}
 
 	networks, unmarshalErr := asObjects(outBuf, unmarshalListedNetwork)
-	pco.rememberListedNetworkIDs(networks)
+	pco.rememberListedNetworkIDs(lookup, networks)
+	lookupActive = false
 	return networks, unmarshalErr
 }
 
@@ -1896,14 +1921,17 @@ func (pco *PodmanCliOrchestrator) toNetworkEventMessage(
 }
 
 type networkIDCacheEntry struct {
-	id                 string
-	generation         uint64
-	pendingResolutions uint32
+	id         string
+	generation uint64
+}
+
+type networkIDLookup struct {
+	generation uint64
 }
 
 type networkIDResolution struct {
 	networkName string
-	generation  uint64
+	lookup      networkIDLookup
 }
 
 func (pco *PodmanCliOrchestrator) normalizeNetworkEventMessage(
@@ -1928,35 +1956,27 @@ func (pco *PodmanCliOrchestrator) normalizeNetworkEventMessage(
 	switch message.Action {
 	case containers.EventActionCreate:
 		entry := pco.networkIDs[networkName]
-		entry.generation++
+		pco.networkIDsGeneration++
 		entry.id = event.ID
-		if entry.id == "" && entry.pendingResolutions == 0 {
-			delete(pco.networkIDs, networkName)
-		} else {
-			pco.networkIDs[networkName] = entry
-		}
+		entry.generation = pco.networkIDsGeneration
+		pco.storeNetworkIDEntryLocked(networkName, entry)
 		return message, nil, nil
 	case containers.EventActionDestroy:
 		entry := pco.networkIDs[networkName]
-		entry.generation++
+		pco.networkIDsGeneration++
 		if message.Actor.ID == "" && entry.id != "" {
 			message.Actor.ID = entry.id
 		}
 		entry.id = ""
-		if entry.pendingResolutions == 0 {
-			delete(pco.networkIDs, networkName)
-		} else {
-			pco.networkIDs[networkName] = entry
-		}
+		entry.generation = pco.networkIDsGeneration
+		pco.storeNetworkIDEntryLocked(networkName, entry)
 		return message, nil, nil
 	case containers.EventActionConnect, containers.EventActionDisconnect:
 		entry := pco.networkIDs[networkName]
 		if entry.id == "" {
-			entry.pendingResolutions++
-			pco.networkIDs[networkName] = entry
 			resolution := &networkIDResolution{
 				networkName: networkName,
-				generation:  entry.generation,
+				lookup:      pco.beginNetworkIDLookupLocked(),
 			}
 			return message, fmt.Errorf("%w: %q", errNetworkIDNotCached, networkName), resolution
 		}
@@ -2034,26 +2054,31 @@ func (pco *PodmanCliOrchestrator) resolveNetworkEventMessage(
 	return message, nil
 }
 
-func (pco *PodmanCliOrchestrator) rememberNetworkIDs(networks []containers.InspectedNetwork) {
+func (pco *PodmanCliOrchestrator) rememberNetworkIDs(lookup networkIDLookup, networks []containers.InspectedNetwork) {
 	pco.networkIDsLock.Lock()
 	defer pco.networkIDsLock.Unlock()
 
 	for _, network := range networks {
 		if network.Name != "" && network.Id != "" {
-			pco.rememberNetworkIDLocked(network.Name, network.Id)
+			pco.rememberNetworkIDLookupResultLocked(lookup, network.Name, network.Id)
 		}
 	}
+	pco.finishNetworkIDLookupLocked(lookup)
 }
 
-func (pco *PodmanCliOrchestrator) rememberListedNetworkIDs(networks []containers.ListedNetwork) {
+func (pco *PodmanCliOrchestrator) rememberListedNetworkIDs(
+	lookup networkIDLookup,
+	networks []containers.ListedNetwork,
+) {
 	pco.networkIDsLock.Lock()
 	defer pco.networkIDsLock.Unlock()
 
 	for _, network := range networks {
 		if network.Name != "" && network.ID != "" {
-			pco.rememberNetworkIDLocked(network.Name, network.ID)
+			pco.rememberNetworkIDLookupResultLocked(lookup, network.Name, network.ID)
 		}
 	}
+	pco.finishNetworkIDLookupLocked(lookup)
 }
 
 func (pco *PodmanCliOrchestrator) rememberNetworkID(networkName string, networkID string) {
@@ -2068,8 +2093,77 @@ func (pco *PodmanCliOrchestrator) rememberNetworkIDLocked(networkName string, ne
 		return
 	}
 	entry.id = networkID
-	entry.generation++
+	pco.networkIDsGeneration++
+	entry.generation = pco.networkIDsGeneration
 	pco.networkIDs[networkName] = entry
+}
+
+func (pco *PodmanCliOrchestrator) beginNetworkIDLookup() networkIDLookup {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	return pco.beginNetworkIDLookupLocked()
+}
+
+func (pco *PodmanCliOrchestrator) beginNetworkIDLookupLocked() networkIDLookup {
+	lookup := networkIDLookup{generation: pco.networkIDsGeneration}
+	if pco.networkIDLookups == nil {
+		pco.networkIDLookups = make(map[uint64]uint32)
+	}
+	pco.networkIDLookups[lookup.generation]++
+	return lookup
+}
+
+func (pco *PodmanCliOrchestrator) rememberNetworkIDLookupResultLocked(
+	lookup networkIDLookup,
+	networkName string,
+	networkID string,
+) (string, bool) {
+	entry := pco.networkIDs[networkName]
+	if entry.generation > lookup.generation {
+		return entry.id, entry.id != "" && entry.id == networkID
+	}
+	if entry.id == networkID {
+		return entry.id, true
+	}
+
+	pco.networkIDsGeneration++
+	entry.id = networkID
+	entry.generation = pco.networkIDsGeneration
+	pco.networkIDs[networkName] = entry
+	return entry.id, true
+}
+
+func (pco *PodmanCliOrchestrator) storeNetworkIDEntryLocked(networkName string, entry networkIDCacheEntry) {
+	if entry.id == "" && !pco.networkIDEntryNeededLocked(entry) {
+		delete(pco.networkIDs, networkName)
+		return
+	}
+	pco.networkIDs[networkName] = entry
+}
+
+func (pco *PodmanCliOrchestrator) networkIDEntryNeededLocked(entry networkIDCacheEntry) bool {
+	for lookupGeneration := range pco.networkIDLookups {
+		if lookupGeneration < entry.generation {
+			return true
+		}
+	}
+	return false
+}
+
+func (pco *PodmanCliOrchestrator) finishNetworkIDLookupLocked(lookup networkIDLookup) {
+	activeCount := pco.networkIDLookups[lookup.generation]
+	if activeCount <= 1 {
+		delete(pco.networkIDLookups, lookup.generation)
+	} else {
+		pco.networkIDLookups[lookup.generation] = activeCount - 1
+	}
+
+	for networkName, entry := range pco.networkIDs {
+		if entry.id == "" && !pco.networkIDEntryNeededLocked(entry) {
+			delete(pco.networkIDs, networkName)
+		}
+	}
 }
 
 func (pco *PodmanCliOrchestrator) cachedNetworkID(networkName string) (string, bool) {
@@ -2080,20 +2174,15 @@ func (pco *PodmanCliOrchestrator) cachedNetworkID(networkName string) (string, b
 	return entry.id, found && entry.id != ""
 }
 
-func (pco *PodmanCliOrchestrator) cancelNetworkIDResolution(resolution networkIDResolution) {
+func (pco *PodmanCliOrchestrator) cancelNetworkIDLookup(lookup networkIDLookup) {
 	pco.networkIDsLock.Lock()
 	defer pco.networkIDsLock.Unlock()
 
-	entry, found := pco.networkIDs[resolution.networkName]
-	if !found || entry.pendingResolutions == 0 {
-		return
-	}
-	entry.pendingResolutions--
-	if entry.id == "" && entry.pendingResolutions == 0 {
-		delete(pco.networkIDs, resolution.networkName)
-	} else {
-		pco.networkIDs[resolution.networkName] = entry
-	}
+	pco.finishNetworkIDLookupLocked(lookup)
+}
+
+func (pco *PodmanCliOrchestrator) cancelNetworkIDResolution(resolution networkIDResolution) {
+	pco.cancelNetworkIDLookup(resolution.lookup)
 }
 
 func (pco *PodmanCliOrchestrator) completeNetworkIDResolution(
@@ -2103,31 +2192,13 @@ func (pco *PodmanCliOrchestrator) completeNetworkIDResolution(
 	pco.networkIDsLock.Lock()
 	defer pco.networkIDsLock.Unlock()
 
-	entry, found := pco.networkIDs[resolution.networkName]
-	if !found || entry.pendingResolutions == 0 {
-		return "", false
-	}
-	entry.pendingResolutions--
-
-	accepted := entry.generation == resolution.generation
-	if accepted {
-		switch {
-		case entry.id == "":
-			entry.id = resolvedNetworkID
-		case entry.id != resolvedNetworkID:
-			accepted = false
-		}
-	}
-
-	if entry.id == "" && entry.pendingResolutions == 0 {
-		delete(pco.networkIDs, resolution.networkName)
-	} else {
-		pco.networkIDs[resolution.networkName] = entry
-	}
-	if !accepted {
-		return "", false
-	}
-	return entry.id, true
+	networkID, accepted := pco.rememberNetworkIDLookupResultLocked(
+		resolution.lookup,
+		resolution.networkName,
+		resolvedNetworkID,
+	)
+	pco.finishNetworkIDLookupLocked(resolution.lookup)
+	return networkID, accepted
 }
 
 func normalizeCliErrors(errBuf *bytes.Buffer, errorMatches ...containers.ErrorMatch) error {
