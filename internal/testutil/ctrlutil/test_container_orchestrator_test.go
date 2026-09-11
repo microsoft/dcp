@@ -7,6 +7,7 @@ package ctrlutil
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -82,4 +83,38 @@ func TestFailMatchingContainersMatchesBuiltImageTag(t *testing.T) {
 		Containers: []string{containerID},
 	})
 	require.ErrorContains(t, startErr, "expected startup failure")
+}
+
+func TestRemoveImagesReturnsRequestedIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	orchestrator, orchestratorErr := NewTestContainerOrchestrator(ctx, logr.Discard(), TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	t.Cleanup(func() {
+		require.NoError(t, orchestrator.Close())
+	})
+
+	firstID, firstPullErr := orchestrator.PullImage(ctx, containers.PullImageOptions{Image: "example.test/first:latest"})
+	require.NoError(t, firstPullErr)
+	_, secondPullErr := orchestrator.PullImage(ctx, containers.PullImageOptions{Image: "example.test/second:latest"})
+	require.NoError(t, secondPullErr)
+
+	removed, removeErr := orchestrator.RemoveImages(ctx, containers.RemoveImagesOptions{
+		Images: []string{"example.test/first:latest", firstID, "missing", "example.test/second:latest"},
+		Force:  true,
+	})
+
+	require.Equal(t, []string{"example.test/first:latest", "example.test/second:latest"}, removed)
+	require.ErrorIs(t, removeErr, containers.ErrNotFound)
+	require.ErrorIs(t, removeErr, containers.ErrIncomplete)
+	require.False(t, orchestrator.HasImage("example.test/first:latest"))
+	require.False(t, orchestrator.HasImage("example.test/second:latest"))
+
+	_, inspectErr := orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
+		Images: []string{"example.test/first:latest", "example.test/second:latest"},
+	})
+	require.True(t, errors.Is(inspectErr, containers.ErrNotFound))
 }

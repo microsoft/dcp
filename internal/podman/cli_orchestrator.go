@@ -70,13 +70,10 @@ var (
 	defaultCreateContainerTimeout = 10 * time.Minute
 	defaultRunContainerTimeout    = 10 * time.Minute
 
-	// Cache and synchronization control for checking runtime cachedStatus
-	cachedStatus *containers.ContainerRuntimeStatus
-	// Ensure that only one goroutine is checking the status at a time
-	checkStatusLock = concurrency.NewContextAwareLock()
-	// Mutex to control read/write access to the cached status
-	updateStatus            = &sync.RWMutex{}
-	backgroundStatusUpdates atomic.Int32
+	networkEventResolutionConcurrency = 4
+	networkEventReplayMargin          = time.Second
+
+	errNetworkIDNotCached = errors.New("network ID is not cached")
 )
 
 type PodmanCliOrchestrator struct {
@@ -84,6 +81,21 @@ type PodmanCliOrchestrator struct {
 
 	// Process executor for running Podman commands
 	executor process.Executor
+
+	// Runtime status state is scoped to this orchestrator instance.
+	cachedStatus            *containers.ContainerRuntimeStatus
+	checkStatusLock         *concurrency.ContextAwareLock
+	updateStatus            sync.RWMutex
+	backgroundStatusUpdates atomic.Int32
+
+	// Podman connect/disconnect events identify networks by name, while DCP tracks them by ID.
+	networkIDsLock       sync.Mutex
+	networkIDs           map[string]networkIDCacheEntry
+	networkIDsGeneration uint64
+	networkIDLookups     map[uint64]uint32
+
+	// Limits asynchronous cache-miss resolution without blocking the event scanner.
+	networkEventResolutionSlots chan struct{}
 
 	// Event watcher for container events
 	containerEvtWatcher *pubsub.SubscriptionSet[containers.EventMessage]
@@ -94,8 +106,12 @@ type PodmanCliOrchestrator struct {
 
 func NewPodmanCliOrchestrator(log logr.Logger, executor process.Executor) containers.ContainerOrchestrator {
 	pco := &PodmanCliOrchestrator{
-		log:      log,
-		executor: executor,
+		log:                         log,
+		executor:                    executor,
+		checkStatusLock:             concurrency.NewContextAwareLock(),
+		networkIDs:                  make(map[string]networkIDCacheEntry),
+		networkIDLookups:            make(map[uint64]uint32),
+		networkEventResolutionSlots: make(chan struct{}, networkEventResolutionConcurrency),
 	}
 
 	pco.containerEvtWatcher = pubsub.NewSubscriptionSet(pco.doWatchContainers, context.Background())
@@ -118,16 +134,16 @@ func (*PodmanCliOrchestrator) ContainerHost() string {
 
 func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage containers.CachedRuntimeStatusUsage) containers.ContainerRuntimeStatus {
 	// A cached status is already available, return it
-	updateStatus.RLock()
-	if cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
-		defer updateStatus.RUnlock()
-		return *cachedStatus
+	pco.updateStatus.RLock()
+	if pco.cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
+		defer pco.updateStatus.RUnlock()
+		return *pco.cachedStatus
 	}
-	updateStatus.RUnlock()
+	pco.updateStatus.RUnlock()
 
 	if cacheUsage == containers.CachedRuntimeStatusAllowed {
 		// For cached results, only one goroutine should be checking the status at a time
-		if syncErr := checkStatusLock.Lock(ctx); syncErr != nil {
+		if syncErr := pco.checkStatusLock.Lock(ctx); syncErr != nil {
 			// Timed out, assume Podman is not responsive and unavailable
 			return containers.ContainerRuntimeStatus{
 				Installed: false,
@@ -136,29 +152,29 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage co
 			}
 		}
 
-		defer checkStatusLock.Unlock()
+		defer pco.checkStatusLock.Unlock()
 	}
 
-	updateStatus.RLock()
+	pco.updateStatus.RLock()
 	// Check again if the status is available in the cache
-	if cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
-		defer updateStatus.RUnlock()
-		return *cachedStatus
+	if pco.cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
+		defer pco.updateStatus.RUnlock()
+		return *pco.cachedStatus
 	}
-	updateStatus.RUnlock()
+	pco.updateStatus.RUnlock()
 
 	newStatus := pco.getStatus(ctx)
-	updateStatus.Lock()
+	pco.updateStatus.Lock()
 	// Update the cached status
-	cachedStatus = &newStatus
-	updateStatus.Unlock()
+	pco.cachedStatus = &newStatus
+	pco.updateStatus.Unlock()
 
 	return newStatus
 }
 
 // Check the status of the Podman runtime in the background until the context is canceled.
 func (pco *PodmanCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Context) {
-	if !backgroundStatusUpdates.CompareAndSwap(0, 1) {
+	if !pco.backgroundStatusUpdates.CompareAndSwap(0, 1) {
 		return
 	}
 
@@ -167,13 +183,15 @@ func (pco *PodmanCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Cont
 		timer.Stop()
 		for {
 			// Only one goroutine should be checking the status at a time
-			if checkStatusLock.TryLock() {
+			if pco.checkStatusLock.TryLock() {
 				newStatus := pco.getStatus(ctx)
 
-				updateStatus.Lock()
+				pco.updateStatus.Lock()
 				// Update the cached status
-				cachedStatus = &newStatus
-				updateStatus.Unlock()
+				pco.cachedStatus = &newStatus
+				pco.updateStatus.Unlock()
+
+				pco.checkStatusLock.Unlock()
 			}
 
 			// Wait for 5 seconds before checking again
@@ -375,7 +393,7 @@ func (pco *PodmanCliOrchestrator) InspectImages(ctx context.Context, options con
 	return inspectedImages, err
 }
 
-func (dco *PodmanCliOrchestrator) PullImage(ctx context.Context, options containers.PullImageOptions) (string, error) {
+func (pco *PodmanCliOrchestrator) PullImage(ctx context.Context, options containers.PullImageOptions) (string, error) {
 	if options.Image == "" {
 		return "", fmt.Errorf("must specify an image to pull")
 	}
@@ -392,12 +410,30 @@ func (dco *PodmanCliOrchestrator) PullImage(ctx context.Context, options contain
 	if options.Timeout == 0 {
 		options.Timeout = defaultPullImageTimeout
 	}
-	outBuf, errBuf, err := dco.runBufferedPodmanCommand(ctx, "PullImage", cmd, nil, nil, options.Timeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "PullImage", cmd, nil, nil, options.Timeout)
 	if err != nil {
 		return "", errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
 	}
 
 	return asId(outBuf)
+}
+
+func (pco *PodmanCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {
+	return containers.RemoveImagesSequentially(ctx, options, func(ctx context.Context, image string, force bool) error {
+		args := []string{"image", "rm"}
+		if force {
+			args = append(args, "--force")
+		}
+		args = append(args, image)
+
+		cmd := makePodmanCommand(args...)
+		_, errBuf, removeErr := pco.runBufferedPodmanCommand(ctx, "RemoveImage", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+		if removeErr != nil {
+			return errors.Join(removeErr, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
+		}
+
+		return nil
+	})
 }
 
 func applyCreateContainerOptions(args []string, options containers.CreateContainerOptions) []string {
@@ -912,12 +948,22 @@ func (pco *PodmanCliOrchestrator) CreateNetwork(ctx context.Context, options con
 	args = append(args, options.Name)
 
 	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return "", errors.Join(err, normalizeCliErrors(errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1)))
 	}
 
-	return asId(outBuf)
+	inspected, inspectErr := pco.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{options.Name},
+	})
+	if inspectErr != nil {
+		return "", fmt.Errorf("inspecting newly created network %q: %w", options.Name, inspectErr)
+	}
+	if len(inspected) != 1 || inspected[0].Id == "" {
+		return "", fmt.Errorf("newly created network %q did not report an ID", options.Name)
+	}
+
+	return inspected[0].Id, nil
 }
 
 func (pco *PodmanCliOrchestrator) RemoveNetworks(ctx context.Context, options containers.RemoveNetworksOptions) ([]string, error) {
@@ -948,8 +994,28 @@ func (pco *PodmanCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 }
 
 func (pco *PodmanCliOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
+	return pco.inspectNetworks(ctx, options, true)
+}
+
+func (pco *PodmanCliOrchestrator) inspectNetworks(
+	ctx context.Context,
+	options containers.InspectNetworksOptions,
+	rememberIDs bool,
+) ([]containers.InspectedNetwork, error) {
 	if len(options.Networks) == 0 {
 		return nil, fmt.Errorf("must specify at least one network")
+	}
+
+	var lookup networkIDLookup
+	lookupActive := false
+	if rememberIDs {
+		lookup = pco.beginNetworkIDLookup()
+		lookupActive = true
+		defer func() {
+			if lookupActive {
+				pco.cancelNetworkIDLookup(lookup)
+			}
+		}()
 	}
 
 	args := []string{"network", "inspect", "--format", "json"}
@@ -968,6 +1034,10 @@ func (pco *PodmanCliOrchestrator) InspectNetworks(ctx context.Context, options c
 		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all networks were inspected, expected %d but got %d", len(options.Networks), len(inspectedNetworks))))
 	}
 
+	if rememberIDs {
+		pco.rememberNetworkIDs(lookup, inspectedNetworks)
+		lookupActive = false
+	}
 	return inspectedNetworks, err
 }
 
@@ -1008,6 +1078,14 @@ func (pco *PodmanCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 }
 
 func (pco *PodmanCliOrchestrator) ListNetworks(ctx context.Context, options containers.ListNetworksOptions) ([]containers.ListedNetwork, error) {
+	lookup := pco.beginNetworkIDLookup()
+	lookupActive := true
+	defer func() {
+		if lookupActive {
+			pco.cancelNetworkIDLookup(lookup)
+		}
+	}()
+
 	args := []string{"network", "ls"}
 
 	for _, label := range options.Filters.LabelFilters {
@@ -1029,7 +1107,10 @@ func (pco *PodmanCliOrchestrator) ListNetworks(ctx context.Context, options cont
 		return nil, errors.Join(err, normalizeCliErrors(errBuf))
 	}
 
-	return asObjects(outBuf, unmarshalListedNetwork)
+	networks, unmarshalErr := asObjects(outBuf, unmarshalListedNetwork)
+	pco.rememberListedNetworkIDs(lookup, networks)
+	lookupActive = false
+	return networks, unmarshalErr
 }
 
 func (pco *PodmanCliOrchestrator) DefaultNetworkName() string {
@@ -1100,7 +1181,13 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 }
 
 func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss *pubsub.SubscriptionSet[containers.EventMessage]) {
-	args := []string{"events", "--filter", "type=network", "--format", "json"}
+	prewarmStart := time.Now()
+	if _, listErr := pco.ListNetworks(watcherCtx, containers.ListNetworksOptions{}); listErr != nil {
+		pco.log.Error(listErr, "Could not pre-warm network ID cache before watching Podman events")
+	}
+
+	replayDuration := time.Since(prewarmStart) + networkEventReplayMargin
+	args := podmanNetworkEventsArgs(replayDuration)
 	cmd := makePodmanCommand(args...)
 
 	reader, writer := usvc_io.NewBufferedPipe()
@@ -1116,13 +1203,44 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 				return // Cancellation has been requested, so we should stop scanning events
 			}
 
-			evtData := scanner.Text()
-			var evtMessage containers.EventMessage
-			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
+			var rawEvent podmanEventMessage
+			unmarshalErr := json.Unmarshal(scanner.Bytes(), &rawEvent)
 			if unmarshalErr != nil {
-				pco.log.Error(unmarshalErr, "Network event data could not be parsed", "EventData", evtData)
+				pco.log.Error(unmarshalErr, "Network event data could not be parsed", "EventData", scanner.Text())
 			} else {
-				ss.Notify(evtMessage)
+				eventMessage, normalizeErr, resolution := pco.normalizeNetworkEventMessage(&rawEvent)
+				if normalizeErr != nil {
+					if errors.Is(normalizeErr, errNetworkIDNotCached) {
+						eventData := scanner.Text()
+						if resolution == nil {
+							pco.log.Error(normalizeErr, "Network event cache miss did not include resolution state", "EventData", eventData)
+							continue
+						}
+						select {
+						case pco.networkEventResolutionSlots <- struct{}{}:
+							go pco.resolveAndNotifyNetworkEvent(
+								watcherCtx,
+								ss,
+								rawEvent,
+								eventData,
+								*resolution,
+							)
+						default:
+							pco.cancelNetworkIDResolution(*resolution)
+							pco.log.Error(
+								normalizeErr,
+								"Network event ID resolution is saturated; delivering unresolved event",
+								"EventData",
+								eventData,
+							)
+							ss.Notify(eventMessage)
+						}
+						continue
+					}
+					pco.log.Error(normalizeErr, "Network event data could not be normalized", "EventData", scanner.Text())
+					continue
+				}
+				ss.Notify(eventMessage)
 			}
 		}
 
@@ -1156,6 +1274,15 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	case <-watcherCtx.Done():
 		// We are asked to shut down
 		pco.log.V(1).Info("Stopping 'podman events' command", "PID", handle.Pid)
+	}
+}
+
+func podmanNetworkEventsArgs(replayDuration time.Duration) []string {
+	return []string{
+		"events",
+		"--since", replayDuration.String(),
+		"--filter", "type=network",
+		"--format", "json",
 	}
 }
 
@@ -1366,7 +1493,7 @@ func unmarshalImage(pii *podmanInspectedImage, ic *containers.InspectedImage) er
 
 func unmarshalListedContainer(plc *podmanListedContainer, lc *containers.ListedContainer) error {
 	lc.Id = plc.Id
-	if len(plc.Names) == 0 {
+	if len(plc.Names) > 0 {
 		lc.Name = plc.Names[0]
 	}
 	lc.Image = plc.Image
@@ -1642,33 +1769,350 @@ type podmanEventMessage struct {
 	// The ID of the resource triggering the event
 	ID string `json:"ID,omitempty"`
 
+	// The name of the resource triggering the event.
+	Name string `json:"Name,omitempty"`
+
+	// The network associated with a network connect or disconnect event.
+	Network string `json:"Network,omitempty"`
+
 	// The status change that triggered the event
 	Action containers.EventAction `json:"Status"`
+
+	Attributes map[string]string `json:"Attributes,omitempty"`
 }
 
 func (pem *podmanEventMessage) ToEventMessage() containers.EventMessage {
+	attributes := make(map[string]string, len(pem.Attributes)+3)
+	for key, value := range pem.Attributes {
+		attributes[key] = value
+	}
+	if pem.Name != "" {
+		attributes["name"] = pem.Name
+	}
+	if pem.Network != "" {
+		attributes["network"] = pem.Network
+	}
+
+	action := pem.Action
+	if action == containers.EventActionRemove {
+		action = containers.EventActionDestroy
+	}
+
+	actorID := pem.ID
 	if pem.Source == containers.EventSourceNetwork {
-		// Podman only returns network events for containers, not the actual networks
-		return containers.EventMessage{
-			Source: pem.Source,
-			Action: pem.Action,
-			Actor: containers.EventActor{
-				ID: pem.ID,
-			},
-			Attributes: map[string]string{
-				"container": pem.ID,
-			},
+		if pem.Action == containers.EventActionConnect || pem.Action == containers.EventActionDisconnect {
+			attributes["container"] = pem.ID
+			if pem.Network != "" {
+				actorID = pem.Network
+			}
+		} else if actorID == "" {
+			if pem.Network != "" {
+				actorID = pem.Network
+			} else {
+				actorID = pem.Name
+			}
 		}
 	}
 
 	return containers.EventMessage{
 		Source: pem.Source,
-		Action: pem.Action,
+		Action: action,
 		Actor: containers.EventActor{
-			ID: pem.ID,
+			ID: actorID,
 		},
-		Attributes: make(map[string]string),
+		Attributes: attributes,
 	}
+}
+
+func (pco *PodmanCliOrchestrator) toNetworkEventMessage(
+	event *podmanEventMessage,
+) (containers.EventMessage, error) {
+	message, normalizeErr, resolution := pco.normalizeNetworkEventMessage(event)
+	if resolution != nil {
+		pco.cancelNetworkIDResolution(*resolution)
+	}
+	return message, normalizeErr
+}
+
+type networkIDCacheEntry struct {
+	id         string
+	generation uint64
+}
+
+type networkIDLookup struct {
+	generation uint64
+}
+
+type networkIDResolution struct {
+	networkName string
+	lookup      networkIDLookup
+}
+
+func (pco *PodmanCliOrchestrator) normalizeNetworkEventMessage(
+	event *podmanEventMessage,
+) (containers.EventMessage, error, *networkIDResolution) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	message := event.ToEventMessage()
+	if event.Source != containers.EventSourceNetwork {
+		return message, nil, nil
+	}
+
+	networkName := event.Network
+	if networkName == "" {
+		networkName = event.Name
+	}
+	if networkName == "" {
+		return message, nil, nil
+	}
+
+	switch message.Action {
+	case containers.EventActionCreate:
+		entry := pco.networkIDs[networkName]
+		pco.networkIDsGeneration++
+		entry.id = event.ID
+		entry.generation = pco.networkIDsGeneration
+		pco.storeNetworkIDEntryLocked(networkName, entry)
+		return message, nil, nil
+	case containers.EventActionDestroy:
+		entry := pco.networkIDs[networkName]
+		pco.networkIDsGeneration++
+		if message.Actor.ID == "" && entry.id != "" {
+			message.Actor.ID = entry.id
+		}
+		entry.id = ""
+		entry.generation = pco.networkIDsGeneration
+		pco.storeNetworkIDEntryLocked(networkName, entry)
+		return message, nil, nil
+	case containers.EventActionConnect, containers.EventActionDisconnect:
+		entry := pco.networkIDs[networkName]
+		if entry.id == "" {
+			resolution := &networkIDResolution{
+				networkName: networkName,
+				lookup:      pco.beginNetworkIDLookupLocked(),
+			}
+			return message, fmt.Errorf("%w: %q", errNetworkIDNotCached, networkName), resolution
+		}
+		message.Actor.ID = entry.id
+	}
+
+	return message, nil, nil
+}
+
+func (pco *PodmanCliOrchestrator) resolveAndNotifyNetworkEvent(
+	ctx context.Context,
+	subscriptions *pubsub.SubscriptionSet[containers.EventMessage],
+	event podmanEventMessage,
+	eventData string,
+	resolution networkIDResolution,
+) {
+	defer func() {
+		<-pco.networkEventResolutionSlots
+	}()
+
+	message, resolveErr := pco.resolveNetworkEventMessage(ctx, &event, resolution)
+	if resolveErr != nil {
+		if ctx.Err() == nil {
+			pco.log.Error(resolveErr, "Network event data could not be normalized", "EventData", eventData)
+		}
+	}
+	if ctx.Err() == nil {
+		subscriptions.Notify(message)
+	}
+}
+
+func (pco *PodmanCliOrchestrator) resolveNetworkEventMessage(
+	ctx context.Context,
+	event *podmanEventMessage,
+	resolution networkIDResolution,
+) (containers.EventMessage, error) {
+	resolutionCompleted := false
+	defer func() {
+		if !resolutionCompleted {
+			pco.cancelNetworkIDResolution(resolution)
+		}
+	}()
+
+	networkName := event.Network
+	if networkName == "" {
+		networkName = event.Name
+	}
+	if networkName == "" {
+		return event.ToEventMessage(), fmt.Errorf("network event does not identify a network")
+	}
+
+	inspected, inspectErr := pco.inspectNetworks(
+		ctx,
+		containers.InspectNetworksOptions{Networks: []string{networkName}},
+		false,
+	)
+	if inspectErr != nil {
+		return event.ToEventMessage(), fmt.Errorf("resolving network event name %q to an ID: %w", networkName, inspectErr)
+	}
+	if len(inspected) != 1 || inspected[0].Id == "" {
+		return event.ToEventMessage(), fmt.Errorf("resolving network event name %q returned no network ID", networkName)
+	}
+
+	resolvedNetworkID, accepted := pco.completeNetworkIDResolution(resolution, inspected[0].Id)
+	resolutionCompleted = true
+	if !accepted {
+		return event.ToEventMessage(), fmt.Errorf(
+			"network event name %q was resolved after the network cache changed",
+			networkName,
+		)
+	}
+
+	message := event.ToEventMessage()
+	message.Actor.ID = resolvedNetworkID
+	return message, nil
+}
+
+func (pco *PodmanCliOrchestrator) rememberNetworkIDs(lookup networkIDLookup, networks []containers.InspectedNetwork) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	for _, network := range networks {
+		if network.Name != "" && network.Id != "" {
+			pco.rememberNetworkIDLookupResultLocked(lookup, network.Name, network.Id)
+		}
+	}
+	pco.finishNetworkIDLookupLocked(lookup)
+}
+
+func (pco *PodmanCliOrchestrator) rememberListedNetworkIDs(
+	lookup networkIDLookup,
+	networks []containers.ListedNetwork,
+) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	for _, network := range networks {
+		if network.Name != "" && network.ID != "" {
+			pco.rememberNetworkIDLookupResultLocked(lookup, network.Name, network.ID)
+		}
+	}
+	pco.finishNetworkIDLookupLocked(lookup)
+}
+
+func (pco *PodmanCliOrchestrator) rememberNetworkID(networkName string, networkID string) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+	pco.rememberNetworkIDLocked(networkName, networkID)
+}
+
+func (pco *PodmanCliOrchestrator) rememberNetworkIDLocked(networkName string, networkID string) {
+	entry := pco.networkIDs[networkName]
+	if entry.id == networkID {
+		return
+	}
+	entry.id = networkID
+	pco.networkIDsGeneration++
+	entry.generation = pco.networkIDsGeneration
+	pco.networkIDs[networkName] = entry
+}
+
+func (pco *PodmanCliOrchestrator) beginNetworkIDLookup() networkIDLookup {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	return pco.beginNetworkIDLookupLocked()
+}
+
+func (pco *PodmanCliOrchestrator) beginNetworkIDLookupLocked() networkIDLookup {
+	lookup := networkIDLookup{generation: pco.networkIDsGeneration}
+	if pco.networkIDLookups == nil {
+		pco.networkIDLookups = make(map[uint64]uint32)
+	}
+	pco.networkIDLookups[lookup.generation]++
+	return lookup
+}
+
+func (pco *PodmanCliOrchestrator) rememberNetworkIDLookupResultLocked(
+	lookup networkIDLookup,
+	networkName string,
+	networkID string,
+) (string, bool) {
+	entry := pco.networkIDs[networkName]
+	if entry.generation > lookup.generation {
+		return entry.id, entry.id != "" && entry.id == networkID
+	}
+	if entry.id == networkID {
+		return entry.id, true
+	}
+
+	pco.networkIDsGeneration++
+	entry.id = networkID
+	entry.generation = pco.networkIDsGeneration
+	pco.networkIDs[networkName] = entry
+	return entry.id, true
+}
+
+func (pco *PodmanCliOrchestrator) storeNetworkIDEntryLocked(networkName string, entry networkIDCacheEntry) {
+	if entry.id == "" && !pco.networkIDEntryNeededLocked(entry) {
+		delete(pco.networkIDs, networkName)
+		return
+	}
+	pco.networkIDs[networkName] = entry
+}
+
+func (pco *PodmanCliOrchestrator) networkIDEntryNeededLocked(entry networkIDCacheEntry) bool {
+	for lookupGeneration := range pco.networkIDLookups {
+		if lookupGeneration < entry.generation {
+			return true
+		}
+	}
+	return false
+}
+
+func (pco *PodmanCliOrchestrator) finishNetworkIDLookupLocked(lookup networkIDLookup) {
+	activeCount := pco.networkIDLookups[lookup.generation]
+	if activeCount <= 1 {
+		delete(pco.networkIDLookups, lookup.generation)
+	} else {
+		pco.networkIDLookups[lookup.generation] = activeCount - 1
+	}
+
+	for networkName, entry := range pco.networkIDs {
+		if entry.id == "" && !pco.networkIDEntryNeededLocked(entry) {
+			delete(pco.networkIDs, networkName)
+		}
+	}
+}
+
+func (pco *PodmanCliOrchestrator) cachedNetworkID(networkName string) (string, bool) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	entry, found := pco.networkIDs[networkName]
+	return entry.id, found && entry.id != ""
+}
+
+func (pco *PodmanCliOrchestrator) cancelNetworkIDLookup(lookup networkIDLookup) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	pco.finishNetworkIDLookupLocked(lookup)
+}
+
+func (pco *PodmanCliOrchestrator) cancelNetworkIDResolution(resolution networkIDResolution) {
+	pco.cancelNetworkIDLookup(resolution.lookup)
+}
+
+func (pco *PodmanCliOrchestrator) completeNetworkIDResolution(
+	resolution networkIDResolution,
+	resolvedNetworkID string,
+) (string, bool) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	networkID, accepted := pco.rememberNetworkIDLookupResultLocked(
+		resolution.lookup,
+		resolution.networkName,
+		resolvedNetworkID,
+	)
+	pco.finishNetworkIDLookupLocked(resolution.lookup)
+	return networkID, accepted
 }
 
 func normalizeCliErrors(errBuf *bytes.Buffer, errorMatches ...containers.ErrorMatch) error {

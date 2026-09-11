@@ -72,14 +72,6 @@ var (
 	defaultCreateContainerTimeout = 10 * time.Minute
 	defaultRunContainerTimeout    = 10 * time.Minute
 
-	// Cache and synchronization control for checking runtime cachedStatus
-	cachedStatus *containers.ContainerRuntimeStatus
-	// Ensure that only one goroutine is checking the status at a time
-	checkStatusLock = concurrency.NewContextAwareLock()
-	// Mutex to control read/write access to the cached status
-	updateStatus            = &sync.RWMutex{}
-	backgroundStatusUpdates atomic.Int32
-
 	errInvalidDockerVersionOutput = fmt.Errorf("invalid Docker CLI version output")
 
 	minimumSupportedDockerCliVersion = dockerCliVersion{
@@ -117,6 +109,12 @@ type DockerCliOrchestrator struct {
 	// Process executor for running Docker commands
 	executor process.Executor
 
+	// Runtime status state is scoped to this orchestrator instance.
+	cachedStatus            *containers.ContainerRuntimeStatus
+	checkStatusLock         *concurrency.ContextAwareLock
+	updateStatus            sync.RWMutex
+	backgroundStatusUpdates atomic.Int32
+
 	// Event watcher for container events
 	containerEvtWatcher *pubsub.SubscriptionSet[containers.EventMessage]
 
@@ -126,8 +124,9 @@ type DockerCliOrchestrator struct {
 
 func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) containers.ContainerOrchestrator {
 	dco := &DockerCliOrchestrator{
-		log:      log,
-		executor: executor,
+		log:             log,
+		executor:        executor,
+		checkStatusLock: concurrency.NewContextAwareLock(),
 	}
 
 	dco.containerEvtWatcher = pubsub.NewSubscriptionSet(dco.doWatchContainers, context.Background())
@@ -150,16 +149,16 @@ func (*DockerCliOrchestrator) ContainerHost() string {
 
 func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage containers.CachedRuntimeStatusUsage) containers.ContainerRuntimeStatus {
 	// A cached status is already available, return it
-	updateStatus.RLock()
-	if cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
-		defer updateStatus.RUnlock()
-		return *cachedStatus
+	dco.updateStatus.RLock()
+	if dco.cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
+		defer dco.updateStatus.RUnlock()
+		return *dco.cachedStatus
 	}
-	updateStatus.RUnlock()
+	dco.updateStatus.RUnlock()
 
 	if cacheUsage == containers.CachedRuntimeStatusAllowed {
 		// For cached results, only one goroutine should be checking the status at a time
-		if syncErr := checkStatusLock.Lock(ctx); syncErr != nil {
+		if syncErr := dco.checkStatusLock.Lock(ctx); syncErr != nil {
 			// Timed out, assume Docker is not responsive and unavailable
 			return containers.ContainerRuntimeStatus{
 				Installed: false,
@@ -168,30 +167,30 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage co
 			}
 		}
 
-		defer checkStatusLock.Unlock()
+		defer dco.checkStatusLock.Unlock()
 	}
 
-	updateStatus.RLock()
+	dco.updateStatus.RLock()
 	// Check again if the status is available in the cache
-	if cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
-		defer updateStatus.RUnlock()
-		return *cachedStatus
+	if dco.cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
+		defer dco.updateStatus.RUnlock()
+		return *dco.cachedStatus
 	}
-	updateStatus.RUnlock()
+	dco.updateStatus.RUnlock()
 
 	newStatus := dco.getStatus(ctx)
 
-	updateStatus.Lock()
+	dco.updateStatus.Lock()
 	// Update the cached status
-	cachedStatus = &newStatus
-	updateStatus.Unlock()
+	dco.cachedStatus = &newStatus
+	dco.updateStatus.Unlock()
 
 	return newStatus
 }
 
 // Check the status of the Docker runtime in the background until the context is canceled.
 func (dco *DockerCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Context) {
-	if !backgroundStatusUpdates.CompareAndSwap(0, 1) {
+	if !dco.backgroundStatusUpdates.CompareAndSwap(0, 1) {
 		return
 	}
 
@@ -200,15 +199,15 @@ func (dco *DockerCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Cont
 		timer.Stop()
 		for {
 			// Only one goroutine should be checking the status at a time
-			if checkStatusLock.TryLock() {
+			if dco.checkStatusLock.TryLock() {
 				newStatus := dco.getStatus(ctx)
 
-				updateStatus.Lock()
+				dco.updateStatus.Lock()
 				// Update the cached status
-				cachedStatus = &newStatus
-				updateStatus.Unlock()
+				dco.cachedStatus = &newStatus
+				dco.updateStatus.Unlock()
 
-				checkStatusLock.Unlock()
+				dco.checkStatusLock.Unlock()
 			}
 
 			// Wait for 5 seconds before checking again
@@ -529,6 +528,24 @@ func (dco *DockerCliOrchestrator) PullImage(ctx context.Context, options contain
 	}
 
 	return asId(outBuf)
+}
+
+func (dco *DockerCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {
+	return containers.RemoveImagesSequentially(ctx, options, func(ctx context.Context, image string, force bool) error {
+		args := []string{"image", "rm"}
+		if force {
+			args = append(args, "--force")
+		}
+		args = append(args, image)
+
+		cmd := makeDockerCommand(args...)
+		_, errBuf, removeErr := dco.runBufferedDockerCommand(ctx, "RemoveImage", cmd, nil, nil, ordinaryDockerCommandTimeout)
+		if removeErr != nil {
+			return errors.Join(removeErr, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
+		}
+
+		return nil
+	})
 }
 
 func applyCreateContainerOptions(args []string, options containers.CreateContainerOptions) []string {
@@ -861,7 +878,7 @@ func (dco *DockerCliOrchestrator) StopContainers(ctx context.Context, options co
 	args := []string{"container", "stop"}
 	var timeout time.Duration = ordinaryDockerCommandTimeout
 	if options.SecondsToKill > 0 {
-		args = append(args, "--time", fmt.Sprintf("%d", options.SecondsToKill))
+		args = append(args, "-t", fmt.Sprintf("%d", options.SecondsToKill))
 		timeout = time.Duration(options.SecondsToKill)*time.Second + ordinaryDockerCommandTimeout
 	}
 	args = append(args, options.Containers...)
@@ -1131,7 +1148,7 @@ func (dco *DockerCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 }
 
 func (dco *DockerCliOrchestrator) ListNetworks(ctx context.Context, options containers.ListNetworksOptions) ([]containers.ListedNetwork, error) {
-	args := []string{"network", "ls"}
+	args := []string{"network", "ls", "--no-trunc"}
 
 	for _, label := range options.Filters.LabelFilters {
 		filter := fmt.Sprintf("label=%s", label.Key)
@@ -1180,8 +1197,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 			}
 
 			evtData := scanner.Text()
-			var evtMessage containers.EventMessage
-			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
+			evtMessage, unmarshalErr := unmarshalDockerEvent(scanner.Bytes())
 			if unmarshalErr != nil {
 				dco.log.Error(unmarshalErr, "Container event data could not be parsed", "EventData", evtData)
 			} else {
@@ -1239,8 +1255,7 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 				return // Cancellation has been requested, so we should stop scanning events
 			}
 
-			var evtMessage containers.EventMessage
-			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
+			evtMessage, unmarshalErr := unmarshalDockerEvent(scanner.Bytes())
 			if unmarshalErr != nil {
 				dco.log.Error(unmarshalErr, "Network event data could not be parsed", "EventData", scanner.Text())
 			} else {
@@ -1629,6 +1644,33 @@ type dockerClientVersion struct {
 
 type dockerServerVersion struct {
 	Version string `json:"Version"`
+}
+
+type dockerEventActor struct {
+	ID         string            `json:"ID,omitempty"`
+	Attributes map[string]string `json:"Attributes,omitempty"`
+}
+
+type dockerEventMessage struct {
+	Source containers.EventSource `json:"Type"`
+	Action containers.EventAction `json:"Action"`
+	Actor  dockerEventActor       `json:"Actor,omitempty"`
+}
+
+func unmarshalDockerEvent(data []byte) (containers.EventMessage, error) {
+	var dockerEvent dockerEventMessage
+	if unmarshalErr := json.Unmarshal(data, &dockerEvent); unmarshalErr != nil {
+		return containers.EventMessage{}, unmarshalErr
+	}
+
+	return containers.EventMessage{
+		Source: dockerEvent.Source,
+		Action: dockerEvent.Action,
+		Actor: containers.EventActor{
+			ID: dockerEvent.Actor.ID,
+		},
+		Attributes: dockerEvent.Actor.Attributes,
+	}, nil
 }
 
 type dockerListedContainer struct {

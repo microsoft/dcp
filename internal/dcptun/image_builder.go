@@ -101,9 +101,8 @@ func setupImageBuildContextArchive(
 		return nil, fmt.Errorf("create random build context archive suffix: %w", randomSuffixErr)
 	}
 	// The archive lives in the DCP session directory, whose lifetime owns its cleanup.
-	archiveFile, openArchiveErr := usvc_io.OpenTempFile(
+	archiveFile, openArchiveErr := usvc_io.CreateNewTempFile(
 		fmt.Sprintf("dcptun-build-context-%s.tar", randomSuffix),
-		os.O_RDWR|os.O_CREATE|os.O_EXCL,
 		osutil.PermissionOnlyOwnerReadWrite,
 	)
 	if openArchiveErr != nil {
@@ -141,7 +140,7 @@ ENTRYPOINT ["%[3]s"]
 		return nil, fmt.Errorf("write Dockerfile to build context archive: %w", writeDockerfileErr)
 	}
 
-	binaryFile, openBinaryErr := usvc_io.OpenFile(dcpTunClientPath, os.O_RDONLY, 0)
+	binaryFile, openBinaryErr := usvc_io.OpenFileReadOnly(dcpTunClientPath)
 	if openBinaryErr != nil {
 		cleanup()
 		return nil, fmt.Errorf("open dcptun client binary: %w", openBinaryErr)
@@ -196,7 +195,7 @@ ENTRYPOINT ["%[3]s"]
 
 // Computes the SHA256 hash of a given binary file
 func computeFileHash(filePath string) (string, error) {
-	file, openErr := usvc_io.OpenFile(filePath, os.O_RDONLY, 0)
+	file, openErr := usvc_io.OpenFileReadOnly(filePath)
 	if openErr != nil {
 		return "", fmt.Errorf("failed to open binary file %s: %w", filePath, openErr)
 	}

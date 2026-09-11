@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"testing"
 
@@ -18,15 +19,16 @@ import (
 )
 
 // Verifies that the child is redirected through the 'fork-process-exec' command on platforms
-// that need it, and left alone everywhere else. The redirection is what clears the Go runtime's
-// signal handler flags before the real program starts, so losing it reintroduces crashes in
-// child runtimes that inspect those flags.
+// that need it, and left alone everywhere else. The redirection is what cleans the Go runtime's
+// SIGUSR1 disposition before the real program starts.
 func TestUseExecShim(t *testing.T) {
 	t.Parallel()
 
 	childCmd := exec.Command("sh", "-c", "exit 0")
+	childCmd.Env = []string{"EXISTING=value", "GODEBUG=gctrace=1,asyncpreemptoff=0,schedtrace=1000"}
 	originalPath := childCmd.Path
 	originalArgs := childCmd.Args
+	originalEnv := childCmd.Env
 
 	execShim, shimErr := useExecShim(childCmd)
 	require.NoError(t, shimErr)
@@ -34,23 +36,35 @@ func TestUseExecShim(t *testing.T) {
 		defer execShim.close()
 	}
 
-	if !process.SignalDispositionsLeakToChildren() {
+	if !process.NeedsExecSignalDispositionWorkaround() {
 		require.Nil(t, execShim, "no handshake is needed on this platform")
 		require.Equal(t, originalPath, childCmd.Path, "the command should not be redirected on this platform")
 		require.Equal(t, originalArgs, childCmd.Args, "the arguments should not be rewritten on this platform")
+		require.Equal(t, originalEnv, childCmd.Env, "the environment should not be rewritten on this platform")
 		return
 	}
 
 	dcpPath, dcpPathErr := os.Executable()
 	require.NoError(t, dcpPathErr)
 
+	ignoredByCaller, dispositionErr := process.InheritedSIGUSR1Ignored()
+	require.NoError(t, dispositionErr)
+
 	expectedArgs := append(
-		[]string{dcpPath, ForkProcessExecCmdName, "--" + execPathFlagName, originalPath, "--"},
+		[]string{
+			dcpPath,
+			ForkProcessExecCmdName,
+			"--" + execPathFlagName,
+			originalPath,
+			"--" + callerSIGUSR1IgnoredFlagName + "=" + strconv.FormatBool(ignoredByCaller),
+			"--",
+		},
 		originalArgs...,
 	)
 
 	require.Equal(t, dcpPath, childCmd.Path, "the command should run the current executable")
 	require.Equal(t, expectedArgs, childCmd.Args, "the original program and arguments should be passed to the shim")
+	require.Equal(t, originalEnv, childCmd.Env, "the target environment should not be rewritten")
 
 	require.NotNil(t, execShim, "the shim should report whether the exec succeeded")
 	require.Len(t, childCmd.ExtraFiles, 1, "the status descriptor should be passed to the shim")
@@ -96,9 +110,7 @@ func TestExecShimHandshakeReportsExecFailure(t *testing.T) {
 	handshake := newTestExecShimHandshake(t)
 
 	// Stand in for the shim reporting a failed execve.
-	_, writeErr := fmt.Fprintf(handshake.statusW, "%d", int(syscall.ENOENT))
-	require.NoError(t, writeErr)
-	require.NoError(t, handshake.statusW.Close())
+	writeForkProcessExecFailure(handshake.statusW, fmt.Errorf("executing child: %w", syscall.ENOENT))
 
 	require.ErrorIs(t, handshake.wait(), syscall.ENOENT)
 }

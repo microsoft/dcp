@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -47,9 +48,16 @@ func CleanupSessionFolderIfNeeded() {
 func init() {
 	DcpSessionDir = sync.OnceValue(func() string {
 		if dcpSessionDir, found := os.LookupEnv(DCP_SESSION_FOLDER); found {
-			info, err := os.Stat(dcpSessionDir)
+			if dcpSessionDir == "" {
+				return ""
+			}
+			absoluteSessionDir, absolutePathErr := filepath.Abs(dcpSessionDir)
+			if absolutePathErr != nil {
+				return ""
+			}
+			info, err := os.Stat(absoluteSessionDir)
 			if err == nil && info.IsDir() {
-				return dcpSessionDir
+				return absoluteSessionDir
 			}
 		}
 

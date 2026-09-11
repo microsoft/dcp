@@ -412,12 +412,12 @@ func TestAdoptedProcessWatcherDoesNotDeleteReusedRunID(t *testing.T) {
 func TestReleaseRunClosesProcessRunFiles(t *testing.T) {
 	t.Parallel()
 
-	stdOutFile, stdOutFileErr := usvc_io.OpenTempFile(fmt.Sprintf("stdout_%d", time.Now().UnixNano()), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdOutFile, stdOutFileErr := usvc_io.CreateNewTempFile(fmt.Sprintf("stdout_%d", time.Now().UnixNano()), osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, stdOutFileErr)
 	t.Cleanup(func() {
 		require.NoError(t, os.Remove(stdOutFile.Name()))
 	})
-	stdErrFile, stdErrFileErr := usvc_io.OpenTempFile(fmt.Sprintf("stderr_%d", time.Now().UnixNano()), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdErrFile, stdErrFileErr := usvc_io.CreateNewTempFile(fmt.Sprintf("stderr_%d", time.Now().UnixNano()), osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, stdErrFileErr)
 	t.Cleanup(func() {
 		require.NoError(t, os.Remove(stdErrFile.Name()))

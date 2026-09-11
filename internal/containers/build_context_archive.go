@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"os"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
@@ -34,7 +33,7 @@ func OpenBuildContextArchive(archive *ContainerBuildContextArchive) (io.ReadClos
 		return io.NopCloser(bytes.NewReader(contents)), nil
 	}
 
-	archiveFile, openErr := usvc_io.OpenFile(archive.Source, os.O_RDONLY, 0)
+	archiveFile, openErr := usvc_io.OpenFileReadOnly(archive.Source)
 	if openErr != nil {
 		return nil, fmt.Errorf("open build context archive %q: %w", archive.Source, openErr)
 	}

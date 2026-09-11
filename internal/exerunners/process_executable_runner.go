@@ -47,7 +47,10 @@ var persistentExecutableOutputDir = func() (string, error) {
 	if adminErr != nil {
 		return "", fmt.Errorf("could not determine current elevation: %w", adminErr)
 	}
-	baseDir := persistentExecutableOutputBaseDir()
+	baseDir, absolutePathErr := filepath.Abs(persistentExecutableOutputBaseDir())
+	if absolutePathErr != nil {
+		return "", fmt.Errorf("could not resolve persistent Executable output directory: %w", absolutePathErr)
+	}
 	if isAdmin {
 		return baseDir + "-admin", nil
 	}
@@ -674,7 +677,7 @@ func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, e
 	// Kubernetes UIDs are effectively unique, so collisions between different Executable objects are not expected.
 	fileName := fmt.Sprintf("%s_%s", exe.UID, stream)
 	if !executableIsPersistent(exe) {
-		return usvc_io.OpenTempFile(fileName, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+		return usvc_io.CreateNewTempFile(fileName, osutil.PermissionOnlyOwnerReadWrite)
 	}
 
 	dir, dirErr := persistentExecutableOutputDir()
@@ -685,7 +688,7 @@ func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, e
 		return nil, fmt.Errorf("could not prepare persistent Executable output directory: %w", ensureDirErr)
 	}
 
-	return usvc_io.OpenFile(filepath.Join(dir, fileName), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	return usvc_io.CreateNewFile(filepath.Join(dir, fileName), osutil.PermissionOnlyOwnerReadWrite)
 }
 
 func executableOutputWriter(exe *apiv1.Executable, file *os.File) usvc_io.WriteSyncerCloser {

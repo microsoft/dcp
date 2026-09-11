@@ -146,6 +146,9 @@ func ApplyImageLayersImpl(
 	if options.Tag != "" {
 		args = append(args, "-t", options.Tag)
 	}
+	for _, label := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
+	}
 	args = append(args, "-")
 
 	cmd := runner.MakeCommand(args...)

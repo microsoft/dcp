@@ -98,10 +98,27 @@ const (
 	ApiServerUseTrueContainerOrchestrator ApiServerFlag = 1
 )
 
+// ApiServerOptions controls API server test startup and in-process container orchestration.
+type ApiServerOptions struct {
+	Flags                 ApiServerFlag
+	ContainerOrchestrator containers.ContainerOrchestrator
+}
+
 // Starts the API server in a separate process.
 func StartApiServer(
 	testRunCtx context.Context,
 	flags ApiServerFlag,
+	log logr.Logger,
+	sessionFolder string,
+) (*ApiServerInfo, error) {
+	return StartApiServerWithOptions(testRunCtx, ApiServerOptions{Flags: flags}, log, sessionFolder)
+}
+
+// StartApiServerWithOptions starts the API server and optionally uses a caller-supplied
+// container orchestrator for in-process controllers.
+func StartApiServerWithOptions(
+	testRunCtx context.Context,
+	options ApiServerOptions,
 	log logr.Logger,
 	sessionFolder string,
 ) (*ApiServerInfo, error) {
@@ -186,7 +203,10 @@ func StartApiServer(
 
 	// From here on we need to do cleanup if something goes wrong.
 
-	if (flags & ApiServerUseTrueContainerOrchestrator) != 0 {
+	if options.ContainerOrchestrator != nil {
+		info.ContainerOrchestrator = options.ContainerOrchestrator
+		info.ContainerOrchestrator.EnsureBackgroundStatusUpdates(testRunCtx)
+	} else if (options.Flags & ApiServerUseTrueContainerOrchestrator) != 0 {
 		co, coErr := runtimes.FindAvailableContainerRuntime(testRunCtx, log.WithName("ContainerOrchestrator"), pe)
 		if coErr != nil {
 			cleanup()

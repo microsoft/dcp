@@ -126,7 +126,7 @@ func (sls stdIoLogStreamer) StreamLogs(
 		return status, nil, nil
 	}
 
-	logFile, fileErr := usvc_io.OpenFile(logFilePath, os.O_RDONLY, 0)
+	logFile, fileErr := usvc_io.OpenFileReadOnly(logFilePath)
 	if fileErr != nil {
 		if os.IsNotExist(fileErr) {
 			log.V(1).Info("Log file does not exist yet", "Path", logFilePath)

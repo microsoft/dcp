@@ -10,6 +10,7 @@ package process
 import (
 	"os"
 	"os/exec"
+	"os/signal"
 	"syscall"
 	"testing"
 	"time"
@@ -19,44 +20,152 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Marks the re-executed test binary as the helper that performs the reset. The reset disables
-// the Go runtime's signal handling, so it cannot run in the main test process.
-const resetSignalDispositionsHelperEnvVar = "DCP_TEST_RESET_SIGNAL_DISPOSITIONS_HELPER"
+const (
+	prepareSIGUSR1ForExecHelperEnvVar        = "DCP_TEST_PREPARE_SIGUSR1_FOR_EXEC_HELPER"
+	prepareSIGUSR1DefaultMode                = "default"
+	prepareSIGUSR1IgnoredMode                = "ignored"
+	darwinTestSARestart               int32  = 0x2
+	dirtySignalMask                   uint32 = 1
+)
 
-func TestResetSignalDispositions(t *testing.T) {
+func TestPrepareSIGUSR1ForExecUsesDefaultDisposition(t *testing.T) {
 	t.Parallel()
+
+	runPrepareSIGUSR1ForExecHelper(t, prepareSIGUSR1DefaultMode)
+}
+
+func TestPrepareSIGUSR1ForExecUsesIgnoredDisposition(t *testing.T) {
+	t.Parallel()
+
+	runPrepareSIGUSR1ForExecHelper(t, prepareSIGUSR1IgnoredMode)
+}
+
+func runPrepareSIGUSR1ForExecHelper(t *testing.T, mode string) {
+	t.Helper()
 
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
 	t.Cleanup(testCancel)
 
-	helper := exec.CommandContext(testCtx, os.Args[0], "-test.run=TestResetSignalDispositionsHelper", "-test.v")
-	helper.Env = append(os.Environ(), resetSignalDispositionsHelperEnvVar+"=1")
+	helper := exec.CommandContext(testCtx, os.Args[0], "-test.run=^TestPrepareSIGUSR1ForExecHelper$", "-test.v")
+	helper.Env = append(os.Environ(), prepareSIGUSR1ForExecHelperEnvVar+"="+mode)
 
 	output, runErr := helper.CombinedOutput()
 	require.NoError(t, runErr, "helper process failed; output:\n%s", output)
 }
 
-// Runs inside the process started by TestResetSignalDispositions and is skipped otherwise.
-func TestResetSignalDispositionsHelper(t *testing.T) {
-	if os.Getenv(resetSignalDispositionsHelperEnvVar) != "1" {
-		t.Skip("helper for TestResetSignalDispositions")
+func TestPrepareSIGUSR1ForExecHelper(t *testing.T) {
+	mode := os.Getenv(prepareSIGUSR1ForExecHelperEnvVar)
+	if mode == "" {
+		t.Skip("helper for TestPrepareSIGUSR1ForExec")
 	}
 
-	before, beforeErr := signalDisposition(int(syscall.SIGUSR1))
-	require.NoError(t, beforeErr)
-	require.NotZero(t, before.flags, "the Go runtime should have left flags set on SIGUSR1")
+	switch mode {
+	case prepareSIGUSR1DefaultMode:
+		testPrepareSIGUSR1ForExecDefault(t)
+	case prepareSIGUSR1IgnoredMode:
+		testPrepareSIGUSR1ForExecIgnored(t)
+	default:
+		t.Fatalf("unknown helper mode %q", mode)
+	}
+}
 
-	ResetSignalDispositions()
+func testPrepareSIGUSR1ForExecDefault(t *testing.T) {
+	t.Helper()
 
+	initiallyIgnored, ignoredErr := IsSIGUSR1Ignored()
+	require.NoError(t, ignoredErr)
+	require.False(t, initiallyIgnored, "the Go test process should not start with SIGUSR1 ignored")
+
+	// The requested target disposition, rather than the shim's current disposition, must win.
+	setDirtySIGUSR1Disposition(t, darwinSigIgn)
+	before := readSignalDispositions(t)
+	beforeSIGUSR1 := before[int(syscall.SIGUSR1)]
+	require.Equal(t, darwinSigIgn, beforeSIGUSR1.handler)
+	require.NotZero(t, beforeSIGUSR1.flags)
+	require.NotZero(t, beforeSIGUSR1.mask)
+
+	require.NoError(t, PrepareSIGUSR1ForExec(false))
+
+	assertPreparedSIGUSR1Disposition(t, before, darwinSigDfl)
+}
+
+func testPrepareSIGUSR1ForExecIgnored(t *testing.T) {
+	t.Helper()
+
+	signal.Ignore(syscall.SIGUSR1)
+	ignored, ignoredErr := IsSIGUSR1Ignored()
+	require.NoError(t, ignoredErr)
+	require.True(t, ignored, "SIGUSR1 should be reported as ignored")
+
+	// The requested target disposition, rather than the shim's current disposition, must win.
+	setDirtySIGUSR1Disposition(t, darwinSigDfl)
+	before := readSignalDispositions(t)
+	beforeSIGUSR1 := before[int(syscall.SIGUSR1)]
+	require.Equal(t, darwinSigDfl, beforeSIGUSR1.handler)
+	require.NotZero(t, beforeSIGUSR1.flags)
+	require.NotZero(t, beforeSIGUSR1.mask)
+
+	require.NoError(t, PrepareSIGUSR1ForExec(true))
+
+	assertPreparedSIGUSR1Disposition(t, before, darwinSigIgn)
+}
+
+func setDirtySIGUSR1Disposition(t *testing.T, handler uintptr) {
+	t.Helper()
+
+	dirtyAction := darwinSigactionNew{
+		handler: handler,
+		mask:    dirtySignalMask,
+		flags:   darwinTestSARestart,
+	}
+	setErr := setSignalDisposition(int(syscall.SIGUSR1), &dirtyAction)
+	require.NoError(t, setErr)
+}
+
+func assertPreparedSIGUSR1Disposition(
+	t *testing.T,
+	before map[int]darwinSigactionOld,
+	expectedHandler uintptr,
+) {
+	t.Helper()
+
+	after := readSignalDispositions(t)
+	afterSIGUSR1 := after[int(syscall.SIGUSR1)]
+	require.Equal(t, expectedHandler, afterSIGUSR1.handler, "SIGUSR1 should have the requested handler")
+	require.Zero(t, afterSIGUSR1.flags, "SIGUSR1 should have no flags")
+	require.Zero(t, afterSIGUSR1.mask, "SIGUSR1 should have an empty mask")
+	require.Equal(
+		t,
+		before[int(syscall.SIGURG)],
+		after[int(syscall.SIGURG)],
+		"SIGURG disposition should remain unchanged",
+	)
+
+	for sig := 1; sig < darwinNumSignals; sig++ {
+		if sig == int(syscall.SIGKILL) ||
+			sig == int(syscall.SIGSTOP) ||
+			sig == int(syscall.SIGUSR1) ||
+			sig == int(syscall.SIGURG) {
+			continue
+		}
+
+		require.Equal(t, before[sig], after[sig], "signal %d disposition should remain unchanged", sig)
+	}
+}
+
+func readSignalDispositions(t *testing.T) map[int]darwinSigactionOld {
+	t.Helper()
+
+	dispositions := make(map[int]darwinSigactionOld, darwinNumSignals-3)
 	for sig := 1; sig < darwinNumSignals; sig++ {
 		if sig == int(syscall.SIGKILL) || sig == int(syscall.SIGSTOP) {
 			continue
 		}
 
-		after, afterErr := signalDisposition(sig)
-		require.NoError(t, afterErr, "signal %d disposition should be readable", sig)
-		require.Equal(t, darwinSigDfl, after.handler, "signal %d should be reset to SIG_DFL", sig)
-		require.Zero(t, after.flags, "signal %d should have no flags", sig)
-		require.Zero(t, after.mask, "signal %d should have an empty mask", sig)
+		disposition, dispositionErr := signalDisposition(sig)
+		require.NoError(t, dispositionErr, "signal %d disposition should be readable", sig)
+		dispositions[sig] = disposition
 	}
+
+	return dispositions
 }

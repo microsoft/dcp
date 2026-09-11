@@ -14,7 +14,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -24,6 +23,9 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 // fakeCLICommandRunner implements CLICommandRunner for testing.
@@ -227,7 +229,7 @@ func TestApplyImageLayersImpl_SourceLayerWithSHA256Prefix(t *testing.T) {
 
 	tempDir := t.TempDir()
 	layerPath := filepath.Join(tempDir, "layer.tar")
-	require.NoError(t, os.WriteFile(layerPath, layerContent, 0644))
+	require.NoError(t, usvc_io.WriteFile(layerPath, layerContent, osutil.PermissionOwnerReadWriteOthersRead))
 
 	result := &fakeBuildResult{}
 	options := ApplyImageLayersOptions{
@@ -261,7 +263,7 @@ func TestApplyImageLayersImpl_SourceLayerWithUppercaseSHA256(t *testing.T) {
 
 	tempDir := t.TempDir()
 	layerPath := filepath.Join(tempDir, "layer.tar")
-	require.NoError(t, os.WriteFile(layerPath, layerContent, 0644))
+	require.NoError(t, usvc_io.WriteFile(layerPath, layerContent, osutil.PermissionOwnerReadWriteOthersRead))
 
 	result := &fakeBuildResult{}
 	options := ApplyImageLayersOptions{
@@ -289,7 +291,7 @@ func TestApplyImageLayersImpl_SourceLayerHashMismatch(t *testing.T) {
 
 	tempDir := t.TempDir()
 	layerPath := filepath.Join(tempDir, "layer.tar")
-	require.NoError(t, os.WriteFile(layerPath, layerContent, 0644))
+	require.NoError(t, usvc_io.WriteFile(layerPath, layerContent, osutil.PermissionOwnerReadWriteOthersRead))
 
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
@@ -321,7 +323,11 @@ func TestApplyImageLayersImpl_BuildCommandArgs(t *testing.T) {
 		options := ApplyImageLayersOptions{
 			BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
 			Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
-			Tag:       "myimage:dcp-abc",
+			Labels: []Label{
+				{Key: "test.label", Value: "value with spaces"},
+				{Key: "another.label", Value: "second-value"},
+			},
+			Tag: "myimage:dcp-abc",
 		}
 
 		_, applyErr := ApplyImageLayersImpl(
@@ -334,6 +340,8 @@ func TestApplyImageLayersImpl_BuildCommandArgs(t *testing.T) {
 		assert.Contains(t, result.args, "--quiet")
 		assert.Contains(t, result.args, "-t")
 		assert.Contains(t, result.args, "myimage:dcp-abc")
+		assert.Contains(t, result.args, "test.label=value with spaces")
+		assert.Contains(t, result.args, "another.label=second-value")
 		assert.Equal(t, "-", result.args[len(result.args)-1])
 	})
 

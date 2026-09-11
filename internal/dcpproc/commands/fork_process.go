@@ -190,9 +190,9 @@ func trimForkProcessArgSeparator(args []string) []string {
 }
 
 // Redirects the child through the 'fork-process-exec' command on platforms where the child would
-// otherwise inherit the Go runtime's signal handler flags. The shim clears those flags and then
-// execs the original program, which keeps the process ID, session, standard streams, and exit
-// code that the caller of 'fork-process' expects.
+// otherwise inherit an invalid SIGUSR1 disposition from the Go runtime. The shim cleans that
+// disposition and then execs the original program, which keeps the process ID, session, standard
+// streams, and exit code that the caller of 'fork-process' expects.
 //
 // The reset cannot be done here: the Go runtime restores its own signal dispositions in the
 // forked child before it reaches execve, so it has to happen in the process that calls exec.
@@ -200,7 +200,7 @@ func trimForkProcessArgSeparator(args []string) []string {
 // Returns the handshake that reports whether the shim reached the requested program, or nil when
 // the child is started directly. The caller owns the returned handshake and must close it.
 func useExecShim(childCmd *exec.Cmd) (*execShimHandshake, error) {
-	if !process.SignalDispositionsLeakToChildren() {
+	if !process.NeedsExecSignalDispositionWorkaround() {
 		return nil, nil
 	}
 
@@ -210,6 +210,18 @@ func useExecShim(childCmd *exec.Cmd) (*execShimHandshake, error) {
 		return nil, nil
 	}
 
+	callerSIGUSR1Ignored, dispositionErr := process.InheritedSIGUSR1Ignored()
+	if dispositionErr != nil {
+		return nil, fmt.Errorf("could not determine the inherited SIGUSR1 disposition: %w", dispositionErr)
+	}
+
+	return useExecShimWithDisposition(childCmd, callerSIGUSR1Ignored)
+}
+
+func useExecShimWithDisposition(
+	childCmd *exec.Cmd,
+	callerSIGUSR1Ignored bool,
+) (*execShimHandshake, error) {
 	dcpPath, dcpPathErr := os.Executable()
 	if dcpPathErr != nil {
 		return nil, fmt.Errorf("could not determine the path of the current executable: %w", dcpPathErr)
@@ -220,7 +232,13 @@ func useExecShim(childCmd *exec.Cmd) (*execShimHandshake, error) {
 		return nil, fmt.Errorf("could not create the exec status pipe: %w", pipeErr)
 	}
 
-	shimArgs := []string{dcpPath, ForkProcessExecCmdName, "--" + execPathFlagName, childCmd.Path, "--"}
+	shimArgs := []string{
+		dcpPath,
+		ForkProcessExecCmdName,
+		"--" + execPathFlagName, childCmd.Path,
+		"--" + callerSIGUSR1IgnoredFlagName + "=" + strconv.FormatBool(callerSIGUSR1Ignored),
+	}
+	shimArgs = append(shimArgs, "--")
 	childCmd.Args = append(shimArgs, childCmd.Args...)
 	childCmd.Path = dcpPath
 

@@ -6,7 +6,6 @@
 package controllers
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -49,7 +48,7 @@ func createTunnelProxyBuildContextTestFile(t *testing.T) string {
 	t.Helper()
 
 	source := filepath.Join(t.TempDir(), "build-context.tar")
-	file, openErr := usvc_io.OpenFile(source, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOnlyOwnerReadWrite)
+	file, openErr := usvc_io.CreateNewFile(source, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, openErr)
 	require.NoError(t, file.Close())
 	return source

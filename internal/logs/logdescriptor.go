@@ -192,7 +192,7 @@ func (l *LogDescriptor) createLogFiles(logsFolder string) error {
 
 	stdOutFileName := fmt.Sprintf("%s_out_%s_%s", l.ResourceName.Name, l.ResourceUID, string(suffix))
 	stdOutPath := filepath.Join(logsFolder, stdOutFileName)
-	stdOut, stdOutErr := usvc_io.OpenFile(stdOutPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdOut, stdOutErr := usvc_io.CreateNewFile(stdOutPath, osutil.PermissionOnlyOwnerReadWrite)
 	if stdOutErr != nil {
 		// If we cannot create stdout or stderr file, this descriptor is pretty much unusable.
 		// We consider is disposed.
@@ -202,7 +202,7 @@ func (l *LogDescriptor) createLogFiles(logsFolder string) error {
 
 	stdErrFileName := fmt.Sprintf("%s_err_%s_%s", l.ResourceName.Name, l.ResourceUID, string(suffix))
 	stdErrPath := filepath.Join(logsFolder, stdErrFileName)
-	stdErr, stdErrErr := usvc_io.OpenFile(stdErrPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdErr, stdErrErr := usvc_io.CreateNewFile(stdErrPath, osutil.PermissionOnlyOwnerReadWrite)
 	if stdErrErr != nil {
 		l.disposed = true
 		stdOutCloseErr := stdOut.Close()

@@ -37,6 +37,7 @@ import (
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/containertest"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
@@ -143,6 +144,13 @@ func TestMain(m *testing.M) {
 		case <-serverInfo.ApiServerDisposalComplete.Wait():
 		case <-time.After(5 * time.Second):
 		}
+
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		if cleanupErr := containertest.CleanupActiveResources(cleanupCtx); cleanupErr != nil {
+			log.Error(cleanupErr, "Could not clean active true-runtime test resources")
+			code = 1
+		}
+		cleanupCancel()
 
 		os.Exit(code)
 	}()

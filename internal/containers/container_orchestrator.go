@@ -602,6 +602,9 @@ type ApplyImageLayersOptions struct {
 	// The image layers to apply (tar files)
 	Layers []ImageLayer
 
+	// Labels to apply to the derived image
+	Labels []Label
+
 	// Tag to apply to the derived image
 	Tag string
 
@@ -704,6 +707,7 @@ const (
 	EventActionKill         EventAction = "kill"
 	EventActionOom          EventAction = "oom"
 	EventActionPause        EventAction = "pause"
+	EventActionRemove       EventAction = "remove" // Podman-specific - normalized before events reach consumers
 	EventActionRename       EventAction = "rename"
 	EventActionResize       EventAction = "resize"
 	EventActionRestart      EventAction = "restart"

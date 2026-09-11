@@ -7,6 +7,8 @@ package containers
 
 import (
 	"context"
+	"errors"
+	"fmt"
 )
 
 // InspectImages command types
@@ -114,7 +116,7 @@ type BuildImageOptions struct {
 }
 
 type BuildImage interface {
-	// Build a new container image. If successful, the ID of the image is returned.
+	// Build a new container image.
 	BuildImage(ctx context.Context, options BuildImageOptions) error
 }
 
@@ -135,10 +137,74 @@ type PullImage interface {
 	PullImage(ctx context.Context, options PullImageOptions) (string, error)
 }
 
+// RemoveImages command types
+
+type RemoveImagesOptions struct {
+	// The list of image IDs or names to remove.
+	Images []string
+
+	// Force removal of the images.
+	Force bool
+}
+
+type RemoveImages interface {
+	// Removes images identified by the given list of names or IDs.
+	// Returns the requested names or IDs that were successfully removed. If some images cannot be
+	// removed, an error is reported, but images that can be removed are still processed.
+	RemoveImages(ctx context.Context, options RemoveImagesOptions) ([]string, error)
+}
+
+// RemoveImagesSequentially applies a runtime-specific single-image removal operation while
+// preserving the partial-success contract shared by the orchestrator removal APIs.
+// Image removal output of the underlying runtime (e.g., Docker) tends to report affected tags and layers
+// rather than requested identifiers, so separate exit results are required to attribute success reliably.
+func RemoveImagesSequentially(
+	ctx context.Context,
+	options RemoveImagesOptions,
+	removeImage func(ctx context.Context, image string, force bool) error,
+) ([]string, error) {
+	if len(options.Images) == 0 {
+		return nil, fmt.Errorf("must specify at least one image")
+	}
+	if removeImage == nil {
+		return nil, fmt.Errorf("image removal function cannot be nil")
+	}
+
+	removed := make([]string, 0, len(options.Images))
+	var removalErrors error
+
+	for _, image := range options.Images {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			removalErrors = errors.Join(removalErrors, ctxErr)
+			break
+		}
+
+		if removeErr := removeImage(ctx, image, options.Force); removeErr != nil {
+			removalErrors = errors.Join(removalErrors, fmt.Errorf("removing image %q: %w", image, removeErr))
+			continue
+		}
+
+		removed = append(removed, image)
+	}
+
+	if len(removed) < len(options.Images) {
+		removalErrors = errors.Join(
+			removalErrors,
+			errors.Join(
+				ErrIncomplete,
+				fmt.Errorf("only %d out of %d images were successfully removed", len(removed), len(options.Images)),
+			),
+		)
+	}
+
+	return removed, removalErrors
+}
+
 type ImageOrchestrator interface {
 	InspectImages
 	BuildImage
 	PullImage
+	RemoveImages
 
 	RuntimeStatusChecker
 }
