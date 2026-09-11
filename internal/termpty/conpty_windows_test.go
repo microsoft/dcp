@@ -156,7 +156,7 @@ func TestStartProcessWithTerminal_AbnormalExitCode(t *testing.T) {
 // calling GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, processGroupID). That
 // API only signals processes that share the SAME console as the caller. The
 // test process runs in its own console (or none at all), while the ConPTY
-// child runs attached to a separate conhost.exe — they do not share a
+// child runs attached to a separate OpenConsole.exe — they do not share a
 // console, so the CTRL_BREAK signal never reaches the child. The executor's
 // graceful-stop timeout therefore elapses and it falls back to
 // os.Process.Kill, which on Windows is TerminateProcess(handle, 1) and
@@ -257,7 +257,7 @@ func TestStartProcessWithTerminal_PTYCloseDeliversCloseEvent(t *testing.T) {
 //
 // Windows-specific behavior: unlike Unix, where the master end of the PTY
 // returns EOF/EIO once the slave side is closed (which the kernel does on
-// child exit), ConPTY's output pipe is owned by conhost.exe and only closes
+// child exit), ConPTY's output pipe is owned by OpenConsole.exe and only closes
 // when the host calls ClosePseudoConsole. The child's exit alone is not
 // sufficient to unblock a pending read on the output pipe; the test
 // therefore closes the PTY before asserting that subsequent reads fail.
@@ -276,7 +276,7 @@ func TestStartProcessWithTerminal_NormalExitWithPTYStillOpen(t *testing.T) {
 	require.Equal(t, int32(0), ei.ExitCode)
 
 	// On Windows the ConPTY output pipe stays open until the host closes
-	// it; closing the PTY here releases conhost's hold on the write end.
+	// it; closing the PTY here releases the console host's hold on the write end.
 	require.NoError(t, sp.PTY.Close())
 
 	// Drain any residual bytes and then assert the read terminates with an

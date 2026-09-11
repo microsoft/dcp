@@ -35,11 +35,11 @@ Windows builds require the bundled `conpty.dll` and native console hosts from th
 | `arm64` | arm64 | `arm64/OpenConsole.exe` |
 | `386` | x86 | `x86/OpenConsole.exe`, `x64/OpenConsole.exe`, `arm64/OpenConsole.exe` |
 
-`make build-dcp`, `make compile`, `make release`, and `make test-prereqs` stage this layout into `OUTPUT_BIN` (default `bin/`), together with `LICENSE-ConPTY.txt`, including when cross-compiling with `GOOS=windows`. Downloads are cached under `.toolbin/conpty/<version>/<DLL architecture>/`; incomplete restores are retried, and every build refreshes the required hosts and removes stale root or architecture-specific hosts. `make install` preserves the layout; `make uninstall` removes all bundled files. Release archives and NuGet packages preserve these subdirectories through their existing build-output globs.
+`make build-dcp`, `make compile`, `make release`, and `make test-prereqs` stage this layout beside `DCP_BINARY` (by default in `OUTPUT_BIN`, which defaults to `bin/`), together with `LICENSE-ConPTY.txt`, including when cross-compiling with `GOOS=windows`. Downloads are cached under `.toolbin/conpty/<version>/<DLL architecture>/`; incomplete restores are retried, and every build refreshes the required hosts and removes stale root or architecture-specific hosts. `make install` preserves the layout; `make uninstall` removes all bundled files. Release archives and NuGet packages preserve these subdirectories through their existing build-output globs.
 
 Windows CI uses `scripts/test-ci.ps1`, which performs the same restore and staging without make. Keep its ConPTY version and restore logic in sync with the Makefile. Restoring uses the public NuGet feed and requires `curl` plus `unzip` on Unix build hosts, or PowerShell's `Expand-Archive` on Windows. Non-Windows targets do not restore or stage ConPTY.
 
-Direct `go build` does not copy native dependencies. When building a Windows executable directly, also run `make stage-conpty` with the same `GOOS`, `GOARCH`, and output directory (`OUTPUT_BIN`), or manually reproduce the layout above and include `LICENSE-ConPTY.txt`. Keep the output directory consistent with `DCP_BINARY` if overriding that path.
+Direct `go build` does not copy native dependencies. When building a Windows executable directly, also run `make stage-conpty` with the same `GOOS`, `GOARCH`, and `DCP_BINARY`, or manually reproduce the layout above and include `LICENSE-ConPTY.txt`.
 
 ### Environment variables affecting DCP behavior
 

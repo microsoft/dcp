@@ -100,6 +100,7 @@ endif
 OUTPUT_BIN ?= $(repo_dir)/bin
 DCP_DIR ?= $(home_dir)/.dcp
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
+DCP_BINARY_DIR := $(abspath $(dir $(DCP_BINARY)))
 DCPTUN_CLIENT_BINARY ?= $(OUTPUT_BIN)/dcptun_c
 
 # Locations and definitions for tool binaries
@@ -309,7 +310,7 @@ build-ci: generate-ci release ## Runs codegen, including license/notice files, t
 
 .PHONY: build-dcp
 build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
-$(DCP_BINARY): $(GO_SOURCES) go.mod | ${OUTPUT_BIN}
+$(DCP_BINARY): $(GO_SOURCES) go.mod | ${DCP_BINARY_DIR}
 	$(GO_BIN) build -o $(DCP_BINARY) $(BUILD_ARGS) ./cmd/dcp
 
 ifeq ($(build_os),windows)
@@ -343,10 +344,10 @@ $$ErrorActionPreference = 'Stop'; \
 		$$path = Join-Path "$(DCP_DIR)" $$name; \
 		if (Test-Path -LiteralPath $$path) { Remove-Item -LiteralPath $$path -Force }; \
 	}; \
-	Copy-Item -LiteralPath "$(OUTPUT_BIN)/conpty.dll", "$(OUTPUT_BIN)/LICENSE-ConPTY.txt" -Destination "$(DCP_DIR)" -Force; \
+	Copy-Item -LiteralPath "$(DCP_BINARY_DIR)/conpty.dll", "$(DCP_BINARY_DIR)/LICENSE-ConPTY.txt" -Destination "$(DCP_DIR)" -Force; \
 	foreach ($$arch in "$(CONPTY_HOST_ARCHES)".Split(' ')) { \
 		New-Item -ItemType Directory -Path "$(DCP_DIR)/$$arch" -Force | Out-Null; \
-		Copy-Item -LiteralPath "$(OUTPUT_BIN)/$$arch/OpenConsole.exe" -Destination "$(DCP_DIR)/$$arch/OpenConsole.exe" -Force; \
+		Copy-Item -LiteralPath "$(DCP_BINARY_DIR)/$$arch/OpenConsole.exe" -Destination "$(DCP_DIR)/$$arch/OpenConsole.exe" -Force; \
 	}
 endef
 endif
@@ -360,11 +361,11 @@ ifeq ($(detected_OS),windows)
 	@$(install-conpty-windows)
 else
 	$(rm_f) "$(DCP_DIR)/OpenConsole.exe" "$(DCP_DIR)/x86/OpenConsole.exe" "$(DCP_DIR)/x64/OpenConsole.exe" "$(DCP_DIR)/arm64/OpenConsole.exe"
-	$(install) "$(OUTPUT_BIN)/conpty.dll" "$(DCP_DIR)"
-	$(install) -m 0644 "$(OUTPUT_BIN)/LICENSE-ConPTY.txt" "$(DCP_DIR)"
+	$(install) "$(DCP_BINARY_DIR)/conpty.dll" "$(DCP_DIR)"
+	$(install) -m 0644 "$(DCP_BINARY_DIR)/LICENSE-ConPTY.txt" "$(DCP_DIR)"
 	@set -e; for arch in $(CONPTY_HOST_ARCHES); do \
 		mkdir -p "$(DCP_DIR)/$$arch"; \
-		$(install) "$(OUTPUT_BIN)/$$arch/OpenConsole.exe" "$(DCP_DIR)/$$arch/OpenConsole.exe"; \
+		$(install) "$(DCP_BINARY_DIR)/$$arch/OpenConsole.exe" "$(DCP_DIR)/$$arch/OpenConsole.exe"; \
 	done
 endif
 endif
@@ -428,8 +429,8 @@ test-ci: test-ci-prereqs ## Runs tests in a way appropriate for CI pipeline, wit
 
 ## Development and test support targets
 
-${OUTPUT_BIN}:
-	$(mkdir) ${OUTPUT_BIN}
+$(sort ${OUTPUT_BIN} ${DCP_BINARY_DIR}):
+	$(mkdir) $@
 
 ${OUTPUT_BIN}/ext/bin/: | ${OUTPUT_BIN}
 	$(mkdir) ${OUTPUT_BIN}/ext/
@@ -462,7 +463,7 @@ endif
 .PHONY: stage-conpty
 stage-conpty: ## Restores and stages the required ConPTY binaries and license for Windows targets.
 ifeq ($(build_os),windows)
-stage-conpty: | $(OUTPUT_BIN)
+stage-conpty: | $(DCP_BINARY_DIR)
 ifeq ($(CONPTY_ARCH),)
 	$(error Unsupported Windows ConPTY GOARCH: $(CONPTY_GOARCH))
 else ifeq ($(detected_OS),windows)
@@ -487,13 +488,13 @@ $$ErrorActionPreference = 'Stop'; \
 		New-Item -ItemType File -Path "$(CONPTY_DIR)/.complete" -Force | Out-Null; \
 	}; \
 	foreach ($$name in @('OpenConsole.exe', 'x86/OpenConsole.exe', 'x64/OpenConsole.exe', 'arm64/OpenConsole.exe')) { \
-		$$path = Join-Path "$(OUTPUT_BIN)" $$name; \
+		$$path = Join-Path "$(DCP_BINARY_DIR)" $$name; \
 		if (Test-Path -LiteralPath $$path) { Remove-Item -LiteralPath $$path -Force }; \
 	}; \
-	Copy-Item -LiteralPath "$(CONPTY_DLL)", "$(repo_dir)/LICENSE-ConPTY.txt" -Destination "$(OUTPUT_BIN)" -Force; \
+	Copy-Item -LiteralPath "$(CONPTY_DLL)", "$(repo_dir)/LICENSE-ConPTY.txt" -Destination "$(DCP_BINARY_DIR)" -Force; \
 	foreach ($$arch in $$hostArches) { \
-		New-Item -ItemType Directory -Path "$(OUTPUT_BIN)/$$arch" -Force | Out-Null; \
-		Copy-Item -LiteralPath "$(CONPTY_DIR)/build/native/runtimes/$$arch/OpenConsole.exe" -Destination "$(OUTPUT_BIN)/$$arch/OpenConsole.exe" -Force; \
+		New-Item -ItemType Directory -Path "$(DCP_BINARY_DIR)/$$arch" -Force | Out-Null; \
+		Copy-Item -LiteralPath "$(CONPTY_DIR)/build/native/runtimes/$$arch/OpenConsole.exe" -Destination "$(DCP_BINARY_DIR)/$$arch/OpenConsole.exe" -Force; \
 	}
 endef
 stage-conpty:
@@ -520,11 +521,11 @@ else
 			done; \
 			touch "$(CONPTY_DIR)/.complete"; \
 		fi; \
-		rm -f "$(OUTPUT_BIN)/OpenConsole.exe" "$(OUTPUT_BIN)/x86/OpenConsole.exe" "$(OUTPUT_BIN)/x64/OpenConsole.exe" "$(OUTPUT_BIN)/arm64/OpenConsole.exe"; \
-		cp -f "$(CONPTY_DLL)" "$(repo_dir)/LICENSE-ConPTY.txt" "$(OUTPUT_BIN)/"; \
+		rm -f "$(DCP_BINARY_DIR)/OpenConsole.exe" "$(DCP_BINARY_DIR)/x86/OpenConsole.exe" "$(DCP_BINARY_DIR)/x64/OpenConsole.exe" "$(DCP_BINARY_DIR)/arm64/OpenConsole.exe"; \
+		cp -f "$(CONPTY_DLL)" "$(repo_dir)/LICENSE-ConPTY.txt" "$(DCP_BINARY_DIR)/"; \
 		for arch in $(CONPTY_HOST_ARCHES); do \
-			mkdir -p "$(OUTPUT_BIN)/$$arch"; \
-			cp -f "$(CONPTY_DIR)/build/native/runtimes/$$arch/OpenConsole.exe" "$(OUTPUT_BIN)/$$arch/OpenConsole.exe"; \
+			mkdir -p "$(DCP_BINARY_DIR)/$$arch"; \
+			cp -f "$(CONPTY_DIR)/build/native/runtimes/$$arch/OpenConsole.exe" "$(DCP_BINARY_DIR)/$$arch/OpenConsole.exe"; \
 		done
 endif
 endif
