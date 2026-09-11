@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
 	"slices"
 	"sync"
 
@@ -209,14 +208,14 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 		return updateContainerExecStatus(exec, execStatus)
 	}
 
-	stdOutFile, err := usvc_io.OpenTempFile(fmt.Sprintf("%s_out_%s", exec.Name, exec.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdOutFile, err := usvc_io.CreateNewTempFile(fmt.Sprintf("%s_out_%s", exec.Name, exec.UID), osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		log.Error(err, "Failed to create temporary file for capturing process standard output data")
 	} else {
 		execStatus.stdOutFile = stdOutFile.Name()
 	}
 
-	stdErrFile, err := usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exec.Name, exec.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdErrFile, err := usvc_io.CreateNewTempFile(fmt.Sprintf("%s_err_%s", exec.Name, exec.UID), osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		log.Error(err, "Failed to create temporary file for capturing process standard error data")
 	} else {

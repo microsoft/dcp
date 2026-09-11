@@ -201,9 +201,8 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 	)
 	logOutput, err := resiliency.RetryGet(context.Background(), b, func() (*os.File, error) {
 		logname := fmt.Sprintf("%s-%s-%s%s.log", sessionId, name, ProcessMomentHash(PlainHash), logFileNameSuffix)
-		return usvc_io.OpenFile(
+		return usvc_io.CreateNewFile(
 			filepath.Join(logFolder, logname),
-			os.O_RDWR|os.O_CREATE|os.O_EXCL,
 			osutil.PermissionOnlyOwnerReadWrite,
 		)
 	})
@@ -229,7 +228,10 @@ func GetDiagnosticsLogFolder() string {
 
 // Returns the folder to write diagnostics logs and perf traces to.
 func EnsureDiagnosticsLogsFolder() (string, error) {
-	logFolder := GetDiagnosticsLogFolder()
+	logFolder, absolutePathErr := filepath.Abs(GetDiagnosticsLogFolder())
+	if absolutePathErr != nil {
+		return "", fmt.Errorf("failed to resolve the diagnostic log folder path: %w", absolutePathErr)
+	}
 
 	info, err := os.Stat(logFolder)
 	if errors.Is(err, fs.ErrNotExist) {

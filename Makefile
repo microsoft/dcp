@@ -114,6 +114,7 @@ DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
 PARROT_TOOL ?= $(TOOL_BIN)/parrot$(exe_suffix)
 PARROT_TOOL_CONTAINER_BINARY ?= $(TOOL_BIN)/parrot_c
+CONTAINER_PROBE_TOOL_CONTAINER_BINARY ?= $(TOOL_BIN)/container_probe_c
 TERMCHILD_TOOL ?= $(TOOL_BIN)/termchild$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
@@ -339,9 +340,9 @@ endif
 # mirrored there.
 
 ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
-TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe termchild-tool
+TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe container-probe-tool-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe termchild-tool
 else
-TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe termchild-tool
+TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe container-probe-tool-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe termchild-tool
 endif
 
 .PHONY: test-prereqs
@@ -425,14 +426,24 @@ parrot-tool: $(PARROT_TOOL)
 $(PARROT_TOOL): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
 	$(GO_BIN) build -o $(PARROT_TOOL) github.com/microsoft/dcp/test/parrot
 
-# Builds parrot tool binary suitable for use inside containers
+# Builds a static parrot binary suitable for the scratch-based test container image.
 .PHONY: parrot-tool-containerexe
 parrot-tool-containerexe: $(PARROT_TOOL_CONTAINER_BINARY)
-$(PARROT_TOOL_CONTAINER_BINARY): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
+$(PARROT_TOOL_CONTAINER_BINARY): Makefile $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	$$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
+	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
 else
-	GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
+	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
+endif
+
+# Builds a static probe binary for the scratch-based container conformance image.
+.PHONY: container-probe-tool-containerexe
+container-probe-tool-containerexe: $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY)
+$(CONTAINER_PROBE_TOOL_CONTAINER_BINARY): Makefile $(wildcard ./test/containerprobe/*.go) | $(TOOL_BIN)
+ifeq ($(detected_OS),windows)
+	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/containerprobe
+else
+	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/containerprobe
 endif
 
 .PHONY: httpcontent-stream-repro

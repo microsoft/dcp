@@ -8,15 +8,57 @@
 package process
 
 import (
+	"fmt"
+	"os"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
-// Darwin's NSIG. Valid signal numbers are 1 through darwinNumSignals-1.
-const darwinNumSignals = 32
+const (
+	// Darwin's NSIG. Valid signal numbers are 1 through darwinNumSignals-1.
+	darwinNumSignals = 32
 
-// SIG_DFL, which the syscall package does not define.
-const darwinSigDfl = uintptr(0)
+	// SIG_DFL and SIG_IGN, which the syscall package does not define.
+	darwinSigDfl = uintptr(0)
+	darwinSigIgn = uintptr(1)
+)
+
+// InheritedSIGUSR1Ignored reports whether SIGUSR1 was ignored when this process started.
+//
+// The Go runtime replaces an inherited SIG_IGN disposition for SIGUSR1 during startup, so the
+// original state is recovered from the live launcher process that supplied it.
+func InheritedSIGUSR1Ignored() (bool, error) {
+	parentPID := os.Getppid()
+	if parentPID <= 0 {
+		return false, fmt.Errorf("invalid launcher process ID %d", parentPID)
+	}
+
+	parentInfo, parentInfoErr := unix.SysctlKinfoProc("kern.proc.pid", parentPID)
+	if parentInfoErr != nil {
+		return false, fmt.Errorf("reading launcher process %d signal dispositions: %w", parentPID, parentInfoErr)
+	}
+	if parentInfo == nil {
+		return false, fmt.Errorf("launcher process %d returned no process information", parentPID)
+	}
+	if parentInfo.Proc.P_pid != int32(parentPID) {
+		return false, fmt.Errorf(
+			"launcher process query returned process %d instead of %d",
+			parentInfo.Proc.P_pid,
+			parentPID,
+		)
+	}
+
+	signalNumber := uint32(syscall.SIGUSR1)
+	if signalNumber == 0 || signalNumber >= darwinNumSignals {
+		return false, fmt.Errorf("SIGUSR1 number %d cannot be represented in Darwin sigset_t", signalNumber)
+	}
+
+	// Darwin's sigmask macro assigns signal N to bit N-1.
+	signalMask := uint32(1) << (signalNumber - 1)
+	return parentInfo.Proc.P_sigignore&signalMask != 0, nil
+}
 
 // darwinSigactionNew mirrors Darwin's `struct __sigaction`, which is the layout the
 // sigaction(2) system call expects for the new disposition. It differs from the userspace
@@ -38,48 +80,65 @@ type darwinSigactionOld struct {
 	flags   int32
 }
 
-// SignalDispositionsLeakToChildren reports whether signal handler flags set by the Go runtime
-// survive into an exec'd child on this platform, and therefore whether the child needs
-// ResetSignalDispositions to be called on its behalf.
+// NeedsExecSignalDispositionWorkaround reports whether an exec'd child can inherit a SIGUSR1
+// disposition that is incompatible with other language runtimes.
 //
 // Darwin's execve(2) resets signal handlers to SIG_DFL but preserves sa_flags. Linux clears
 // sa_flags along with the handler, and Windows has no signal dispositions at all.
-func SignalDispositionsLeakToChildren() bool {
+func NeedsExecSignalDispositionWorkaround() bool {
 	return true
 }
 
-// ResetSignalDispositions restores every catchable signal in the calling process to SIG_DFL
-// with no flags and an empty mask. It must only be called by a process that is about to replace
-// itself via exec, because it disables the Go runtime's own signal handling process-wide.
+// IsSIGUSR1Ignored reports whether SIGUSR1 currently has the SIG_IGN disposition.
+func IsSIGUSR1Ignored() (bool, error) {
+	current, currentErr := signalDisposition(int(syscall.SIGUSR1))
+	if currentErr != nil {
+		return false, fmt.Errorf("reading SIGUSR1 disposition: %w", currentErr)
+	}
+
+	return current.handler == darwinSigIgn, nil
+}
+
+// PrepareSIGUSR1ForExec gives SIGUSR1 the requested disposition with no trampoline, flags, or
+// mask. The requested disposition must be captured before starting this Go process because the
+// Go runtime may replace the inherited disposition during startup.
 //
-// The Go runtime installs a handler for nearly every signal at startup, and it always requests
-// SA_SIGINFO|SA_ONSTACK|SA_RESTART, even where the disposition is SIG_DFL. Because Darwin's
-// execve(2) preserves sa_flags, children inherit SIG_DFL together with SA_SIGINFO. Runtimes that
-// read the existing disposition back before installing their own handler misinterpret that as a
-// handler already being present: .NET, for example, re-registers a nil sa_sigaction and then
-// jumps to address zero when it first uses SIGUSR1 to suspend threads for a garbage collection.
+// Affected Go releases install handlers with SA_SIGINFO|SA_ONSTACK|SA_RESTART and restore them
+// to SIG_DFL before exec without clearing those flags. Because Darwin's execve(2) preserves
+// sa_flags, children can inherit SIG_DFL together with SA_SIGINFO. .NET misinterprets that as a
+// handler being present and jumps to address zero when it first uses SIGUSR1 to suspend threads
+// for a garbage collection.
 //
 // Resetting in a process that then forks is not sufficient, because the Go runtime restores its
 // own dispositions in the forked child before it reaches execve. The reset has to happen in the
-// process that calls exec, which is what the 'fork-process-exec' command exists to do.
-func ResetSignalDispositions() {
+// process that calls exec, which is what the 'fork-process-exec' command exists to do. This
+// workaround can be removed once DCP requires a Go release containing golang/go#81009.
+func PrepareSIGUSR1ForExec(ignoredByCaller bool) error {
+	targetHandler := darwinSigDfl
+	if ignoredByCaller {
+		targetHandler = darwinSigIgn
+	}
+
 	act := darwinSigactionNew{
-		handler: darwinSigDfl,
+		handler: targetHandler,
 		tramp:   0,
 		mask:    0,
 		flags:   0,
 	}
 
-	for sig := 1; sig < darwinNumSignals; sig++ {
-		if sig == int(syscall.SIGKILL) || sig == int(syscall.SIGSTOP) {
-			// sigaction(2) rejects these with EINVAL; their disposition can never change.
-			continue
-		}
-
-		// Failures are deliberately ignored: there is no useful recovery, and one signal that
-		// cannot be reset must not prevent the child from being started.
-		_, _, _ = syscall.Syscall(syscall.SYS_SIGACTION, uintptr(sig), uintptr(unsafe.Pointer(&act)), 0)
+	if setErr := setSignalDisposition(int(syscall.SIGUSR1), &act); setErr != nil {
+		return fmt.Errorf("setting SIGUSR1 disposition for exec: %w", setErr)
 	}
+
+	return nil
+}
+
+func setSignalDisposition(sig int, act *darwinSigactionNew) error {
+	if _, _, errno := syscall.Syscall(syscall.SYS_SIGACTION, uintptr(sig), uintptr(unsafe.Pointer(act)), 0); errno != 0 {
+		return errno
+	}
+
+	return nil
 }
 
 // signalDisposition reports the current handler and flags for a signal.

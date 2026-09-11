@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	std_slices "slices"
 	"strings"
 	"sync"
 	"time"
@@ -1584,6 +1585,10 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 	}
 
 	guid := uuid.New().String()
+	omitImageID := slices.Any(options.Tags, func(tag string) bool {
+		key := testContainerOperationKey{operation: operationBuildImage, resourceID: tag}
+		return to.operationResultOmissions[key]
+	})
 	image := &testImage{
 		id:      guid,
 		digest:  toDigest(sha256.Sum256([]byte(guid))),
@@ -1602,16 +1607,10 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 
 	to.images = append(to.images, image)
 
-	if options.IidFile != "" {
-		omitImageID := slices.Any(options.Tags, func(tag string) bool {
-			key := testContainerOperationKey{operation: operationBuildImage, resourceID: tag}
-			return to.operationResultOmissions[key]
-		})
-		if !omitImageID {
-			err := usvc_io.WriteFile(options.IidFile, []byte(guid), osutil.PermissionOwnerReadWriteOthersRead)
-			if err != nil {
-				return err
-			}
+	if options.IidFile != "" && !omitImageID {
+		writeErr := usvc_io.WriteFile(options.IidFile, []byte(guid), osutil.PermissionOnlyOwnerReadWrite)
+		if writeErr != nil {
+			return writeErr
 		}
 	}
 
@@ -1712,6 +1711,41 @@ func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options cont
 		return "", nil
 	}
 	return image.id, nil
+}
+
+func (to *TestContainerOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {
+	return containers.RemoveImagesSequentially(ctx, options, func(ctx context.Context, imageRef string, _ bool) error {
+		to.mutex.Lock()
+		defer to.mutex.Unlock()
+
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if !to.runtimeHealthy {
+			return errRuntimeUnhealthy
+		}
+
+		imageIndex := slices.IndexFunc(to.images, func(image *testImage) bool {
+			return image.id == imageRef || slices.Contains(image.tags, imageRef)
+		})
+		if imageIndex < 0 {
+			return containers.ErrNotFound
+		}
+
+		image := to.images[imageIndex]
+		if image.id == imageRef {
+			to.images = std_slices.Delete(to.images, imageIndex, imageIndex+1)
+			return nil
+		}
+
+		tagIndex := slices.Index(image.tags, imageRef)
+		image.tags = std_slices.Delete(image.tags, tagIndex, tagIndex+1)
+		if len(image.tags) == 0 {
+			to.images = std_slices.Delete(to.images, imageIndex, imageIndex+1)
+		}
+
+		return nil
+	})
 }
 
 func (to *TestContainerOrchestrator) FailPullImage(pullImageErr error) {

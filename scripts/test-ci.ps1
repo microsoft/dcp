@@ -12,7 +12,8 @@
 #
 # The sequence implemented here mirrors, for the non-make-4.4 TEST_PREREQS:
 #   generate-grpc build-dcp build-dcptun-containerexe
-#   delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe termchild-tool
+#   container-probe-tool-containerexe delay-tool lfwriter-tool
+#   parrot-tool parrot-tool-containerexe termchild-tool
 # followed by `go test ./... -coverprofile cover.out -count 1`.
 #
 # The Windows CI job runs with CGO_ENABLED=0, so no C toolchain (mingw/gcc) is
@@ -138,20 +139,26 @@ function Invoke-GoBuild {
     param(
         [Parameter(Mandatory)][string]$Output,
         [Parameter(Mandatory)][string]$Package,
-        [string]$TargetGoos
+        [string]$TargetGoos,
+        [string]$CgoEnabled
     )
 
     $savedGoos = $env:GOOS
+    $savedCgoEnabled = $env:CGO_ENABLED
     try {
         if ($TargetGoos) {
             $env:GOOS = $TargetGoos
         }
-        Write-Host "go build -> $Output ($Package, GOOS=$(if ($TargetGoos) { $TargetGoos } else { 'host' }))"
+        if ($CgoEnabled -ne '') {
+            $env:CGO_ENABLED = $CgoEnabled
+        }
+        Write-Host "go build -> $Output ($Package, GOOS=$(if ($TargetGoos) { $TargetGoos } else { 'host' }), CGO_ENABLED=$(if ($CgoEnabled -ne '') { $CgoEnabled } else { 'ambient' }))"
         Invoke-Native -Description "go build $Package" -Script {
             & go build -o $Output $Package
         }
     } finally {
         $env:GOOS = $savedGoos
+        $env:CGO_ENABLED = $savedCgoEnabled
     }
 }
 
@@ -165,13 +172,15 @@ function Build-TestPrereqs {
     Invoke-GoBuild -Output (Join-Path $OutputBin 'dcp.exe') -Package './cmd/dcp'
     # build-dcptun-containerexe (Linux binary, used inside containers)
     Invoke-GoBuild -Output (Join-Path $OutputBin 'dcptun_c') -Package './cmd/dcptun' -TargetGoos 'linux'
+    # container-probe-tool-containerexe (static Linux binary for container conformance tests)
+    Invoke-GoBuild -Output (Join-Path $ToolBin 'container_probe_c') -Package 'github.com/microsoft/dcp/test/containerprobe' -TargetGoos 'linux' -CgoEnabled '0'
     # delay-tool / lfwriter-tool / parrot-tool / termchild-tool
     Invoke-GoBuild -Output (Join-Path $ToolBin 'delay.exe') -Package 'github.com/microsoft/dcp/test/delay'
     Invoke-GoBuild -Output (Join-Path $ToolBin 'lfwriter.exe') -Package 'github.com/microsoft/dcp/test/lfwriter'
     Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot.exe') -Package 'github.com/microsoft/dcp/test/parrot'
     Invoke-GoBuild -Output (Join-Path $ToolBin 'termchild.exe') -Package 'github.com/microsoft/dcp/test/termchild'
-    # parrot-tool-containerexe (Linux binary)
-    Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot_c') -Package 'github.com/microsoft/dcp/test/parrot' -TargetGoos 'linux'
+    # parrot-tool-containerexe (static Linux binary for the scratch-based test image)
+    Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot_c') -Package 'github.com/microsoft/dcp/test/parrot' -TargetGoos 'linux' -CgoEnabled '0'
 }
 
 function Invoke-Tests {

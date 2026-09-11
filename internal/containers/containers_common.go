@@ -83,7 +83,7 @@ func AddCertificateToTar(tarWriter *usvc_io.TarWriter, basePath string, owner in
 			return "", fmt.Errorf("file %s exceeds max supported file size (%d bytes): %d bytes", certificate.Source, osutil.MaxCopyFileSize, stat.Size())
 		}
 
-		f, openErr := usvc_io.OpenFile(certificate.Source, os.O_RDONLY, 0)
+		f, openErr := usvc_io.OpenFileReadOnly(certificate.Source)
 		if openErr != nil {
 			return "", fmt.Errorf("could not open %s: %w", certificate.Source, openErr)
 		}
@@ -174,7 +174,7 @@ func AddFileToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, gr
 
 		log.V(1).Info("Copying file to tar", "File", file.Source, "Size", stat.Size())
 
-		f, openErr := usvc_io.OpenFile(file.Source, os.O_RDONLY, 0)
+		f, openErr := usvc_io.OpenFileReadOnly(file.Source)
 		if openErr != nil {
 			return fmt.Errorf("could not open file %s: %w", file.Source, openErr)
 		}

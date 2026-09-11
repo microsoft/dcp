@@ -35,9 +35,11 @@ import (
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/networking"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/containertest"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -1171,27 +1173,47 @@ func TestTunnelProxyClientUnexpectedExit(t *testing.T) {
 // This is an advanced test that is not included in routine test runs.
 // Requires DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR environment variable to be set to "true".
 func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
-	testutil.SkipIfTrueContainerOrchestratorNotEnabled(t)
-
 	t.Parallel()
 
 	const testTimeout = 6 * time.Minute
+	testCtx, testCancel := testutil.GetTestContext(t, testTimeout)
+	t.Cleanup(testCancel)
+
+	containertest.ForEachHealthyRuntime(t, testCtx, testTunnelProxyWithRealOrchestrator)
+}
+
+func testTunnelProxyWithRealOrchestrator(
+	t *testing.T,
+	runtimeCtx context.Context,
+	runtime containertest.Runtime,
+) {
 	const parrotTimeout = 3 * time.Minute
 
-	ctx, cancel := testutil.GetTestContext(t, testTimeout)
+	ctx, cancel := context.WithCancel(runtimeCtx)
 	defer cancel()
-	const testName = "test-tunnel-proxy-with-real-orchestrator"
+	testName := containertest.UniqueName(t, "test-tunnel-proxy-with-real-orchestrator")
+	resourceTracker := containertest.NewResourceTracker(t, runtime)
 	dcppaths.EnableTestPathProbing()
 
-	serverInfo, teInfo, startupErr := StartAdvancedTestEnvironment(ctx, AllControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartAdvancedTestEnvironmentWithOptions(
+		ctx,
+		AllControllers,
+		testName,
+		t.TempDir(),
+		AdvancedTestEnvironmentOptions{
+			ApiServerFlags:        ctrl_testutil.ApiServerUseTrueContainerOrchestrator,
+			ContainerOrchestrator: runtime.Orchestrator,
+		},
+	)
 	require.NoError(t, startupErr, "Failed to start the API server")
 	t.Logf("API server started with PID %d", serverInfo.ApiServerPID)
 	defer teInfo.ProcessExecutor.Dispose()
 	defer shutdownAdvancedTestEnvironment(t, ctx, cancel, serverInfo)
 
+	serverServiceName := containertest.UniqueName(t, "parrot-server-service")
 	serverSvc := &apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "parrot-server-service",
+			Name:      serverServiceName,
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
@@ -1212,9 +1234,10 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 		parrotToolPath += ".exe"
 	}
 
+	serverExecutableName := containertest.UniqueName(t, "parrot-server")
 	serverExe := &apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "parrot-server",
+			Name:      serverExecutableName,
 			Namespace: metav1.NamespaceNone,
 			Annotations: map[string]string{
 				commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s"}]`, serverSvc.ObjectMeta.Name),
@@ -1235,9 +1258,10 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 	err = serverInfo.Client.Create(ctx, serverExe)
 	require.NoError(t, err, "Could not create the parrot server Executable")
 
+	clientServiceName := containertest.UniqueName(t, "parrot-client-service")
 	clientSvc := &apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "parrot-client-service",
+			Name:      clientServiceName,
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
@@ -1252,7 +1276,7 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      testName + "-network",
+			Name:      containertest.UniqueName(t, "parrot-network"),
 			Namespace: metav1.NamespaceNone,
 		},
 	}
@@ -1261,7 +1285,7 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 	err = serverInfo.Client.Create(ctx, &network)
 	require.NoError(t, err, "Could not create a ContainerNetwork object")
 
-	const proxyAlias = "parrot"
+	proxyAlias := containertest.UniqueName(t, "parrot")
 	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testName,
@@ -1271,7 +1295,7 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 			ContainerNetworkName: network.ObjectMeta.Name,
 			Tunnels: []apiv1.TunnelConfiguration{
 				{
-					Name:              "parrot-tunnel",
+					Name:              containertest.UniqueName(t, "parrot-tunnel"),
 					ServerServiceName: serverSvc.Name,
 					ClientServiceName: clientSvc.Name,
 				},
@@ -1287,12 +1311,21 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 	// Compare with PARROT_TOOL_CONTAINER_BINARY in Makefile
 	parrotContainerBinaryPath := filepath.Join(parrotToolDir, "parrot_c")
 
-	parrotImage, parrotContainerPath, parrotImageErr := ensureParrotContainerImage(ctx, parrotContainerBinaryPath, serverInfo.ContainerOrchestrator)
+	parrotImageName := "localhost/" + containertest.UniqueName(t, "dcp-parrot-test-utility") + ":latest"
+	require.NoError(t, resourceTracker.TrackImage(parrotImageName))
+	parrotImage, parrotContainerPath, parrotImageErr := ensureParrotContainerImage(
+		ctx,
+		parrotContainerBinaryPath,
+		parrotImageName,
+		resourceTracker.Labels(),
+		serverInfo.ContainerOrchestrator,
+	)
 	require.NoError(t, parrotImageErr, "Could not ensure parrot container image")
 
+	clientContainerName := containertest.UniqueName(t, "parrot-client")
 	clientCtr := &apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "parrot-client",
+			Name:      clientContainerName,
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
@@ -1644,19 +1677,11 @@ func watchContainerLifeEvents(
 func ensureParrotContainerImage(
 	ctx context.Context,
 	parrotBinaryPath string,
+	imageName string,
+	labels []containers.Label,
 	ior containers.ImageOrchestrator,
 ) (string, string, error) {
 	const parrotContainerPath = "/usr/local/bin/parrot"
-	dateTag := time.Now().Format("20060102")
-	imageName := fmt.Sprintf("dcp_parrot_test_utility:%s", dateTag)
-
-	// Check if image already exists - if so, assume it's fresh
-	images, inspectErr := ior.InspectImages(ctx, containers.InspectImagesOptions{
-		Images: []string{imageName},
-	})
-	if inspectErr == nil && len(images) > 0 {
-		return imageName, parrotContainerPath, nil
-	}
 
 	// Create temporary directory for build context
 	tempDir, tempDirErr := os.MkdirTemp("", "parrot-build-*")
@@ -1671,22 +1696,15 @@ func ensureParrotContainerImage(
 		return "", "", fmt.Errorf("failed to copy parrot binary to build context: %w", copyErr)
 	}
 
-	// Create Dockerfile content
-
-	dockerfileContent := fmt.Sprintf(`
-FROM %s
-
-# Copy the parrot binary
-COPY --chmod=0755 parrot %[2]s
-
-# Set the entrypoint to the parrot binary
-ENTRYPOINT ["%[2]s"]
-`, "busybox:latest", parrotContainerPath)
-	// Using busybox as the base image helps with debugging.
+	// The parrot container build rule pins CGO off so this binary can run without a loader.
+	dockerfileContent := fmt.Sprintf(
+		"FROM scratch\n\nCOPY --chmod=0755 parrot %[1]s\nENTRYPOINT [\"%[1]s\"]\n",
+		parrotContainerPath,
+	)
 
 	// Write Dockerfile
 	dockerfilePath := filepath.Join(tempDir, "Dockerfile")
-	if writeErr := os.WriteFile(dockerfilePath, []byte(dockerfileContent), osutil.PermissionOnlyOwnerReadWrite); writeErr != nil {
+	if writeErr := usvc_io.WriteFile(dockerfilePath, []byte(dockerfileContent), osutil.PermissionOnlyOwnerReadWrite); writeErr != nil {
 		return "", "", fmt.Errorf("failed to write Dockerfile: %w", writeErr)
 	}
 
@@ -1696,6 +1714,7 @@ ENTRYPOINT ["%[2]s"]
 			Context:    tempDir,
 			Dockerfile: dockerfilePath,
 			Tags:       []string{imageName},
+			Labels:     labels,
 		},
 	}
 
@@ -1709,13 +1728,13 @@ ENTRYPOINT ["%[2]s"]
 
 // copyFileForImageBuild copies a file from src to dst for image building purposes
 func copyFileForImageBuild(src, dst string) error {
-	sourceFile, sourceErr := os.Open(src)
+	sourceFile, sourceErr := usvc_io.OpenFileReadOnly(src)
 	if sourceErr != nil {
 		return sourceErr
 	}
 	defer func() { _ = sourceFile.Close() }()
 
-	destFile, destErr := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWriteExecute)
+	destFile, destErr := usvc_io.CreateNewFile(dst, osutil.PermissionOnlyOwnerReadWriteExecute)
 	if destErr != nil {
 		return destErr
 	}

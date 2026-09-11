@@ -1,0 +1,119 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+package containers_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/testutil/containertest"
+)
+
+func TestBuildInspectAndRemoveImageMethods(t *testing.T) {
+	t.Parallel()
+
+	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
+		tracker := containertest.NewResourceTracker(t, runtime)
+
+		image := imageReference(t, "build-image")
+		require.NoError(t, tracker.TrackImage(image))
+		marker := containertest.UniqueName(t, "build-marker")
+		contextDir, dockerfilePath := writeBuildContext(t, ensureTestImage(t, ctx, runtime), marker)
+
+		buildErr := runtime.Orchestrator.BuildImage(ctx, containers.BuildImageOptions{
+			ContainerBuildContext: &containers.ContainerBuildContext{
+				Context:    contextDir,
+				Dockerfile: dockerfilePath,
+				Tags:       []string{image},
+				Labels:     tracker.Labels(),
+			},
+		})
+		require.NoError(t, buildErr)
+
+		inspected, inspectErr := runtime.Orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
+			Images: []string{image},
+		})
+		require.NoError(t, inspectErr)
+		require.Len(t, inspected, 1)
+		require.NotEmpty(t, inspected[0].Id)
+		require.Contains(t, inspected[0].Tags, image)
+		require.Equal(t, tracker.RunID(), inspected[0].Labels[containertest.TestRunLabel])
+
+		stdout, stderr := runImageAndCapture(
+			t,
+			ctx,
+			runtime,
+			tracker,
+			"run-built-image",
+			image,
+			[]string{"cat", "/dcp-build-marker"},
+		)
+		require.Equal(t, marker, stdout)
+		require.Empty(t, stderr)
+	})
+}
+
+func TestApplyImageLayersMethod(t *testing.T) {
+	t.Parallel()
+
+	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
+		tracker := containertest.NewResourceTracker(t, runtime)
+
+		baseImage := ensureTestImage(t, ctx, runtime)
+		inspectedBase, inspectBaseErr := runtime.Orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
+			Images: []string{baseImage},
+		})
+		require.NoError(t, inspectBaseErr)
+		require.Len(t, inspectedBase, 1)
+
+		image := imageReference(t, "layered-image")
+		require.NoError(t, tracker.TrackImage(image))
+		marker := containertest.UniqueName(t, "layer-marker")
+		imageRef, applyErr := runtime.Orchestrator.ApplyImageLayers(ctx, containers.ApplyImageLayersOptions{
+			BaseImage: inspectedBase[0],
+			Layers: []containers.ImageLayer{{
+				Digest:      marker,
+				RawContents: rawImageLayer(t, "dcp-layer-marker", marker),
+			}},
+			Labels: tracker.Labels(),
+			Tag:    image,
+		})
+		require.NoError(t, applyErr)
+		require.Equal(t, image, imageRef)
+
+		inspected, inspectErr := runtime.Orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
+			Images: []string{image},
+		})
+		require.NoError(t, inspectErr)
+		require.Len(t, inspected, 1)
+		require.NotEmpty(t, inspected[0].Id)
+		for key, value := range tracker.MapLabels() {
+			require.Equal(t, value, inspected[0].Labels[key], "label %q", key)
+		}
+
+		stdout, stderr := runImageAndCapture(
+			t,
+			ctx,
+			runtime,
+			tracker,
+			"run-layered-image",
+			image,
+			[]string{"cat", "/dcp-layer-marker"},
+		)
+		require.Equal(t, marker, stdout)
+		require.Empty(t, stderr)
+
+		removed, removeErr := runtime.Orchestrator.RemoveImages(ctx, containers.RemoveImagesOptions{
+			Images: []string{image},
+		})
+		require.NoError(t, removeErr)
+		require.Equal(t, []string{image}, removed)
+		waitForImageAbsent(t, ctx, runtime.Orchestrator, image)
+	})
+}

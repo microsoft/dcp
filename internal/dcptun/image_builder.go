@@ -417,13 +417,13 @@ ENTRYPOINT ["%[3]s"]
 
 // copyFile copies a file from src to dst
 func copyFile(src, dst string, perm os.FileMode) error {
-	sourceFile, sourceErr := usvc_io.OpenFile(src, os.O_RDONLY, 0)
+	sourceFile, sourceErr := usvc_io.OpenFileReadOnly(src)
 	if sourceErr != nil {
 		return sourceErr
 	}
 	defer func() { _ = sourceFile.Close() }()
 
-	destFile, destErr := usvc_io.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	destFile, destErr := usvc_io.CreateNewFile(dst, perm)
 	if destErr != nil {
 		return destErr
 	}

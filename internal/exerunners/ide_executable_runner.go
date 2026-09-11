@@ -164,7 +164,7 @@ func (r *IdeExecutableRunner) doStartRun(
 	// Set up temp files for capturing stdout and stderr. These files (if successfully created)
 	// will be cleaned up by the Executable controller when the Executable is deleted.
 
-	stdOutFile, err = usvc_io.OpenTempFile(fmt.Sprintf("%s_out_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdOutFile, err = usvc_io.CreateNewTempFile(fmt.Sprintf("%s_out_%s", exe.Name, exe.UID), osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		log.Error(err, "Failed to create temporary file for capturing standard output data")
 		stdOutFile = nil
@@ -172,7 +172,7 @@ func (r *IdeExecutableRunner) doStartRun(
 		result.StdOutFile = stdOutFile.Name()
 	}
 
-	stdErrFile, err = usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdErrFile, err = usvc_io.CreateNewTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		log.Error(err, "Failed to create temporary file for capturing standard error data")
 		stdErrFile = nil

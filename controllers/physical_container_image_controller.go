@@ -653,7 +653,7 @@ func (r *PhysicalContainerImageReconciler) buildPhysicalContainerImage(
 	log.V(1).Info("Building PhysicalContainerImage", "Context", buildContext.Context, "Dockerfile", buildContext.Dockerfile, "Image", outputImage)
 	defer r.queuePhysicalContainerImageDataResult(image, stateKey, data)
 
-	iidFile, openErr := usvc_io.OpenTempFile(fmt.Sprintf("%s_iid_%s", image.Name, image.UID), os.O_RDWR|os.O_CREATE|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
+	iidFile, openErr := usvc_io.EnsureEmptyTempFile(physicalContainerImageIDFileName(image), osutil.PermissionOnlyOwnerReadWrite)
 	if openErr != nil {
 		log.Error(openErr, "Failed to create PhysicalContainerImage build image ID file", "Image", outputImage)
 		data.progress = physicalResourceProgressFailed
@@ -720,7 +720,7 @@ func (r *PhysicalContainerImageReconciler) queuePhysicalContainerImageDataResult
 }
 
 func readPhysicalContainerImageIDFile(name string) (string, error) {
-	file, openErr := usvc_io.OpenFile(name, os.O_RDONLY, osutil.PermissionOnlyOwnerReadWrite)
+	file, openErr := usvc_io.OpenFileReadOnly(name)
 	if openErr != nil {
 		return "", fmt.Errorf("open image ID file: %w", openErr)
 	}
@@ -768,6 +768,14 @@ func physicalContainerImageOutputTag(image *apiv2.PhysicalContainerImage) string
 		uid = string(image.UID)
 	}
 	return fmt.Sprintf("dcp-v2-%s-%s:%s", image.Namespace, image.Name, uid)
+}
+
+func physicalContainerImageIDFileName(image *apiv2.PhysicalContainerImage) string {
+	identifier := string(image.UID)
+	if identifier == "" {
+		identifier = image.NamespacedName().String()
+	}
+	return fmt.Sprintf("pci_iid_%s", MakeValidLabelValue(identifier))
 }
 
 func physicalContainerImageBuildTags(tags []string, outputImage string) []string {
