@@ -181,10 +181,22 @@ func TestTunnelProxyDelayedNetworkCreation(t *testing.T) {
 
 // Verifies that running ContainerNetworkTunnelProxy has the status updated with client proxy and server proxy information.
 func TestTunnelProxyRunningStatus(t *testing.T) {
-	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-running-status"
+
+	buildContextDir, mkdirErr := os.MkdirTemp("", "dcp-tunnel-")
+	require.NoError(t, mkdirErr)
+	t.Cleanup(func() {
+		require.NoError(t, os.RemoveAll(buildContextDir))
+	})
+	originalDcpTempDir := usvc_io.DcpTempDir
+	usvc_io.DcpTempDir = func() string {
+		return buildContextDir
+	}
+	t.Cleanup(func() {
+		usvc_io.DcpTempDir = originalDcpTempDir
+	})
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
@@ -298,6 +310,9 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.NotEmpty(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.SHA256)
 	require.Empty(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.RawContents)
 	require.FileExists(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source)
+	buildContextFiles, globErr := filepath.Glob(filepath.Join(buildContextDir, "dcptun-build-context-*.tar"))
+	require.NoError(t, globErr)
+	require.Equal(t, []string{physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source}, buildContextFiles)
 	t.Cleanup(func() {
 		require.NoError(t, os.Remove(physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source))
 	})
