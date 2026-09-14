@@ -108,12 +108,14 @@ type PhysicalContainerImageConfig struct {
 	// Build describes how to build the image locally.
 	Build *ContainerBuildContext `json:"build,omitempty"`
 
-	// PullPolicy controls source image pulling. For builds, missing reuses an existing output when
-	// its material build inputs match; best-effort additionally resolves declared base images and
-	// rebuilds when their identities change while tolerating pull failures when local copies are
-	// available; and always rebuilds while pulling newer base images.
-	// If omitted, missing is used. Never is not supported for builds.
+	// PullPolicy controls pulling the source image or declared build base images. Best-effort
+	// attempts to pull but uses an existing local image when pulling fails. If omitted, missing
+	// is used.
 	PullPolicy ImagePullPolicy `json:"pullPolicy,omitempty"`
+
+	// BuildPolicy controls whether a matching existing build output can be reused. If omitted,
+	// ifNeeded is used. Only supported when build is set.
+	BuildPolicy ImageBuildPolicy `json:"buildPolicy,omitempty"`
 
 	// PullRetryLimit is how many times a failed source image pull is retried, with exponential
 	// backoff between attempts. Set to zero to fail on the first error. If omitted, a small
@@ -252,18 +254,23 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 		}))
 	}
 
+	switch image.BuildPolicy {
+	case "", BuildPolicyAlways, BuildPolicyIfNeeded:
+	default:
+		errorList = append(errorList, field.NotSupported(imagePath.Child("buildPolicy"), image.BuildPolicy, []string{
+			string(BuildPolicyAlways),
+			string(BuildPolicyIfNeeded),
+		}))
+	}
+
 	if image.PullRetryLimit != nil && *image.PullRetryLimit < 0 {
 		errorList = append(errorList, field.Invalid(imagePath.Child("pullRetryLimit"), *image.PullRetryLimit, "pullRetryLimit must not be negative"))
 	}
 
 	if image.Build != nil {
-		if image.PullPolicy == PullPolicyNever {
-			errorList = append(errorList, field.Invalid(imagePath.Child("pullPolicy"), image.PullPolicy, "pullPolicy never is not supported for image builds"))
-		}
-		if image.PullPolicy == PullPolicyBestEffort && len(image.Build.BaseImages) == 0 {
-			errorList = append(errorList, field.Required(imagePath.Child("build", "baseImages"), "baseImages must be set when pullPolicy is best-effort"))
-		}
 		errorList = append(errorList, validatePhysicalContainerImageBuild(image.Build, imagePath.Child("build"))...)
+	} else if image.BuildPolicy != "" {
+		errorList = append(errorList, field.Forbidden(imagePath.Child("buildPolicy"), "buildPolicy can only be set when build is set"))
 	}
 
 	return errorList

@@ -230,8 +230,9 @@ type ContainerBuildContext struct {
 	// +optional
 	Platform string `json:"platform,omitempty"`
 
-	// BaseImages identifies image references whose resolved identities determine whether an
-	// existing build output is current when using the best-effort pull policy.
+	// BaseImages identifies image references used by the build. PhysicalContainerImage applies
+	// its pull policy to these images and includes their resolved identities when determining
+	// whether an existing build output is current.
 	// +listType=set
 	// +optional
 	BaseImages []string `json:"baseImages,omitempty"`
@@ -266,13 +267,23 @@ const (
 	// Attempt to pull a source image, but use an existing local image if pulling fails.
 	// For builds, declared base images are resolved this way and their immutable identities
 	// participate in deciding whether an existing build output can be reused.
-	PullPolicyBestEffort ImagePullPolicy = "best-effort"
+	PullPolicyBestEffort ImagePullPolicy = "bestEffort"
 
 	// Pull the container image only if it is not present.
 	PullPolicyMissing ImagePullPolicy = "missing"
 
 	// Never pull the container image.
 	PullPolicyNever ImagePullPolicy = "never"
+)
+
+type ImageBuildPolicy string
+
+const (
+	// Reuse an existing image when its material build inputs match.
+	BuildPolicyIfNeeded ImageBuildPolicy = "ifNeeded"
+
+	// Always build the container image.
+	BuildPolicyAlways ImageBuildPolicy = "always"
 )
 
 type FileSystemEntryType string

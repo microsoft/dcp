@@ -115,6 +115,52 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 			},
 		},
 		{
+			name: "valid best effort build image without base images",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{
+					PullPolicy: PullPolicyBestEffort,
+					Build: &ContainerBuildContext{
+						Context: "test-context",
+					},
+				}},
+			},
+		},
+		{
+			name: "valid never pull build image",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{
+					PullPolicy: PullPolicyNever,
+					Build: &ContainerBuildContext{
+						Context:    "test-context",
+						BaseImages: []string{"test-base-image"},
+					},
+				}},
+			},
+		},
+		{
+			name: "valid always build policy",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{
+					BuildPolicy: BuildPolicyAlways,
+					Build: &ContainerBuildContext{
+						Context: "test-context",
+					},
+				}},
+			},
+		},
+		{
 			name: "valid build image with raw context archive",
 			image: PhysicalContainerImage{
 				ObjectMeta: metav1.ObjectMeta{
@@ -225,35 +271,32 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 			expectedError: "spec.image.pullPolicy",
 		},
 		{
-			name: "never pull policy with build",
-			image: PhysicalContainerImage{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-image",
-					Namespace: "test-namespace",
-				},
-				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
-					Context: "test-context",
-				},
-					PullPolicy: PullPolicyNever},
-				},
-			},
-			expectedError: "spec.image.pullPolicy",
-		},
-		{
-			name: "best effort build missing base image",
+			name: "invalid build policy",
 			image: PhysicalContainerImage{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{
-					PullPolicy: PullPolicyBestEffort,
-					Build: &ContainerBuildContext{
-						Context: "test-context",
-					},
+					BuildPolicy: "invalid",
+					Build:       &ContainerBuildContext{Context: "test-context"},
 				}},
 			},
-			expectedError: "spec.image.build.baseImages",
+			expectedError: "spec.image.buildPolicy",
+		},
+		{
+			name: "build policy without build",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{
+					Image:       "test-source-image",
+					BuildPolicy: BuildPolicyAlways,
+				}},
+			},
+			expectedError: "spec.image.buildPolicy",
 		},
 		{
 			name: "build rejects invalid base image",

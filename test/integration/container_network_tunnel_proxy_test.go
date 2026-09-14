@@ -289,6 +289,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.Equal(t, controllers.V1TunnelProxyPhysicalContainerImageName, physicalImages.Items[0].Name)
 	require.Equal(t, updatedTunnelProxy.Status.ClientProxyContainerImage, physicalImages.Items[0].Spec.Image.Image)
 	require.Equal(t, apiv2.PullPolicyBestEffort, physicalImages.Items[0].Spec.Image.PullPolicy)
+	require.Equal(t, apiv2.BuildPolicyIfNeeded, physicalImages.Items[0].Spec.Image.BuildPolicy)
 	require.NotNil(t, physicalImages.Items[0].Spec.Image.Build)
 	require.Equal(t, []string{dcptun.DefaultBaseImage}, physicalImages.Items[0].Spec.Image.Build.BaseImages)
 	require.NotNil(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive)

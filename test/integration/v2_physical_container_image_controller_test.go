@@ -79,7 +79,8 @@ func TestV2PhysicalContainerImageControllerBuildsRawArchiveContext(t *testing.T)
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
-			Image: targetImage,
+			Image:      targetImage,
+			PullPolicy: apiv2.PullPolicyAlways,
 			Build: &apiv2.ContainerBuildContext{
 				ContextArchive: &apiv2.ContainerBuildContextArchive{
 					Digest:      "empty-tar-v1",
@@ -98,6 +99,7 @@ func TestV2PhysicalContainerImageControllerBuildsRawArchiveContext(t *testing.T)
 	require.NotNil(t, buildOptions.ContextArchive)
 	require.Equal(t, "empty-tar-v1", buildOptions.ContextArchive.Digest)
 	require.Equal(t, rawContents, buildOptions.ContextArchive.RawContents)
+	require.False(t, buildOptions.Pull)
 }
 
 func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {
@@ -591,6 +593,222 @@ func TestV2PhysicalContainerImageControllerReusesBuildOutputWhenInputsMatch(t *t
 	fourthImage := createImage("fourth-build-image", "context-v2", "label-v2")
 	require.NotEqual(t, thirdImage.Status.ImageID, fourthImage.Status.ImageID)
 	require.Equal(t, 3, containerOrchestrator.BuildImageCallCount(targetImage))
+}
+
+func TestV2PhysicalContainerImageControllerAlwaysBuildPolicyRebuildsMatchingOutput(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	targetImage := "v2-pci-always-build-target"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-always-build")
+	createImage := func(name string) *apiv2.PhysicalContainerImage {
+		image := &apiv2.PhysicalContainerImage{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace.Name,
+			},
+			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+				Image:       targetImage,
+				BuildPolicy: apiv2.BuildPolicyAlways,
+				Build: &apiv2.ContainerBuildContext{
+					ContextArchive: &apiv2.ContainerBuildContextArchive{
+						Digest:      "context-v1",
+						RawContents: "dGVzdA==",
+					},
+				},
+			}},
+		}
+		require.NoError(t, client.Create(ctx, image))
+		return waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	}
+
+	firstImage := createImage("first-always-build")
+	secondImage := createImage("second-always-build")
+	require.NotEqual(t, firstImage.Status.ImageID, secondImage.Status.ImageID)
+	require.Equal(t, 2, containerOrchestrator.BuildImageCallCount(targetImage))
+}
+
+func TestV2PhysicalContainerImageControllerAlwaysPullPolicyReusesMatchingBuildOutput(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	baseImage := "v2-pci-always-pull-base"
+	targetImage := "v2-pci-always-pull-target"
+	_, pullErr := containerOrchestrator.PullImage(ctx, containers.PullImageOptions{Image: baseImage})
+	require.NoError(t, pullErr)
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-always-pull-build")
+	createImage := func(name string) *apiv2.PhysicalContainerImage {
+		image := &apiv2.PhysicalContainerImage{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace.Name,
+			},
+			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+				Image:      targetImage,
+				PullPolicy: apiv2.PullPolicyAlways,
+				Build: &apiv2.ContainerBuildContext{
+					ContextArchive: &apiv2.ContainerBuildContextArchive{
+						Digest:      "context-v1",
+						RawContents: "dGVzdA==",
+					},
+					BaseImages: []string{baseImage},
+				},
+			}},
+		}
+		require.NoError(t, client.Create(ctx, image))
+		return waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	}
+
+	firstImage := createImage("first-always-pull-build")
+	secondImage := createImage("second-always-pull-build")
+	require.Equal(t, firstImage.Status.ImageID, secondImage.Status.ImageID)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+	require.Equal(t, 3, containerOrchestrator.PullImageCallCount(baseImage))
+}
+
+func TestV2PhysicalContainerImageControllerNeverPullPolicyUsesLocalBuildBase(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	baseImage := "v2-pci-never-pull-base"
+	targetImage := "v2-pci-never-pull-target"
+	_, pullErr := containerOrchestrator.PullImage(ctx, containers.PullImageOptions{Image: baseImage})
+	require.NoError(t, pullErr)
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-never-pull-build")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "never-pull-build",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image:      targetImage,
+			PullPolicy: apiv2.PullPolicyNever,
+			Build: &apiv2.ContainerBuildContext{
+				Context:    "test-context",
+				BaseImages: []string{baseImage},
+			},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(baseImage))
+}
+
+func TestV2PhysicalContainerImageControllerMissingPullPolicyPullsMissingBuildBase(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	baseImage := "v2-pci-missing-pull-base"
+	targetImage := "v2-pci-missing-pull-target"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-missing-pull-build")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "missing-pull-build",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image:      targetImage,
+			PullPolicy: apiv2.PullPolicyMissing,
+			Build: &apiv2.ContainerBuildContext{
+				Context:    "test-context",
+				BaseImages: []string{baseImage},
+			},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(baseImage))
+}
+
+func TestV2PhysicalContainerImageControllerMissingPullPolicyTracksLocalBuildBaseIdentity(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	baseImage := "v2-pci-missing-pull-identity-base"
+	targetImage := "v2-pci-missing-pull-identity-target"
+	buildBaseImage := func() {
+		require.NoError(t, containerOrchestrator.BuildImage(ctx, containers.BuildImageOptions{
+			ContainerBuildContext: &containers.ContainerBuildContext{
+				Context: "base-context",
+				Tags:    []string{baseImage},
+			},
+		}))
+	}
+	buildBaseImage()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-missing-pull-identity")
+	createImage := func(name string) *apiv2.PhysicalContainerImage {
+		image := &apiv2.PhysicalContainerImage{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace.Name,
+			},
+			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+				Image:      targetImage,
+				PullPolicy: apiv2.PullPolicyMissing,
+				Build: &apiv2.ContainerBuildContext{
+					ContextArchive: &apiv2.ContainerBuildContextArchive{
+						Digest:      "context-v1",
+						RawContents: "dGVzdA==",
+					},
+					BaseImages: []string{baseImage},
+				},
+			}},
+		}
+		require.NoError(t, client.Create(ctx, image))
+		return waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	}
+
+	firstImage := createImage("first-missing-pull-identity")
+	secondImage := createImage("second-missing-pull-identity")
+	require.Equal(t, firstImage.Status.ImageID, secondImage.Status.ImageID)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	buildBaseImage()
+	thirdImage := createImage("third-missing-pull-identity")
+	require.NotEqual(t, secondImage.Status.ImageID, thirdImage.Status.ImageID)
+	require.Equal(t, 2, containerOrchestrator.BuildImageCallCount(targetImage))
+	require.Equal(t, 0, containerOrchestrator.PullImageCallCount(baseImage))
+}
+
+func TestV2PhysicalContainerImageControllerNeverPullPolicyFailsForMissingBuildBase(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	baseImage := "v2-pci-never-pull-missing-base"
+	targetImage := "v2-pci-never-pull-missing-target"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-never-pull-missing-build")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "never-pull-missing-build",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image:      targetImage,
+			PullPolicy: apiv2.PullPolicyNever,
+			Build: &apiv2.ContainerBuildContext{
+				Context:    "test-context",
+				BaseImages: []string{baseImage},
+			},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
+	require.Equal(t, 0, containerOrchestrator.BuildImageCallCount(targetImage))
+	require.Equal(t, 0, containerOrchestrator.PullImageCallCount(baseImage))
 }
 
 func TestV2PhysicalContainerImageControllerRebuildsWhenBestEffortBaseImageChanges(t *testing.T) {

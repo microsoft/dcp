@@ -4320,7 +4320,7 @@ func schema_microsoft_dcp_api_v2_ContainerBuildContext(ref common.ReferenceCallb
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "BaseImages identifies image references whose resolved identities determine whether an existing build output is current when using the best-effort pull policy.",
+							Description: "BaseImages identifies image references used by the build. PhysicalContainerImage applies its pull policy to these images and includes their resolved identities when determining whether an existing build output is current.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -5122,7 +5122,14 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerImageConfig(ref common.Referen
 					},
 					"pullPolicy": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PullPolicy controls source image pulling. For builds, missing reuses an existing output when its material build inputs match; best-effort additionally resolves declared base images and rebuilds when their identities change while tolerating pull failures when local copies are available; and always rebuilds while pulling newer base images. If omitted, missing is used. Never is not supported for builds.",
+							Description: "PullPolicy controls pulling the source image or declared build base images. Best-effort attempts to pull but uses an existing local image when pulling fails. If omitted, missing is used.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"buildPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "BuildPolicy controls whether a matching existing build output can be reused. If omitted, ifNeeded is used. Only supported when build is set.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

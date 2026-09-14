@@ -1150,8 +1150,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 		return prepareErr
 	}
 	imageConfig := &apiv2.PhysicalContainerImageConfig{
-		Image:      imagePlan.Image,
-		PullPolicy: apiv2.PullPolicyBestEffort,
+		Image:       imagePlan.Image,
+		PullPolicy:  apiv2.PullPolicyBestEffort,
+		BuildPolicy: apiv2.BuildPolicyIfNeeded,
 		Build: &apiv2.ContainerBuildContext{
 			ContextArchive: &apiv2.ContainerBuildContextArchive{
 				Digest:      imagePlan.BuildContextArchive.Digest,
