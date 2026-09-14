@@ -17,9 +17,29 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
-
-	"github.com/microsoft/dcp/internal/dcppaths"
 )
+
+const conPTYPathEnv = "DCP_CONPTY_PATH"
+
+type conPTYProvider interface {
+	createPseudoConsole(windows.Coord, windows.Handle, windows.Handle, *windows.Handle) error
+	resizePseudoConsole(windows.Handle, windows.Coord) error
+	closePseudoConsole(windows.Handle)
+}
+
+type systemConPTY struct{}
+
+func (systemConPTY) createPseudoConsole(size windows.Coord, input, output windows.Handle, console *windows.Handle) error {
+	return windows.CreatePseudoConsole(size, input, output, 0, console)
+}
+
+func (systemConPTY) resizePseudoConsole(console windows.Handle, size windows.Coord) error {
+	return windows.ResizePseudoConsole(console, size)
+}
+
+func (systemConPTY) closePseudoConsole(console windows.Handle) {
+	windows.ClosePseudoConsole(console)
+}
 
 type conPTY struct {
 	dll      *windows.DLL
@@ -29,14 +49,20 @@ type conPTY struct {
 	hostPath string
 }
 
-// Keep the DLL loaded for the process lifetime so all HPCONs use the same implementation.
-var getConPTY = sync.OnceValues(func() (*conPTY, error) {
-	dcpDir, dirErr := dcppaths.GetDcpDir()
-	if dirErr != nil {
-		return nil, fmt.Errorf("could not locate bundled ConPTY: %w", dirErr)
+// Select once on first PTY use and keep the DLL loaded for the process lifetime.
+var getConPTY = sync.OnceValues(conPTYFromEnvironment)
+
+func conPTYFromEnvironment() (conPTYProvider, error) {
+	directory := os.Getenv(conPTYPathEnv)
+	if directory == "" {
+		return systemConPTY{}, nil
 	}
-	return loadConPTY(dcpDir)
-})
+	api, loadErr := loadConPTY(directory)
+	if loadErr != nil {
+		return nil, fmt.Errorf("invalid %s configuration: %w", conPTYPathEnv, loadErr)
+	}
+	return api, nil
+}
 
 func loadConPTY(directory string) (*conPTY, error) {
 	absoluteDir, pathErr := filepath.Abs(directory)
@@ -65,12 +91,12 @@ func loadConPTY(directory string) (*conPTY, error) {
 		return nil, hostErr
 	}
 
-	// Load the exact bundled DLL and restrict its dependency search to this directory and System32.
+	// Load the exact configured DLL and restrict its dependency search to this directory and System32.
 	// NewLazyDLL does not expose the required LoadLibraryEx search flags.
 	module, loadErr := windows.LoadLibraryEx(dllPath, 0,
 		windows.LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|windows.LOAD_LIBRARY_SEARCH_SYSTEM32)
 	if loadErr != nil {
-		return nil, fmt.Errorf("could not load bundled ConPTY DLL %q: %w", dllPath, loadErr)
+		return nil, fmt.Errorf("could not load configured ConPTY DLL %q: %w", dllPath, loadErr)
 	}
 
 	api := &conPTY{dll: &windows.DLL{Name: dllPath, Handle: module}, hostPath: hostPath}
@@ -85,7 +111,7 @@ func loadConPTY(directory string) (*conPTY, error) {
 		proc, findErr := api.dll.FindProc(binding.name)
 		if findErr != nil {
 			releaseErr := api.dll.Release()
-			return nil, fmt.Errorf("could not bind bundled ConPTY function %s: %w",
+			return nil, fmt.Errorf("could not bind configured ConPTY function %s: %w",
 				binding.name, errors.Join(findErr, releaseErr))
 		}
 		*binding.proc = proc
@@ -139,7 +165,7 @@ func validateConPTYHost(hostPath string) error {
 		return fmt.Errorf("could not check for an overriding ConPTY host %q: %w", adjacentPath, adjacentErr)
 	}
 
-	// conpty.dll silently uses the OS console host if the bundled host is missing.
+	// conpty.dll silently uses the OS console host if the standalone host is missing.
 	return requireConPTYBinary(hostPath)
 }
 

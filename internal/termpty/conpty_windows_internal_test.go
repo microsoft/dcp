@@ -24,18 +24,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 
-	"github.com/microsoft/dcp/internal/dcppaths"
 	int_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 const internalTestTimeout = 20 * time.Second
-
-func TestMain(m *testing.M) {
-	dcppaths.EnableTestPathProbing()
-	os.Exit(m.Run())
-}
 
 // newOpenedWindowsPTY allocates a fresh ConPTY (pseudo-console + I/O pipes)
 // and registers a t.Cleanup that closes it. No child process is spawned;

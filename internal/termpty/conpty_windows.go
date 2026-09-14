@@ -30,7 +30,7 @@ import (
 // The Close() method is also goroutine-safe, but invoking Close() while other methods are in progress
 // may lead to an I/O error.
 type windowsPTY struct {
-	conpty       *conPTY
+	conpty       conPTYProvider
 	hConsole     windows.Handle
 	outputRead   windows.Handle
 	inputWrite   windows.Handle

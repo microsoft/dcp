@@ -25,21 +25,29 @@ DCP's main executable (`dcp`) can run in one of several modes depending on how i
 - `dcp version` - displays version information about the DCP installation.
 - `dcp info` - displays information about the current DCP installation and identified container runtime.
 
-### Windows native dependency
+### Windows ConPTY provider
 
-Windows builds require the bundled `conpty.dll` and native console hosts from the MIT-licensed [Microsoft.Windows.Console.ConPTY](https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY/1.24.260710001) package, pinned to **1.24.260710001**. The DLL stays beside `dcp.exe`; `OpenConsole.exe` stays in architecture subdirectories so ConPTY selects the host matching the native Windows OS, including when DCP runs under emulation. Do not place `OpenConsole.exe` beside the DLL: that overrides native-host selection. There is no fallback to the Windows-provided ConPTY implementation.
+On Windows, DCP uses the operating system's ConPTY implementation by default. An AppHost or another launcher can opt into a standalone implementation by setting `DCP_CONPTY_PATH` in DCP's environment before starting DCP. The value is the directory containing `conpty.dll`, not the path to a DLL or executable. DCP does not download, pin, or redistribute this payload; its provider owns distribution, updates, and licensing.
 
-| `GOARCH` | DLL architecture | Required host paths relative to `dcp.exe` |
+An unset or empty variable selects inbox ConPTY. A nonempty value selects standalone ConPTY; missing binaries, invalid DLLs, and missing exports produce errors rather than silently falling back to inbox ConPTY. Selection and DLL loading happen once per process, on the first terminal launch, and the result is retained for that process's lifetime. Each PTY uses the same provider for creation, resizing, and closure. Non-Windows platforms ignore this variable.
+
+The standalone DLL must export `ConptyCreatePseudoConsole`, `ConptyResizePseudoConsole`, and `ConptyClosePseudoConsole`. The DLL must match DCP's process architecture; `OpenConsole.exe` must match the native Windows architecture. Keep hosts in the following subdirectories of `DCP_CONPTY_PATH` to support emulation:
+
+| DCP `GOARCH` | DLL architecture | Host paths for supported native Windows architectures |
 | --- | --- | --- |
 | `amd64` | x64 | `x64/OpenConsole.exe`, `arm64/OpenConsole.exe` |
 | `arm64` | arm64 | `arm64/OpenConsole.exe` |
 | `386` | x86 | `x86/OpenConsole.exe`, `x64/OpenConsole.exe`, `arm64/OpenConsole.exe` |
 
-`make build-dcp`, `make compile`, `make release`, and `make test-prereqs` stage this layout beside `DCP_BINARY` (by default in `OUTPUT_BIN`, which defaults to `bin/`), together with `LICENSE-ConPTY.txt`, including when cross-compiling with `GOOS=windows`. Downloads are cached under `.toolbin/conpty/<version>/<DLL architecture>/`; incomplete restores are retried, and every build refreshes the required hosts and removes stale root or architecture-specific hosts. `make install` preserves the layout; `make uninstall` removes all bundled files. Release archives and NuGet packages preserve these subdirectories through their existing build-output globs.
+Only the host for the current native Windows architecture is required at runtime. Do not place `OpenConsole.exe` directly beside `conpty.dll`: that overrides native-host selection and is rejected. DLL dependencies are resolved from the configured directory and System32, not arbitrary search-path directories. Use a trusted payload directory and keep its files available for the lifetime of DCP.
 
-Windows CI uses `scripts/test-ci.ps1`, which performs the same restore and staging without make. Keep its ConPTY version and restore logic in sync with the Makefile. Restoring uses the public NuGet feed and requires `curl` plus `unzip` on Unix build hosts, or PowerShell's `Expand-Archive` on Windows. Non-Windows targets do not restore or stage ConPTY.
+For example, with an already restored Hex1b Windows x64 payload:
 
-Direct `go build` does not copy native dependencies. When building a Windows executable directly, also run `make stage-conpty` with the same `GOOS`, `GOARCH`, and `DCP_BINARY`, or manually reproduce the layout above and include `LICENSE-ConPTY.txt`.
+```powershell
+$env:DCP_CONPTY_PATH = 'C:\Nuget\hex1b\<version>\runtimes\win-x64\native'
+```
+
+Set this on the DCP process, not just the terminalized workload. Use an absolute path so child DCP processes resolve the same directory. After `make test-prereqs`, run `go test -count 1 -parallel 32 -timeout 180s ./internal/termpty` with the variable unset to exercise inbox ConPTY, and with it set to exercise the external provider, including KGP and Sixel passthrough. Graphics support depends on the supplied implementation; standalone-only tests are skipped when no payload is configured.
 
 ### Environment variables affecting DCP behavior
 
@@ -47,6 +55,7 @@ DCP has knowledge of a number of environment variables that can change its behav
 
 | Variable | Description |
 | --- | --------- |
+| `DCP_CONPTY_PATH` | Windows only: directory containing an externally supplied `conpty.dll` and native-architecture `OpenConsole.exe` hosts. Unset or empty selects inbox ConPTY; invalid explicit configuration fails terminal creation without fallback. See [Windows ConPTY provider](#windows-conpty-provider). |
 | `DCP_EXTENSIONS_PATH` | Points to directory that contains DCP extensions. By default extensions are placed in the `ext` sub-directory of the directory where DCP main executable is located. |
 | `DEBUG_SESSION_PORT`, `DEBUG_SESSION_TOKEN`, and `DEBUG_SESSION_SERVER_CERTIFICATE` | These are variables that configure the endpoint for running Executables via a developer IDE/under debugger. For more information see [IDE execution specification](https://github.com/dotnet/aspire/blob/main/docs/specs/IDE-execution.md). |
 | `DCP_SESSION_FOLDER` | This variable is used for isolating multiple DCP instances running concurrently on the same machine. If set (to a valid filesystem folder), DCP process(es) will create files related to their execution in this folder: the access configuration file (kubeconfig), captured Executable/Container logs, etc. |

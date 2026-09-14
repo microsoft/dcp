@@ -34,7 +34,6 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpclient"
-	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
@@ -113,7 +112,6 @@ func v1VolumeMountsToCreateContainerVolumeMounts(mounts []apiv1.VolumeMount) []c
 }
 
 func TestMain(m *testing.M) {
-	dcppaths.EnableTestPathProbing()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	serverInfo, teInfo, envStartErr := StartTestEnvironment(ctx, AllControllers, "IntegrationTests", "")
