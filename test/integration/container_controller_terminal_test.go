@@ -24,6 +24,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/termpty"
+	"github.com/microsoft/dcp/internal/testutil/containertest"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	usvc_random "github.com/microsoft/dcp/pkg/randdata"
@@ -391,23 +392,36 @@ func TestContainerTerminalAttachFailure(t *testing.T) {
 // ====================================================================================
 
 // TestContainerTerminalEndToEndWithRealOrchestrator exercises the full container
-// terminal path through Docker/Podman attach to a real container running an
-// interactive busybox shell. It is gated by SkipIfTrueContainerOrchestratorNotEnabled
-// (i.e., DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR=true).
+// terminal path through each supported runtime using an interactive busybox shell.
 func TestContainerTerminalEndToEndWithRealOrchestrator(t *testing.T) {
-	testutil.SkipIfTrueContainerOrchestratorNotEnabled(t)
-
 	t.Parallel()
 
 	const testTimeout = 3 * time.Minute
-	ctx, cancel := testutil.GetTestContext(t, testTimeout)
-	defer cancel()
+	testCtx, testCancel := testutil.GetTestContext(t, testTimeout)
+	t.Cleanup(testCancel)
+	containertest.ForEachHealthyRuntime(t, testCtx, testContainerTerminalWithRealOrchestrator)
+}
 
-	serverInfo, teInfo, startupErr := StartAdvancedTestEnvironment(
+func testContainerTerminalWithRealOrchestrator(
+	t *testing.T,
+	runtimeCtx context.Context,
+	runtime containertest.Runtime,
+) {
+	ctx, cancel := context.WithCancel(runtimeCtx)
+	defer cancel()
+	tracker := containertest.NewResourceTracker(t, runtime)
+	containerName := containertest.UniqueName(t, "container-terminal")
+	require.NoError(t, tracker.TrackContainer(containerName))
+
+	serverInfo, teInfo, startupErr := StartAdvancedTestEnvironmentWithOptions(
 		ctx,
 		ContainerController,
-		t.Name(),
-		NoSeparateWorkingDir,
+		containertest.UniqueName(t, "terminal-environment"),
+		t.TempDir(),
+		AdvancedTestEnvironmentOptions{
+			ApiServerFlags:        ctrl_testutil.ApiServerUseTrueContainerOrchestrator,
+			ContainerOrchestrator: runtime.Orchestrator,
+		},
 	)
 	require.NoError(t, startupErr, "failed to start advanced test environment")
 	defer teInfo.ProcessExecutor.Dispose()
@@ -415,15 +429,14 @@ func TestContainerTerminalEndToEndWithRealOrchestrator(t *testing.T) {
 
 	apiClient := serverInfo.Client
 	socketPath := pickContainerTerminalSocketPath(t)
-	const ctrName = "test-ctr-term-e2e"
 
 	ctr := &apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      ctrName,
+			Name:      containerName,
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			ContainerName: ctrName,
+			ContainerName: containerName,
 			Image:         "busybox:latest",
 			Command:       "sh",
 			Args:          []string{"-i"},
@@ -433,6 +446,9 @@ func TestContainerTerminalEndToEndWithRealOrchestrator(t *testing.T) {
 				Rows:    40,
 			},
 		},
+	}
+	for _, label := range tracker.Labels() {
+		ctr.Spec.Labels = append(ctr.Spec.Labels, apiv1.ContainerLabel{Key: label.Key, Value: label.Value})
 	}
 
 	require.NoError(t, apiClient.Create(ctx, ctr), "create Container")

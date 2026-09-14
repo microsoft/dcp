@@ -32,6 +32,7 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/apiserver"
 	"github.com/microsoft/dcp/internal/containers"
+	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/dcptun"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
@@ -1404,13 +1405,13 @@ func testTunnelProxyClientFailure(
 	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateFailed)
 }
 
-// Verifies that a ContainerNetworkTunnelProxy really works with real container orchestrator (Docker or Podman).
+// Verifies that a ContainerNetworkTunnelProxy works with each supported real container orchestrator.
 // This is an advanced test that is not included in routine test runs.
 // Requires DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR environment variable to be set to "true".
 func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 	t.Parallel()
 
-	const testTimeout = 6 * time.Minute
+	const testTimeout = 3 * time.Minute
 	testCtx, testCancel := testutil.GetTestContext(t, testTimeout)
 	t.Cleanup(testCancel)
 
@@ -1422,6 +1423,7 @@ func testTunnelProxyWithRealOrchestrator(
 	runtimeCtx context.Context,
 	runtime containertest.Runtime,
 ) {
+	containertest.SkipIfNativeRuntimeEventsUnavailable(t, runtime)
 	const parrotTimeout = 3 * time.Minute
 
 	ctx, cancel := context.WithCancel(runtimeCtx)
@@ -1578,9 +1580,11 @@ func testTunnelProxyWithRealOrchestrator(
 					Name: network.Name,
 				},
 			},
-			// Enable ability to do pings etc. from within container, for debugging purposes.
-			RunArgs: []string{"--cap-add=NET_RAW"},
 		},
+	}
+	if runtime.Name != string(container_flags.WslcRuntime) {
+		// Optional ping/debug access is not exposed by the WSLC CLI.
+		clientCtr.Spec.RunArgs = []string{"--cap-add=NET_RAW"}
 	}
 
 	t.Logf("Creating parrot client Container '%s'...", clientCtr.ObjectMeta.Name)
