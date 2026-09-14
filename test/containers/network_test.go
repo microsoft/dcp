@@ -106,10 +106,79 @@ func TestNetworkMethods(t *testing.T) {
 	})
 }
 
+func TestContainerCreationAcceptsNetworkIDs(t *testing.T) {
+	t.Parallel()
+
+	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
+		tracker := containertest.NewResourceTracker(t, runtime)
+		image := ensureTestImage(t, ctx, runtime)
+		type testNetwork struct {
+			id    string
+			name  string
+			alias string
+		}
+		networks := make([]testNetwork, 0, 2)
+		for index := 0; index < 2; index++ {
+			networkName := containertest.UniqueName(t, fmt.Sprintf("creation-network-%d", index))
+			require.NoError(t, tracker.TrackNetwork(networkName))
+			networkID, createNetworkErr := runtime.Orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+				Name: networkName, Labels: tracker.MapLabels(),
+			})
+			require.NoError(t, createNetworkErr)
+			networks = append(networks, testNetwork{
+				id: networkID, name: networkName,
+				alias: containertest.UniqueName(t, fmt.Sprintf("creation-alias-%d", index)),
+			})
+		}
+
+		for _, operation := range []string{"create", "run"} {
+			t.Run(operation, func(t *testing.T) {
+				containerName := containertest.UniqueName(t, "network-id-container")
+				require.NoError(t, tracker.TrackContainer(containerName))
+				options := longRunningContainerOptions(containerName, image, tracker.Labels())
+				for _, network := range networks {
+					options.Networks = append(options.Networks, containers.CreateContainerNetworkOptions{
+						Name: network.id, Aliases: []string{network.alias},
+					})
+				}
+
+				var containerID string
+				var createErr error
+				if operation == "run" {
+					containerID, createErr = runtime.Orchestrator.RunContainer(ctx, containers.RunContainerOptions{CreateContainerOptions: options})
+				} else {
+					containerID, createErr = runtime.Orchestrator.CreateContainer(ctx, options)
+				}
+				require.NoError(t, createErr)
+				if operation == "create" {
+					_, startErr := runtime.Orchestrator.StartContainers(ctx, containers.StartContainersOptions{
+						Containers: []string{containerID},
+					})
+					require.NoError(t, startErr)
+				}
+				waitForContainerStatus(t, ctx, runtime.Orchestrator, containerID, containers.ContainerStatusRunning)
+				inspected, inspectErr := runtime.Orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+					Containers: []string{containerID},
+				})
+				require.NoError(t, inspectErr)
+				require.Len(t, inspected, 1)
+				for _, network := range networks {
+					networkIndex := std_slices.IndexFunc(inspected[0].Networks, func(attached containers.InspectedContainerNetwork) bool {
+						return attached.Id == network.id && attached.Name == network.name
+					})
+					require.NotEqual(t, -1, networkIndex)
+					require.Contains(t, inspected[0].Networks[networkIndex].Aliases, network.alias)
+				}
+			})
+		}
+	})
+}
+
 func TestWatchNetworksMethod(t *testing.T) {
 	t.Parallel()
 
 	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
+		containertest.SkipIfNativeRuntimeEventsUnavailable(t, runtime)
 		tracker := containertest.NewResourceTracker(t, runtime)
 
 		events := concurrency.NewUnboundedChan[containers.EventMessage](ctx)

@@ -908,54 +908,13 @@ func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options conta
 
 	args = append(args, options.Container+":/")
 
-	tarWriter := usvc_io.NewTarWriter()
-
-	certificateHashes := []string{}
-	for _, item := range options.Entries {
-		switch item.Type {
-		case containers.FileSystemEntryTypeDir:
-			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addDirectoryErr != nil {
-				return addDirectoryErr
-			}
-		case containers.FileSystemEntryTypeSymlink:
-			if addSymlinkErr := containers.AddSymlinkToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addSymlinkErr != nil {
-				if item.ContinueOnError {
-					pco.log.Error(addSymlinkErr, "Failed to add symlink to tar archive, continuing", "SymLink", item)
-				} else {
-					return addSymlinkErr
-				}
-			}
-		case containers.FileSystemEntryTypeOpenSSL:
-			hash, addCertErr := containers.AddCertificateToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, certificateHashes, pco.log)
-			if addCertErr != nil {
-				if item.ContinueOnError {
-					pco.log.Error(addCertErr, "Failed to add a certificate to the tar file, but continueOnError is set", "Certificate", item)
-				} else {
-					return addCertErr
-				}
-			}
-
-			// Keep track of the certificate hashes we've added to this directory so that we can deal with the possibility of collisions
-			certificateHashes = append(certificateHashes, hash)
-		default:
-			if addFileErr := containers.AddFileToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addFileErr != nil {
-				if item.ContinueOnError {
-					pco.log.Error(addFileErr, "Failed to add a file to the tar file, but continueOnError is set", "File", item)
-				} else {
-					return addFileErr
-				}
-			}
-		}
+	buffer, archiveErr := containers.CreateFilesArchive(ctx, pco.log, options)
+	if archiveErr != nil {
+		return archiveErr
 	}
-
-	if tarWriter.Empty() {
+	if buffer == nil {
 		// Can happen if all ContinueOnError items fail
 		return nil
-	}
-
-	buffer, bufferErr := tarWriter.Buffer()
-	if bufferErr != nil {
-		return bufferErr
 	}
 
 	var cmd *exec.Cmd
