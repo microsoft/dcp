@@ -7,6 +7,7 @@ package dcptun
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -55,12 +56,13 @@ func PrepareClientProxyImageBuild() (ClientProxyImageBuildPlan, error) {
 		return ClientProxyImageBuildPlan{}, fmt.Errorf("failed to get path to dcptun client binary: %w", clientPathErr)
 	}
 
-	imageName, imageErr := clientProxyImageName(dcpTunClientPath)
-	if imageErr != nil {
-		return ClientProxyImageBuildPlan{}, fmt.Errorf("failed to determine client proxy image: %w", imageErr)
+	clientBinaryHash, hashErr := computeFileHash(dcpTunClientPath)
+	if hashErr != nil {
+		return ClientProxyImageBuildPlan{}, fmt.Errorf("failed to compute current executable hash: %w", hashErr)
 	}
 
-	buildContextArchive, contextErr := setupImageBuildContextArchive(dcpTunClientPath)
+	imageName := clientProxyImageName(clientBinaryHash)
+	buildContextArchive, contextErr := setupImageBuildContextArchive(dcpTunClientPath, clientBinaryHash)
 	if contextErr != nil {
 		return ClientProxyImageBuildPlan{}, fmt.Errorf("failed to create build context archive: %w", contextErr)
 	}
@@ -74,28 +76,38 @@ func PrepareClientProxyImageBuild() (ClientProxyImageBuildPlan, error) {
 
 // clientProxyImageName() determines the name of the client proxy container image,
 // based on the current version of the DCP binaries.
-func clientProxyImageName(dcpTunClientPath string) (string, error) {
+func clientProxyImageName(clientBinaryHash string) string {
 	imageName := ClientProxyContainerImageNamePrefix
 
 	tag := version.Version().Version
 
 	if tag == version.DevelopmentVersion {
-		// Compute the hash of our binary and append it to the tag
-		hash, hashErr := computeFileHash(dcpTunClientPath)
-		if hashErr != nil {
-			return "", fmt.Errorf("failed to compute current executable hash: %w", hashErr)
-		}
-
 		// 12 characters is more than enough for ensuring that the image with correct binary exists
-		tag += "_" + hash[:12]
+		tag += "_" + clientBinaryHash[:12]
 	}
 
-	return fmt.Sprintf("%s:%s", imageName, tag), nil
+	return fmt.Sprintf("%s:%s", imageName, tag)
 }
 
 func setupImageBuildContextArchive(
 	dcpTunClientPath string,
+	clientBinaryHash string,
 ) (*containers.ContainerBuildContextArchive, error) {
+	dockerfileContent := fmt.Sprintf(`
+FROM %s
+
+# Copy the dcptun client binary
+COPY --chmod=0755 %s %[3]s
+
+# Set the entrypoint to the dcptun client
+ENTRYPOINT ["%[3]s"]
+`, DefaultBaseImage, ClientBinaryName, ClientProxyBinaryPath)
+
+	contextDigest, digestErr := clientProxyBuildContextDigest(dockerfileContent, clientBinaryHash)
+	if digestErr != nil {
+		return nil, digestErr
+	}
+
 	randomSuffix, randomSuffixErr := randdata.MakeRandomString(12)
 	if randomSuffixErr != nil {
 		return nil, fmt.Errorf("create random build context archive suffix: %w", randomSuffixErr)
@@ -113,16 +125,6 @@ func setupImageBuildContextArchive(
 		_ = archiveFile.Close()
 		_ = os.Remove(archivePath)
 	}
-
-	dockerfileContent := fmt.Sprintf(`
-FROM %s
-
-# Copy the dcptun client binary
-COPY --chmod=0755 %s %[3]s
-
-# Set the entrypoint to the dcptun client
-ENTRYPOINT ["%[3]s"]
-`, DefaultBaseImage, ClientBinaryName, ClientProxyBinaryPath)
 
 	now := time.Now()
 	tarWriter := usvc_io.NewTarWriterTo(archiveFile)
@@ -187,10 +189,26 @@ ENTRYPOINT ["%[3]s"]
 	}
 
 	return &containers.ContainerBuildContextArchive{
-		Digest: "sha256:" + archiveHash,
+		Digest: "sha256:" + contextDigest,
 		Source: archivePath,
 		SHA256: archiveHash,
 	}, nil
+}
+
+func clientProxyBuildContextDigest(dockerfileContent string, clientBinaryHash string) (string, error) {
+	buildInputs := struct {
+		Dockerfile       string `json:"dockerfile"`
+		ClientBinaryHash string `json:"clientBinaryHash"`
+	}{
+		Dockerfile:       dockerfileContent,
+		ClientBinaryHash: clientBinaryHash,
+	}
+	encodedInputs, encodeErr := json.Marshal(buildInputs)
+	if encodeErr != nil {
+		return "", fmt.Errorf("encode client proxy build context inputs: %w", encodeErr)
+	}
+
+	return fmt.Sprintf("%x", sha256.Sum256(encodedInputs)), nil
 }
 
 // Computes the SHA256 hash of a given binary file

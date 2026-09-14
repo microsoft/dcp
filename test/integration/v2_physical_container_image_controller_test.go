@@ -557,7 +557,7 @@ func TestV2PhysicalContainerImageControllerReusesBuildOutputWhenInputsMatch(t *t
 
 	targetImage := "v2-pci-existing-build-target"
 	namespace := createActiveV2Namespace(t, ctx, "v2-pci-existing-build")
-	createImage := func(name, digest, labelValue string) *apiv2.PhysicalContainerImage {
+	createImage := func(name, digest, rawContents, labelValue string) *apiv2.PhysicalContainerImage {
 		image := &apiv2.PhysicalContainerImage{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
@@ -569,7 +569,7 @@ func TestV2PhysicalContainerImageControllerReusesBuildOutputWhenInputsMatch(t *t
 				Build: &apiv2.ContainerBuildContext{
 					ContextArchive: &apiv2.ContainerBuildContextArchive{
 						Digest:      digest,
-						RawContents: "dGVzdA==",
+						RawContents: rawContents,
 					},
 					Labels: []commonapi.Label{{Key: "material-label", Value: labelValue}},
 				},
@@ -579,18 +579,18 @@ func TestV2PhysicalContainerImageControllerReusesBuildOutputWhenInputsMatch(t *t
 		return waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
 	}
 
-	firstImage := createImage("first-build-image", "context-v1", "label-v1")
+	firstImage := createImage("first-build-image", "context-v1", "dGVzdA==", "label-v1")
 	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
 
-	secondImage := createImage("second-build-image", "context-v1", "label-v1")
+	secondImage := createImage("second-build-image", "context-v1", "ZGlmZmVyZW50", "label-v1")
 	require.Equal(t, firstImage.Status.ImageID, secondImage.Status.ImageID)
 	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
 
-	thirdImage := createImage("third-build-image", "context-v2", "label-v1")
+	thirdImage := createImage("third-build-image", "context-v2", "ZGlmZmVyZW50", "label-v1")
 	require.NotEqual(t, secondImage.Status.ImageID, thirdImage.Status.ImageID)
 	require.Equal(t, 2, containerOrchestrator.BuildImageCallCount(targetImage))
 
-	fourthImage := createImage("fourth-build-image", "context-v2", "label-v2")
+	fourthImage := createImage("fourth-build-image", "context-v2", "ZGlmZmVyZW50", "label-v2")
 	require.NotEqual(t, thirdImage.Status.ImageID, fourthImage.Status.ImageID)
 	require.Equal(t, 3, containerOrchestrator.BuildImageCallCount(targetImage))
 }
