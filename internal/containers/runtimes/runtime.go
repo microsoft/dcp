@@ -15,6 +15,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/docker"
 	"github.com/microsoft/dcp/internal/podman"
+	"github.com/microsoft/dcp/internal/wslc"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -25,6 +26,7 @@ var (
 	supportedRuntimes = map[flags.RuntimeFlagValue]ContainerOrchestratorFactory{
 		flags.DockerRuntime: docker.NewDockerCliOrchestrator,
 		flags.PodmanRuntime: podman.NewPodmanCliOrchestrator,
+		flags.WslcRuntime:   wslc.NewWslcCliOrchestrator,
 	}
 )
 
@@ -51,22 +53,11 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 		}
 
 		for i := 0; i < len(supportedRuntimes); i++ {
-			supportedRuntime := <-runtimesCh
-
-			switch {
-			case availableRuntime == nil:
-				// We haven't picked a runtime yet
-				availableRuntime = supportedRuntime
-			case !availableRuntime.status.Installed && supportedRuntime.status.Installed:
-				// Prefer a runtime that is installed over one that isn't
-				availableRuntime = supportedRuntime
-			case !availableRuntime.status.Running && supportedRuntime.status.Running:
-				// Prefer a runtime that is running over one that isn't
-				availableRuntime = supportedRuntime
-			case supportedRuntime.orchestrator.IsDefault() && supportedRuntime.status.Installed == availableRuntime.status.Installed && supportedRuntime.status.Running == availableRuntime.status.Running:
-				// Prefer the default runtime
-				availableRuntime = supportedRuntime
+			supportedRuntime, open := <-runtimesCh
+			if !open || supportedRuntime == nil {
+				return nil, fmt.Errorf("container runtime discovery ended without a result")
 			}
+			availableRuntime = preferredRuntime(availableRuntime, supportedRuntime)
 		}
 	} else {
 		orchestrator, runtimeErr := FindContainerRuntime(ctx, string(runtimeFlagValue), log, executor)
@@ -82,6 +73,36 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 	log.V(1).Info("Runtime status", "Runtime", availableRuntime.orchestrator.Name(), "Status", availableRuntime.status)
 
 	return availableRuntime.orchestrator, nil
+}
+
+func preferredRuntime(current, candidate *runtimeSupport) *runtimeSupport {
+	switch {
+	case current == nil:
+		return candidate
+	case !current.status.Installed && candidate.status.Installed:
+		return candidate
+	case !current.status.Running && candidate.status.Running:
+		return candidate
+	case current.status.Installed == candidate.status.Installed &&
+		current.status.Running == candidate.status.Running &&
+		runtimePriority(candidate.orchestrator.Name()) < runtimePriority(current.orchestrator.Name()):
+		return candidate
+	default:
+		return current
+	}
+}
+
+func runtimePriority(runtimeName string) int {
+	switch flags.RuntimeFlagValue(runtimeName) {
+	case flags.DockerRuntime:
+		return 0
+	case flags.PodmanRuntime:
+		return 1
+	case flags.WslcRuntime:
+		return 2
+	default:
+		return 3
+	}
 }
 
 func FindContainerRuntime(ctx context.Context, runtimeName string, log logr.Logger, executor process.Executor) (containers.ContainerOrchestrator, error) {

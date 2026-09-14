@@ -120,6 +120,7 @@ type NetworkReconciler struct {
 	networkEvtSub *pubsub.Subscription[containers.EventMessage]
 	// Channel to receive network change events
 	networkEvtCh         *concurrency.UnboundedChan[containers.EventMessage]
+	networkEvtChCancel   context.CancelFunc
 	networkEvtWorkerStop chan struct{}
 
 	// Count of existing Container resources
@@ -849,8 +850,10 @@ func (r *NetworkReconciler) ensureNetworkWatch(network *apiv1.ContainerNetwork, 
 		return // We are already watching container events
 	}
 
+	eventCtx, eventCancel := context.WithCancel(r.LifetimeCtx)
+	r.networkEvtChCancel = eventCancel
 	r.networkEvtCh = concurrency.NewUnboundedChanBuffered[containers.EventMessage](
-		r.LifetimeCtx,
+		eventCtx,
 		containerEventChanBuffer,
 		containerEventChanBuffer,
 	)
@@ -860,14 +863,15 @@ func (r *NetworkReconciler) ensureNetworkWatch(network *apiv1.ContainerNetwork, 
 
 	log.V(1).Info("Subscribing to container events...")
 	sub, err := r.orchestrator.WatchNetworks(r.networkEvtCh.In)
+	r.networkEvtSub = sub
+	if err == nil && sub == nil {
+		err = fmt.Errorf("container runtime returned no network event subscription")
+	}
 	if err != nil {
 		log.Error(err, "Could not subscribe to network events")
-		close(r.networkEvtWorkerStop)
-		r.networkEvtWorkerStop = nil
+		r.cancelNetworkWatch()
 		return
 	}
-
-	r.networkEvtSub = sub
 }
 
 func (r *NetworkReconciler) releaseNetworkWatch(network *apiv1.ContainerNetwork, log logr.Logger) {
@@ -946,6 +950,11 @@ func (r *NetworkReconciler) cancelNetworkWatch() {
 		r.networkEvtSub.Cancel()
 		r.networkEvtSub = nil
 	}
+	if r.networkEvtChCancel != nil {
+		r.networkEvtChCancel()
+		r.networkEvtChCancel = nil
+	}
+	r.networkEvtCh = nil
 }
 
 func (r *NetworkReconciler) onShutdown() {

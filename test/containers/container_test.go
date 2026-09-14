@@ -86,6 +86,77 @@ func TestContainerLifecycleMethods(t *testing.T) {
 	})
 }
 
+func TestCreateContainerLabelsUseLastValue(t *testing.T) {
+	t.Parallel()
+
+	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
+		tracker := containertest.NewResourceTracker(t, runtime)
+		containerName := containertest.UniqueName(t, "duplicate-container-label")
+		require.NoError(t, tracker.TrackContainer(containerName))
+		const labelKey = "com.microsoft.developer.dcp.duplicate-label-test"
+		options := longRunningContainerOptions(containerName, ensureTestImage(t, ctx, runtime), tracker.Labels())
+		options.Labels = append(options.Labels,
+			containers.Label{Key: labelKey, Value: "first"},
+			containers.Label{Key: labelKey, Value: "last"},
+		)
+
+		containerID, createErr := runtime.Orchestrator.CreateContainer(ctx, options)
+		require.NoError(t, createErr)
+		inspected, inspectErr := runtime.Orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+			Containers: []string{containerID},
+		})
+		require.NoError(t, inspectErr)
+		require.Len(t, inspected, 1)
+		require.Equal(t, "last", inspected[0].Labels[labelKey])
+	})
+}
+
+func TestInspectContainersPreservesPartialResults(t *testing.T) {
+	t.Parallel()
+
+	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
+		tracker := containertest.NewResourceTracker(t, runtime)
+		containerName, containerID := runLongLivedContainer(t, ctx, runtime, tracker, "partial-inspect")
+		missingName := containertest.UniqueName(t, "missing-inspect")
+
+		inspected, inspectErr := runtime.Orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+			Containers: []string{containerName, missingName},
+		})
+		require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+		require.Len(t, inspected, 1)
+		require.Equal(t, containerID, inspected[0].Id)
+		require.Equal(t, containerName, inspected[0].Name)
+	})
+}
+
+func TestStartContainersPreservesPartialResults(t *testing.T) {
+	t.Parallel()
+
+	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
+		tracker := containertest.NewResourceTracker(t, runtime)
+		image := ensureTestImage(t, ctx, runtime)
+		containerNames := []string{
+			containertest.UniqueName(t, "partial-start-first"),
+			containertest.UniqueName(t, "partial-start-second"),
+		}
+		for _, containerName := range containerNames {
+			require.NoError(t, tracker.TrackContainer(containerName))
+			_, createErr := runtime.Orchestrator.CreateContainer(ctx, longRunningContainerOptions(containerName, image, tracker.Labels()))
+			require.NoError(t, createErr)
+		}
+		missingName := containertest.UniqueName(t, "missing-start")
+
+		started, startErr := runtime.Orchestrator.StartContainers(ctx, containers.StartContainersOptions{
+			Containers: []string{containerNames[0], missingName, containerNames[1]},
+		})
+		require.ErrorIs(t, startErr, containers.ErrNotFound)
+		require.ElementsMatch(t, containerNames, started)
+		for _, containerName := range containerNames {
+			waitForContainerStatus(t, ctx, runtime.Orchestrator, containerName, containers.ContainerStatusRunning)
+		}
+	})
+}
+
 func TestRunAndExecContainerMethods(t *testing.T) {
 	t.Parallel()
 
@@ -239,6 +310,7 @@ func TestWatchContainersMethod(t *testing.T) {
 	t.Parallel()
 
 	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
+		containertest.SkipIfNativeRuntimeEventsUnavailable(t, runtime)
 		tracker := containertest.NewResourceTracker(t, runtime)
 
 		events := concurrency.NewUnboundedChan[containers.EventMessage](ctx)

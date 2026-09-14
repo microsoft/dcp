@@ -10,18 +10,24 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
-const defaultApplyImageLayersTimeout = 10 * time.Minute
+const (
+	defaultApplyImageLayersTimeout = 10 * time.Minute
+	maxImageIDFileSize             = 1024
+)
 
 // ImageLayer represents a tar file to be applied as an additional image layer when running the
 // container. The layer is provided either as a path to a tar file (with a SHA256 hash for
@@ -53,8 +59,9 @@ func ApplyImageLayersImpl(
 	options ApplyImageLayersOptions,
 	runner CLICommandRunner,
 ) (string, error) {
-	if len(options.Layers) == 0 {
-		return "", fmt.Errorf("at least one image layer must be specified")
+	dockerfile, prepareErr := prepareImageLayerDockerfile(options)
+	if prepareErr != nil {
+		return "", prepareErr
 	}
 
 	timeout := options.Timeout
@@ -62,16 +69,8 @@ func ApplyImageLayersImpl(
 		timeout = defaultApplyImageLayersTimeout
 	}
 
-	// Use a tag if available, otherwise fall back to the image ID for the FROM directive
-	baseImage := options.BaseImage.Id
-	if len(options.BaseImage.Tags) > 0 {
-		baseImage = options.BaseImage.Tags[0]
-	}
-
-	// First pass: verify source-file layers and build the Dockerfile content.
-	// Source layers are hash-verified here (streaming, no full buffer) so that
-	// the second pass can stream them directly into the tar.
-	dockerfile := fmt.Sprintf("FROM %s\n", baseImage)
+	// Source layers are hash-verified here so the second pass can stream them
+	// directly into the tar without buffering their full contents.
 	for i := range options.Layers {
 		layer := &options.Layers[i]
 
@@ -81,8 +80,6 @@ func ApplyImageLayersImpl(
 			}
 			log.V(1).Info("Layer source SHA256 verified", "Source", layer.Source, "Digest", layer.Digest)
 		}
-
-		dockerfile += fmt.Sprintf("ADD layer%d.tar /\n", i)
 	}
 
 	// Second pass: stream the tar archive directly to docker build via io.Pipe.
@@ -107,7 +104,7 @@ func ApplyImageLayersImpl(
 
 		for i := range options.Layers {
 			layer := &options.Layers[i]
-			layerFileName := fmt.Sprintf("layer%d.tar", i)
+			layerFileName := imageLayerFileName(i)
 
 			if layer.Source != "" {
 				if streamErr := streamLayerFromSource(tw, layer, layerFileName, now); streamErr != nil {
@@ -187,10 +184,326 @@ func ApplyImageLayersImpl(
 	return imageRef, nil
 }
 
+// ApplyImageLayersFromDirectory builds a derived image from a disk-backed build context.
+func ApplyImageLayersFromDirectory(
+	ctx context.Context,
+	log logr.Logger,
+	options ApplyImageLayersOptions,
+	builder BuildImage,
+) (string, error) {
+	return applyImageLayersFromDirectory(ctx, log, options, builder, usvc_io.DcpTempDir())
+}
+
+func applyImageLayersFromDirectory(
+	ctx context.Context,
+	log logr.Logger,
+	options ApplyImageLayersOptions,
+	builder BuildImage,
+	tempDirectory string,
+) (imageRef string, returnErr error) {
+	if cancellationErr := ctx.Err(); cancellationErr != nil {
+		return "", cancellationErr
+	}
+
+	dockerfile, prepareErr := prepareImageLayerDockerfile(options)
+	if prepareErr != nil {
+		return "", prepareErr
+	}
+
+	workspace, workspaceErr := createImageLayerWorkspace(tempDirectory)
+	if workspaceErr != nil {
+		return "", workspaceErr
+	}
+	defer func() {
+		if cleanupErr := os.RemoveAll(workspace); cleanupErr != nil {
+			imageRef = ""
+			returnErr = errors.Join(returnErr, fmt.Errorf("removing image layer build workspace %q: %w", workspace, cleanupErr))
+		}
+	}()
+
+	contextDirectory := filepath.Join(workspace, "context")
+	if contextErr := usvc_io.EnsureRestrictedDirectory(contextDirectory, osutil.PermissionOnlyOwnerReadWriteTraverse); contextErr != nil {
+		return "", fmt.Errorf("creating image layer build context: %w", contextErr)
+	}
+
+	dockerfilePath := filepath.Join(contextDirectory, "Dockerfile")
+	if dockerfileErr := writeImageLayerBuildFile(ctx, dockerfilePath, strings.NewReader(dockerfile), nil); dockerfileErr != nil {
+		return "", fmt.Errorf("writing Dockerfile to image layer build context: %w", dockerfileErr)
+	}
+
+	for layerIndex := range options.Layers {
+		if cancellationErr := ctx.Err(); cancellationErr != nil {
+			return "", cancellationErr
+		}
+
+		layer := &options.Layers[layerIndex]
+		layerPath := filepath.Join(contextDirectory, imageLayerFileName(layerIndex))
+		if layer.Source != "" {
+			if stageErr := stageImageLayerSource(ctx, layerPath, layer); stageErr != nil {
+				return "", fmt.Errorf("staging image layer %d: %w", layerIndex, stageErr)
+			}
+			log.V(1).Info("Layer source SHA256 verified", "Source", layer.Source, "Digest", layer.Digest)
+		} else {
+			decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(layer.RawContents))
+			if stageErr := writeImageLayerBuildFile(ctx, layerPath, decoder, nil); stageErr != nil {
+				return "", fmt.Errorf("staging base64 rawContents for layer %d (%q): %w", layerIndex, layer.Digest, stageErr)
+			}
+		}
+	}
+
+	if cancellationErr := ctx.Err(); cancellationErr != nil {
+		return "", cancellationErr
+	}
+
+	timeout := options.Timeout
+	if timeout == 0 {
+		timeout = defaultApplyImageLayersTimeout
+	}
+
+	tags := []string(nil)
+	iidFilePath := ""
+	if options.Tag != "" {
+		tags = []string{options.Tag}
+	} else {
+		iidFilePath = filepath.Join(workspace, "image.iid")
+		iidFile, createIidErr := usvc_io.CreateNewFile(iidFilePath, osutil.PermissionOnlyOwnerReadWrite)
+		if createIidErr != nil {
+			return "", fmt.Errorf("creating image ID file: %w", createIidErr)
+		}
+		if closeIidErr := iidFile.Close(); closeIidErr != nil {
+			return "", fmt.Errorf("closing image ID file before build: %w", closeIidErr)
+		}
+	}
+
+	if cancellationErr := ctx.Err(); cancellationErr != nil {
+		return "", cancellationErr
+	}
+
+	buildErr := builder.BuildImage(ctx, BuildImageOptions{
+		IidFile: iidFilePath,
+		ContainerBuildContext: &ContainerBuildContext{
+			Context:    contextDirectory,
+			Dockerfile: dockerfilePath,
+			Tags:       tags,
+			Labels:     options.Labels,
+		},
+		TimeoutOption: TimeoutOption{Timeout: timeout},
+	})
+	if buildErr != nil {
+		return "", fmt.Errorf("building derived image with image layers: %w", buildErr)
+	}
+	if cancellationErr := ctx.Err(); cancellationErr != nil {
+		return "", fmt.Errorf("building derived image with image layers: %w", cancellationErr)
+	}
+
+	imageRef = options.Tag
+	if imageRef == "" {
+		builtImageID, readIidErr := ReadImageIDFile(iidFilePath)
+		if readIidErr != nil {
+			return "", fmt.Errorf("reading derived image ID: %w", readIidErr)
+		}
+		imageRef = builtImageID
+	}
+
+	log.V(1).Info("Built derived image with image layers", "ImageRef", imageRef, "LayerCount", len(options.Layers))
+	return imageRef, nil
+}
+
+func prepareImageLayerDockerfile(options ApplyImageLayersOptions) (string, error) {
+	if len(options.Layers) == 0 {
+		return "", fmt.Errorf("at least one image layer must be specified")
+	}
+
+	baseImage := options.BaseImage.Id
+	if len(options.BaseImage.Tags) > 0 {
+		baseImage = options.BaseImage.Tags[0]
+	}
+
+	var dockerfile strings.Builder
+	dockerfile.WriteString("FROM ")
+	dockerfile.WriteString(baseImage)
+	dockerfile.WriteByte('\n')
+	for layerIndex := range options.Layers {
+		dockerfile.WriteString("ADD ")
+		dockerfile.WriteString(imageLayerFileName(layerIndex))
+		dockerfile.WriteString(" /\n")
+	}
+	return dockerfile.String(), nil
+}
+
+func imageLayerFileName(layerIndex int) string {
+	return fmt.Sprintf("layer%d.tar", layerIndex)
+}
+
+func createImageLayerWorkspace(tempDirectory string) (string, error) {
+	workspace, createErr := os.MkdirTemp(tempDirectory, "dcp-image-layers-")
+	if createErr != nil {
+		return "", fmt.Errorf("creating image layer build workspace: %w", createErr)
+	}
+
+	if restrictErr := usvc_io.EnsureRestrictedDirectory(workspace, osutil.PermissionOnlyOwnerReadWriteTraverse); restrictErr != nil {
+		cleanupErr := os.RemoveAll(workspace)
+		return "", errors.Join(
+			fmt.Errorf("restricting image layer build workspace %q: %w", workspace, restrictErr),
+			wrapImageLayerCleanupError(workspace, cleanupErr),
+		)
+	}
+	return workspace, nil
+}
+
+func wrapImageLayerCleanupError(workspace string, cleanupErr error) error {
+	if cleanupErr == nil {
+		return nil
+	}
+	return fmt.Errorf("removing image layer build workspace %q: %w", workspace, cleanupErr)
+}
+
+func writeImageLayerBuildFile(ctx context.Context, name string, source io.Reader, observer io.Writer) error {
+	file, createErr := usvc_io.CreateNewFile(name, osutil.PermissionOnlyOwnerReadWrite)
+	if createErr != nil {
+		return fmt.Errorf("creating build context file %q: %w", name, createErr)
+	}
+
+	destination := io.Writer(file)
+	if observer != nil {
+		destination = io.MultiWriter(file, observer)
+	}
+
+	_, copyErr := copyImageLayerContents(ctx, destination, source)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return errors.Join(
+			fmt.Errorf("writing build context file %q: %w", name, copyErr),
+			wrapImageLayerFileCloseError(name, closeErr),
+		)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("closing build context file %q: %w", name, closeErr)
+	}
+	return nil
+}
+
+func wrapImageLayerFileCloseError(name string, closeErr error) error {
+	if closeErr == nil {
+		return nil
+	}
+	return fmt.Errorf("closing build context file %q: %w", name, closeErr)
+}
+
+func copyImageLayerContents(ctx context.Context, destination io.Writer, source io.Reader) (int64, error) {
+	buffer := make([]byte, 128*1024)
+	var total int64
+
+	for {
+		if cancellationErr := ctx.Err(); cancellationErr != nil {
+			return total, cancellationErr
+		}
+
+		readCount, readErr := source.Read(buffer)
+		if readCount > 0 {
+			writeCount, writeErr := destination.Write(buffer[:readCount])
+			total += int64(writeCount)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if writeCount != readCount {
+				return total, io.ErrShortWrite
+			}
+		}
+
+		if errors.Is(readErr, io.EOF) {
+			return total, nil
+		}
+		if readErr != nil {
+			return total, readErr
+		}
+	}
+}
+
+func stageImageLayerSource(ctx context.Context, destination string, layer *ImageLayer) error {
+	sourceFile, openErr := usvc_io.OpenFileReadOnly(layer.Source)
+	if openErr != nil {
+		return fmt.Errorf("opening layer source file %q: %w", layer.Source, openErr)
+	}
+
+	hasher := sha256.New()
+	stageErr := writeImageLayerBuildFile(ctx, destination, sourceFile, hasher)
+	closeErr := sourceFile.Close()
+	if stageErr != nil {
+		return errors.Join(stageErr, wrapImageLayerSourceCloseError(layer.Source, closeErr))
+	}
+	if closeErr != nil {
+		return fmt.Errorf("closing layer source file %q: %w", layer.Source, closeErr)
+	}
+
+	actualHashHex := hex.EncodeToString(hasher.Sum(nil))
+	return verifyLayerHash(layer, actualHashHex)
+}
+
+func wrapImageLayerSourceCloseError(source string, closeErr error) error {
+	if closeErr == nil {
+		return nil
+	}
+	return fmt.Errorf("closing layer source file %q: %w", source, closeErr)
+}
+
+// ReadImageIDFile reads and validates a bounded SHA256 image ID from a regular file.
+func ReadImageIDFile(name string) (string, error) {
+	info, statErr := os.Lstat(name)
+	if statErr != nil {
+		return "", fmt.Errorf("inspecting image ID file %q: %w", name, statErr)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("image ID file %q is not a regular file", name)
+	}
+
+	file, openErr := usvc_io.EnsureFile(name, osutil.PermissionOnlyOwnerReadWrite)
+	if openErr != nil {
+		return "", fmt.Errorf("opening image ID file %q: %w", name, openErr)
+	}
+
+	contents, readErr := io.ReadAll(io.LimitReader(file, maxImageIDFileSize+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return "", errors.Join(
+			fmt.Errorf("reading image ID file %q: %w", name, readErr),
+			wrapImageLayerFileCloseError(name, closeErr),
+		)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("closing image ID file %q: %w", name, closeErr)
+	}
+	if len(contents) > maxImageIDFileSize {
+		return "", fmt.Errorf("image ID file %q exceeds %d bytes", name, maxImageIDFileSize)
+	}
+
+	imageID := strings.TrimSpace(string(contents))
+	if imageID == "" {
+		return "", fmt.Errorf("image ID file is empty")
+	}
+	if validateErr := validateBuiltImageID(imageID); validateErr != nil {
+		return "", fmt.Errorf("invalid image ID %q: %w", imageID, validateErr)
+	}
+	return imageID, nil
+}
+
+func validateBuiltImageID(imageID string) error {
+	const sha256Prefix = "sha256:"
+	const sha256HexLength = sha256.Size * 2
+
+	if len(imageID) != len(sha256Prefix)+sha256HexLength || !strings.EqualFold(imageID[:len(sha256Prefix)], sha256Prefix) {
+		return fmt.Errorf("expected %s followed by %d hexadecimal characters", sha256Prefix, sha256HexLength)
+	}
+	if _, decodeErr := hex.DecodeString(imageID[len(sha256Prefix):]); decodeErr != nil {
+		return fmt.Errorf("decoding SHA256 value: %w", decodeErr)
+	}
+	return nil
+}
+
 // verifyLayerSourceHash streams the source file through a SHA256 hasher
 // and verifies the hash matches, without buffering the full file in memory.
 func verifyLayerSourceHash(layer *ImageLayer) error {
-	f, openErr := os.Open(layer.Source)
+	f, openErr := usvc_io.OpenFileReadOnly(layer.Source)
 	if openErr != nil {
 		return fmt.Errorf("opening layer source file %q: %w", layer.Source, openErr)
 	}
@@ -202,6 +515,10 @@ func verifyLayerSourceHash(layer *ImageLayer) error {
 	}
 
 	actualHashHex := hex.EncodeToString(hasher.Sum(nil))
+	return verifyLayerHash(layer, actualHashHex)
+}
+
+func verifyLayerHash(layer *ImageLayer, actualHashHex string) error {
 	expectedHash := strings.TrimSpace(layer.SHA256)
 	if strings.HasPrefix(strings.ToLower(expectedHash), "sha256:") {
 		expectedHash = expectedHash[7:]
@@ -216,7 +533,7 @@ func verifyLayerSourceHash(layer *ImageLayer) error {
 // streamLayerFromSource streams a source-file layer directly into the tar writer
 // without buffering the full file contents in memory.
 func streamLayerFromSource(tw *usvc_io.TarWriter, layer *ImageLayer, tarName string, modTime time.Time) error {
-	f, openErr := os.Open(layer.Source)
+	f, openErr := usvc_io.OpenFileReadOnly(layer.Source)
 	if openErr != nil {
 		return fmt.Errorf("opening layer source file %q: %w", layer.Source, openErr)
 	}
