@@ -175,7 +175,7 @@ generate-ci: generate generate-licenses ## Generate all codegen artifacts includ
 
 .PHONY: generate-object-methods
 generate-object-methods: ## Generates object copy methods for resources defined in this repo
-	$(CLEAR_GOARGS) $(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..." paths="./pkg/commonapi/..."
+	$(CLEAR_GOARGS) $(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="github.com/microsoft/dcp/api/..." paths="github.com/microsoft/dcp/pkg/commonapi/..."
 
 define run-openapi-gen
 $(CLEAR_GOARGS) $(OPENAPI_GEN) \
