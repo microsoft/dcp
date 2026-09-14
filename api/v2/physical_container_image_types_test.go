@@ -90,8 +90,8 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					Digest: "archive-v1",
 					ContextArchive: &ContainerBuildContextArchive{
-						Digest: "archive-v1",
 						Source: "context.tar",
 						SHA256: validArchiveSHA256,
 					},
@@ -168,8 +168,8 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					Digest: "archive-v1",
 					ContextArchive: &ContainerBuildContextArchive{
-						Digest:      "archive-v1",
 						RawContents: "dGVzdA==",
 					},
 				}}},
@@ -335,7 +335,6 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
 					Context: "test-context",
 					ContextArchive: &ContainerBuildContextArchive{
-						Digest: "archive-v1",
 						Source: "context.tar",
 						SHA256: validArchiveSHA256,
 					},
@@ -351,7 +350,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
-					ContextArchive: &ContainerBuildContextArchive{Digest: "archive-v1"},
+					ContextArchive: &ContainerBuildContextArchive{},
 				}}},
 			},
 			expectedError: "spec.image.build.contextArchive",
@@ -364,13 +363,13 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
-					ContextArchive: &ContainerBuildContextArchive{Digest: "archive-v1", Source: "context.tar"},
+					ContextArchive: &ContainerBuildContextArchive{Source: "context.tar"},
 				}}},
 			},
 			expectedError: "spec.image.build.contextArchive.sha256",
 		},
 		{
-			name: "build context archive missing digest",
+			name: "build context archive without digest",
 			image: PhysicalContainerImage{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-image",
@@ -380,7 +379,6 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					ContextArchive: &ContainerBuildContextArchive{RawContents: "dGVzdA=="},
 				}}},
 			},
-			expectedError: "spec.image.build.contextArchive.digest",
 		},
 		{
 			name: "build context archive source conflicts with raw contents",
@@ -391,7 +389,6 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 				},
 				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
 					ContextArchive: &ContainerBuildContextArchive{
-						Digest:      "archive-v1",
 						Source:      "context.tar",
 						SHA256:      validArchiveSHA256,
 						RawContents: "dGVzdA==",
@@ -409,7 +406,6 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 				},
 				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
 					ContextArchive: &ContainerBuildContextArchive{
-						Digest:      "archive-v1",
 						RawContents: "not-base64!!!",
 					},
 				}}},
@@ -425,7 +421,6 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 				},
 				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
 					ContextArchive: &ContainerBuildContextArchive{
-						Digest: "archive-v1",
 						Source: "context.tar",
 						SHA256: "deadbeef",
 					},
@@ -442,7 +437,6 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 				},
 				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
 					ContextArchive: &ContainerBuildContextArchive{
-						Digest:      "archive-v1",
 						SHA256:      validArchiveSHA256,
 						RawContents: "dGVzdA==",
 					},

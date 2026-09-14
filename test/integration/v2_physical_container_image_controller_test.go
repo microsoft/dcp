@@ -82,8 +82,8 @@ func TestV2PhysicalContainerImageControllerBuildsRawArchiveContext(t *testing.T)
 			Image:      targetImage,
 			PullPolicy: apiv2.PullPolicyAlways,
 			Build: &apiv2.ContainerBuildContext{
+				Digest: "empty-tar-v1",
 				ContextArchive: &apiv2.ContainerBuildContextArchive{
-					Digest:      "empty-tar-v1",
 					RawContents: rawContents,
 				},
 			},
@@ -97,7 +97,7 @@ func TestV2PhysicalContainerImageControllerBuildsRawArchiveContext(t *testing.T)
 
 	buildOptions := <-recordingOrchestrator.buildOptions
 	require.NotNil(t, buildOptions.ContextArchive)
-	require.Equal(t, "empty-tar-v1", buildOptions.ContextArchive.Digest)
+	require.Equal(t, "empty-tar-v1", buildOptions.Digest)
 	require.Equal(t, rawContents, buildOptions.ContextArchive.RawContents)
 	require.False(t, buildOptions.Pull)
 }
@@ -567,8 +567,8 @@ func TestV2PhysicalContainerImageControllerReusesBuildOutputWhenInputsMatch(t *t
 				Image:      targetImage,
 				PullPolicy: apiv2.PullPolicyMissing,
 				Build: &apiv2.ContainerBuildContext{
+					Digest: digest,
 					ContextArchive: &apiv2.ContainerBuildContextArchive{
-						Digest:      digest,
 						RawContents: rawContents,
 					},
 					Labels: []commonapi.Label{{Key: "material-label", Value: labelValue}},
@@ -595,6 +595,110 @@ func TestV2PhysicalContainerImageControllerReusesBuildOutputWhenInputsMatch(t *t
 	require.Equal(t, 3, containerOrchestrator.BuildImageCallCount(targetImage))
 }
 
+func TestV2PhysicalContainerImageControllerReusesDirectoryBuildOutputByDigest(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	targetImage := "v2-pci-directory-build-target"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-directory-build")
+	createImage := func(name, contextPath, digest string) *apiv2.PhysicalContainerImage {
+		image := &apiv2.PhysicalContainerImage{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace.Name,
+			},
+			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+				Image: targetImage,
+				Build: &apiv2.ContainerBuildContext{
+					Context: contextPath,
+					Digest:  digest,
+				},
+			}},
+		}
+		require.NoError(t, client.Create(ctx, image))
+		return waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	}
+
+	firstImage := createImage("first-directory-build", "first-context", "context-v1")
+	secondImage := createImage("second-directory-build", "second-context", "context-v1")
+	require.Equal(t, firstImage.Status.ImageID, secondImage.Status.ImageID)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	thirdImage := createImage("third-directory-build", "second-context", "context-v2")
+	require.NotEqual(t, secondImage.Status.ImageID, thirdImage.Status.ImageID)
+	require.Equal(t, 2, containerOrchestrator.BuildImageCallCount(targetImage))
+}
+
+func TestV2PhysicalContainerImageControllerBuildsWithoutContextDigest(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	targetImage := "v2-pci-no-context-digest-target"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-no-context-digest")
+	createImage := func(name string) *apiv2.PhysicalContainerImage {
+		image := &apiv2.PhysicalContainerImage{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace.Name,
+			},
+			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+				Image: targetImage,
+				Build: &apiv2.ContainerBuildContext{Context: "test-context"},
+			}},
+		}
+		require.NoError(t, client.Create(ctx, image))
+		return waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	}
+
+	firstImage := createImage("first-no-context-digest")
+	secondImage := createImage("second-no-context-digest")
+	require.NotEqual(t, firstImage.Status.ImageID, secondImage.Status.ImageID)
+	require.Equal(t, 2, containerOrchestrator.BuildImageCallCount(targetImage))
+}
+
+func TestV2PhysicalContainerImageControllerRebuildsWhenBuildTagsChange(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	targetImage := "v2-pci-build-tags-target"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-build-tags")
+	createImage := func(name string, secondaryTags []string) *apiv2.PhysicalContainerImage {
+		image := &apiv2.PhysicalContainerImage{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace.Name,
+			},
+			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+				Image: targetImage,
+				Build: &apiv2.ContainerBuildContext{
+					Context: "test-context",
+					Digest:  "context-v1",
+					Tags:    secondaryTags,
+				},
+			}},
+		}
+		require.NoError(t, client.Create(ctx, image))
+		return waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	}
+
+	firstImage := createImage("first-build-tags", []string{"v2-pci-secondary-a", "v2-pci-secondary-b"})
+	secondImage := createImage("second-build-tags", []string{"v2-pci-secondary-b", "v2-pci-secondary-a"})
+	require.Equal(t, firstImage.Status.ImageID, secondImage.Status.ImageID)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	thirdImage := createImage("third-build-tags", []string{"v2-pci-secondary-c"})
+	require.NotEqual(t, secondImage.Status.ImageID, thirdImage.Status.ImageID)
+	require.Equal(t, 2, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	inspectedImages, inspectErr := containerOrchestrator.InspectImages(ctx, containers.InspectImagesOptions{Images: []string{targetImage}})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedImages, 1)
+	require.Contains(t, inspectedImages[0].Tags, "v2-pci-secondary-c")
+}
+
 func TestV2PhysicalContainerImageControllerAlwaysBuildPolicyRebuildsMatchingOutput(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -612,8 +716,8 @@ func TestV2PhysicalContainerImageControllerAlwaysBuildPolicyRebuildsMatchingOutp
 				Image:       targetImage,
 				BuildPolicy: apiv2.BuildPolicyAlways,
 				Build: &apiv2.ContainerBuildContext{
+					Digest: "context-v1",
 					ContextArchive: &apiv2.ContainerBuildContextArchive{
-						Digest:      "context-v1",
 						RawContents: "dGVzdA==",
 					},
 				},
@@ -650,8 +754,8 @@ func TestV2PhysicalContainerImageControllerAlwaysPullPolicyReusesMatchingBuildOu
 				Image:      targetImage,
 				PullPolicy: apiv2.PullPolicyAlways,
 				Build: &apiv2.ContainerBuildContext{
+					Digest: "context-v1",
 					ContextArchive: &apiv2.ContainerBuildContextArchive{
-						Digest:      "context-v1",
 						RawContents: "dGVzdA==",
 					},
 					BaseImages: []string{baseImage},
@@ -758,8 +862,8 @@ func TestV2PhysicalContainerImageControllerMissingPullPolicyTracksLocalBuildBase
 				Image:      targetImage,
 				PullPolicy: apiv2.PullPolicyMissing,
 				Build: &apiv2.ContainerBuildContext{
+					Digest: "context-v1",
 					ContextArchive: &apiv2.ContainerBuildContextArchive{
-						Digest:      "context-v1",
 						RawContents: "dGVzdA==",
 					},
 					BaseImages: []string{baseImage},
@@ -839,8 +943,8 @@ func TestV2PhysicalContainerImageControllerRebuildsWhenBestEffortBaseImageChange
 				Image:      targetImage,
 				PullPolicy: apiv2.PullPolicyBestEffort,
 				Build: &apiv2.ContainerBuildContext{
+					Digest: "context-v1",
 					ContextArchive: &apiv2.ContainerBuildContextArchive{
-						Digest:      "context-v1",
 						RawContents: "dGVzdA==",
 					},
 					BaseImages: []string{baseImage},

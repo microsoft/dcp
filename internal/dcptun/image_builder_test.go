@@ -31,10 +31,10 @@ func TestPrepareClientProxyImageBuild(t *testing.T) {
 	require.True(t, strings.HasPrefix(plan.Image, expectedTagPrefix))
 	require.Greater(t, len(plan.Image), len(expectedTagPrefix), "Image tag should have a version suffix")
 	require.NotNil(t, plan.BuildContextArchive)
-	require.NotEmpty(t, plan.BuildContextArchive.Digest)
+	require.NotEmpty(t, plan.BuildContextDigest)
 	require.NotEmpty(t, plan.BuildContextArchive.Source)
 	require.NotEmpty(t, plan.BuildContextArchive.SHA256)
-	require.NotEqual(t, "sha256:"+plan.BuildContextArchive.SHA256, plan.BuildContextArchive.Digest)
+	require.NotEqual(t, "sha256:"+plan.BuildContextArchive.SHA256, plan.BuildContextDigest)
 	require.Empty(t, plan.BuildContextArchive.RawContents)
 	require.Equal(t, "Dockerfile", plan.Dockerfile)
 	t.Cleanup(func() {
@@ -43,7 +43,7 @@ func TestPrepareClientProxyImageBuild(t *testing.T) {
 
 	secondPlan, secondPrepareErr := dcptun.PrepareClientProxyImageBuild()
 	require.NoError(t, secondPrepareErr)
-	require.Equal(t, plan.BuildContextArchive.Digest, secondPlan.BuildContextArchive.Digest)
+	require.Equal(t, plan.BuildContextDigest, secondPlan.BuildContextDigest)
 	t.Cleanup(func() {
 		require.NoError(t, os.Remove(secondPlan.BuildContextArchive.Source))
 	})

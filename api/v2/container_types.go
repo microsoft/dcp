@@ -196,6 +196,12 @@ type ContainerBuildContext struct {
 	// +optional
 	ContextArchive *ContainerBuildContextArchive `json:"contextArchive,omitempty"`
 
+	// An opaque identifier for the logical contents of the build context. PhysicalContainerImage
+	// uses this value to determine whether an existing build output can be reused. If omitted,
+	// the build context is treated as changed and the output is rebuilt.
+	// +optional
+	Digest string `json:"digest,omitempty"`
+
 	// The path to a Dockerfile to use for the build.
 	// +optional
 	Dockerfile string `json:"dockerfile,omitempty"`
@@ -241,13 +247,6 @@ type ContainerBuildContext struct {
 // ContainerBuildContextArchive describes a tar archive containing an image build context.
 // +k8s:openapi-gen=true
 type ContainerBuildContextArchive struct {
-	// An opaque identifier for the logical contents of this archive.
-	// This allows a client to track whether the build context has meaningfully changed independently
-	// of the raw binary content (which may vary due to timestamps or other materially unimportant
-	// differences in the tar file). PhysicalContainerImage includes it in the material build-input
-	// identity used to decide whether an existing output image can be reused.
-	Digest string `json:"digest"`
-
 	// Path to a tar file on the host filesystem. Mutually exclusive with RawContents.
 	Source string `json:"source,omitempty"`
 

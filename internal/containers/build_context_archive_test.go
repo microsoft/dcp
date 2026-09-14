@@ -28,7 +28,6 @@ func TestOpenBuildContextArchive(t *testing.T) {
 	hash := sha256.Sum256(contents)
 
 	archiveFile, openErr := OpenBuildContextArchive(&ContainerBuildContextArchive{
-		Digest: "archive-v1",
 		Source: archivePath,
 		SHA256: fmt.Sprintf("sha256:%x", hash),
 	})
@@ -47,7 +46,6 @@ func TestOpenBuildContextArchiveRejectsHashMismatch(t *testing.T) {
 	require.NoError(t, usvc_io.WriteFile(archivePath, []byte("build context"), osutil.PermissionOnlyOwnerReadWrite))
 
 	_, openErr := OpenBuildContextArchive(&ContainerBuildContextArchive{
-		Digest: "archive-v1",
 		Source: archivePath,
 		SHA256: "deadbeef",
 	})
@@ -59,7 +57,6 @@ func TestOpenBuildContextArchiveRawContents(t *testing.T) {
 
 	contents := []byte("build context")
 	archiveReader, openErr := OpenBuildContextArchive(&ContainerBuildContextArchive{
-		Digest:      "archive-v1",
 		RawContents: base64.StdEncoding.EncodeToString(contents),
 	})
 	require.NoError(t, openErr)
@@ -73,7 +70,7 @@ func TestOpenBuildContextArchiveRawContents(t *testing.T) {
 func TestOpenBuildContextArchiveRejectsMissingContents(t *testing.T) {
 	t.Parallel()
 
-	_, openErr := OpenBuildContextArchive(&ContainerBuildContextArchive{Digest: "archive-v1"})
+	_, openErr := OpenBuildContextArchive(&ContainerBuildContextArchive{})
 	require.ErrorContains(t, openErr, "source or raw contents is required")
 }
 
@@ -81,7 +78,6 @@ func TestOpenBuildContextArchiveRejectsConflictingContents(t *testing.T) {
 	t.Parallel()
 
 	_, openErr := OpenBuildContextArchive(&ContainerBuildContextArchive{
-		Digest:      "archive-v1",
 		Source:      "context.tar",
 		RawContents: "dGVzdA==",
 	})

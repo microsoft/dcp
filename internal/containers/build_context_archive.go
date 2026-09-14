@@ -28,7 +28,7 @@ func OpenBuildContextArchive(archive *ContainerBuildContextArchive) (io.ReadClos
 		}
 		contents, decodeErr := base64.StdEncoding.DecodeString(archive.RawContents)
 		if decodeErr != nil {
-			return nil, fmt.Errorf("decode build context archive %q raw contents: %w", archive.Digest, decodeErr)
+			return nil, fmt.Errorf("decode build context archive raw contents: %w", decodeErr)
 		}
 		return io.NopCloser(bytes.NewReader(contents)), nil
 	}

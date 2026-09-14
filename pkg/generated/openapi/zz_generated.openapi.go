@@ -4212,6 +4212,13 @@ func schema_microsoft_dcp_api_v2_ContainerBuildContext(ref common.ReferenceCallb
 							Ref:         ref(v2.ContainerBuildContextArchive{}.OpenAPIModelName()),
 						},
 					},
+					"digest": {
+						SchemaProps: spec.SchemaProps{
+							Description: "An opaque identifier for the logical contents of the build context. PhysicalContainerImage uses this value to determine whether an existing build output can be reused. If omitted, the build context is treated as changed and the output is rebuilt.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"dockerfile": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The path to a Dockerfile to use for the build.",
@@ -4348,14 +4355,6 @@ func schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref common.Referen
 				Description: "ContainerBuildContextArchive describes a tar archive containing an image build context.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"digest": {
-						SchemaProps: spec.SchemaProps{
-							Description: "An opaque identifier for the logical contents of this archive. This allows a client to track whether the build context has meaningfully changed independently of the raw binary content (which may vary due to timestamps or other materially unimportant differences in the tar file). PhysicalContainerImage includes it in the material build-input identity used to decide whether an existing output image can be reused.",
-							Default:     "",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
 					"source": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Path to a tar file on the host filesystem. Mutually exclusive with RawContents.",
@@ -4378,7 +4377,6 @@ func schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref common.Referen
 						},
 					},
 				},
-				Required: []string{"digest"},
 			},
 		},
 	}

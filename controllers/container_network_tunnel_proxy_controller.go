@@ -1154,8 +1154,8 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 		PullPolicy:  apiv2.PullPolicyBestEffort,
 		BuildPolicy: apiv2.BuildPolicyIfNeeded,
 		Build: &apiv2.ContainerBuildContext{
+			Digest: imagePlan.BuildContextDigest,
 			ContextArchive: &apiv2.ContainerBuildContextArchive{
-				Digest:      imagePlan.BuildContextArchive.Digest,
 				Source:      imagePlan.BuildContextArchive.Source,
 				SHA256:      imagePlan.BuildContextArchive.SHA256,
 				RawContents: imagePlan.BuildContextArchive.RawContents,

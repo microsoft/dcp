@@ -44,6 +44,7 @@ const (
 
 type ClientProxyImageBuildPlan struct {
 	Image               string
+	BuildContextDigest  string
 	BuildContextArchive *containers.ContainerBuildContextArchive
 	Dockerfile          string
 }
@@ -62,13 +63,19 @@ func PrepareClientProxyImageBuild() (ClientProxyImageBuildPlan, error) {
 	}
 
 	imageName := clientProxyImageName(clientBinaryHash)
-	buildContextArchive, contextErr := setupImageBuildContextArchive(dcpTunClientPath, clientBinaryHash)
+	dockerfileContent := clientProxyDockerfileContent()
+	buildContextDigest, digestErr := clientProxyBuildContextDigest(dockerfileContent, clientBinaryHash)
+	if digestErr != nil {
+		return ClientProxyImageBuildPlan{}, digestErr
+	}
+	buildContextArchive, contextErr := setupImageBuildContextArchive(dcpTunClientPath, dockerfileContent)
 	if contextErr != nil {
 		return ClientProxyImageBuildPlan{}, fmt.Errorf("failed to create build context archive: %w", contextErr)
 	}
 
 	return ClientProxyImageBuildPlan{
 		Image:               imageName,
+		BuildContextDigest:  "sha256:" + buildContextDigest,
 		BuildContextArchive: buildContextArchive,
 		Dockerfile:          dockerfileName,
 	}, nil
@@ -91,23 +98,8 @@ func clientProxyImageName(clientBinaryHash string) string {
 
 func setupImageBuildContextArchive(
 	dcpTunClientPath string,
-	clientBinaryHash string,
+	dockerfileContent string,
 ) (*containers.ContainerBuildContextArchive, error) {
-	dockerfileContent := fmt.Sprintf(`
-FROM %s
-
-# Copy the dcptun client binary
-COPY --chmod=0755 %s %[3]s
-
-# Set the entrypoint to the dcptun client
-ENTRYPOINT ["%[3]s"]
-`, DefaultBaseImage, ClientBinaryName, ClientProxyBinaryPath)
-
-	contextDigest, digestErr := clientProxyBuildContextDigest(dockerfileContent, clientBinaryHash)
-	if digestErr != nil {
-		return nil, digestErr
-	}
-
 	randomSuffix, randomSuffixErr := randdata.MakeRandomString(12)
 	if randomSuffixErr != nil {
 		return nil, fmt.Errorf("create random build context archive suffix: %w", randomSuffixErr)
@@ -189,10 +181,21 @@ ENTRYPOINT ["%[3]s"]
 	}
 
 	return &containers.ContainerBuildContextArchive{
-		Digest: "sha256:" + contextDigest,
 		Source: archivePath,
 		SHA256: archiveHash,
 	}, nil
+}
+
+func clientProxyDockerfileContent() string {
+	return fmt.Sprintf(`
+FROM %s
+
+# Copy the dcptun client binary
+COPY --chmod=0755 %s %[3]s
+
+# Set the entrypoint to the dcptun client
+ENTRYPOINT ["%[3]s"]
+`, DefaultBaseImage, ClientBinaryName, ClientProxyBinaryPath)
 }
 
 func clientProxyBuildContextDigest(dockerfileContent string, clientBinaryHash string) (string, error) {

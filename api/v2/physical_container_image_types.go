@@ -299,9 +299,6 @@ func validatePhysicalContainerImageBuild(build *ContainerBuildContext, buildPath
 	if build.ContextArchive != nil {
 		archive := build.ContextArchive
 		archivePath := buildPath.Child("contextArchive")
-		if archive.Digest == "" {
-			errorList = append(errorList, field.Required(archivePath.Child("digest"), "digest must be set to a non-empty value"))
-		}
 		if archive.Source == "" && archive.RawContents == "" {
 			errorList = append(errorList, field.Required(archivePath, "either source or rawContents must be set"))
 		}

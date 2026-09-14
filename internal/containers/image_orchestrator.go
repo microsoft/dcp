@@ -76,6 +76,9 @@ type ContainerBuildContext struct {
 	// A tar archive to stream to the image builder as the build context.
 	ContextArchive *ContainerBuildContextArchive `json:"contextArchive,omitempty"`
 
+	// An opaque identifier for the logical contents of the build context.
+	Digest string `json:"digest,omitempty"`
+
 	// The path to a Dockerfile to use for the build.
 	Dockerfile string `json:"dockerfile,omitempty"`
 
@@ -99,7 +102,6 @@ type ContainerBuildContext struct {
 }
 
 type ContainerBuildContextArchive struct {
-	Digest      string `json:"digest"`
 	Source      string `json:"source,omitempty"`
 	SHA256      string `json:"sha256,omitempty"`
 	RawContents string `json:"rawContents,omitempty"`

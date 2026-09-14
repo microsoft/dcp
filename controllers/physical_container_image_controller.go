@@ -79,9 +79,9 @@ type physicalContainerImageBaseImageIdentity struct {
 }
 
 type physicalContainerImageBuildInputs struct {
-	Context       string                                    `json:"context,omitempty"`
 	ContextDigest string                                    `json:"contextDigest,omitempty"`
 	Dockerfile    string                                    `json:"dockerfile,omitempty"`
+	Tags          []string                                  `json:"tags,omitempty"`
 	Args          []commonapi.EnvVar                        `json:"args,omitempty"`
 	Secrets       []apiv2.ContainerBuildSecret              `json:"secrets,omitempty"`
 	Stage         string                                    `json:"stage,omitempty"`
@@ -557,23 +557,22 @@ func physicalContainerImageBuildInputsFingerprint(
 		}
 	}
 	buildInputs := physicalContainerImageBuildInputs{
-		Dockerfile: build.Dockerfile,
-		Args:       slices.Clone(build.Args),
-		Secrets:    slices.Clone(build.Secrets),
-		Stage:      build.Stage,
-		Labels:     slices.Clone(build.Labels),
-		Platform:   build.Platform,
-		BaseImages: slices.Clone(baseImages),
-	}
-	if build.ContextArchive == nil {
-		buildInputs.Context = build.Context
-	} else {
-		buildInputs.ContextDigest = build.ContextArchive.Digest
+		ContextDigest: build.Digest,
+		Dockerfile:    build.Dockerfile,
+		Tags:          slices.Clone(build.Tags),
+		Args:          slices.Clone(build.Args),
+		Secrets:       slices.Clone(build.Secrets),
+		Stage:         build.Stage,
+		Labels:        slices.Clone(build.Labels),
+		Platform:      build.Platform,
+		BaseImages:    slices.Clone(baseImages),
 	}
 
 	slices.SortFunc(buildInputs.Secrets, func(left, right apiv2.ContainerBuildSecret) int {
 		return strings.Compare(left.ID, right.ID)
 	})
+	slices.Sort(buildInputs.Tags)
+	buildInputs.Tags = slices.Compact(buildInputs.Tags)
 	buildInputs.Labels = slices.DeleteFunc(buildInputs.Labels, func(label commonapi.Label) bool {
 		switch label.Key {
 		case physicalContainerImageBuildInputsLabel,
@@ -679,11 +678,7 @@ func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImageBuild(
 		return noChange, StandardDelay
 	}
 
-	buildContextArchiveDigest := ""
-	if buildContext.ContextArchive != nil {
-		buildContextArchiveDigest = buildContext.ContextArchive.Digest
-	}
-	log.V(1).Info("Queued PhysicalContainerImage build", "Context", buildContext.Context, "ContextArchiveDigest", buildContextArchiveDigest, "Dockerfile", buildContext.Dockerfile, "Image", outputImage)
+	log.V(1).Info("Queued PhysicalContainerImage build", "Context", buildContext.Context, "ContextDigest", buildContext.Digest, "Dockerfile", buildContext.Dockerfile, "Image", outputImage)
 	return noChange, StandardDelay
 }
 
@@ -759,7 +754,8 @@ func (r *PhysicalContainerImageReconciler) buildPhysicalContainerImage(
 		return
 	}
 
-	if image.Spec.Image.BuildPolicy == "" || image.Spec.Image.BuildPolicy == apiv2.BuildPolicyIfNeeded {
+	if buildContext.Digest != "" &&
+		(image.Spec.Image.BuildPolicy == "" || image.Spec.Image.BuildPolicy == apiv2.BuildPolicyIfNeeded) {
 		inspectedImage, inspectErr := inspectPhysicalContainerImage(ctx, r.orchestrator, outputImage)
 		if inspectErr == nil && inspectedImage.Labels[physicalContainerImageBuildInputsLabel] == buildInputs {
 			data.progress = physicalResourceProgressCompleted
@@ -1024,12 +1020,12 @@ func v2BuildContextToContainerBuildContext(build *apiv2.ContainerBuildContext) *
 
 	return &containers.ContainerBuildContext{
 		Context: build.Context,
+		Digest:  build.Digest,
 		ContextArchive: func() *containers.ContainerBuildContextArchive {
 			if build.ContextArchive == nil {
 				return nil
 			}
 			return &containers.ContainerBuildContextArchive{
-				Digest:      build.ContextArchive.Digest,
 				Source:      build.ContextArchive.Source,
 				SHA256:      build.ContextArchive.SHA256,
 				RawContents: build.ContextArchive.RawContents,

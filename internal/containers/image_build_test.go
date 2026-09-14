@@ -85,7 +85,6 @@ func TestBuildImageImplStreamsArchive(t *testing.T) {
 		BuildImageOptions{
 			ContainerBuildContext: &ContainerBuildContext{
 				ContextArchive: &ContainerBuildContextArchive{
-					Digest:      "archive-digest",
 					RawContents: base64.StdEncoding.EncodeToString(archiveContents),
 				},
 			},
@@ -108,7 +107,6 @@ func TestBuildImageImplRejectsPathAndArchive(t *testing.T) {
 			ContainerBuildContext: &ContainerBuildContext{
 				Context: "context-dir",
 				ContextArchive: &ContainerBuildContextArchive{
-					Digest:      "archive-digest",
 					RawContents: base64.StdEncoding.EncodeToString([]byte("archive contents")),
 				},
 			},
