@@ -72,15 +72,18 @@ func (wp *windowsPTY) Resize(cols, rows uint16) error {
 	}
 
 	wp.lock.Lock()
-	defer wp.lock.Unlock()
 	if wp.hConsole == 0 || wp.hConsole == windows.InvalidHandle {
+		wp.lock.Unlock()
 		return os.ErrClosed
 	}
+
+	hConsole := wp.hConsole
+	wp.lock.Unlock()
 
 	// windowsConsoleSize/normalizeTerminalDimensions substitutes defaults for
 	// zero dimensions; we reject zeros above so only the upper-bound clamp matters here.
 	consoleSize := windowsConsoleSize(cols, rows)
-	return wp.conpty.resizePseudoConsole(wp.hConsole, consoleSize)
+	return wp.conpty.resizePseudoConsole(hConsole, consoleSize)
 }
 
 func (wp *windowsPTY) Close() error {

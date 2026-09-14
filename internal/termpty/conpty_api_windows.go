@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -133,6 +134,9 @@ func (api *conPTY) createPseudoConsole(size windows.Coord, input, output windows
 		0,
 		uintptr(unsafe.Pointer(console)),
 	)
+
+	runtime.KeepAlive(console)
+
 	// These APIs return HRESULT, not GetLastError.
 	if int32(result) < 0 {
 		return windows.Errno(uint32(result))
