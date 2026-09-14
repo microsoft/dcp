@@ -25,37 +25,13 @@ DCP's main executable (`dcp`) can run in one of several modes depending on how i
 - `dcp version` - displays version information about the DCP installation.
 - `dcp info` - displays information about the current DCP installation and identified container runtime.
 
-### Windows ConPTY provider
-
-On Windows, DCP uses the operating system's ConPTY implementation by default. An AppHost or another launcher can opt into a standalone implementation by setting `DCP_CONPTY_PATH` in DCP's environment before starting DCP. The value is the directory containing `conpty.dll`, not the path to a DLL or executable. DCP does not download, pin, or redistribute this payload; its provider owns distribution, updates, and licensing.
-
-An unset or empty variable selects inbox ConPTY. A nonempty value selects standalone ConPTY; missing binaries, invalid DLLs, and missing exports produce errors rather than silently falling back to inbox ConPTY. Selection and DLL loading happen once per process, on the first terminal launch, and the result is retained for that process's lifetime. Each PTY uses the same provider for creation, resizing, and closure. Non-Windows platforms ignore this variable.
-
-The standalone DLL must export `ConptyCreatePseudoConsole`, `ConptyResizePseudoConsole`, and `ConptyClosePseudoConsole`. The DLL must match DCP's process architecture; `OpenConsole.exe` must match the native Windows architecture. Keep hosts in the following subdirectories of `DCP_CONPTY_PATH` to support emulation:
-
-| DCP `GOARCH` | DLL architecture | Host paths for supported native Windows architectures |
-| --- | --- | --- |
-| `amd64` | x64 | `x64/OpenConsole.exe`, `arm64/OpenConsole.exe` |
-| `arm64` | arm64 | `arm64/OpenConsole.exe` |
-| `386` | x86 | `x86/OpenConsole.exe`, `x64/OpenConsole.exe`, `arm64/OpenConsole.exe` |
-
-Only the host for the current native Windows architecture is required at runtime. Do not place `OpenConsole.exe` directly beside `conpty.dll`: that overrides native-host selection and is rejected. DLL dependencies are resolved from the configured directory and System32, not arbitrary search-path directories. Use a trusted payload directory and keep its files available for the lifetime of DCP.
-
-For example, with an already restored Hex1b Windows x64 payload:
-
-```powershell
-$env:DCP_CONPTY_PATH = 'C:\Nuget\hex1b\<version>\runtimes\win-x64\native'
-```
-
-Set this on the DCP process, not just the terminalized workload. Use an absolute path so child DCP processes resolve the same directory. After `make test-prereqs`, run `go test -count 1 -parallel 32 -timeout 180s ./internal/termpty` with the variable unset to exercise inbox ConPTY, and with it set to exercise the external provider, including KGP and Sixel passthrough. Graphics support depends on the supplied implementation; standalone-only tests are skipped when no payload is configured.
-
 ### Environment variables affecting DCP behavior
 
 DCP has knowledge of a number of environment variables that can change its behavior; they are used mostly for testing.
 
 | Variable | Description |
 | --- | --------- |
-| `DCP_CONPTY_PATH` | Windows only: directory containing an externally supplied `conpty.dll` and native-architecture `OpenConsole.exe` hosts. Unset or empty selects inbox ConPTY; invalid explicit configuration fails terminal creation without fallback. See [Windows ConPTY provider](#windows-conpty-provider). |
+| `DCP_CONPTY_PATH` | Windows only: directory containing an externally supplied `conpty.dll` and native-architecture `OpenConsole.exe` hosts. Unset or empty selects inbox ConPTY; invalid explicit configuration fails terminal creation without fallback. See [Windows console provider](https://github.com/microsoft/dcp/blob/main/doc/Windows-console.md). |
 | `DCP_EXTENSIONS_PATH` | Points to directory that contains DCP extensions. By default extensions are placed in the `ext` sub-directory of the directory where DCP main executable is located. |
 | `DEBUG_SESSION_PORT`, `DEBUG_SESSION_TOKEN`, and `DEBUG_SESSION_SERVER_CERTIFICATE` | These are variables that configure the endpoint for running Executables via a developer IDE/under debugger. For more information see [IDE execution specification](https://github.com/dotnet/aspire/blob/main/docs/specs/IDE-execution.md). |
 | `DCP_SESSION_FOLDER` | This variable is used for isolating multiple DCP instances running concurrently on the same machine. If set (to a valid filesystem folder), DCP process(es) will create files related to their execution in this folder: the access configuration file (kubeconfig), captured Executable/Container logs, etc. |
@@ -75,5 +51,5 @@ DCP has knowledge of a number of environment variables that can change its behav
 | `DCP_IP_VERSION_PREFERENCE` | Describes which version of the IP protocol will be preferred for communicating with DCP and for allocating service ports. Can be set to `IPv4`, `v4` or `4` (to prefer IP protocol version 4) or `IPv6`, `v6` or `6` (to prefer IP protocol version 6). <br/> <br/> The preference determines which type of available IP addresses will be preferred when resolving `localhost` host name. `localhost` is the default pseudo-address that both Services and DCP itself bind to. The value of `DCP_IP_VERSION_PREFERENCE` environment variable is not used if a Service requests specific address, or if a Service uses an address allocation mode that is different from `localhost`. |
 | `DCP_SHUTDOWN_TIMEOUT_SECONDS` | Overrides the default DCP shutdown timeout (120 seconds). DCP will use this timeout to wait for all resources to be cleaned up before shutting down. |
 | `DCP_SECURE_TOKEN` | Provides a predetermined bearer token for DCP to use rather than generating a randm one. If this is set, DCP will write a placeholder value to the kubeconfig file. Any client trying to connect will have to know this predetermined token and apply it to their config themselves. |
-| `DCP_PERF_TRACE` | If set, instructs DCP to capture a performance trace during startup and/or shutdown. For more information see [performance investigations page](performance-investigations.md). |
+| `DCP_PERF_TRACE` | If set, instructs DCP to capture a performance trace during startup and/or shutdown. For more information see [performance investigations page](https://github.com/microsoft/dcp/blob/main/doc/performance-investigations.md). |
 | `DCP_DISABLE_PROCESS_CLEANUP_JOB` | On Windows, DCP will use a Win32 Job object to ensure that processes it launches are terminated when it shuts down. This alters standard process startup sequence and might not work on tightly locked-down machines, or might be flagged as "suspicious behavior" by antivirus software. If DCP cannot start processes and complains about "process cleanup job" errors, setting `DCP_DISABLE_PROCESS_CLEANUP_JOB` to `1` or `true` should help. |
