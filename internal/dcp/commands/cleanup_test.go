@@ -157,6 +157,29 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 	require.Empty(t, networkRecords)
 }
 
+func TestRemovePersistentNetworkRetriesTransientRemovalFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	wrappedOrchestrator := &transientNetworkRemovalOrchestrator{
+		ContainerOrchestrator: orchestrator,
+		failuresRemaining:     2,
+	}
+
+	networkID, createNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "app-network"})
+	require.NoError(t, createNetworkErr)
+
+	removeErr := removePersistentNetwork(ctx, wrappedOrchestrator, networkID)
+
+	require.NoError(t, removeErr)
+	require.Equal(t, 3, wrappedOrchestrator.removeCalls)
+	_, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
+	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+}
+
 func TestCleanupWorkloadResourcesOnlyRemovesVolumesWhenEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -1402,6 +1425,22 @@ type failingCleanupContainerOrchestrator struct {
 
 func (o *failingCleanupContainerOrchestrator) RemoveContainers(context.Context, containers.RemoveContainersOptions) ([]string, error) {
 	return nil, o.removeContainersErr
+}
+
+type transientNetworkRemovalOrchestrator struct {
+	containers.ContainerOrchestrator
+
+	failuresRemaining int
+	removeCalls       int
+}
+
+func (o *transientNetworkRemovalOrchestrator) RemoveNetworks(ctx context.Context, options containers.RemoveNetworksOptions) ([]string, error) {
+	o.removeCalls++
+	if o.failuresRemaining > 0 {
+		o.failuresRemaining--
+		return nil, errors.New("network has active endpoints")
+	}
+	return o.ContainerOrchestrator.RemoveNetworks(ctx, options)
 }
 
 type recordingVolumeRemovalOrchestrator struct {

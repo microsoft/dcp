@@ -27,12 +27,14 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
 const (
 	workloadCleanupLeaseRevalidationInterval = 30 * time.Second
 	workloadCleanupLeaseRetryInterval        = 500 * time.Millisecond
+	workloadCleanupNetworkTimeout            = 30 * time.Second
 	workloadCleanupStopContainerTimeout      = 10
 	workloadCleanupResourceConcurrencyLimit  = uint16(8)
 	cleanupVolumesFlagName                   = "volumes"
@@ -801,28 +803,20 @@ func removePersistentNetwork(ctx context.Context, orchestrator containers.Contai
 		return fmt.Errorf("network ID cannot be empty")
 	}
 
-	_, initialInspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
-	if errors.Is(initialInspectErr, containers.ErrNotFound) {
-		return nil
-	}
-	if initialInspectErr != nil {
-		return initialInspectErr
-	}
+	return resiliency.RetryExponentialWithTimeout(ctx, workloadCleanupNetworkTimeout, func() error {
+		_, removeErr := orchestrator.RemoveNetworks(ctx, containers.RemoveNetworksOptions{
+			Networks: []string{networkID},
+			Force:    true,
+		})
 
-	_, removeErr := orchestrator.RemoveNetworks(ctx, containers.RemoveNetworksOptions{
-		Networks: []string{networkID},
-		Force:    true,
+		_, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
+		if errors.Is(inspectErr, containers.ErrNotFound) {
+			return nil
+		}
+		if inspectErr != nil {
+			return errors.Join(removeErr, inspectErr)
+		}
+
+		return errors.Join(removeErr, fmt.Errorf("network %s still exists after cleanup", networkID))
 	})
-	if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
-		return removeErr
-	}
-
-	_, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
-	if errors.Is(inspectErr, containers.ErrNotFound) {
-		return nil
-	}
-	if inspectErr != nil {
-		return inspectErr
-	}
-	return fmt.Errorf("network %s still exists after cleanup", networkID)
 }
