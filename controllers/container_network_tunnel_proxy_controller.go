@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -43,6 +42,7 @@ import (
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/maps"
@@ -120,8 +120,7 @@ type ContainerNetworkTunnelProxyReconciler struct {
 	// A work queue for long-running operations.
 	workQueue *resiliency.WorkQueue
 
-	sharedImagePreparationMutex      sync.Mutex
-	sharedImagePreparationInProgress bool
+	sharedImagePreparationLock *concurrency.ContextAwareLock
 }
 
 func NewContainerNetworkTunnelProxyReconciler(
@@ -144,10 +143,11 @@ func NewContainerNetworkTunnelProxyReconciler(
 	base := NewReconcilerBase[apiv1.ContainerNetworkTunnelProxy](client, noCacheClient, log, lifetimeCtx)
 
 	r := ContainerNetworkTunnelProxyReconciler{
-		ReconcilerBase: base,
-		config:         config,
-		proxyData:      NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy](),
-		workQueue:      resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
+		ReconcilerBase:             base,
+		config:                     config,
+		proxyData:                  NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy](),
+		workQueue:                  resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
+		sharedImagePreparationLock: concurrency.NewContextAwareLock(),
 	}
 
 	return &r
@@ -1207,19 +1207,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) scheduleTunnelProxyPhysicalConta
 	tunnelProxyName types.NamespacedName,
 	log logr.Logger,
 ) error {
-	r.sharedImagePreparationMutex.Lock()
-	if r.sharedImagePreparationInProgress {
-		r.sharedImagePreparationMutex.Unlock()
+	if !r.sharedImagePreparationLock.TryLock() {
 		return nil
 	}
-	r.sharedImagePreparationInProgress = true
-	r.sharedImagePreparationMutex.Unlock()
 
 	enqueueErr := r.workQueue.Enqueue(func(ctx context.Context) {
 		defer func() {
-			r.sharedImagePreparationMutex.Lock()
-			r.sharedImagePreparationInProgress = false
-			r.sharedImagePreparationMutex.Unlock()
+			r.sharedImagePreparationLock.Unlock()
 			r.ScheduleReconciliation(tunnelProxyName)
 		}()
 
@@ -1229,9 +1223,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) scheduleTunnelProxyPhysicalConta
 		}
 	})
 	if enqueueErr != nil {
-		r.sharedImagePreparationMutex.Lock()
-		r.sharedImagePreparationInProgress = false
-		r.sharedImagePreparationMutex.Unlock()
+		r.sharedImagePreparationLock.Unlock()
 		return fmt.Errorf("queue shared tunnel proxy PhysicalContainerImage creation: %w", enqueueErr)
 	}
 
