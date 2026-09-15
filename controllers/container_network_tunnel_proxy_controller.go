@@ -68,8 +68,7 @@ const (
 	containerNetworkNameKey = ".metadata.containerNetworkName"
 	serviceReferencesKey    = ".metadata.serviceReferences"
 
-	clientProxyContainerCleanupTimeout = 5 * time.Second
-	serverProxyConfigReadTimeout       = 10 * time.Second
+	serverProxyConfigReadTimeout = 10 * time.Second
 
 	// Timeout for tunnel operations (like preparation or deletion of a tunnel)
 	tunnelOperationTimeout = 5 * time.Second
@@ -1492,13 +1491,17 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPairCleanup(
 	return func(ctx context.Context) {
 		r.cleanupProxyPair(ctx, pd, tunnelProxy.UID, log)
 
-		log.V(1).Info("Completed cleanup of ContainerNetworkTunnelProxy proxy pair")
+		log.V(1).Info("Completed cleanup attempt for ContainerNetworkTunnelProxy proxy pair")
 		nn := tunnelProxy.NamespacedName()
 		pdMap := r.proxyData
 		pdMap.QueueDeferredOp(nn, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
 			pdMap.Update(nn, nn, pd)
 		})
-		r.ScheduleReconciliation(nn)
+		reconciliationDelay := NoDelay
+		if !pd.cleanupCompleted {
+			reconciliationDelay = StandardDelay
+		}
+		r.ScheduleReconciliationWithDelay(nn, reconciliationDelay)
 	}
 }
 
@@ -1512,9 +1515,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 ) {
 	cleanupCompleted := true
 	log.V(1).Info("Removing client proxy PhysicalContainer...")
-	removeErr := r.removeClientPhysicalResourcesWithTimeout(ctx, proxyObjectID)
+	physicalContainerRemoved, removeErr := r.cleanupClientPhysicalResources(ctx, proxyObjectID)
 	if removeErr != nil {
 		log.Error(removeErr, "Failed to remove client proxy PhysicalContainer")
+		pd.cleanupScheduled = false
+		cleanupCompleted = false
+	} else if !physicalContainerRemoved {
+		log.V(1).Info("Client proxy PhysicalContainer deletion is still in progress")
 		pd.cleanupScheduled = false
 		cleanupCompleted = false
 	} else {
@@ -1558,20 +1565,10 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 	pd.cleanupCompleted = cleanupCompleted
 }
 
-func (r *ContainerNetworkTunnelProxyReconciler) removeClientPhysicalResourcesWithTimeout(
-	ctx context.Context,
-	proxyObjectID types.UID,
-) error {
-	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, clientProxyContainerCleanupTimeout)
-	defer cleanupCancel()
-
-	return r.cleanupClientPhysicalResources(cleanupCtx, proxyObjectID)
-}
-
 func (r *ContainerNetworkTunnelProxyReconciler) cleanupClientPhysicalResources(
 	ctx context.Context,
 	proxyObjectID types.UID,
-) error {
+) (bool, error) {
 	resourceName := tunnelProxyPhysicalContainerNameForUID(proxyObjectID)
 	physicalContainer := &apiv2.PhysicalContainer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1580,24 +1577,14 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupClientPhysicalResources(
 		},
 	}
 	deleteContainerErr := r.Client.Delete(ctx, physicalContainer)
-	if deleteContainerErr != nil && !apimachinery_errors.IsNotFound(deleteContainerErr) {
-		return fmt.Errorf("delete PhysicalContainer %q: %w", resourceName.String(), deleteContainerErr)
+	if apimachinery_errors.IsNotFound(deleteContainerErr) {
+		return true, nil
+	}
+	if deleteContainerErr != nil {
+		return false, fmt.Errorf("delete PhysicalContainer %q: %w", resourceName.String(), deleteContainerErr)
 	}
 
-	waitContainerErr := resiliency.RetryExponential(ctx, func() error {
-		getContainerErr := r.Client.Get(ctx, resourceName, &apiv2.PhysicalContainer{})
-		if apimachinery_errors.IsNotFound(getContainerErr) {
-			return nil
-		}
-		if getContainerErr != nil {
-			return fmt.Errorf("get deleting PhysicalContainer %q: %w", resourceName.String(), getContainerErr)
-		}
-		return fmt.Errorf("PhysicalContainer %q still exists", resourceName.String())
-	})
-	if waitContainerErr != nil {
-		return waitContainerErr
-	}
-	return nil
+	return false, nil
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) onServerProcessExit(
