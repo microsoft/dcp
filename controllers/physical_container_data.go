@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/containers"
 )
 
 type physicalContainerDataStateKey string
@@ -22,6 +23,7 @@ const (
 	physicalContainerStateNamespace physicalContainerState = iota + 1
 	physicalContainerStateResolve
 	physicalContainerStateImage
+	physicalContainerStateNetworks
 	physicalContainerStateCreate
 	physicalContainerStateReplace
 	physicalContainerStateCopyFiles
@@ -56,6 +58,9 @@ type physicalContainerData struct {
 	// Image name resolved from the referenced PhysicalContainerImage.
 	image string
 
+	// Runtime networks resolved from the referenced PhysicalContainerNetworks.
+	networks []containers.CreateContainerNetworkOptions
+
 	// Diagnostic message from the current failed runtime operation.
 	failureMessage string
 
@@ -69,6 +74,44 @@ type physicalContainerData struct {
 	retryAfter time.Time
 }
 
+func clonePhysicalContainerNetworks(networks []containers.CreateContainerNetworkOptions) []containers.CreateContainerNetworkOptions {
+	if networks == nil {
+		return nil
+	}
+
+	clonedNetworks := make([]containers.CreateContainerNetworkOptions, len(networks))
+	for i := range networks {
+		clonedNetworks[i] = networks[i]
+		clonedNetworks[i].Aliases = append([]string{}, networks[i].Aliases...)
+	}
+	return clonedNetworks
+}
+
+func physicalContainerNetworksEqual(left, right []containers.CreateContainerNetworkOptions) bool {
+	if len(left) != len(right) {
+		return false
+	}
+
+	for i := range left {
+		if left[i].Name != right[i].Name || !stringSlicesEqual(left[i].Aliases, right[i].Aliases) {
+			return false
+		}
+	}
+	return true
+}
+
+func stringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (data *physicalContainerData) Clone() *physicalContainerData {
 	return &physicalContainerData{
 		resourceUID:               data.resourceUID,
@@ -76,6 +119,7 @@ func (data *physicalContainerData) Clone() *physicalContainerData {
 		progress:                  data.progress,
 		containerID:               data.containerID,
 		image:                     data.image,
+		networks:                  clonePhysicalContainerNetworks(data.networks),
 		failureMessage:            data.failureMessage,
 		portMappingFailureMessage: data.portMappingFailureMessage,
 		cleanupMessage:            data.cleanupMessage,
@@ -103,6 +147,10 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 	}
 	if data.image != other.image {
 		data.image = other.image
+		updated = true
+	}
+	if !physicalContainerNetworksEqual(data.networks, other.networks) {
+		data.networks = clonePhysicalContainerNetworks(other.networks)
 		updated = true
 	}
 	if data.failureMessage != other.failureMessage {
@@ -209,6 +257,16 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 		},
 		{state: physicalContainerStateImage, progress: physicalResourceProgressRetryPending}: {
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonImageLookupFailed,
+			requeue: true, requeueDelay: LongDelay,
+		},
+		{state: physicalContainerStateNetworks, progress: physicalResourceProgressNotFound}: {
+			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonNetworkNotFound,
+		},
+		{state: physicalContainerStateNetworks, progress: physicalResourceProgressNotReady}: {
+			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonNetworkNotReady,
+		},
+		{state: physicalContainerStateNetworks, progress: physicalResourceProgressRetryPending}: {
+			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonNetworkLookupFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
 		{state: physicalContainerStateCreate, progress: physicalResourceProgressInProgress}: {

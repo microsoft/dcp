@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base32"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	mathrand "math/rand"
@@ -27,6 +28,7 @@ import (
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -57,6 +59,8 @@ const (
 	V1PhysicalResourcesNamespaceName = "v1-compatibility"
 	// V1TunnelProxyPhysicalContainerImageName is the shared tunnel proxy image resource created by the V1 tunnel controller.
 	V1TunnelProxyPhysicalContainerImageName = "tunnel-proxy"
+	// V1ContainerNetworkNameAnnotation identifies the V1 ContainerNetwork mirrored by a V2 physical network reference.
+	V1ContainerNetworkNameAnnotation = "usvc-dev.developer.microsoft.com/v1-container-network-name"
 
 	MaxConcurrentReconciles = 6
 
@@ -182,6 +186,60 @@ func EnsureV1PhysicalResourcesNamespace(ctx context.Context, client ctrl_client.
 		return fmt.Errorf("create V1 physical resources namespace: %w", createErr)
 	}
 
+	return nil
+}
+
+// V1PhysicalContainerNetworkReferenceName returns the shared V2 physical network reference name for a V1 ContainerNetwork.
+func V1PhysicalContainerNetworkReferenceName(networkUID types.UID) types.NamespacedName {
+	return types.NamespacedName{
+		Namespace: V1PhysicalResourcesNamespaceName,
+		Name:      fmt.Sprintf("container-network-%s", networkUID),
+	}
+}
+
+// EnsureV1PhysicalContainerNetworkReference ensures a non-owning V2 reference to a running V1 ContainerNetwork.
+func EnsureV1PhysicalContainerNetworkReference(
+	ctx context.Context,
+	client ctrl_client.Client,
+	network *apiv1.ContainerNetwork,
+) error {
+	if network.UID == "" {
+		return errors.New("v1 ContainerNetwork UID is missing")
+	}
+	if network.Status.ID == "" {
+		return errors.New("v1 ContainerNetwork runtime ID is missing")
+	}
+
+	namespaceErr := EnsureV1PhysicalResourcesNamespace(ctx, client)
+	if namespaceErr != nil {
+		return namespaceErr
+	}
+
+	resourceName := V1PhysicalContainerNetworkReferenceName(network.UID)
+	physicalNetwork := apiv2.PhysicalContainerNetwork{}
+	getErr := client.Get(ctx, resourceName, &physicalNetwork)
+	if apierrors.IsNotFound(getErr) {
+		physicalNetwork = apiv2.PhysicalContainerNetwork{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resourceName.Name,
+				Namespace: resourceName.Namespace,
+				Annotations: map[string]string{
+					V1ContainerNetworkNameAnnotation: network.Name,
+				},
+			},
+			Spec: apiv2.PhysicalContainerNetworkSpec{
+				NetworkID: network.Status.ID,
+			},
+		}
+		createErr := client.Create(ctx, &physicalNetwork)
+		if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+			return fmt.Errorf("create v2 PhysicalContainerNetwork reference %q: %w", resourceName.String(), createErr)
+		}
+		return nil
+	}
+	if getErr != nil {
+		return fmt.Errorf("get v2 PhysicalContainerNetwork reference %q: %w", resourceName.String(), getErr)
+	}
 	return nil
 }
 

@@ -324,14 +324,42 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.NoError(t, listContainersErr)
 	require.Len(t, physicalContainers.Items, 2)
 	foundClientPhysicalContainer := false
+	clientPhysicalContainerName := ""
 	for _, physicalContainer := range physicalContainers.Items {
 		require.Equal(t, controllers.V1TunnelProxyPhysicalContainerImageName, physicalContainer.Spec.Container.ImageRef)
 		require.Equal(t, apiv2.PhysicalContainerPhaseRunning, physicalContainer.Status.Phase)
 		if physicalContainer.Status.ContainerID == updatedTunnelProxy.Status.ClientProxyContainerID {
 			foundClientPhysicalContainer = true
+			clientPhysicalContainerName = physicalContainer.Name
 		}
 	}
 	require.True(t, foundClientPhysicalContainer)
+
+	physicalNetworks := apiv2.PhysicalContainerNetworkList{}
+	listNetworksErr := serverInfo.Client.List(ctx, &physicalNetworks, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listNetworksErr)
+	require.Len(t, physicalNetworks.Items, 1)
+	for _, physicalNetwork := range physicalNetworks.Items {
+		require.Equal(t, updatedNetwork.Status.ID, physicalNetwork.Spec.NetworkID)
+		require.Equal(t, apiv2.PhysicalContainerNetworkPhaseReady, physicalNetwork.Status.Phase)
+		require.Equal(t, updatedNetwork.Status.ID, physicalNetwork.Status.NetworkID)
+		require.Equal(t, updatedNetwork.Name, physicalNetwork.Annotations[controllers.V1ContainerNetworkNameAnnotation])
+		require.Len(t, physicalNetwork.Status.ContainerIDs, 2)
+		require.True(t, std_slices.Contains(physicalNetwork.Status.ContainerIDs, updatedTunnelProxy.Status.ClientProxyContainerID))
+	}
+
+	physicalConnections := apiv2.PhysicalContainerNetworkConnectionList{}
+	listConnectionsErr := serverInfo.Client.List(ctx, &physicalConnections, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listConnectionsErr)
+	require.Len(t, physicalConnections.Items, 2)
+	foundClientPhysicalConnection := false
+	for _, physicalConnection := range physicalConnections.Items {
+		if physicalConnection.Spec.ContainerRef == clientPhysicalContainerName {
+			foundClientPhysicalConnection = true
+			require.Equal(t, aliases, physicalConnection.Spec.Aliases)
+		}
+	}
+	require.True(t, foundClientPhysicalConnection)
 
 	t.Log("Verifying client proxy container exists...")
 	inspectedContainers, inspectErr := serverInfo.ContainerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
@@ -456,6 +484,18 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	require.Len(t, physicalContainers.Items, 1)
 	physicalContainer := physicalContainers.Items[0]
 
+	physicalNetworks := apiv2.PhysicalContainerNetworkList{}
+	listNetworksErr := serverInfo.Client.List(ctx, &physicalNetworks, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listNetworksErr)
+	require.Len(t, physicalNetworks.Items, 1)
+	physicalNetwork := physicalNetworks.Items[0]
+
+	physicalConnections := apiv2.PhysicalContainerNetworkConnectionList{}
+	listConnectionsErr := serverInfo.Client.List(ctx, &physicalConnections, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listConnectionsErr)
+	require.Len(t, physicalConnections.Items, 1)
+	physicalConnection := physicalConnections.Items[0]
+
 	physicalImages := apiv2.PhysicalContainerImageList{}
 	listImagesErr := serverInfo.Client.List(ctx, &physicalImages, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
 	require.NoError(t, listImagesErr)
@@ -481,6 +521,10 @@ func TestTunnelProxyCleanup(t *testing.T) {
 
 	t.Log("Verifying proxy resources are cleaned up...")
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &physicalContainer)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &physicalConnection)
+	retainedPhysicalNetwork := apiv2.PhysicalContainerNetwork{}
+	require.NoError(t, serverInfo.Client.Get(ctx, physicalNetwork.NamespacedName(), &retainedPhysicalNetwork))
+	require.Equal(t, apiv2.PhysicalContainerNetworkPhaseReady, retainedPhysicalNetwork.Status.Phase)
 	retainedPhysicalImage := apiv2.PhysicalContainerImage{}
 	require.NoError(t, serverInfo.Client.Get(ctx, physicalImage.NamespacedName(), &retainedPhysicalImage))
 	require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, retainedPhysicalImage.Status.Phase)

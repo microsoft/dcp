@@ -67,6 +67,34 @@ func TestEnsureV1PhysicalResourcesNamespace(t *testing.T) {
 	require.Equal(t, V1PhysicalResourcesNamespaceName, namespace.Name)
 }
 
+func TestEnsureV1PhysicalContainerNetworkReference(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv1.AddToScheme(scheme))
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	network := &apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "source-network",
+			UID:  types.UID("source-network-uid"),
+		},
+		Status: apiv1.ContainerNetworkStatus{
+			ID: "first-network-id",
+		},
+	}
+
+	ensureErr := EnsureV1PhysicalContainerNetworkReference(context.Background(), client, network)
+	require.NoError(t, ensureErr)
+
+	resourceName := V1PhysicalContainerNetworkReferenceName(network.UID)
+	physicalNetwork := apiv2.PhysicalContainerNetwork{}
+	require.NoError(t, client.Get(context.Background(), resourceName, &physicalNetwork))
+	require.Equal(t, network.Status.ID, physicalNetwork.Spec.NetworkID)
+	require.Nil(t, physicalNetwork.Spec.Network)
+	require.Equal(t, network.Name, physicalNetwork.Annotations[V1ContainerNetworkNameAnnotation])
+}
+
 // Verifies that callWithRetryAndVerification() can be stopped from retrying by returning a permanent error
 func TestCallWithRetryAndVerificationPermanentError(t *testing.T) {
 	t.Parallel()

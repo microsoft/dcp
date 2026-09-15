@@ -17,6 +17,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
@@ -169,9 +170,18 @@ func TestV2PhysicalContainerControllerCreatesContainerWithNetworks(t *testing.T)
 	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-networks")
 	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "networked-image", "networked-image")
 	networkName := "v2-pctr-networked-runtime"
-	_, networkErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
+	runtimeNetwork, networkErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
 	require.NoError(t, networkErr)
 	removeRuntimeNetworkOnCleanup(t, networkName)
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "networked-network",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{NetworkID: runtimeNetwork},
+	}
+	require.NoError(t, client.Create(ctx, network))
+	waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 
 	container := &apiv2.PhysicalContainer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -182,7 +192,7 @@ func TestV2PhysicalContainerControllerCreatesContainerWithNetworks(t *testing.T)
 			ContainerName: "v2-pctr-networked-container",
 			Networks: []apiv2.ContainerNetworkConnectionConfig{
 				{
-					Name:    networkName,
+					Name:    network.Name,
 					Aliases: []string{"api", "service"},
 				},
 			}},
@@ -201,6 +211,67 @@ func TestV2PhysicalContainerControllerCreatesContainerWithNetworks(t *testing.T)
 	require.Len(t, inspectedContainers[0].Networks, 1)
 	require.Equal(t, networkName, inspectedContainers[0].Networks[0].Name)
 	require.ElementsMatch(t, []string{"api", "service"}, inspectedContainers[0].Networks[0].Aliases)
+
+	connections := apiv2.PhysicalContainerNetworkConnectionList{}
+	require.NoError(t, client.List(ctx, &connections, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, connections.Items, 1)
+	require.Equal(t, container.Name, connections.Items[0].Spec.ContainerRef)
+	require.Equal(t, network.Name, connections.Items[0].Spec.NetworkRef)
+	require.ElementsMatch(t, []string{"api", "service"}, connections.Items[0].Spec.Aliases)
+	require.True(t, metav1.IsControlledBy(&connections.Items[0], container))
+}
+
+func TestV2PhysicalContainerControllerWaitsForNetwork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-waits-network")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "waits-network-image", "waits-network-image")
+	networkName := "waited-network"
+	containerName := "v2-pctr-waits-network-container"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "waits-network-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:      image.Name,
+				ContainerName: containerName,
+				Networks: []apiv2.ContainerNetworkConnectionConfig{
+					{Name: networkName},
+				},
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	pendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
+		return currentContainer.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonNetworkNotFound, nil
+	})
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonNetworkNotFound)
+	require.Equal(t, 0, containerOrchestrator.CreateContainerCallCount(containerName))
+
+	runtimeNetworkName := "v2-pctr-waits-network-runtime"
+	removeRuntimeNetworkOnCleanup(t, runtimeNetworkName)
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      networkName,
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: runtimeNetworkName},
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
 }
 
 func TestV2PhysicalContainerControllerReportsPortMappings(t *testing.T) {

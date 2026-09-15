@@ -127,10 +127,10 @@ func ValidateContainerPorts(ports []ContainerPort, portsPath *field.Path) field.
 	return errorList
 }
 
-// ContainerNetworkConnectionConfig describes a network to attach to when creating a container.
+// ContainerNetworkConnectionConfig describes a PhysicalContainerNetwork to attach to a container.
 // +k8s:openapi-gen=true
 type ContainerNetworkConnectionConfig struct {
-	// Name of the network to connect to.
+	// Name of the PhysicalContainerNetwork to connect to in the container's namespace.
 	Name string `json:"name"`
 
 	// Aliases of the container on the network.
