@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -1290,12 +1289,12 @@ func appendUniqueStrings(destination []string, values ...string) []string {
 }
 
 func physicalContainerNetworkContainsContainer(containerIDs map[string]struct{}, containerID string) bool {
-	for existingID := range containerIDs {
-		if existingID == containerID || strings.HasPrefix(existingID, containerID) || strings.HasPrefix(containerID, existingID) {
-			return true
-		}
+	if containerID == "" {
+		return false
 	}
-	return false
+
+	_, found := containerIDs[containerID]
+	return found
 }
 
 func physicalContainerNetworkCreationLabels(network *apiv2.PhysicalContainerNetwork, log logr.Logger) map[string]string {
