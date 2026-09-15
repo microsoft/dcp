@@ -1586,7 +1586,7 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 	}
 
 	for _, existingImage := range to.images {
-		remainingTags := existingImage.tags[:0]
+		remainingTags := make([]string, 0, len(existingImage.tags))
 		for _, existingTag := range existingImage.tags {
 			if !slices.Contains(options.Tags, existingTag) {
 				remainingTags = append(remainingTags, existingTag)
@@ -1603,7 +1603,7 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 	image := &testImage{
 		id:      guid,
 		digest:  toDigest(sha256.Sum256([]byte(guid))),
-		tags:    options.Tags,
+		tags:    std_slices.Clone(options.Tags),
 		secrets: map[string]string{},
 		labels: maps.SliceToMap(options.Labels, func(label commonapi.Label) (string, string) {
 			return label.Key, label.Value
