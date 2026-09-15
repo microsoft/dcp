@@ -1251,11 +1251,14 @@ func (r *ContainerNetworkTunnelProxyReconciler) scheduleTunnelProxyPhysicalConta
 		return nil
 	}
 
+	// Release the lock if shutdown drops the queued work before it can run.
+	stopUnlockOnShutdown := context.AfterFunc(r.LifetimeCtx, r.sharedImagePreparationLock.Unlock)
 	enqueueErr := r.workQueue.Enqueue(func(ctx context.Context) {
 		defer func() {
 			r.sharedImagePreparationLock.Unlock()
 			r.ScheduleReconciliation(tunnelProxyName)
 		}()
+		defer stopUnlockOnShutdown()
 
 		imageResourceErr := r.ensureTunnelProxyPhysicalContainerImage(ctx, log)
 		if imageResourceErr != nil && ctx.Err() == nil {
@@ -1263,6 +1266,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) scheduleTunnelProxyPhysicalConta
 		}
 	})
 	if enqueueErr != nil {
+		stopUnlockOnShutdown()
 		r.sharedImagePreparationLock.Unlock()
 		return fmt.Errorf("queue shared tunnel proxy PhysicalContainerImage creation: %w", enqueueErr)
 	}
