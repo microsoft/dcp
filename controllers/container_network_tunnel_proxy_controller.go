@@ -613,6 +613,8 @@ func ensureTunnelProxyFailedState(
 	pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) objectChange {
+	// Supported controller paths initialize proxy data before entering Failed.
+	// This guard only prevents an invariant violation from crashing the controller.
 	if pd == nil {
 		log.Error(fmt.Errorf("data about ContainerNetworkTunnelProxy object is missing"), "",
 			"CurrentState", apiv1.ContainerNetworkTunnelProxyStateFailed,
