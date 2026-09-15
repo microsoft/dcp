@@ -74,7 +74,10 @@ func StartTestEnvironmentWithOptions(
 	*TestEnvironmentInfo,
 	error,
 ) {
-	inclCtrl |= NamespaceController | PhysicalContainerImageController | PhysicalContainerController
+	inclCtrl |= NamespaceController
+	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
+		inclCtrl |= PhysicalContainerImageController | PhysicalContainerController | PhysicalContainerNetworkController
+	}
 
 	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
 	if sessionFolderErr != nil {
