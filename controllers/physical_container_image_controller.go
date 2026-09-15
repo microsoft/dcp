@@ -78,16 +78,30 @@ type physicalContainerImageBaseImageIdentity struct {
 	Identity string `json:"identity"`
 }
 
+type physicalContainerImageEnvironmentInputIdentity struct {
+	Name    string `json:"name"`
+	Present bool   `json:"present"`
+	Digest  string `json:"digest,omitempty"`
+}
+
+type physicalContainerImageFileInputIdentity struct {
+	Path   string `json:"path"`
+	Digest string `json:"digest"`
+}
+
 type physicalContainerImageBuildInputs struct {
-	ContextDigest string                                    `json:"contextDigest,omitempty"`
-	Dockerfile    string                                    `json:"dockerfile,omitempty"`
-	Tags          []string                                  `json:"tags,omitempty"`
-	Args          []commonapi.EnvVar                        `json:"args,omitempty"`
-	Secrets       []apiv2.ContainerBuildSecret              `json:"secrets,omitempty"`
-	Stage         string                                    `json:"stage,omitempty"`
-	Labels        []commonapi.Label                         `json:"labels,omitempty"`
-	Platform      string                                    `json:"platform,omitempty"`
-	BaseImages    []physicalContainerImageBaseImageIdentity `json:"baseImages,omitempty"`
+	ContextDigest      string                                           `json:"contextDigest,omitempty"`
+	Dockerfile         string                                           `json:"dockerfile,omitempty"`
+	Tags               []string                                         `json:"tags,omitempty"`
+	Args               []commonapi.EnvVar                               `json:"args,omitempty"`
+	InheritedArgs      []physicalContainerImageEnvironmentInputIdentity `json:"inheritedArgs,omitempty"`
+	Secrets            []apiv2.ContainerBuildSecret                     `json:"secrets,omitempty"`
+	EnvironmentSecrets []physicalContainerImageEnvironmentInputIdentity `json:"environmentSecrets,omitempty"`
+	FileSecrets        []physicalContainerImageFileInputIdentity        `json:"fileSecrets,omitempty"`
+	Stage              string                                           `json:"stage,omitempty"`
+	Labels             []commonapi.Label                                `json:"labels,omitempty"`
+	Platform           string                                           `json:"platform,omitempty"`
+	BaseImages         []physicalContainerImageBaseImageIdentity        `json:"baseImages,omitempty"`
 }
 
 // Builds the retry policy for pulling the given image. A PullRetryLimit of zero disables
@@ -571,6 +585,35 @@ func physicalContainerImageBuildInputsFingerprint(
 	slices.SortFunc(buildInputs.Secrets, func(left, right apiv2.ContainerBuildSecret) int {
 		return strings.Compare(left.ID, right.ID)
 	})
+	for _, buildArgument := range buildInputs.Args {
+		if buildArgument.Value == "" {
+			buildInputs.InheritedArgs = append(
+				buildInputs.InheritedArgs,
+				physicalContainerImageEnvironmentInput(buildArgument.Name),
+			)
+		}
+	}
+	for _, secret := range buildInputs.Secrets {
+		switch secret.Type {
+		case "", apiv2.FileSecret:
+			fileIdentity, fileIdentityErr := physicalContainerImageFileInput(secret.Source)
+			if fileIdentityErr != nil {
+				return "", fmt.Errorf("identify build secret %q: %w", secret.ID, fileIdentityErr)
+			}
+			buildInputs.FileSecrets = append(buildInputs.FileSecrets, fileIdentity)
+		case apiv2.EnvSecret:
+			if secret.Value == "" {
+				secretSource := secret.Source
+				if secretSource == "" {
+					secretSource = secret.ID
+				}
+				buildInputs.EnvironmentSecrets = append(
+					buildInputs.EnvironmentSecrets,
+					physicalContainerImageEnvironmentInput(secretSource),
+				)
+			}
+		}
+	}
 	slices.Sort(buildInputs.Tags)
 	buildInputs.Tags = slices.Compact(buildInputs.Tags)
 	buildInputs.Labels = slices.DeleteFunc(buildInputs.Labels, func(label commonapi.Label) bool {
@@ -598,6 +641,46 @@ func physicalContainerImageBuildInputsFingerprint(
 	}
 
 	return fmt.Sprintf("sha256:%x", sha256.Sum256(encodedInputs)), nil
+}
+
+func physicalContainerImageEnvironmentInput(name string) physicalContainerImageEnvironmentInputIdentity {
+	value, present := os.LookupEnv(name)
+	identity := physicalContainerImageEnvironmentInputIdentity{
+		Name:    name,
+		Present: present,
+	}
+	if present {
+		identity.Digest = fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(value)))
+	}
+	return identity
+}
+
+func physicalContainerImageFileInput(path string) (physicalContainerImageFileInputIdentity, error) {
+	file, openErr := usvc_io.OpenFileReadOnly(path)
+	if openErr != nil {
+		return physicalContainerImageFileInputIdentity{}, fmt.Errorf("open file %q: %w", path, openErr)
+	}
+
+	hasher := sha256.New()
+	_, hashErr := stdio.Copy(hasher, file)
+	closeErr := file.Close()
+	var hashFileErr error
+	if hashErr != nil {
+		hashFileErr = fmt.Errorf("hash file %q: %w", path, hashErr)
+	}
+	var closeFileErr error
+	if closeErr != nil {
+		closeFileErr = fmt.Errorf("close file %q: %w", path, closeErr)
+	}
+	combinedFileErr := errors.Join(hashFileErr, closeFileErr)
+	if combinedFileErr != nil {
+		return physicalContainerImageFileInputIdentity{}, combinedFileErr
+	}
+
+	return physicalContainerImageFileInputIdentity{
+		Path:   path,
+		Digest: fmt.Sprintf("sha256:%x", hasher.Sum(nil)),
+	}, nil
 }
 
 func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImagePull(

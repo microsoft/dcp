@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -23,6 +24,8 @@ import (
 	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -593,6 +596,186 @@ func TestV2PhysicalContainerImageControllerReusesBuildOutputWhenInputsMatch(t *t
 	fourthImage := createImage("fourth-build-image", "context-v2", "ZGlmZmVyZW50", "label-v2")
 	require.NotEqual(t, thirdImage.Status.ImageID, fourthImage.Status.ImageID)
 	require.Equal(t, 3, containerOrchestrator.BuildImageCallCount(targetImage))
+}
+
+func TestV2PhysicalContainerImageControllerRebuildsWhenInheritedBuildInputsChange(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const (
+		buildArgumentName = "DCP_TEST_V2_PHYSICAL_IMAGE_BUILD_ARGUMENT"
+		buildSecretName   = "DCP_TEST_V2_PHYSICAL_IMAGE_BUILD_SECRET"
+	)
+	t.Setenv(buildArgumentName, "argument-one")
+	t.Setenv(buildSecretName, "secret-one")
+
+	targetImage := "v2-pci-inherited-build-argument-target"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-inherited-build-argument")
+	createImage := func(name string) *apiv2.PhysicalContainerImage {
+		image := &apiv2.PhysicalContainerImage{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace.Name,
+			},
+			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+				Image: targetImage,
+				Build: &apiv2.ContainerBuildContext{
+					Digest:         "context-v1",
+					ContextArchive: &apiv2.ContainerBuildContextArchive{RawContents: "dGVzdA=="},
+					Args:           []commonapi.EnvVar{{Name: buildArgumentName}},
+					Secrets: []apiv2.ContainerBuildSecret{{
+						Type: apiv2.EnvSecret,
+						ID:   buildSecretName,
+					}},
+				},
+			}},
+		}
+		require.NoError(t, client.Create(ctx, image))
+		return waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	}
+
+	firstImage := createImage("first-inherited-build-argument")
+	secondImage := createImage("second-inherited-build-argument")
+	require.Equal(t, firstImage.Status.ImageID, secondImage.Status.ImageID)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	t.Setenv(buildArgumentName, "argument-two")
+	thirdImage := createImage("third-inherited-build-argument")
+	require.NotEqual(t, secondImage.Status.ImageID, thirdImage.Status.ImageID)
+	require.Equal(t, 2, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	t.Setenv(buildArgumentName, "argument-one")
+	t.Setenv(buildSecretName, "secret-two")
+	fourthImage := createImage("fourth-inherited-build-argument")
+	require.NotEqual(t, thirdImage.Status.ImageID, fourthImage.Status.ImageID)
+	require.Equal(t, 3, containerOrchestrator.BuildImageCallCount(targetImage))
+}
+
+func TestV2PhysicalContainerImageControllerReusesExplicitBuildInputsAcrossAmbientChanges(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const (
+		buildArgumentName = "DCP_TEST_V2_PHYSICAL_IMAGE_EXPLICIT_BUILD_ARGUMENT"
+		buildSecretName   = "DCP_TEST_V2_PHYSICAL_IMAGE_EXPLICIT_BUILD_SECRET"
+	)
+	t.Setenv(buildArgumentName, "ambient-argument-one")
+	t.Setenv(buildSecretName, "ambient-secret-one")
+
+	targetImage := "v2-pci-explicit-build-input-target"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-explicit-build-input")
+	createImage := func(name string) *apiv2.PhysicalContainerImage {
+		image := &apiv2.PhysicalContainerImage{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace.Name,
+			},
+			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+				Image: targetImage,
+				Build: &apiv2.ContainerBuildContext{
+					Digest:         "context-v1",
+					ContextArchive: &apiv2.ContainerBuildContextArchive{RawContents: "dGVzdA=="},
+					Args: []commonapi.EnvVar{{
+						Name:  buildArgumentName,
+						Value: "explicit-argument",
+					}},
+					Secrets: []apiv2.ContainerBuildSecret{{
+						Type:   apiv2.EnvSecret,
+						ID:     "secret",
+						Source: buildSecretName,
+						Value:  "explicit-secret",
+					}},
+				},
+			}},
+		}
+		require.NoError(t, client.Create(ctx, image))
+		return waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	}
+
+	firstImage := createImage("first-explicit-build-input")
+	t.Setenv(buildArgumentName, "ambient-argument-two")
+	t.Setenv(buildSecretName, "ambient-secret-two")
+	secondImage := createImage("second-explicit-build-input")
+	require.Equal(t, firstImage.Status.ImageID, secondImage.Status.ImageID)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+}
+
+func TestV2PhysicalContainerImageControllerRebuildsWhenFileSecretChanges(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	secretPath := filepath.Join(t.TempDir(), "secret")
+	require.NoError(t, usvc_io.WriteFile(secretPath, []byte("secret-one"), osutil.PermissionOnlyOwnerReadWrite))
+
+	targetImage := "v2-pci-file-secret-target"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-file-secret")
+	createImage := func(name string) *apiv2.PhysicalContainerImage {
+		image := &apiv2.PhysicalContainerImage{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace.Name,
+			},
+			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+				Image: targetImage,
+				Build: &apiv2.ContainerBuildContext{
+					Digest:         "context-v1",
+					ContextArchive: &apiv2.ContainerBuildContextArchive{RawContents: "dGVzdA=="},
+					Secrets: []apiv2.ContainerBuildSecret{{
+						Type:   apiv2.FileSecret,
+						ID:     "secret",
+						Source: secretPath,
+					}},
+				},
+			}},
+		}
+		require.NoError(t, client.Create(ctx, image))
+		return waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	}
+
+	firstImage := createImage("first-file-secret")
+	secondImage := createImage("second-file-secret")
+	require.Equal(t, firstImage.Status.ImageID, secondImage.Status.ImageID)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	require.NoError(t, usvc_io.WriteFile(secretPath, []byte("secret-two"), osutil.PermissionOnlyOwnerReadWrite))
+	thirdImage := createImage("third-file-secret")
+	require.NotEqual(t, secondImage.Status.ImageID, thirdImage.Status.ImageID)
+	require.Equal(t, 2, containerOrchestrator.BuildImageCallCount(targetImage))
+}
+
+func TestV2PhysicalContainerImageControllerReportsUnreadableFileSecret(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	secretPath := filepath.Join(t.TempDir(), "missing-secret")
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-missing-file-secret")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "missing-file-secret",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image: "v2-pci-missing-file-secret-target",
+			Build: &apiv2.ContainerBuildContext{
+				Digest:         "context-v1",
+				ContextArchive: &apiv2.ContainerBuildContextArchive{RawContents: "dGVzdA=="},
+				Secrets: []apiv2.ContainerBuildSecret{{
+					Type:   apiv2.FileSecret,
+					ID:     "secret",
+					Source: secretPath,
+				}},
+			},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	failedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
+	requireReadyCondition(t, failedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonBuildFailed)
+	readyCondition := apimeta.FindStatusCondition(failedImage.Status.Conditions, string(apiv2.ConditionReady))
+	require.NotNil(t, readyCondition)
+	require.Contains(t, readyCondition.Message, secretPath)
 }
 
 func TestV2PhysicalContainerImageControllerReusesDirectoryBuildOutputByDigest(t *testing.T) {
