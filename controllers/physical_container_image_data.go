@@ -169,6 +169,11 @@ var physicalContainerImageProjections = physicalResourceProjectionTable[physical
 			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed,
 			requeue:         true, requeueDelay: LongDelay,
 		},
+		{state: physicalContainerImageStateResolve, progress: physicalResourceProgressNotReady}: {
+			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonContainerRuntimeUnhealthy,
+			requeue:         true, requeueDelay: LongDelay,
+		},
 		{state: physicalContainerImageStatePull, progress: physicalResourceProgressInProgress}: {
 			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonPulling,

@@ -120,6 +120,7 @@ type PhysicalContainerImageConfig struct {
 	// PullRetryLimit is how many times a failed source image pull is retried, with exponential
 	// backoff between attempts. Set to zero to fail on the first error. If omitted, a small
 	// default number of retries is used to absorb transient registry and network failures.
+	// Pulls are deferred while the container runtime is unhealthy, without consuming this limit.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
 	PullRetryLimit *int32 `json:"pullRetryLimit,omitempty"`

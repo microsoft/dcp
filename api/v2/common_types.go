@@ -44,6 +44,9 @@ const (
 	// PhysicalResourceReasonNamespaceLookupFailed indicates that the resource's namespace could not be read.
 	PhysicalResourceReasonNamespaceLookupFailed ConditionReason = "NamespaceLookupFailed"
 
+	// PhysicalResourceReasonContainerRuntimeUnhealthy indicates that reconciliation is blocked because the container runtime is not healthy.
+	PhysicalResourceReasonContainerRuntimeUnhealthy ConditionReason = "ContainerRuntimeUnhealthy"
+
 	// PhysicalResourceReasonOperationStateInvalid indicates that controller-owned operation state is invalid.
 	PhysicalResourceReasonOperationStateInvalid ConditionReason = "OperationStateInvalid"
 )

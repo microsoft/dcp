@@ -204,7 +204,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	defer shutdownTestEnvironment(serverInfo, cancel)
 	testContainerOrchestrator, ok := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, ok)
-	imagePlan, imagePlanErr := dcptun.PrepareClientProxyImageBuild()
+	imagePlan, imagePlanErr := dcptun.PrepareClientProxyImageBuild(ctx)
 	require.NoError(t, imagePlanErr)
 	require.NoError(t, os.Remove(imagePlan.BuildContextArchive.Source))
 	releaseImageBuild := testContainerOrchestrator.BlockBuildImage(imagePlan.Image)

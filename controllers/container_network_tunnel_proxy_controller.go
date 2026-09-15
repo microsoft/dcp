@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -118,6 +119,9 @@ type ContainerNetworkTunnelProxyReconciler struct {
 
 	// A work queue for long-running operations.
 	workQueue *resiliency.WorkQueue
+
+	sharedImagePreparationMutex      sync.Mutex
+	sharedImagePreparationInProgress bool
 }
 
 func NewContainerNetworkTunnelProxyReconciler(
@@ -470,9 +474,9 @@ func ensureTunnelProxyBuildingImageState(
 			change |= additionalReconciliationNeeded
 			break
 		}
-		imageResourceErr := r.ensureTunnelProxyPhysicalContainerImage(ctx, log)
-		if imageResourceErr != nil {
-			log.Error(imageResourceErr, "Failed to ensure shared tunnel proxy PhysicalContainerImage")
+		scheduleImageErr := r.scheduleTunnelProxyPhysicalContainerImageCreation(tunnelProxy.NamespacedName(), log)
+		if scheduleImageErr != nil {
+			log.Error(scheduleImageErr, "Failed to schedule shared tunnel proxy PhysicalContainerImage creation")
 			change |= additionalReconciliationNeeded
 			break
 		}
@@ -1089,10 +1093,10 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		}
 		createContainerErr := r.Client.Create(ctx, &physicalContainer)
 		if createContainerErr != nil && !apimachinery_errors.IsAlreadyExists(createContainerErr) {
-			log.Error(createContainerErr, "Failed to create client proxy PhysicalContainer")
-			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-			pd.Message = fmt.Sprintf("Failed to create client proxy PhysicalContainer: %v", createContainerErr)
-			return false, NoDelay
+			if !commonapi.ResourceCreationProhibited.Load() {
+				log.Error(createContainerErr, "Failed to create client proxy PhysicalContainer")
+			}
+			return false, StandardDelay
 		}
 
 		log.V(1).Info("Created client proxy PhysicalContainer", "PhysicalContainer", physicalContainerName)
@@ -1145,7 +1149,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 		return fmt.Errorf("get PhysicalContainerImage %q: %w", imageName.String(), getErr)
 	}
 
-	imagePlan, prepareErr := dcptun.PrepareClientProxyImageBuild()
+	imagePlan, prepareErr := dcptun.PrepareClientProxyImageBuild(ctx)
 	if prepareErr != nil {
 		return prepareErr
 	}
@@ -1196,6 +1200,42 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 	}
 
 	log.V(1).Info("Created shared tunnel proxy PhysicalContainerImage", "PhysicalContainerImage", imageName)
+	return nil
+}
+
+func (r *ContainerNetworkTunnelProxyReconciler) scheduleTunnelProxyPhysicalContainerImageCreation(
+	tunnelProxyName types.NamespacedName,
+	log logr.Logger,
+) error {
+	r.sharedImagePreparationMutex.Lock()
+	if r.sharedImagePreparationInProgress {
+		r.sharedImagePreparationMutex.Unlock()
+		return nil
+	}
+	r.sharedImagePreparationInProgress = true
+	r.sharedImagePreparationMutex.Unlock()
+
+	enqueueErr := r.workQueue.Enqueue(func(ctx context.Context) {
+		defer func() {
+			r.sharedImagePreparationMutex.Lock()
+			r.sharedImagePreparationInProgress = false
+			r.sharedImagePreparationMutex.Unlock()
+			r.ScheduleReconciliation(tunnelProxyName)
+		}()
+
+		imageResourceErr := r.ensureTunnelProxyPhysicalContainerImage(ctx, log)
+		if imageResourceErr != nil && ctx.Err() == nil {
+			log.Error(imageResourceErr, "Failed to ensure shared tunnel proxy PhysicalContainerImage")
+		}
+	})
+	if enqueueErr != nil {
+		r.sharedImagePreparationMutex.Lock()
+		r.sharedImagePreparationInProgress = false
+		r.sharedImagePreparationMutex.Unlock()
+		return fmt.Errorf("queue shared tunnel proxy PhysicalContainerImage creation: %w", enqueueErr)
+	}
+
+	log.V(1).Info("Scheduled shared tunnel proxy PhysicalContainerImage creation")
 	return nil
 }
 

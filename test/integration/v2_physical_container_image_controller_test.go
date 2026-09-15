@@ -1363,6 +1363,134 @@ func TestV2PhysicalContainerImageControllerHonorsDisabledPullRetries(t *testing.
 	}, 3*time.Second, 250*time.Millisecond)
 }
 
+func TestV2PhysicalContainerImageControllerWaitsForHealthyRuntimeBeforePull(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	containerOrchestrator.SetRuntimeHealth(false)
+	defer containerOrchestrator.SetRuntimeHealth(true)
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-runtime-gate")
+	sourceImage := "v2-pci-runtime-gate-source"
+	noRetries := int32(0)
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "runtime-gated-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image:          sourceImage,
+			PullPolicy:     apiv2.PullPolicyAlways,
+			PullRetryLimit: &noRetries,
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	waitObjectAssumesState(t, ctx, image.NamespacedName(), func(currentImage *apiv2.PhysicalContainerImage) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentImage.Status.Conditions, string(apiv2.ConditionReady))
+		return currentImage.Status.Phase == apiv2.PhysicalContainerImagePhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalResourceReasonContainerRuntimeUnhealthy, nil
+	})
+	require.Equal(t, 0, containerOrchestrator.PullImageCallCount(sourceImage))
+
+	containerOrchestrator.SetRuntimeHealth(true)
+
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
+}
+
+func TestV2PhysicalContainerImageControllerPreservesPullBudgetWhenRuntimeBecomesUnhealthy(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-runtime-pull")
+	sourceImage := "v2-pci-runtime-pull-source"
+	releasePull := containerOrchestrator.BlockPullImage(sourceImage)
+	defer releasePull()
+
+	noRetries := int32(0)
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "runtime-interrupted-pull-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image:          sourceImage,
+			PullPolicy:     apiv2.PullPolicyAlways,
+			PullRetryLimit: &noRetries,
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+	waitPullImageCallCount(t, ctx, sourceImage, 1)
+
+	containerOrchestrator.SetRuntimeHealth(false)
+	defer containerOrchestrator.SetRuntimeHealth(true)
+	releasePull()
+
+	waitObjectAssumesState(t, ctx, image.NamespacedName(), func(currentImage *apiv2.PhysicalContainerImage) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentImage.Status.Conditions, string(apiv2.ConditionReady))
+		return currentImage.Status.Phase == apiv2.PhysicalContainerImagePhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalResourceReasonContainerRuntimeUnhealthy, nil
+	})
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
+
+	containerOrchestrator.SetRuntimeHealth(true)
+
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, 2, containerOrchestrator.PullImageCallCount(sourceImage))
+}
+
+func TestV2PhysicalContainerImageControllerPreservesBasePullBudgetWhenRuntimeBecomesUnhealthy(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-runtime-base-pull")
+	baseImage := "v2-pci-runtime-base-pull-source"
+	targetImage := "v2-pci-runtime-base-pull-target"
+	releasePull := containerOrchestrator.BlockPullImage(baseImage)
+	defer releasePull()
+
+	noRetries := int32(0)
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "runtime-interrupted-base-pull-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image:          targetImage,
+			PullPolicy:     apiv2.PullPolicyAlways,
+			PullRetryLimit: &noRetries,
+			Build: &apiv2.ContainerBuildContext{
+				Context:    "test-context",
+				BaseImages: []string{baseImage},
+			},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+	waitPullImageCallCount(t, ctx, baseImage, 1)
+
+	containerOrchestrator.SetRuntimeHealth(false)
+	defer containerOrchestrator.SetRuntimeHealth(true)
+	releasePull()
+
+	waitObjectAssumesState(t, ctx, image.NamespacedName(), func(currentImage *apiv2.PhysicalContainerImage) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentImage.Status.Conditions, string(apiv2.ConditionReady))
+		return currentImage.Status.Phase == apiv2.PhysicalContainerImagePhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalResourceReasonContainerRuntimeUnhealthy, nil
+	})
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(baseImage))
+	require.Equal(t, 0, containerOrchestrator.BuildImageCallCount(targetImage))
+
+	containerOrchestrator.SetRuntimeHealth(true)
+
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, 2, containerOrchestrator.PullImageCallCount(baseImage))
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
+}
+
 func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

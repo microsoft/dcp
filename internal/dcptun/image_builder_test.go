@@ -7,6 +7,7 @@ package dcptun_test
 
 import (
 	"archive/tar"
+	"context"
 	"io"
 	"os"
 	"strings"
@@ -24,7 +25,7 @@ func TestPrepareClientProxyImageBuild(t *testing.T) {
 
 	dcppaths.EnableTestPathProbing()
 
-	plan, prepareErr := dcptun.PrepareClientProxyImageBuild()
+	plan, prepareErr := dcptun.PrepareClientProxyImageBuild(context.Background())
 	require.NoError(t, prepareErr)
 
 	const expectedTagPrefix = "dcptun_developer_ms:"
@@ -41,7 +42,7 @@ func TestPrepareClientProxyImageBuild(t *testing.T) {
 		require.NoError(t, os.Remove(plan.BuildContextArchive.Source))
 	})
 
-	secondPlan, secondPrepareErr := dcptun.PrepareClientProxyImageBuild()
+	secondPlan, secondPrepareErr := dcptun.PrepareClientProxyImageBuild(context.Background())
 	require.NoError(t, secondPrepareErr)
 	require.Equal(t, plan.BuildContextDigest, secondPlan.BuildContextDigest)
 	t.Cleanup(func() {
@@ -67,4 +68,15 @@ func TestPrepareClientProxyImageBuild(t *testing.T) {
 
 	require.Contains(t, string(entries["Dockerfile"]), "FROM "+dcptun.DefaultBaseImage)
 	require.NotEmpty(t, entries[dcptun.ClientBinaryName])
+}
+
+func TestPrepareClientProxyImageBuildHonorsCancellation(t *testing.T) {
+	t.Parallel()
+
+	dcppaths.EnableTestPathProbing()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, prepareErr := dcptun.PrepareClientProxyImageBuild(ctx)
+	require.ErrorIs(t, prepareErr, context.Canceled)
 }

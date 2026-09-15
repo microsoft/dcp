@@ -6,6 +6,7 @@
 package dcptun
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -51,13 +52,13 @@ type ClientProxyImageBuildPlan struct {
 
 // PrepareClientProxyImageBuild creates the build input for the shared tunnel proxy
 // PhysicalContainerImage.
-func PrepareClientProxyImageBuild() (ClientProxyImageBuildPlan, error) {
+func PrepareClientProxyImageBuild(ctx context.Context) (ClientProxyImageBuildPlan, error) {
 	dcpTunClientPath, clientPathErr := dcptunClientBinaryPath()
 	if clientPathErr != nil {
 		return ClientProxyImageBuildPlan{}, fmt.Errorf("failed to get path to dcptun client binary: %w", clientPathErr)
 	}
 
-	clientBinaryHash, hashErr := computeFileHash(dcpTunClientPath)
+	clientBinaryHash, hashErr := computeFileHash(ctx, dcpTunClientPath)
 	if hashErr != nil {
 		return ClientProxyImageBuildPlan{}, fmt.Errorf("failed to compute current executable hash: %w", hashErr)
 	}
@@ -68,7 +69,7 @@ func PrepareClientProxyImageBuild() (ClientProxyImageBuildPlan, error) {
 	if digestErr != nil {
 		return ClientProxyImageBuildPlan{}, digestErr
 	}
-	buildContextArchive, contextErr := setupImageBuildContextArchive(dcpTunClientPath, dockerfileContent)
+	buildContextArchive, contextErr := setupImageBuildContextArchive(ctx, dcpTunClientPath, dockerfileContent)
 	if contextErr != nil {
 		return ClientProxyImageBuildPlan{}, fmt.Errorf("failed to create build context archive: %w", contextErr)
 	}
@@ -97,9 +98,14 @@ func clientProxyImageName(clientBinaryHash string) string {
 }
 
 func setupImageBuildContextArchive(
+	ctx context.Context,
 	dcpTunClientPath string,
 	dockerfileContent string,
 ) (*containers.ContainerBuildContextArchive, error) {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
+
 	randomSuffix, randomSuffixErr := randdata.MakeRandomString(12)
 	if randomSuffixErr != nil {
 		return nil, fmt.Errorf("create random build context archive suffix: %w", randomSuffixErr)
@@ -145,8 +151,9 @@ func setupImageBuildContextArchive(
 		cleanup()
 		return nil, fmt.Errorf("stat dcptun client binary: %w", statBinaryErr)
 	}
+	copyBinaryCtx, cancelCopyBinary := context.WithCancel(ctx)
 	copyBinaryErr := tarWriter.CopyFile(
-		binaryFile,
+		usvc_io.NewContextReader(copyBinaryCtx, binaryFile, false),
 		binaryInfo.Size(),
 		ClientBinaryName,
 		0,
@@ -156,6 +163,7 @@ func setupImageBuildContextArchive(
 		binaryInfo.ModTime(),
 		binaryInfo.ModTime(),
 	)
+	cancelCopyBinary()
 	closeBinaryErr := binaryFile.Close()
 	if copyBinaryErr != nil {
 		cleanup()
@@ -174,7 +182,7 @@ func setupImageBuildContextArchive(
 		return nil, fmt.Errorf("close build context archive: %w", closeArchiveErr)
 	}
 
-	archiveHash, hashErr := computeFileHash(archivePath)
+	archiveHash, hashErr := computeFileHash(ctx, archivePath)
 	if hashErr != nil {
 		cleanup()
 		return nil, fmt.Errorf("hash build context archive: %w", hashErr)
@@ -215,7 +223,7 @@ func clientProxyBuildContextDigest(dockerfileContent string, clientBinaryHash st
 }
 
 // Computes the SHA256 hash of a given binary file
-func computeFileHash(filePath string) (string, error) {
+func computeFileHash(ctx context.Context, filePath string) (string, error) {
 	file, openErr := usvc_io.OpenFileReadOnly(filePath)
 	if openErr != nil {
 		return "", fmt.Errorf("failed to open binary file %s: %w", filePath, openErr)
@@ -223,7 +231,10 @@ func computeFileHash(filePath string) (string, error) {
 	defer file.Close()
 
 	hasher := sha256.New()
-	if _, copyErr := io.Copy(hasher, file); copyErr != nil {
+	hashCtx, cancelHash := context.WithCancel(ctx)
+	_, copyErr := io.Copy(hasher, usvc_io.NewContextReader(hashCtx, file, false))
+	cancelHash()
+	if copyErr != nil {
 		return "", fmt.Errorf("failed to compute hash of binary %s: %w", filePath, copyErr)
 	}
 
