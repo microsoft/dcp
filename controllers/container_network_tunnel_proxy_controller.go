@@ -613,6 +613,13 @@ func ensureTunnelProxyFailedState(
 	pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) objectChange {
+	if pd == nil {
+		log.Error(fmt.Errorf("data about ContainerNetworkTunnelProxy object is missing"), "",
+			"CurrentState", apiv1.ContainerNetworkTunnelProxyStateFailed,
+		)
+		return noChange
+	}
+
 	change := r.failAllExistingTunnels(tunnelProxy, pd)
 	pd.cleanupScheduled = true
 	r.cleanupProxyPair(ctx, pd, tunnelProxy.UID, log)
