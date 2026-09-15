@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	std_maps "maps"
 	"net"
 	"net/http"
 	"os"
@@ -1657,8 +1658,8 @@ func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, options 
 
 		result = append(result, containers.InspectedImage{
 			Id:     image.id,
-			Labels: image.labels,
-			Tags:   image.tags,
+			Labels: std_maps.Clone(image.labels),
+			Tags:   std_slices.Clone(image.tags),
 			Digest: image.digest,
 		})
 	}
