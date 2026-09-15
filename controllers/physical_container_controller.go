@@ -10,7 +10,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	std_slices "slices"
 	"strconv"
 	"strings"
@@ -1224,7 +1223,8 @@ func (r *PhysicalContainerReconciler) ensurePhysicalContainerNetworkConnections(
 				resultErr = errors.Join(resultErr, fmt.Errorf("get existing PhysicalContainerNetworkConnection %q: %w", connection.NamespacedName(), getErr))
 				continue
 			}
-			if !metav1.IsControlledBy(&existingConnection, container) || !reflect.DeepEqual(existingConnection.Spec, connection.Spec) {
+			if !metav1.IsControlledBy(&existingConnection, container) ||
+				!existingConnection.Spec.Equal(connection.Spec) {
 				resultErr = errors.Join(resultErr, fmt.Errorf("physical container network connection %q already exists with a different owner or spec", connection.NamespacedName()))
 			}
 			continue

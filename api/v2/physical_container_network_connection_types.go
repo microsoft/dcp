@@ -7,7 +7,7 @@ package v2
 
 import (
 	"context"
-	"reflect"
+	"slices"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -36,6 +36,13 @@ type PhysicalContainerNetworkConnectionSpec struct {
 	// Aliases contains network-scoped aliases for the container.
 	// +listType=set
 	Aliases []string `json:"aliases,omitempty"`
+}
+
+// Equal reports whether two PhysicalContainerNetworkConnectionSpec values are equal.
+func (spec PhysicalContainerNetworkConnectionSpec) Equal(other PhysicalContainerNetworkConnectionSpec) bool {
+	return spec.ContainerRef == other.ContainerRef &&
+		spec.NetworkRef == other.NetworkRef &&
+		slices.Equal(spec.Aliases, other.Aliases)
 }
 
 // PhysicalContainerNetworkConnection represents desired runtime network membership for one physical container.
@@ -101,7 +108,7 @@ func (connection *PhysicalContainerNetworkConnection) Validate(ctx context.Conte
 
 func (connection *PhysicalContainerNetworkConnection) ValidateUpdate(ctx context.Context, old runtime.Object) field.ErrorList {
 	oldConnection := old.(*PhysicalContainerNetworkConnection)
-	if reflect.DeepEqual(oldConnection.Spec, connection.Spec) {
+	if oldConnection.Spec.Equal(connection.Spec) {
 		return nil
 	}
 

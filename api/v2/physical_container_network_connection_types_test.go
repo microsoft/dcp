@@ -89,6 +89,16 @@ func TestPhysicalContainerNetworkConnectionValidate(t *testing.T) {
 func TestPhysicalContainerNetworkConnectionValidateUpdate(t *testing.T) {
 	t.Parallel()
 
+	withoutAliases := &PhysicalContainerNetworkConnection{
+		Spec: PhysicalContainerNetworkConnectionSpec{
+			ContainerRef: "container",
+			NetworkRef:   "network",
+		},
+	}
+	emptyAliasesUpdate := withoutAliases.DeepCopy()
+	emptyAliasesUpdate.Spec.Aliases = []string{}
+	require.Empty(t, emptyAliasesUpdate.ValidateUpdate(context.Background(), withoutAliases))
+
 	original := &PhysicalContainerNetworkConnection{
 		Spec: PhysicalContainerNetworkConnectionSpec{
 			ContainerRef: "container",
