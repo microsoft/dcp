@@ -59,7 +59,7 @@ const (
 	stopContainerTimeoutSeconds = 10
 	containerInspectionTimeout  = 6 * time.Second
 
-	ownerKey             = ".metadata.controllerOwner" // client index key for child ContainerNetworkConnections
+	ownerKey             = ".metadata.controllerOwner" // client index key for controller-owned network connections
 	dcpBuildLabel        = "com.microsoft.developer.usvc-dev.build"
 	groupVersionLabel    = "com.microsoft.developer.usvc-dev.group-version"
 	nameLabel            = "com.microsoft.developer.usvc-dev.name"

@@ -38,8 +38,11 @@ type fakeCLICommandRunner struct {
 
 // fakeBuildResult captures the stdin tar and args for inspection by tests.
 type fakeBuildResult struct {
-	args     []string
-	stdinTar []byte
+	args          []string
+	stdinTar      []byte
+	env           []string
+	operationName string
+	timeout       time.Duration
 }
 
 func (f *fakeCLICommandRunner) MakeCommand(args ...string) *exec.Cmd {
@@ -48,6 +51,9 @@ func (f *fakeCLICommandRunner) MakeCommand(args ...string) *exec.Cmd {
 
 func (f *fakeCLICommandRunner) RunBufferedCommand(ctx context.Context, opName string, cmd *exec.Cmd, stdout io.WriteCloser, stderr io.WriteCloser, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
 	f.result.args = cmd.Args
+	f.result.env = cmd.Env
+	f.result.operationName = opName
+	f.result.timeout = timeout
 
 	if cmd.Stdin != nil {
 		data, readErr := io.ReadAll(cmd.Stdin)

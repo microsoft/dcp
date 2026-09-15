@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	stdmaps "maps"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,6 +42,9 @@ type physicalContainerNetworkData struct {
 	failureMessage string
 	retryAfter     time.Time
 	resolveByName  bool
+	connections    map[string]int
+	expected       int
+	connected      int
 }
 
 func (data *physicalContainerNetworkData) Clone() *physicalContainerNetworkData {
@@ -51,6 +55,9 @@ func (data *physicalContainerNetworkData) Clone() *physicalContainerNetworkData 
 		failureMessage: data.failureMessage,
 		retryAfter:     data.retryAfter,
 		resolveByName:  data.resolveByName,
+		connections:    stdmaps.Clone(data.connections),
+		expected:       data.expected,
+		connected:      data.connected,
 	}
 }
 
@@ -82,6 +89,18 @@ func (data *physicalContainerNetworkData) UpdateFrom(other *physicalContainerNet
 	}
 	if data.resolveByName != other.resolveByName {
 		data.resolveByName = other.resolveByName
+		updated = true
+	}
+	if !stdmaps.Equal(data.connections, other.connections) {
+		data.connections = stdmaps.Clone(other.connections)
+		updated = true
+	}
+	if data.expected != other.expected {
+		data.expected = other.expected
+		updated = true
+	}
+	if data.connected != other.connected {
+		data.connected = other.connected
 		updated = true
 	}
 

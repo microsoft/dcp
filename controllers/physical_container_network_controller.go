@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -22,10 +23,16 @@ import (
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/pkg/resiliency"
+)
+
+const (
+	physicalContainerNetworkConnectionContainerRefField = ".spec.containerRef"
+	physicalContainerNetworkConnectionNetworkRefField   = ".spec.networkRef"
 )
 
 var (
@@ -74,13 +81,101 @@ func NewPhysicalContainerNetworkReconciler(
 }
 
 func (r *PhysicalContainerNetworkReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
+	indexer := mgr.GetFieldIndexer()
+	containerRefIndexErr := indexer.IndexField(
+		context.Background(),
+		&apiv2.PhysicalContainerNetworkConnection{},
+		physicalContainerNetworkConnectionContainerRefField,
+		func(rawObj ctrl_client.Object) []string {
+			connection := rawObj.(*apiv2.PhysicalContainerNetworkConnection)
+			if connection.Spec.ContainerRef == "" {
+				return nil
+			}
+			return []string{connection.Spec.ContainerRef}
+		},
+	)
+	if containerRefIndexErr != nil {
+		return fmt.Errorf("index PhysicalContainerNetworkConnections by container reference: %w", containerRefIndexErr)
+	}
+
+	networkRefIndexErr := indexer.IndexField(
+		context.Background(),
+		&apiv2.PhysicalContainerNetworkConnection{},
+		physicalContainerNetworkConnectionNetworkRefField,
+		func(rawObj ctrl_client.Object) []string {
+			connection := rawObj.(*apiv2.PhysicalContainerNetworkConnection)
+			if connection.Spec.NetworkRef == "" {
+				return nil
+			}
+			return []string{connection.Spec.NetworkRef}
+		},
+	)
+	if networkRefIndexErr != nil {
+		return fmt.Errorf("index PhysicalContainerNetworkConnections by network reference: %w", networkRefIndexErr)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.PhysicalContainerNetwork{}).
 		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.PhysicalContainerNetworkList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.PhysicalContainerNetworkConnection{}, handler.EnqueueRequestsFromMapFunc(r.networkForPhysicalContainerNetworkConnection), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.PhysicalContainer{}, handler.EnqueueRequestsFromMapFunc(r.networksForPhysicalContainer), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
+}
+
+func (r *PhysicalContainerNetworkReconciler) networkForPhysicalContainerNetworkConnection(
+	_ context.Context,
+	obj ctrl_client.Object,
+) []reconcile.Request {
+	connection := obj.(*apiv2.PhysicalContainerNetworkConnection)
+	if connection.Spec.NetworkRef == "" {
+		return nil
+	}
+	return []reconcile.Request{{
+		NamespacedName: types.NamespacedName{
+			Namespace: connection.Namespace,
+			Name:      connection.Spec.NetworkRef,
+		},
+	}}
+}
+
+func (r *PhysicalContainerNetworkReconciler) networksForPhysicalContainer(
+	ctx context.Context,
+	obj ctrl_client.Object,
+) []reconcile.Request {
+	connections := apiv2.PhysicalContainerNetworkConnectionList{}
+	listErr := r.List(
+		ctx,
+		&connections,
+		ctrl_client.InNamespace(obj.GetNamespace()),
+		ctrl_client.MatchingFields{physicalContainerNetworkConnectionContainerRefField: obj.GetName()},
+	)
+	if listErr != nil {
+		r.Log.Error(listErr, "Failed to list PhysicalContainerNetworkConnections for PhysicalContainer", "PhysicalContainer", obj.GetName())
+		return nil
+	}
+
+	networkNames := make(map[string]struct{}, len(connections.Items))
+	requests := make([]reconcile.Request, 0, len(connections.Items))
+	for i := range connections.Items {
+		networkName := connections.Items[i].Spec.NetworkRef
+		if networkName == "" {
+			continue
+		}
+		if _, found := networkNames[networkName]; found {
+			continue
+		}
+		networkNames[networkName] = struct{}{}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: obj.GetNamespace(),
+				Name:      networkName,
+			},
+		})
+	}
+	return requests
 }
 
 func (r *PhysicalContainerNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -266,7 +361,9 @@ func (r *PhysicalContainerNetworkReconciler) applyRuntimeNetworkStatus(
 	data.progress = physicalResourceProgressCompleted
 	data.networkID = inspectedNetwork.Id
 	data.failureMessage = ""
-	return applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)
+	change := applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)
+	change |= r.ensurePhysicalContainerNetworkConnections(ctx, network, data, inspectedNetwork, log)
+	return change
 }
 
 func (r *PhysicalContainerNetworkReconciler) schedulePhysicalContainerNetworkCreate(
@@ -1026,6 +1123,181 @@ func inspectPhysicalContainerNetwork(ctx context.Context, orchestrator container
 	return nil, containers.ErrNotFound
 }
 
+type desiredPhysicalContainerNetworkConnection struct {
+	containerID string
+	aliases     []string
+}
+
+func (r *PhysicalContainerNetworkReconciler) ensurePhysicalContainerNetworkConnections(
+	ctx context.Context,
+	network *apiv2.PhysicalContainerNetwork,
+	data *physicalContainerNetworkData,
+	inspectedNetwork *containers.InspectedNetwork,
+	log logr.Logger,
+) objectChange {
+	connections := apiv2.PhysicalContainerNetworkConnectionList{}
+	listErr := r.List(
+		ctx,
+		&connections,
+		ctrl_client.InNamespace(network.Namespace),
+		ctrl_client.MatchingFields{physicalContainerNetworkConnectionNetworkRefField: network.Name},
+	)
+	if listErr != nil {
+		log.Error(listErr, "Failed to list PhysicalContainerNetworkConnections")
+		return additionalReconciliationNeeded
+	}
+
+	if data.connections == nil {
+		data.connections = make(map[string]int)
+	}
+
+	runtimeStatus := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
+	if !runtimeStatus.IsHealthy() {
+		return additionalReconciliationNeeded
+	}
+
+	desiredConnections := make(map[string]*desiredPhysicalContainerNetworkConnection, len(connections.Items))
+	for i := range connections.Items {
+		connection := &connections.Items[i]
+		container := apiv2.PhysicalContainer{}
+		containerName := types.NamespacedName{Namespace: connection.Namespace, Name: connection.Spec.ContainerRef}
+		containerLookupErr := r.Get(ctx, containerName, &container)
+		switch {
+		case apierrors.IsNotFound(containerLookupErr):
+			continue
+		case containerLookupErr != nil:
+			log.Error(containerLookupErr, "Failed to get referenced PhysicalContainer", "PhysicalContainer", containerName)
+			return additionalReconciliationNeeded
+		case container.Status.ContainerID == "":
+			continue
+		}
+
+		containerID := container.Status.ContainerID
+		desiredConnection := desiredConnections[containerID]
+		if desiredConnection == nil {
+			desiredConnection = &desiredPhysicalContainerNetworkConnection{
+				containerID: containerID,
+			}
+			desiredConnections[containerID] = desiredConnection
+		}
+		desiredConnection.aliases = appendUniqueStrings(desiredConnection.aliases, connection.Spec.Aliases...)
+	}
+
+	connectedContainers := physicalContainerNetworkContainerIDs(inspectedNetwork)
+	change := noChange
+	membershipOperationAttempted := false
+	for containerID := range data.connections {
+		if _, desired := desiredConnections[containerID]; desired {
+			continue
+		}
+		if !physicalContainerNetworkContainsContainer(connectedContainers, containerID) {
+			delete(data.connections, containerID)
+			continue
+		}
+
+		membershipOperationAttempted = true
+		disconnectErr := r.orchestrator.DisconnectNetwork(ctx, containers.DisconnectNetworkOptions{
+			Network:   inspectedNetwork.Id,
+			Container: containerID,
+		})
+		if disconnectErr != nil && !errors.Is(disconnectErr, containers.ErrNotFound) {
+			data.connections[containerID]++
+			if data.connections[containerID]%logAfterFailures == 0 {
+				log.Error(disconnectErr, "Could not disconnect a physical container from the network", "ContainerID", containerID)
+			}
+			change |= additionalReconciliationNeeded
+			continue
+		}
+		delete(data.connections, containerID)
+	}
+
+	for containerID, desiredConnection := range desiredConnections {
+		if physicalContainerNetworkContainsContainer(connectedContainers, containerID) {
+			data.connections[containerID] = 0
+			continue
+		}
+
+		membershipOperationAttempted = true
+		connectErr := r.orchestrator.ConnectNetwork(ctx, containers.ConnectNetworkOptions{
+			Network:   inspectedNetwork.Id,
+			Container: containerID,
+			Aliases:   desiredConnection.aliases,
+		})
+		if connectErr != nil &&
+			!errors.Is(connectErr, containers.ErrAlreadyExists) &&
+			!errors.Is(connectErr, containers.ErrNotFound) {
+			data.connections[containerID]++
+			if data.connections[containerID]%logAfterFailures == 0 {
+				log.Error(connectErr, "Could not connect a physical container to the network", "ContainerID", containerID)
+			}
+			change |= additionalReconciliationNeeded
+			continue
+		}
+		data.connections[containerID] = 0
+	}
+
+	verifiedNetwork := inspectedNetwork
+	if membershipOperationAttempted {
+		var verifyErr error
+		verifiedNetwork, verifyErr = inspectPhysicalContainerNetwork(ctx, r.orchestrator, inspectedNetwork.Id)
+		if verifyErr != nil {
+			log.Error(verifyErr, "Could not verify physical container network state")
+			return change | additionalReconciliationNeeded
+		}
+	}
+
+	change |= setPhysicalContainerNetworkContainerIDs(&network.Status.ContainerIDs, verifiedNetwork.Containers)
+	verifiedContainerIDs := physicalContainerNetworkContainerIDs(verifiedNetwork)
+	connected := 0
+	for containerID := range desiredConnections {
+		if physicalContainerNetworkContainsContainer(verifiedContainerIDs, containerID) {
+			connected++
+			data.connections[containerID] = 0
+		}
+	}
+
+	countsChanged := data.expected != len(desiredConnections) || data.connected != connected
+	data.expected = len(desiredConnections)
+	data.connected = connected
+	if countsChanged {
+		if data.connected < data.expected {
+			log.V(1).Info("Not all expected physical containers are connected to the network, retrying...", "Expected", data.expected, "Found", data.connected)
+			change |= additionalReconciliationNeeded
+		} else {
+			log.Info("All expected physical containers are connected to the network", "Expected", data.expected, "Found", data.connected)
+		}
+	}
+
+	return change
+}
+
+func physicalContainerNetworkContainerIDs(network *containers.InspectedNetwork) map[string]struct{} {
+	containerIDs := make(map[string]struct{}, len(network.Containers))
+	for _, container := range network.Containers {
+		containerIDs[container.Id] = struct{}{}
+	}
+	return containerIDs
+}
+
+func appendUniqueStrings(destination []string, values ...string) []string {
+	for _, value := range values {
+		if slices.Contains(destination, value) {
+			continue
+		}
+		destination = append(destination, value)
+	}
+	return destination
+}
+
+func physicalContainerNetworkContainsContainer(containerIDs map[string]struct{}, containerID string) bool {
+	for existingID := range containerIDs {
+		if existingID == containerID || strings.HasPrefix(existingID, containerID) || strings.HasPrefix(containerID, existingID) {
+			return true
+		}
+	}
+	return false
+}
+
 func physicalContainerNetworkCreationLabels(network *apiv2.PhysicalContainerNetwork, log logr.Logger) map[string]string {
 	networkConfig := network.Spec.Network
 	creationLabels := physicalResourceCreationLabels(
@@ -1055,11 +1327,26 @@ func applyReadyPhysicalContainerNetworkStatus(network *apiv2.PhysicalContainerNe
 	change |= setValue(&network.Status.IPv6, inspectedNetwork.IPv6)
 	change |= setPhysicalContainerNetworkAddresses(&network.Status.Subnets, inspectedNetwork.Subnets)
 	change |= setPhysicalContainerNetworkAddresses(&network.Status.Gateways, inspectedNetwork.Gateways)
+	change |= setPhysicalContainerNetworkContainerIDs(&network.Status.ContainerIDs, inspectedNetwork.Containers)
 	change |= setTimestamp(&network.Status.CreatedAt, metav1.NewMicroTime(inspectedNetwork.CreatedAt))
 	change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseReady)
 	change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionTrue, apiv2.PhysicalContainerNetworkReasonNetworkAvailable, "Runtime network is available.")
 	// Keep polling slowly so a network removed outside of DCP does not leave a stale Ready status.
 	return change | additionalReconciliationNeeded
+}
+
+func setPhysicalContainerNetworkContainerIDs(target *[]string, networkContainers []containers.InspectedNetworkContainer) objectChange {
+	containerIDs := make([]string, len(networkContainers))
+	for i := range networkContainers {
+		containerIDs[i] = networkContainers[i].Id
+	}
+	slices.Sort(containerIDs)
+	if slices.Equal(*target, containerIDs) {
+		return noChange
+	}
+
+	*target = containerIDs
+	return statusChanged
 }
 
 func setPhysicalContainerNetworkAddresses(target *[]string, addresses []string) objectChange {

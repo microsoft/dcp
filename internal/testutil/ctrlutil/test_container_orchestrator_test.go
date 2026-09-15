@@ -48,6 +48,78 @@ func TestIsBuiltInNetwork(t *testing.T) {
 	require.False(t, orchestrator.IsBuiltInNetwork("application"))
 }
 
+func TestFailMatchingContainersMatchesBuiltImageTag(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	orchestrator, orchestratorErr := NewTestContainerOrchestrator(ctx, logr.Discard(), TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	defer func() {
+		require.NoError(t, orchestrator.Close())
+	}()
+
+	const imageTag = "test-image:latest"
+	buildErr := orchestrator.BuildImage(ctx, containers.BuildImageOptions{
+		ContainerBuildContext: &containers.ContainerBuildContext{
+			Tags: []string{imageTag},
+		},
+	})
+	require.NoError(t, buildErr)
+
+	images, inspectErr := orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
+		Images: []string{imageTag},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, images, 1)
+
+	containerID, createErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:  "test-container",
+		Image: images[0].Id,
+	})
+	require.NoError(t, createErr)
+
+	orchestrator.FailMatchingContainers(ctx, "test-image", 1, "expected startup failure")
+	_, startErr := orchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{containerID},
+	})
+	require.ErrorContains(t, startErr, "expected startup failure")
+}
+
+func TestInspectImagesReturnsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	orchestrator, orchestratorErr := NewTestContainerOrchestrator(ctx, logr.Discard(), TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	t.Cleanup(func() {
+		require.NoError(t, orchestrator.Close())
+	})
+
+	const imageTag = "snapshot-image:latest"
+	buildErr := orchestrator.BuildImage(ctx, containers.BuildImageOptions{
+		ContainerBuildContext: &containers.ContainerBuildContext{
+			Tags:   []string{imageTag},
+			Labels: []containers.Label{{Key: "snapshot-label", Value: "original"}},
+		},
+	})
+	require.NoError(t, buildErr)
+
+	images, inspectErr := orchestrator.InspectImages(ctx, containers.InspectImagesOptions{Images: []string{imageTag}})
+	require.NoError(t, inspectErr)
+	require.Len(t, images, 1)
+	imageID := images[0].Id
+	images[0].Tags[0] = "modified:latest"
+	images[0].Labels["snapshot-label"] = "modified"
+
+	inspectedAgain, inspectAgainErr := orchestrator.InspectImages(ctx, containers.InspectImagesOptions{Images: []string{imageID}})
+	require.NoError(t, inspectAgainErr)
+	require.Len(t, inspectedAgain, 1)
+	require.Equal(t, []string{imageTag}, inspectedAgain[0].Tags)
+	require.Equal(t, "original", inspectedAgain[0].Labels["snapshot-label"])
+}
+
 func TestRemoveImagesReturnsRequestedIdentifiers(t *testing.T) {
 	t.Parallel()
 

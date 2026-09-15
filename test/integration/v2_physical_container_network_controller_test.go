@@ -514,7 +514,7 @@ func TestV2PhysicalContainerNetworkControllerDisconnectsPreservedContainerDuring
 				ContainerName:          "v2-pcn-ns-preserved-container",
 				RetainRuntimeContainer: true,
 				Networks: []apiv2.ContainerNetworkConnectionConfig{
-					{Name: networkName},
+					{Name: network.Name},
 				},
 			},
 		},
