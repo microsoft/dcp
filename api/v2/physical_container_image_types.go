@@ -30,8 +30,9 @@ import (
 
 var validSHA256HexRegexp = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
-// isArchiveRelativePath reports whether archivePath addresses an entry inside an archive,
-// that is, it uses archive separators, is relative, and does not escape the archive root.
+// isArchiveRelativePath reports whether archivePath names a non-root entry using
+// slash-separated archive path semantics. Backslashes are ordinary path element
+// characters, not separators. The path must be relative and cannot escape the archive root.
 func isArchiveRelativePath(archivePath string) bool {
 	cleaned := path.Clean(archivePath)
 	return cleaned != "." && fs.ValidPath(cleaned)
