@@ -6488,8 +6488,14 @@ func schema_microsoft_dcp_api_v2_VolumeMount(ref common.ReferenceCallback) commo
 					},
 					"source": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Bind mounts: the host directory to mount. Volume mounts: name of the volume to mount.",
-							Default:     "",
+							Description: "Source is the host directory to mount for bind mounts.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"volumeRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "VolumeRef is the name of a PhysicalContainerVolume in the same namespace for volume mounts.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -6510,7 +6516,7 @@ func schema_microsoft_dcp_api_v2_VolumeMount(ref common.ReferenceCallback) commo
 						},
 					},
 				},
-				Required: []string{"type", "source", "target"},
+				Required: []string{"type", "target"},
 			},
 		},
 	}

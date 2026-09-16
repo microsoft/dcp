@@ -190,6 +190,133 @@ func TestV2PhysicalContainerControllerReconcilesWhenReferencedImageBecomesReady(
 	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
 }
 
+func TestV2PhysicalContainerControllerCreatesContainerWithVolumes(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-volumes")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "volume-image", "volume-image")
+	runtimeVolumeName := "v2-pctr-volume-runtime"
+	require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: runtimeVolumeName}))
+	removeRuntimeVolumeOnCleanup(t, runtimeVolumeName)
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "container-volume",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerVolumeSpec{VolumeID: runtimeVolumeName},
+	}
+	require.NoError(t, client.Create(ctx, volume))
+	waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "volume-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:      image.Name,
+				ContainerName: "v2-pctr-volume-container",
+				VolumeMounts: []apiv2.VolumeMount{
+					{Type: apiv2.NamedVolumeMount, VolumeRef: volume.Name, Target: "/volume", ReadOnly: true},
+					{Type: apiv2.BindMount, Source: "/host/data", Target: "/bind"},
+				},
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedContainer.Status.ContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+	require.Equal(t, []containers.VolumeMount{
+		{Type: containers.NamedVolumeMount, Source: runtimeVolumeName, Target: "/volume", ReadOnly: true},
+		{Type: containers.BindMount, Source: "/host/data", Target: "/bind"},
+	}, inspectedContainers[0].Mounts)
+}
+
+func TestV2PhysicalContainerControllerReconcilesWhenReferencedVolumeBecomesReady(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-volume-watch")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "watched-volume-image", "watched-volume-image")
+	volumeName := "watched-volume"
+	containerName := "v2-pctr-watched-volume-container"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "watched-volume-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:      image.Name,
+				ContainerName: containerName,
+				VolumeMounts: []apiv2.VolumeMount{{
+					Type:      apiv2.NamedVolumeMount,
+					VolumeRef: volumeName,
+					Target:    "/data",
+				}},
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	pendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
+		return currentContainer.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonVolumeNotFound, nil
+	})
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonVolumeNotFound)
+	require.Equal(t, 0, containerOrchestrator.CreateContainerCallCount(containerName))
+
+	runtimeVolumeName := "v2-pctr-watched-volume-runtime"
+	releaseCreate := containerOrchestrator.BlockCreateVolume(runtimeVolumeName)
+	defer releaseCreate()
+	removeRuntimeVolumeOnCleanup(t, runtimeVolumeName)
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      volumeName,
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerVolumeSpec{
+			Volume: &apiv2.PhysicalContainerVolumeConfig{VolumeName: runtimeVolumeName},
+		},
+	}
+	require.NoError(t, client.Create(ctx, volume))
+
+	pendingContainer = waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
+		return currentContainer.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonVolumeNotReady, nil
+	})
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonVolumeNotReady)
+	require.Equal(t, 0, containerOrchestrator.CreateContainerCallCount(containerName))
+	releaseCreate()
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedContainer.Status.ContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+	require.Len(t, inspectedContainers[0].Mounts, 1)
+	require.Equal(t, runtimeVolumeName, inspectedContainers[0].Mounts[0].Source)
+}
+
 func TestV2PhysicalContainerControllerCreatesContainerWithNetworks(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

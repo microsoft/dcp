@@ -65,6 +65,15 @@ const (
 	// PhysicalContainerReasonImageLookupFailed indicates that the referenced PhysicalContainerImage could not be read.
 	PhysicalContainerReasonImageLookupFailed ConditionReason = "ImageLookupFailed"
 
+	// PhysicalContainerReasonVolumeNotFound indicates that a referenced PhysicalContainerVolume does not exist.
+	PhysicalContainerReasonVolumeNotFound ConditionReason = "VolumeNotFound"
+
+	// PhysicalContainerReasonVolumeNotReady indicates that a referenced PhysicalContainerVolume is not ready.
+	PhysicalContainerReasonVolumeNotReady ConditionReason = "VolumeNotReady"
+
+	// PhysicalContainerReasonVolumeLookupFailed indicates that a referenced PhysicalContainerVolume could not be read.
+	PhysicalContainerReasonVolumeLookupFailed ConditionReason = "VolumeLookupFailed"
+
 	// PhysicalContainerReasonNetworkNotFound indicates that a referenced PhysicalContainerNetwork does not exist.
 	PhysicalContainerReasonNetworkNotFound ConditionReason = "NetworkNotFound"
 
@@ -372,6 +381,7 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 	for i, network := range container.Networks {
 		errorList = append(errorList, validatePhysicalResourceReference(network.Name, networksPath.Index(i).Child("name"))...)
 	}
+	errorList = append(errorList, ValidateVolumeMounts(container.VolumeMounts, containerPath.Child("volumeMounts"))...)
 	errorList = append(errorList, ValidateContainerPorts(container.Ports, containerPath.Child("ports"))...)
 	errorList = append(errorList, validateLabels(container.Labels, containerPath.Child("labels"))...)
 
