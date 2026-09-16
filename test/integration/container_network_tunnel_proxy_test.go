@@ -27,6 +27,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/apiserver"
 	"github.com/microsoft/dcp/internal/containers"
@@ -180,15 +181,34 @@ func TestTunnelProxyDelayedNetworkCreation(t *testing.T) {
 
 // Verifies that running ContainerNetworkTunnelProxy has the status updated with client proxy and server proxy information.
 func TestTunnelProxyRunningStatus(t *testing.T) {
-	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-running-status"
+
+	buildContextDir, mkdirErr := os.MkdirTemp("", "dcp-tunnel-")
+	require.NoError(t, mkdirErr)
+	t.Cleanup(func() {
+		require.NoError(t, os.RemoveAll(buildContextDir))
+	})
+	originalDcpTempDir := usvc_io.DcpTempDir
+	usvc_io.DcpTempDir = func() string {
+		return buildContextDir
+	}
+	t.Cleanup(func() {
+		usvc_io.DcpTempDir = originalDcpTempDir
+	})
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
+	testContainerOrchestrator, ok := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, ok)
+	imagePlan, imagePlanErr := dcptun.PrepareClientProxyImageBuild(ctx)
+	require.NoError(t, imagePlanErr)
+	require.NoError(t, os.Remove(imagePlan.BuildContextArchive.Source))
+	releaseImageBuild := testContainerOrchestrator.BlockBuildImage(imagePlan.Image)
+	defer releaseImageBuild()
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -234,16 +254,114 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	err = serverInfo.Client.Create(ctx, &tunnelProxy)
 	require.NoError(t, err, "Could not create a ContainerNetworkTunnelProxy object")
 
+	secondTunnelProxy := apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-second",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.ObjectMeta.Name,
+		},
+	}
+	err = serverInfo.Client.Create(ctx, &secondTunnelProxy)
+	require.NoError(t, err, "Could not create a second ContainerNetworkTunnelProxy object")
+
+	t.Log("Waiting for physical containers to be created while the shared image build is blocked...")
+	waitContainersErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		physicalContainers := apiv2.PhysicalContainerList{}
+		listErr := serverInfo.Client.List(ctx, &physicalContainers, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+		return len(physicalContainers.Items) == 2, listErr
+	})
+	require.NoError(t, waitContainersErr)
+	waitingTunnelProxy := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateBuildingImage && tp.Status.Message != "", nil
+	})
+	require.Contains(t, waitingTunnelProxy.Status.Message, "Waiting for")
+	require.Equal(t, 1, testContainerOrchestrator.BuildImageCallCount(imagePlan.Image))
+	releaseImageBuild()
+
 	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Running state...")
 	updatedTunnelProxy := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
 		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning, nil
 	})
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, secondTunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning, nil
+	})
 
 	t.Log("Verifying client proxy status...")
+	require.Empty(t, updatedTunnelProxy.Status.Message, "Running tunnel proxy should not retain a startup wait message")
 	require.NotEmpty(t, updatedTunnelProxy.Status.ClientProxyContainerImage, "Tunnel proxy should publish the image for the client proxy container")
 	require.NotEmpty(t, updatedTunnelProxy.Status.ClientProxyContainerID, "Tunnel proxy should have a client proxy container ID")
 	require.True(t, networking.IsValidPort(int(updatedTunnelProxy.Status.ClientProxyControlPort)), "Tunnel proxy should have a valid client proxy control port")
 	require.True(t, networking.IsValidPort(int(updatedTunnelProxy.Status.ClientProxyDataPort)), "Tunnel proxy should have a valid client proxy data port")
+
+	t.Log("Verifying V2 physical resources represent the client proxy...")
+	physicalImages := apiv2.PhysicalContainerImageList{}
+	listImagesErr := serverInfo.Client.List(ctx, &physicalImages, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listImagesErr)
+	require.Len(t, physicalImages.Items, 1)
+	require.Equal(t, controllers.V1TunnelProxyPhysicalContainerImageName, physicalImages.Items[0].Name)
+	require.Equal(t, updatedTunnelProxy.Status.ClientProxyContainerImage, physicalImages.Items[0].Spec.Image.Image)
+	require.Equal(t, apiv2.PullPolicyBestEffort, physicalImages.Items[0].Spec.Image.PullPolicy)
+	require.Equal(t, apiv2.BuildPolicyIfNeeded, physicalImages.Items[0].Spec.Image.BuildPolicy)
+	require.NotNil(t, physicalImages.Items[0].Spec.Image.Build)
+	require.Equal(t, []string{dcptun.DefaultBaseImage}, physicalImages.Items[0].Spec.Image.Build.BaseImages)
+	require.NotEmpty(t, physicalImages.Items[0].Spec.Image.Build.Digest)
+	require.NotNil(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive)
+	require.NotEmpty(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source)
+	require.NotEmpty(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.SHA256)
+	require.Empty(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.RawContents)
+	require.FileExists(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source)
+	buildContextFiles, globErr := filepath.Glob(filepath.Join(buildContextDir, "dcptun-build-context-*.tar"))
+	require.NoError(t, globErr)
+	require.Equal(t, []string{physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source}, buildContextFiles)
+	t.Cleanup(func() {
+		require.NoError(t, os.Remove(physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source))
+	})
+	require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, physicalImages.Items[0].Status.Phase)
+	require.Equal(t, 1, testContainerOrchestrator.BuildImageCallCount(updatedTunnelProxy.Status.ClientProxyContainerImage))
+
+	physicalContainers := apiv2.PhysicalContainerList{}
+	listContainersErr := serverInfo.Client.List(ctx, &physicalContainers, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listContainersErr)
+	require.Len(t, physicalContainers.Items, 2)
+	foundClientPhysicalContainer := false
+	clientPhysicalContainerName := ""
+	for _, physicalContainer := range physicalContainers.Items {
+		require.Equal(t, controllers.V1TunnelProxyPhysicalContainerImageName, physicalContainer.Spec.Container.ImageRef)
+		require.Equal(t, apiv2.PhysicalContainerPhaseRunning, physicalContainer.Status.Phase)
+		if physicalContainer.Status.ContainerID == updatedTunnelProxy.Status.ClientProxyContainerID {
+			foundClientPhysicalContainer = true
+			clientPhysicalContainerName = physicalContainer.Name
+		}
+	}
+	require.True(t, foundClientPhysicalContainer)
+
+	physicalNetworks := apiv2.PhysicalContainerNetworkList{}
+	listNetworksErr := serverInfo.Client.List(ctx, &physicalNetworks, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listNetworksErr)
+	require.Len(t, physicalNetworks.Items, 1)
+	for _, physicalNetwork := range physicalNetworks.Items {
+		require.Equal(t, updatedNetwork.Status.ID, physicalNetwork.Spec.NetworkID)
+		require.Equal(t, apiv2.PhysicalContainerNetworkPhaseReady, physicalNetwork.Status.Phase)
+		require.Equal(t, updatedNetwork.Status.ID, physicalNetwork.Status.NetworkID)
+		require.Equal(t, updatedNetwork.Name, physicalNetwork.Annotations[controllers.V1ContainerNetworkNameAnnotation])
+		require.Len(t, physicalNetwork.Status.ContainerIDs, 2)
+		require.True(t, std_slices.Contains(physicalNetwork.Status.ContainerIDs, updatedTunnelProxy.Status.ClientProxyContainerID))
+	}
+
+	physicalConnections := apiv2.PhysicalContainerNetworkConnectionList{}
+	listConnectionsErr := serverInfo.Client.List(ctx, &physicalConnections, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listConnectionsErr)
+	require.Len(t, physicalConnections.Items, 2)
+	foundClientPhysicalConnection := false
+	for _, physicalConnection := range physicalConnections.Items {
+		if physicalConnection.Spec.ContainerRef == clientPhysicalContainerName {
+			foundClientPhysicalConnection = true
+			require.Equal(t, aliases, physicalConnection.Spec.Aliases)
+		}
+	}
+	require.True(t, foundClientPhysicalConnection)
 
 	t.Log("Verifying client proxy container exists...")
 	inspectedContainers, inspectErr := serverInfo.ContainerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
@@ -252,7 +370,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.NoError(t, inspectErr, "Should be able to inspect client proxy container")
 	require.Len(t, inspectedContainers, 1, "Should find exactly one container")
 	clientContainer := inspectedContainers[0]
-	require.Equal(t, updatedTunnelProxy.Status.ClientProxyContainerImage, clientContainer.Image, "Container should have the expected image")
+	require.Equal(t, physicalImages.Items[0].Status.ImageID, clientContainer.Image, "Container should use the physical image ID")
 	require.Equal(t, containers.ContainerStatusRunning, clientContainer.Status, "Container should be running")
 	require.Len(t, clientContainer.Networks, 1, "Client proxy container should only be attached to the target network")
 	require.Equal(t, updatedNetwork.Status.NetworkName, clientContainer.Networks[0].Name, "Client proxy container should be attached to the target network during creation")
@@ -283,6 +401,12 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.Equal(t, fmt.Sprintf("%d", updatedTunnelProxy.Status.ClientProxyControlPort), pe.Cmd.Args[3], "Third argument should be client control port")
 	require.Equal(t, networking.IPv4LocalhostDefaultAddress, pe.Cmd.Args[4], "Fourth argument should be client data address")
 	require.Equal(t, fmt.Sprintf("%d", updatedTunnelProxy.Status.ClientProxyDataPort), pe.Cmd.Args[5], "Fifth argument should be client data port")
+
+	sharedPhysicalImages := apiv2.PhysicalContainerImageList{}
+	require.NoError(t, serverInfo.Client.List(ctx, &sharedPhysicalImages, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName)))
+	require.Len(t, sharedPhysicalImages.Items, 1)
+	require.Equal(t, controllers.V1TunnelProxyPhysicalContainerImageName, sharedPhysicalImages.Items[0].Name)
+	require.Equal(t, 1, testContainerOrchestrator.BuildImageCallCount(updatedTunnelProxy.Status.ClientProxyContainerImage))
 }
 
 // Verifies that ContainerNetworkTunnelProxy proxy pair cleanup works correctly during object deletion.
@@ -293,8 +417,8 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-cleanup"
 
-	controllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, controllers, t.Name(), t.TempDir())
+	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -356,6 +480,38 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	require.Len(t, containerInfoList, 1, "Client proxy container should exist")
 	require.Equal(t, clientContainerID, containerInfoList[0].Id, "Container ID should match")
 
+	physicalContainers := apiv2.PhysicalContainerList{}
+	listContainersErr := serverInfo.Client.List(ctx, &physicalContainers, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listContainersErr)
+	require.Len(t, physicalContainers.Items, 1)
+	physicalContainer := physicalContainers.Items[0]
+
+	physicalNetworks := apiv2.PhysicalContainerNetworkList{}
+	listNetworksErr := serverInfo.Client.List(ctx, &physicalNetworks, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listNetworksErr)
+	require.Len(t, physicalNetworks.Items, 1)
+	physicalNetwork := physicalNetworks.Items[0]
+
+	physicalConnections := apiv2.PhysicalContainerNetworkConnectionList{}
+	listConnectionsErr := serverInfo.Client.List(ctx, &physicalConnections, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listConnectionsErr)
+	require.Len(t, physicalConnections.Items, 1)
+	physicalConnection := physicalConnections.Items[0]
+
+	physicalImages := apiv2.PhysicalContainerImageList{}
+	listImagesErr := serverInfo.Client.List(ctx, &physicalImages, ctrl_client.InNamespace(controllers.V1PhysicalResourcesNamespaceName))
+	require.NoError(t, listImagesErr)
+	require.Len(t, physicalImages.Items, 1)
+	physicalImage := physicalImages.Items[0]
+	require.NotNil(t, physicalImage.Spec.Image.Build)
+	require.NotNil(t, physicalImage.Spec.Image.Build.ContextArchive)
+	require.NotEmpty(t, physicalImage.Spec.Image.Build.ContextArchive.Source)
+	require.Empty(t, physicalImage.Spec.Image.Build.ContextArchive.RawContents)
+	require.FileExists(t, physicalImage.Spec.Image.Build.ContextArchive.Source)
+	t.Cleanup(func() {
+		require.NoError(t, os.Remove(physicalImage.Spec.Image.Build.ContextArchive.Source))
+	})
+
 	t.Logf("Deleting ContainerNetworkTunnelProxy object '%s'", tunnelProxy.ObjectMeta.Name)
 	err = retryOnConflictEx(ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(ctx context.Context, tp *apiv1.ContainerNetworkTunnelProxy) error {
 		return serverInfo.Client.Delete(ctx, tp)
@@ -366,6 +522,15 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &tunnelProxy)
 
 	t.Log("Verifying proxy resources are cleaned up...")
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &physicalContainer)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &physicalConnection)
+	retainedPhysicalNetwork := apiv2.PhysicalContainerNetwork{}
+	require.NoError(t, serverInfo.Client.Get(ctx, physicalNetwork.NamespacedName(), &retainedPhysicalNetwork))
+	require.Equal(t, apiv2.PhysicalContainerNetworkPhaseReady, retainedPhysicalNetwork.Status.Phase)
+	retainedPhysicalImage := apiv2.PhysicalContainerImage{}
+	require.NoError(t, serverInfo.Client.Get(ctx, physicalImage.NamespacedName(), &retainedPhysicalImage))
+	require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, retainedPhysicalImage.Status.Phase)
+	require.FileExists(t, retainedPhysicalImage.Spec.Image.Build.ContextArchive.Source)
 
 	// Verify the client container has been removed
 	_, inspectErrAfter := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
@@ -1064,13 +1229,74 @@ func TestTunnelProxyServerUnexpectedExit(t *testing.T) {
 	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateFailed)
 }
 
-// Verifies that ContainerNetworkTunnelProxy transitions to Failed state when client proxy container unexpectedly stops running.
-func TestTunnelProxyClientUnexpectedExit(t *testing.T) {
+func TestTunnelProxyClientExited(t *testing.T) {
 	t.Parallel()
+	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-unexpected-exit", "Runtime container has exited", func(
+		ctx context.Context,
+		orchestrator *ctrl_testutil.TestContainerOrchestrator,
+		containerID string,
+	) error {
+		return orchestrator.SimulateContainerExit(ctx, containerID, 5)
+	}, nil)
+}
+
+func TestTunnelProxyClientDestroyed(t *testing.T) {
+	t.Parallel()
+	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-destroyed", "Runtime container was not found", func(
+		ctx context.Context,
+		orchestrator *ctrl_testutil.TestContainerOrchestrator,
+		containerID string,
+	) error {
+		removedContainers, removeErr := orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
+			Containers: []string{containerID},
+			Force:      true,
+		})
+		if removeErr != nil {
+			return removeErr
+		}
+		if !std_slices.Equal(removedContainers, []string{containerID}) {
+			return fmt.Errorf("unexpected removed containers: %v", removedContainers)
+		}
+		return nil
+	}, nil)
+}
+
+func TestTunnelProxyClientPaused(t *testing.T) {
+	t.Parallel()
+	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-paused", "Runtime container is paused", func(
+		ctx context.Context,
+		orchestrator *ctrl_testutil.TestContainerOrchestrator,
+		containerID string,
+	) error {
+		return orchestrator.SimulateContainerStatus(ctx, containerID, containers.ContainerStatusPaused)
+	}, func(ctx context.Context, orchestrator *ctrl_testutil.TestContainerOrchestrator, containerID string) error {
+		return orchestrator.SimulateContainerStatus(ctx, containerID, containers.ContainerStatusRunning)
+	})
+}
+
+func TestTunnelProxyClientPortMappingsMissing(t *testing.T) {
+	t.Parallel()
+	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-port-mappings-missing", "no host port mapping exists", func(
+		ctx context.Context,
+		orchestrator *ctrl_testutil.TestContainerOrchestrator,
+		containerID string,
+	) error {
+		return orchestrator.SimulateContainerPortMappings(ctx, containerID, nil)
+	}, nil)
+}
+
+// Verifies that ContainerNetworkTunnelProxy transitions to Failed state when its runtime client proxy container becomes unusable.
+func testTunnelProxyClientFailure(
+	t *testing.T,
+	testName string,
+	expectedMessage string,
+	terminateContainer func(context.Context, *ctrl_testutil.TestContainerOrchestrator, string) error,
+	afterFailure func(context.Context, *ctrl_testutil.TestContainerOrchestrator, string) error,
+) {
+	t.Helper()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
-	const testName = "test-tunnel-proxy-client-unexpected-exit"
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
@@ -1144,16 +1370,19 @@ func TestTunnelProxyClientUnexpectedExit(t *testing.T) {
 	t.Log("Verifying all tunnels are in NotReady state...")
 	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateNotReady)
 
-	t.Logf("Simulating client proxy container exit with code 5 (container ID: %s)...", clientContainerID)
-	tco, isTCO := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
-	require.True(t, isTCO, "Container orchestrator should be a TestContainerOrchestrator")
-	simulateErr := tco.SimulateContainerExit(ctx, clientContainerID, 5)
-	require.NoError(t, simulateErr, "Should be able to simulate container exit")
+	testContainerOrchestrator, isTestContainerOrchestrator := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTestContainerOrchestrator)
+	t.Logf("Terminating client proxy runtime container (container ID: %s)...", clientContainerID)
+	require.NoError(t, terminateContainer(ctx, testContainerOrchestrator, clientContainerID))
 
 	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Failed state...")
-	_ = waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+	failedTunnelProxy := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
 		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateFailed, nil
 	})
+	require.Contains(t, failedTunnelProxy.Status.Message, expectedMessage)
+	if afterFailure != nil {
+		require.NoError(t, afterFailure(ctx, testContainerOrchestrator, clientContainerID))
+	}
 
 	t.Log("Verifying server proxy process has been stopped...")
 	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, true /* poll immediately */, func(_ context.Context) (bool, error) {
