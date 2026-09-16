@@ -4372,7 +4372,7 @@ func schema_microsoft_dcp_api_v2_ContainerNetworkConnectionConfig(ref common.Ref
 				Properties: map[string]spec.Schema{
 					"name": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Name of the PhysicalContainerNetwork to connect to in the container's namespace.",
+							Description: "Name identifies a PhysicalContainerNetwork in the same namespace using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -4810,7 +4810,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref common.ReferenceCal
 					},
 					"imageRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ImageRef is the name of a PhysicalContainerImage in the same namespace to use when creating a new runtime container.",
+							Description: "ImageRef identifies a PhysicalContainerImage in the same namespace using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -5489,7 +5489,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConnectionSpec(ref comm
 				Properties: map[string]spec.Schema{
 					"containerRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ContainerRef is the name of the PhysicalContainer to connect.",
+							Description: "ContainerRef identifies the PhysicalContainer using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -5497,7 +5497,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConnectionSpec(ref comm
 					},
 					"networkRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "NetworkRef is the name of the PhysicalContainerNetwork to connect to.",
+							Description: "NetworkRef identifies the PhysicalContainerNetwork using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -6495,7 +6495,7 @@ func schema_microsoft_dcp_api_v2_VolumeMount(ref common.ReferenceCallback) commo
 					},
 					"volumeRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "VolumeRef is the name of a PhysicalContainerVolume in the same namespace for volume mounts.",
+							Description: "VolumeRef identifies a PhysicalContainerVolume in the same namespace using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

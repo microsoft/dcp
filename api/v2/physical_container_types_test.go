@@ -79,6 +79,24 @@ func TestPhysicalContainerValidate(t *testing.T) {
 			},
 		},
 		{
+			name: "valid explicit same namespace references",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{
+					ImageRef: "test-namespace/test-image",
+					VolumeMounts: []VolumeMount{
+						{Type: NamedVolumeMount, VolumeRef: "test-namespace/test-volume", Target: "/cache"},
+					},
+					Networks: []ContainerNetworkConnectionConfig{
+						{Name: "test-namespace/test-network"},
+					},
+				}},
+			},
+		},
+		{
 			name: "missing namespace",
 			container: PhysicalContainer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -119,6 +137,17 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "/"}},
 			},
 			expectedError: "spec.container.imageRef",
+		},
+		{
+			name: "cross-namespace imageRef",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "other-namespace/test-image"}},
+			},
+			expectedError: "cross-namespace references are not supported",
 		},
 		{
 			name: "imageRef conflicts with existing container ID",
@@ -328,6 +357,38 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				}},
 			},
 			expectedError: "spec.container.volumeMounts[0].volumeRef",
+		},
+		{
+			name: "volume mount rejects cross-namespace volumeRef",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{
+					ImageRef: "test-image",
+					VolumeMounts: []VolumeMount{{
+						Type: NamedVolumeMount, VolumeRef: "other-namespace/test-volume", Target: "/data",
+					}},
+				}},
+			},
+			expectedError: "cross-namespace references are not supported",
+		},
+		{
+			name: "network rejects cross-namespace reference",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{
+					ImageRef: "test-image",
+					Networks: []ContainerNetworkConnectionConfig{{
+						Name: "other-namespace/test-network",
+					}},
+				}},
+			},
+			expectedError: "cross-namespace references are not supported",
 		},
 		{
 			name: "unsupported volume mount type",

@@ -150,7 +150,7 @@ func TestV2PhysicalContainerControllerReconcilesWhenReferencedImageBecomesReady(
 			Name:      "watched-image-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: imageName,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: namespace.Name + "/" + imageName,
 			ContainerName: containerName},
 		},
 	}
@@ -262,7 +262,7 @@ func TestV2PhysicalContainerControllerReconcilesWhenReferencedVolumeBecomesReady
 				ContainerName: containerName,
 				VolumeMounts: []apiv2.VolumeMount{{
 					Type:      apiv2.NamedVolumeMount,
-					VolumeRef: volumeName,
+					VolumeRef: namespace.Name + "/" + volumeName,
 					Target:    "/data",
 				}},
 			},
@@ -395,7 +395,7 @@ func TestV2PhysicalContainerControllerWaitsForNetwork(t *testing.T) {
 				ImageRef:      image.Name,
 				ContainerName: containerName,
 				Networks: []apiv2.ContainerNetworkConnectionConfig{
-					{Name: networkName},
+					{Name: namespace.Name + "/" + networkName},
 				},
 			},
 		},
