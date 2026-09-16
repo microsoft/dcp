@@ -2929,6 +2929,49 @@ func (to *TestContainerOrchestrator) SimulateContainerStatus(ctx context.Context
 	return containers.ErrNotFound
 }
 
+func (to *TestContainerOrchestrator) SimulateContainerPortMappings(
+	ctx context.Context,
+	name string,
+	portMappings containers.InspectedContainerPortMapping,
+) error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
+
+	for _, container := range to.containers {
+		if !container.matches(name) {
+			continue
+		}
+
+		container.Ports = maps.Map[string, []containers.InspectedContainerHostPortConfig, []TestContainerPortConfig](
+			portMappings,
+			func(_ string, hostPorts []containers.InspectedContainerHostPortConfig) []TestContainerPortConfig {
+				return slices.Map[TestContainerPortConfig](hostPorts, func(hostPort containers.InspectedContainerHostPortConfig) TestContainerPortConfig {
+					return TestContainerPortConfig{InspectedContainerHostPortConfig: hostPort}
+				})
+			},
+		)
+		to.containers[container.ID] = container
+		to.containerEventsWatcher.Notify(containers.EventMessage{
+			Source: containers.EventSourceContainer,
+			Action: containers.EventActionUpdate,
+			Actor:  containers.EventActor{ID: container.ID},
+			Attributes: map[string]string{
+				ContainerNameAttribute: name,
+			},
+		})
+		return nil
+	}
+
+	return containers.ErrNotFound
+}
+
 func (to *TestContainerOrchestrator) SimulateContainerRestart(ctx context.Context, name string) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()

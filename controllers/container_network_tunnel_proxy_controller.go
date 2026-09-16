@@ -486,21 +486,25 @@ func ensureTunnelProxyBuildingImageState(
 	imageReady := false
 	switch {
 	case apimachinery_errors.IsNotFound(getImageErr):
+		pd.Message = fmt.Sprintf("Waiting for shared tunnel proxy PhysicalContainerImage %q to be created", tunnelProxyPhysicalImageName().String())
 		namespaceErr := EnsureV1PhysicalResourcesNamespace(ctx, r.Client)
 		if namespaceErr != nil {
 			log.Error(namespaceErr, "Failed to ensure V1 physical resources namespace")
+			pd.Message = fmt.Sprintf("Failed to ensure V1 physical resources namespace: %v", namespaceErr)
 			change |= additionalReconciliationNeeded
 			break
 		}
 		scheduleImageErr := r.scheduleTunnelProxyPhysicalContainerImageCreation(tunnelProxy.NamespacedName(), log)
 		if scheduleImageErr != nil {
 			log.Error(scheduleImageErr, "Failed to schedule shared tunnel proxy PhysicalContainerImage creation")
+			pd.Message = fmt.Sprintf("Failed to schedule shared tunnel proxy PhysicalContainerImage creation: %v", scheduleImageErr)
 			change |= additionalReconciliationNeeded
 			break
 		}
 		change |= additionalReconciliationNeeded
 	case getImageErr != nil:
 		log.Error(getImageErr, "Failed to get shared tunnel proxy PhysicalContainerImage")
+		pd.Message = fmt.Sprintf("Failed to get shared tunnel proxy PhysicalContainerImage: %v", getImageErr)
 		change |= additionalReconciliationNeeded
 	default:
 		switch physicalImage.Status.Phase {
@@ -511,6 +515,11 @@ func ensureTunnelProxyBuildingImageState(
 			pd.ClientProxyContainerImage = physicalImage.Status.Image
 			imageReady = true
 		default:
+			pd.Message = fmt.Sprintf(
+				"Waiting for shared tunnel proxy PhysicalContainerImage %q: %s",
+				tunnelProxyPhysicalImageName().String(),
+				physicalResourceStatusMessage(physicalImage.Status.Conditions),
+			)
 			change |= additionalReconciliationNeeded
 		}
 	}
@@ -1081,11 +1090,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	cnErr := r.Get(ctx, containerNetworkName, &containerNetwork)
 	if cnErr != nil {
 		log.Error(cnErr, "Failed to retrieve ContainerNetwork data necessary for starting the client proxy container")
+		pd.Message = fmt.Sprintf("Failed to retrieve ContainerNetwork %q necessary for starting the client proxy container: %v", containerNetworkName.String(), cnErr)
 		pd.startupScheduled = false
 		return false, StandardDelay
 	}
 	if containerNetwork.Status.State != apiv1.ContainerNetworkStateRunning || containerNetwork.Status.ID == "" || containerNetwork.Status.NetworkName == "" {
 		log.V(1).Info("Referenced ContainerNetwork is not in Running state, cannot start the client proxy container")
+		pd.Message = fmt.Sprintf("Waiting for referenced ContainerNetwork %q to be running", containerNetworkName.String())
 		pd.startupScheduled = false
 		return false, StandardDelay
 	}
@@ -1093,6 +1104,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	networkReferenceErr := EnsureV1PhysicalContainerNetworkReference(ctx, r.Client, &containerNetwork)
 	if networkReferenceErr != nil {
 		log.Error(networkReferenceErr, "Failed to ensure client proxy PhysicalContainerNetwork")
+		pd.Message = fmt.Sprintf("Failed to ensure client proxy PhysicalContainerNetwork: %v", networkReferenceErr)
 		return false, StandardDelay
 	}
 
@@ -1136,14 +1148,17 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 			if !commonapi.ResourceCreationProhibited.Load() {
 				log.Error(createContainerErr, "Failed to create client proxy PhysicalContainer")
 			}
+			pd.Message = fmt.Sprintf("Failed to create client proxy PhysicalContainer %q: %v", physicalContainerName.String(), createContainerErr)
 			return false, StandardDelay
 		}
 
 		log.V(1).Info("Created client proxy PhysicalContainer", "PhysicalContainer", physicalContainerName)
+		pd.Message = fmt.Sprintf("Waiting for client proxy PhysicalContainer %q to start", physicalContainerName.String())
 		return false, StandardDelay
 	}
 	if getContainerErr != nil {
 		log.Error(getContainerErr, "Failed to get client proxy PhysicalContainer")
+		pd.Message = fmt.Sprintf("Failed to get client proxy PhysicalContainer %q: %v", physicalContainerName.String(), getContainerErr)
 		return false, StandardDelay
 	}
 
@@ -1313,17 +1328,27 @@ func (r *ContainerNetworkTunnelProxyReconciler) updateClientProxyContainerStatus
 			pd.Message = fmt.Sprintf("Client proxy PhysicalContainer %q no longer exists", containerName.String())
 			return false, NoDelay
 		}
+		pd.Message = fmt.Sprintf("Waiting for client proxy PhysicalContainer %q to be created", containerName.String())
 		return false, StandardDelay
 	}
 	if getContainerErr != nil {
 		log.Error(getContainerErr, "Failed to get client proxy PhysicalContainer")
+		pd.Message = fmt.Sprintf("Failed to get client proxy PhysicalContainer %q: %v", containerName.String(), getContainerErr)
 		return false, StandardDelay
 	}
 
 	switch physicalContainer.Status.Phase {
 	case apiv2.PhysicalContainerPhaseRunning:
-		// Continue below.
+		if physicalResourceReadyConditionReason(physicalContainer.Status.Conditions) == apiv2.PhysicalContainerReasonPortMappingResolutionFailed {
+			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+			pd.Message = fmt.Sprintf("Client proxy PhysicalContainer failed: %s", physicalResourceStatusMessage(physicalContainer.Status.Conditions))
+			return false, NoDelay
+		}
 	case apiv2.PhysicalContainerPhaseFailed, apiv2.PhysicalContainerPhaseExited:
+		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Client proxy PhysicalContainer failed: %s", physicalResourceStatusMessage(physicalContainer.Status.Conditions))
+		return false, NoDelay
+	case apiv2.PhysicalContainerPhasePaused:
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 		pd.Message = fmt.Sprintf("Client proxy PhysicalContainer failed: %s", physicalResourceStatusMessage(physicalContainer.Status.Conditions))
 		return false, NoDelay
@@ -1333,8 +1358,10 @@ func (r *ContainerNetworkTunnelProxyReconciler) updateClientProxyContainerStatus
 			pd.Message = fmt.Sprintf("Client proxy PhysicalContainer failed: %s", physicalResourceStatusMessage(physicalContainer.Status.Conditions))
 			return false, NoDelay
 		}
+		pd.Message = fmt.Sprintf("Waiting for client proxy PhysicalContainer %q: %s", containerName.String(), physicalResourceStatusMessage(physicalContainer.Status.Conditions))
 		return false, StandardDelay
 	default:
+		pd.Message = fmt.Sprintf("Waiting for client proxy PhysicalContainer %q: %s", containerName.String(), physicalResourceStatusMessage(physicalContainer.Status.Conditions))
 		return false, StandardDelay
 	}
 
@@ -1342,31 +1369,46 @@ func (r *ContainerNetworkTunnelProxyReconciler) updateClientProxyContainerStatus
 	physicalNetwork := apiv2.PhysicalContainerNetwork{}
 	getNetworkErr := r.Get(ctx, networkName, &physicalNetwork)
 	if apimachinery_errors.IsNotFound(getNetworkErr) {
+		pd.Message = fmt.Sprintf("Waiting for client proxy PhysicalContainerNetwork %q to be created", networkName.String())
 		return false, StandardDelay
 	}
 	if getNetworkErr != nil {
 		log.Error(getNetworkErr, "Failed to get client proxy PhysicalContainerNetwork")
+		pd.Message = fmt.Sprintf("Failed to get client proxy PhysicalContainerNetwork %q: %v", networkName.String(), getNetworkErr)
 		return false, StandardDelay
 	}
-	if physicalNetwork.Status.Phase != apiv2.PhysicalContainerNetworkPhaseReady ||
-		!slices.Contains(physicalNetwork.Status.ContainerIDs, physicalContainer.Status.ContainerID) {
+	if physicalNetwork.Status.Phase != apiv2.PhysicalContainerNetworkPhaseReady {
+		pd.Message = fmt.Sprintf("Waiting for client proxy PhysicalContainerNetwork %q: %s", networkName.String(), physicalResourceStatusMessage(physicalNetwork.Status.Conditions))
+		return false, StandardDelay
+	}
+	if !slices.Contains(physicalNetwork.Status.ContainerIDs, physicalContainer.Status.ContainerID) {
+		pd.Message = fmt.Sprintf(
+			"Waiting for client proxy PhysicalContainer %q to connect to PhysicalContainerNetwork %q",
+			containerName.String(),
+			networkName.String(),
+		)
 		return false, StandardDelay
 	}
 
 	controlPort, controlPortErr := physicalContainerHostPort(physicalContainer.Status.PortMappings, int32(dcptun.DefaultContainerProxyControlPort))
 	if controlPortErr != nil {
 		log.Error(controlPortErr, "Failed to determine control connection host port for the client proxy PhysicalContainer")
-		return false, StandardDelay
+		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to determine control connection host port for client proxy PhysicalContainer %q: %v", containerName.String(), controlPortErr)
+		return false, NoDelay
 	}
 	dataPort, dataPortErr := physicalContainerHostPort(physicalContainer.Status.PortMappings, int32(dcptun.DefaultContainerProxyDataPort))
 	if dataPortErr != nil {
 		log.Error(dataPortErr, "Failed to determine data connection host port for the client proxy PhysicalContainer")
-		return false, StandardDelay
+		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to determine data connection host port for client proxy PhysicalContainer %q: %v", containerName.String(), dataPortErr)
+		return false, NoDelay
 	}
 
 	pd.ClientProxyContainerID = physicalContainer.Status.ContainerID
 	pd.ClientProxyControlPort = controlPort
 	pd.ClientProxyDataPort = dataPort
+	pd.Message = ""
 	return true, NoDelay
 }
 
@@ -1673,8 +1715,8 @@ func (r *ContainerNetworkTunnelProxyReconciler) onServerProcessExit(
 		if pd == nil {
 			return // ContainerNetworkTunnelProxy object has been deleted, nothing to do
 		}
-		if pd.cleanupScheduled {
-			return // We are cleaning up and just got a callback reporting server process termination, nothing to do
+		if pd.cleanupScheduled || pd.State == apiv1.ContainerNetworkTunnelProxyStateFailed {
+			return // Cleanup or another failure already owns the proxy's terminal status.
 		}
 
 		// Server proxy process exited unexpectedly, so we need to mark the proxy as failed, which will trigger the cleanup.

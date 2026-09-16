@@ -273,9 +273,10 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 		return len(physicalContainers.Items) == 2, listErr
 	})
 	require.NoError(t, waitContainersErr)
-	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
-		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateBuildingImage, nil
+	waitingTunnelProxy := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateBuildingImage && tp.Status.Message != "", nil
 	})
+	require.Contains(t, waitingTunnelProxy.Status.Message, "Waiting for")
 	require.Equal(t, 1, testContainerOrchestrator.BuildImageCallCount(imagePlan.Image))
 	releaseImageBuild()
 
@@ -288,6 +289,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	})
 
 	t.Log("Verifying client proxy status...")
+	require.Empty(t, updatedTunnelProxy.Status.Message, "Running tunnel proxy should not retain a startup wait message")
 	require.NotEmpty(t, updatedTunnelProxy.Status.ClientProxyContainerImage, "Tunnel proxy should publish the image for the client proxy container")
 	require.NotEmpty(t, updatedTunnelProxy.Status.ClientProxyContainerID, "Tunnel proxy should have a client proxy container ID")
 	require.True(t, networking.IsValidPort(int(updatedTunnelProxy.Status.ClientProxyControlPort)), "Tunnel proxy should have a valid client proxy control port")
@@ -1229,18 +1231,18 @@ func TestTunnelProxyServerUnexpectedExit(t *testing.T) {
 
 func TestTunnelProxyClientExited(t *testing.T) {
 	t.Parallel()
-	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-unexpected-exit", func(
+	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-unexpected-exit", "Runtime container has exited", func(
 		ctx context.Context,
 		orchestrator *ctrl_testutil.TestContainerOrchestrator,
 		containerID string,
 	) error {
 		return orchestrator.SimulateContainerExit(ctx, containerID, 5)
-	})
+	}, nil)
 }
 
 func TestTunnelProxyClientDestroyed(t *testing.T) {
 	t.Parallel()
-	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-destroyed", func(
+	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-destroyed", "Runtime container was not found", func(
 		ctx context.Context,
 		orchestrator *ctrl_testutil.TestContainerOrchestrator,
 		containerID string,
@@ -1256,14 +1258,40 @@ func TestTunnelProxyClientDestroyed(t *testing.T) {
 			return fmt.Errorf("unexpected removed containers: %v", removedContainers)
 		}
 		return nil
+	}, nil)
+}
+
+func TestTunnelProxyClientPaused(t *testing.T) {
+	t.Parallel()
+	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-paused", "Runtime container is paused", func(
+		ctx context.Context,
+		orchestrator *ctrl_testutil.TestContainerOrchestrator,
+		containerID string,
+	) error {
+		return orchestrator.SimulateContainerStatus(ctx, containerID, containers.ContainerStatusPaused)
+	}, func(ctx context.Context, orchestrator *ctrl_testutil.TestContainerOrchestrator, containerID string) error {
+		return orchestrator.SimulateContainerStatus(ctx, containerID, containers.ContainerStatusRunning)
 	})
 }
 
-// Verifies that ContainerNetworkTunnelProxy transitions to Failed state when its runtime client proxy container stops or disappears.
+func TestTunnelProxyClientPortMappingsMissing(t *testing.T) {
+	t.Parallel()
+	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-port-mappings-missing", "no host port mapping exists", func(
+		ctx context.Context,
+		orchestrator *ctrl_testutil.TestContainerOrchestrator,
+		containerID string,
+	) error {
+		return orchestrator.SimulateContainerPortMappings(ctx, containerID, nil)
+	}, nil)
+}
+
+// Verifies that ContainerNetworkTunnelProxy transitions to Failed state when its runtime client proxy container becomes unusable.
 func testTunnelProxyClientFailure(
 	t *testing.T,
 	testName string,
+	expectedMessage string,
 	terminateContainer func(context.Context, *ctrl_testutil.TestContainerOrchestrator, string) error,
+	afterFailure func(context.Context, *ctrl_testutil.TestContainerOrchestrator, string) error,
 ) {
 	t.Helper()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -1348,9 +1376,13 @@ func testTunnelProxyClientFailure(
 	require.NoError(t, terminateContainer(ctx, testContainerOrchestrator, clientContainerID))
 
 	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Failed state...")
-	_ = waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+	failedTunnelProxy := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
 		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateFailed, nil
 	})
+	require.Contains(t, failedTunnelProxy.Status.Message, expectedMessage)
+	if afterFailure != nil {
+		require.NoError(t, afterFailure(ctx, testContainerOrchestrator, clientContainerID))
+	}
 
 	t.Log("Verifying server proxy process has been stopped...")
 	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, true /* poll immediately */, func(_ context.Context) (bool, error) {
