@@ -39,7 +39,8 @@ type VolumeMount struct {
 	// Source is the host directory to mount for bind mounts.
 	Source string `json:"source,omitempty"`
 
-	// VolumeRef is the name of a PhysicalContainerVolume in the same namespace for volume mounts.
+	// VolumeRef identifies a PhysicalContainerVolume in the same namespace using <name> or <namespace>/<name>.
+	// Cross-namespace references are not supported.
 	VolumeRef string `json:"volumeRef,omitempty"`
 
 	// The path within the container that the mount will use.
@@ -50,7 +51,7 @@ type VolumeMount struct {
 	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
-func ValidateVolumeMounts(mounts []VolumeMount, mountsPath *field.Path) field.ErrorList {
+func ValidateVolumeMounts(mounts []VolumeMount, namespace string, mountsPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
 	for i, mount := range mounts {
@@ -67,7 +68,7 @@ func ValidateVolumeMounts(mounts []VolumeMount, mountsPath *field.Path) field.Er
 			if mount.Source != "" {
 				errorList = append(errorList, field.Forbidden(mountPath.Child("source"), "source cannot be set for volume mounts"))
 			}
-			errorList = append(errorList, validatePhysicalResourceReference(mount.VolumeRef, mountPath.Child("volumeRef"))...)
+			errorList = append(errorList, validateSameNamespaceResourceReference(mount.VolumeRef, namespace, mountPath.Child("volumeRef"))...)
 		default:
 			errorList = append(errorList, field.NotSupported(mountPath.Child("type"), mount.Type, []string{string(BindMount), string(NamedVolumeMount)}))
 		}
@@ -158,7 +159,8 @@ func ValidateContainerPorts(ports []ContainerPort, portsPath *field.Path) field.
 // ContainerNetworkConnectionConfig describes a PhysicalContainerNetwork to attach to a container.
 // +k8s:openapi-gen=true
 type ContainerNetworkConnectionConfig struct {
-	// Name of the PhysicalContainerNetwork to connect to in the container's namespace.
+	// Name identifies a PhysicalContainerNetwork in the same namespace using <name> or <namespace>/<name>.
+	// Cross-namespace references are not supported.
 	Name string `json:"name"`
 
 	// Aliases of the container on the network.

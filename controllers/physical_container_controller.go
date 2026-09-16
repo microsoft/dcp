@@ -112,7 +112,8 @@ func (r *PhysicalContainerReconciler) SetupWithManager(mgr ctrl.Manager, name st
 			return nil
 		}
 
-		return []string{container.Spec.Container.ImageRef}
+		imageName := commonapi.AsNamespacedName(container.Spec.Container.ImageRef, container.Namespace)
+		return []string{imageName.Name}
 	}); err != nil {
 		r.Log.Error(err, "Failed to create imageRef index for PhysicalContainer", "IndexField", physicalContainerImageRefField)
 		return err
@@ -127,7 +128,8 @@ func (r *PhysicalContainerReconciler) SetupWithManager(mgr ctrl.Manager, name st
 		networkNames := make([]string, 0, len(container.Spec.Container.Networks))
 		for i := range container.Spec.Container.Networks {
 			if container.Spec.Container.Networks[i].Name != "" {
-				networkNames = append(networkNames, container.Spec.Container.Networks[i].Name)
+				networkName := commonapi.AsNamespacedName(container.Spec.Container.Networks[i].Name, container.Namespace)
+				networkNames = append(networkNames, networkName.Name)
 			}
 		}
 		return networkNames
@@ -146,7 +148,8 @@ func (r *PhysicalContainerReconciler) SetupWithManager(mgr ctrl.Manager, name st
 		for i := range container.Spec.Container.VolumeMounts {
 			mount := &container.Spec.Container.VolumeMounts[i]
 			if mount.Type == apiv2.NamedVolumeMount && mount.VolumeRef != "" {
-				volumeNames = append(volumeNames, mount.VolumeRef)
+				volumeName := commonapi.AsNamespacedName(mount.VolumeRef, container.Namespace)
+				volumeNames = append(volumeNames, volumeName.Name)
 			}
 		}
 		return volumeNames
@@ -801,7 +804,8 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(
 ) (bool, string, physicalResourceProgress, string, objectChange) {
 	image := apiv2.PhysicalContainerImage{}
 	imageRef := container.Spec.Container.ImageRef
-	getErr := r.Client.Get(ctx, types.NamespacedName{Namespace: container.Namespace, Name: imageRef}, &image)
+	imageName := commonapi.AsNamespacedName(imageRef, container.Namespace)
+	getErr := r.Client.Get(ctx, imageName, &image)
 	if apierrors.IsNotFound(getErr) {
 		return false, "", physicalResourceProgressNotFound, fmt.Sprintf("PhysicalContainerImage %q does not exist.", imageRef), noChange
 	}
@@ -828,7 +832,7 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerVolumes(
 		source := mount.Source
 		if mount.Type == apiv2.NamedVolumeMount {
 			volume := apiv2.PhysicalContainerVolume{}
-			volumeName := types.NamespacedName{Namespace: container.Namespace, Name: mount.VolumeRef}
+			volumeName := commonapi.AsNamespacedName(mount.VolumeRef, container.Namespace)
 			getErr := r.Client.Get(ctx, volumeName, &volume)
 			if apierrors.IsNotFound(getErr) {
 				return false, nil, physicalResourceProgressNotFound, fmt.Sprintf("PhysicalContainerVolume %q does not exist.", mount.VolumeRef)
@@ -864,7 +868,7 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerNetworks(
 	for i := range containerConfig.Networks {
 		networkConfig := &containerConfig.Networks[i]
 		network := apiv2.PhysicalContainerNetwork{}
-		networkName := types.NamespacedName{Namespace: container.Namespace, Name: networkConfig.Name}
+		networkName := commonapi.AsNamespacedName(networkConfig.Name, container.Namespace)
 		getErr := r.Client.Get(ctx, networkName, &network)
 		if apierrors.IsNotFound(getErr) {
 			return false, nil, physicalResourceProgressNotFound, fmt.Sprintf("PhysicalContainerNetwork %q does not exist.", networkConfig.Name)
@@ -1271,9 +1275,10 @@ func (r *PhysicalContainerReconciler) ensurePhysicalContainerNetworkConnections(
 		desiredConnections = make(map[string]apiv2.PhysicalContainerNetworkConnectionSpec, len(container.Spec.Container.Networks))
 		for i := range container.Spec.Container.Networks {
 			network := &container.Spec.Container.Networks[i]
+			networkName := commonapi.AsNamespacedName(network.Name, container.Namespace)
 			desiredConnections[physicalContainerNetworkConnectionName(container, i)] = apiv2.PhysicalContainerNetworkConnectionSpec{
 				ContainerRef: container.Name,
-				NetworkRef:   network.Name,
+				NetworkRef:   networkName.Name,
 				Aliases:      append([]string{}, network.Aliases...),
 			}
 		}

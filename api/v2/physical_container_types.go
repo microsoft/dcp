@@ -16,7 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
@@ -178,7 +177,8 @@ type PhysicalContainerConfig struct {
 	// RetainRuntimeContainer keeps a runtime container created by this resource in place when the resource is deleted.
 	RetainRuntimeContainer bool `json:"retainRuntimeContainer,omitempty"`
 
-	// ImageRef is the name of a PhysicalContainerImage in the same namespace to use when creating a new runtime container.
+	// ImageRef identifies a PhysicalContainerImage in the same namespace using <name> or <namespace>/<name>.
+	// Cross-namespace references are not supported.
 	ImageRef string `json:"imageRef,omitempty"`
 
 	// ContainerName is the runtime name to use when creating a new container.
@@ -363,13 +363,7 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 
 	container := pc.Spec.Container
 	containerPath := specPath.Child("container")
-	if container.ImageRef == "" {
-		errorList = append(errorList, field.Required(containerPath.Child("imageRef"), "imageRef must be set"))
-	} else {
-		for _, validationMessage := range validation.IsDNS1123Subdomain(container.ImageRef) {
-			errorList = append(errorList, field.Invalid(containerPath.Child("imageRef"), container.ImageRef, validationMessage))
-		}
-	}
+	errorList = append(errorList, validateSameNamespaceResourceReference(container.ImageRef, pc.Namespace, containerPath.Child("imageRef"))...)
 	if container.ContainerName != "" && !validContainerNameRegexp.MatchString(container.ContainerName) {
 		errorList = append(errorList, field.Invalid(containerPath.Child("containerName"), container.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
 	}
@@ -379,9 +373,9 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 
 	networksPath := containerPath.Child("networks")
 	for i, network := range container.Networks {
-		errorList = append(errorList, validatePhysicalResourceReference(network.Name, networksPath.Index(i).Child("name"))...)
+		errorList = append(errorList, validateSameNamespaceResourceReference(network.Name, pc.Namespace, networksPath.Index(i).Child("name"))...)
 	}
-	errorList = append(errorList, ValidateVolumeMounts(container.VolumeMounts, containerPath.Child("volumeMounts"))...)
+	errorList = append(errorList, ValidateVolumeMounts(container.VolumeMounts, pc.Namespace, containerPath.Child("volumeMounts"))...)
 	errorList = append(errorList, ValidateContainerPorts(container.Ports, containerPath.Child("ports"))...)
 	errorList = append(errorList, validateLabels(container.Labels, containerPath.Child("labels"))...)
 

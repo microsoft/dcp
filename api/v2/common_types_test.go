@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
@@ -58,6 +59,73 @@ func TestValidateNamespacedResourceMetadata(t *testing.T) {
 			}
 
 			errorList := ValidateNamespacedResourceMetadata(obj)
+			if tc.expectedError == "" {
+				require.Empty(t, errorList)
+			} else {
+				require.NotEmpty(t, errorList)
+				require.Contains(t, errorList.ToAggregate().Error(), tc.expectedError)
+			}
+		})
+	}
+}
+
+func TestValidateSameNamespaceResourceReference(t *testing.T) {
+	testCases := []struct {
+		name          string
+		reference     string
+		expectedError string
+	}{
+		{
+			name:      "name",
+			reference: "test-resource",
+		},
+		{
+			name:      "explicit same namespace",
+			reference: "test-namespace/test-resource",
+		},
+		{
+			name:          "missing reference",
+			expectedError: "reference must be set",
+		},
+		{
+			name:          "cross namespace",
+			reference:     "other-namespace/test-resource",
+			expectedError: "cross-namespace references are not supported",
+		},
+		{
+			name:          "missing explicit namespace",
+			reference:     "/test-resource",
+			expectedError: "lowercase RFC 1123 label",
+		},
+		{
+			name:          "missing explicit name",
+			reference:     "test-namespace/",
+			expectedError: "lowercase RFC 1123 subdomain",
+		},
+		{
+			name:          "additional separator",
+			reference:     "test-namespace/test-resource/extra",
+			expectedError: "lowercase RFC 1123 subdomain",
+		},
+		{
+			name:          "invalid explicit namespace",
+			reference:     "INVALID/test-resource",
+			expectedError: "lowercase RFC 1123 label",
+		},
+		{
+			name:          "invalid name",
+			reference:     "INVALID",
+			expectedError: "lowercase RFC 1123 subdomain",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			errorList := validateSameNamespaceResourceReference(
+				tc.reference,
+				"test-namespace",
+				field.NewPath("spec", "reference"),
+			)
 			if tc.expectedError == "" {
 				require.Empty(t, errorList)
 			} else {
