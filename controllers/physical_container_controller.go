@@ -40,6 +40,7 @@ import (
 
 const (
 	physicalContainerImageRefField   = ".spec.imageRef"
+	physicalContainerVolumeRefField  = ".spec.volumeMounts.volumeRef"
 	physicalContainerNetworkRefField = ".spec.networks.name"
 )
 
@@ -50,6 +51,7 @@ var (
 		physicalContainerStateNamespace: handlePhysicalContainerNamespace,
 		physicalContainerStateResolve:   handlePhysicalContainerResolve,
 		physicalContainerStateImage:     handlePhysicalContainerImage,
+		physicalContainerStateVolumes:   handlePhysicalContainerVolumes,
 		physicalContainerStateNetworks:  handlePhysicalContainerNetworks,
 		physicalContainerStateCreate:    handlePhysicalContainerCreate,
 		physicalContainerStateReplace:   handlePhysicalContainerCreateFailure,
@@ -134,6 +136,25 @@ func (r *PhysicalContainerReconciler) SetupWithManager(mgr ctrl.Manager, name st
 		return err
 	}
 
+	if err := indexer.IndexField(context.Background(), &apiv2.PhysicalContainer{}, physicalContainerVolumeRefField, func(rawObj ctrl_client.Object) []string {
+		container := rawObj.(*apiv2.PhysicalContainer)
+		if container.Spec.Container == nil || len(container.Spec.Container.VolumeMounts) == 0 {
+			return nil
+		}
+
+		volumeNames := make([]string, 0, len(container.Spec.Container.VolumeMounts))
+		for i := range container.Spec.Container.VolumeMounts {
+			mount := &container.Spec.Container.VolumeMounts[i]
+			if mount.Type == apiv2.NamedVolumeMount && mount.VolumeRef != "" {
+				volumeNames = append(volumeNames, mount.VolumeRef)
+			}
+		}
+		return volumeNames
+	}); err != nil {
+		r.Log.Error(err, "Failed to create volumeRef index for PhysicalContainer", "IndexField", physicalContainerVolumeRefField)
+		return err
+	}
+
 	if err := indexer.IndexField(context.Background(), &apiv2.PhysicalContainerNetworkConnection{}, ownerKey, func(rawObj ctrl_client.Object) []string {
 		connection := rawObj.(*apiv2.PhysicalContainerNetworkConnection)
 		owner := metav1.GetControllerOf(connection)
@@ -151,11 +172,30 @@ func (r *PhysicalContainerReconciler) SetupWithManager(mgr ctrl.Manager, name st
 		For(&apiv2.PhysicalContainer{}).
 		Owns(&apiv2.PhysicalContainerNetworkConnection{}).
 		Watches(&apiv2.PhysicalContainerImage{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForImage), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.PhysicalContainerVolume{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForVolume), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Watches(&apiv2.PhysicalContainerNetwork{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNetwork), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.PhysicalContainerList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
+}
+
+func (r *PhysicalContainerReconciler) requestReconcileForVolume(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
+	volume := obj.(*apiv2.PhysicalContainerVolume)
+	var containerList apiv2.PhysicalContainerList
+	listErr := r.List(ctx, &containerList, ctrl_client.InNamespace(volume.Namespace), ctrl_client.MatchingFields{physicalContainerVolumeRefField: volume.Name})
+	if listErr != nil {
+		r.Log.Error(listErr, "Failed to list PhysicalContainers referencing PhysicalContainerVolume", "Volume", volume.NamespacedName())
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(containerList.Items))
+	for i := range containerList.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: containerList.Items[i].NamespacedName()})
+	}
+
+	r.Log.V(1).Info("PhysicalContainerVolume updated, requesting PhysicalContainer reconciliation", "Volume", volume.NamespacedName(), "Containers", len(requests))
+	return requests
 }
 
 func (r *PhysicalContainerReconciler) requestReconcileForNetwork(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
@@ -380,10 +420,33 @@ func handlePhysicalContainerImage(
 	}
 
 	data.image = image
+	data.state = physicalContainerStateVolumes
+	data.progress = physicalResourceProgressInProgress
+	data.failureMessage = ""
+	return imageChange | handlePhysicalContainerVolumes(ctx, reconciler, container, data.state, data, log)
+}
+
+func handlePhysicalContainerVolumes(
+	ctx context.Context,
+	reconciler *PhysicalContainerReconciler,
+	container *apiv2.PhysicalContainer,
+	_ physicalContainerState,
+	data *physicalContainerData,
+	log logr.Logger,
+) objectChange {
+	volumesReady, volumeMounts, volumeProgress, volumeMessage := reconciler.resolvePhysicalContainerVolumes(ctx, container, log)
+	if !volumesReady {
+		data.state = physicalContainerStateVolumes
+		data.progress = volumeProgress
+		data.failureMessage = volumeMessage
+		return noChange
+	}
+
+	data.volumeMounts = volumeMounts
 	data.state = physicalContainerStateNetworks
 	data.progress = physicalResourceProgressInProgress
 	data.failureMessage = ""
-	return imageChange | handlePhysicalContainerNetworks(ctx, reconciler, container, data.state, data, log)
+	return handlePhysicalContainerNetworks(ctx, reconciler, container, data.state, data, log)
 }
 
 func handlePhysicalContainerNetworks(
@@ -753,6 +816,44 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(
 	return true, image.Status.ImageID, physicalResourceProgressCompleted, "", setValue(&container.Status.Image, image.Status.ImageID)
 }
 
+func (r *PhysicalContainerReconciler) resolvePhysicalContainerVolumes(
+	ctx context.Context,
+	container *apiv2.PhysicalContainer,
+	log logr.Logger,
+) (bool, []containers.CreateContainerVolumeMount, physicalResourceProgress, string) {
+	containerConfig := container.Spec.Container
+	volumeMounts := make([]containers.CreateContainerVolumeMount, 0, len(containerConfig.VolumeMounts))
+	for i := range containerConfig.VolumeMounts {
+		mount := &containerConfig.VolumeMounts[i]
+		source := mount.Source
+		if mount.Type == apiv2.NamedVolumeMount {
+			volume := apiv2.PhysicalContainerVolume{}
+			volumeName := types.NamespacedName{Namespace: container.Namespace, Name: mount.VolumeRef}
+			getErr := r.Client.Get(ctx, volumeName, &volume)
+			if apierrors.IsNotFound(getErr) {
+				return false, nil, physicalResourceProgressNotFound, fmt.Sprintf("PhysicalContainerVolume %q does not exist.", mount.VolumeRef)
+			}
+			if getErr != nil {
+				log.Error(getErr, "Failed to get PhysicalContainerVolume", "VolumeRef", mount.VolumeRef)
+				return false, nil, physicalResourceProgressRetryPending, fmt.Sprintf("Failed to get PhysicalContainerVolume %q: %v", mount.VolumeRef, getErr)
+			}
+			if volume.Status.Phase != apiv2.PhysicalContainerVolumePhaseReady || volume.Status.VolumeID == "" {
+				return false, nil, physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerVolume %q is not ready.", mount.VolumeRef)
+			}
+			source = volume.Status.VolumeID
+		}
+
+		volumeMounts = append(volumeMounts, containers.CreateContainerVolumeMount{
+			Type:     containers.VolumeMountType(mount.Type),
+			Source:   source,
+			Target:   mount.Target,
+			ReadOnly: mount.ReadOnly,
+		})
+	}
+
+	return true, volumeMounts, physicalResourceProgressCompleted, ""
+}
+
 func (r *PhysicalContainerReconciler) resolvePhysicalContainerNetworks(
 	ctx context.Context,
 	container *apiv2.PhysicalContainer,
@@ -845,7 +946,7 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		Image:        data.image,
 		Entrypoint:   containerConfig.Entrypoint,
 		Command:      containerConfig.Command,
-		VolumeMounts: physicalVolumeMountsToCreateContainerVolumeMounts(containerConfig.VolumeMounts),
+		VolumeMounts: data.volumeMounts,
 		Ports:        physicalPortsToCreateContainerPorts(containerConfig.Ports),
 		Networks:     data.networks,
 		Env:          containerConfig.Env,
@@ -1349,19 +1450,6 @@ func physicalPortsToCreateContainerPorts(ports []apiv2.ContainerPort) []containe
 				Protocol:      string(port.Protocol),
 				HostIP:        port.HostIP,
 			})
-		}
-	}
-	return retval
-}
-
-func physicalVolumeMountsToCreateContainerVolumeMounts(mounts []apiv2.VolumeMount) []containers.CreateContainerVolumeMount {
-	retval := make([]containers.CreateContainerVolumeMount, len(mounts))
-	for i, mount := range mounts {
-		retval[i] = containers.CreateContainerVolumeMount{
-			Type:     containers.VolumeMountType(mount.Type),
-			Source:   mount.Source,
-			Target:   mount.Target,
-			ReadOnly: mount.ReadOnly,
 		}
 	}
 	return retval

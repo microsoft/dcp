@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	std_slices "slices"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,6 +24,7 @@ const (
 	physicalContainerStateNamespace physicalContainerState = iota + 1
 	physicalContainerStateResolve
 	physicalContainerStateImage
+	physicalContainerStateVolumes
 	physicalContainerStateNetworks
 	physicalContainerStateCreate
 	physicalContainerStateReplace
@@ -57,6 +59,9 @@ type physicalContainerData struct {
 
 	// Image name resolved from the referenced PhysicalContainerImage.
 	image string
+
+	// Runtime volume mounts resolved from the referenced PhysicalContainerVolumes.
+	volumeMounts []containers.CreateContainerVolumeMount
 
 	// Runtime networks resolved from the referenced PhysicalContainerNetworks.
 	networks []containers.CreateContainerNetworkOptions
@@ -119,6 +124,7 @@ func (data *physicalContainerData) Clone() *physicalContainerData {
 		progress:                  data.progress,
 		containerID:               data.containerID,
 		image:                     data.image,
+		volumeMounts:              append([]containers.CreateContainerVolumeMount{}, data.volumeMounts...),
 		networks:                  clonePhysicalContainerNetworks(data.networks),
 		failureMessage:            data.failureMessage,
 		portMappingFailureMessage: data.portMappingFailureMessage,
@@ -147,6 +153,10 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 	}
 	if data.image != other.image {
 		data.image = other.image
+		updated = true
+	}
+	if !std_slices.Equal(data.volumeMounts, other.volumeMounts) {
+		data.volumeMounts = append([]containers.CreateContainerVolumeMount{}, other.volumeMounts...)
 		updated = true
 	}
 	if !physicalContainerNetworksEqual(data.networks, other.networks) {
@@ -257,6 +267,16 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 		},
 		{state: physicalContainerStateImage, progress: physicalResourceProgressRetryPending}: {
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonImageLookupFailed,
+			requeue: true, requeueDelay: LongDelay,
+		},
+		{state: physicalContainerStateVolumes, progress: physicalResourceProgressNotFound}: {
+			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonVolumeNotFound,
+		},
+		{state: physicalContainerStateVolumes, progress: physicalResourceProgressNotReady}: {
+			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonVolumeNotReady,
+		},
+		{state: physicalContainerStateVolumes, progress: physicalResourceProgressRetryPending}: {
+			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonVolumeLookupFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
 		{state: physicalContainerStateNetworks, progress: physicalResourceProgressNotFound}: {

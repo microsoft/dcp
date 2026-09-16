@@ -36,9 +36,11 @@ const (
 type VolumeMount struct {
 	Type VolumeMountType `json:"type"`
 
-	// Bind mounts: the host directory to mount.
-	// Volume mounts: name of the volume to mount.
-	Source string `json:"source"`
+	// Source is the host directory to mount for bind mounts.
+	Source string `json:"source,omitempty"`
+
+	// VolumeRef is the name of a PhysicalContainerVolume in the same namespace for volume mounts.
+	VolumeRef string `json:"volumeRef,omitempty"`
 
 	// The path within the container that the mount will use.
 	Target string `json:"target"`
@@ -46,6 +48,32 @@ type VolumeMount struct {
 	// True if the mounted file system is supposed to be read-only.
 	// +optional
 	ReadOnly bool `json:"readOnly,omitempty"`
+}
+
+func ValidateVolumeMounts(mounts []VolumeMount, mountsPath *field.Path) field.ErrorList {
+	errorList := field.ErrorList{}
+
+	for i, mount := range mounts {
+		mountPath := mountsPath.Index(i)
+		switch mount.Type {
+		case BindMount:
+			if mount.Source == "" {
+				errorList = append(errorList, field.Required(mountPath.Child("source"), "source must be set for bind mounts"))
+			}
+			if mount.VolumeRef != "" {
+				errorList = append(errorList, field.Forbidden(mountPath.Child("volumeRef"), "volumeRef cannot be set for bind mounts"))
+			}
+		case NamedVolumeMount:
+			if mount.Source != "" {
+				errorList = append(errorList, field.Forbidden(mountPath.Child("source"), "source cannot be set for volume mounts"))
+			}
+			errorList = append(errorList, validatePhysicalResourceReference(mount.VolumeRef, mountPath.Child("volumeRef"))...)
+		default:
+			errorList = append(errorList, field.NotSupported(mountPath.Child("type"), mount.Type, []string{string(BindMount), string(NamedVolumeMount)}))
+		}
+	}
+
+	return errorList
 }
 
 // ContainerPort describes a port, or contiguous range of ports, to publish from a container.
