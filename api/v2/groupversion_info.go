@@ -35,6 +35,7 @@ var (
 		&PhysicalContainerImage{},
 		&PhysicalContainer{},
 		&PhysicalContainerNetwork{},
+		&PhysicalContainerNetworkConnection{},
 		&PhysicalContainerVolume{},
 		&PhysicalProcess{},
 	}

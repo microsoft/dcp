@@ -28,22 +28,25 @@ func TestShutdownResourcesIncludeV1AndV2Namespace(t *testing.T) {
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.PhysicalProcess{}).GetGroupVersionResource())
 }
 
-func TestNamespaceResourcesCleanPhysicalContainersFirst(t *testing.T) {
+func TestNamespaceResourcesCleanPhysicalConnectionsBeforeContainers(t *testing.T) {
 	namespaceResourcesByGVR := cleanupResourcesByGVR(NamespaceResources)
 	physicalContainerGVR := (&apiv2.PhysicalContainer{}).GetGroupVersionResource()
 	physicalContainerImageGVR := (&apiv2.PhysicalContainerImage{}).GetGroupVersionResource()
 	physicalContainerNetworkGVR := (&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource()
+	physicalContainerNetworkConnectionGVR := (&apiv2.PhysicalContainerNetworkConnection{}).GetGroupVersionResource()
 	physicalContainerVolumeGVR := (&apiv2.PhysicalContainerVolume{}).GetGroupVersionResource()
 	physicalProcessGVR := (&apiv2.PhysicalProcess{}).GetGroupVersionResource()
 
-	require.Len(t, namespaceResourcesByGVR, 5)
+	require.Len(t, namespaceResourcesByGVR, 6)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerImageGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerNetworkGVR)
+	require.Contains(t, namespaceResourcesByGVR, physicalContainerNetworkConnectionGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerVolumeGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalProcessGVR)
 	require.Empty(t, namespaceResourcesByGVR[physicalProcessGVR].CleanUpAfter)
-	require.Empty(t, namespaceResourcesByGVR[physicalContainerGVR].CleanUpAfter)
+	require.Empty(t, namespaceResourcesByGVR[physicalContainerNetworkConnectionGVR].CleanUpAfter)
+	require.Contains(t, namespaceResourcesByGVR[physicalContainerGVR].CleanUpAfter, physicalContainerNetworkConnectionGVR)
 	require.Contains(t, namespaceResourcesByGVR[physicalContainerImageGVR].CleanUpAfter, physicalContainerGVR)
 	// A network cannot be removed while containers are still attached to it.
 	require.Contains(t, namespaceResourcesByGVR[physicalContainerNetworkGVR].CleanUpAfter, physicalContainerGVR)

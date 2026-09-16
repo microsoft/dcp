@@ -8,6 +8,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	std_slices "slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,14 +17,44 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/statestore"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+type invalidPortMappingContainerOrchestrator struct {
+	containers.ContainerOrchestrator
+	containerName string
+}
+
+func (orchestrator *invalidPortMappingContainerOrchestrator) InspectContainers(
+	ctx context.Context,
+	options containers.InspectContainersOptions,
+) ([]containers.InspectedContainer, error) {
+	inspectedContainers, inspectErr := orchestrator.ContainerOrchestrator.InspectContainers(ctx, options)
+	if inspectErr != nil {
+		return nil, inspectErr
+	}
+
+	for i := range inspectedContainers {
+		if inspectedContainers[i].Name != orchestrator.containerName {
+			continue
+		}
+		if inspectedContainers[i].Ports == nil {
+			inspectedContainers[i].Ports = make(containers.InspectedContainerPortMapping)
+		}
+		inspectedContainers[i].Ports["invalid-port"] = nil
+	}
+
+	return inspectedContainers, nil
+}
 
 func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 	t.Parallel()
@@ -77,6 +108,7 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 	require.NotEqual(t, "caller-value", inspectedContainers[0].Labels[controllers.CreatorProcessIdLabel])
 	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
 	require.NotEqual(t, "caller-value", inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
+	require.Len(t, physicalContainerMonitorProcesses(updatedContainer.Status.ContainerID), 1)
 }
 
 func TestV2PhysicalContainerControllerReconcilesWhenNamespaceBecomesActive(t *testing.T) {
@@ -166,9 +198,18 @@ func TestV2PhysicalContainerControllerCreatesContainerWithNetworks(t *testing.T)
 	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-networks")
 	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "networked-image", "networked-image")
 	networkName := "v2-pctr-networked-runtime"
-	_, networkErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
+	runtimeNetwork, networkErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
 	require.NoError(t, networkErr)
 	removeRuntimeNetworkOnCleanup(t, networkName)
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "networked-network",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{NetworkID: runtimeNetwork},
+	}
+	require.NoError(t, client.Create(ctx, network))
+	waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 
 	container := &apiv2.PhysicalContainer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -179,7 +220,7 @@ func TestV2PhysicalContainerControllerCreatesContainerWithNetworks(t *testing.T)
 			ContainerName: "v2-pctr-networked-container",
 			Networks: []apiv2.ContainerNetworkConnectionConfig{
 				{
-					Name:    networkName,
+					Name:    network.Name,
 					Aliases: []string{"api", "service"},
 				},
 			}},
@@ -198,6 +239,67 @@ func TestV2PhysicalContainerControllerCreatesContainerWithNetworks(t *testing.T)
 	require.Len(t, inspectedContainers[0].Networks, 1)
 	require.Equal(t, networkName, inspectedContainers[0].Networks[0].Name)
 	require.ElementsMatch(t, []string{"api", "service"}, inspectedContainers[0].Networks[0].Aliases)
+
+	connections := apiv2.PhysicalContainerNetworkConnectionList{}
+	require.NoError(t, client.List(ctx, &connections, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, connections.Items, 1)
+	require.Equal(t, container.Name, connections.Items[0].Spec.ContainerRef)
+	require.Equal(t, network.Name, connections.Items[0].Spec.NetworkRef)
+	require.ElementsMatch(t, []string{"api", "service"}, connections.Items[0].Spec.Aliases)
+	require.True(t, metav1.IsControlledBy(&connections.Items[0], container))
+}
+
+func TestV2PhysicalContainerControllerWaitsForNetwork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-waits-network")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "waits-network-image", "waits-network-image")
+	networkName := "waited-network"
+	containerName := "v2-pctr-waits-network-container"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "waits-network-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:      image.Name,
+				ContainerName: containerName,
+				Networks: []apiv2.ContainerNetworkConnectionConfig{
+					{Name: networkName},
+				},
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	pendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
+		return currentContainer.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonNetworkNotFound, nil
+	})
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonNetworkNotFound)
+	require.Equal(t, 0, containerOrchestrator.CreateContainerCallCount(containerName))
+
+	runtimeNetworkName := "v2-pctr-waits-network-runtime"
+	removeRuntimeNetworkOnCleanup(t, runtimeNetworkName)
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      networkName,
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: runtimeNetworkName},
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
 }
 
 func TestV2PhysicalContainerControllerReportsPortMappings(t *testing.T) {
@@ -269,6 +371,81 @@ func TestV2PhysicalContainerControllerReportsPortMappings(t *testing.T) {
 	require.Equal(t, commonapi.PortProtocolTCP, fifthMapping.Protocol)
 	require.Equal(t, "127.0.0.3", fifthMapping.HostIP)
 	require.Equal(t, int32(19102), fifthMapping.HostPort)
+}
+
+func TestV2PhysicalContainerControllerPreservesRuntimePhaseOnPortMappingFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const runtimeContainerName = "v2-pctr-invalid-port-runtime"
+	var testContainerOrchestrator *ctrl_testutil.TestContainerOrchestrator
+	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(
+		ctx,
+		PhysicalContainerController,
+		t.Name(),
+		t.TempDir(),
+		TestEnvironmentOptions{
+			DecorateContainerOrchestrator: func(
+				orchestrator containers.ContainerOrchestrator,
+				_ *statestore.Store,
+			) containers.ContainerOrchestrator {
+				var isTestContainerOrchestrator bool
+				testContainerOrchestrator, isTestContainerOrchestrator = orchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+				require.True(t, isTestContainerOrchestrator)
+				return &invalidPortMappingContainerOrchestrator{
+					ContainerOrchestrator: orchestrator,
+					containerName:         runtimeContainerName,
+				}
+			},
+		},
+	)
+	require.NoError(t, startupErr)
+	defer shutdownTestEnvironment(serverInfo, cancel)
+
+	runtimeContainerID, runErr := testContainerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:  runtimeContainerName,
+			Image: "existing-image",
+		},
+	})
+	require.NoError(t, runErr)
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), defaultIntegrationTestTimeout)
+		defer cleanupCancel()
+		_, _ = testContainerOrchestrator.RemoveContainersWithoutEvents(cleanupCtx, containers.RemoveContainersOptions{
+			Containers: []string{runtimeContainerID},
+			Force:      true,
+		})
+	}()
+
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-pctr-invalid-port"}}
+	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "invalid-port-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{ContainerID: runtimeContainerID},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, container))
+
+	updatedContainer := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhaseRunning &&
+			readyCondition != nil &&
+			readyCondition.Reason == string(apiv2.PhysicalContainerReasonPortMappingResolutionFailed), nil
+	})
+	requireReadyCondition(
+		t,
+		updatedContainer.Status.Conditions,
+		metav1.ConditionFalse,
+		apiv2.PhysicalContainerReasonPortMappingResolutionFailed,
+	)
 }
 
 func TestV2PhysicalContainerControllerCopiesCreateFilesBeforeStart(t *testing.T) {
@@ -607,6 +784,7 @@ func TestV2PhysicalContainerControllerTracksExistingContainer(t *testing.T) {
 	require.NoError(t, inspectErr)
 	require.Len(t, inspectedContainers, 1)
 	require.NotContains(t, inspectedContainers[0].Labels, controllers.CreatorProcessIdLabel)
+	require.Empty(t, physicalContainerMonitorProcesses(existingContainerID))
 }
 
 func TestV2PhysicalContainerControllerRejectsDuplicateRuntimeContainerOwnership(t *testing.T) {
@@ -812,6 +990,13 @@ func TestV2PhysicalContainerControllerPreservesCreatedContainerOnDeletion(t *tes
 	require.NoError(t, inspectErr)
 	require.Len(t, inspectedContainers, 1)
 	require.Equal(t, "true", inspectedContainers[0].Labels[controllers.PersistentLabel])
+	require.Empty(t, physicalContainerMonitorProcesses(containerID))
+}
+
+func physicalContainerMonitorProcesses(containerID string) []*internal_testutil.ProcessExecution {
+	return testProcessExecutor.FindAll([]string{"dcp", "monitor-container"}, "", func(processExecution *internal_testutil.ProcessExecution) bool {
+		return std_slices.Contains(processExecution.Cmd.Args, containerID)
+	})
 }
 
 func TestV2PhysicalContainerControllerPreservesExistingContainerOnDeletion(t *testing.T) {

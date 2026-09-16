@@ -146,6 +146,10 @@ type PhysicalContainerNetworkStatus struct {
 	// +listType=set
 	Gateways []string `json:"gateways,omitempty"`
 
+	// ContainerIDs are the runtime container IDs currently attached to the network.
+	// +listType=set
+	ContainerIDs []string `json:"containerIDs,omitempty"`
+
 	// CreatedAt is the runtime network creation timestamp.
 	CreatedAt metav1.MicroTime `json:"createdAt,omitempty"`
 

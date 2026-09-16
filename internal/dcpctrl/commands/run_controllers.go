@@ -280,6 +280,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerReconciler"),
 			containerOrchestrator,
+			processExecutor,
 		)
 		if err = physicalContainerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up PhysicalContainer controller")
@@ -374,7 +375,6 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			controllers.ContainerNetworkTunnelProxyReconcilerConfig{
-				Orchestrator:            containerOrchestrator,
 				ProcessExecutor:         processExecutor,
 				MakeTunnelControlClient: dcptunproto.NewTunnelControlClient,
 			},
