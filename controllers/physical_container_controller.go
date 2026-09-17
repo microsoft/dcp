@@ -50,9 +50,9 @@ var (
 	physicalContainerDataInitializers = map[physicalContainerState]physicalContainerDataInitializerFunc{
 		physicalContainerStateNamespace: handlePhysicalContainerNamespace,
 		physicalContainerStateResolve:   handlePhysicalContainerResolve,
-		physicalContainerStateImage:     handlePhysicalContainerImage,
-		physicalContainerStateVolumes:   handlePhysicalContainerVolumes,
-		physicalContainerStateNetworks:  handlePhysicalContainerNetworks,
+		physicalContainerStateImage:     handlePhysicalContainerPrepare,
+		physicalContainerStateVolumes:   handlePhysicalContainerPrepare,
+		physicalContainerStateNetworks:  handlePhysicalContainerPrepare,
 		physicalContainerStateCreate:    handlePhysicalContainerCreate,
 		physicalContainerStateReplace:   handlePhysicalContainerCreateFailure,
 		physicalContainerStateCopyFiles: handlePhysicalContainerCopyFiles,
@@ -378,7 +378,7 @@ func handlePhysicalContainerResolve(
 		containerID = data.containerID
 	}
 	if containerID == "" {
-		return handlePhysicalContainerImage(ctx, reconciler, container, data.state, data, log)
+		return handlePhysicalContainerPrepare(ctx, reconciler, container, data.state, data, log)
 	}
 
 	if data.containerID == "" {
@@ -406,7 +406,7 @@ func handlePhysicalContainerResolve(
 	return handlePhysicalContainerRuntime(ctx, reconciler, container, data.state, data, log)
 }
 
-func handlePhysicalContainerImage(
+func handlePhysicalContainerPrepare(
 	ctx context.Context,
 	reconciler *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
@@ -414,6 +414,10 @@ func handlePhysicalContainerImage(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
+	data.image = ""
+	data.volumeMounts = nil
+	data.networks = nil
+
 	imageReady, image, imageProgress, imageMessage, imageChange := reconciler.resolvePhysicalContainerImage(ctx, container, log)
 	if !imageReady {
 		data.state = physicalContainerStateImage
@@ -422,54 +426,26 @@ func handlePhysicalContainerImage(
 		return imageChange
 	}
 
-	data.image = image
-	data.state = physicalContainerStateVolumes
-	data.progress = physicalResourceProgressInProgress
-	data.failureMessage = ""
-	return imageChange | handlePhysicalContainerVolumes(ctx, reconciler, container, data.state, data, log)
-}
-
-func handlePhysicalContainerVolumes(
-	ctx context.Context,
-	reconciler *PhysicalContainerReconciler,
-	container *apiv2.PhysicalContainer,
-	_ physicalContainerState,
-	data *physicalContainerData,
-	log logr.Logger,
-) objectChange {
 	volumesReady, volumeMounts, volumeProgress, volumeMessage := reconciler.resolvePhysicalContainerVolumes(ctx, container, log)
 	if !volumesReady {
 		data.state = physicalContainerStateVolumes
 		data.progress = volumeProgress
 		data.failureMessage = volumeMessage
-		return noChange
+		return imageChange
 	}
 
-	data.volumeMounts = volumeMounts
-	data.state = physicalContainerStateNetworks
-	data.progress = physicalResourceProgressInProgress
-	data.failureMessage = ""
-	return handlePhysicalContainerNetworks(ctx, reconciler, container, data.state, data, log)
-}
-
-func handlePhysicalContainerNetworks(
-	ctx context.Context,
-	reconciler *PhysicalContainerReconciler,
-	container *apiv2.PhysicalContainer,
-	_ physicalContainerState,
-	data *physicalContainerData,
-	log logr.Logger,
-) objectChange {
 	networksReady, networks, networkProgress, networkMessage := reconciler.resolvePhysicalContainerNetworks(ctx, container, log)
 	if !networksReady {
 		data.state = physicalContainerStateNetworks
 		data.progress = networkProgress
 		data.failureMessage = networkMessage
-		return noChange
+		return imageChange
 	}
 
+	data.image = image
+	data.volumeMounts = volumeMounts
 	data.networks = networks
-	return reconciler.schedulePhysicalContainerCreate(container, data, log)
+	return imageChange | reconciler.schedulePhysicalContainerCreate(container, data, log)
 }
 
 func handlePhysicalContainerCreate(
@@ -734,7 +710,7 @@ func handlePhysicalContainerRecoverableCreateFailed(
 	}
 
 	log.V(1).Info("Retrying physical container creation", "ContainerName", container.Spec.Container.ContainerName)
-	return cleanupChange | reconciler.schedulePhysicalContainerCreate(container, data, log)
+	return cleanupChange | handlePhysicalContainerPrepare(ctx, reconciler, container, data.state, data, log)
 }
 
 func (r *PhysicalContainerReconciler) removePartiallyCreatedPhysicalContainer(
