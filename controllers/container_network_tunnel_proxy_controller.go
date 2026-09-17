@@ -99,7 +99,7 @@ type ContainerNetworkTunnelProxyReconcilerConfig struct {
 	ProcessExecutor process.Executor // Mandatory
 
 	// Directory that owns the lifetime of generated tunnel proxy image build contexts.
-	// Mandatory.
+	// Defaults to the DCP temporary directory.
 	BuildContextDir string
 
 	// The factory function to create a TunnelControlClient used to control the proxy pair.
@@ -137,7 +137,7 @@ func NewContainerNetworkTunnelProxyReconciler(
 		panic("ContainerNetworkTunnelProxyReconcilerConfig.ProcessExecutor must not be nil")
 	}
 	if config.BuildContextDir == "" {
-		panic("ContainerNetworkTunnelProxyReconcilerConfig.BuildContextDir must not be empty")
+		config.BuildContextDir = usvc_io.DcpTempDir()
 	}
 	if config.MakeTunnelControlClient == nil {
 		panic("ContainerNetworkTunnelProxyReconcilerConfig.TunnelControlClientFactory must not be nil")
