@@ -316,7 +316,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.NoError(t, globErr)
 	require.Equal(t, []string{physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source}, buildContextFiles)
 	t.Cleanup(func() {
-		require.NoError(t, os.Remove(physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source))
+		require.NoFileExists(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source)
 	})
 	require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, physicalImages.Items[0].Status.Phase)
 	require.Equal(t, 1, testContainerOrchestrator.BuildImageCallCount(updatedTunnelProxy.Status.ClientProxyContainerImage))
@@ -509,7 +509,7 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	require.Empty(t, physicalImage.Spec.Image.Build.ContextArchive.RawContents)
 	require.FileExists(t, physicalImage.Spec.Image.Build.ContextArchive.Source)
 	t.Cleanup(func() {
-		require.NoError(t, os.Remove(physicalImage.Spec.Image.Build.ContextArchive.Source))
+		require.NoFileExists(t, physicalImage.Spec.Image.Build.ContextArchive.Source)
 	})
 
 	t.Logf("Deleting ContainerNetworkTunnelProxy object '%s'", tunnelProxy.ObjectMeta.Name)
