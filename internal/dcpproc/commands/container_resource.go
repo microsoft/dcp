@@ -7,11 +7,16 @@ package commands
 
 import (
 	"context"
-	"math/rand"
+	"errors"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
+
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
+
+var errContainerResourceNotRemoved = errors.New("container resource has not been removed")
 
 func pollContainerResourceRemoved(
 	ctx context.Context,
@@ -20,33 +25,30 @@ func pollContainerResourceRemoved(
 	inspectFailureMessage string,
 	log logr.Logger,
 ) bool {
-	timer := time.NewTimer(containerResourcePollDelay(pollInterval))
-	defer timer.Stop()
+	if ctx.Err() != nil {
+		return false
+	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-timer.C:
-			removed, inspectErr := inspect(ctx)
-			if removed {
-				return true
-			}
-			if inspectErr != nil {
-				if ctx.Err() != nil {
-					return false
-				}
-				log.Error(inspectErr, inspectFailureMessage)
-			}
-			timer.Reset(containerResourcePollDelay(pollInterval))
+	pollBackoff := backoff.NewExponentialBackOff(
+		backoff.WithInitialInterval(pollInterval),
+		backoff.WithMaxInterval(pollInterval),
+		backoff.WithMaxElapsedTime(0),
+		backoff.WithRandomizationFactor(0.05),
+		backoff.WithMultiplier(1),
+	)
+	pollErr := resiliency.Retry(ctx, pollBackoff, func() error {
+		removed, inspectErr := inspect(ctx)
+		if removed {
+			return nil
 		}
-	}
-}
-
-func containerResourcePollDelay(pollInterval time.Duration) time.Duration {
-	jitterRange := pollInterval / 20
-	if jitterRange <= 0 {
-		return pollInterval
-	}
-	return pollInterval + time.Duration(rand.Int63n(int64(jitterRange)))
+		if inspectErr != nil {
+			if ctx.Err() != nil {
+				return inspectErr
+			}
+			log.Error(inspectErr, inspectFailureMessage)
+			return inspectErr
+		}
+		return errContainerResourceNotRemoved
+	})
+	return pollErr == nil
 }
