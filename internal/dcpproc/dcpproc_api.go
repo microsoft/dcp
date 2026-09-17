@@ -174,18 +174,20 @@ func RunNetworkWatcher(
 func RunVolumeWatcher(
 	pe process.Executor,
 	volumeID string,
+	resourceUID string,
 	log logr.Logger,
 ) {
 	if _, found := os.LookupEnv(DCP_DISABLE_MONITOR_PROCESS); found {
 		return
 	}
 
-	log = log.WithValues("VolumeID", volumeID)
+	log = log.WithValues("VolumeID", volumeID, "ResourceUID", resourceUID)
 	monitorPid := process.Uint32_ToPidT(uint32(os.Getpid()))
 	monitorIdentityTime := process.ProcessIdentityTime(monitorPid)
 	cmdArgs := []string{
 		"monitor-container-volume",
 		"--volumeID", volumeID,
+		"--resourceUID", resourceUID,
 	}
 	cmdArgs = append(cmdArgs, getMonitorCmdArgs(process.NewHandle(monitorPid, monitorIdentityTime))...)
 

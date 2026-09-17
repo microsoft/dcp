@@ -67,8 +67,14 @@ func TestCleanupVolumeDoesNotForceRemoval(t *testing.T) {
 		require.NoError(t, orchestrator.Close())
 	}()
 
-	const createdVolumeID = "cleanup-volume"
-	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: createdVolumeID}))
+	const (
+		createdVolumeID = "cleanup-volume"
+		resourceUID     = "cleanup-volume-resource"
+	)
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name:   createdVolumeID,
+		Labels: map[string]string{containers.ResourceUIDLabel: resourceUID},
+	}))
 	createdContainerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name:  "cleanup-volume-container",
 		Image: "cleanup-volume-image",
@@ -80,7 +86,7 @@ func TestCleanupVolumeDoesNotForceRemoval(t *testing.T) {
 	})
 	require.NoError(t, createContainerErr)
 
-	cleanupErr := doCleanupVolume(ctx, createdVolumeID, orchestrator)
+	cleanupErr := doCleanupVolume(ctx, createdVolumeID, resourceUID, orchestrator)
 	require.Error(t, cleanupErr)
 
 	inspectedVolumes, inspectVolumeErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{
@@ -93,7 +99,7 @@ func TestCleanupVolumeDoesNotForceRemoval(t *testing.T) {
 		Force:      true,
 	})
 	require.NoError(t, removeContainerErr)
-	require.NoError(t, doCleanupVolume(ctx, createdVolumeID, orchestrator))
+	require.NoError(t, doCleanupVolume(ctx, createdVolumeID, resourceUID, orchestrator))
 	_, inspectRemovedVolumeErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{
 		Volumes: []string{createdVolumeID},
 	})
@@ -115,8 +121,12 @@ func TestCleanupVolumeWaitsForContainerCleanup(t *testing.T) {
 	const (
 		createdVolumeID    = "cleanup-volume-after-container"
 		createdContainerID = "cleanup-volume-after-container-container"
+		resourceUID        = "cleanup-volume-after-container-resource"
 	)
-	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: createdVolumeID}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name:   createdVolumeID,
+		Labels: map[string]string{containers.ResourceUIDLabel: resourceUID},
+	}))
 	_, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name:  createdContainerID,
 		Image: "cleanup-volume-after-container-image",
@@ -135,6 +145,7 @@ func TestCleanupVolumeWaitsForContainerCleanup(t *testing.T) {
 	require.NoError(t, cleanupVolumeAfterMonitorExit(
 		ctx,
 		createdVolumeID,
+		resourceUID,
 		backoff.WithMaxRetries(backoff.NewConstantBackOff(time.Millisecond), 1),
 		log,
 		orderedOrchestrator,
@@ -159,8 +170,14 @@ func TestCleanupVolumeStopsRetryingWhileContainerRemains(t *testing.T) {
 		require.NoError(t, orchestrator.Close())
 	}()
 
-	const createdVolumeID = "bounded-cleanup-volume"
-	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: createdVolumeID}))
+	const (
+		createdVolumeID = "bounded-cleanup-volume"
+		resourceUID     = "bounded-cleanup-volume-resource"
+	)
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name:   createdVolumeID,
+		Labels: map[string]string{containers.ResourceUIDLabel: resourceUID},
+	}))
 	_, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name:  "bounded-cleanup-volume-container",
 		Image: "bounded-cleanup-volume-image",
@@ -175,12 +192,74 @@ func TestCleanupVolumeStopsRetryingWhileContainerRemains(t *testing.T) {
 	cleanupErr := cleanupVolumeAfterMonitorExit(
 		ctx,
 		createdVolumeID,
+		resourceUID,
 		backoff.WithMaxRetries(backoff.NewConstantBackOff(time.Millisecond), 1),
 		log,
 		orchestrator,
 	)
 	require.ErrorIs(t, cleanupErr, containers.ErrObjectInUse)
 	require.Equal(t, 2, orchestrator.RemoveVolumeCallCount(createdVolumeID))
+}
+
+func TestCleanupVolumePreservesSameNameReplacement(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+
+	log := testutil.NewLogForTesting(t.Name())
+	orchestrator, orchestratorErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	defer func() {
+		require.NoError(t, orchestrator.Close())
+	}()
+
+	const (
+		createdVolumeID = "replaced-cleanup-volume"
+		originalUID     = "original-resource"
+		replacementUID  = "replacement-resource"
+	)
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name:   createdVolumeID,
+		Labels: map[string]string{containers.ResourceUIDLabel: originalUID},
+	}))
+	_, removeOriginalErr := orchestrator.RemoveVolumes(ctx, containers.RemoveVolumesOptions{
+		Volumes: []string{createdVolumeID},
+	})
+	require.NoError(t, removeOriginalErr)
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name:   createdVolumeID,
+		Labels: map[string]string{containers.ResourceUIDLabel: replacementUID},
+	}))
+
+	require.NoError(t, doCleanupVolume(ctx, createdVolumeID, originalUID, orchestrator))
+	require.Equal(t, 1, orchestrator.RemoveVolumeCallCount(createdVolumeID))
+	inspectedVolumes, inspectVolumeErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{
+		Volumes: []string{createdVolumeID},
+	})
+	require.NoError(t, inspectVolumeErr)
+	require.Len(t, inspectedVolumes, 1)
+	require.Equal(t, replacementUID, inspectedVolumes[0].Labels[containers.ResourceUIDLabel])
+}
+
+func TestPollContainerResourceRemovedReturnsFalseWhenContextIsCancelled(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	inspectCalled := false
+	removed := pollContainerResourceRemoved(
+		ctx,
+		time.Hour,
+		func(context.Context) (bool, error) {
+			inspectCalled = true
+			return false, nil
+		},
+		"Unexpected inspection failure",
+		testutil.NewLogForTesting(t.Name()),
+	)
+
+	require.False(t, removed)
+	require.False(t, inspectCalled)
 }
 
 type removeContainerAfterVolumeAttemptOrchestrator struct {

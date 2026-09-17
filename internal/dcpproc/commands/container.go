@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -126,16 +125,12 @@ func monitorContainer(log logr.Logger) func(cmd *cobra.Command, args []string) e
 			}
 		}
 
-		ctrRemovedCh := pollContainerRemoved(monitorCtx, containerID, co, log)
-
-		select {
-		case <-ctrRemovedCh:
-			// Container was removed, we are done
+		if pollContainerRemoved(monitorCtx, containerID, co, log) {
 			return nil
-		case <-monitorCtx.Done():
-			log.Info("Monitored process exited, cleaning up container")
-			return doCleanupContainer(cmd.Context(), containerID, containerStopOnly, log, co)
 		}
+
+		log.Info("Monitored process exited, cleaning up container")
+		return doCleanupContainer(cmd.Context(), containerID, containerStopOnly, log, co)
 	}
 }
 
@@ -229,47 +224,20 @@ func doCleanupContainer(
 	return nil
 }
 
-func pollContainerRemoved(ctx context.Context, containerID string, co inspectStopRemoveContainers, log logr.Logger) <-chan struct{} {
-	ctrRemovedCh := make(chan struct{})
-
-	jitter := func() time.Duration {
-		// Up to 5% of the poll interval, to avoid all instances of dcpproc polling at the same exact time
-		return time.Duration(rand.Int63n(int64(containerPollInterval / 20.0)))
-	}
-
-	go func() {
-		defer close(ctrRemovedCh)
-		// Use the configured poll interval (overridable via hidden flag for tests)
-		timer := time.NewTimer(containerPollInterval + jitter())
-		defer timer.Stop()
-
-		for {
-			select {
-
-			case <-ctx.Done():
-				return
-
-			case <-timer.C:
-				// Poll the container status
-				_, inspectErr := co.InspectContainers(ctx, containers.InspectContainersOptions{
-					Containers: []string{containerID},
-				})
-
-				if inspectErr != nil {
-					if errors.Is(inspectErr, containers.ErrNotFound) {
-						// Container has been removed, we should exit, which will close the channel
-						// and notify the caller.
-						return
-					} else {
-						log.Error(inspectErr, "Failed to inspect container")
-						// May be transient error, continue polling
-					}
-				}
-
-				timer.Reset(containerPollInterval + jitter())
+func pollContainerRemoved(ctx context.Context, containerID string, co inspectStopRemoveContainers, log logr.Logger) bool {
+	return pollContainerResourceRemoved(
+		ctx,
+		containerPollInterval,
+		func(ctx context.Context) (bool, error) {
+			_, inspectErr := co.InspectContainers(ctx, containers.InspectContainersOptions{
+				Containers: []string{containerID},
+			})
+			if errors.Is(inspectErr, containers.ErrNotFound) {
+				return true, nil
 			}
-		}
-	}()
-
-	return ctrRemovedCh
+			return false, inspectErr
+		},
+		"Failed to inspect container",
+		log,
+	)
 }

@@ -127,6 +127,8 @@ func TestV2PhysicalContainerVolumeControllerHonorsCreatedVolumeCleanupPolicy(t *
 		monitorProcesses := physicalContainerVolumeMonitorProcesses(readyVolume.Status.VolumeID)
 		if removeRuntimeVolumeOnDelete {
 			require.Len(t, monitorProcesses, 1)
+			require.Contains(t, monitorProcesses[0].Cmd.Args, "--resourceUID")
+			require.Contains(t, monitorProcesses[0].Cmd.Args, string(readyVolume.UID))
 		} else {
 			require.Empty(t, monitorProcesses)
 		}

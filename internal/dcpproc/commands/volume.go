@@ -35,6 +35,7 @@ const (
 
 var (
 	volumeID           string
+	volumeResourceUID  string
 	volumePollInterval time.Duration
 )
 
@@ -62,6 +63,12 @@ DCP terminates unexpectedly. Volumes are never force-removed.`,
 		return nil, flagErr
 	}
 
+	volumeCmd.Flags().StringVar(&volumeResourceUID, "resourceUID", "", "The UID of the PhysicalContainerVolume that created the volume")
+	flagErr = volumeCmd.MarkFlagRequired("resourceUID")
+	if flagErr != nil {
+		return nil, flagErr
+	}
+
 	volumeCmd.Flags().DurationVar(
 		&volumePollInterval,
 		"volumePollInterval",
@@ -83,11 +90,15 @@ func monitorVolume(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 		if volumeID == "" {
 			return errors.New("volume ID or name must be specified with --volumeID")
 		}
+		if volumeResourceUID == "" {
+			return errors.New("physical container volume UID must be specified with --resourceUID")
+		}
 
 		log = log.WithName("ContainerVolumeMonitor").
 			WithValues(
 				"MonitorPID", monitorPid,
 				"Volume", volumeID,
+				"ResourceUID", volumeResourceUID,
 			)
 		if resourceId != "" {
 			log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resourceId)
@@ -118,6 +129,7 @@ func monitorVolume(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 				return cleanupVolumeAfterMonitorExit(
 					cmd.Context(),
 					volumeID,
+					volumeResourceUID,
 					newVolumeCleanupBackoff(),
 					log,
 					orchestrator,
@@ -128,33 +140,33 @@ func monitorVolume(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			return monitorCtxErr
 		}
 
-		volumeRemovedCh := pollVolumeRemoved(monitorCtx, volumeID, orchestrator, log)
-		select {
-		case <-volumeRemovedCh:
+		if pollVolumeRemoved(monitorCtx, volumeID, volumeResourceUID, orchestrator, log) {
 			return nil
-		case <-monitorCtx.Done():
-			log.Info("Monitored process exited, cleaning up container volume")
-			return cleanupVolumeAfterMonitorExit(
-				cmd.Context(),
-				volumeID,
-				newVolumeCleanupBackoff(),
-				log,
-				orchestrator,
-			)
 		}
+
+		log.Info("Monitored process exited, cleaning up container volume")
+		return cleanupVolumeAfterMonitorExit(
+			cmd.Context(),
+			volumeID,
+			volumeResourceUID,
+			newVolumeCleanupBackoff(),
+			log,
+			orchestrator,
+		)
 	}
 }
 
 func cleanupVolumeAfterMonitorExit(
 	ctx context.Context,
 	volumeID string,
+	resourceUID string,
 	retryPolicy backoff.BackOff,
 	log logr.Logger,
 	orchestrator containers.VolumeOrchestrator,
 ) error {
 	waitingForContainerCleanup := false
 	return resiliency.Retry(ctx, retryPolicy, func() error {
-		cleanupErr := doCleanupVolume(ctx, volumeID, orchestrator)
+		cleanupErr := doCleanupVolume(ctx, volumeID, resourceUID, orchestrator)
 		if cleanupErr == nil {
 			return nil
 		}
@@ -189,6 +201,7 @@ func newVolumeCleanupBackoff() *backoff.ExponentialBackOff {
 func doCleanupVolume(
 	ctx context.Context,
 	volumeID string,
+	resourceUID string,
 	orchestrator containers.VolumeOrchestrator,
 ) error {
 	inspectedVolumes, inspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{
@@ -201,6 +214,9 @@ func doCleanupVolume(
 		return fmt.Errorf("inspect container volume before removal: %w", inspectErr)
 	}
 	if len(inspectedVolumes) == 0 {
+		return nil
+	}
+	if inspectedVolumes[0].Labels[containers.ResourceUIDLabel] != resourceUID {
 		return nil
 	}
 
@@ -224,32 +240,29 @@ func doCleanupVolume(
 func pollVolumeRemoved(
 	ctx context.Context,
 	volumeID string,
+	resourceUID string,
 	orchestrator containers.InspectVolumes,
 	log logr.Logger,
-) <-chan struct{} {
-	volumeRemovedCh := make(chan struct{})
-	go func() {
-		defer close(volumeRemovedCh)
-		timer := time.NewTimer(containerResourcePollDelay(volumePollInterval))
-		defer timer.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-timer.C:
-				inspectedVolumes, inspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{
-					Volumes: []string{volumeID},
-				})
-				if errors.Is(inspectErr, containers.ErrNotFound) || (inspectErr == nil && len(inspectedVolumes) == 0) {
-					return
-				}
-				if inspectErr != nil && !errors.Is(inspectErr, containers.ErrIncomplete) {
-					log.Error(inspectErr, "Failed to inspect container volume")
-				}
-				timer.Reset(containerResourcePollDelay(volumePollInterval))
+) bool {
+	return pollContainerResourceRemoved(
+		ctx,
+		volumePollInterval,
+		func(ctx context.Context) (bool, error) {
+			inspectedVolumes, inspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{
+				Volumes: []string{volumeID},
+			})
+			if errors.Is(inspectErr, containers.ErrNotFound) || (inspectErr == nil && len(inspectedVolumes) == 0) {
+				return true, nil
 			}
-		}
-	}()
-	return volumeRemovedCh
+			if len(inspectedVolumes) > 0 && inspectedVolumes[0].Labels[containers.ResourceUIDLabel] != resourceUID {
+				return true, nil
+			}
+			if inspectErr != nil && !errors.Is(inspectErr, containers.ErrIncomplete) {
+				return false, inspectErr
+			}
+			return false, nil
+		},
+		"Failed to inspect container volume",
+		log,
+	)
 }

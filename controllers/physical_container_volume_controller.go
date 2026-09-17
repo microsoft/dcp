@@ -509,7 +509,7 @@ func (r *PhysicalContainerVolumeReconciler) runPhysicalContainerVolumeLifecycleM
 		log.Error(errors.New("process executor is not configured"), "Could not start PhysicalContainerVolume cleanup monitor")
 		return
 	}
-	dcpproc.RunVolumeWatcher(r.processExecutor, volumeID, log)
+	dcpproc.RunVolumeWatcher(r.processExecutor, volumeID, string(volume.UID), log)
 }
 
 func handlePhysicalContainerVolumeCreateFailure(

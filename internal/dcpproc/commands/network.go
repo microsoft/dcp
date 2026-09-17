@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -114,14 +113,12 @@ func monitorNetwork(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return monitorCtxErr
 		}
 
-		networkRemovedCh := pollNetworkRemoved(monitorCtx, networkID, orchestrator, log)
-		select {
-		case <-networkRemovedCh:
+		if pollNetworkRemoved(monitorCtx, networkID, orchestrator, log) {
 			return nil
-		case <-monitorCtx.Done():
-			log.Info("Monitored process exited, cleaning up container network")
-			return doCleanupNetwork(cmd.Context(), networkID, log, orchestrator)
 		}
+
+		log.Info("Monitored process exited, cleaning up container network")
+		return doCleanupNetwork(cmd.Context(), networkID, log, orchestrator)
 	}
 }
 
@@ -210,38 +207,23 @@ func pollNetworkRemoved(
 	networkID string,
 	orchestrator containers.InspectNetworks,
 	log logr.Logger,
-) <-chan struct{} {
-	networkRemovedCh := make(chan struct{})
-	go func() {
-		defer close(networkRemovedCh)
-		timer := time.NewTimer(containerResourcePollDelay(networkPollInterval))
-		defer timer.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-timer.C:
-				inspectedNetworks, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
-					Networks: []string{networkID},
-				})
-				if errors.Is(inspectErr, containers.ErrNotFound) || (inspectErr == nil && len(inspectedNetworks) == 0) {
-					return
-				}
-				if inspectErr != nil && !errors.Is(inspectErr, containers.ErrIncomplete) {
-					log.Error(inspectErr, "Failed to inspect container network")
-				}
-				timer.Reset(containerResourcePollDelay(networkPollInterval))
+) bool {
+	return pollContainerResourceRemoved(
+		ctx,
+		networkPollInterval,
+		func(ctx context.Context) (bool, error) {
+			inspectedNetworks, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+				Networks: []string{networkID},
+			})
+			if errors.Is(inspectErr, containers.ErrNotFound) || (inspectErr == nil && len(inspectedNetworks) == 0) {
+				return true, nil
 			}
-		}
-	}()
-	return networkRemovedCh
-}
-
-func containerResourcePollDelay(pollInterval time.Duration) time.Duration {
-	jitterRange := pollInterval / 20
-	if jitterRange <= 0 {
-		return pollInterval
-	}
-	return pollInterval + time.Duration(rand.Int63n(int64(jitterRange)))
+			if inspectErr != nil && !errors.Is(inspectErr, containers.ErrIncomplete) {
+				return false, inspectErr
+			}
+			return false, nil
+		},
+		"Failed to inspect container network",
+		log,
+	)
 }

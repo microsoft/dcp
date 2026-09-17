@@ -968,30 +968,39 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		data.progress = physicalContainerOperationCompleted
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
-		r.runPhysicalContainerLifecycleMonitor(container, containerID, log)
+		r.runPhysicalContainerCleanupMonitor(container, containerID, log)
 	}
 
 	r.queuePhysicalContainerDataResult(container, stateKey, data)
 }
 
-// Starts the monitor process selected by the runtime container's retention policy.
+// Starts a monitor that removes a non-retained runtime container if DCP exits.
 // Failures are logged but not surfaced, because the monitor is a best-effort reliability enhancement;
 // the container harvester reclaims orphaned containers in a later session.
-func (r *PhysicalContainerReconciler) runPhysicalContainerLifecycleMonitor(container *apiv2.PhysicalContainer, containerID string, log logr.Logger) {
+func (r *PhysicalContainerReconciler) runPhysicalContainerCleanupMonitor(container *apiv2.PhysicalContainer, containerID string, log logr.Logger) {
 	containerConfig := container.Spec.Container
-	if containerConfig == nil || containerID == "" {
+	if containerConfig == nil || containerConfig.RetainRuntimeContainer || containerID == "" {
 		return
 	}
 
-	if !containerConfig.RetainRuntimeContainer {
-		if r.processExecutor == nil {
-			log.Error(errors.New("process executor is not configured"), "Could not start PhysicalContainer cleanup monitor")
-			return
-		}
-		dcpproc.RunContainerWatcher(r.processExecutor, containerID, log)
+	if r.processExecutor == nil {
+		log.Error(errors.New("process executor is not configured"), "Could not start PhysicalContainer cleanup monitor")
 		return
 	}
+	dcpproc.RunContainerWatcher(r.processExecutor, containerID, log)
+}
 
+// Starts a stop-only monitor for a retained runtime container after it has started.
+// Failures are logged but not surfaced, because the monitor is a best-effort reliability enhancement.
+func (r *PhysicalContainerReconciler) runRetainedPhysicalContainerLifecycleMonitor(
+	container *apiv2.PhysicalContainer,
+	containerID string,
+	log logr.Logger,
+) {
+	containerConfig := container.Spec.Container
+	if containerConfig == nil || !containerConfig.RetainRuntimeContainer || containerID == "" {
+		return
+	}
 	monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(containerConfig.MonitorPID, containerConfig.MonitorTimestamp)
 	if monitorErr != nil {
 		log.Error(monitorErr, "Could not start retained PhysicalContainer lifecycle monitor")
@@ -1176,6 +1185,7 @@ func (r *PhysicalContainerReconciler) startPhysicalContainer(
 		data.state = physicalContainerStateStart
 		data.progress = physicalContainerOperationCompleted
 		data.failureMessage = ""
+		r.runRetainedPhysicalContainerLifecycleMonitor(container, data.containerID, log)
 	}
 
 	r.queuePhysicalContainerDataResult(container, stateKey, data)

@@ -196,15 +196,18 @@ func TestRunVolumeWatcher(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 
 	testVolumeID := "test-volume-123"
-	RunVolumeWatcher(pe, testVolumeID, log)
+	testResourceUID := "test-resource-123"
+	RunVolumeWatcher(pe, testVolumeID, testResourceUID, log)
 
 	dcpProc, dcpProcErr := findRunningDcp(pe)
 	require.NoError(t, dcpProcErr)
 	require.Equal(t, "monitor-container-volume", dcpProc.Cmd.Args[1])
 	require.Equal(t, "--volumeID", dcpProc.Cmd.Args[2])
 	require.Equal(t, testVolumeID, dcpProc.Cmd.Args[3])
-	require.Equal(t, "--monitor", dcpProc.Cmd.Args[4])
-	require.Equal(t, strconv.FormatInt(int64(os.Getpid()), 10), dcpProc.Cmd.Args[5])
+	require.Equal(t, "--resourceUID", dcpProc.Cmd.Args[4])
+	require.Equal(t, testResourceUID, dcpProc.Cmd.Args[5])
+	require.Equal(t, "--monitor", dcpProc.Cmd.Args[6])
+	require.Equal(t, strconv.FormatInt(int64(os.Getpid()), 10), dcpProc.Cmd.Args[7])
 }
 
 func TestStopProcessTree(t *testing.T) {

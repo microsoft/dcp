@@ -27,6 +27,7 @@ import (
 const (
 	ContainerLogsHttpPath string = "/apis/usvc-dev.developer.microsoft.com/v1/containers/%s/log"
 	ContainerHttpPath     string = "/apis/usvc-dev.developer.microsoft.com/v1/containers/%s"
+	ResourceUIDLabel             = "com.microsoft.developer.usvc-dev.uid"
 )
 
 var (
