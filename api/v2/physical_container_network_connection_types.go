@@ -13,7 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
@@ -27,10 +26,12 @@ import (
 // Both references resolve within the connection resource's namespace.
 // +k8s:openapi-gen=true
 type PhysicalContainerNetworkConnectionSpec struct {
-	// ContainerRef is the name of the PhysicalContainer to connect.
+	// ContainerRef identifies the PhysicalContainer using <name> or <namespace>/<name>.
+	// Cross-namespace references are not supported.
 	ContainerRef string `json:"containerRef"`
 
-	// NetworkRef is the name of the PhysicalContainerNetwork to connect to.
+	// NetworkRef identifies the PhysicalContainerNetwork using <name> or <namespace>/<name>.
+	// Cross-namespace references are not supported.
 	NetworkRef string `json:"networkRef"`
 
 	// Aliases contains network-scoped aliases for the container.
@@ -101,8 +102,8 @@ func (connection *PhysicalContainerNetworkConnection) Validate(ctx context.Conte
 	}
 
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(connection.Annotations, field.NewPath("metadata", "annotations"))...)
-	errorList = append(errorList, validatePhysicalResourceReference(connection.Spec.ContainerRef, specPath.Child("containerRef"))...)
-	errorList = append(errorList, validatePhysicalResourceReference(connection.Spec.NetworkRef, specPath.Child("networkRef"))...)
+	errorList = append(errorList, validateSameNamespaceResourceReference(connection.Spec.ContainerRef, connection.Namespace, specPath.Child("containerRef"))...)
+	errorList = append(errorList, validateSameNamespaceResourceReference(connection.Spec.NetworkRef, connection.Namespace, specPath.Child("networkRef"))...)
 	return errorList
 }
 
@@ -115,18 +116,6 @@ func (connection *PhysicalContainerNetworkConnection) ValidateUpdate(ctx context
 	return field.ErrorList{
 		field.Forbidden(field.NewPath("spec"), "spec is immutable"),
 	}
-}
-
-func validatePhysicalResourceReference(reference string, referencePath *field.Path) field.ErrorList {
-	if reference == "" {
-		return field.ErrorList{field.Required(referencePath, "reference must be set")}
-	}
-
-	errorList := field.ErrorList{}
-	for _, validationMessage := range validation.IsDNS1123Subdomain(reference) {
-		errorList = append(errorList, field.Invalid(referencePath, reference, validationMessage))
-	}
-	return errorList
 }
 
 // PhysicalContainerNetworkConnectionList contains a list of PhysicalContainerNetworkConnection instances.

@@ -36,9 +36,12 @@ const (
 type VolumeMount struct {
 	Type VolumeMountType `json:"type"`
 
-	// Bind mounts: the host directory to mount.
-	// Volume mounts: name of the volume to mount.
-	Source string `json:"source"`
+	// Source is the host directory to mount for bind mounts.
+	Source string `json:"source,omitempty"`
+
+	// VolumeRef identifies a PhysicalContainerVolume in the same namespace using <name> or <namespace>/<name>.
+	// Cross-namespace references are not supported.
+	VolumeRef string `json:"volumeRef,omitempty"`
 
 	// The path within the container that the mount will use.
 	Target string `json:"target"`
@@ -46,6 +49,32 @@ type VolumeMount struct {
 	// True if the mounted file system is supposed to be read-only.
 	// +optional
 	ReadOnly bool `json:"readOnly,omitempty"`
+}
+
+func ValidateVolumeMounts(mounts []VolumeMount, namespace string, mountsPath *field.Path) field.ErrorList {
+	errorList := field.ErrorList{}
+
+	for i, mount := range mounts {
+		mountPath := mountsPath.Index(i)
+		switch mount.Type {
+		case BindMount:
+			if mount.Source == "" {
+				errorList = append(errorList, field.Required(mountPath.Child("source"), "source must be set for bind mounts"))
+			}
+			if mount.VolumeRef != "" {
+				errorList = append(errorList, field.Forbidden(mountPath.Child("volumeRef"), "volumeRef cannot be set for bind mounts"))
+			}
+		case NamedVolumeMount:
+			if mount.Source != "" {
+				errorList = append(errorList, field.Forbidden(mountPath.Child("source"), "source cannot be set for volume mounts"))
+			}
+			errorList = append(errorList, validateSameNamespaceResourceReference(mount.VolumeRef, namespace, mountPath.Child("volumeRef"))...)
+		default:
+			errorList = append(errorList, field.NotSupported(mountPath.Child("type"), mount.Type, []string{string(BindMount), string(NamedVolumeMount)}))
+		}
+	}
+
+	return errorList
 }
 
 // ContainerPort describes a port, or contiguous range of ports, to publish from a container.
@@ -130,7 +159,8 @@ func ValidateContainerPorts(ports []ContainerPort, portsPath *field.Path) field.
 // ContainerNetworkConnectionConfig describes a PhysicalContainerNetwork to attach to a container.
 // +k8s:openapi-gen=true
 type ContainerNetworkConnectionConfig struct {
-	// Name of the PhysicalContainerNetwork to connect to in the container's namespace.
+	// Name identifies a PhysicalContainerNetwork in the same namespace using <name> or <namespace>/<name>.
+	// Cross-namespace references are not supported.
 	Name string `json:"name"`
 
 	// Aliases of the container on the network.

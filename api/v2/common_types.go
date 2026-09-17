@@ -12,6 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 // ConditionType identifies a condition reported by a V2 resource.
@@ -95,5 +97,30 @@ func ValidateNamespacedResourceMetadata(obj metav1.Object) field.ErrorList {
 		}
 	}
 
+	return errorList
+}
+
+func validateSameNamespaceResourceReference(
+	reference string,
+	namespace string,
+	referencePath *field.Path,
+) field.ErrorList {
+	if reference == "" {
+		return field.ErrorList{field.Required(referencePath, "reference must be set")}
+	}
+
+	namespacedName := commonapi.AsNamespacedName(reference, namespace)
+	errorList := field.ErrorList{}
+	if strings.Contains(reference, string(types.Separator)) {
+		for _, validationMessage := range validation.IsDNS1123Label(namespacedName.Namespace) {
+			errorList = append(errorList, field.Invalid(referencePath, reference, validationMessage))
+		}
+		if namespacedName.Namespace != namespace {
+			errorList = append(errorList, field.Invalid(referencePath, reference, "cross-namespace references are not supported"))
+		}
+	}
+	for _, validationMessage := range validation.IsDNS1123Subdomain(namespacedName.Name) {
+		errorList = append(errorList, field.Invalid(referencePath, reference, validationMessage))
+	}
 	return errorList
 }

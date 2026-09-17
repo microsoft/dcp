@@ -26,6 +26,7 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -90,7 +91,8 @@ func (r *PhysicalContainerNetworkReconciler) SetupWithManager(mgr ctrl.Manager, 
 			if connection.Spec.ContainerRef == "" {
 				return nil
 			}
-			return []string{connection.Spec.ContainerRef}
+			containerName := commonapi.AsNamespacedName(connection.Spec.ContainerRef, connection.Namespace)
+			return []string{containerName.Name}
 		},
 	)
 	if containerRefIndexErr != nil {
@@ -106,7 +108,8 @@ func (r *PhysicalContainerNetworkReconciler) SetupWithManager(mgr ctrl.Manager, 
 			if connection.Spec.NetworkRef == "" {
 				return nil
 			}
-			return []string{connection.Spec.NetworkRef}
+			networkName := commonapi.AsNamespacedName(connection.Spec.NetworkRef, connection.Namespace)
+			return []string{networkName.Name}
 		},
 	)
 	if networkRefIndexErr != nil {
@@ -133,10 +136,7 @@ func (r *PhysicalContainerNetworkReconciler) networkForPhysicalContainerNetworkC
 		return nil
 	}
 	return []reconcile.Request{{
-		NamespacedName: types.NamespacedName{
-			Namespace: connection.Namespace,
-			Name:      connection.Spec.NetworkRef,
-		},
+		NamespacedName: commonapi.AsNamespacedName(connection.Spec.NetworkRef, connection.Namespace),
 	}}
 }
 
@@ -156,22 +156,20 @@ func (r *PhysicalContainerNetworkReconciler) networksForPhysicalContainer(
 		return nil
 	}
 
-	networkNames := make(map[string]struct{}, len(connections.Items))
+	networkNames := make(map[types.NamespacedName]struct{}, len(connections.Items))
 	requests := make([]reconcile.Request, 0, len(connections.Items))
 	for i := range connections.Items {
-		networkName := connections.Items[i].Spec.NetworkRef
-		if networkName == "" {
+		networkRef := connections.Items[i].Spec.NetworkRef
+		if networkRef == "" {
 			continue
 		}
+		networkName := commonapi.AsNamespacedName(networkRef, connections.Items[i].Namespace)
 		if _, found := networkNames[networkName]; found {
 			continue
 		}
 		networkNames[networkName] = struct{}{}
 		requests = append(requests, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Namespace: obj.GetNamespace(),
-				Name:      networkName,
-			},
+			NamespacedName: networkName,
 		})
 	}
 	return requests
@@ -1159,7 +1157,7 @@ func (r *PhysicalContainerNetworkReconciler) ensurePhysicalContainerNetworkConne
 	for i := range connections.Items {
 		connection := &connections.Items[i]
 		container := apiv2.PhysicalContainer{}
-		containerName := types.NamespacedName{Namespace: connection.Namespace, Name: connection.Spec.ContainerRef}
+		containerName := commonapi.AsNamespacedName(connection.Spec.ContainerRef, connection.Namespace)
 		containerLookupErr := r.Get(ctx, containerName, &container)
 		switch {
 		case apierrors.IsNotFound(containerLookupErr):
