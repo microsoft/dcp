@@ -63,7 +63,7 @@ const (
 	dcpBuildLabel        = "com.microsoft.developer.usvc-dev.build"
 	groupVersionLabel    = "com.microsoft.developer.usvc-dev.group-version"
 	nameLabel            = "com.microsoft.developer.usvc-dev.name"
-	uidLabel             = containers.ResourceUIDLabel
+	uidLabel             = "com.microsoft.developer.usvc-dev.uid"
 	lifecycleKeyLabel    = "com.microsoft.developer.usvc-dev.lifecycle-key"
 	envLabel             = "com.microsoft.developer.usvc-dev.env"
 	mountsLabel          = "com.microsoft.developer.usvc-dev.mountsLabel"
