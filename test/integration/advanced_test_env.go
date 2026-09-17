@@ -347,6 +347,7 @@ func StartAdvancedTestEnvironmentWithOptions(
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
 		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
 			ProcessExecutor:              pe,
+			BuildContextDir:              sessionFolder,
 			MakeTunnelControlClient:      dcptunproto.NewTunnelControlClient,
 			MaxTunnelPreparationAttempts: 2,
 		}

@@ -185,26 +185,14 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-running-status"
 
-	buildContextDir, mkdirErr := os.MkdirTemp("", "dcp-tunnel-")
-	require.NoError(t, mkdirErr)
-	t.Cleanup(func() {
-		require.NoError(t, os.RemoveAll(buildContextDir))
-	})
-	originalDcpTempDir := usvc_io.DcpTempDir
-	usvc_io.DcpTempDir = func() string {
-		return buildContextDir
-	}
-	t.Cleanup(func() {
-		usvc_io.DcpTempDir = originalDcpTempDir
-	})
-
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 	testContainerOrchestrator, ok := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, ok)
-	imagePlan, imagePlanErr := dcptun.PrepareClientProxyImageBuild(ctx)
+	buildContextDir := teInfo.SessionFolder
+	imagePlan, imagePlanErr := dcptun.PrepareClientProxyImageBuild(ctx, buildContextDir)
 	require.NoError(t, imagePlanErr)
 	require.NoError(t, os.Remove(imagePlan.BuildContextArchive.Source))
 	releaseImageBuild := testContainerOrchestrator.BlockBuildImage(imagePlan.Image)

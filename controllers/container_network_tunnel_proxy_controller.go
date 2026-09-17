@@ -98,6 +98,10 @@ var (
 type ContainerNetworkTunnelProxyReconcilerConfig struct {
 	ProcessExecutor process.Executor // Mandatory
 
+	// Directory that owns the lifetime of generated tunnel proxy image build contexts.
+	// Mandatory.
+	BuildContextDir string
+
 	// The factory function to create a TunnelControlClient used to control the proxy pair.
 	// Normal execution uses "real" gRPC client, tests use a stub since most tests do not run real tunnels.
 	// Mandatory.
@@ -131,6 +135,9 @@ func NewContainerNetworkTunnelProxyReconciler(
 ) *ContainerNetworkTunnelProxyReconciler {
 	if config.ProcessExecutor == nil {
 		panic("ContainerNetworkTunnelProxyReconcilerConfig.ProcessExecutor must not be nil")
+	}
+	if config.BuildContextDir == "" {
+		panic("ContainerNetworkTunnelProxyReconcilerConfig.BuildContextDir must not be empty")
 	}
 	if config.MakeTunnelControlClient == nil {
 		panic("ContainerNetworkTunnelProxyReconcilerConfig.TunnelControlClientFactory must not be nil")
@@ -1204,7 +1211,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 		return fmt.Errorf("get PhysicalContainerImage %q: %w", imageName.String(), getErr)
 	}
 
-	imagePlan, prepareErr := dcptun.PrepareClientProxyImageBuild(ctx)
+	imagePlan, prepareErr := dcptun.PrepareClientProxyImageBuild(ctx, r.config.BuildContextDir)
 	if prepareErr != nil {
 		return prepareErr
 	}
@@ -1240,11 +1247,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 		currentImage := apiv2.PhysicalContainerImage{}
 		lookupErr := r.NoCacheClient.Get(ctx, imageName, &currentImage)
 		if lookupErr == nil {
-			if tunnelProxyPhysicalImageUsesBuildContext(&currentImage, imagePlan.BuildContextArchive.Source) {
-				r.removeTunnelProxyBuildContextOnShutdown(imagePlan.BuildContextArchive.Source, log)
-			} else {
-				removeUnusedTunnelProxyBuildContext(imagePlan.BuildContextArchive.Source, &currentImage, log)
-			}
+			removeUnusedTunnelProxyBuildContext(imagePlan.BuildContextArchive.Source, &currentImage, log)
 			return nil
 		}
 		if apimachinery_errors.IsNotFound(lookupErr) {
@@ -1258,7 +1261,6 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 		)
 	}
 
-	r.removeTunnelProxyBuildContextOnShutdown(imagePlan.BuildContextArchive.Source, log)
 	log.V(1).Info("Created shared tunnel proxy PhysicalContainerImage", "PhysicalContainerImage", imageName)
 	return nil
 }
@@ -1303,7 +1305,11 @@ func removeUnusedTunnelProxyBuildContext(
 	if buildContextSource == "" {
 		return
 	}
-	if tunnelProxyPhysicalImageUsesBuildContext(physicalImage, buildContextSource) {
+	if physicalImage != nil &&
+		physicalImage.Spec.Image != nil &&
+		physicalImage.Spec.Image.Build != nil &&
+		physicalImage.Spec.Image.Build.ContextArchive != nil &&
+		physicalImage.Spec.Image.Build.ContextArchive.Source == buildContextSource {
 		return
 	}
 
@@ -1311,30 +1317,6 @@ func removeUnusedTunnelProxyBuildContext(
 	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 		log.Error(removeErr, "Failed to remove unused tunnel proxy image build context", "Source", buildContextSource)
 	}
-}
-
-func tunnelProxyPhysicalImageUsesBuildContext(
-	physicalImage *apiv2.PhysicalContainerImage,
-	buildContextSource string,
-) bool {
-	return physicalImage != nil &&
-		physicalImage.Spec.Image != nil &&
-		physicalImage.Spec.Image.Build != nil &&
-		physicalImage.Spec.Image.Build.ContextArchive != nil &&
-		physicalImage.Spec.Image.Build.ContextArchive.Source == buildContextSource
-}
-
-func (r *ContainerNetworkTunnelProxyReconciler) removeTunnelProxyBuildContextOnShutdown(
-	buildContextSource string,
-	log logr.Logger,
-) {
-	if buildContextSource == "" {
-		return
-	}
-
-	context.AfterFunc(r.LifetimeCtx, func() {
-		removeUnusedTunnelProxyBuildContext(buildContextSource, nil, log)
-	})
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) updateClientProxyContainerStatus(
