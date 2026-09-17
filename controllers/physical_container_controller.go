@@ -974,21 +974,43 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 	r.queuePhysicalContainerDataResult(container, stateKey, data)
 }
 
-// Starts a container monitor process that removes the runtime container if this DCP instance terminates unexpectedly.
-// Containers the resource does not own past its own lifetime (RetainRuntimeContainer) are left alone.
+// Starts the monitor process selected by the runtime container's retention policy.
 // Failures are logged but not surfaced, because the monitor is a best-effort reliability enhancement;
 // the container harvester reclaims orphaned containers in a later session.
 func (r *PhysicalContainerReconciler) runPhysicalContainerLifecycleMonitor(container *apiv2.PhysicalContainer, containerID string, log logr.Logger) {
-	if container.Spec.Container == nil || container.Spec.Container.RetainRuntimeContainer || containerID == "" {
+	containerConfig := container.Spec.Container
+	if containerConfig == nil || containerID == "" {
 		return
 	}
 
+	if !containerConfig.RetainRuntimeContainer {
+		if r.processExecutor == nil {
+			log.Error(errors.New("process executor is not configured"), "Could not start PhysicalContainer cleanup monitor")
+			return
+		}
+		dcpproc.RunContainerWatcher(r.processExecutor, containerID, log)
+		return
+	}
+
+	monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(containerConfig.MonitorPID, containerConfig.MonitorTimestamp)
+	if monitorErr != nil {
+		log.Error(monitorErr, "Could not start retained PhysicalContainer lifecycle monitor")
+		return
+	}
+	if !found {
+		return
+	}
 	if r.processExecutor == nil {
-		log.Error(errors.New("process executor is not configured"), "Could not start PhysicalContainer cleanup monitor")
+		log.Error(errors.New("process executor is not configured"), "Could not start retained PhysicalContainer lifecycle monitor")
 		return
 	}
-
-	dcpproc.RunContainerWatcher(r.processExecutor, containerID, log)
+	dcpproc.RunContainerWatcherForMonitorWithOptions(
+		r.processExecutor,
+		monitor,
+		containerID,
+		dcpproc.ContainerWatcherOptions{StopOnly: true},
+		log,
+	)
 }
 
 func (r *PhysicalContainerReconciler) removePhysicalContainerForReplacement(ctx context.Context, containerName string, log logr.Logger) error {

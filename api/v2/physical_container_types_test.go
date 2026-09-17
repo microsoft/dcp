@@ -8,6 +8,7 @@ package v2
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,6 +17,9 @@ import (
 )
 
 func TestPhysicalContainerValidate(t *testing.T) {
+	monitorPID := int64(42)
+	invalidMonitorPID := int64(0)
+	monitorTimestamp := metav1.NewMicroTime(time.Now().UTC())
 	testCases := []struct {
 		name          string
 		container     PhysicalContainer
@@ -29,6 +33,18 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image"}},
+			},
+		},
+		{
+			name: "valid retained container monitor",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-container", Namespace: "test-namespace"},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{
+					ImageRef:               "test-image",
+					RetainRuntimeContainer: true,
+					MonitorPID:             &monitorPID,
+					MonitorTimestamp:       monitorTimestamp,
+				}},
 			},
 		},
 		{
@@ -213,6 +229,55 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				},
 			},
 			expectedError: "spec.container.containerName",
+		},
+		{
+			name: "monitor requires retained container",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-container", Namespace: "test-namespace"},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{
+					ImageRef:         "test-image",
+					MonitorPID:       &monitorPID,
+					MonitorTimestamp: monitorTimestamp,
+				}},
+			},
+			expectedError: "spec.container.monitorPID",
+		},
+		{
+			name: "monitor pid requires timestamp",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-container", Namespace: "test-namespace"},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{
+					ImageRef:               "test-image",
+					RetainRuntimeContainer: true,
+					MonitorPID:             &monitorPID,
+				}},
+			},
+			expectedError: "spec.container.monitorTimestamp",
+		},
+		{
+			name: "monitor timestamp requires pid",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-container", Namespace: "test-namespace"},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{
+					ImageRef:               "test-image",
+					RetainRuntimeContainer: true,
+					MonitorTimestamp:       monitorTimestamp,
+				}},
+			},
+			expectedError: "spec.container.monitorPID",
+		},
+		{
+			name: "monitor pid must be valid",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-container", Namespace: "test-namespace"},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{
+					ImageRef:               "test-image",
+					RetainRuntimeContainer: true,
+					MonitorPID:             &invalidMonitorPID,
+					MonitorTimestamp:       monitorTimestamp,
+				}},
+			},
+			expectedError: "spec.container.monitorPID",
 		},
 		{
 			name: "invalid container port range size",

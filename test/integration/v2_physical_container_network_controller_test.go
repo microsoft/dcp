@@ -21,6 +21,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -81,6 +82,7 @@ func TestV2PhysicalContainerNetworkControllerCreatesNetwork(t *testing.T) {
 	require.NotEqual(t, "caller-value", labels[controllers.CreatorProcessIdLabel])
 	require.NotEmpty(t, labels[controllers.CreatorProcessStartTimeLabel])
 	require.NotEqual(t, "caller-value", labels[controllers.CreatorProcessStartTimeLabel])
+	require.Len(t, physicalContainerNetworkMonitorProcesses(updatedNetwork.Status.NetworkID), 1)
 }
 
 func TestV2PhysicalContainerNetworkControllerTracksExistingNetwork(t *testing.T) {
@@ -111,6 +113,7 @@ func TestV2PhysicalContainerNetworkControllerTracksExistingNetwork(t *testing.T)
 
 	// Tracking must not create anything: the only create is the one this test performed.
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
+	require.Empty(t, physicalContainerNetworkMonitorProcesses(networkID))
 }
 
 func TestV2PhysicalContainerNetworkControllerRemovesCreatedNetworkOnDeletion(t *testing.T) {
@@ -269,6 +272,7 @@ func TestV2PhysicalContainerNetworkControllerPreservesCreatedNetworkOnDeletion(t
 	updatedNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	networkID := updatedNetwork.Status.NetworkID
 	require.Equal(t, "true", runtimeNetworkLabels(t, ctx, networkName)[controllers.PersistentLabel])
+	require.Empty(t, physicalContainerNetworkMonitorProcesses(networkID))
 
 	require.NoError(t, client.Delete(ctx, network))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
@@ -998,6 +1002,12 @@ func waitCreateNetworkCallCount(t *testing.T, ctx context.Context, networkName s
 		return containerOrchestrator.CreateNetworkCallCount(networkName) >= expected, nil
 	})
 	require.NoError(t, waitErr)
+}
+
+func physicalContainerNetworkMonitorProcesses(networkID string) []*internal_testutil.ProcessExecution {
+	return testProcessExecutor.FindAll([]string{"dcp", "monitor-container-network"}, "", func(processExecution *internal_testutil.ProcessExecution) bool {
+		return slices.Contains(processExecution.Cmd.Args, networkID)
+	})
 }
 
 func waitInspectNetworkCallCount(

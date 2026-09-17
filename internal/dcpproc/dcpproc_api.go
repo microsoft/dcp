@@ -143,6 +143,58 @@ func RunContainerWatcherForMonitorWithOptions(
 	}
 }
 
+// RunNetworkWatcher starts a monitor that removes a container network if the current process exits.
+// Failures are logged because the monitor is a best-effort reliability enhancement.
+func RunNetworkWatcher(
+	pe process.Executor,
+	networkID string,
+	log logr.Logger,
+) {
+	if _, found := os.LookupEnv(DCP_DISABLE_MONITOR_PROCESS); found {
+		return
+	}
+
+	log = log.WithValues("NetworkID", networkID)
+	monitorPid := process.Uint32_ToPidT(uint32(os.Getpid()))
+	monitorIdentityTime := process.ProcessIdentityTime(monitorPid)
+	cmdArgs := []string{
+		"monitor-container-network",
+		"--networkID", networkID,
+	}
+	cmdArgs = append(cmdArgs, getMonitorCmdArgs(process.NewHandle(monitorPid, monitorIdentityTime))...)
+
+	startErr := startDcpProc(pe, cmdArgs)
+	if startErr != nil {
+		log.Error(startErr, "Failed to start container network monitor")
+	}
+}
+
+// RunVolumeWatcher starts a monitor that removes a container volume if the current process exits.
+// Failures are logged because the monitor is a best-effort reliability enhancement.
+func RunVolumeWatcher(
+	pe process.Executor,
+	volumeID string,
+	log logr.Logger,
+) {
+	if _, found := os.LookupEnv(DCP_DISABLE_MONITOR_PROCESS); found {
+		return
+	}
+
+	log = log.WithValues("VolumeID", volumeID)
+	monitorPid := process.Uint32_ToPidT(uint32(os.Getpid()))
+	monitorIdentityTime := process.ProcessIdentityTime(monitorPid)
+	cmdArgs := []string{
+		"monitor-container-volume",
+		"--volumeID", volumeID,
+	}
+	cmdArgs = append(cmdArgs, getMonitorCmdArgs(process.NewHandle(monitorPid, monitorIdentityTime))...)
+
+	startErr := startDcpProc(pe, cmdArgs)
+	if startErr != nil {
+		log.Error(startErr, "Failed to start container volume monitor")
+	}
+}
+
 // Runs stop-process-tree command to stop the process tree rooted at the given process.
 func StopProcessTree(
 	ctx context.Context,

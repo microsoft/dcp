@@ -293,6 +293,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerNetworkReconciler"),
 			containerOrchestrator,
+			processExecutor,
 		)
 		if err = physicalContainerNetworkCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up PhysicalContainerNetwork controller")
@@ -305,6 +306,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerVolumeReconciler"),
 			containerOrchestrator,
+			processExecutor,
 		)
 		if err = physicalContainerVolumeCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up PhysicalContainerVolume controller")

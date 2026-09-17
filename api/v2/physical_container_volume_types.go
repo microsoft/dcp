@@ -98,8 +98,9 @@ type PhysicalContainerVolumeConfig struct {
 	// VolumeName is the runtime name to use when creating a new volume.
 	VolumeName string `json:"volumeName,omitempty"`
 
-	// RetainRuntimeVolume keeps the created runtime volume in place when this resource is deleted.
-	RetainRuntimeVolume bool `json:"retainRuntimeVolume,omitempty"`
+	// RemoveRuntimeVolumeOnDelete removes the created runtime volume when this resource is deleted.
+	// Created runtime volumes are retained by default.
+	RemoveRuntimeVolumeOnDelete bool `json:"removeRuntimeVolumeOnDelete,omitempty"`
 
 	// ReplaceExisting removes an existing runtime volume with volumeName before creating a new one.
 	// Replacement retries non-forced removal while the existing volume is in use and never removes attached containers.

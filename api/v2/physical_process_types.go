@@ -97,6 +97,14 @@ type PhysicalProcessConfig struct {
 	// RetainRuntimeProcess keeps a process launched by this resource running when the resource is deleted.
 	RetainRuntimeProcess bool `json:"retainRuntimeProcess,omitempty"`
 
+	// MonitorPID optionally scopes a retained runtime process to another process lifetime.
+	// When set, monitorTimestamp must also be set and retainRuntimeProcess must be true.
+	// The retained process is stopped when the monitored process exits.
+	MonitorPID *int64 `json:"monitorPID,omitempty"`
+
+	// MonitorTimestamp identifies the process in monitorPID and guards against PID reuse.
+	MonitorTimestamp metav1.MicroTime `json:"monitorTimestamp,omitempty"`
+
 	// ExecutablePath is the executable path or name to launch.
 	ExecutablePath string `json:"executablePath"`
 
@@ -230,6 +238,15 @@ func (pp *PhysicalProcess) Validate(ctx context.Context) field.ErrorList {
 
 	processConfig := pp.Spec.Process
 	processPath := specPath.Child("process")
+	errorList = append(
+		errorList,
+		validateRetainedResourceMonitor(
+			processConfig.RetainRuntimeProcess,
+			processConfig.MonitorPID,
+			processConfig.MonitorTimestamp,
+			processPath,
+		)...,
+	)
 	if strings.TrimSpace(processConfig.ExecutablePath) == "" {
 		errorList = append(errorList, field.Required(processPath.Child("executablePath"), "executablePath must be set"))
 	}

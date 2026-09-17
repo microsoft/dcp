@@ -169,6 +169,44 @@ func TestRunContainerWatcherForMonitorWithStopOnly(t *testing.T) {
 	require.Contains(t, dcpProc.Cmd.Args, "--stop-only", "Should include --stop-only flag")
 }
 
+func TestRunNetworkWatcher(t *testing.T) {
+	log := testutil.NewLogForTesting(t.Name())
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	pe := internal_testutil.NewTestProcessExecutor(ctx)
+	dcppaths.EnableTestPathProbing()
+
+	testNetworkID := "test-network-123"
+	RunNetworkWatcher(pe, testNetworkID, log)
+
+	dcpProc, dcpProcErr := findRunningDcp(pe)
+	require.NoError(t, dcpProcErr)
+	require.Equal(t, "monitor-container-network", dcpProc.Cmd.Args[1])
+	require.Equal(t, "--networkID", dcpProc.Cmd.Args[2])
+	require.Equal(t, testNetworkID, dcpProc.Cmd.Args[3])
+	require.Equal(t, "--monitor", dcpProc.Cmd.Args[4])
+	require.Equal(t, strconv.FormatInt(int64(os.Getpid()), 10), dcpProc.Cmd.Args[5])
+}
+
+func TestRunVolumeWatcher(t *testing.T) {
+	log := testutil.NewLogForTesting(t.Name())
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	pe := internal_testutil.NewTestProcessExecutor(ctx)
+	dcppaths.EnableTestPathProbing()
+
+	testVolumeID := "test-volume-123"
+	RunVolumeWatcher(pe, testVolumeID, log)
+
+	dcpProc, dcpProcErr := findRunningDcp(pe)
+	require.NoError(t, dcpProcErr)
+	require.Equal(t, "monitor-container-volume", dcpProc.Cmd.Args[1])
+	require.Equal(t, "--volumeID", dcpProc.Cmd.Args[2])
+	require.Equal(t, testVolumeID, dcpProc.Cmd.Args[3])
+	require.Equal(t, "--monitor", dcpProc.Cmd.Args[4])
+	require.Equal(t, strconv.FormatInt(int64(os.Getpid()), 10), dcpProc.Cmd.Args[5])
+}
+
 func TestStopProcessTree(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)

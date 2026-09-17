@@ -177,6 +177,14 @@ type PhysicalContainerConfig struct {
 	// RetainRuntimeContainer keeps a runtime container created by this resource in place when the resource is deleted.
 	RetainRuntimeContainer bool `json:"retainRuntimeContainer,omitempty"`
 
+	// MonitorPID optionally scopes a retained runtime container to another process lifetime.
+	// When set, monitorTimestamp must also be set and retainRuntimeContainer must be true.
+	// The container is stopped but not removed when the monitored process exits.
+	MonitorPID *int64 `json:"monitorPID,omitempty"`
+
+	// MonitorTimestamp identifies the process in monitorPID and guards against PID reuse.
+	MonitorTimestamp metav1.MicroTime `json:"monitorTimestamp,omitempty"`
+
 	// ImageRef identifies a PhysicalContainerImage in the same namespace using <name> or <namespace>/<name>.
 	// Cross-namespace references are not supported.
 	ImageRef string `json:"imageRef,omitempty"`
@@ -363,6 +371,15 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 
 	container := pc.Spec.Container
 	containerPath := specPath.Child("container")
+	errorList = append(
+		errorList,
+		validateRetainedResourceMonitor(
+			container.RetainRuntimeContainer,
+			container.MonitorPID,
+			container.MonitorTimestamp,
+			containerPath,
+		)...,
+	)
 	errorList = append(errorList, validateSameNamespaceResourceReference(container.ImageRef, pc.Namespace, containerPath.Child("imageRef"))...)
 	if container.ContainerName != "" && !validContainerNameRegexp.MatchString(container.ContainerName) {
 		errorList = append(errorList, field.Invalid(containerPath.Child("containerName"), container.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))

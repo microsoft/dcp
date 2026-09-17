@@ -621,13 +621,17 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 	dcppaths.EnableTestPathProbing()
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
 	require.NoError(t, dcpPathErr)
+	customMonitorPID := int64(12345)
 
 	testCases := []struct {
-		name   string
-		retain bool
+		name             string
+		slug             string
+		retain           bool
+		customMonitorPID *int64
 	}{
-		{name: "deletes", retain: false},
-		{name: "retains", retain: true},
+		{name: "deletes", slug: "deletes", retain: false},
+		{name: "retains", slug: "retains", retain: true},
+		{name: "retains with monitor", slug: "retains-with-monitor", retain: true, customMonitorPID: &customMonitorPID},
 	}
 
 	for _, testCase := range testCases {
@@ -636,19 +640,30 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
 
-			namespace := createActiveV2Namespace(t, ctx, "v2-pproc-"+testCase.name)
-			executablePath := "v2-pproc-" + testCase.name + "-command"
+			namespace := createActiveV2Namespace(t, ctx, "v2-pproc-"+testCase.slug)
+			executablePath := "v2-pproc-" + testCase.slug + "-command"
+			monitorTimestamp := metav1.NewMicroTime(time.Now().Add(-time.Minute))
 			physicalProcess := &apiv2.PhysicalProcess{
-				ObjectMeta: metav1.ObjectMeta{Name: testCase.name + "-process", Namespace: namespace.Name},
+				ObjectMeta: metav1.ObjectMeta{Name: testCase.slug + "-process", Namespace: namespace.Name},
 				Spec: apiv2.PhysicalProcessSpec{
 					Process: &apiv2.PhysicalProcessConfig{
 						ExecutablePath:       executablePath,
 						RetainRuntimeProcess: testCase.retain,
+						MonitorPID:           testCase.customMonitorPID,
+						MonitorTimestamp:     monitorTimestamp,
 					},
 				},
 			}
+			if testCase.customMonitorPID == nil {
+				physicalProcess.Spec.Process.MonitorTimestamp = metav1.MicroTime{}
+			}
 			require.NoError(t, client.Create(ctx, physicalProcess))
 			runningProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
+			if testCase.customMonitorPID != nil {
+				require.NotNil(t, runningProcess.Spec.Process.MonitorPID)
+				require.Equal(t, *testCase.customMonitorPID, *runningProcess.Spec.Process.MonitorPID)
+				require.True(t, monitorTimestamp.Time.Equal(runningProcess.Spec.Process.MonitorTimestamp.Time))
+			}
 			pid, convertErr := process.Int64_ToPidT(*runningProcess.Status.PID)
 			require.NoError(t, convertErr)
 			monitorExecutions := testProcessExecutor.FindAll(
@@ -656,7 +671,11 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 				"",
 				nil,
 			)
-			if testCase.retain {
+			if testCase.customMonitorPID != nil {
+				require.Len(t, monitorExecutions, 1)
+				require.Contains(t, monitorExecutions[0].Cmd.Args, strconv.FormatInt(*testCase.customMonitorPID, 10))
+				require.Contains(t, monitorExecutions[0].Cmd.Args, monitorTimestamp.Time.Format(osutil.RFC3339MiliTimestampFormat))
+			} else if testCase.retain {
 				require.Empty(t, monitorExecutions)
 			} else {
 				require.Len(t, monitorExecutions, 1)

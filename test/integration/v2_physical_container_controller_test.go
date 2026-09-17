@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	std_slices "slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ import (
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -1232,6 +1234,45 @@ func TestV2PhysicalContainerControllerPreservesCreatedContainerOnDeletion(t *tes
 	require.Len(t, inspectedContainers, 1)
 	require.Equal(t, "true", inspectedContainers[0].Labels[controllers.PersistentLabel])
 	require.Empty(t, physicalContainerMonitorProcesses(containerID))
+}
+
+func TestV2PhysicalContainerControllerScopesRetainedContainerToMonitorProcess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-retained-monitor")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "retained-monitor-image", "retained-monitor-image")
+	monitorPID := int64(12345)
+	monitorTimestamp := metav1.NewMicroTime(time.Now().Add(-time.Minute))
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "retained-monitor-container", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef:               image.Name,
+			ContainerName:          "v2-pctr-retained-monitor",
+			RetainRuntimeContainer: true,
+			MonitorPID:             &monitorPID,
+			MonitorTimestamp:       monitorTimestamp,
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	require.NotNil(t, updatedContainer.Spec.Container.MonitorPID)
+	require.Equal(t, monitorPID, *updatedContainer.Spec.Container.MonitorPID)
+	require.True(t, monitorTimestamp.Time.Equal(updatedContainer.Spec.Container.MonitorTimestamp.Time))
+	containerID := updatedContainer.Status.ContainerID
+	removeRuntimeContainerOnCleanup(t, containerID)
+	var monitorProcesses []*internal_testutil.ProcessExecution
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		monitorProcesses = physicalContainerMonitorProcesses(containerID)
+		return len(monitorProcesses) == 1, nil
+	})
+	require.NoError(t, waitErr)
+	require.Len(t, monitorProcesses, 1)
+	require.Contains(t, monitorProcesses[0].Cmd.Args, "--stop-only")
+	require.Contains(t, monitorProcesses[0].Cmd.Args, strconv.FormatInt(monitorPID, 10))
+	require.Contains(t, monitorProcesses[0].Cmd.Args, monitorTimestamp.Time.Format(osutil.RFC3339MiliTimestampFormat))
 }
 
 func physicalContainerMonitorProcesses(containerID string) []*internal_testutil.ProcessExecution {

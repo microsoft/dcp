@@ -24,6 +24,8 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/dcpproc"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -54,9 +56,10 @@ type physicalContainerVolumeDataInitializerFunc = stateInitializerFunc[
 type PhysicalContainerVolumeReconciler struct {
 	*ReconcilerBase[apiv2.PhysicalContainerVolume, *apiv2.PhysicalContainerVolume]
 
-	orchestrator   containers.VolumeOrchestrator
-	volumeData     *ObjectStateMap[physicalContainerVolumeDataStateKey, physicalContainerVolumeData, *physicalContainerVolumeData, *apiv2.PhysicalContainerVolume]
-	operationQueue *resiliency.WorkQueue
+	orchestrator    containers.VolumeOrchestrator
+	processExecutor process.Executor
+	volumeData      *ObjectStateMap[physicalContainerVolumeDataStateKey, physicalContainerVolumeData, *physicalContainerVolumeData, *apiv2.PhysicalContainerVolume]
+	operationQueue  *resiliency.WorkQueue
 }
 
 func NewPhysicalContainerVolumeReconciler(
@@ -65,12 +68,14 @@ func NewPhysicalContainerVolumeReconciler(
 	noCacheClient ctrl_client.Reader,
 	log logr.Logger,
 	orchestrator containers.VolumeOrchestrator,
+	processExecutor process.Executor,
 ) *PhysicalContainerVolumeReconciler {
 	return &PhysicalContainerVolumeReconciler{
-		ReconcilerBase: NewReconcilerBase[apiv2.PhysicalContainerVolume](client, noCacheClient, log, lifetimeCtx),
-		orchestrator:   orchestrator,
-		volumeData:     NewObjectStateMap[physicalContainerVolumeDataStateKey, physicalContainerVolumeData, *physicalContainerVolumeData, *apiv2.PhysicalContainerVolume](),
-		operationQueue: resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
+		ReconcilerBase:  NewReconcilerBase[apiv2.PhysicalContainerVolume](client, noCacheClient, log, lifetimeCtx),
+		orchestrator:    orchestrator,
+		processExecutor: processExecutor,
+		volumeData:      NewObjectStateMap[physicalContainerVolumeDataStateKey, physicalContainerVolumeData, *physicalContainerVolumeData, *apiv2.PhysicalContainerVolume](),
+		operationQueue:  resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
 	}
 }
 
@@ -488,7 +493,23 @@ func handlePhysicalContainerVolumeCreated(
 	}
 
 	log.V(1).Info("Runtime volume created; saving volume status", "VolumeID", data.volumeID)
+	reconciler.runPhysicalContainerVolumeLifecycleMonitor(volume, data.volumeID, log)
 	return reconciler.applyRuntimeVolumeStatus(ctx, volume, data, data.volumeID, log)
+}
+
+func (r *PhysicalContainerVolumeReconciler) runPhysicalContainerVolumeLifecycleMonitor(
+	volume *apiv2.PhysicalContainerVolume,
+	volumeID string,
+	log logr.Logger,
+) {
+	if volume.Spec.Volume == nil || !volume.Spec.Volume.RemoveRuntimeVolumeOnDelete || volumeID == "" {
+		return
+	}
+	if r.processExecutor == nil {
+		log.Error(errors.New("process executor is not configured"), "Could not start PhysicalContainerVolume cleanup monitor")
+		return
+	}
+	dcpproc.RunVolumeWatcher(r.processExecutor, volumeID, log)
 }
 
 func handlePhysicalContainerVolumeCreateFailure(
@@ -611,7 +632,7 @@ func (r *PhysicalContainerVolumeReconciler) beginPhysicalContainerVolumeRemoval(
 	log logr.Logger,
 ) objectChange {
 	volumeConfig := volume.Spec.Volume
-	if volumeConfig == nil || volumeConfig.RetainRuntimeVolume {
+	if volumeConfig == nil || !volumeConfig.RemoveRuntimeVolumeOnDelete {
 		r.volumeData.DeleteByNamespacedName(volume.NamespacedName())
 		return deleteFinalizer(volume, physicalContainerVolumeFinalizer, log)
 	}
@@ -972,7 +993,7 @@ func physicalContainerVolumeCreationLabels(volume *apiv2.PhysicalContainerVolume
 	volumeConfig := volume.Spec.Volume
 	creationLabels := physicalResourceCreationLabels(
 		volumeConfig.Labels,
-		volumeConfig.RetainRuntimeVolume,
+		!volumeConfig.RemoveRuntimeVolumeOnDelete,
 		volume.UID,
 		log,
 	)

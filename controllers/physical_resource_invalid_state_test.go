@@ -165,7 +165,7 @@ func TestInvalidPhysicalContainerVolumeStillHandlesDeletion(t *testing.T) {
 			DeletionTimestamp: &now,
 		},
 		Spec: apiv2.PhysicalContainerVolumeSpec{
-			Volume: &apiv2.PhysicalContainerVolumeConfig{RetainRuntimeVolume: true},
+			Volume: &apiv2.PhysicalContainerVolumeConfig{},
 		},
 	}
 	data := &physicalContainerVolumeData{

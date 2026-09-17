@@ -23,7 +23,7 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 	rootCmd := &cobra.Command{
 		SilenceErrors: true,
 		Use:           "dcpproc",
-		Short:         "Monitors dcp and cleans up orphaned resources (processes or containers)",
+		Short:         "Monitors dcp and cleans up orphaned resources",
 		Long: `DCP is a developer tool for running multi-service applications.
 
 	It integrates your code, emulators and containers to give you a development environment
@@ -52,6 +52,18 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 
 	if cmd, err = NewContainerCommand(log.Logger); err != nil {
 		return nil, fmt.Errorf("could not set up 'monitor-container' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
+	}
+
+	if cmd, err = NewNetworkCommand(log.Logger); err != nil {
+		return nil, fmt.Errorf("could not set up 'monitor-container-network' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
+	}
+
+	if cmd, err = NewVolumeCommand(log.Logger); err != nil {
+		return nil, fmt.Errorf("could not set up 'monitor-container-volume' command: %w", err)
 	} else {
 		rootCmd.AddCommand(cmd)
 	}
