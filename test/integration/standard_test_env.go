@@ -42,6 +42,7 @@ type TestEnvironmentInfo struct {
 	StateStore                       *statestore.Store
 	ResourceLeaseOwner               process.ProcessHandle
 	Log                              logr.Logger
+	SessionFolder                    string
 }
 
 type TestEnvironmentOptions struct {
@@ -377,6 +378,7 @@ func StartTestEnvironmentWithOptions(
 		tcc = ctrl_testutil.NewTestTunnelControlClient()
 		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
 			ProcessExecutor:              pex,
+			BuildContextDir:              sessionFolder,
 			MakeTunnelControlClient:      func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
 			MaxTunnelPreparationAttempts: 2,
 		}
@@ -414,6 +416,7 @@ func StartTestEnvironmentWithOptions(
 		StateStore:                       stateStore,
 		ResourceLeaseOwner:               leaseOwner,
 		Log:                              log,
+		SessionFolder:                    sessionFolder,
 	}
 	return serverInfo, teInfo, nil
 }

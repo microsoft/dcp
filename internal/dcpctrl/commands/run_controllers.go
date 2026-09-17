@@ -30,6 +30,7 @@ import (
 	"github.com/microsoft/dcp/internal/perftrace"
 	"github.com/microsoft/dcp/internal/proxy"
 	"github.com/microsoft/dcp/internal/statestore"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
@@ -376,6 +377,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetAPIReader(),
 			controllers.ContainerNetworkTunnelProxyReconcilerConfig{
 				ProcessExecutor:         processExecutor,
+				BuildContextDir:         usvc_io.DcpTempDir(),
 				MakeTunnelControlClient: dcptunproto.NewTunnelControlClient,
 			},
 			log.WithName("TunnelProxyReconciler"),
