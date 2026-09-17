@@ -52,7 +52,11 @@ type ClientProxyImageBuildPlan struct {
 
 // PrepareClientProxyImageBuild creates the build input for the shared tunnel proxy
 // PhysicalContainerImage.
-func PrepareClientProxyImageBuild(ctx context.Context) (ClientProxyImageBuildPlan, error) {
+func PrepareClientProxyImageBuild(ctx context.Context, buildContextDir string) (ClientProxyImageBuildPlan, error) {
+	if buildContextDir == "" {
+		return ClientProxyImageBuildPlan{}, fmt.Errorf("build context directory is required")
+	}
+
 	dcpTunClientPath, clientPathErr := dcptunClientBinaryPath()
 	if clientPathErr != nil {
 		return ClientProxyImageBuildPlan{}, fmt.Errorf("failed to get path to dcptun client binary: %w", clientPathErr)
@@ -69,7 +73,7 @@ func PrepareClientProxyImageBuild(ctx context.Context) (ClientProxyImageBuildPla
 	if digestErr != nil {
 		return ClientProxyImageBuildPlan{}, digestErr
 	}
-	buildContextArchive, contextErr := setupImageBuildContextArchive(ctx, dcpTunClientPath, dockerfileContent)
+	buildContextArchive, contextErr := setupImageBuildContextArchive(ctx, buildContextDir, dcpTunClientPath, dockerfileContent)
 	if contextErr != nil {
 		return ClientProxyImageBuildPlan{}, fmt.Errorf("failed to create build context archive: %w", contextErr)
 	}
@@ -99,6 +103,7 @@ func clientProxyImageName(clientBinaryHash string) string {
 
 func setupImageBuildContextArchive(
 	ctx context.Context,
+	buildContextDir string,
 	dcpTunClientPath string,
 	dockerfileContent string,
 ) (*containers.ContainerBuildContextArchive, error) {
@@ -110,9 +115,9 @@ func setupImageBuildContextArchive(
 	if randomSuffixErr != nil {
 		return nil, fmt.Errorf("create random build context archive suffix: %w", randomSuffixErr)
 	}
-	// The archive lives in the DCP session directory, whose lifetime owns its cleanup.
-	archiveFile, openArchiveErr := usvc_io.CreateNewTempFile(
-		fmt.Sprintf("dcptun-build-context-%s.tar", randomSuffix),
+	// The caller-provided directory owns the archive lifetime.
+	archiveFile, openArchiveErr := usvc_io.CreateNewFile(
+		filepath.Join(buildContextDir, fmt.Sprintf("dcptun-build-context-%s.tar", randomSuffix)),
 		osutil.PermissionOnlyOwnerReadWrite,
 	)
 	if openArchiveErr != nil {

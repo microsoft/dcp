@@ -10,6 +10,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -24,8 +25,9 @@ func TestPrepareClientProxyImageBuild(t *testing.T) {
 	t.Parallel()
 
 	dcppaths.EnableTestPathProbing()
+	buildContextDir := t.TempDir()
 
-	plan, prepareErr := dcptun.PrepareClientProxyImageBuild(context.Background())
+	plan, prepareErr := dcptun.PrepareClientProxyImageBuild(context.Background(), buildContextDir)
 	require.NoError(t, prepareErr)
 
 	const expectedTagPrefix = "dcptun_developer_ms:"
@@ -34,6 +36,7 @@ func TestPrepareClientProxyImageBuild(t *testing.T) {
 	require.NotNil(t, plan.BuildContextArchive)
 	require.NotEmpty(t, plan.BuildContextDigest)
 	require.NotEmpty(t, plan.BuildContextArchive.Source)
+	require.Equal(t, buildContextDir, filepath.Dir(plan.BuildContextArchive.Source))
 	require.NotEmpty(t, plan.BuildContextArchive.SHA256)
 	require.NotEqual(t, "sha256:"+plan.BuildContextArchive.SHA256, plan.BuildContextDigest)
 	require.Empty(t, plan.BuildContextArchive.RawContents)
@@ -42,9 +45,10 @@ func TestPrepareClientProxyImageBuild(t *testing.T) {
 		require.NoError(t, os.Remove(plan.BuildContextArchive.Source))
 	})
 
-	secondPlan, secondPrepareErr := dcptun.PrepareClientProxyImageBuild(context.Background())
+	secondPlan, secondPrepareErr := dcptun.PrepareClientProxyImageBuild(context.Background(), buildContextDir)
 	require.NoError(t, secondPrepareErr)
 	require.Equal(t, plan.BuildContextDigest, secondPlan.BuildContextDigest)
+	require.Equal(t, buildContextDir, filepath.Dir(secondPlan.BuildContextArchive.Source))
 	t.Cleanup(func() {
 		require.NoError(t, os.Remove(secondPlan.BuildContextArchive.Source))
 	})
@@ -77,6 +81,6 @@ func TestPrepareClientProxyImageBuildHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, prepareErr := dcptun.PrepareClientProxyImageBuild(ctx)
+	_, prepareErr := dcptun.PrepareClientProxyImageBuild(ctx, t.TempDir())
 	require.ErrorIs(t, prepareErr, context.Canceled)
 }
