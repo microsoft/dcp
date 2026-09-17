@@ -65,6 +65,15 @@ const (
 	// PhysicalContainerReasonImageLookupFailed indicates that the referenced PhysicalContainerImage could not be read.
 	PhysicalContainerReasonImageLookupFailed ConditionReason = "ImageLookupFailed"
 
+	// PhysicalContainerReasonNetworkNotFound indicates that a referenced PhysicalContainerNetwork does not exist.
+	PhysicalContainerReasonNetworkNotFound ConditionReason = "NetworkNotFound"
+
+	// PhysicalContainerReasonNetworkNotReady indicates that a referenced PhysicalContainerNetwork is not ready.
+	PhysicalContainerReasonNetworkNotReady ConditionReason = "NetworkNotReady"
+
+	// PhysicalContainerReasonNetworkLookupFailed indicates that a referenced PhysicalContainerNetwork could not be read.
+	PhysicalContainerReasonNetworkLookupFailed ConditionReason = "NetworkLookupFailed"
+
 	// PhysicalContainerReasonCreating indicates that runtime container creation is in progress.
 	PhysicalContainerReasonCreating ConditionReason = "Creating"
 
@@ -189,7 +198,7 @@ type PhysicalContainerConfig struct {
 	// +listType=atomic
 	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
 
-	// Networks describes runtime networks to attach the container to when it is created.
+	// Networks describes PhysicalContainerNetworks to attach the container to.
 	// If omitted, the container runtime chooses the default network.
 	// +listType=atomic
 	Networks []ContainerNetworkConnectionConfig `json:"networks,omitempty"`
@@ -361,9 +370,7 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 
 	networksPath := containerPath.Child("networks")
 	for i, network := range container.Networks {
-		if network.Name == "" {
-			errorList = append(errorList, field.Required(networksPath.Index(i).Child("name"), "name must be set to a non-empty value"))
-		}
+		errorList = append(errorList, validatePhysicalResourceReference(network.Name, networksPath.Index(i).Child("name"))...)
 	}
 	errorList = append(errorList, ValidateContainerPorts(container.Ports, containerPath.Child("ports"))...)
 	errorList = append(errorList, validateLabels(container.Labels, containerPath.Child("labels"))...)

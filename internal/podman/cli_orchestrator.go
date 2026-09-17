@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -67,7 +66,6 @@ var (
 	// We allow up to a minute for diagnostic commands to finish as we'd rather wait a bit longer than miss information.
 	diagnosticPodmanCommandTimeout = 1 * time.Minute
 
-	defaultBuildImageTimeout      = 10 * time.Minute
 	defaultPullImageTimeout       = 10 * time.Minute
 	defaultCreateContainerTimeout = 10 * time.Minute
 	defaultRunContainerTimeout    = 10 * time.Minute
@@ -362,93 +360,9 @@ func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, options con
 }
 
 func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
-	args := []string{"build"}
-
-	if options.Dockerfile != "" {
-		args = append(args, "-f", options.Dockerfile)
-	}
-
-	// Should base images be updated even if they are already present locally?
-	if options.Pull {
-		args = append(args, "--pull")
-	}
-
-	// If specified, the ID of the image will be written to this file
-	if options.IidFile != "" {
-		args = append(args, "--iidfile", options.IidFile)
-	}
-
-	// Apply all tags specified in the build context to the image
-	for _, tag := range options.Tags {
-		args = append(args, "-t", tag)
-	}
-
-	// Apply all specified build arguments
-	for _, buildArg := range options.Args {
-		if buildArg.Value != "" {
-			args = append(args, "--build-arg", fmt.Sprintf("%s=%s", buildArg.Name, buildArg.Value))
-		} else {
-			args = append(args, "--build-arg", buildArg.Name)
-		}
-	}
-
-	// Secret values that need to be applied to the build command environment
-	secretEnvironment := map[string]string{}
-
-	// Apply all specified build secrets
-	for _, secret := range options.Secrets {
-		switch secret.Type {
-		case containers.FileSecret, "":
-			args = append(args, "--secret", fmt.Sprintf("id=%s,src=%s", secret.ID, secret.Source))
-		case containers.EnvSecret:
-			if secret.Source != "" {
-				args = append(args, "--secret", fmt.Sprintf("id=%s,env=%s", secret.ID, secret.Source))
-				if secret.Value != "" {
-					secretEnvironment[secret.Source] = secret.Value
-				}
-			} else {
-				args = append(args, "--secret", fmt.Sprintf("id=%s,env=%s", secret.ID, secret.ID))
-				if secret.Value != "" {
-					secretEnvironment[secret.ID] = secret.Value
-				}
-			}
-		}
-	}
-
-	// If a build stage is given, use it
-	if options.Stage != "" {
-		args = append(args, "--target", options.Stage)
-	}
-
-	// Apply any specified labels
-	for _, label := range options.Labels {
-		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
-	}
-
-	// If a target platform is specified, build for that platform
-	if options.Platform != "" {
-		args = append(args, "--platform", options.Platform)
-	}
-
-	// Append the build context argument
-	args = append(args, options.Context)
-
-	cmd := makePodmanCommand(args...)
-
-	// Append secret environment
-	cmd.Env = os.Environ()
-	for secretName, secretValue := range secretEnvironment {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", secretName, secretValue))
-	}
-
-	// Building an image can take a long time to finish, particularly if any base images are not available locally.
-	// Use a much longer timeout than for other commands.
-	if options.Timeout == 0 {
-		options.Timeout = defaultBuildImageTimeout
-	}
-	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "BuildImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
-	if err != nil {
-		return errors.Join(err, normalizeCliErrors(errBuf))
+	errBuf, buildErr := containers.BuildImageImpl(ctx, options, pco)
+	if buildErr != nil {
+		return errors.Join(buildErr, normalizeCliErrors(errBuf))
 	}
 
 	return nil

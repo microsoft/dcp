@@ -196,18 +196,28 @@ func verifyLayerSourceHash(layer *ImageLayer) error {
 	}
 	defer f.Close()
 
+	if verifyErr := verifySHA256(f, layer.SHA256); verifyErr != nil {
+		return fmt.Errorf("verifying layer source %q: %w", layer.Source, verifyErr)
+	}
+
+	return nil
+}
+
+// verifySHA256 hashes everything readable from r and compares it against expectedSHA256,
+// which may be a bare hex digest or one carrying the "sha256:" prefix.
+func verifySHA256(r io.Reader, expectedSHA256 string) error {
 	hasher := sha256.New()
-	if _, copyErr := io.Copy(hasher, f); copyErr != nil {
-		return fmt.Errorf("hashing layer source file %q: %w", layer.Source, copyErr)
+	if _, copyErr := io.Copy(hasher, r); copyErr != nil {
+		return fmt.Errorf("hashing contents: %w", copyErr)
 	}
 
 	actualHashHex := hex.EncodeToString(hasher.Sum(nil))
-	expectedHash := strings.TrimSpace(layer.SHA256)
+	expectedHash := strings.TrimSpace(expectedSHA256)
 	if strings.HasPrefix(strings.ToLower(expectedHash), "sha256:") {
-		expectedHash = expectedHash[7:]
+		expectedHash = expectedHash[len("sha256:"):]
 	}
 	if !strings.EqualFold(actualHashHex, expectedHash) {
-		return fmt.Errorf("SHA256 mismatch for layer source %q: expected %s, got %s", layer.Source, layer.SHA256, actualHashHex)
+		return fmt.Errorf("SHA256 mismatch: expected %s, got %s", expectedSHA256, actualHashHex)
 	}
 
 	return nil

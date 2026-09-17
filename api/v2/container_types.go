@@ -127,10 +127,10 @@ func ValidateContainerPorts(ports []ContainerPort, portsPath *field.Path) field.
 	return errorList
 }
 
-// ContainerNetworkConnectionConfig describes a network to attach to when creating a container.
+// ContainerNetworkConnectionConfig describes a PhysicalContainerNetwork to attach to a container.
 // +k8s:openapi-gen=true
 type ContainerNetworkConnectionConfig struct {
-	// Name of the network to connect to.
+	// Name of the PhysicalContainerNetwork to connect to in the container's namespace.
 	Name string `json:"name"`
 
 	// Aliases of the container on the network.
@@ -187,7 +187,20 @@ type ContainerBuildSecret struct {
 // +k8s:openapi-gen=true
 type ContainerBuildContext struct {
 	// The path to the directory to be used as the root of the build context.
-	Context string `json:"context"`
+	// Exactly one of context or contextArchive must be set.
+	// +optional
+	Context string `json:"context,omitempty"`
+
+	// A tar archive to stream to the image builder as the build context.
+	// Exactly one of context or contextArchive must be set.
+	// +optional
+	ContextArchive *ContainerBuildContextArchive `json:"contextArchive,omitempty"`
+
+	// An opaque identifier for the logical contents of the build context. PhysicalContainerImage
+	// uses this value to determine whether an existing build output can be reused. If omitted,
+	// the build context is treated as changed and the output is rebuilt.
+	// +optional
+	Digest string `json:"digest,omitempty"`
 
 	// The path to a Dockerfile to use for the build.
 	// +optional
@@ -222,6 +235,26 @@ type ContainerBuildContext struct {
 	// Optional target platform for the build (e.g. "linux/amd64").
 	// +optional
 	Platform string `json:"platform,omitempty"`
+
+	// BaseImages identifies image references used by the build. PhysicalContainerImage applies
+	// its pull policy to these images and includes their resolved identities when determining
+	// whether an existing build output is current.
+	// +listType=set
+	// +optional
+	BaseImages []string `json:"baseImages,omitempty"`
+}
+
+// ContainerBuildContextArchive describes a tar archive containing an image build context.
+// +k8s:openapi-gen=true
+type ContainerBuildContextArchive struct {
+	// Path to a tar file on the host filesystem. Mutually exclusive with RawContents.
+	Source string `json:"source,omitempty"`
+
+	// SHA256 hash of the tar file referenced by Source. Required when Source is set.
+	SHA256 string `json:"sha256,omitempty"`
+
+	// Base64-encoded tar file contents. Mutually exclusive with Source.
+	RawContents string `json:"rawContents,omitempty"`
 }
 
 type ImagePullPolicy string
@@ -230,11 +263,26 @@ const (
 	// Always pull the container image.
 	PullPolicyAlways ImagePullPolicy = "always"
 
+	// Attempt to pull a source image, but use an existing local image if pulling fails.
+	// For builds, declared base images are resolved this way and their immutable identities
+	// participate in deciding whether an existing build output can be reused.
+	PullPolicyBestEffort ImagePullPolicy = "bestEffort"
+
 	// Pull the container image only if it is not present.
 	PullPolicyMissing ImagePullPolicy = "missing"
 
 	// Never pull the container image.
 	PullPolicyNever ImagePullPolicy = "never"
+)
+
+type ImageBuildPolicy string
+
+const (
+	// Reuse an existing image when its material build inputs match.
+	BuildPolicyIfNeeded ImageBuildPolicy = "ifNeeded"
+
+	// Always build the container image.
+	BuildPolicyAlways ImageBuildPolicy = "always"
 )
 
 type FileSystemEntryType string

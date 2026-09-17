@@ -47,11 +47,12 @@ type namespaceCleanupResult struct {
 }
 
 var namespaceCleanupResourceHandlers = map[schema.GroupVersionResource]namespaceCleanupResourceHandler{
-	(&apiv2.PhysicalProcess{}).GetGroupVersionResource():          (*NamespaceReconciler).cleanupPhysicalProcesses,
-	(&apiv2.PhysicalContainer{}).GetGroupVersionResource():        (*NamespaceReconciler).cleanupPhysicalContainers,
-	(&apiv2.PhysicalContainerImage{}).GetGroupVersionResource():   (*NamespaceReconciler).cleanupPhysicalContainerImages,
-	(&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource(): (*NamespaceReconciler).cleanupPhysicalContainerNetworks,
-	(&apiv2.PhysicalContainerVolume{}).GetGroupVersionResource():  (*NamespaceReconciler).cleanupPhysicalContainerVolumes,
+	(&apiv2.PhysicalProcess{}).GetGroupVersionResource():                    (*NamespaceReconciler).cleanupPhysicalProcesses,
+	(&apiv2.PhysicalContainer{}).GetGroupVersionResource():                  (*NamespaceReconciler).cleanupPhysicalContainers,
+	(&apiv2.PhysicalContainerImage{}).GetGroupVersionResource():             (*NamespaceReconciler).cleanupPhysicalContainerImages,
+	(&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource():           (*NamespaceReconciler).cleanupPhysicalContainerNetworks,
+	(&apiv2.PhysicalContainerNetworkConnection{}).GetGroupVersionResource(): (*NamespaceReconciler).cleanupPhysicalContainerNetworkConnections,
+	(&apiv2.PhysicalContainerVolume{}).GetGroupVersionResource():            (*NamespaceReconciler).cleanupPhysicalContainerVolumes,
 }
 
 func (r *NamespaceReconciler) cleanupPhysicalProcesses(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
@@ -79,6 +80,37 @@ func (r *NamespaceReconciler) cleanupPhysicalProcesses(ctx context.Context, name
 	}
 
 	return len(physicalProcesses.Items), nil
+}
+
+func (r *NamespaceReconciler) cleanupPhysicalContainerNetworkConnections(
+	ctx context.Context,
+	namespace *apiv2.Namespace,
+	log logr.Logger,
+) (int, error) {
+	connections := apiv2.PhysicalContainerNetworkConnectionList{}
+	listErr := r.NoCacheClient.List(ctx, &connections, ctrl_client.InNamespace(namespace.Name))
+	if listErr != nil {
+		return 0, fmt.Errorf("failed to list PhysicalContainerNetworkConnections in namespace %q: %w", namespace.Name, listErr)
+	}
+
+	deleteErrors := slices.MapConcurrent[error](connections.Items, func(connection apiv2.PhysicalContainerNetworkConnection) error {
+		if connection.DeletionTimestamp != nil && !connection.DeletionTimestamp.IsZero() {
+			return nil
+		}
+
+		log.V(1).Info("Deleting PhysicalContainerNetworkConnection during namespace cleanup", "Namespace", namespace.Name, "PhysicalContainerNetworkConnection", connection.Name)
+		deleteConnectionErr := r.Client.Delete(ctx, &connection)
+		if deleteConnectionErr != nil && !apierrors.IsNotFound(deleteConnectionErr) {
+			return fmt.Errorf("failed to delete PhysicalContainerNetworkConnection %q in namespace %q: %w", connection.Name, namespace.Name, deleteConnectionErr)
+		}
+		return nil
+	}, namespaceCleanupMaxConcurrentDeletes)
+	deleteErr := errors.Join(deleteErrors...)
+	if deleteErr != nil {
+		return 0, deleteErr
+	}
+
+	return len(connections.Items), nil
 }
 
 type NamespaceReconciler struct {

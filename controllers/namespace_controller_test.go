@@ -34,9 +34,9 @@ func TestNamespaceCleanupProcessesReadyResourceKindsConcurrently(t *testing.T) {
 	})
 
 	processStarted := make(chan struct{})
-	containerStarted := make(chan struct{})
+	connectionStarted := make(chan struct{})
 	processGVR := (&apiv2.PhysicalProcess{}).GetGroupVersionResource()
-	containerGVR := (&apiv2.PhysicalContainer{}).GetGroupVersionResource()
+	connectionGVR := (&apiv2.PhysicalContainerNetworkConnection{}).GetGroupVersionResource()
 	namespaceCleanupResourceHandlers[processGVR] = func(
 		_ *NamespaceReconciler,
 		ctx context.Context,
@@ -45,19 +45,19 @@ func TestNamespaceCleanupProcessesReadyResourceKindsConcurrently(t *testing.T) {
 	) (int, error) {
 		close(processStarted)
 		select {
-		case <-containerStarted:
+		case <-connectionStarted:
 			return 1, nil
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}
 	}
-	namespaceCleanupResourceHandlers[containerGVR] = func(
+	namespaceCleanupResourceHandlers[connectionGVR] = func(
 		_ *NamespaceReconciler,
 		ctx context.Context,
 		_ *apiv2.Namespace,
 		_ logr.Logger,
 	) (int, error) {
-		close(containerStarted)
+		close(connectionStarted)
 		select {
 		case <-processStarted:
 			return 1, nil
@@ -71,5 +71,5 @@ func TestNamespaceCleanupProcessesReadyResourceKindsConcurrently(t *testing.T) {
 	pending, cleanupErr := reconciler.cleanupNamespace(ctx, namespace, logr.Discard())
 
 	require.NoError(t, cleanupErr)
-	require.Equal(t, "1 physicalprocesses and 1 physicalcontainers", pending)
+	require.Equal(t, "1 physicalprocesses and 1 physicalcontainernetworkconnections", pending)
 }
