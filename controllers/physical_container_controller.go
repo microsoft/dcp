@@ -789,6 +789,9 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(
 		log.Error(getErr, "Failed to get PhysicalContainerImage", "ImageRef", imageRef)
 		return false, "", physicalResourceProgressRetryPending, fmt.Sprintf("Failed to get PhysicalContainerImage: %v", getErr), additionalReconciliationNeeded
 	}
+	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
+		return false, "", physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerImage %q is terminating.", imageRef), noChange
+	}
 	if image.Status.Phase != apiv2.PhysicalContainerImagePhaseReady || image.Status.ImageID == "" {
 		return false, "", physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerImage %q is not ready.", imageRef), noChange
 	}
@@ -816,6 +819,9 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerVolumes(
 			if getErr != nil {
 				log.Error(getErr, "Failed to get PhysicalContainerVolume", "VolumeRef", mount.VolumeRef)
 				return false, nil, physicalResourceProgressRetryPending, fmt.Sprintf("Failed to get PhysicalContainerVolume %q: %v", mount.VolumeRef, getErr)
+			}
+			if volume.DeletionTimestamp != nil && !volume.DeletionTimestamp.IsZero() {
+				return false, nil, physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerVolume %q is terminating.", mount.VolumeRef)
 			}
 			if volume.Status.Phase != apiv2.PhysicalContainerVolumePhaseReady || volume.Status.VolumeID == "" {
 				return false, nil, physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerVolume %q is not ready.", mount.VolumeRef)
@@ -852,6 +858,9 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerNetworks(
 		if getErr != nil {
 			log.Error(getErr, "Failed to get PhysicalContainerNetwork", "NetworkRef", networkConfig.Name)
 			return false, nil, physicalResourceProgressRetryPending, fmt.Sprintf("Failed to get PhysicalContainerNetwork %q: %v", networkConfig.Name, getErr)
+		}
+		if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
+			return false, nil, physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerNetwork %q is terminating.", networkConfig.Name)
 		}
 		if network.Status.Phase != apiv2.PhysicalContainerNetworkPhaseReady || network.Status.NetworkID == "" {
 			return false, nil, physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerNetwork %q is not ready.", networkConfig.Name)
