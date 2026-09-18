@@ -26,9 +26,7 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
-	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/pkg/commonapi"
-	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -62,10 +60,9 @@ type physicalContainerNetworkDataInitializerFunc = stateInitializerFunc[
 type PhysicalContainerNetworkReconciler struct {
 	*ReconcilerBase[apiv2.PhysicalContainerNetwork, *apiv2.PhysicalContainerNetwork]
 
-	orchestrator    containers.NetworkAttachmentOrchestrator
-	processExecutor process.Executor
-	networkData     *ObjectStateMap[physicalContainerNetworkDataStateKey, physicalContainerNetworkData, *physicalContainerNetworkData, *apiv2.PhysicalContainerNetwork]
-	operationQueue  *resiliency.WorkQueue
+	orchestrator   containers.NetworkAttachmentOrchestrator
+	networkData    *ObjectStateMap[physicalContainerNetworkDataStateKey, physicalContainerNetworkData, *physicalContainerNetworkData, *apiv2.PhysicalContainerNetwork]
+	operationQueue *resiliency.WorkQueue
 }
 
 func NewPhysicalContainerNetworkReconciler(
@@ -74,14 +71,12 @@ func NewPhysicalContainerNetworkReconciler(
 	noCacheClient ctrl_client.Reader,
 	log logr.Logger,
 	orchestrator containers.NetworkAttachmentOrchestrator,
-	processExecutor process.Executor,
 ) *PhysicalContainerNetworkReconciler {
 	return &PhysicalContainerNetworkReconciler{
-		ReconcilerBase:  NewReconcilerBase[apiv2.PhysicalContainerNetwork](client, noCacheClient, log, lifetimeCtx),
-		orchestrator:    orchestrator,
-		processExecutor: processExecutor,
-		networkData:     NewObjectStateMap[physicalContainerNetworkDataStateKey, physicalContainerNetworkData, *physicalContainerNetworkData, *apiv2.PhysicalContainerNetwork](),
-		operationQueue:  resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
+		ReconcilerBase: NewReconcilerBase[apiv2.PhysicalContainerNetwork](client, noCacheClient, log, lifetimeCtx),
+		orchestrator:   orchestrator,
+		networkData:    NewObjectStateMap[physicalContainerNetworkDataStateKey, physicalContainerNetworkData, *physicalContainerNetworkData, *apiv2.PhysicalContainerNetwork](),
+		operationQueue: resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
 	}
 }
 
@@ -620,23 +615,7 @@ func handlePhysicalContainerNetworkCreated(
 
 	networkID := data.networkID
 	log.V(1).Info("Runtime network created; saving network status", "NetworkID", networkID)
-	reconciler.runPhysicalContainerNetworkLifecycleMonitor(network, networkID, log)
 	return reconciler.applyRuntimeNetworkStatus(ctx, network, data, networkID, log)
-}
-
-func (r *PhysicalContainerNetworkReconciler) runPhysicalContainerNetworkLifecycleMonitor(
-	network *apiv2.PhysicalContainerNetwork,
-	networkID string,
-	log logr.Logger,
-) {
-	if network.Spec.Network == nil || network.Spec.Network.RetainRuntimeNetwork || networkID == "" {
-		return
-	}
-	if r.processExecutor == nil {
-		log.Error(errors.New("process executor is not configured"), "Could not start PhysicalContainerNetwork cleanup monitor")
-		return
-	}
-	dcpproc.RunNetworkWatcher(r.processExecutor, networkID, log)
 }
 
 func handlePhysicalContainerNetworkCreateFailure(

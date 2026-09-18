@@ -56,18 +56,6 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 		rootCmd.AddCommand(cmd)
 	}
 
-	if cmd, err = NewNetworkCommand(log.Logger); err != nil {
-		return nil, fmt.Errorf("could not set up 'monitor-container-network' command: %w", err)
-	} else {
-		rootCmd.AddCommand(cmd)
-	}
-
-	if cmd, err = NewVolumeCommand(log.Logger); err != nil {
-		return nil, fmt.Errorf("could not set up 'monitor-container-volume' command: %w", err)
-	} else {
-		rootCmd.AddCommand(cmd)
-	}
-
 	if cmd, err = NewStopProcessTreeCommand(log.Logger); err != nil {
 		return nil, fmt.Errorf("could not set up 'stop-process-tree' command: %w", err)
 	} else {

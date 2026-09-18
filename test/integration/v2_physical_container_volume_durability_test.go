@@ -136,7 +136,7 @@ func TestV2PhysicalContainerVolumeControllerBoundsRemovalDuringNamespaceDeletion
 		},
 	}))
 	orchestrator.FailNextRemoveVolume(volumeName, errors.New("volume remains in use"))
-	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator, nil)
+	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
 	request := ctrl.Request{NamespacedName: volume.NamespacedName()}
 
 	currentVolume := waitPhysicalContainerVolumeConditionReason(
@@ -187,7 +187,7 @@ func TestV2PhysicalContainerVolumeControllerRetriesBeforeNamespaceRemovalDeadlin
 		},
 	}))
 	orchestrator.FailNextRemoveVolume(volumeName, errors.New("volume remains in use"))
-	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator, nil)
+	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
 	request := ctrl.Request{NamespacedName: volume.NamespacedName()}
 
 	require.NoError(t, baseClient.Delete(ctx, volume))
@@ -240,7 +240,7 @@ func TestV2PhysicalContainerVolumeControllerDoesNotBoundDirectRemoval(t *testing
 		},
 	}))
 	orchestrator.FailNextRemoveVolume(volumeName, errors.New("volume remains in use"))
-	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator, nil)
+	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
 	request := ctrl.Request{NamespacedName: volume.NamespacedName()}
 
 	currentVolume := waitPhysicalContainerVolumeConditionReason(
@@ -290,7 +290,7 @@ func TestV2PhysicalContainerVolumeControllerRetriesUncertainCreateCleanup(t *tes
 		},
 	}
 
-	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator, nil)
+	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
 	request := ctrl.Request{NamespacedName: volume.NamespacedName()}
 	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 		_, reconcileErr := reconciler.Reconcile(ctx, request)
@@ -374,7 +374,7 @@ func TestV2PhysicalContainerVolumeControllerRetainsCreatedVolumeUntilStatusIsDur
 		},
 	}
 	orchestrator := newDurabilityTestContainerOrchestrator(t, ctx)
-	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, statusClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator, nil)
+	reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, statusClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
 	request := ctrl.Request{NamespacedName: volume.NamespacedName()}
 
 	_, reconcileErr := reconciler.Reconcile(ctx, request)
@@ -441,7 +441,7 @@ func TestV2PhysicalContainerVolumeControllerRetainsTerminalFailureUntilStatusIsD
 			}
 			orchestrator := newDurabilityTestContainerOrchestrator(t, ctx)
 			require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volume.Spec.Volume.VolumeName}))
-			reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, statusClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator, nil)
+			reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, statusClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
 			request := ctrl.Request{NamespacedName: volume.NamespacedName()}
 
 			_, reconcileErr := reconciler.Reconcile(ctx, request)

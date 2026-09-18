@@ -292,7 +292,6 @@ func StartTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerNetworkReconciler"),
 			serverInfo.ContainerOrchestrator,
-			pex,
 		)
 		if err = physicalContainerNetworkR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerNetworkReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerNetwork reconciler: %w", err)
@@ -306,7 +305,6 @@ func StartTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerVolumeReconciler"),
 			serverInfo.ContainerOrchestrator,
-			pex,
 		)
 		if err = physicalContainerVolumeR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerVolumeReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerVolume reconciler: %w", err)

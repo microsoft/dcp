@@ -22,10 +22,8 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
-	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
-	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -71,7 +69,6 @@ func TestV2PhysicalContainerVolumeControllerCreatesRetainedVolumeByDefault(t *te
 	require.NotEqual(t, "caller-value", inspectedVolume.Labels[controllers.CreatorProcessIdLabel])
 	require.NotEmpty(t, inspectedVolume.Labels[controllers.CreatorProcessStartTimeLabel])
 	require.NotEqual(t, "caller-value", inspectedVolume.Labels[controllers.CreatorProcessStartTimeLabel])
-	require.Empty(t, physicalContainerVolumeMonitorProcesses(readyVolume.Status.VolumeID))
 }
 
 func TestV2PhysicalContainerVolumeControllerRetainsReferencedVolume(t *testing.T) {
@@ -93,7 +90,6 @@ func TestV2PhysicalContainerVolumeControllerRetainsReferencedVolume(t *testing.T
 	readyVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
 	require.Equal(t, volumeName, readyVolume.Status.VolumeID)
 	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
-	require.Empty(t, physicalContainerVolumeMonitorProcesses(volumeName))
 
 	require.NoError(t, client.Delete(ctx, volume))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
@@ -123,15 +119,7 @@ func TestV2PhysicalContainerVolumeControllerHonorsCreatedVolumeCleanupPolicy(t *
 			},
 		}
 		require.NoError(t, client.Create(ctx, volume))
-		readyVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
-		monitorProcesses := physicalContainerVolumeMonitorProcesses(readyVolume.Status.VolumeID)
-		if removeRuntimeVolumeOnDelete {
-			require.Len(t, monitorProcesses, 1)
-			require.Contains(t, monitorProcesses[0].Cmd.Args, "--resourceUID")
-			require.Contains(t, monitorProcesses[0].Cmd.Args, string(readyVolume.UID))
-		} else {
-			require.Empty(t, monitorProcesses)
-		}
+		waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
 
 		require.NoError(t, client.Delete(ctx, volume))
 		ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
@@ -721,12 +709,6 @@ func waitCreateVolumeCallCount(t *testing.T, ctx context.Context, volumeName str
 		return containerOrchestrator.CreateVolumeCallCount(volumeName) >= expected, nil
 	})
 	require.NoError(t, waitErr)
-}
-
-func physicalContainerVolumeMonitorProcesses(volumeID string) []*internal_testutil.ProcessExecution {
-	return testProcessExecutor.FindAll([]string{"dcp", "monitor-container-volume"}, "", func(processExecution *internal_testutil.ProcessExecution) bool {
-		return slices.Contains(processExecution.Cmd.Args, volumeID)
-	})
 }
 
 func waitInspectVolumeCallCount(

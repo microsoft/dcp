@@ -175,7 +175,7 @@ func TestV2PhysicalContainerNetworkControllerQueuesDeletionBeforeRemovingFinaliz
 		WithStatusSubresource(&apiv2.PhysicalContainerNetwork{}).
 		WithObjects(network).
 		Build()
-	reconciler := controllers.NewPhysicalContainerNetworkReconciler(ctx, baseClient, baseClient, log, orchestrator, nil)
+	reconciler := controllers.NewPhysicalContainerNetworkReconciler(ctx, baseClient, baseClient, log, orchestrator)
 	request := ctrl.Request{NamespacedName: network.NamespacedName()}
 
 	reconcileDone := make(chan error, 1)
@@ -267,7 +267,7 @@ func TestV2PhysicalContainerNetworkControllerRetriesUncertainCreateCleanup(t *te
 		},
 	}
 
-	reconciler := controllers.NewPhysicalContainerNetworkReconciler(ctx, baseClient, baseClient, log, orchestrator, nil)
+	reconciler := controllers.NewPhysicalContainerNetworkReconciler(ctx, baseClient, baseClient, log, orchestrator)
 	request := ctrl.Request{NamespacedName: network.NamespacedName()}
 	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 		_, reconcileErr := reconciler.Reconcile(ctx, request)
@@ -417,7 +417,6 @@ func TestV2PhysicalContainerNetworkControllerRetainsTerminalCreateFailureUntilSt
 				baseClient,
 				log,
 				orchestrator,
-				nil,
 			)
 			request := ctrl.Request{NamespacedName: network.NamespacedName()}
 
@@ -515,7 +514,6 @@ func TestV2PhysicalContainerNetworkControllerRetainsBuiltInFailureUntilStatusIsD
 		baseClient,
 		log,
 		orchestrator,
-		nil,
 	)
 	request := ctrl.Request{NamespacedName: network.NamespacedName()}
 
@@ -611,7 +609,6 @@ func TestV2PhysicalContainerNetworkControllerAdoptsOwnedNetworkBeforeReplacement
 		baseClient,
 		log,
 		orchestrator,
-		nil,
 	)
 	request := ctrl.Request{NamespacedName: network.NamespacedName()}
 
@@ -688,7 +685,6 @@ func TestV2PhysicalContainerNetworkControllerRetainsCreatedNetworkUntilStatusIsD
 		baseClient,
 		log,
 		orchestrator,
-		nil,
 	)
 	request := ctrl.Request{NamespacedName: network.NamespacedName()}
 
