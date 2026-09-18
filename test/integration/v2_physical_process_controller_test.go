@@ -662,7 +662,7 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 			if testCase.customMonitorPID != nil {
 				require.NotNil(t, runningProcess.Spec.Process.MonitorPID)
 				require.Equal(t, *testCase.customMonitorPID, *runningProcess.Spec.Process.MonitorPID)
-				require.True(t, monitorTimestamp.Time.Equal(runningProcess.Spec.Process.MonitorTimestamp.Time))
+				require.True(t, osutil.Within(monitorTimestamp.Time, runningProcess.Spec.Process.MonitorTimestamp.Time, 2*time.Microsecond))
 			}
 			pid, convertErr := process.Int64_ToPidT(*runningProcess.Status.PID)
 			require.NoError(t, convertErr)

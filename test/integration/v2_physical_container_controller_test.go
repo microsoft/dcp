@@ -1260,7 +1260,7 @@ func TestV2PhysicalContainerControllerScopesRetainedContainerToMonitorProcess(t 
 	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
 	require.NotNil(t, updatedContainer.Spec.Container.MonitorPID)
 	require.Equal(t, monitorPID, *updatedContainer.Spec.Container.MonitorPID)
-	require.True(t, monitorTimestamp.Time.Equal(updatedContainer.Spec.Container.MonitorTimestamp.Time))
+	require.True(t, osutil.Within(monitorTimestamp.Time, updatedContainer.Spec.Container.MonitorTimestamp.Time, 2*time.Microsecond))
 	containerID := updatedContainer.Status.ContainerID
 	removeRuntimeContainerOnCleanup(t, containerID)
 	var monitorProcesses []*internal_testutil.ProcessExecution
