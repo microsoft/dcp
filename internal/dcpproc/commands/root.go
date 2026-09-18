@@ -23,7 +23,7 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 	rootCmd := &cobra.Command{
 		SilenceErrors: true,
 		Use:           "dcpproc",
-		Short:         "Monitors dcp and cleans up orphaned resources (processes or containers)",
+		Short:         "Monitors dcp and cleans up orphaned resources",
 		Long: `DCP is a developer tool for running multi-service applications.
 
 	It integrates your code, emulators and containers to give you a development environment

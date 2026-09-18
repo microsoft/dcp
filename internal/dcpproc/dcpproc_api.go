@@ -17,6 +17,7 @@ import (
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/logger"
@@ -136,6 +137,7 @@ func RunContainerWatcherForMonitorWithOptions(
 		cmdArgs = append(cmdArgs, "--stop-only")
 	}
 	cmdArgs = append(cmdArgs, getMonitorCmdArgs(monitor)...)
+	cmdArgs = append(cmdArgs, getContainerRuntimeCmdArgs()...)
 
 	startErr := startDcpProc(pe, cmdArgs)
 	if startErr != nil {
@@ -192,6 +194,14 @@ func getMonitorCmdArgs(monitor process.ProcessHandle) []string {
 	}
 
 	return cmdArgs
+}
+
+func getContainerRuntimeCmdArgs() []string {
+	runtime := container_flags.GetRuntimeFlagValue()
+	if runtime == container_flags.UnknownRuntime {
+		return nil
+	}
+	return []string{container_flags.GetRuntimeFlag(), string(runtime)}
 }
 
 func startDcpProc(pe process.Executor, cmdArgs []string) error {

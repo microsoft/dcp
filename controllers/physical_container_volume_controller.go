@@ -611,7 +611,7 @@ func (r *PhysicalContainerVolumeReconciler) beginPhysicalContainerVolumeRemoval(
 	log logr.Logger,
 ) objectChange {
 	volumeConfig := volume.Spec.Volume
-	if volumeConfig == nil || volumeConfig.RetainRuntimeVolume {
+	if volumeConfig == nil || !volumeConfig.RemoveRuntimeVolumeOnDelete {
 		r.volumeData.DeleteByNamespacedName(volume.NamespacedName())
 		return deleteFinalizer(volume, physicalContainerVolumeFinalizer, log)
 	}
@@ -972,7 +972,7 @@ func physicalContainerVolumeCreationLabels(volume *apiv2.PhysicalContainerVolume
 	volumeConfig := volume.Spec.Volume
 	creationLabels := physicalResourceCreationLabels(
 		volumeConfig.Labels,
-		volumeConfig.RetainRuntimeVolume,
+		!volumeConfig.RemoveRuntimeVolumeOnDelete,
 		volume.UID,
 		log,
 	)

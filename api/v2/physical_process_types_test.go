@@ -9,6 +9,7 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,6 +19,8 @@ func TestPhysicalProcessValidate(t *testing.T) {
 	validPID := int64(42)
 	zeroPID := int64(0)
 	largePID := int64(math.MaxUint32) + 1
+	monitorPID := int64(43)
+	monitorTimestamp := metav1.NewMicroTime(time.Now().UTC())
 	testCases := []struct {
 		name          string
 		process       PhysicalProcess
@@ -41,6 +44,18 @@ func TestPhysicalProcessValidate(t *testing.T) {
 			process: PhysicalProcess{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
 				Spec:       PhysicalProcessSpec{PID: &validPID},
+			},
+		},
+		{
+			name: "valid retained process monitor",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec: PhysicalProcessSpec{Process: &PhysicalProcessConfig{
+					ExecutablePath:       "test-command",
+					RetainRuntimeProcess: true,
+					MonitorPID:           &monitorPID,
+					MonitorTimestamp:     monitorTimestamp,
+				}},
 			},
 		},
 		{
@@ -100,6 +115,55 @@ func TestPhysicalProcessValidate(t *testing.T) {
 				Spec:       PhysicalProcessSpec{Process: &PhysicalProcessConfig{ExecutablePath: " "}},
 			},
 			expectedError: "spec.process.executablePath",
+		},
+		{
+			name: "monitor requires retained process",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec: PhysicalProcessSpec{Process: &PhysicalProcessConfig{
+					ExecutablePath:   "test-command",
+					MonitorPID:       &monitorPID,
+					MonitorTimestamp: monitorTimestamp,
+				}},
+			},
+			expectedError: "spec.process.monitorPID",
+		},
+		{
+			name: "monitor pid requires timestamp",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec: PhysicalProcessSpec{Process: &PhysicalProcessConfig{
+					ExecutablePath:       "test-command",
+					RetainRuntimeProcess: true,
+					MonitorPID:           &monitorPID,
+				}},
+			},
+			expectedError: "spec.process.monitorTimestamp",
+		},
+		{
+			name: "monitor timestamp requires pid",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec: PhysicalProcessSpec{Process: &PhysicalProcessConfig{
+					ExecutablePath:       "test-command",
+					RetainRuntimeProcess: true,
+					MonitorTimestamp:     monitorTimestamp,
+				}},
+			},
+			expectedError: "spec.process.monitorPID",
+		},
+		{
+			name: "monitor pid must be valid",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec: PhysicalProcessSpec{Process: &PhysicalProcessConfig{
+					ExecutablePath:       "test-command",
+					RetainRuntimeProcess: true,
+					MonitorPID:           &zeroPID,
+					MonitorTimestamp:     monitorTimestamp,
+				}},
+			},
+			expectedError: "spec.process.monitorPID",
 		},
 	}
 

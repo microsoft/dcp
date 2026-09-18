@@ -4808,6 +4808,19 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref common.ReferenceCal
 							Format:      "",
 						},
 					},
+					"monitorPID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MonitorPID optionally scopes a retained runtime container to another process lifetime. When set, monitorTimestamp must also be set and retainRuntimeContainer must be true. The container is stopped but not removed when the monitored process exits.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"monitorTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MonitorTimestamp identifies the process in monitorPID and guards against PID reuse.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
 					"imageRef": {
 						SchemaProps: spec.SchemaProps{
 							Description: "ImageRef identifies a PhysicalContainerImage in the same namespace using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
@@ -4973,7 +4986,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref common.ReferenceCal
 			},
 		},
 		Dependencies: []string{
-			v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName(), v2.ContainerPort{}.OpenAPIModelName(), v2.CreateFileSystem{}.OpenAPIModelName(), v2.VolumeMount{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName()},
+			v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName(), v2.ContainerPort{}.OpenAPIModelName(), v2.CreateFileSystem{}.OpenAPIModelName(), v2.VolumeMount{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -5992,9 +6005,9 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeConfig(ref common.Refere
 							Format:      "",
 						},
 					},
-					"retainRuntimeVolume": {
+					"removeRuntimeVolumeOnDelete": {
 						SchemaProps: spec.SchemaProps{
-							Description: "RetainRuntimeVolume keeps the created runtime volume in place when this resource is deleted.",
+							Description: "RemoveRuntimeVolumeOnDelete removes the created runtime volume when this resource is deleted. Created runtime volumes are retained by default.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -6249,6 +6262,19 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 							Format:      "",
 						},
 					},
+					"monitorPID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MonitorPID optionally scopes a retained runtime process to another process lifetime. When set, monitorTimestamp must also be set and retainRuntimeProcess must be true. The retained process is stopped when the monitored process exits.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"monitorTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MonitorTimestamp identifies the process in monitorPID and guards against PID reuse.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
 					"executablePath": {
 						SchemaProps: spec.SchemaProps{
 							Description: "ExecutablePath is the executable path or name to launch.",
@@ -6316,7 +6342,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 			},
 		},
 		Dependencies: []string{
-			commonapi.EnvVar{}.OpenAPIModelName()},
+			commonapi.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 

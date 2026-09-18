@@ -40,6 +40,11 @@ func GetRuntimeFlagValue() RuntimeFlagValue {
 	return runtime
 }
 
+// SetRuntimeFlagValue sets the container runtime used by subsequent runtime consumers.
+func SetRuntimeFlagValue(value RuntimeFlagValue) error {
+	return runtime.Set(string(value))
+}
+
 func (rf *RuntimeFlagValue) Set(flagValue string) error {
 	if flagValue == string(UnknownRuntime) || slices.ContainsFunc(supportedRuntimeNames, func(name string) bool {
 		return name == strings.ToLower(flagValue)

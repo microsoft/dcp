@@ -492,7 +492,10 @@ func durablePhysicalContainerVolume(namespace, name, volumeName string) *apiv2.P
 			Finalizers: []string{apiv2.GroupName + "/physicalcontainervolume-reconciler"},
 		},
 		Spec: apiv2.PhysicalContainerVolumeSpec{
-			Volume: &apiv2.PhysicalContainerVolumeConfig{VolumeName: volumeName},
+			Volume: &apiv2.PhysicalContainerVolumeConfig{
+				VolumeName:                  volumeName,
+				RemoveRuntimeVolumeOnDelete: true,
+			},
 		},
 	}
 }

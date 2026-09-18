@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -167,6 +169,29 @@ func TestRunContainerWatcherForMonitorWithStopOnly(t *testing.T) {
 	require.Equal(t, "--containerID", dcpProc.Cmd.Args[2], "Should include --containerID flag")
 	require.Equal(t, testContainerID, dcpProc.Cmd.Args[3], "Should include container ID")
 	require.Contains(t, dcpProc.Cmd.Args, "--stop-only", "Should include --stop-only flag")
+}
+
+func TestRunContainerWatcherPassesSelectedRuntime(t *testing.T) {
+	log := testutil.NewLogForTesting(t.Name())
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	pe := internal_testutil.NewTestProcessExecutor(ctx)
+	dcppaths.EnableTestPathProbing()
+
+	originalRuntime := container_flags.GetRuntimeFlagValue()
+	t.Cleanup(func() {
+		require.NoError(t, container_flags.SetRuntimeFlagValue(originalRuntime))
+	})
+	require.NoError(t, container_flags.SetRuntimeFlagValue(container_flags.PodmanRuntime))
+
+	RunContainerWatcher(pe, "test-container-123", log)
+
+	dcpProc, dcpProcErr := findRunningDcp(pe)
+	require.NoError(t, dcpProcErr)
+	runtimeFlagIndex := slices.Index(dcpProc.Cmd.Args, container_flags.GetRuntimeFlag())
+	require.GreaterOrEqual(t, runtimeFlagIndex, 0)
+	require.Less(t, runtimeFlagIndex+1, len(dcpProc.Cmd.Args))
+	require.Equal(t, string(container_flags.PodmanRuntime), dcpProc.Cmd.Args[runtimeFlagIndex+1])
 }
 
 func TestStopProcessTree(t *testing.T) {

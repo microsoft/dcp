@@ -604,14 +604,33 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 	data.progress = physicalResourceProgressRunning
 	data.failureMessage = ""
 	data.retryAfter = time.Time{}
-	if !processConfig.RetainRuntimeProcess {
-		dcpproc.RunProcessWatcher(r.processExecutor, handle, log)
-	}
+	r.runPhysicalProcessLifecycleMonitor(processConfig, handle, log)
 	r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 	if startWaitForExit != nil {
 		startWaitForExit()
 	}
 	log.V(1).Info("Physical process launched", "PID", handle.Pid, "ExecutablePath", processConfig.ExecutablePath)
+}
+
+func (r *PhysicalProcessReconciler) runPhysicalProcessLifecycleMonitor(
+	processConfig *apiv2.PhysicalProcessConfig,
+	handle process.ProcessHandle,
+	log logr.Logger,
+) {
+	if !processConfig.RetainRuntimeProcess {
+		dcpproc.RunProcessWatcher(r.processExecutor, handle, log)
+		return
+	}
+
+	monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(processConfig.MonitorPID, processConfig.MonitorTimestamp)
+	if monitorErr != nil {
+		log.Error(monitorErr, "Could not start retained PhysicalProcess lifecycle monitor")
+		return
+	}
+	if !found {
+		return
+	}
+	dcpproc.RunProcessWatcherForMonitor(r.processExecutor, monitor, handle, log)
 }
 
 func (r *PhysicalProcessReconciler) queuePhysicalProcessDataResult(

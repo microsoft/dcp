@@ -6,6 +6,7 @@
 package v2
 
 import (
+	"math"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -95,6 +96,34 @@ func ValidateNamespacedResourceMetadata(obj metav1.Object) field.ErrorList {
 		for _, validationMessage := range validation.IsDNS1123Label(obj.GetNamespace()) {
 			errorList = append(errorList, field.Invalid(metadataPath.Child("namespace"), obj.GetNamespace(), validationMessage))
 		}
+	}
+
+	return errorList
+}
+
+func validateRetainedResourceMonitor(
+	retainRuntimeResource bool,
+	monitorPID *int64,
+	monitorTimestamp metav1.MicroTime,
+	monitorPath *field.Path,
+) field.ErrorList {
+	errorList := field.ErrorList{}
+	monitorTimestampSet := !monitorTimestamp.IsZero()
+
+	if monitorPID != nil && (*monitorPID <= 0 || *monitorPID > math.MaxUint32) {
+		errorList = append(errorList, field.Invalid(monitorPath.Child("monitorPID"), *monitorPID, "monitorPID must be between 1 and 4294967295"))
+	}
+	if !retainRuntimeResource && monitorPID != nil {
+		errorList = append(errorList, field.Forbidden(monitorPath.Child("monitorPID"), "monitorPID can only be set for retained runtime resources"))
+	}
+	if !retainRuntimeResource && monitorTimestampSet {
+		errorList = append(errorList, field.Forbidden(monitorPath.Child("monitorTimestamp"), "monitorTimestamp can only be set for retained runtime resources"))
+	}
+	if monitorPID != nil && !monitorTimestampSet {
+		errorList = append(errorList, field.Required(monitorPath.Child("monitorTimestamp"), "monitorTimestamp must be set when monitorPID is set"))
+	}
+	if monitorPID == nil && monitorTimestampSet {
+		errorList = append(errorList, field.Required(monitorPath.Child("monitorPID"), "monitorPID must be set when monitorTimestamp is set"))
 	}
 
 	return errorList
