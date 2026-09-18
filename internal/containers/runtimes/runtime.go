@@ -79,6 +79,11 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 		return nil, errNoRuntimeFound
 	}
 
+	selectedRuntimeErr := flags.SetRuntimeFlagValue(flags.RuntimeFlagValue(availableRuntime.orchestrator.Name()))
+	if selectedRuntimeErr != nil {
+		return nil, fmt.Errorf("record selected container runtime: %w", selectedRuntimeErr)
+	}
+
 	log.V(1).Info("Runtime status", "Runtime", availableRuntime.orchestrator.Name(), "Status", availableRuntime.status)
 
 	return availableRuntime.orchestrator, nil

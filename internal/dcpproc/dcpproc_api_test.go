@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -172,20 +171,18 @@ func TestRunContainerWatcherForMonitorWithStopOnly(t *testing.T) {
 	require.Contains(t, dcpProc.Cmd.Args, "--stop-only", "Should include --stop-only flag")
 }
 
-func TestRunContainerWatcherPassesConfiguredRuntime(t *testing.T) {
+func TestRunContainerWatcherPassesSelectedRuntime(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
 	pe := internal_testutil.NewTestProcessExecutor(ctx)
 	dcppaths.EnableTestPathProbing()
 
-	flagSet := pflag.NewFlagSet(t.Name(), pflag.ContinueOnError)
-	container_flags.EnsureRuntimeFlag(flagSet)
 	originalRuntime := container_flags.GetRuntimeFlagValue()
 	t.Cleanup(func() {
-		require.NoError(t, flagSet.Set(container_flags.RuntimeFlagName, string(originalRuntime)))
+		require.NoError(t, container_flags.SetRuntimeFlagValue(originalRuntime))
 	})
-	require.NoError(t, flagSet.Set(container_flags.RuntimeFlagName, string(container_flags.PodmanRuntime)))
+	require.NoError(t, container_flags.SetRuntimeFlagValue(container_flags.PodmanRuntime))
 
 	RunContainerWatcher(pe, "test-container-123", log)
 
