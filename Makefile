@@ -401,7 +401,6 @@ $(TOOL_BIN):
 ifeq ($(build_os),darwin)
 .PHONY: force-go-runtime-overlay
 force-go-runtime-overlay:
-
 # Apply the upstream fix for golang/go#81009 to the selected toolchain without
 # replacing unrelated standard-library source.
 $(GO_RUNTIME_OVERLAY_FILE): force-go-runtime-overlay $(wildcard ./internal/tools/goruntimeoverlay/*) | $(TOOL_BIN)
