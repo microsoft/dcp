@@ -138,10 +138,24 @@ func applyDarwinRuntimePatch(ctx context.Context, source []byte) ([]byte, bool, 
 
 		return patchedSource, true, nil
 	}
+	if !gitApplyRejectedPatch(forwardCheckErr) {
+		return nil, false, fmt.Errorf(
+			"checking whether the upstream patch applies: %w: %s",
+			forwardCheckErr,
+			forwardCheckOutput,
+		)
+	}
 
 	reverseCheckOutput, reverseCheckErr := runGitApply(ctx, stagingDirectory, true, true)
 	if reverseCheckErr == nil {
 		return source, false, nil
+	}
+	if !gitApplyRejectedPatch(reverseCheckErr) {
+		return nil, false, fmt.Errorf(
+			"checking whether the upstream patch was already applied: %w: %s",
+			reverseCheckErr,
+			reverseCheckOutput,
+		)
 	}
 
 	return nil, false, fmt.Errorf(
@@ -159,7 +173,13 @@ func runGitApply(
 	reverse bool,
 	check bool,
 ) ([]byte, error) {
-	args := []string{"-C", workingDirectory, "apply"}
+	args := []string{
+		"-c", "core.autocrlf=false",
+		"-c", "core.eol=lf",
+		"-C", workingDirectory,
+		"apply",
+		"--whitespace=nowarn",
+	}
 	if reverse {
 		args = append(args, "--reverse")
 	}
@@ -169,9 +189,15 @@ func runGitApply(
 	args = append(args, "-")
 
 	applyCommand := exec.CommandContext(ctx, "git", args...)
-	applyCommand.Stdin = bytes.NewReader(darwinRuntimePatch)
+	normalizedPatch := bytes.ReplaceAll(darwinRuntimePatch, []byte("\r\n"), []byte("\n"))
+	applyCommand.Stdin = bytes.NewReader(normalizedPatch)
 	output, applyErr := applyCommand.CombinedOutput()
 	return output, applyErr
+}
+
+func gitApplyRejectedPatch(applyErr error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(applyErr, &exitErr)
 }
 
 func readFile(path string) ([]byte, error) {

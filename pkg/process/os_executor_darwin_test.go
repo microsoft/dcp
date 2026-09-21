@@ -32,11 +32,21 @@ func TestStartProcessChildDoesNotInheritSIGINFOWithDefaultHandler(t *testing.T) 
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
 	defer testCancel()
 
-	launcherCmd := exec.CommandContext(testCtx, signalDispositionTool)
+	testDeadline, haveTestDeadline := testCtx.Deadline()
+	require.True(t, haveTestDeadline, "signal disposition test context should have a deadline")
+
+	launcherTimeout := time.Until(testDeadline)
+	require.Positive(t, launcherTimeout, "signal disposition test deadline should be in the future")
+
+	launcherCmd := exec.CommandContext(
+		testCtx,
+		signalDispositionTool,
+		"--timeout", launcherTimeout.String(),
+	)
 	var launcherOutput bytes.Buffer
 	launcherCmd.Stdout = &launcherOutput
 	launcherCmd.Stderr = &launcherOutput
 
 	runErr := launcherCmd.Run()
-	require.NoError(t, runErr, "child process inherited an invalid signal disposition:\n%s", launcherOutput.String())
+	require.NoError(t, runErr, "signal disposition launcher failed:\n%s", launcherOutput.String())
 }
