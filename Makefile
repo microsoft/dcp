@@ -312,11 +312,11 @@ $(DCP_BINARY): $(GO_SOURCES) go.mod $(GO_RUNTIME_OVERLAY_PREREQ) | ${OUTPUT_BIN}
 
 .PHONY: build-dcptun-containerexe
 build-dcptun-containerexe: $(DCPTUN_CLIENT_BINARY) ## Builds DCP reverse network tunnel client binary for Linux (to be used in containers)
-$(DCPTUN_CLIENT_BINARY): $(GO_SOURCES) go.mod $(GO_RUNTIME_OVERLAY_PREREQ) | $(OUTPUT_BIN)
+$(DCPTUN_CLIENT_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
 ifeq ($(detected_OS),windows)
-	$$env:GOOS = "linux"; $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(GO_RUNTIME_OVERLAY_ARG) $(BUILD_ARGS) ./cmd/dcptun
+	$$env:GOOS = "linux"; $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
 else
-	GOOS=linux $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(GO_RUNTIME_OVERLAY_ARG) $(BUILD_ARGS) ./cmd/dcptun
+	GOOS=linux $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
 endif
 
 .PHONY: clean
