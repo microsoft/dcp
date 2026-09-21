@@ -13,11 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	int_testutil "github.com/microsoft/dcp/internal/testutil"
-	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStartProcessChildDoesNotInheritSIGINFOWithDefaultHandler(t *testing.T) {
@@ -30,18 +28,14 @@ func TestStartProcessChildDoesNotInheritSIGINFOWithDefaultHandler(t *testing.T) 
 		"could not locate signal-disposition test tool (did you run `make test-prereqs`?)",
 	)
 
-	childCmd := exec.Command(signalDispositionTool)
-	var childOutput bytes.Buffer
-	childCmd.Stdout = &childOutput
-	childCmd.Stderr = &childOutput
-
-	executor := process.NewOSExecutor(log)
-	defer executor.Dispose()
-
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
 	defer testCancel()
 
-	exitCode, runErr := process.RunToCompletion(testCtx, executor, childCmd)
-	require.NoError(t, runErr, "child process inherited an invalid signal disposition:\n%s", childOutput.String())
-	require.Zero(t, exitCode, "child process reported an invalid signal disposition:\n%s", childOutput.String())
+	launcherCmd := exec.CommandContext(testCtx, signalDispositionTool)
+	var launcherOutput bytes.Buffer
+	launcherCmd.Stdout = &launcherOutput
+	launcherCmd.Stderr = &launcherOutput
+
+	runErr := launcherCmd.Run()
+	require.NoError(t, runErr, "child process inherited an invalid signal disposition:\n%s", launcherOutput.String())
 }

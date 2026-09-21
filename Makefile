@@ -446,8 +446,8 @@ $(TERMCHILD_TOOL): $(wildcard ./test/termchild/*.go) $(GO_RUNTIME_OVERLAY_PREREQ
 ifeq ($(build_os),darwin)
 .PHONY: signal-disposition-tool
 signal-disposition-tool: $(SIGNAL_DISPOSITION_TOOL)
-$(SIGNAL_DISPOSITION_TOOL): $(wildcard ./test/signaldisposition/*.go) | $(TOOL_BIN)
-	CGO_ENABLED=1 $(GO_BIN) build -o $(SIGNAL_DISPOSITION_TOOL) github.com/microsoft/dcp/test/signaldisposition
+$(SIGNAL_DISPOSITION_TOOL): $(wildcard ./test/signaldisposition/*.go) $(GO_RUNTIME_OVERLAY_PREREQ) | $(TOOL_BIN)
+	CGO_ENABLED=1 $(GO_BIN) build -o $(SIGNAL_DISPOSITION_TOOL) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/signaldisposition
 endif
 
 # lfwriter tool is used for testing lockfile package
