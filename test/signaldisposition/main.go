@@ -40,6 +40,7 @@ import "C"
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -53,16 +54,25 @@ import (
 const childArgument = "child"
 
 func main() {
-	if len(os.Args) == 1 {
-		runLauncher()
+	if len(os.Args) == 2 && os.Args[1] == childArgument {
+		validateChildSignalDisposition()
 		return
 	}
 
-	if len(os.Args) != 2 || os.Args[1] != childArgument {
-		_, _ = fmt.Fprintf(os.Stderr, "unexpected arguments: %q\n", os.Args[1:])
+	launcherFlags := flag.NewFlagSet("signal-disposition", flag.ContinueOnError)
+	launcherTimeout := launcherFlags.Duration("timeout", 30*time.Second, "Maximum time to wait for the child")
+	if parseErr := launcherFlags.Parse(os.Args[1:]); parseErr != nil {
+		os.Exit(2)
+	}
+	if launcherFlags.NArg() != 0 {
+		_, _ = fmt.Fprintf(os.Stderr, "unexpected arguments: %q\n", launcherFlags.Args())
 		os.Exit(2)
 	}
 
+	runLauncher(*launcherTimeout)
+}
+
+func validateChildSignalDisposition() {
 	handlerIsDefault := C.get_initial_handler_is_default() != 0
 	hasSIGINFO := C.get_initial_has_siginfo() != 0
 	flags := uint32(C.get_initial_flags())
@@ -78,11 +88,17 @@ func main() {
 	}
 }
 
-func runLauncher() {
-	runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Second)
+func runLauncher(timeout time.Duration) {
+	executablePath, executablePathErr := os.Executable()
+	if executablePathErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "could not determine signal disposition executable path: %v\n", executablePathErr)
+		os.Exit(1)
+	}
+
+	runCtx, runCancel := context.WithTimeout(context.Background(), timeout)
 	defer runCancel()
 
-	childCmd := exec.Command(os.Args[0], childArgument)
+	childCmd := exec.Command(executablePath, childArgument)
 	childCmd.Stdout = os.Stdout
 	childCmd.Stderr = os.Stderr
 
@@ -95,6 +111,7 @@ func runLauncher() {
 		os.Exit(1)
 	}
 	if exitCode != 0 {
+		_, _ = fmt.Fprintf(os.Stderr, "signal disposition child exited with code %d\n", exitCode)
 		os.Exit(1)
 	}
 }

@@ -464,21 +464,21 @@ $(PARROT_TOOL): $(wildcard ./test/parrot/*.go) $(GO_RUNTIME_OVERLAY_PREREQ) | $(
 # Builds a static parrot binary suitable for the scratch-based test container image.
 .PHONY: parrot-tool-containerexe
 parrot-tool-containerexe: $(PARROT_TOOL_CONTAINER_BINARY)
-$(PARROT_TOOL_CONTAINER_BINARY): Makefile $(wildcard ./test/parrot/*.go) $(GO_RUNTIME_OVERLAY_PREREQ) | $(TOOL_BIN)
+$(PARROT_TOOL_CONTAINER_BINARY): Makefile $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/parrot
+	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
 else
-	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/parrot
+	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
 endif
 
 # Builds a static probe binary for the scratch-based container conformance image.
 .PHONY: container-probe-tool-containerexe
 container-probe-tool-containerexe: $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY)
-$(CONTAINER_PROBE_TOOL_CONTAINER_BINARY): Makefile $(wildcard ./test/containerprobe/*.go) $(GO_RUNTIME_OVERLAY_PREREQ) | $(TOOL_BIN)
+$(CONTAINER_PROBE_TOOL_CONTAINER_BINARY): Makefile $(wildcard ./test/containerprobe/*.go) | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/containerprobe
+	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/containerprobe
 else
-	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/containerprobe
+	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/containerprobe
 endif
 
 .PHONY: httpcontent-stream-repro
