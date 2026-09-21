@@ -93,12 +93,6 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 		rootCmd.AddCommand(cmd)
 	}
 
-	if cmd, err = dcpproc_cmds.NewForkProcessExecCommand(log.Logger); err != nil {
-		return nil, fmt.Errorf("could not set up '%s' command: %w", dcpproc_cmds.ForkProcessExecCmdName, err)
-	} else {
-		rootCmd.AddCommand(cmd)
-	}
-
 	// Add dcptun sub-commands
 	rootCmd.AddCommand(dcptun_cmds.NewRunServerCommand(log.Logger))
 
