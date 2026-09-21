@@ -373,6 +373,7 @@ func TestExecutableCleanupModeStopsExistingProcessOnDelete(t *testing.T) {
 
 	const testName = "executable-cleanup-mode-stops-existing"
 	serverInfo, teInfo, startupErr := StartTestEnvironment(
+		t,
 		ctx,
 		ExecutableController,
 		testName,
@@ -735,7 +736,7 @@ func TestPersistentExecutableRecordsWorkloadID(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, ExecutableController, "PersistentExecutableWorkloadID", t.TempDir(), TestEnvironmentOptions{
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(t, ctx, ExecutableController, "PersistentExecutableWorkloadID", t.TempDir(), TestEnvironmentOptions{
 		WorkloadID: "workload-a",
 	})
 	require.NoError(t, envStartErr)
@@ -1081,7 +1082,7 @@ func TestPersistentExecutableStopsProcessWhenProcessRecordUpdateFails(t *testing
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, ExecutableController, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, ExecutableController, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Test environment could not be started")
 	defer func() {
 		cancel()

@@ -9,6 +9,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
+	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -43,6 +45,8 @@ type TestEnvironmentInfo struct {
 	ResourceLeaseOwner               process.ProcessHandle
 	Log                              logr.Logger
 	SessionFolder                    string
+	afterShutdownLock                sync.Mutex
+	afterShutdown                    []func()
 }
 
 type TestEnvironmentOptions struct {
@@ -50,9 +54,27 @@ type TestEnvironmentOptions struct {
 	DecorateContainerOrchestrator func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
 }
 
+func (tei *TestEnvironmentInfo) addAfterShutdown(callback func()) {
+	tei.afterShutdownLock.Lock()
+	defer tei.afterShutdownLock.Unlock()
+	tei.afterShutdown = append(tei.afterShutdown, callback)
+}
+
+func (tei *TestEnvironmentInfo) runAfterShutdown() {
+	tei.afterShutdownLock.Lock()
+	callbacks := tei.afterShutdown
+	tei.afterShutdown = nil
+	tei.afterShutdownLock.Unlock()
+
+	for callbackIndex := len(callbacks) - 1; callbackIndex >= 0; callbackIndex-- {
+		callbacks[callbackIndex]()
+	}
+}
+
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
 func StartTestEnvironment(
-	ctx context.Context,
+	t testing.TB,
+	parentCtx context.Context,
 	inclCtrl IncludedController,
 	instanceTag string,
 	testTempDir string,
@@ -61,11 +83,12 @@ func StartTestEnvironment(
 	*TestEnvironmentInfo,
 	error,
 ) {
-	return StartTestEnvironmentWithOptions(ctx, inclCtrl, instanceTag, testTempDir, TestEnvironmentOptions{})
+	return StartTestEnvironmentWithOptions(t, parentCtx, inclCtrl, instanceTag, testTempDir, TestEnvironmentOptions{})
 }
 
 func StartTestEnvironmentWithOptions(
-	ctx context.Context,
+	t testing.TB,
+	parentCtx context.Context,
 	inclCtrl IncludedController,
 	instanceTag string,
 	testTempDir string,
@@ -75,6 +98,21 @@ func StartTestEnvironmentWithOptions(
 	*TestEnvironmentInfo,
 	error,
 ) {
+	ctx := parentCtx
+	var serverInfo *ctrl_testutil.ApiServerInfo
+	var testEnvironmentInfo *TestEnvironmentInfo
+	if t != nil {
+		t.Helper()
+		var cancelEnvironment context.CancelFunc
+		ctx, cancelEnvironment = context.WithCancel(parentCtx)
+		t.Cleanup(func() {
+			shutdownTestEnvironment(t, serverInfo, cancelEnvironment)
+			if testEnvironmentInfo != nil {
+				testEnvironmentInfo.runAfterShutdown()
+			}
+		})
+	}
+
 	inclCtrl |= NamespaceController
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
 		inclCtrl |= PhysicalContainerImageController | PhysicalContainerController | PhysicalContainerNetworkController
@@ -88,9 +126,10 @@ func StartTestEnvironmentWithOptions(
 	log := testutil.NewLogWithResourceSinkForTesting(instanceTag, sessionFolder)
 	ctrl.SetLogger(log)
 
-	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, log, sessionFolder)
-	if serverErr != nil {
-		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
+	startedServerInfo, serverStartErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, log, sessionFolder)
+	serverInfo = startedServerInfo
+	if serverStartErr != nil {
+		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverStartErr)
 	}
 
 	stateStore, stateStoreCleanup, stateStoreErr := createTestStateStore(ctx, testTempDir)
@@ -406,7 +445,7 @@ func StartTestEnvironmentWithOptions(
 		managerDone.Set()
 	}()
 
-	teInfo := &TestEnvironmentInfo{
+	testEnvironmentInfo = &TestEnvironmentInfo{
 		TestProcessExecutor:              pex,
 		TestProcessExecutableRunner:      exeRunner,
 		TestIdeRunner:                    ir,
@@ -418,5 +457,26 @@ func StartTestEnvironmentWithOptions(
 		Log:                              log,
 		SessionFolder:                    sessionFolder,
 	}
-	return serverInfo, teInfo, nil
+	return serverInfo, testEnvironmentInfo, nil
+}
+
+func shutdownTestEnvironment(
+	t testing.TB,
+	serverInfo *ctrl_testutil.ApiServerInfo,
+	cancel context.CancelFunc,
+) {
+	t.Helper()
+	cancel()
+	if serverInfo == nil {
+		return
+	}
+
+	shutdownTimer := time.NewTimer(20 * time.Second)
+	defer shutdownTimer.Stop()
+
+	select {
+	case <-serverInfo.ApiServerDisposalComplete.Wait():
+	case <-shutdownTimer.C:
+		t.Errorf("timed out waiting for test environment shutdown")
+	}
 }

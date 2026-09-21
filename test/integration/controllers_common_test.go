@@ -115,7 +115,7 @@ func v1VolumeMountsToCreateContainerVolumeMounts(mounts []apiv1.VolumeMount) []c
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	serverInfo, teInfo, envStartErr := StartTestEnvironment(ctx, AllControllers, "IntegrationTests", "")
+	serverInfo, teInfo, envStartErr := StartTestEnvironment(nil, ctx, AllControllers, "IntegrationTests", "")
 	if envStartErr != nil {
 		cancel()
 		panic(envStartErr)

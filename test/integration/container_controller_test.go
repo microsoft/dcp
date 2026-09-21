@@ -118,7 +118,7 @@ func TestPersistentContainerRecordsWorkloadID(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, ContainerController, "PersistentContainerWorkloadID", t.TempDir(), TestEnvironmentOptions{
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(t, ctx, ContainerController, "PersistentContainerWorkloadID", t.TempDir(), TestEnvironmentOptions{
 		WorkloadID: "workload-a",
 	})
 	require.NoError(t, envStartErr)
@@ -331,7 +331,7 @@ func TestContainerRuntimeUnhealthy(t *testing.T) {
 	// We are going to use a separate instance of the API server because we need to simulate container runtime being unhealthy,
 	// and that might interfere with other tests if we used the shared container orchestrator.
 
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), NoSeparateWorkingDir)
+	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, ContainerController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
@@ -2018,7 +2018,7 @@ func TestContainerCleanupModeDeletedBeforeAdoptionRemovesExistingContainer(t *te
 	const testName = "container-cleanup-mode-delete-before-adopt"
 	const imageName = testName + "-image"
 
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), NoSeparateWorkingDir)
+	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, ContainerController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "failed to start the API server")
 	defer func() {
 		cancel()

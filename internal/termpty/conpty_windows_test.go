@@ -41,8 +41,7 @@ func TestStartProcessWithTerminal_StdoutFromChild(t *testing.T) {
 
 	sp := startTermchildWithPTY(t, ctx, "--print", "hello-from-child")
 
-	out, err := readUntil(ctx, sp.PTY, "hello-from-child")
-	require.NoError(t, err, "expected to see 'hello-from-child'; got: %q", out)
+	_ = requireReadUntil(t, ctx, sp, "hello-from-child")
 
 	ei := awaitExit(t, ctx, sp.ExitHandler)
 	require.NoError(t, ei.Err)
@@ -88,8 +87,7 @@ func TestStartProcessWithTerminal_StderrFromChild(t *testing.T) {
 
 	sp := startTermchildWithPTY(t, ctx, "--print-stderr", "boom-from-stderr")
 
-	out, err := readUntil(ctx, sp.PTY, "boom-from-stderr")
-	require.NoError(t, err, "expected to see 'boom-from-stderr'; got: %q", out)
+	_ = requireReadUntil(t, ctx, sp, "boom-from-stderr")
 
 	ei := awaitExit(t, ctx, sp.ExitHandler)
 	require.NoError(t, ei.Err)

@@ -45,9 +45,11 @@ func (r *recordingBuildImageOrchestrator) BuildImage(ctx context.Context, option
 func TestV2PhysicalContainerImageControllerBuildsRawArchiveContext(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
 
 	var recordingOrchestrator *recordingBuildImageOrchestrator
 	serverInfo, _, startErr := StartTestEnvironmentWithOptions(
+		t,
 		ctx,
 		NamespaceController|PhysicalContainerImageController,
 		t.Name(),
@@ -66,7 +68,6 @@ func TestV2PhysicalContainerImageControllerBuildsRawArchiveContext(t *testing.T)
 		},
 	)
 	require.NoError(t, startErr)
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-pci-raw-archive"}}
 	require.NoError(t, serverInfo.Client.Create(ctx, namespace))

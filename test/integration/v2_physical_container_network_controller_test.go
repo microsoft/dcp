@@ -144,7 +144,7 @@ func TestV2PhysicalContainerNetworkControllerRemovesCreatedNetworkOnDeletion(t *
 func TestV2PhysicalContainerNetworkControllerReportsDeletionFailure(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, NamespaceController|PhysicalContainerNetworkController, t.Name(), NoSeparateWorkingDir)
+	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, NamespaceController|PhysicalContainerNetworkController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
@@ -753,7 +753,7 @@ func TestV2PhysicalContainerNetworkControllerRecoversFromRuntimeFailure(t *testi
 	// We are going to use a separate instance of the API server because we need to simulate the
 	// container runtime being unhealthy, and that would interfere with other tests if we used the
 	// shared container orchestrator.
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, NamespaceController|PhysicalContainerNetworkController, t.Name(), NoSeparateWorkingDir)
+	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, NamespaceController|PhysicalContainerNetworkController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
@@ -823,7 +823,7 @@ func TestV2PhysicalContainerNetworkControllerRecoversFromRuntimeFailure(t *testi
 func TestV2PhysicalContainerNetworkControllerRecoversFromCreateFailure(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, NamespaceController|PhysicalContainerNetworkController, t.Name(), NoSeparateWorkingDir)
+	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, NamespaceController|PhysicalContainerNetworkController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
@@ -876,7 +876,7 @@ func TestV2PhysicalContainerNetworkControllerRecoversFromCreateFailure(t *testin
 func TestV2PhysicalContainerNetworkControllerRecoversFromReplacementFailure(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, NamespaceController|PhysicalContainerNetworkController, t.Name(), NoSeparateWorkingDir)
+	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, NamespaceController|PhysicalContainerNetworkController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {

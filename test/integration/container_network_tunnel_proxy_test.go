@@ -59,9 +59,8 @@ func TestTunnelProxyCreateDelete(t *testing.T) {
 	// Use dedicated test environment because otherwise it is difficult to differentiate
 	// between different server proxy processes running in parallel tests.
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -124,9 +123,8 @@ func TestTunnelProxyDelayedNetworkCreation(t *testing.T) {
 	const testName = "test-tunnel-proxy-delayed-network-creation"
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	// Create the ContainerNetworkTunnelProxy object WITHOUT creating the ContainerNetwork first
 	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
@@ -182,13 +180,13 @@ func TestTunnelProxyDelayedNetworkCreation(t *testing.T) {
 // Verifies that running ContainerNetworkTunnelProxy has the status updated with client proxy and server proxy information.
 func TestTunnelProxyRunningStatus(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-running-status"
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 	testContainerOrchestrator, ok := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, ok)
 	buildContextDir := teInfo.SessionFolder
@@ -303,7 +301,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	buildContextFiles, globErr := filepath.Glob(filepath.Join(buildContextDir, "dcptun-build-context-*.tar"))
 	require.NoError(t, globErr)
 	require.Equal(t, []string{physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source}, buildContextFiles)
-	t.Cleanup(func() {
+	teInfo.addAfterShutdown(func() {
 		require.NoFileExists(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source)
 	})
 	require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, physicalImages.Items[0].Status.Phase)
@@ -406,9 +404,8 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	const testName = "test-tunnel-proxy-cleanup"
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -496,7 +493,7 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	require.NotEmpty(t, physicalImage.Spec.Image.Build.ContextArchive.Source)
 	require.Empty(t, physicalImage.Spec.Image.Build.ContextArchive.RawContents)
 	require.FileExists(t, physicalImage.Spec.Image.Build.ContextArchive.Source)
-	t.Cleanup(func() {
+	teInfo.addAfterShutdown(func() {
 		require.NoFileExists(t, physicalImage.Spec.Image.Build.ContextArchive.Source)
 	})
 
@@ -541,9 +538,8 @@ func TestTunnelProxyTunnelCreate(t *testing.T) {
 	const testName = "test-tunnel-proxy-tunnel-management"
 
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -600,9 +596,8 @@ func TestTunnelProxyTunnelCreateFallsBackToRandomPort(t *testing.T) {
 	const testName = "test-tunnel-proxy-tunnel-port-fallback"
 
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -671,9 +666,8 @@ func TestTunnelProxyTunnelFailure(t *testing.T) {
 	const testName = "test-tunnel-proxy-tunnel-failure"
 
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -732,9 +726,8 @@ func TestTunnelProxyServerServiceTransition(t *testing.T) {
 	const testName = "test-tunnel-proxy-server-service-transition"
 
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -842,9 +835,8 @@ func TestTunnelProxyMultipleTunnels(t *testing.T) {
 	const testName = "test-tunnel-proxy-multiple-tunnels"
 
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -928,9 +920,8 @@ func TestTunnelProxyClientProxyAliases(t *testing.T) {
 	const testName = "test-tunnel-proxy-client-proxy-aliases"
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -993,9 +984,8 @@ func TestTunnelProxyServerStartupFailure(t *testing.T) {
 	const testName = "test-tunnel-proxy-server-startup-failure"
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1069,9 +1059,8 @@ func TestTunnelProxyClientContainerStartupFailure(t *testing.T) {
 	const testName = "test-tunnel-proxy-client-container-startup-failure"
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1132,9 +1121,8 @@ func TestTunnelProxyServerUnexpectedExit(t *testing.T) {
 	const testName = "test-tunnel-proxy-server-unexpected-exit"
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1287,9 +1275,8 @@ func testTunnelProxyClientFailure(
 	dcppaths.EnableTestPathProbing()
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1582,18 +1569,6 @@ func testTunnelProxyWithRealOrchestrator(
 	require.Equal(t, int32(0), *updatedServerExe.Status.ExitCode, "Parrot server executable should exit with code 0 indicating successful completion of all conversations")
 }
 
-func shutdownTestEnvironment(serverInfo *ctrl_testutil.ApiServerInfo, cancel context.CancelFunc) {
-	cancel()
-
-	// StartTestEnvironment closes its state store before disposing the API server. Wait
-	// for that full cleanup path before returning so t.TempDir cleanup does not race
-	// open SQLite file handles on Windows.
-	select {
-	case <-serverInfo.ApiServerDisposalComplete.Wait():
-	case <-time.After(20 * time.Second):
-	}
-}
-
 func shutdownAdvancedTestEnvironment(
 	t *testing.T,
 	ctx context.Context,
@@ -1612,7 +1587,7 @@ func shutdownAdvancedTestEnvironment(
 	waitErr := ctrl_testutil.WaitApiServerStatus(ctx, client, serverInfo, apiserver.ApiServerCleanupComplete)
 	require.NoError(t, waitErr, "Failed to wait for API server to complete cleanup")
 
-	shutdownTestEnvironment(serverInfo, cancel)
+	shutdownTestEnvironment(t, serverInfo, cancel)
 }
 
 // The tunnel controller will try to create a server-side proxy

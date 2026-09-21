@@ -119,7 +119,7 @@ func TestPersistentNetworkRecordsWorkloadID(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, NetworkController, "PersistentNetworkWorkloadID", t.TempDir(), TestEnvironmentOptions{
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(t, ctx, NetworkController, "PersistentNetworkWorkloadID", t.TempDir(), TestEnvironmentOptions{
 		WorkloadID: "workload-a",
 	})
 	require.NoError(t, envStartErr)
@@ -477,7 +477,7 @@ func TestNetworkRuntimeUnhealthy(t *testing.T) {
 	// We are going to use a separate instance of the API server because we need to simulate container runtime being unhealthy,
 	// and that might interfere with other tests if we used the shared container orchestrator.
 
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, NetworkController, t.Name(), NoSeparateWorkingDir)
+	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, NetworkController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
