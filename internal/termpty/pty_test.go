@@ -188,8 +188,6 @@ func requireReadUntil(
 			exitInfo.ExitCode,
 			exitInfo.Err,
 		)
-	case <-ctx.Done():
-		exitSummary = fmt.Sprintf("process exit was not observed before context completion: %v", ctx.Err())
 	case <-exitTimer.C:
 		exitSummary = fmt.Sprintf("process exit was not observed within %s", drainExitTimeout)
 	}
