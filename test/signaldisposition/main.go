@@ -39,11 +39,30 @@ static int get_initial_flags(void) {
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"time"
+
+	"github.com/go-logr/logr"
+
+	"github.com/microsoft/dcp/pkg/process"
 )
 
+const childArgument = "child"
+
 func main() {
+	if len(os.Args) == 1 {
+		runLauncher()
+		return
+	}
+
+	if len(os.Args) != 2 || os.Args[1] != childArgument {
+		_, _ = fmt.Fprintf(os.Stderr, "unexpected arguments: %q\n", os.Args[1:])
+		os.Exit(2)
+	}
+
 	handlerIsDefault := C.get_initial_handler_is_default() != 0
 	hasSIGINFO := C.get_initial_has_siginfo() != 0
 	flags := uint32(C.get_initial_flags())
@@ -55,6 +74,27 @@ func main() {
 			handlerIsDefault,
 			flags,
 		)
+		os.Exit(1)
+	}
+}
+
+func runLauncher() {
+	runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer runCancel()
+
+	childCmd := exec.Command(os.Args[0], childArgument)
+	childCmd.Stdout = os.Stdout
+	childCmd.Stderr = os.Stderr
+
+	executor := process.NewOSExecutor(logr.Discard())
+	defer executor.Dispose()
+
+	exitCode, runErr := process.RunToCompletion(runCtx, executor, childCmd)
+	if runErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "could not run signal disposition child: %v\n", runErr)
+		os.Exit(1)
+	}
+	if exitCode != 0 {
 		os.Exit(1)
 	}
 }
