@@ -101,6 +101,7 @@ func TestGenerateRuntimeOverlay(t *testing.T) {
 	require.Equal(t, map[string]string{runtimeSourcePath: patchedSourcePath}, config.Replace)
 }
 
+// Remove this test with the runtime overlay once DCP requires a Go release containing golang/go#81009.
 func TestGenerateRuntimeOverlayIsEmptyWhenToolchainContainsFix(t *testing.T) {
 	t.Parallel()
 
@@ -126,6 +127,7 @@ func TestGenerateRuntimeOverlayIsEmptyWhenToolchainContainsFix(t *testing.T) {
 	require.Empty(t, config.Replace)
 }
 
+// Remove this test with the runtime overlay once DCP requires a Go release containing golang/go#81009.
 func TestGenerateRuntimeOverlayRejectsUnexpectedSource(t *testing.T) {
 	t.Parallel()
 

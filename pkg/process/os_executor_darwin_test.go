@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Remove this test with the runtime overlay once DCP requires a Go release containing golang/go#81009.
 func TestStartProcessChildDoesNotInheritSIGINFOWithDefaultHandler(t *testing.T) {
 	t.Parallel()
 
