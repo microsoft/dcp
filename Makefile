@@ -116,8 +116,19 @@ PARROT_TOOL ?= $(TOOL_BIN)/parrot$(exe_suffix)
 PARROT_TOOL_CONTAINER_BINARY ?= $(TOOL_BIN)/parrot_c
 CONTAINER_PROBE_TOOL_CONTAINER_BINARY ?= $(TOOL_BIN)/container_probe_c
 TERMCHILD_TOOL ?= $(TOOL_BIN)/termchild$(exe_suffix)
+SIGNAL_DISPOSITION_TOOL ?= $(TOOL_BIN)/signal-disposition$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
+GO_RUNTIME_OVERLAY_DIR ?= $(TOOL_BIN)/go-runtime-overlay
+GO_RUNTIME_OVERLAY_FILE ?= $(GO_RUNTIME_OVERLAY_DIR)/overlay.json
+
+ifeq ($(build_os),darwin)
+	GO_RUNTIME_OVERLAY_ARG := -overlay="$(GO_RUNTIME_OVERLAY_FILE)"
+	GO_RUNTIME_OVERLAY_PREREQ := $(GO_RUNTIME_OVERLAY_FILE)
+else
+	GO_RUNTIME_OVERLAY_ARG :=
+	GO_RUNTIME_OVERLAY_PREREQ :=
+endif
 
 # Tool Versions
 PROTOC_VERSION ?= 33.5
@@ -166,6 +177,9 @@ help: ## Display this help.
 
 
 ##@ Code generation
+
+.PHONY: generate-go-runtime-overlay
+generate-go-runtime-overlay: $(GO_RUNTIME_OVERLAY_PREREQ) ## Generate the Darwin Go runtime overlay used by DCP builds
 
 .PHONY: generate
 generate: generate-object-methods generate-openapi generate-goversioninfo generate-grpc ## Generate artifacts needed for DCP binary build: object copy methods, OpenAPI definitions, binary version info, and gRPC files.
@@ -293,16 +307,16 @@ build-ci: generate-ci release ## Runs codegen, including license/notice files, t
 
 .PHONY: build-dcp
 build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
-$(DCP_BINARY): $(GO_SOURCES) go.mod | ${OUTPUT_BIN}
-	$(GO_BIN) build -o $(DCP_BINARY) $(BUILD_ARGS) ./cmd/dcp
+$(DCP_BINARY): $(GO_SOURCES) go.mod $(GO_RUNTIME_OVERLAY_PREREQ) | ${OUTPUT_BIN}
+	$(GO_BIN) build -o $(DCP_BINARY) $(GO_RUNTIME_OVERLAY_ARG) $(BUILD_ARGS) ./cmd/dcp
 
 .PHONY: build-dcptun-containerexe
 build-dcptun-containerexe: $(DCPTUN_CLIENT_BINARY) ## Builds DCP reverse network tunnel client binary for Linux (to be used in containers)
-$(DCPTUN_CLIENT_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
+$(DCPTUN_CLIENT_BINARY): $(GO_SOURCES) go.mod $(GO_RUNTIME_OVERLAY_PREREQ) | $(OUTPUT_BIN)
 ifeq ($(detected_OS),windows)
-	$$env:GOOS = "linux"; $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
+	$$env:GOOS = "linux"; $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(GO_RUNTIME_OVERLAY_ARG) $(BUILD_ARGS) ./cmd/dcptun
 else
-	GOOS=linux $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
+	GOOS=linux $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(GO_RUNTIME_OVERLAY_ARG) $(BUILD_ARGS) ./cmd/dcptun
 endif
 
 .PHONY: clean
@@ -344,6 +358,9 @@ TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe containe
 else
 TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe container-probe-tool-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe termchild-tool
 endif
+ifeq ($(build_os),darwin)
+TEST_PREREQS := $(TEST_PREREQS) signal-disposition-tool
+endif
 
 .PHONY: test-prereqs
 test-prereqs: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
@@ -361,13 +378,13 @@ TEST_OPTS := $(COMMON_TEST_OPTS) -race
 endif
 
 .PHONY: test
-test: test-prereqs ## Run all tests in the repository
-	$(GO_BIN) test ./... $(TEST_OPTS) -parallel 32
+test: test-prereqs $(GO_RUNTIME_OVERLAY_PREREQ) ## Run all tests in the repository
+	$(GO_BIN) test ./... $(GO_RUNTIME_OVERLAY_ARG) $(TEST_OPTS) -parallel 32
 
 # NOTE: Keep scripts/test-ci.ps1 in sync with test-ci (see comment above TEST_PREREQS).
 .PHONY: test-ci
-test-ci: test-ci-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
-	$(GO_BIN) test ./... $(TEST_OPTS)
+test-ci: test-ci-prereqs $(GO_RUNTIME_OVERLAY_PREREQ) ## Runs tests in a way appropriate for CI pipeline, with linting etc.
+	$(GO_BIN) test ./... $(GO_RUNTIME_OVERLAY_ARG) $(TEST_OPTS)
 
 ## Development and test support targets
 
@@ -380,6 +397,16 @@ ${OUTPUT_BIN}/ext/bin/: | ${OUTPUT_BIN}
 
 $(TOOL_BIN):
 	$(mkdir) $(TOOL_BIN)
+
+ifeq ($(build_os),darwin)
+.PHONY: force-go-runtime-overlay
+force-go-runtime-overlay:
+
+# Apply the upstream fix for golang/go#81009 to the selected toolchain without
+# replacing unrelated standard-library source.
+$(GO_RUNTIME_OVERLAY_FILE): force-go-runtime-overlay $(wildcard ./internal/tools/goruntimeoverlay/*) | $(TOOL_BIN)
+	$(CLEAR_GOARGS) $(GO_BIN) run ./internal/tools/goruntimeoverlay --output-dir "$(GO_RUNTIME_OVERLAY_DIR)"
+endif
 
 $(DCP_DIR):
 	$(mkdir) $(DCP_DIR)
@@ -405,45 +432,54 @@ endif
 # delay-tool is used for process package testing
 .PHONY: delay-tool
 delay-tool: $(DELAY_TOOL)
-$(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
-	$(GO_BIN) build -o $(DELAY_TOOL) github.com/microsoft/dcp/test/delay
+$(DELAY_TOOL): $(wildcard ./test/delay/*.go) $(GO_RUNTIME_OVERLAY_PREREQ) | $(TOOL_BIN)
+	$(GO_BIN) build -o $(DELAY_TOOL) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/delay
 
 # termchild-tool is used for internal/termpty pseudo-terminal tests
 .PHONY: termchild-tool
 termchild-tool: $(TERMCHILD_TOOL)
-$(TERMCHILD_TOOL): $(wildcard ./test/termchild/*.go) | $(TOOL_BIN)
-	$(GO_BIN) build -o $(TERMCHILD_TOOL) github.com/microsoft/dcp/test/termchild
+$(TERMCHILD_TOOL): $(wildcard ./test/termchild/*.go) $(GO_RUNTIME_OVERLAY_PREREQ) | $(TOOL_BIN)
+	$(GO_BIN) build -o $(TERMCHILD_TOOL) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/termchild
+
+# signal-disposition captures the signal state inherited by an exec'd child before
+# its Go runtime initializes.
+ifeq ($(build_os),darwin)
+.PHONY: signal-disposition-tool
+signal-disposition-tool: $(SIGNAL_DISPOSITION_TOOL)
+$(SIGNAL_DISPOSITION_TOOL): $(wildcard ./test/signaldisposition/*.go) | $(TOOL_BIN)
+	CGO_ENABLED=1 $(GO_BIN) build -o $(SIGNAL_DISPOSITION_TOOL) github.com/microsoft/dcp/test/signaldisposition
+endif
 
 # lfwriter tool is used for testing lockfile package
 .PHONY: lfwriter-tool
 lfwriter-tool: $(LFWRITER_TOOL)
-$(LFWRITER_TOOL): $(wildcard ./test/lfwriter/*.go) | $(TOOL_BIN)
-	$(GO_BIN) build -o $(LFWRITER_TOOL) github.com/microsoft/dcp/test/lfwriter
+$(LFWRITER_TOOL): $(wildcard ./test/lfwriter/*.go) $(GO_RUNTIME_OVERLAY_PREREQ) | $(TOOL_BIN)
+	$(GO_BIN) build -o $(LFWRITER_TOOL) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/lfwriter
 
 # parrot tool is used for testing network connectivity
 .PHONY: parrot-tool
 parrot-tool: $(PARROT_TOOL)
-$(PARROT_TOOL): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
-	$(GO_BIN) build -o $(PARROT_TOOL) github.com/microsoft/dcp/test/parrot
+$(PARROT_TOOL): $(wildcard ./test/parrot/*.go) $(GO_RUNTIME_OVERLAY_PREREQ) | $(TOOL_BIN)
+	$(GO_BIN) build -o $(PARROT_TOOL) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/parrot
 
 # Builds a static parrot binary suitable for the scratch-based test container image.
 .PHONY: parrot-tool-containerexe
 parrot-tool-containerexe: $(PARROT_TOOL_CONTAINER_BINARY)
-$(PARROT_TOOL_CONTAINER_BINARY): Makefile $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
+$(PARROT_TOOL_CONTAINER_BINARY): Makefile $(wildcard ./test/parrot/*.go) $(GO_RUNTIME_OVERLAY_PREREQ) | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
+	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/parrot
 else
-	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
+	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/parrot
 endif
 
 # Builds a static probe binary for the scratch-based container conformance image.
 .PHONY: container-probe-tool-containerexe
 container-probe-tool-containerexe: $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY)
-$(CONTAINER_PROBE_TOOL_CONTAINER_BINARY): Makefile $(wildcard ./test/containerprobe/*.go) | $(TOOL_BIN)
+$(CONTAINER_PROBE_TOOL_CONTAINER_BINARY): Makefile $(wildcard ./test/containerprobe/*.go) $(GO_RUNTIME_OVERLAY_PREREQ) | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/containerprobe
+	$$env:CGO_ENABLED = "0"; $$env:GOOS = "linux"; $(GO_BIN) build -o $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/containerprobe
 else
-	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/containerprobe
+	CGO_ENABLED=0 GOOS=linux $(GO_BIN) build -o $(CONTAINER_PROBE_TOOL_CONTAINER_BINARY) $(GO_RUNTIME_OVERLAY_ARG) github.com/microsoft/dcp/test/containerprobe
 endif
 
 .PHONY: httpcontent-stream-repro
