@@ -14,7 +14,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/cenkalti/backoff/v4"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -495,19 +494,10 @@ func TestContainerVolumeCleanup(t *testing.T) {
 	const testName = "container-volume-cleanup"
 
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
 
 	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, VolumeController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-
-		// Wait for the API server cleanup to complete.
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
 
 	adminDocUrl := serverInfo.ClientConfig.Host + apiserver.AdminPathPrefix + apiserver.ExecutionDocument
 
@@ -587,6 +577,7 @@ func TestContainerVolumeCleanup(t *testing.T) {
 func TestContainerVolumeRuntimeUnhealthy(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
 	const testName = "container-volume-runtime-unhealthy"
 
 	// We are going to use a separate instance of the API server because we need to simulate container runtime being unhealthy,
@@ -594,16 +585,6 @@ func TestContainerVolumeRuntimeUnhealthy(t *testing.T) {
 
 	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, VolumeController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-
-		// Wait for the API server cleanup to complete.
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
 
 	vol := apiv1.ContainerVolume{
 		ObjectMeta: metav1.ObjectMeta{

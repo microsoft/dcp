@@ -324,6 +324,7 @@ func TestContainerInstanceStarts(t *testing.T) {
 func TestContainerRuntimeUnhealthy(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
 
 	const testName = "container-runtime-unhealthy"
 	const imageName = testName + "-image"
@@ -333,16 +334,6 @@ func TestContainerRuntimeUnhealthy(t *testing.T) {
 
 	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, ContainerController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-
-		// Wait for the API server cleanup to complete.
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
 
 	ctr := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2014,19 +2005,13 @@ func TestContainerCleanupModeRemovesExistingContainerOnDelete(t *testing.T) {
 func TestContainerCleanupModeDeletedBeforeAdoptionRemovesExistingContainer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
 
 	const testName = "container-cleanup-mode-delete-before-adopt"
 	const imageName = testName + "-image"
 
 	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, ContainerController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "failed to start the API server")
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
 
 	ctr := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{

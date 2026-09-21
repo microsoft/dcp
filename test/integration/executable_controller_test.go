@@ -1084,13 +1084,6 @@ func TestPersistentExecutableStopsProcessWhenProcessRecordUpdateFails(t *testing
 
 	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, ExecutableController, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Test environment could not be started")
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
 
 	exe := &apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{

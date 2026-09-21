@@ -149,7 +149,7 @@ type readUntilError struct {
 
 func (e *readUntilError) Error() string {
 	return fmt.Sprintf(
-		"PTY read failed before observing %q after %d attempts, %d bytes, and %s: %v",
+		"pty read failed before observing %q after %d attempts, %d bytes, and %s: %v",
 		e.target,
 		e.readAttempts,
 		e.bytesRead,

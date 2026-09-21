@@ -480,16 +480,6 @@ func TestNetworkRuntimeUnhealthy(t *testing.T) {
 	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, NetworkController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
-	defer func() {
-		cancel()
-
-		// Wait for the API server cleanup to complete.
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
-
 	tco, isTCO := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, isTCO, "Container orchestrator should be a TestContainerOrchestrator")
 

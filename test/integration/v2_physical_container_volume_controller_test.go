@@ -460,15 +460,9 @@ func TestV2PhysicalContainerVolumeControllerRetriesTransientReplacementRemovalFa
 
 func TestV2PhysicalContainerVolumeControllerRetriesTransientReplacementInspectionFailure(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
 	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, NamespaceController|PhysicalContainerVolumeController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr)
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
 
 	testOrchestrator, isTestOrchestrator := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, isTestOrchestrator)
@@ -588,15 +582,9 @@ func TestV2PhysicalContainerVolumeControllerDoesNotChurnReadyStatus(t *testing.T
 
 func TestV2PhysicalContainerVolumeControllerRecoversFromRuntimeAndCreateFailures(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
 	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, NamespaceController|PhysicalContainerVolumeController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr)
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
 
 	testOrchestrator, isTestOrchestrator := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, isTestOrchestrator)
