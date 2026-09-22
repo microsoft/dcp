@@ -98,6 +98,10 @@ var (
 type ContainerNetworkTunnelProxyReconcilerConfig struct {
 	ProcessExecutor process.Executor // Mandatory
 
+	// Directory that owns the lifetime of generated tunnel proxy image build contexts.
+	// Defaults to the DCP temporary directory.
+	BuildContextDir string
+
 	// The factory function to create a TunnelControlClient used to control the proxy pair.
 	// Normal execution uses "real" gRPC client, tests use a stub since most tests do not run real tunnels.
 	// Mandatory.
@@ -131,6 +135,9 @@ func NewContainerNetworkTunnelProxyReconciler(
 ) *ContainerNetworkTunnelProxyReconciler {
 	if config.ProcessExecutor == nil {
 		panic("ContainerNetworkTunnelProxyReconcilerConfig.ProcessExecutor must not be nil")
+	}
+	if config.BuildContextDir == "" {
+		config.BuildContextDir = usvc_io.DcpTempDir()
 	}
 	if config.MakeTunnelControlClient == nil {
 		panic("ContainerNetworkTunnelProxyReconcilerConfig.TunnelControlClientFactory must not be nil")
@@ -1204,7 +1211,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureTunnelProxyPhysicalContain
 		return fmt.Errorf("get PhysicalContainerImage %q: %w", imageName.String(), getErr)
 	}
 
-	imagePlan, prepareErr := dcptun.PrepareClientProxyImageBuild(ctx)
+	imagePlan, prepareErr := dcptun.PrepareClientProxyImageBuild(ctx, r.config.BuildContextDir)
 	if prepareErr != nil {
 		return prepareErr
 	}

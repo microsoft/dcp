@@ -185,26 +185,14 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-running-status"
 
-	buildContextDir, mkdirErr := os.MkdirTemp("", "dcp-tunnel-")
-	require.NoError(t, mkdirErr)
-	t.Cleanup(func() {
-		require.NoError(t, os.RemoveAll(buildContextDir))
-	})
-	originalDcpTempDir := usvc_io.DcpTempDir
-	usvc_io.DcpTempDir = func() string {
-		return buildContextDir
-	}
-	t.Cleanup(func() {
-		usvc_io.DcpTempDir = originalDcpTempDir
-	})
-
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 	testContainerOrchestrator, ok := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, ok)
-	imagePlan, imagePlanErr := dcptun.PrepareClientProxyImageBuild(ctx)
+	buildContextDir := teInfo.SessionFolder
+	imagePlan, imagePlanErr := dcptun.PrepareClientProxyImageBuild(ctx, buildContextDir)
 	require.NoError(t, imagePlanErr)
 	require.NoError(t, os.Remove(imagePlan.BuildContextArchive.Source))
 	releaseImageBuild := testContainerOrchestrator.BlockBuildImage(imagePlan.Image)
@@ -316,7 +304,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	require.NoError(t, globErr)
 	require.Equal(t, []string{physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source}, buildContextFiles)
 	t.Cleanup(func() {
-		require.NoError(t, os.Remove(physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source))
+		require.NoFileExists(t, physicalImages.Items[0].Spec.Image.Build.ContextArchive.Source)
 	})
 	require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, physicalImages.Items[0].Status.Phase)
 	require.Equal(t, 1, testContainerOrchestrator.BuildImageCallCount(updatedTunnelProxy.Status.ClientProxyContainerImage))
@@ -509,7 +497,7 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	require.Empty(t, physicalImage.Spec.Image.Build.ContextArchive.RawContents)
 	require.FileExists(t, physicalImage.Spec.Image.Build.ContextArchive.Source)
 	t.Cleanup(func() {
-		require.NoError(t, os.Remove(physicalImage.Spec.Image.Build.ContextArchive.Source))
+		require.NoFileExists(t, physicalImage.Spec.Image.Build.ContextArchive.Source)
 	})
 
 	t.Logf("Deleting ContainerNetworkTunnelProxy object '%s'", tunnelProxy.ObjectMeta.Name)
