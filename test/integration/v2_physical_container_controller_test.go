@@ -576,6 +576,7 @@ func TestV2PhysicalContainerControllerPreservesRuntimePhaseOnPortMappingFailure(
 	const runtimeContainerName = "v2-pctr-invalid-port-runtime"
 	var testContainerOrchestrator *ctrl_testutil.TestContainerOrchestrator
 	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(
+		t,
 		ctx,
 		PhysicalContainerController,
 		t.Name(),
@@ -596,7 +597,6 @@ func TestV2PhysicalContainerControllerPreservesRuntimePhaseOnPortMappingFailure(
 		},
 	)
 	require.NoError(t, startupErr)
-	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	runtimeContainerID, runErr := testContainerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{

@@ -14,7 +14,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/cenkalti/backoff/v4"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -101,7 +100,7 @@ func TestPersistentVolumeRecordsWorkloadID(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "PersistentVolumeWorkloadID", t.TempDir(), TestEnvironmentOptions{
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(t, ctx, VolumeController, "PersistentVolumeWorkloadID", t.TempDir(), TestEnvironmentOptions{
 		WorkloadID: "workload-a",
 	})
 	require.NoError(t, envStartErr)
@@ -133,7 +132,7 @@ func TestExistingPersistentVolumeIsNotRecordedForWorkloadCleanup(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "ExistingPersistentVolumeWorkloadID", t.TempDir(), TestEnvironmentOptions{
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(t, ctx, VolumeController, "ExistingPersistentVolumeWorkloadID", t.TempDir(), TestEnvironmentOptions{
 		WorkloadID: "workload-a",
 	})
 	require.NoError(t, envStartErr)
@@ -163,7 +162,7 @@ func TestPersistentVolumeRecordPrecedesRuntimeCreation(t *testing.T) {
 	defer cancel()
 
 	var recordingOrchestrator *recordingVolumeCreateOrchestrator
-	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "PersistentVolumeRecordBeforeCreate", t.TempDir(), TestEnvironmentOptions{
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(t, ctx, VolumeController, "PersistentVolumeRecordBeforeCreate", t.TempDir(), TestEnvironmentOptions{
 		WorkloadID: "workload-a",
 		DecorateContainerOrchestrator: func(
 			orchestrator containers.ContainerOrchestrator,
@@ -194,7 +193,7 @@ func TestPersistentVolumePersistenceFailurePreventsRuntimeCreation(t *testing.T)
 	defer cancel()
 
 	var failingOrchestrator *volumePersistenceFailureOrchestrator
-	serverInfo, _, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "PersistentVolumePersistenceFailure", t.TempDir(), TestEnvironmentOptions{
+	serverInfo, _, envStartErr := StartTestEnvironmentWithOptions(t, ctx, VolumeController, "PersistentVolumePersistenceFailure", t.TempDir(), TestEnvironmentOptions{
 		WorkloadID: "workload-a",
 		DecorateContainerOrchestrator: func(
 			orchestrator containers.ContainerOrchestrator,
@@ -232,7 +231,7 @@ func TestPersistentVolumeWithoutWorkloadIDDoesNotUseStateStore(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	serverInfo, _, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "PersistentVolumeWithoutWorkloadID", t.TempDir(), TestEnvironmentOptions{
+	serverInfo, _, envStartErr := StartTestEnvironmentWithOptions(t, ctx, VolumeController, "PersistentVolumeWithoutWorkloadID", t.TempDir(), TestEnvironmentOptions{
 		DecorateContainerOrchestrator: func(
 			orchestrator containers.ContainerOrchestrator,
 			stateStore *statestore.Store,
@@ -253,7 +252,7 @@ func TestPersistentVolumeCreateRaceAdoptsUnlabeledVolume(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "PersistentVolumeCreateRace", t.TempDir(), TestEnvironmentOptions{
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(t, ctx, VolumeController, "PersistentVolumeCreateRace", t.TempDir(), TestEnvironmentOptions{
 		WorkloadID: "workload-a",
 		DecorateContainerOrchestrator: func(
 			orchestrator containers.ContainerOrchestrator,
@@ -278,7 +277,7 @@ func TestPersistentVolumeAmbiguousCreateFailureRetainsOwnershipRecord(t *testing
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "PersistentVolumeAmbiguousCreate", t.TempDir(), TestEnvironmentOptions{
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(t, ctx, VolumeController, "PersistentVolumeAmbiguousCreate", t.TempDir(), TestEnvironmentOptions{
 		WorkloadID: "workload-a",
 		DecorateContainerOrchestrator: func(
 			orchestrator containers.ContainerOrchestrator,
@@ -495,19 +494,10 @@ func TestContainerVolumeCleanup(t *testing.T) {
 	const testName = "container-volume-cleanup"
 
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
 
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, VolumeController, t.Name(), NoSeparateWorkingDir)
+	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, VolumeController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-
-		// Wait for the API server cleanup to complete.
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
 
 	adminDocUrl := serverInfo.ClientConfig.Host + apiserver.AdminPathPrefix + apiserver.ExecutionDocument
 
@@ -587,23 +577,14 @@ func TestContainerVolumeCleanup(t *testing.T) {
 func TestContainerVolumeRuntimeUnhealthy(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
 	const testName = "container-volume-runtime-unhealthy"
 
 	// We are going to use a separate instance of the API server because we need to simulate container runtime being unhealthy,
 	// and that might interfere with other tests if we used the shared container orchestrator.
 
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, VolumeController, t.Name(), NoSeparateWorkingDir)
+	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, VolumeController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-
-		// Wait for the API server cleanup to complete.
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
 
 	vol := apiv1.ContainerVolume{
 		ObjectMeta: metav1.ObjectMeta{

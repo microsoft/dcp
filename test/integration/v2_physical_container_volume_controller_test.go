@@ -8,6 +8,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -249,10 +250,17 @@ func TestV2PhysicalContainerVolumeControllerWaitsForCreateBeforeDeletion(t *test
 	waitCreateVolumeCallCount(t, ctx, volumeName, 1)
 	require.NoError(t, client.Delete(ctx, volume))
 
+	finalizer := apiv2.GroupName + "/physicalcontainervolume-reconciler"
 	terminatingVolume := waitObjectAssumesState(t, ctx, volume.NamespacedName(), func(current *apiv2.PhysicalContainerVolume) (bool, error) {
-		return current.DeletionTimestamp != nil && !current.DeletionTimestamp.IsZero(), nil
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.DeletionTimestamp != nil &&
+			!current.DeletionTimestamp.IsZero() &&
+			slices.Contains(current.Finalizers, finalizer) &&
+			readyCondition != nil &&
+			readyCondition.Status == metav1.ConditionFalse &&
+			readyCondition.Reason == string(apiv2.PhysicalContainerVolumeReasonCreating), nil
 	})
-	require.Contains(t, terminatingVolume.Finalizers, apiv2.GroupName+"/physicalcontainervolume-reconciler")
+	require.Contains(t, terminatingVolume.Finalizers, finalizer)
 	requireReadyCondition(t, terminatingVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonCreating)
 	require.Equal(t, 0, containerOrchestrator.RemoveVolumeCallCount(volumeName))
 
@@ -452,15 +460,9 @@ func TestV2PhysicalContainerVolumeControllerRetriesTransientReplacementRemovalFa
 
 func TestV2PhysicalContainerVolumeControllerRetriesTransientReplacementInspectionFailure(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, NamespaceController|PhysicalContainerVolumeController, t.Name(), NoSeparateWorkingDir)
+	defer cancel()
+	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, NamespaceController|PhysicalContainerVolumeController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr)
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
 
 	testOrchestrator, isTestOrchestrator := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, isTestOrchestrator)
@@ -580,15 +582,9 @@ func TestV2PhysicalContainerVolumeControllerDoesNotChurnReadyStatus(t *testing.T
 
 func TestV2PhysicalContainerVolumeControllerRecoversFromRuntimeAndCreateFailures(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, NamespaceController|PhysicalContainerVolumeController, t.Name(), NoSeparateWorkingDir)
+	defer cancel()
+	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, NamespaceController|PhysicalContainerVolumeController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr)
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
 
 	testOrchestrator, isTestOrchestrator := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, isTestOrchestrator)

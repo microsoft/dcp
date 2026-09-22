@@ -10,6 +10,7 @@ package termpty_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os/exec"
 	"strings"
@@ -88,6 +89,9 @@ func readUntil(ctx context.Context, r io.Reader, target string) (string, error) 
 	}
 
 	var accumulated bytes.Buffer
+	readAttempts := 0
+	bytesRead := 0
+	startedAt := time.Now()
 	for {
 		if strings.Contains(accumulated.String(), target) {
 			return accumulated.String(), nil
@@ -95,6 +99,7 @@ func readUntil(ctx context.Context, r io.Reader, target string) (string, error) 
 
 		buf := make([]byte, 4096)
 		resCh := make(chan readResult, 1)
+		readAttempts++
 		go func() {
 			n, err := r.Read(buf)
 			if n > 0 {
@@ -106,19 +111,96 @@ func readUntil(ctx context.Context, r io.Reader, target string) (string, error) 
 
 		select {
 		case <-ctx.Done():
-			return accumulated.String(), ctx.Err()
+			return accumulated.String(), &readUntilError{
+				target:       target,
+				readAttempts: readAttempts,
+				bytesRead:    bytesRead,
+				elapsed:      time.Since(startedAt),
+				err:          ctx.Err(),
+			}
 		case res := <-resCh:
 			if len(res.data) > 0 {
 				accumulated.Write(res.data)
+				bytesRead += len(res.data)
 			}
 			if res.err != nil {
 				if strings.Contains(accumulated.String(), target) {
 					return accumulated.String(), nil
 				}
-				return accumulated.String(), res.err
+				return accumulated.String(), &readUntilError{
+					target:       target,
+					readAttempts: readAttempts,
+					bytesRead:    bytesRead,
+					elapsed:      time.Since(startedAt),
+					err:          res.err,
+				}
 			}
 		}
 	}
+}
+
+type readUntilError struct {
+	target       string
+	readAttempts int
+	bytesRead    int
+	elapsed      time.Duration
+	err          error
+}
+
+func (e *readUntilError) Error() string {
+	return fmt.Sprintf(
+		"pty read failed before observing %q after %d attempts, %d bytes, and %s: %v",
+		e.target,
+		e.readAttempts,
+		e.bytesRead,
+		e.elapsed,
+		e.err,
+	)
+}
+
+func (e *readUntilError) Unwrap() error {
+	return e.err
+}
+
+func requireReadUntil(
+	t *testing.T,
+	ctx context.Context,
+	sp *termpty.PseudoTerminalProcess,
+	target string,
+) string {
+	t.Helper()
+
+	out, readErr := readUntil(ctx, sp.PTY, target)
+	if readErr == nil {
+		return out
+	}
+
+	exitSummary := "process exit was not observed"
+	exitTimer := time.NewTimer(drainExitTimeout)
+	defer exitTimer.Stop()
+
+	select {
+	case <-sp.ExitHandler.Exited():
+		exitInfo := sp.ExitHandler.ExitInfo()
+		exitSummary = fmt.Sprintf(
+			"process exit: PID=%d, exit code=%d, error=%v",
+			exitInfo.PID,
+			exitInfo.ExitCode,
+			exitInfo.Err,
+		)
+	case <-exitTimer.C:
+		exitSummary = fmt.Sprintf("process exit was not observed within %s", drainExitTimeout)
+	}
+
+	t.Fatalf(
+		"expected PTY output %q; child PID=%d; %s; read error=%v; output=%q",
+		target,
+		sp.Handle.Pid,
+		exitSummary,
+		readErr,
+		out,
+	)
+	return out
 }
 
 // awaitExit blocks until the exit notification arrives or ctx is done.
