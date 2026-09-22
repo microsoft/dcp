@@ -51,8 +51,8 @@ func TestV2PhysicalContainerNetworkConnectionReconcilesMembership(t *testing.T) 
 	connection := &apiv2.PhysicalContainerNetworkConnection{
 		ObjectMeta: metav1.ObjectMeta{Name: "connection", Namespace: namespace.Name},
 		Spec: apiv2.PhysicalContainerNetworkConnectionSpec{
-			ContainerRef: physicalContainer.Name,
-			NetworkRef:   physicalNetwork.Name,
+			ContainerRef: namespace.Name + "/" + physicalContainer.Name,
+			NetworkRef:   namespace.Name + "/" + physicalNetwork.Name,
 			Aliases:      []string{"physical-alias"},
 		},
 	}

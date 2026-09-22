@@ -34,6 +34,17 @@ func TestPhysicalContainerNetworkConnectionValidate(t *testing.T) {
 			valid: true,
 		},
 		{
+			name: "valid explicit same namespace references",
+			connection: PhysicalContainerNetworkConnection{
+				ObjectMeta: metav1.ObjectMeta{Name: "connection", Namespace: "namespace"},
+				Spec: PhysicalContainerNetworkConnectionSpec{
+					ContainerRef: "namespace/container",
+					NetworkRef:   "namespace/network",
+				},
+			},
+			valid: true,
+		},
+		{
 			name: "missing container reference",
 			connection: PhysicalContainerNetworkConnection{
 				ObjectMeta: metav1.ObjectMeta{Name: "connection", Namespace: "namespace"},
@@ -68,6 +79,26 @@ func TestPhysicalContainerNetworkConnectionValidate(t *testing.T) {
 				Spec: PhysicalContainerNetworkConnectionSpec{
 					ContainerRef: "container",
 					NetworkRef:   "INVALID",
+				},
+			},
+		},
+		{
+			name: "cross-namespace container reference",
+			connection: PhysicalContainerNetworkConnection{
+				ObjectMeta: metav1.ObjectMeta{Name: "connection", Namespace: "namespace"},
+				Spec: PhysicalContainerNetworkConnectionSpec{
+					ContainerRef: "other-namespace/container",
+					NetworkRef:   "network",
+				},
+			},
+		},
+		{
+			name: "cross-namespace network reference",
+			connection: PhysicalContainerNetworkConnection{
+				ObjectMeta: metav1.ObjectMeta{Name: "connection", Namespace: "namespace"},
+				Spec: PhysicalContainerNetworkConnectionSpec{
+					ContainerRef: "container",
+					NetworkRef:   "other-namespace/network",
 				},
 			},
 		},

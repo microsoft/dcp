@@ -66,6 +66,8 @@ func (state physicalContainerState) String() string {
 		return "Resolve"
 	case physicalContainerStateImage:
 		return "Image"
+	case physicalContainerStateVolumes:
+		return "Volumes"
 	case physicalContainerStateCreate:
 		return "Create"
 	case physicalContainerStateReplace:

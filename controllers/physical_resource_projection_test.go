@@ -33,6 +33,7 @@ func TestPhysicalResourceStateStringsDistinguishUnsetAndInvalidValues(t *testing
 	require.Equal(t, "physicalResourceProgress(999)", physicalResourceProgress(999).String())
 
 	require.Equal(t, "Unset", physicalContainerState(0).String())
+	require.Equal(t, "Volumes", physicalContainerStateVolumes.String())
 	require.Equal(t, "physicalContainerState(999)", physicalContainerState(999).String())
 	require.Equal(t, "Unset", physicalContainerImageState(0).String())
 	require.Equal(t, "physicalContainerImageState(999)", physicalContainerImageState(999).String())

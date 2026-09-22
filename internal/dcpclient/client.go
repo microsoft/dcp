@@ -130,7 +130,7 @@ func ApplyDcpOptions(config *clientgorest.Config) {
 // need a workload ID to scope reuse and orphan reaping the way V1 persistent containers do through
 // the state store. Until that lands, apiv2.NamespaceWorkloadIDAnnotation is validated but has no
 // effect on behavior. See the "Physical resource layer" roadmap item covering crash cleanup in
-// docs/v2-resource-plan.md.
+// plan/v2-resource-plan.md.
 func ResolveNamespaceWorkloadID(
 	ctx context.Context,
 	reader ctrl_client.Reader,
