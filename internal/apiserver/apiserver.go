@@ -380,6 +380,7 @@ func addDcpHttpHandlers(
 		return namespaceWatchSourceErr
 	}
 	config.GenericConfig.BuildHandlerChainFunc = func(handler http.Handler, c *kubeapiserver.Config) http.Handler {
+		handler = withOrderedResourceMutations(handler)
 		handler = originalChainBuilder(handler, c)
 		handler = withDcpContextValues(handler, ctx, log)
 		return handler
