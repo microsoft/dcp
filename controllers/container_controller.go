@@ -2115,7 +2115,7 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 	attachMgrErr := connMgr.AttachProcess(ptp)
 	if attachMgrErr != nil {
 		log.Error(attachMgrErr, "Failed to attach process to terminal connection manager")
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(r.LifetimeCtx), physicalProcessStopTimeout)
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(r.LifetimeCtx)
 		defer cleanupCancel()
 		if stopErr := ptp.Stop(cleanupCtx); stopErr != nil {
 			log.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
@@ -2788,7 +2788,9 @@ func (r *ContainerReconciler) onShutdown() {
 
 	r.runningContainers.Range(func(containerName types.NamespacedName, id containerID, rcd *runningContainerData) bool {
 		rcd.deleteStartupLogFiles(r.Log)
-		rcd.closeTerminalResources(context.WithoutCancel(r.LifetimeCtx), r.config.ProcessExecutor, r.Log)
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(r.LifetimeCtx)
+		rcd.closeTerminalResources(cleanupCtx, r.config.ProcessExecutor, r.Log)
+		cleanupCancel()
 		_ = r.runningContainers.Update(containerName, id, rcd)
 		return true
 	})

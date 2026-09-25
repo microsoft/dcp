@@ -8,6 +8,7 @@ package process
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -73,4 +74,38 @@ func TestProcessActionCancellationDuringInspection(t *testing.T) {
 	})
 	require.ErrorIs(t, actionErr, context.Canceled)
 	require.False(t, actionCalled)
+}
+
+func TestRollbackProcessStartUsesConfirmedExit(t *testing.T) {
+	t.Parallel()
+
+	killErr := errors.New("kill failed")
+	waitErr := errors.New("wait failed")
+	tests := []struct {
+		name      string
+		waitErr   error
+		uncertain bool
+	}{
+		{"successful wait", nil, false},
+		{"process already exited", os.ErrProcessDone, false},
+		{"wait failed", waitErr, true},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			rollbackErr := rollbackProcessStart(
+				context.Background(),
+				func() error { return killErr },
+				func() error { return testCase.waitErr },
+			)
+			require.Equal(t, testCase.uncertain, errors.Is(rollbackErr, ErrProcessStartUncertain))
+			if testCase.uncertain {
+				require.ErrorIs(t, rollbackErr, killErr)
+				require.ErrorIs(t, rollbackErr, waitErr)
+			} else {
+				require.NoError(t, rollbackErr)
+			}
+		})
+	}
 }

@@ -188,6 +188,27 @@ func TestStartTimeForProcess(t *testing.T) {
 		creationTime, now)
 }
 
+func TestStartTimeForExitedProcess(t *testing.T) {
+	t.Parallel()
+
+	delayToolDir, toolLaunchErr := getDelayToolDir()
+	require.NoError(t, toolLaunchErr)
+
+	cmd := exec.Command("./delay", "-d", "30s")
+	cmd.Dir = delayToolDir
+	require.NoError(t, cmd.Start())
+
+	handle, handleErr := process.ProcessHandleFromCmd(cmd)
+	require.NoError(t, handleErr)
+	require.NoError(t, cmd.Process.Kill())
+	waitErr := cmd.Wait()
+	require.True(t, waitErr == nil || process.IsEarlyProcessExitError(waitErr))
+
+	creationTime, creationErr := process.StartTimeForProcess(handle)
+	require.NoError(t, creationErr)
+	require.False(t, creationTime.IsZero())
+}
+
 func TestFindProcessHandle(t *testing.T) {
 	t.Parallel()
 

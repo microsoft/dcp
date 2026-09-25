@@ -32,8 +32,6 @@ import (
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
-const physicalProcessStopTimeout = 15 * time.Second
-
 var (
 	physicalProcessFinalizer = fmt.Sprintf("%s/physicalprocess-reconciler", apiv2.GroupVersion.Group)
 
@@ -739,7 +737,7 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 ) {
 	var stopErr error
 	if osutil.IsWindows() {
-		stopCtx, stopCtxCancel := context.WithTimeout(ctx, physicalProcessStopTimeout)
+		stopCtx, stopCtxCancel := process.WithStopTimeout(ctx)
 		stopErr = dcpproc.StopProcessTree(stopCtx, r.processExecutor, data.handle, log)
 		stopCtxCancel()
 	} else {

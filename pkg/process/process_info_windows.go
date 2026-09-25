@@ -178,7 +178,7 @@ func ProcessName(handle ProcessHandle) (string, error) {
 
 // RollbackNativeProcess terminates and closes an owned Windows process whose startup failed.
 func RollbackNativeProcess(ctx context.Context, nativeHandle windows.Handle) (returnErr error) {
-	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, waitForProcessExitTimeout)
+	cleanupCtx, cleanupCancel := WithStopTimeout(ctx)
 	defer cleanupCancel()
 	defer func() { returnErr = uncertainProcessStart(errors.Join(returnErr, windows.CloseHandle(nativeHandle))) }()
 	terminateErr := windows.TerminateProcess(nativeHandle, 1)

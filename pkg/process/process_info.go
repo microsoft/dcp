@@ -48,14 +48,13 @@ func ProcessIdentityTime(pid Pid_t) (time.Time, error) {
 	return handle.IdentityTime, nil
 }
 
-// StartTimeForProcess returns a wall-clock display time after validating the supplied identity.
-// Clock adjustments can affect the display value, but must not affect process identity.
+// StartTimeForProcess converts a captured process identity to a wall-clock display time.
+// It does not require the process to still be running.
 func StartTimeForProcess(handle ProcessHandle) (time.Time, error) {
-	info, infoErr := findProcessInfo(handle)
-	if infoErr != nil {
-		return time.Time{}, infoErr
+	if handleErr := handle.Validate(); handleErr != nil {
+		return time.Time{}, handleErr
 	}
-	return processDisplayTime(info)
+	return processDisplayTime(processInfo{handle: handle})
 }
 
 // FindProcess acquires and validates a process reference. The caller must wait on it or release it.

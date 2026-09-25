@@ -28,11 +28,6 @@ const (
 	waitReasonNone       waitReason = 0x0
 	waitReasonMonitoring waitReason = 0x1
 	waitReasonStopping   waitReason = 0x2
-
-	// Timeout for getting a confirmation that the child process has exited (return of a wait() call).
-	// Must be greater that 2 * signalAndWaitTimeout, because in worst case we might send up to two signals
-	// and then time out checking if the process exited.
-	waitForProcessExitTimeout = 15 * time.Second
 )
 
 var (
@@ -86,7 +81,7 @@ func (e *OSExecutor) StartProcess(
 			}
 
 		case <-ctx.Done():
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), waitForProcessExitTimeout)
+			cleanupCtx, cleanupCancel := WithDetachedStopTimeout(ctx)
 			defer cleanupCancel()
 			_, _ = e.tryStartWaiting(handle, waitable, waitReasonMonitoring)
 			cleanupLog := e.log.WithValues("PID", pid, "Command", cmd.Path, "Args", cmd.Args[1:])
@@ -369,7 +364,7 @@ func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHand
 			procTreeLog.Info("Root process has stopped")
 			return nil
 
-		case <-time.After(waitForProcessExitTimeout):
+		case <-time.After(processStopTimeout):
 			procTreeLog.Error(ErrTimedOutWaitingForProcessToStop, "Did not get confirmation that the root process has stopped before timeout elapsed")
 			return ErrTimedOutWaitingForProcessToStop
 		}
@@ -502,7 +497,7 @@ func (e *OSExecutor) Dispose() {
 			if flags&CreationFlagEnsureKillOnDispose == CreationFlagEnsureKillOnDispose {
 				// Best effort to stop the process.
 				e.log.V(1).Info("Stopping process during executor disposal...", "PID", handle.Pid, "Command", waitable.Info())
-				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), waitForProcessExitTimeout)
+				cleanupCtx, cleanupCancel := WithStopTimeout(context.Background())
 				defer cleanupCancel()
 				stopErr := e.stopProcessInternal(cleanupCtx, handle, optIsResponsibleForStopping|optTrySignal)
 				if stopErr != nil {

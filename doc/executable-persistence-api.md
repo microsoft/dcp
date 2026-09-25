@@ -135,11 +135,13 @@ Runner results distinguish between the process identity timestamp and the displa
 
 `pkg/process` identifies existing processes by a complete `ProcessHandle` (positive PID and nonzero identity time). PID discovery and process creation return a complete handle or an error. Creation failures roll back through the creator's owned process reference; `Waitable.Abort` performs that rollback before normal waiting begins. An unconfirmed rollback is reported with `ErrProcessStartUncertain`, and must not trigger another launch or a fallback runner that could duplicate the original process.
 
-`StopProcess`, `StopViaConsole`, and `GetProcessTree` accept caller contexts. Cancellation stops further cleanup work; it does not mean the process has exited. Automatic cleanup after lifetime cancellation uses a separate bounded cleanup context. Retry with the original identity, not a freshly resolved PID.
+`StopProcess`, `StopViaConsole`, and `GetProcessTree` accept caller contexts. Cancellation stops further cleanup work; it does not mean the process has exited. Normal stop paths use `process.WithStopTimeout` so they remain linked to caller cancellation. Rollback, shutdown, and failure cleanup that must continue after parent cancellation use `process.WithDetachedStopTimeout`, which retains context values but applies a fresh bounded deadline. Callers must invoke the returned cancellation function. Retry with the original identity, not a freshly resolved PID.
 
 Tree enumeration validates parent relationships using native process birth times, rejects stale parent IDs and cycles, and returns handles in breadth-first order. `ErrIncompleteProcessTree` can accompany a verified partial tree; shutdown acts only on verified identities and reports incomplete cleanup. A snapshot cannot include children created afterward or reconstruct every orphaned relationship.
 
 Identity is checked again immediately before signaling. Existing timestamp serialization and the 2 ms matching tolerance are retained, while ancestry checks use unrounded native times. Revalidation is not atomic with PID-based signaling: scheduling can extend the gap, so this does not provide an absolute PID-reuse guarantee. Windows console signals retain their console/group-wide effects.
+
+Display start time is derived from the identity captured in `ProcessHandle`, so it remains available after the process exits. Operations that inspect or act on a process still validate that identity against the live process.
 
 On Linux, `HOST_PROC` consistently selects the procfs source for process metadata. It must describe DCP's PID namespace; an alternate path does not translate PIDs used by signaling syscalls. Linux identity times remain boot-relative and must not be used as wall-clock display timestamps.
 

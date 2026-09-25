@@ -502,7 +502,7 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 // signal that docker attach observes). Stopping the process triggers its
 // ExitHandler, which in turn drives the ConnManager shutdown.
 func (rcd *runningContainerData) closeTerminalResources(ctx context.Context, pe process.Executor, log logr.Logger) {
-	stopCtx, stopCancel := context.WithTimeout(ctx, physicalProcessStopTimeout)
+	stopCtx, stopCancel := process.WithStopTimeout(ctx)
 	defer stopCancel()
 	ptp := rcd.ptp
 	connMgr := rcd.connMgr
