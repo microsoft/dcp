@@ -11,6 +11,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
+	cmds "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/internal/flags"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -37,7 +38,7 @@ func NewStopProcessTreeCommand(log logr.Logger) (*cobra.Command, error) {
 		return nil, flagErr
 	}
 
-	stopProcessTreeCmd.Flags().Var(flags.NewTimeFlag(&stopProcessStartTime, osutil.RFC3339MiliTimestampFormat), "process-start-time", "If present, specifies the start time of the root process of the process tree to be stopped. This is used to ensure the correct process tree will be stopped. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
+	stopProcessTreeCmd.Flags().Var(flags.NewTimeFlag(&stopProcessStartTime, osutil.RFC3339MiliTimestampFormat), "process-start-time", "Specifies the identity time of the root process. If omitted, identity is resolved once at command startup. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
 	stopProcessTreeCmd.Flags().BoolVar(&stopSkipDescendants, "skip-descendants", false, "If specified, stops only the root process and skips force-killing descendants.")
 
 	return stopProcessTreeCmd, nil
@@ -51,20 +52,20 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 			"SkipDescendants", stopSkipDescendants,
 		)
 
-		handle := process.NewHandle(stopPid, stopProcessStartTime)
-		_, procErr := process.FindWaitableProcess(handle)
-		if procErr != nil {
-			log.Error(procErr, "Could not find the process to stop")
-			return procErr
+		handle, handleErr := cmds.ResolveProcessHandle(stopPid, stopProcessStartTime)
+		if handleErr != nil {
+			log.Error(handleErr, "Could not resolve the process to stop")
+			return handleErr
 		}
 
 		pe := process.NewOSExecutor(log)
+		defer pe.Dispose()
 		var stopOptions []process.ProcessStopOption
 		if stopSkipDescendants {
 			stopOptions = append(stopOptions, process.StopRootOnly())
 		}
 
-		stopErr := process.StopViaConsole(log, pe, handle, stopOptions...)
+		stopErr := process.StopViaConsole(cmd.Context(), log, pe, handle, stopOptions...)
 		if stopErr != nil {
 			log.Error(stopErr, "Failed to stop process tree")
 			return stopErr

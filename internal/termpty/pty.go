@@ -57,11 +57,11 @@ type PseudoTerminalProcess struct {
 	Executor process.Executor
 }
 
-func (ptp *PseudoTerminalProcess) Stop(options ...process.ProcessStopOption) error {
+func (ptp *PseudoTerminalProcess) Stop(ctx context.Context, options ...process.ProcessStopOption) error {
 	if ptp.Executor == nil {
 		return errors.New("process executor is not available, cannot stop process") // Should never happen
 	}
-	return ptp.Executor.StopProcess(ptp.Handle, options...)
+	return ptp.Executor.StopProcess(ctx, ptp.Handle, options...)
 }
 
 // CommandSpec captures data needed to spawn a command attached to a freshly allocated pseudo-terminal.

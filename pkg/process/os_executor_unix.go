@@ -8,6 +8,7 @@
 package process
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -29,23 +30,34 @@ type OSExecutor struct {
 	disposed     bool
 	lock         sync.Locker
 	log          logr.Logger
+	waitCtx      context.Context
+	cancelWait   context.CancelFunc
 }
 
 func NewOSExecutor(log logr.Logger) Executor {
+	waitCtx, cancelWait := context.WithCancel(context.Background())
 	return &OSExecutor{
 		procsWaiting: make(map[ProcessHandle]*waitState),
 		disposed:     false,
 		lock:         &sync.Mutex{},
 		log:          log.WithName("os-executor"),
+		waitCtx:      waitCtx,
+		cancelWait:   cancelWait,
 	}
 }
 
-func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppingOpts) (<-chan struct{}, error) {
+func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle, opts processStoppingOpts) (<-chan struct{}, error) {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
 	// Console group signaling is Windows-specific; keep the shared option as an explicit no-op on Unix.
 	opts &^= optSignalConsoleGroup
 
 	proc, err := FindProcess(handle)
 	if err != nil {
+		if !IsProcessGoneErr(err) {
+			return nil, err
+		}
 		e.acquireLock()
 		alreadyEnded := false
 		ws, found := e.procsWaiting[handle]
@@ -61,7 +73,12 @@ func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppin
 		}
 	}
 
-	waitable := makeProcessWaitable(handle.Pid, proc)
+	defer func() {
+		if releaseErr := proc.Release(); releaseErr != nil {
+			e.log.Error(releaseErr, "Could not release process reference", "PID", handle.Pid)
+		}
+	}()
+	waitable := makeProcessWaitable(e.waitCtx, handle)
 	ws, shouldStopProcess := e.tryStartWaiting(handle, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh
@@ -72,12 +89,13 @@ func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppin
 	if !shouldStopProcess && (opts&optIsResponsibleForStopping) == 0 {
 		return waitEndedCh, nil
 	}
+	defer e.finishStopAttempt(ws)
 
 	if (opts & optTrySignal) == optTrySignal {
 		// Give the process a chance to gracefully exit.
 		// There is no established standard for what signals are used for graceful shutdown,
 		// but SIGTERM and SIGQUIT are commonly used.
-		err = e.signalAndWaitForExit(proc, syscall.SIGTERM, ws)
+		err = e.signalAndWaitForExit(ctx, handle, proc, syscall.SIGTERM, ws)
 		switch {
 		case err == nil:
 			e.log.V(1).Info("Process stopped by SIGTERM", "PID", handle.Pid)
@@ -90,7 +108,7 @@ func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppin
 	}
 
 	e.log.V(1).Info("Sending SIGKILL to process...", "PID", handle.Pid)
-	err = e.signalAndWaitForExit(proc, syscall.SIGKILL, ws)
+	err = e.signalAndWaitForExit(ctx, handle, proc, syscall.SIGKILL, ws)
 	if err != nil {
 		return nil, err
 	}
@@ -101,16 +119,18 @@ func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppin
 
 // Sends a given signal to a process and waits for it to exit.
 // If the process does not exit within 6 seconds, the function returns context.DeadlineExceeded.
-func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, ws *waitState) error {
-	err := proc.Signal(sig)
+func (e *OSExecutor) signalAndWaitForExit(ctx context.Context, handle ProcessHandle, proc *os.Process, sig syscall.Signal, ws *waitState) error {
+	err := signalProcess(ctx, handle, proc, sig)
 	switch {
-	case errors.Is(err, os.ErrProcessDone):
+	case IsProcessGoneErr(err):
 		return nil
 	case err != nil:
 		return fmt.Errorf("could not send signal %s to process %d: %w", sig.String(), proc.Pid, err)
 	}
 
 	select {
+	case <-ctx.Done():
+		return ctx.Err()
 
 	case <-ws.waitEndedCh:
 		err = ws.waitErr

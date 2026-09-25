@@ -660,8 +660,13 @@ func (r *ExecutableReconciler) startExecutable(
 
 	// Try to start the Executable using available runner(s)
 	for {
-		if allRunnersAttempted(ri.startupStage, exe) {
-			log.Error(errors.New("all available Executable runners have been tried and failed"), "The Executable failed to start")
+		uncertainStart := startResult != nil && errors.Is(startResult.StartupError, process.ErrProcessStartUncertain)
+		if uncertainStart || allRunnersAttempted(ri.startupStage, exe) {
+			if uncertainStart {
+				log.Error(startResult.StartupError, "Process cleanup is unconfirmed; fallback execution will not be attempted")
+			} else {
+				log.Error(errors.New("all available Executable runners have been tried and failed"), "The Executable failed to start")
+			}
 			ri.ApplyTo(exe, log)
 			exe.Status.ExecutionID = "" // Clear the starting execution ID
 			r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)

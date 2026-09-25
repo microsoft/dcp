@@ -396,7 +396,7 @@ func TestExecutableCleanupModeStopsExistingProcessOnDelete(t *testing.T) {
 	handle, _, startProcessErr := teInfo.TestProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startProcessErr, "could not seed process execution")
 	t.Cleanup(func() {
-		_ = teInfo.TestProcessExecutor.StopProcess(handle)
+		_ = teInfo.TestProcessExecutor.StopProcess(context.Background(), handle)
 	})
 	pid := handle.Pid
 	identityTime := handle.IdentityTime
@@ -458,7 +458,7 @@ func TestExecutableCleanupModeDeletedBeforeAdoptionStopsExistingProcess(t *testi
 	handle, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startProcessErr, "could not seed process execution")
 	t.Cleanup(func() {
-		_ = testProcessExecutor.StopProcess(handle)
+		_ = testProcessExecutor.StopProcess(context.Background(), handle)
 	})
 	pid := handle.Pid
 	identityTime := handle.IdentityTime
@@ -596,7 +596,7 @@ func TestExecutableCleanupModeAdoptsProcessRecordCreatedAfterNotFound(t *testing
 	handle, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startProcessErr, "could not seed process execution")
 	t.Cleanup(func() {
-		_ = testProcessExecutor.StopProcess(handle)
+		_ = testProcessExecutor.StopProcess(context.Background(), handle)
 	})
 	pid := handle.Pid
 	identityTime := handle.IdentityTime

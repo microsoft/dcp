@@ -21,7 +21,7 @@ const (
 type WaitableProcess struct {
 	WaitPollInterval time.Duration
 	process          *os.Process
-	processStartTime time.Time
+	handle           ProcessHandle
 	err              error
 	waitChan         chan struct{}
 	waitLock         sync.Mutex
@@ -36,7 +36,7 @@ func FindWaitableProcess(handle ProcessHandle) (*WaitableProcess, error) {
 	dcpProcess := &WaitableProcess{
 		WaitPollInterval: defaultWaitPollInterval,
 		process:          foundProcess,
-		processStartTime: handle.IdentityTime,
+		handle:           handle,
 		err:              nil,
 		waitLock:         sync.Mutex{},
 	}
@@ -45,11 +45,11 @@ func FindWaitableProcess(handle ProcessHandle) (*WaitableProcess, error) {
 }
 
 func (p *WaitableProcess) Pid() Pid_t {
-	return Uint32_ToPidT(uint32(p.process.Pid))
+	return p.handle.Pid
 }
 
 func (p *WaitableProcess) IdentityTime() time.Time {
-	return p.processStartTime
+	return p.handle.IdentityTime
 }
 
 func (p *WaitableProcess) pollingWait(ctx context.Context) {
@@ -62,39 +62,7 @@ func (p *WaitableProcess) pollingWait(ctx context.Context) {
 		p.waitChan = make(chan struct{})
 		go func() {
 			defer close(p.waitChan)
-
-			_, err := p.process.Wait()
-			if err == nil {
-				return
-			}
-
-			var syscallErr syscall.Errno
-			if found := errors.As(err, &syscallErr); found && syscallErr == syscall.ECHILD {
-				timer := time.NewTimer(p.WaitPollInterval)
-				defer timer.Stop()
-
-				for done := false; !done; {
-					select {
-					case <-timer.C:
-						pid := Uint32_ToPidT(uint32(p.process.Pid))
-
-						_, pollErr := FindProcess(ProcessHandle{Pid: pid, IdentityTime: p.processStartTime})
-						// We couldn't find the PID, so the process has exited
-						if pollErr != nil {
-							p.err = nil
-							done = true
-						} else {
-							timer.Reset(p.WaitPollInterval)
-						}
-
-					case <-ctx.Done():
-						p.err = ctx.Err()
-						done = true
-					}
-				}
-			} else {
-				p.err = err
-			}
+			p.err = waitForProcess(ctx, p.handle, p.process, p.WaitPollInterval)
 		}()
 	}
 }
@@ -111,9 +79,50 @@ func (p *WaitableProcess) Wait(ctx context.Context) error {
 }
 
 func (p *WaitableProcess) Signal(signal syscall.Signal) error {
-	return p.process.Signal(signal)
+	proc, findErr := FindProcess(p.handle)
+	if findErr != nil {
+		return findErr
+	}
+	signalErr := signalProcess(context.Background(), p.handle, proc, signal)
+	return errors.Join(signalErr, proc.Release())
 }
 
 func (p *WaitableProcess) Kill() error {
-	return p.process.Kill()
+	proc, findErr := FindProcess(p.handle)
+	if findErr != nil {
+		return findErr
+	}
+	killErr := signalProcess(context.Background(), p.handle, proc, os.Kill)
+	return errors.Join(killErr, proc.Release())
+}
+
+func waitForProcess(ctx context.Context, handle ProcessHandle, proc *os.Process, interval time.Duration) error {
+	_, waitErr := proc.Wait()
+	if waitErr == nil {
+		return nil
+	}
+	releaseErr := proc.Release()
+	if !errors.Is(waitErr, syscall.ECHILD) {
+		return errors.Join(waitErr, releaseErr)
+	}
+	if releaseErr != nil {
+		return releaseErr
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			_, pollErr := findProcessInfo(handle)
+			if IsProcessGoneErr(pollErr) {
+				return nil
+			}
+			if pollErr != nil {
+				return pollErr
+			}
+			timer.Reset(interval)
+		}
+	}
 }

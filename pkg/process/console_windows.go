@@ -8,8 +8,10 @@
 package process
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/go-logr/logr"
 	"golang.org/x/sys/windows"
@@ -26,11 +28,23 @@ var (
 // If attachment succeeds, it sends CTRL_C_EVENT to the entire console group and protects
 // the caller from its own signal.
 // If the target has no console or has already exited, it falls back to a regular StopProcess call.
-func StopViaConsole(log logr.Logger, executor Executor, handle ProcessHandle, options ...ProcessStopOption) error {
-	attached, attachErr := attachToTargetProcessConsole(log, handle.Pid)
+func StopViaConsole(ctx context.Context, log logr.Logger, executor Executor, handle ProcessHandle, options ...ProcessStopOption) error {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	proc, findErr := FindProcess(handle)
+	if findErr != nil {
+		return findErr
+	}
+	defer func() {
+		if releaseErr := proc.Release(); releaseErr != nil {
+			log.Error(releaseErr, "Could not release console target process", "PID", handle.Pid)
+		}
+	}()
+	attached, attachErr := attachToTargetProcessConsole(ctx, log, handle, proc)
 	if attachErr != nil {
 		// Error already logged in attachToTargetProcessConsole. Fall back to direct stop.
-		stopErr := executor.StopProcess(handle, options...)
+		stopErr := executor.StopProcess(ctx, handle, options...)
 		if stopErr != nil {
 			return errors.Join(attachErr, stopErr)
 		}
@@ -38,7 +52,7 @@ func StopViaConsole(log logr.Logger, executor Executor, handle ProcessHandle, op
 	}
 
 	if !attached {
-		return executor.StopProcess(handle, options...)
+		return executor.StopProcess(ctx, handle, options...)
 	}
 	defer restoreParentConsole(log)
 
@@ -52,7 +66,7 @@ func StopViaConsole(log logr.Logger, executor Executor, handle ProcessHandle, op
 	consoleOptions := make([]ProcessStopOption, 0, len(options)+1)
 	consoleOptions = append(consoleOptions, options...)
 	consoleOptions = append(consoleOptions, stopConsoleGroup())
-	return executor.StopProcess(handle, consoleOptions...)
+	return executor.StopProcess(ctx, handle, consoleOptions...)
 }
 
 func stopConsoleGroup() ProcessStopOption {
@@ -65,8 +79,11 @@ func stopConsoleGroup() ProcessStopOption {
 // of the target process. Returns true if attachment was successful, or false if the target
 // process has no console or has already exited.
 // Returns a non-nil error only on unexpected failures.
-func attachToTargetProcessConsole(log logr.Logger, targetPid Pid_t) (bool, error) {
-	targetOSPid, pidErr := PidT_ToUint32(targetPid)
+func attachToTargetProcessConsole(ctx context.Context, log logr.Logger, handle ProcessHandle, proc *os.Process) (bool, error) {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return false, contextErr
+	}
+	targetOSPid, pidErr := PidT_ToUint32(handle.Pid)
 	if pidErr != nil {
 		return false, pidErr
 	}
@@ -87,9 +104,18 @@ func attachToTargetProcessConsole(log logr.Logger, targetPid Pid_t) (bool, error
 		}
 	}()
 
-	retval, _, win32err = attachConsoleProc.Call(uintptr(targetOSPid))
-	if retval == 0 {
-		errno, isErrno := win32err.(windows.Errno)
+	attachErr := actOnProcess(ctx, handle, func() (ProcessHandle, error) {
+		info, infoErr := readProcessInfoFromProcess(proc, false)
+		return info.handle, infoErr
+	}, func() error {
+		attachResult, _, nativeErr := attachConsoleProc.Call(uintptr(targetOSPid))
+		if attachResult == 0 {
+			return nativeErr
+		}
+		return nil
+	})
+	if attachErr != nil {
+		errno, isErrno := attachErr.(windows.Errno)
 		switch {
 		case isErrno && errno == windows.ERROR_INVALID_HANDLE:
 			log.Info("The target process does not have a console. It will not be possible to stop it gracefully.")
@@ -98,8 +124,8 @@ func attachToTargetProcessConsole(log logr.Logger, targetPid Pid_t) (bool, error
 			log.Info("The target process exited before we could attach to its console")
 			return false, nil
 		default:
-			log.Error(win32err, "Could not attach to target process console")
-			return false, win32err
+			log.Error(attachErr, "Could not attach to target process console")
+			return false, attachErr
 		}
 	}
 

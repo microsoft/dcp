@@ -18,9 +18,6 @@ import (
 	"syscall"
 	"time"
 
-	ps "github.com/shirou/gopsutil/v4/process"
-
-	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
@@ -34,9 +31,11 @@ func FormatIdentityTime(identityTime time.Time) string {
 var (
 	This func() (ProcessHandle, error)
 
-	// Essentially the same as ps.ErrorProcessNotRunning, but we do not want to
-	// expose the ps package outside of this package.
-	ErrorProcessNotFound = errors.New("process does not exist")
+	ErrorProcessNotFound          = errors.New("process does not exist")
+	ErrInvalidProcessHandle       = errors.New("invalid process handle")
+	ErrProcessIdentityUnavailable = errors.New("process identity is unavailable")
+	ErrIncompleteProcessTree      = errors.New("process tree is incomplete")
+	ErrProcessStartUncertain      = errors.New("process startup cleanup could not be confirmed")
 
 	// Returned when a process with the requested PID exists, but its identity time
 	// does not match the expected identity time. This typically means the original
@@ -46,46 +45,36 @@ var (
 
 // IsProcessGoneErr reports whether an error means the expected process exited, no longer exists, or its PID was reused.
 func IsProcessGoneErr(err error) bool {
-	var notFoundErr *ErrProcessNotFound
+	if err == nil {
+		return false
+	}
+	if joined, isJoined := err.(interface{ Unwrap() []error }); isJoined {
+		innerErrors := joined.Unwrap()
+		if len(innerErrors) == 0 {
+			return false
+		}
+		for _, innerErr := range innerErrors {
+			if !IsProcessGoneErr(innerErr) {
+				return false
+			}
+		}
+		return true
+	}
+	if _, notFound := err.(*ErrProcessNotFound); notFound {
+		return true
+	}
+	if wrapped, isWrapped := err.(interface{ Unwrap() error }); isWrapped {
+		return IsProcessGoneErr(wrapped.Unwrap())
+	}
 	return errors.Is(err, os.ErrProcessDone) ||
 		errors.Is(err, ErrorProcessNotFound) ||
-		errors.Is(err, ErrProcessIdentityMismatch) ||
-		errors.As(err, &notFoundErr)
+		errors.Is(err, ErrProcessIdentityMismatch)
 }
 
 func getIDs(items []ProcessHandle) []Pid_t {
 	return slices.Map[Pid_t](items, func(item ProcessHandle) Pid_t {
 		return item.Pid
 	})
-}
-
-// Returns the list of ID for a given process and its children
-// The list is ordered starting with the root of the hierarchy, then the children, then the grandchildren etc.
-func GetProcessTree(rootP ProcessHandle) ([]ProcessHandle, error) {
-	root, err := findPsProcess(rootP)
-	if err != nil {
-		return nil, err
-	}
-
-	tree := []ProcessHandle{}
-	next := []*ps.Process{root}
-
-	for len(next) > 0 {
-		current := next[0]
-		next = next[1:]
-		nextPid := Uint32_ToPidT(uint32(current.Pid))
-		tree = append(tree, ProcessHandle{nextPid, processIdentityTime(current)})
-
-		children, childrenErr := current.Children()
-		if childrenErr != nil {
-			// If we fail to get the children, assume there are no children.
-			children = []*ps.Process{}
-		}
-
-		next = append(next, children...)
-	}
-
-	return tree, nil
 }
 
 // Runs the command as a child process to completion.
@@ -106,7 +95,10 @@ func RunToCompletion(ctx context.Context, executor Executor, cmd *exec.Cmd) (int
 	startWaitForProcessExit()
 
 	// Only exit when the process exit--do not exit merely because the context is cancelled.
-	exitInfo := <-pic
+	exitInfo, received := <-pic
+	if !received {
+		return UnknownExitCode, fmt.Errorf("process exit notification channel closed without a result")
+	}
 	return exitInfo.ExitCode, exitInfo.Err
 }
 
@@ -127,99 +119,16 @@ func RunWithTimeout(ctx context.Context, executor Executor, cmd *exec.Cmd) (int3
 	select {
 	case <-ctx.Done():
 		return UnknownExitCode, ctx.Err()
-	case runResult := <-resultCh:
+	case runResult, received := <-resultCh:
+		if !received {
+			return UnknownExitCode, fmt.Errorf("process result channel closed without a result")
+		}
 		return runResult.result, runResult.err
 	}
 }
 
 // We serialize timestamps with millisecond precision, so a maximum couple of milliseconds of difference works well.
 const ProcessIdentityTimeMaximumDifference = 2 * time.Millisecond
-
-// Returns the creation time as a time.Time for a process.
-// This time is intended for display purposes and may differ from the raw start time used to verify
-// process identity and the value returned can change due to clock adjustments etc.
-func StartTimeForProcess(pid Pid_t) time.Time {
-	osPid, osPidErr := PidT_ToUint32(pid)
-	if osPidErr != nil {
-		return time.Time{}
-	}
-
-	proc, procErr := ps.NewProcess(int32(osPid))
-	if procErr != nil {
-		return time.Time{}
-	}
-
-	createTimestamp, err := proc.CreateTime()
-	if err != nil {
-		return time.Time{}
-	}
-
-	return time.UnixMilli(createTimestamp)
-}
-
-// Gets the raw start time for the process, used to verify process identity.
-// This time may not match the wall clock time returned by StartTimeForProcess() on all OS platforms and
-// should not be used for display purposes, but is stable across system clock changes.
-func ProcessIdentityTime(pid Pid_t) time.Time {
-	osPid, osPidErr := PidT_ToUint32(pid)
-	if osPidErr != nil {
-		return time.Time{}
-	}
-
-	proc, procErr := ps.NewProcess(int32(osPid))
-	if procErr != nil {
-		return time.Time{}
-	}
-
-	return processIdentityTime(proc)
-}
-
-func findPsProcess(handle ProcessHandle) (*ps.Process, error) {
-	osPid, err := PidT_ToUint32(handle.Pid)
-	if err != nil {
-		return nil, err
-	}
-
-	// Call this first even if processStartTime is not used, to ensure the process exists.
-	proc, procErr := ps.NewProcess(int32(osPid))
-	if procErr != nil {
-		if !errors.Is(procErr, ps.ErrorProcessNotRunning) {
-			return nil, procErr
-		} else {
-			return nil, fmt.Errorf("process with pid %d does not exist: %w", handle.Pid, ErrorProcessNotFound)
-		}
-	}
-
-	if !HasExpectedIdentityTime(proc, handle.IdentityTime) {
-		actualIdentityTime := processIdentityTime(proc)
-
-		return nil, fmt.Errorf(
-			"%w: pid %d, expected start time %s, actual start time %s",
-			ErrProcessIdentityMismatch,
-			handle.Pid,
-			handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-			actualIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-		)
-	}
-
-	return proc, nil
-}
-
-// Returns the process with the given handle. If the handle's IdentityTime is not zero,
-// the process identity time is checked to match the expected identity time.
-func FindProcess(handle ProcessHandle) (*os.Process, error) {
-	proc, err := findPsProcess(handle)
-	if err != nil {
-		return nil, err
-	}
-
-	process, findErr := os.FindProcess(int(proc.Pid))
-	if findErr != nil {
-		return nil, findErr
-	}
-
-	return process, nil
-}
 
 func Int64_ToPidT(val int64) (Pid_t, error) {
 	return convertPid[int64, Pid_t](val)
@@ -255,15 +164,6 @@ func StringToPidT(val string) (Pid_t, error) {
 	return convertPid[uint64, Pid_t](u64val)
 }
 
-func HasExpectedIdentityTime(proc *ps.Process, expectedIdentityTime time.Time) bool {
-	if expectedIdentityTime.IsZero() {
-		return true
-	} else {
-		identityTime := processIdentityTime(proc)
-		return osutil.Within(expectedIdentityTime, identityTime, ProcessIdentityTimeMaximumDifference)
-	}
-}
-
 // Checks if the error is associated with early exit of a process, which is often expected.
 func IsEarlyProcessExitError(err error) bool {
 	if err == nil {
@@ -296,6 +196,13 @@ func (cmd waitableCmd) Flags() ProcessCreationFlag {
 	return cmd.flags
 }
 
+func (cmd waitableCmd) Abort(ctx context.Context) error {
+	if cmd.WaitDelay == 0 || cmd.WaitDelay > waitForProcessExitTimeout {
+		cmd.WaitDelay = waitForProcessExitTimeout
+	}
+	return rollbackProcessStart(ctx, cmd.Process.Kill, cmd.Wait)
+}
+
 type waitableLite struct {
 	wait  func() error
 	info  func() string
@@ -314,17 +221,27 @@ func (wl waitableLite) Flags() ProcessCreationFlag {
 	return wl.flags()
 }
 
+func (wl waitableLite) Abort(_ context.Context) error {
+	return fmt.Errorf("cannot roll back a discovered process: %w", errors.ErrUnsupported)
+}
+
 var _ Waitable = waitableCmd{}
 var _ Waitable = waitableLite{}
 
-func makeProcessWaitable(pid Pid_t, proc *os.Process) Waitable {
-	return waitableLite{
+func makeProcessWaitable(ctx context.Context, handle ProcessHandle) Waitable {
+	return &waitableLite{
 		wait: func() error {
-			_, waitErr := proc.Wait()
-			return waitErr
+			proc, findErr := FindProcess(handle)
+			if IsProcessGoneErr(findErr) {
+				return nil
+			}
+			if findErr != nil {
+				return findErr
+			}
+			return waitForProcess(ctx, handle, proc, defaultWaitPollInterval)
 		},
 		info: func() string {
-			return "(" + strconv.FormatInt(int64(pid), 10) + ")"
+			return "(" + strconv.FormatInt(int64(handle.Pid), 10) + ")"
 		},
 		flags: func() ProcessCreationFlag {
 			return CreationFlagsNone
@@ -332,28 +249,38 @@ func makeProcessWaitable(pid Pid_t, proc *os.Process) Waitable {
 	}
 }
 
+func signalProcess(ctx context.Context, handle ProcessHandle, proc *os.Process, signal os.Signal) error {
+	return actOnProcess(ctx, handle, func() (ProcessHandle, error) {
+		info, infoErr := readProcessInfoFromProcess(proc, false)
+		return info.handle, infoErr
+	}, func() error {
+		return proc.Signal(signal)
+	})
+}
+
+func actOnProcess(ctx context.Context, handle ProcessHandle, inspect func() (ProcessHandle, error), action func() error) error {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	if handleErr := handle.Validate(); handleErr != nil {
+		return handleErr
+	}
+	actual, inspectErr := inspect()
+	if inspectErr != nil {
+		return inspectErr
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	if identityErr := validateIdentity(handle, actual); identityErr != nil {
+		return identityErr
+	}
+	// Keep identity validation adjacent to dispatch. PID-based platforms still have a non-atomic race.
+	return action()
+}
+
 func init() {
-	ps.EnableBootTimeCache(true)
-
 	This = sync.OnceValues(func() (ProcessHandle, error) {
-		retval := ProcessHandle{
-			Pid:          UnknownPID,
-			IdentityTime: time.Time{},
-		}
-
-		osPid := os.Getpid()
-		pid := Uint32_ToPidT(uint32(osPid))
-
-		pp, findProcessErr := ps.NewProcess(int32(osPid))
-		if findProcessErr != nil {
-			return retval, findProcessErr
-		}
-
-		identityTime := processIdentityTime(pp)
-
-		retval.Pid = pid
-		retval.IdentityTime = identityTime
-
-		return retval, nil
+		return FindProcessHandle(Uint32_ToPidT(uint32(os.Getpid())))
 	})
 }

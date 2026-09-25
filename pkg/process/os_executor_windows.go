@@ -8,7 +8,7 @@
 package process
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -40,27 +40,42 @@ var (
 )
 
 type OSExecutor struct {
-	procsWaiting      map[ProcessHandle]*waitState
-	lock              sync.Locker
-	disposed          bool
-	log               logr.Logger
-	processCleanupJob func() windows.Handle
+	procsWaiting             map[ProcessHandle]*waitState
+	lock                     sync.Locker
+	disposed                 bool
+	log                      logr.Logger
+	processCleanupJob        func() windows.Handle
+	processCleanupJobCreated bool
+	waitCtx                  context.Context
+	cancelWait               context.CancelFunc
 }
 
 func NewOSExecutor(log logr.Logger) Executor {
+	waitCtx, cancelWait := context.WithCancel(context.Background())
 	e := &OSExecutor{
 		procsWaiting: make(map[ProcessHandle]*waitState),
 		lock:         &sync.Mutex{},
 		disposed:     false,
 		log:          log.WithName("os-executor"),
+		waitCtx:      waitCtx,
+		cancelWait:   cancelWait,
 	}
-	e.processCleanupJob = sync.OnceValue(func() windows.Handle { return e.createProcessCleanupJob() })
+	e.processCleanupJob = sync.OnceValue(func() windows.Handle {
+		e.processCleanupJobCreated = true
+		return e.createProcessCleanupJob()
+	})
 	return e
 }
 
-func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppingOpts) (<-chan struct{}, error) {
+func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle, opts processStoppingOpts) (<-chan struct{}, error) {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
 	proc, err := FindProcess(handle)
 	if err != nil {
+		if !IsProcessGoneErr(err) {
+			return nil, err
+		}
 		e.acquireLock()
 		alreadyEnded := false
 		ws, found := e.procsWaiting[handle]
@@ -76,7 +91,12 @@ func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppin
 		}
 	}
 
-	waitable := makeProcessWaitable(handle.Pid, proc)
+	defer func() {
+		if releaseErr := proc.Release(); releaseErr != nil {
+			e.log.Error(releaseErr, "Could not release process reference", "PID", handle.Pid)
+		}
+	}()
+	waitable := makeProcessWaitable(e.waitCtx, handle)
 	ws, shouldStopProcess := e.tryStartWaiting(handle, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh
@@ -87,6 +107,7 @@ func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppin
 	if !shouldStopProcess && (opts&optIsResponsibleForStopping) == 0 {
 		return waitEndedCh, nil
 	}
+	defer e.finishStopAttempt(ws)
 
 	if (opts & optTrySignal) == optTrySignal {
 		// Give the process a chance to gracefully exit.
@@ -106,7 +127,7 @@ func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppin
 			processGroupID = uint32(proc.Pid)
 		}
 
-		err = e.signalAndWaitForExit(proc, sig, processGroupID, ws)
+		err = e.signalAndWaitForExit(ctx, handle, proc, sig, processGroupID, ws)
 		if err == nil {
 			e.log.V(1).Info("Process stopped by signal", "PID", handle.Pid, "Signal", sig)
 			return waitEndedCh, nil
@@ -118,6 +139,8 @@ func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppin
 		// broadcast to the entire console group (for the root process). Give this process
 		// time to exit from that broadcast before force-killing it.
 		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		case <-ws.waitEndedCh:
 			e.log.V(1).Info("Process exited after console group signal", "PID", handle.Pid)
 			return waitEndedCh, nil
@@ -127,8 +150,8 @@ func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppin
 	}
 
 	e.log.V(1).Info("Sending SIGKILL to process...", "PID", handle.Pid)
-	err = proc.Kill()
-	if err != nil && !errors.Is(err, os.ErrProcessDone) {
+	err = signalProcess(ctx, handle, proc, os.Kill)
+	if err != nil && !IsProcessGoneErr(err) {
 		return nil, err
 	}
 
@@ -140,13 +163,23 @@ func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppin
 // processGroupID specifies the target process group; use 0 to signal all processes
 // in the current console group (as required when attached to a foreign console).
 // If the process does not exit within 6 seconds, the function returns ErrTimedOutWaitingForProcessToStop.
-func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig uint32, processGroupID uint32, ws *waitState) error {
-	err := windows.GenerateConsoleCtrlEvent(sig, processGroupID)
+func (e *OSExecutor) signalAndWaitForExit(ctx context.Context, handle ProcessHandle, proc *os.Process, sig uint32, processGroupID uint32, ws *waitState) error {
+	err := actOnProcess(ctx, handle, func() (ProcessHandle, error) {
+		info, infoErr := readProcessInfoFromProcess(proc, false)
+		return info.handle, infoErr
+	}, func() error {
+		return windows.GenerateConsoleCtrlEvent(sig, processGroupID)
+	})
+	if IsProcessGoneErr(err) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("could not send signal to process %d: %w", proc.Pid, err)
 	}
 
 	select {
+	case <-ctx.Done():
+		return ctx.Err()
 
 	case <-ws.waitEndedCh:
 		err = ws.waitErr
@@ -165,6 +198,9 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig uint32, processG
 func (e *OSExecutor) completeDispose() {
 	e.acquireLock()
 	defer e.releaseLock()
+	if !e.processCleanupJobCreated {
+		return
+	}
 
 	pcj := e.processCleanupJob()
 	if pcj != windows.InvalidHandle {
@@ -214,6 +250,13 @@ func (e *OSExecutor) completeProcessStart(handle ProcessHandle, flags ProcessCre
 			e.log.V(1).Info("Could not open new process handle", "PID", handle.Pid, "Error", processHandleErr)
 		} else {
 			defer tryCloseHandle(processHandle)
+			info, infoErr := readWindowsProcessInfo(processHandle, false)
+			if infoErr != nil {
+				return infoErr
+			}
+			if identityErr := validateIdentity(handle, info.handle); identityErr != nil {
+				return identityErr
+			}
 
 			// Ideally we would assign the process to the job on process start, but the required access to STARTUPINFOEX structure
 			// is not available via the exec.Cmd interface as of Go 1.24.3. We would need to completely re-implement
@@ -226,7 +269,7 @@ func (e *OSExecutor) completeProcessStart(handle ProcessHandle, flags ProcessCre
 		}
 	}
 
-	resumptionErr := resumeNewSuspendedProcess(uint32(handle.Pid))
+	resumptionErr := resumeNewSuspendedProcess(handle)
 	if resumptionErr != nil {
 		e.log.Error(resumptionErr, "Could not resume new suspended process", "PID", handle.Pid)
 		return fmt.Errorf("could not resume new suspended process with pid %d: %w", handle.Pid, resumptionErr)
@@ -267,7 +310,13 @@ func (e *OSExecutor) createProcessCleanupJob() windows.Handle {
 	return job
 }
 
-func resumeNewSuspendedProcess(pid uint32) error {
+func resumeNewSuspendedProcess(handle ProcessHandle) error {
+	proc, findErr := FindProcess(handle)
+	if findErr != nil {
+		return findErr
+	}
+	defer func() { _ = proc.Release() }()
+	pid := uint32(handle.Pid)
 	snapshot, snapshotErr := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, pid)
 	if snapshotErr != nil {
 		return fmt.Errorf("could not create thread snapshot for pid %d: %w", pid, snapshotErr)
@@ -296,6 +345,9 @@ func resumeNewSuspendedProcess(pid uint32) error {
 	}
 	defer tryCloseHandle(hThread)
 
+	if identityErr := checkProcessIdentity(handle, proc); identityErr != nil {
+		return identityErr
+	}
 	_, resumeErr := windows.ResumeThread(hThread)
 	if resumeErr != nil {
 		return fmt.Errorf("could not resume primary thread for pid %d: %w", pid, resumeErr)

@@ -61,9 +61,12 @@ func RunProcessWatcher(
 	child process.ProcessHandle,
 	log logr.Logger,
 ) {
-	monitorPid := process.Uint32_ToPidT(uint32(os.Getpid()))
-	monitorIdentityTime := process.ProcessIdentityTime(monitorPid)
-	RunProcessWatcherForMonitor(pe, process.NewHandle(monitorPid, monitorIdentityTime), child, log)
+	monitor, monitorErr := process.This()
+	if monitorErr != nil {
+		log.Error(monitorErr, "Could not determine process monitor identity")
+		return
+	}
+	RunProcessWatcherForMonitor(pe, monitor, child, log)
 }
 
 func RunProcessWatcherForMonitor(
@@ -102,9 +105,12 @@ func RunContainerWatcher(
 	containerID string,
 	log logr.Logger,
 ) {
-	monitorPid := process.Uint32_ToPidT(uint32(os.Getpid()))
-	monitorIdentityTime := process.ProcessIdentityTime(monitorPid)
-	RunContainerWatcherForMonitor(pe, process.NewHandle(monitorPid, monitorIdentityTime), containerID, log)
+	monitor, monitorErr := process.This()
+	if monitorErr != nil {
+		log.Error(monitorErr, "Could not determine container monitor identity")
+		return
+	}
+	RunContainerWatcherForMonitor(pe, monitor, containerID, log)
 }
 
 func RunContainerWatcherForMonitor(
@@ -241,7 +247,15 @@ func SimulateStopProcessTreeCommand(pe *internal_testutil.ProcessExecution) int3
 	// We do not simulate stopping the whole process tree (or process parent-child relationships, for that matter).
 	// We can consider adding it if we have tests that require it (currently none).
 
-	stopErr := pe.Executor.StopProcess(process.NewHandle(pid, startTime))
+	handle := process.NewHandle(pid, startTime)
+	if startTime.IsZero() {
+		var handleErr error
+		handle, handleErr = pe.Executor.FindProcessHandle(pid)
+		if handleErr != nil {
+			return 5
+		}
+	}
+	stopErr := pe.Executor.StopProcess(context.Background(), handle)
 	if stopErr != nil {
 		return 5 // Failed to stop the process
 	}

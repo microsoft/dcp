@@ -66,15 +66,17 @@ type Pid_t int64
 // the sysCreateProcessFunc function can be used to replace exec.Cmd.Start() call
 // and create the process using a different approach.
 // In most circumstance the standard library's implementation should be sufficient.
-// Upon success, the function returns the started process ID and a Waitable object
-// that can be used to wait for the process to exit.
-type SysCreateProcessFunc func(cmd *exec.Cmd) (Pid_t, Waitable, error)
+// Upon success, the function returns a complete process identity and its Waitable.
+// On failure after creation, the creator must clean up its owned process before returning.
+type SysCreateProcessFunc func(cmd *exec.Cmd) (ProcessHandle, Waitable, error)
 
 // Waitable represents a process-like object that can be waited on for completion.
 type Waitable interface {
 	Wait() error
 	Info() string
 	Flags() ProcessCreationFlag
+	// Abort rolls back owned process creation before Wait has been started.
+	Abort(ctx context.Context) error
 }
 
 // ExitCodeSource is an interface that provides access to a process's exit code.
@@ -103,16 +105,14 @@ type Executor interface {
 	) (handle ProcessHandle, startWaitForProcessExit func(), err error)
 
 	// Stops the process identified by the given ProcessHandle.
-	// The handle's IdentityTime, if provided (time.IsZero() returns false), is used to further validate the process to be stopped
-	// (to protect against stopping a wrong process, if the PID was reused).
-	StopProcess(handle ProcessHandle, options ...ProcessStopOption) error
+	// A positive PID and nonzero identity time are required. Cancellation ends further stopping work.
+	StopProcess(ctx context.Context, handle ProcessHandle, options ...ProcessStopOption) error
 
 	// Checks that the process identified by the given ProcessHandle is running.
 	CheckProcessRunning(handle ProcessHandle) error
 
 	// Resolves a process ID into a handle for a currently running process.
-	// The returned handle carries the process identity time when it can be determined; callers that
-	// need to guard against PID reuse must check whether the returned IdentityTime is zero.
+	// The returned handle always carries a nonzero identity time on success.
 	// If the process does not exist, the returned error satisfies IsProcessGoneErr().
 	FindProcessHandle(pid Pid_t) (ProcessHandle, error)
 

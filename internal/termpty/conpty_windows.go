@@ -138,8 +138,8 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 		spec.Cmd,
 		exitHandler,
 		spec.CreationFlags,
-		func(cmd *exec.Cmd) (process.Pid_t, process.Waitable, error) {
-			return createProcessWithConsole(cmd, hConsole, spec.CreationFlags)
+		func(cmd *exec.Cmd) (process.ProcessHandle, process.Waitable, error) {
+			return createProcessWithConsole(ctx, cmd, hConsole, spec.CreationFlags)
 		})
 	if startErr != nil {
 		consoleAPI.closePseudoConsole(hConsole)
@@ -166,12 +166,13 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 }
 
 func createProcessWithConsole(
+	ctx context.Context,
 	cmd *exec.Cmd,
 	hConsole windows.Handle,
 	flags process.ProcessCreationFlag,
-) (process.Pid_t, process.Waitable, error) {
+) (process.ProcessHandle, process.Waitable, error) {
 	if len(cmd.Args) == 0 || cmd.Args[0] != cmd.Path || cmd.Path == "" {
-		return process.UnknownPID, nil, fmt.Errorf("missing or invalid command path")
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("missing or invalid command path")
 	}
 
 	commandLine := windows.ComposeCommandLine(cmd.Args)
@@ -180,7 +181,7 @@ func createProcessWithConsole(
 	}
 	commandLinePtr, commandLineErr := windows.UTF16PtrFromString(commandLine)
 	if commandLineErr != nil {
-		return process.UnknownPID, nil, fmt.Errorf("could not convert command line to UTF-16: %w", commandLineErr)
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("could not convert command line to UTF-16: %w", commandLineErr)
 	}
 
 	var workingDir *uint16
@@ -188,13 +189,13 @@ func createProcessWithConsole(
 		var workingDirErr error
 		workingDir, workingDirErr = windows.UTF16PtrFromString(cmd.Dir)
 		if workingDirErr != nil {
-			return process.UnknownPID, nil, fmt.Errorf("could not convert working directory to UTF-16: %w", workingDirErr)
+			return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("could not convert working directory to UTF-16: %w", workingDirErr)
 		}
 	}
 
 	attributeList, attributeListErr := windows.NewProcThreadAttributeList(1)
 	if attributeListErr != nil {
-		return process.UnknownPID, nil, fmt.Errorf("could not create new thread attribute list: %w", attributeListErr)
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("could not create new thread attribute list: %w", attributeListErr)
 	}
 	defer attributeList.Delete()
 
@@ -204,7 +205,7 @@ func createProcessWithConsole(
 		unsafe.Sizeof(hConsole),
 	)
 	if updateAttributeErr != nil {
-		return process.UnknownPID, nil, fmt.Errorf("could not update thread attribute list: %w", updateAttributeErr)
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("could not update thread attribute list: %w", updateAttributeErr)
 	}
 
 	startupInfoEx := windows.StartupInfoEx{
@@ -246,7 +247,7 @@ func createProcessWithConsole(
 
 	envBlock, envBlockErr := createEnvironmentBlock(cmd.Env)
 	if envBlockErr != nil {
-		return process.UnknownPID, nil, envBlockErr
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, envBlockErr
 	}
 	var envBlockPtr *uint16
 	if envBlock != nil {
@@ -268,7 +269,7 @@ func createProcessWithConsole(
 		&processInformation,
 	)
 	if createProcessErr != nil {
-		return process.UnknownPID, nil, fmt.Errorf("could not start process: %w", createProcessErr)
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("could not start process: %w", createProcessErr)
 	}
 
 	runtime.KeepAlive(envBlock)
@@ -276,10 +277,14 @@ func createProcessWithConsole(
 
 	_ = closeHandles(processInformation.Thread) // best effort
 
-	pid := process.Uint32_ToPidT(processInformation.ProcessId)
+	handle, handleErr := process.ProcessHandleFromNativeHandle(processInformation.Process)
+	if handleErr != nil {
+		rollbackErr := process.RollbackNativeProcess(context.WithoutCancel(ctx), processInformation.Process)
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, errors.Join(handleErr, rollbackErr)
+	}
 	waitable := newWindowsProcessHandle(processInformation.Process, cmd, flags)
 
-	return pid, waitable, nil
+	return handle, waitable, nil
 }
 
 func closeHandles(handles ...windows.Handle) error {
@@ -377,6 +382,17 @@ func newWindowsProcessHandle(hProcess windows.Handle, cmd *exec.Cmd, flags proce
 
 func (wph *windowsProcessHandle) Wait() error {
 	return wph.waitOnce()
+}
+
+func (wph *windowsProcessHandle) Abort(ctx context.Context) error {
+	wph.lock.Lock()
+	nativeHandle := wph.hProcess
+	wph.hProcess = windows.InvalidHandle
+	wph.lock.Unlock()
+	if nativeHandle == windows.InvalidHandle {
+		return os.ErrClosed
+	}
+	return process.RollbackNativeProcess(ctx, nativeHandle)
 }
 
 func (wph *windowsProcessHandle) ExitCode() int32 {

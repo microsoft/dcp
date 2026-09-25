@@ -743,7 +743,7 @@ func ensureContainerExitedState(ctx context.Context,
 	}
 
 	rcd.closeStartupLogFiles(log)
-	rcd.closeTerminalResources(r.config.ProcessExecutor, log)
+	rcd.closeTerminalResources(ctx, r.config.ProcessExecutor, log)
 	r.disableEndpointsAndHealthProbes(ctx, container, rcd, log)
 
 	log.V(1).Info("Inspecting container resource...")
@@ -796,7 +796,7 @@ func ensureContainerUnknownState(
 	if rcd != nil {
 		rcd.containerState = apiv1.ContainerStateUnknown
 		rcd.closeStartupLogFiles(log)
-		rcd.closeTerminalResources(r.config.ProcessExecutor, log)
+		rcd.closeTerminalResources(ctx, r.config.ProcessExecutor, log)
 	}
 
 	return change
@@ -1997,7 +1997,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	// or if the container has already finished starting/stopping and we know the outcome of either.
 
 	defer rcd.deleteStartupLogFiles(log)
-	defer rcd.closeTerminalResources(r.config.ProcessExecutor, log)
+	defer rcd.closeTerminalResources(ctx, r.config.ProcessExecutor, log)
 
 	if !container.Spec.EffectiveMode().ShouldDeleteContainer() {
 		log.V(1).Info("Container is being deleted, leaving underlying resources")
@@ -2115,7 +2115,9 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 	attachMgrErr := connMgr.AttachProcess(ptp)
 	if attachMgrErr != nil {
 		log.Error(attachMgrErr, "Failed to attach process to terminal connection manager")
-		if stopErr := ptp.Stop(); stopErr != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(r.LifetimeCtx), physicalProcessStopTimeout)
+		defer cleanupCancel()
+		if stopErr := ptp.Stop(cleanupCtx); stopErr != nil {
 			log.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
 		}
 		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
@@ -2786,7 +2788,7 @@ func (r *ContainerReconciler) onShutdown() {
 
 	r.runningContainers.Range(func(containerName types.NamespacedName, id containerID, rcd *runningContainerData) bool {
 		rcd.deleteStartupLogFiles(r.Log)
-		rcd.closeTerminalResources(r.config.ProcessExecutor, r.Log)
+		rcd.closeTerminalResources(context.WithoutCancel(r.LifetimeCtx), r.config.ProcessExecutor, r.Log)
 		_ = r.runningContainers.Update(containerName, id, rcd)
 		return true
 	})
