@@ -533,7 +533,7 @@ func (rcd *runningContainerData) closeTerminalResources(ctx context.Context, pe 
 			}
 		}
 		if !alreadyExited {
-			stopCtx, stopCancel := process.WithStopTimeout(ctx)
+			stopCtx, stopCancel := process.WithDetachedStopTimeout(ctx)
 			stopErr := pe.StopProcess(stopCtx, ptp.Handle)
 			stopCancel()
 			var notFound *process.ErrProcessNotFound

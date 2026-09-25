@@ -180,7 +180,9 @@ func ProcessName(handle ProcessHandle) (string, error) {
 func RollbackNativeProcess(ctx context.Context, nativeHandle windows.Handle) (returnErr error) {
 	cleanupCtx, cleanupCancel := WithStopTimeout(ctx)
 	defer cleanupCancel()
-	defer func() { returnErr = uncertainProcessStart(errors.Join(returnErr, windows.CloseHandle(nativeHandle))) }()
+	defer func() {
+		returnErr = nativeProcessRollbackResult(returnErr, windows.CloseHandle(nativeHandle))
+	}()
 	terminateErr := windows.TerminateProcess(nativeHandle, 1)
 	for {
 		if contextErr := cleanupCtx.Err(); contextErr != nil {
@@ -200,4 +202,8 @@ func RollbackNativeProcess(ctx context.Context, nativeHandle windows.Handle) (re
 			return terminateErr
 		}
 	}
+}
+
+func nativeProcessRollbackResult(rollbackErr error, closeErr error) error {
+	return errors.Join(uncertainProcessStart(rollbackErr), closeErr)
 }

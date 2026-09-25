@@ -495,7 +495,7 @@ func TestSysCreateProcess(t *testing.T) {
 	cmd.Dir = delayToolDir
 
 	var capturedWaitable *testProcessWaitable
-	sysCreate := process.SysCreateProcessFunc(func(c *exec.Cmd) (process.ProcessHandle, process.Waitable, error) {
+	sysCreate := process.SysCreateProcessFunc(func(_ context.Context, c *exec.Cmd) (process.ProcessHandle, process.Waitable, error) {
 		proc, startErr := os.StartProcess(c.Path, c.Args, &os.ProcAttr{
 			Dir:   c.Dir,
 			Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},

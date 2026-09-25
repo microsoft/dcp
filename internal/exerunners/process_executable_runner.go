@@ -320,11 +320,17 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	attachErr := connMgr.AttachProcess(ptp)
 	if attachErr != nil {
 		startLog.Error(attachErr, "Failed to attach the process to the terminal connection manager; stopping process")
-		// Best-effort: stop the just-started process and close its PTY before reporting failure.
+		startupErr := attachErr
 		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(processCtx)
 		defer cleanupCancel()
 		if stopErr := ptp.Stop(cleanupCtx); stopErr != nil {
 			startLog.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
+			if !process.IsProcessGoneErr(stopErr) {
+				startupErr = errors.Join(
+					startupErr,
+					fmt.Errorf("%w: could not confirm terminal process cleanup: %w", process.ErrProcessStartUncertain, stopErr),
+				)
+			}
 		}
 		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			startLog.Error(closeErr, "Failed to close PTY after terminal connection manager creation failure")
@@ -332,7 +338,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 		connMgr.Shutdown()
 		result.CompletionTimestamp = metav1.NowMicro()
 		result.ExeState = apiv1.ExecutableStateFailedToStart
-		result.StartupError = attachErr
+		result.StartupError = startupErr
 		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 		return result
 	}
