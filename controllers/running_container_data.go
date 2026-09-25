@@ -502,8 +502,6 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 // signal that docker attach observes). Stopping the process triggers its
 // ExitHandler, which in turn drives the ConnManager shutdown.
 func (rcd *runningContainerData) closeTerminalResources(ctx context.Context, pe process.Executor, log logr.Logger) {
-	stopCtx, stopCancel := process.WithStopTimeout(ctx)
-	defer stopCancel()
 	ptp := rcd.ptp
 	connMgr := rcd.connMgr
 	rcd.ptp = nil
@@ -535,8 +533,11 @@ func (rcd *runningContainerData) closeTerminalResources(ctx context.Context, pe 
 			}
 		}
 		if !alreadyExited {
+			stopCtx, stopCancel := process.WithStopTimeout(ctx)
+			stopErr := pe.StopProcess(stopCtx, ptp.Handle)
+			stopCancel()
 			var notFound *process.ErrProcessNotFound
-			if stopErr := pe.StopProcess(stopCtx, ptp.Handle); stopErr != nil && !errors.As(stopErr, &notFound) {
+			if stopErr != nil && !errors.As(stopErr, &notFound) {
 				log.V(1).Info("Failed to stop container terminal attach process", "PID", ptp.Handle.Pid, "Error", stopErr.Error())
 			}
 		}
