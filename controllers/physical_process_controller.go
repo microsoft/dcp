@@ -737,6 +737,8 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 ) {
 	var stopErr error
 	if osutil.IsWindows() {
+		// Windows stops through an out-of-process helper so it can attach to the target console.
+		// Bound the helper invocation; direct stops on other platforms use executor-internal timeouts.
 		stopCtx, stopCtxCancel := process.WithStopTimeout(ctx)
 		stopErr = dcpproc.StopProcessTree(stopCtx, r.processExecutor, data.handle, log)
 		stopCtxCancel()
