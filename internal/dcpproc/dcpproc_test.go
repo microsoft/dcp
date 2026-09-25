@@ -83,7 +83,8 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	parentCmdErr := parentCmd.Start()
 	require.NoError(t, parentCmdErr, "command should start without error")
 
-	parentHandle := process.ProcessHandleFromCmd(parentCmd)
+	parentHandle, parentHandleErr := process.ProcessHandleFromCmd(parentCmd)
+	require.NoError(t, parentHandleErr)
 	parentIdentityTime := parentHandle.IdentityTime
 	require.False(t, parentIdentityTime.IsZero(), "parent process start time should not be zero")
 	int_testutil.EnsureProcessTree(t, parentHandle, 1, testTimeout/3)
@@ -94,7 +95,8 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	childrenCmdErr := childrenCmd.Start()
 	require.NoError(t, childrenCmdErr, "command should start without error")
 
-	childHandle := process.ProcessHandleFromCmd(childrenCmd)
+	childHandle, childHandleErr := process.ProcessHandleFromCmd(childrenCmd)
+	require.NoError(t, childHandleErr)
 	childIdentityTime := childHandle.IdentityTime
 	require.False(t, childIdentityTime.IsZero(), "child process start time should not be zero")
 	int_testutil.EnsureProcessTree(
@@ -164,7 +166,8 @@ func TestMonitorProcessExitsCleanlyIfChildStartTimeDoesNotMatch(t *testing.T) {
 		_ = parentCmd.Wait()
 	}()
 
-	parentHandle := process.ProcessHandleFromCmd(parentCmd)
+	parentHandle, parentHandleErr := process.ProcessHandleFromCmd(parentCmd)
+	require.NoError(t, parentHandleErr)
 	parentIdentityTime := parentHandle.IdentityTime
 	require.False(t, parentIdentityTime.IsZero(), "parent process start time should not be zero")
 	int_testutil.EnsureProcessTree(t, parentHandle, 1, testTimeout/3)
@@ -177,7 +180,8 @@ func TestMonitorProcessExitsCleanlyIfChildStartTimeDoesNotMatch(t *testing.T) {
 		_ = childCmd.Wait()
 	}()
 
-	childHandle := process.ProcessHandleFromCmd(childCmd)
+	childHandle, childHandleErr := process.ProcessHandleFromCmd(childCmd)
+	require.NoError(t, childHandleErr)
 	childIdentityTime := childHandle.IdentityTime
 	require.False(t, childIdentityTime.IsZero(), "child process start time should not be zero")
 	int_testutil.EnsureProcessTree(t, childHandle, 1, testTimeout/3)
@@ -205,7 +209,8 @@ func TestMonitorProcessExitsCleanlyIfChildStartTimeDoesNotMatch(t *testing.T) {
 
 	// The child process must still be alive: dcpproc must NOT kill a process it could not
 	// positively identify.
-	childStillAlive := process.ProcessIdentityTime(childHandle.Pid)
+	childStillAlive, childIdentityErr := process.ProcessIdentityTime(childHandle.Pid)
+	require.NoError(t, childIdentityErr)
 	require.False(t, childStillAlive.IsZero(), "child process should still be running")
 	require.True(t, childStillAlive.Equal(childIdentityTime), "child process should still be the same instance")
 }
@@ -243,7 +248,8 @@ func TestMonitorProcessCleansUpChildIfMonitorStartTimeDoesNotMatch(t *testing.T)
 		_ = parentCmd.Wait()
 	}()
 
-	parentHandle := process.ProcessHandleFromCmd(parentCmd)
+	parentHandle, parentHandleErr := process.ProcessHandleFromCmd(parentCmd)
+	require.NoError(t, parentHandleErr)
 	parentIdentityTime := parentHandle.IdentityTime
 	require.False(t, parentIdentityTime.IsZero(), "parent process start time should not be zero")
 	int_testutil.EnsureProcessTree(t, parentHandle, 1, testTimeout/3)
@@ -257,7 +263,8 @@ func TestMonitorProcessCleansUpChildIfMonitorStartTimeDoesNotMatch(t *testing.T)
 		_ = childCmd.Wait()
 	}()
 
-	childHandle := process.ProcessHandleFromCmd(childCmd)
+	childHandle, childHandleErr := process.ProcessHandleFromCmd(childCmd)
+	require.NoError(t, childHandleErr)
 	childIdentityTime := childHandle.IdentityTime
 	require.False(t, childIdentityTime.IsZero(), "child process start time should not be zero")
 	expectedChildTreeSize := 1
@@ -337,7 +344,8 @@ func TestMonitorProcessCleansUpChildWhenMonitoredProcessAlreadyExited(t *testing
 	process.DecoupleFromParent(parentCmd)
 	require.NoError(t, parentCmd.Start(), "Monitored process should start without error")
 
-	parentHandle := process.ProcessHandleFromCmd(parentCmd)
+	parentHandle, parentHandleErr := process.ProcessHandleFromCmd(parentCmd)
+	require.NoError(t, parentHandleErr)
 	parentIdentityTime := parentHandle.IdentityTime
 	require.False(t, parentIdentityTime.IsZero(), "Monitored process start time should not be zero")
 
@@ -353,7 +361,8 @@ func TestMonitorProcessCleansUpChildWhenMonitoredProcessAlreadyExited(t *testing
 		_ = childCmd.Wait()
 	}()
 
-	childHandle := process.ProcessHandleFromCmd(childCmd)
+	childHandle, childHandleErr := process.ProcessHandleFromCmd(childCmd)
+	require.NoError(t, childHandleErr)
 	childIdentityTime := childHandle.IdentityTime
 	require.False(t, childIdentityTime.IsZero(), "child process start time should not be zero")
 	expectedChildTreeSize := 1
@@ -450,7 +459,8 @@ func TestMonitorContainerTerminatesWatchedContainer(t *testing.T) {
 	parentCmdErr := parentCmd.Start()
 	require.NoError(t, parentCmdErr, "Monitored process should start without error")
 
-	parentHandle := process.ProcessHandleFromCmd(parentCmd)
+	parentHandle, parentHandleErr := process.ProcessHandleFromCmd(parentCmd)
+	require.NoError(t, parentHandleErr)
 	parentIdentityTime := parentHandle.IdentityTime
 	require.False(t, parentIdentityTime.IsZero(), "Monitored process start time should not be zero")
 
@@ -544,7 +554,8 @@ func TestMonitorContainerStopsWatchedContainerWithoutRemoving(t *testing.T) {
 	parentCmdErr := parentCmd.Start()
 	require.NoError(t, parentCmdErr, "Monitored process should start without error")
 
-	parentHandle := process.ProcessHandleFromCmd(parentCmd)
+	parentHandle, parentHandleErr := process.ProcessHandleFromCmd(parentCmd)
+	require.NoError(t, parentHandleErr)
 	parentIdentityTime := parentHandle.IdentityTime
 	require.False(t, parentIdentityTime.IsZero(), "Monitored process start time should not be zero")
 
@@ -651,7 +662,8 @@ func TestMonitorContainerExitWhenContainerRemoved(t *testing.T) {
 	parentCmdErr := parentCmd.Start()
 	require.NoError(t, parentCmdErr, "Monitored process should start without error")
 
-	parentHandle := process.ProcessHandleFromCmd(parentCmd)
+	parentHandle, parentHandleErr := process.ProcessHandleFromCmd(parentCmd)
+	require.NoError(t, parentHandleErr)
 	parentIdentityTime := parentHandle.IdentityTime
 	require.False(t, parentIdentityTime.IsZero(), "Monitored process start time should not be zero")
 
@@ -743,7 +755,8 @@ func TestMonitorContainerCleansUpWhenMonitoredProcessAlreadyExited(t *testing.T)
 	process.DecoupleFromParent(parentCmd)
 	require.NoError(t, parentCmd.Start(), "Monitored process should start without error")
 
-	parentHandle := process.ProcessHandleFromCmd(parentCmd)
+	parentHandle, parentHandleErr := process.ProcessHandleFromCmd(parentCmd)
+	require.NoError(t, parentHandleErr)
 	parentIdentityTime := parentHandle.IdentityTime
 	require.False(t, parentIdentityTime.IsZero(), "Monitored process start time should not be zero")
 
@@ -832,7 +845,8 @@ func TestMonitorContainerCleansUpOnIdentityTimeMismatch(t *testing.T) {
 		_ = parentCmd.Wait()
 	}()
 
-	parentHandle := process.ProcessHandleFromCmd(parentCmd)
+	parentHandle, parentHandleErr := process.ProcessHandleFromCmd(parentCmd)
+	require.NoError(t, parentHandleErr)
 	parentIdentityTime := parentHandle.IdentityTime
 	require.False(t, parentIdentityTime.IsZero(), "Monitored process start time should not be zero")
 
@@ -907,7 +921,8 @@ func TestStopProcessTreeWorks(t *testing.T) {
 	childrenCmdErr := childrenCmd.Start()
 	require.NoError(t, childrenCmdErr, "command should start without error")
 
-	childHandle := process.ProcessHandleFromCmd(childrenCmd)
+	childHandle, childHandleErr := process.ProcessHandleFromCmd(childrenCmd)
+	require.NoError(t, childHandleErr)
 	childIdentityTime := childHandle.IdentityTime
 	require.False(t, childIdentityTime.IsZero(), "child process start time should not be zero")
 	int_testutil.EnsureProcessTree(

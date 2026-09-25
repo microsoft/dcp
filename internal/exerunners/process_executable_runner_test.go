@@ -305,7 +305,7 @@ func TestAdoptedProcessStartsLifecycleMonitor(t *testing.T) {
 			runID := pidToRunID(pid)
 			t.Cleanup(func() {
 				_ = runner.ReleaseRun(context.Background(), runID, logr.Discard())
-				_ = processExecutor.StopProcess(handle)
+				_ = processExecutor.StopProcess(context.Background(), handle)
 			})
 
 			exe := &apiv1.Executable{

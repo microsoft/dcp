@@ -9,11 +9,8 @@ package process_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"syscall"
 	"testing"
 	"time"
 
@@ -24,12 +21,15 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 // Tests that processes that ignore SIGTERM can still be terminated.
 // Run on Unix-like systems only, because Windows does not have signals.
 func TestStopProcessIgnoreSigterm(t *testing.T) {
 	t.Parallel()
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
 
 	delayToolDir, err := getDelayToolDir()
 	require.NoError(t, err)
@@ -44,7 +44,8 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	rootP := process.ProcessHandleFromCmd(cmd)
+	rootP, handleErr := process.ProcessHandleFromCmd(cmd)
+	require.NoError(t, handleErr)
 	require.False(t, rootP.IdentityTime.IsZero(), "process start time should not be zero")
 
 	// Only one process should be running, so the "tree" size is 1.
@@ -52,7 +53,7 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 
 	executor := process.NewOSExecutor(log)
 	start := time.Now()
-	err = executor.StopProcess(process.NewHandle(rootP.Pid, time.Time{}))
+	err = executor.StopProcess(testCtx, rootP)
 	require.NoError(t, err)
 	elapsed := time.Since(start)
 	elapsedStr := osutil.FormatDuration(elapsed)
@@ -82,19 +83,10 @@ func ensureAllStopped(t *testing.T, processes []process.ProcessHandle, timeout t
 }
 
 func isStopped(pp process.ProcessHandle) bool {
-	// On Unix-like systems FindProcess() always succeeds, so it is not a reliable way of checking
-	// if the process is still running.
-	osPid, err := process.PidT_ToInt(pp.Pid)
-	if err != nil {
-		panic(err)
-	}
-
-	proc, findProcessErr := os.FindProcess(osPid)
+	proc, findProcessErr := process.FindProcess(pp)
 	if findProcessErr != nil {
-		return true
+		return process.IsProcessGoneErr(findProcessErr)
 	}
-	// The SIGWINCH (window resize) is ignored by default, so it is a good one to use
-	// as a "Are you there?" query
-	signalSendErr := proc.Signal(syscall.SIGWINCH)
-	return errors.Is(signalSendErr, os.ErrProcessDone)
+	_ = proc.Release()
+	return false
 }

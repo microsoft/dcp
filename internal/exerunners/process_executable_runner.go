@@ -237,7 +237,10 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		runChangeHandler: runChangeHandler,
 	})
 
-	displayStartTime := process.StartTimeForProcess(handle.Pid)
+	displayStartTime, displayErr := process.StartTimeForProcess(handle)
+	if displayErr != nil {
+		startLog.Error(displayErr, "Could not read process display start time", "PID", handle.Pid)
+	}
 	result.RunID = pidToRunID(handle.Pid)
 	pointers.SetValue(&result.Pid, int64(handle.Pid))
 	result.ExeState = apiv1.ExecutableStateRunning
@@ -318,7 +321,9 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	if attachErr != nil {
 		startLog.Error(attachErr, "Failed to attach the process to the terminal connection manager; stopping process")
 		// Best-effort: stop the just-started process and close its PTY before reporting failure.
-		if stopErr := ptp.Stop(); stopErr != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(processCtx), 15*time.Second)
+		defer cleanupCancel()
+		if stopErr := ptp.Stop(cleanupCtx); stopErr != nil {
 			startLog.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
 		}
 		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
@@ -348,7 +353,10 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	// resources, and notify the run-change handler.
 	go r.watchTerminalRunExit(processCtx, runID, ptp, runChangeHandler, startLog)
 
-	displayStartTime := process.StartTimeForProcess(handle.Pid)
+	displayStartTime, displayErr := process.StartTimeForProcess(handle)
+	if displayErr != nil {
+		startLog.Error(displayErr, "Could not read terminal process display start time", "PID", handle.Pid)
+	}
 	result.RunID = runID
 	pointers.SetValue(&result.Pid, int64(handle.Pid))
 	result.ExeState = apiv1.ExecutableStateRunning
@@ -568,42 +576,34 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 		return nil
 	}
 
-	return r.stopProcessRunState(ctx, runID, runState, log)
+	stopErr := r.stopProcessRunState(ctx, runID, runState, log)
+	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
+		r.runningProcesses.Store(runID, runState)
+	}
+	return stopErr
 }
 
 func (r *ProcessExecutableRunner) stopProcessRunState(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
-	if runState.cancelWatch != nil {
-		runState.cancelWatch()
-	}
-
 	stopLog := log.WithValues("RunID", runID, "Command", runState.cmdInfo)
 	stopLog.V(1).Info("Stopping run...")
 
 	// We want to make progress eventually, so we don't want to wait indefinitely for the process to stop.
 	const ProcessStopTimeout = 15 * time.Second
 
-	timer := time.NewTimer(ProcessStopTimeout)
-	defer timer.Stop()
-	errCh := make(chan error, 1)
-
-	go func() {
-		if osutil.IsWindows() && !r.disableConsoleStop {
-			// See StartRun() for why we need to use separate console for the app process on Windows.
-			// This means we cannot send Ctrl-C to that process directly and need to use dcpproc StopProcessTree facility instead.
-			stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
-			defer stopCtxCancel()
-			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runState.handle, stopLog)
-		} else {
-			errCh <- r.pe.StopProcess(runState.handle)
-		}
-	}()
-
-	var stopErr error = nil
-	select {
-	case stopErr = <-errCh:
-		// (no falltrough in Go)
-	case <-timer.C:
-		stopErr = fmt.Errorf("timed out waiting for process associated with run %s to stop", runID)
+	stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
+	defer stopCtxCancel()
+	var stopErr error
+	if osutil.IsWindows() && !r.disableConsoleStop {
+		stopErr = dcpproc.StopProcessTree(stopCtx, r.pe, runState.handle, stopLog)
+	} else {
+		stopErr = r.pe.StopProcess(stopCtx, runState.handle)
+	}
+	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
+		stopLog.Error(stopErr, "Failed to stop run; preserving identity for retry")
+		return stopErr
+	}
+	if runState.cancelWatch != nil {
+		runState.cancelWatch()
 	}
 
 	stopErr = errors.Join(stopErr, closeRunFiles(ctx, runState))

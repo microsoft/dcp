@@ -1540,7 +1540,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	tc, tcErr := readServerProxyConfig(ctx, stdoutFile.Name())
 	if tcErr != nil {
 		log.Error(tcErr, "Failed to read connection information from the server proxy")
-		stopProcessErr := r.config.ProcessExecutor.StopProcess(handle)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), physicalProcessStopTimeout)
+		defer cleanupCancel()
+		stopProcessErr := r.config.ProcessExecutor.StopProcess(cleanupCtx, handle)
 		if stopProcessErr != nil {
 			log.Error(stopProcessErr, "Failed to stop server proxy process after being unable to read its configuration")
 		}
@@ -1647,7 +1649,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 
 		// The process may have already exited because the client container has been stopped.
 
-		stopErr := r.config.ProcessExecutor.StopProcess(process.NewHandle(pid, startTime))
+		stopErr := r.config.ProcessExecutor.StopProcess(ctx, process.NewHandle(pid, startTime))
 		if stopErr != nil && !errors.Is(stopErr, process.ErrorProcessNotFound) {
 			log.Error(stopErr, "Failed to stop server proxy process")
 			pd.cleanupScheduled = false

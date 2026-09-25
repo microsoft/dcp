@@ -211,7 +211,7 @@ func TestAttachContainerMethod(t *testing.T) {
 		require.NotNil(t, terminalProcess.ExitHandler)
 		t.Cleanup(func() {
 			_ = terminalProcess.PTY.Close()
-			_ = terminalProcess.Stop()
+			_ = terminalProcess.Stop(context.WithoutCancel(ctx))
 		})
 		terminalProcess.StartWaitForExit()
 		require.NoError(t, terminalProcess.PTY.Resize(120, 40))
