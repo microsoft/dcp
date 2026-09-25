@@ -138,8 +138,8 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 		spec.Cmd,
 		exitHandler,
 		spec.CreationFlags,
-		func(cmd *exec.Cmd) (process.ProcessHandle, process.Waitable, error) {
-			return createProcessWithConsole(ctx, cmd, hConsole, spec.CreationFlags)
+		func(startCtx context.Context, cmd *exec.Cmd) (process.ProcessHandle, process.Waitable, error) {
+			return createProcessWithConsole(startCtx, cmd, hConsole, spec.CreationFlags)
 		})
 	if startErr != nil {
 		consoleAPI.closePseudoConsole(hConsole)

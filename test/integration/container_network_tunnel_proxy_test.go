@@ -264,6 +264,10 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateBuildingImage && tp.Status.Message != "", nil
 	})
 	require.Contains(t, waitingTunnelProxy.Status.Message, "Waiting for")
+	waitBuildErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return testContainerOrchestrator.BuildImageCallCount(imagePlan.Image) >= 1, nil
+	})
+	require.NoError(t, waitBuildErr)
 	require.Equal(t, 1, testContainerOrchestrator.BuildImageCallCount(imagePlan.Image))
 	releaseImageBuild()
 

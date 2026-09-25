@@ -43,6 +43,28 @@ type waitState struct {
 	waitStarted bool
 }
 
+func (e *OSExecutor) beginProcessStart(parent context.Context) (context.Context, func(), error) {
+	e.acquireLock()
+	if e.disposed {
+		e.releaseLock()
+		return nil, nil, ErrDisposed
+	}
+	e.startsInFlight.Add(1)
+	startLifetimeCtx := e.startLifetimeCtx
+	e.releaseLock()
+
+	startCtx, cancelStart := context.WithCancelCause(parent)
+	stopLifetimeCancellation := context.AfterFunc(startLifetimeCtx, func() {
+		cancelStart(context.Cause(startLifetimeCtx))
+	})
+	finishStart := func() {
+		stopLifetimeCancellation()
+		cancelStart(nil)
+		e.startsInFlight.Done()
+	}
+	return startCtx, finishStart, nil
+}
+
 func (e *OSExecutor) StartProcess(
 	ctx context.Context,
 	cmd *exec.Cmd,
@@ -50,14 +72,13 @@ func (e *OSExecutor) StartProcess(
 	flags ProcessCreationFlag,
 	sysCreateProcess SysCreateProcessFunc,
 ) (ProcessHandle, func(), error) {
-	e.acquireLock()
-	if e.disposed {
-		e.releaseLock()
-		return ProcessHandle{Pid: UnknownPID}, nil, ErrDisposed
+	startCtx, finishStart, admissionErr := e.beginProcessStart(ctx)
+	if admissionErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, nil, admissionErr
 	}
-	e.releaseLock()
+	defer finishStart()
 
-	handle, waitable, startProcessErr := e.startProcess(cmd, flags, sysCreateProcess)
+	handle, waitable, startProcessErr := e.startProcess(startCtx, cmd, flags, sysCreateProcess)
 	if startProcessErr != nil {
 		return ProcessHandle{Pid: UnknownPID}, nil, startProcessErr
 	}
@@ -122,14 +143,13 @@ func (e *OSExecutor) StartProcess(
 }
 
 func (e *OSExecutor) StartAndForget(cmd *exec.Cmd, flags ProcessCreationFlag) (ProcessHandle, error) {
-	e.acquireLock()
-	if e.disposed {
-		e.releaseLock()
-		return ProcessHandle{Pid: UnknownPID}, ErrDisposed
+	startCtx, finishStart, admissionErr := e.beginProcessStart(context.Background())
+	if admissionErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, admissionErr
 	}
-	e.releaseLock()
+	defer finishStart()
 
-	handle, waitable, startProcessErr := e.startProcess(cmd, flags, nil)
+	handle, waitable, startProcessErr := e.startProcess(startCtx, cmd, flags, nil)
 	if startProcessErr != nil {
 		return ProcessHandle{Pid: UnknownPID}, startProcessErr
 	}
@@ -159,20 +179,24 @@ func (e *OSExecutor) StopProcess(ctx context.Context, handle ProcessHandle, opti
 
 // Returns the process handle, waitable process, and error.
 func (e *OSExecutor) startProcess(
+	ctx context.Context,
 	cmd *exec.Cmd,
 	flags ProcessCreationFlag,
 	sysCreateProcess SysCreateProcessFunc,
 ) (ProcessHandle, Waitable, error) {
 	e.prepareProcessStart(cmd, flags)
+	if cancellationErr := context.Cause(ctx); cancellationErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, nil, cancellationErr
+	}
 
 	var handle ProcessHandle
 	var waitable Waitable
 
 	if sysCreateProcess != nil {
 		var sysCreateErr error
-		handle, waitable, sysCreateErr = sysCreateProcess(cmd)
+		handle, waitable, sysCreateErr = sysCreateProcess(ctx, cmd)
 		if sysCreateErr != nil {
-			return ProcessHandle{Pid: UnknownPID}, nil, sysCreateErr
+			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(context.Cause(ctx), sysCreateErr)
 		}
 		if waitable == nil {
 			return ProcessHandle{Pid: UnknownPID}, nil, fmt.Errorf("%w: sysCreateProcess returned nil waitable", ErrProcessStartUncertain)
@@ -183,15 +207,15 @@ func (e *OSExecutor) startProcess(
 				abortStartedProcess(waitable))
 		}
 	} else {
-		if err := cmd.Start(); err != nil {
-			return ProcessHandle{Pid: UnknownPID}, nil, err
+		if cmdStartErr := cmd.Start(); cmdStartErr != nil {
+			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(context.Cause(ctx), cmdStartErr)
 		}
+		waitable = &waitableCmd{cmd, flags}
 		var handleErr error
 		handle, handleErr = ProcessHandleFromCmd(cmd)
 		if handleErr != nil {
-			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(handleErr, abortStartedProcess(waitableCmd{cmd, flags}))
+			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(handleErr, abortStartedProcess(waitable))
 		}
-		waitable = &waitableCmd{cmd, flags}
 	}
 
 	pid := handle.Pid
@@ -201,6 +225,18 @@ func (e *OSExecutor) startProcess(
 		"Args", cmd.Args[1:],
 		"CreationFlags", flags,
 	)
+
+	abortForCancellation := func(cancellationErr error) (ProcessHandle, Waitable, error) {
+		abortErr := abortStartedProcess(waitable)
+		if abortErr != nil {
+			startLog.Error(abortErr, "Could not roll back process after start cancellation")
+		}
+		return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(cancellationErr, abortErr)
+	}
+
+	if cancellationErr := context.Cause(ctx); cancellationErr != nil {
+		return abortForCancellation(cancellationErr)
+	}
 
 	startCompletionErr := e.completeProcessStart(handle, flags)
 	if startCompletionErr != nil {
@@ -212,6 +248,10 @@ func (e *OSExecutor) startProcess(
 		}
 		return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(
 			fmt.Errorf("could not complete process start: %w", startCompletionErr), abortErr)
+	}
+
+	if cancellationErr := context.Cause(ctx); cancellationErr != nil {
+		return abortForCancellation(cancellationErr)
 	}
 
 	startLog.V(1).Info("Process started successfully", "PID", pid)
@@ -459,8 +499,14 @@ func (e *OSExecutor) Dispose() {
 		return
 	}
 	e.disposed = true
-	defer e.cancelWait()
+	e.releaseLock()
+
+	e.startLifetimeCtxCancel(ErrDisposed)
+	e.startsInFlight.Wait()
+	defer e.lifetimeCtxCancel()
+
 	// Make a shallow copy of the waiting processes map so we can safely iterate over it while stopping processes.
+	e.acquireLock()
 	currentProcs := stdlib_maps.Clone(e.procsWaiting)
 	e.releaseLock()
 

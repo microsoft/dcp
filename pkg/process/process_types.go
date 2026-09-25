@@ -67,8 +67,9 @@ type Pid_t int64
 // and create the process using a different approach.
 // In most circumstance the standard library's implementation should be sufficient.
 // Upon success, the function returns a complete process identity and its Waitable.
-// On failure after creation, the creator must clean up its owned process before returning.
-type SysCreateProcessFunc func(cmd *exec.Cmd) (ProcessHandle, Waitable, error)
+// The context controls the creation phase. On cancellation or any failure after creation,
+// the creator must clean up its owned process before returning.
+type SysCreateProcessFunc func(ctx context.Context, cmd *exec.Cmd) (ProcessHandle, Waitable, error)
 
 // Waitable represents a process-like object that can be waited on for completion.
 type Waitable interface {

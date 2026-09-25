@@ -32,6 +32,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
+	usvc_random "github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -316,6 +317,75 @@ func TestStopRunCleanupErrorDoesNotRestoreState(t *testing.T) {
 	require.ErrorIs(t, stopErr, cleanupErr)
 	_, found := runner.runningProcesses.Load(runID)
 	require.False(t, found)
+}
+
+func TestTerminalAttachFailureClassifiesUnconfirmedCleanup(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name              string
+		stopErr           error
+		expectedUncertain bool
+	}{
+		{name: "confirmed stop"},
+		{
+			name:              "process already gone",
+			stopErr:           &process.ErrProcessNotFound{Pid: 4250},
+			expectedUncertain: false,
+		},
+		{
+			name:              "unconfirmed stop",
+			stopErr:           errors.New("stop failed"),
+			expectedUncertain: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			executor := &stopRunTestExecutor{
+				handle:  process.NewHandle(4250, time.Unix(1000, 0).UTC()),
+				stopErr: testCase.stopErr,
+			}
+			runner := NewProcessExecutableRunner(executor)
+			testPty := internal_testutil.NewTestPty()
+			t.Cleanup(func() { _ = testPty.Close() })
+			runner.SetTerminalProcessFactory(func(
+				context.Context,
+				process.Executor,
+				*termpty.CommandSpec,
+			) (*termpty.PseudoTerminalProcess, error) {
+				return &termpty.PseudoTerminalProcess{
+					PTY:      testPty,
+					Handle:   executor.handle,
+					Executor: executor,
+				}, nil
+			})
+
+			socketSuffix, socketSuffixErr := usvc_random.MakeRandomString(12)
+			require.NoError(t, socketSuffixErr)
+			socketPath := filepath.Join(testutil.TestTempRoot(), fmt.Sprintf("dcp-exerunner-%s.sock", socketSuffix))
+			t.Cleanup(func() { _ = os.Remove(socketPath) })
+			result := runner.StartRun(
+				context.Background(),
+				&apiv1.Executable{
+					ObjectMeta: metav1.ObjectMeta{Name: "terminal-attach-failure"},
+					Spec: apiv1.ExecutableSpec{
+						ExecutablePath: "unused",
+						Terminal:       &apiv1.TerminalSpec{UDSPath: socketPath},
+					},
+				},
+				newRecordingRunChangeHandler(),
+				logr.Discard(),
+			)
+
+			require.Equal(t, apiv1.ExecutableStateFailedToStart, result.ExeState)
+			require.Error(t, result.StartupError)
+			require.Equal(t, testCase.expectedUncertain, errors.Is(result.StartupError, process.ErrProcessStartUncertain))
+			if testCase.expectedUncertain {
+				require.ErrorIs(t, result.StartupError, testCase.stopErr)
+			}
+		})
+	}
 }
 
 func TestAdoptedProcessStartsLifecycleMonitor(t *testing.T) {

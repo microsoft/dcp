@@ -49,19 +49,25 @@ type OSExecutor struct {
 	log                      logr.Logger
 	processCleanupJob        func() windows.Handle
 	processCleanupJobCreated bool
-	waitCtx                  context.Context
-	cancelWait               context.CancelFunc
+	lifetimeCtx              context.Context
+	lifetimeCtxCancel        context.CancelFunc
+	startLifetimeCtx         context.Context
+	startLifetimeCtxCancel   context.CancelCauseFunc
+	startsInFlight           sync.WaitGroup
 }
 
 func NewOSExecutor(log logr.Logger) Executor {
-	waitCtx, cancelWait := context.WithCancel(context.Background())
+	lifetimeCtx, lifetimeCtxCancel := context.WithCancel(context.Background())
+	startLifetimeCtx, startLifetimeCtxCancel := context.WithCancelCause(context.Background())
 	e := &OSExecutor{
-		procsWaiting: make(map[ProcessHandle]*waitState),
-		lock:         &sync.Mutex{},
-		disposed:     false,
-		log:          log.WithName("os-executor"),
-		waitCtx:      waitCtx,
-		cancelWait:   cancelWait,
+		procsWaiting:           make(map[ProcessHandle]*waitState),
+		lock:                   &sync.Mutex{},
+		disposed:               false,
+		log:                    log.WithName("os-executor"),
+		lifetimeCtx:            lifetimeCtx,
+		lifetimeCtxCancel:      lifetimeCtxCancel,
+		startLifetimeCtx:       startLifetimeCtx,
+		startLifetimeCtxCancel: startLifetimeCtxCancel,
 	}
 	e.processCleanupJob = sync.OnceValue(func() windows.Handle {
 		e.processCleanupJobCreated = true
@@ -99,7 +105,7 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 			e.log.Error(releaseErr, "Could not release process reference", "PID", handle.Pid)
 		}
 	}()
-	waitable := makeProcessWaitable(e.waitCtx, handle)
+	waitable := makeProcessWaitable(e.lifetimeCtx, handle)
 	ws, shouldStopProcess := e.tryStartWaiting(handle, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh
