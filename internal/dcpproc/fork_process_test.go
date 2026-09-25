@@ -115,7 +115,9 @@ func TestForkProcessExitsWhenMonitoredParentExits(t *testing.T) {
 
 	cleanupExecutor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
 	t.Cleanup(func() {
-		_ = cleanupExecutor.StopProcess(testCtx, process.NewHandle(childPid, childIdentityTime))
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(testCtx)
+		defer cleanupCancel()
+		_ = cleanupExecutor.StopProcess(cleanupCtx, process.NewHandle(childPid, childIdentityTime))
 		cleanupExecutor.Dispose()
 	})
 
@@ -148,7 +150,9 @@ func startForkedDelay(t *testing.T, testCtx context.Context) process.ProcessHand
 	var identityTime time.Time
 	cleanupExecutor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
 	t.Cleanup(func() {
-		_ = cleanupExecutor.StopProcess(testCtx, process.NewHandle(pid, identityTime))
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(testCtx)
+		defer cleanupCancel()
+		_ = cleanupExecutor.StopProcess(cleanupCtx, process.NewHandle(pid, identityTime))
 		cleanupExecutor.Dispose()
 	})
 

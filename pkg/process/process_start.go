@@ -26,7 +26,7 @@ func RollbackProcess(ctx context.Context, proc *os.Process) error {
 
 func rollbackProcessStart(ctx context.Context, kill func() error, wait func() error) (returnErr error) {
 	defer func() { returnErr = uncertainProcessStart(returnErr) }()
-	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, waitForProcessExitTimeout)
+	cleanupCtx, cleanupCancel := WithStopTimeout(ctx)
 	defer cleanupCancel()
 	killErr := kill()
 	if IsProcessGoneErr(killErr) {
@@ -47,12 +47,15 @@ func rollbackProcessStart(ctx context.Context, kill func() error, wait func() er
 		if !received {
 			return errors.Join(killErr, fmt.Errorf("rollback wait channel closed without a result"))
 		}
+		if waitErr == nil {
+			return nil
+		}
 		return errors.Join(killErr, waitErr)
 	}
 }
 
 func abortStartedProcess(waitable Waitable) error {
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), waitForProcessExitTimeout)
+	cleanupCtx, cleanupCancel := WithStopTimeout(context.Background())
 	defer cleanupCancel()
 	return uncertainProcessStart(waitable.Abort(cleanupCtx))
 }

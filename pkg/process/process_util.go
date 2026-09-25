@@ -197,8 +197,8 @@ func (cmd waitableCmd) Flags() ProcessCreationFlag {
 }
 
 func (cmd waitableCmd) Abort(ctx context.Context) error {
-	if cmd.WaitDelay == 0 || cmd.WaitDelay > waitForProcessExitTimeout {
-		cmd.WaitDelay = waitForProcessExitTimeout
+	if cmd.WaitDelay == 0 || cmd.WaitDelay > processStopTimeout {
+		cmd.WaitDelay = processStopTimeout
 	}
 	return rollbackProcessStart(ctx, cmd.Process.Kill, cmd.Wait)
 }

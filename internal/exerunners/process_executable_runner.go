@@ -321,7 +321,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	if attachErr != nil {
 		startLog.Error(attachErr, "Failed to attach the process to the terminal connection manager; stopping process")
 		// Best-effort: stop the just-started process and close its PTY before reporting failure.
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(processCtx), 15*time.Second)
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(processCtx)
 		defer cleanupCancel()
 		if stopErr := ptp.Stop(cleanupCtx); stopErr != nil {
 			startLog.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
@@ -516,11 +516,16 @@ func (r *ProcessExecutableRunner) StopPersistentProcess(ctx context.Context, exe
 		return fmt.Errorf("cannot stop persistent process run %s without process identity time", runID)
 	}
 
-	return r.stopProcessRunState(ctx, runID, &processRunState{
+	runState := &processRunState{
 		handle:  record.ProcessHandle(),
 		cmdInfo: exe.Spec.ExecutablePath,
 		adopted: true,
-	}, log)
+	}
+	stopErr := r.stopProcessRun(ctx, runID, runState, log)
+	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
+		return stopErr
+	}
+	return errors.Join(stopErr, r.completeStoppedRun(ctx, runID, runState, log))
 }
 
 func (r *ProcessExecutableRunner) watchAdoptedProcess(
@@ -570,27 +575,27 @@ func (r *ProcessExecutableRunner) CheckProcessRunning(handle process.ProcessHand
 }
 
 func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
-	runState, found := r.runningProcesses.LoadAndDelete(runID)
+	runState, found := r.runningProcesses.Load(runID)
 	if !found {
 		log.V(1).Info("Stop of a process run requested, but the run was already stopped", "RunID", runID)
 		return nil
 	}
 
-	stopErr := r.stopProcessRunState(ctx, runID, runState, log)
+	stopErr := r.stopProcessRun(ctx, runID, runState, log)
 	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
-		r.runningProcesses.Store(runID, runState)
+		return stopErr
 	}
-	return stopErr
+	if !r.runningProcesses.CompareAndDelete(runID, runState) {
+		return stopErr
+	}
+	return errors.Join(stopErr, r.completeStoppedRun(ctx, runID, runState, log))
 }
 
-func (r *ProcessExecutableRunner) stopProcessRunState(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
+func (r *ProcessExecutableRunner) stopProcessRun(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
 	stopLog := log.WithValues("RunID", runID, "Command", runState.cmdInfo)
 	stopLog.V(1).Info("Stopping run...")
 
-	// We want to make progress eventually, so we don't want to wait indefinitely for the process to stop.
-	const ProcessStopTimeout = 15 * time.Second
-
-	stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
+	stopCtx, stopCtxCancel := process.WithStopTimeout(ctx)
 	defer stopCtxCancel()
 	var stopErr error
 	if osutil.IsWindows() && !r.disableConsoleStop {
@@ -602,18 +607,22 @@ func (r *ProcessExecutableRunner) stopProcessRunState(ctx context.Context, runID
 		stopLog.Error(stopErr, "Failed to stop run; preserving identity for retry")
 		return stopErr
 	}
+
+	return stopErr
+}
+
+func (r *ProcessExecutableRunner) completeStoppedRun(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
 	if runState.cancelWatch != nil {
 		runState.cancelWatch()
 	}
 
-	stopErr = errors.Join(stopErr, closeRunFiles(ctx, runState))
-
-	if stopErr != nil {
-		stopLog.Error(stopErr, "Failed to stop run")
+	cleanupErr := closeRunFiles(ctx, runState)
+	if cleanupErr != nil {
+		log.Error(cleanupErr, "Failed to clean up stopped run", "RunID", runID, "Command", runState.cmdInfo)
 	} else if runState.adopted && runState.runChangeHandler != nil {
 		runState.runChangeHandler.OnRunCompleted(runID, apiv1.UnknownExitCode, nil)
 	}
-	return stopErr
+	return cleanupErr
 }
 
 func (r *ProcessExecutableRunner) ReleaseRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {

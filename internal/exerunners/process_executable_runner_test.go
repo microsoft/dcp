@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/internal/termpty"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -251,6 +253,71 @@ func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
 	require.Equal(t, int32(internal_testutil.KilledProcessExitCode), execution.ExitCode)
 }
 
+func TestStopRunDoesNotRestoreCompletedRun(t *testing.T) {
+	t.Parallel()
+
+	stopExecutor := &stopRunTestExecutor{
+		handle:         process.NewHandle(4242, time.Unix(1000, 0).UTC()),
+		stopErr:        process.ErrIncompleteProcessTree,
+		exitDuringStop: true,
+	}
+	runner, result, changeHandler := startStopRunTest(t, stopExecutor)
+
+	stopErr := runner.StopRun(context.Background(), result.RunID, logr.Discard())
+	require.ErrorIs(t, stopErr, process.ErrIncompleteProcessTree)
+
+	_, found := runner.runningProcesses.Load(result.RunID)
+	require.False(t, found)
+	select {
+	case completed := <-changeHandler.completedRuns:
+		require.Equal(t, result.RunID, completed.runID)
+	default:
+		require.Fail(t, "expected process completion notification")
+	}
+}
+
+func TestStopRunPreservesStateAfterStopFailure(t *testing.T) {
+	t.Parallel()
+
+	expectedErr := errors.New("stop failed")
+	stopExecutor := &stopRunTestExecutor{
+		handle:  process.NewHandle(4243, time.Unix(1001, 0).UTC()),
+		stopErr: expectedErr,
+	}
+	runner, result, _ := startStopRunTest(t, stopExecutor)
+
+	stopErr := runner.StopRun(context.Background(), result.RunID, logr.Discard())
+	require.ErrorIs(t, stopErr, expectedErr)
+
+	stored, found := runner.runningProcesses.Load(result.RunID)
+	require.True(t, found)
+	require.Equal(t, stopExecutor.handle, stored.handle)
+}
+
+func TestStopRunCleanupErrorDoesNotRestoreState(t *testing.T) {
+	t.Parallel()
+
+	cleanupErr := errors.New("cleanup failed")
+	stopExecutor := &stopRunTestExecutor{
+		handle: process.NewHandle(4244, time.Unix(1002, 0).UTC()),
+	}
+	runner := NewProcessExecutableRunner(stopExecutor)
+	runner.disableConsoleStop = true
+	runID := pidToRunID(stopExecutor.handle.Pid)
+	runner.runningProcesses.Store(runID, &processRunState{
+		handle:  stopExecutor.handle,
+		cmdInfo: "cleanup-error",
+		ptp: &termpty.PseudoTerminalProcess{
+			PTY: &stopRunErrorPTY{closeErr: cleanupErr},
+		},
+	})
+
+	stopErr := runner.StopRun(context.Background(), runID, logr.Discard())
+	require.ErrorIs(t, stopErr, cleanupErr)
+	_, found := runner.runningProcesses.Load(runID)
+	require.False(t, found)
+}
+
 func TestAdoptedProcessStartsLifecycleMonitor(t *testing.T) {
 	t.Parallel()
 
@@ -463,6 +530,100 @@ func removeFileIfExists(t *testing.T, path string) {
 	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 		require.NoError(t, removeErr)
 	}
+}
+
+// stopRunTestExecutor synchronously reports process exit before returning a configured stop error.
+// TestProcessExecutor cannot model this ordering because its exit callbacks are asynchronous and StopError returns before exit.
+type stopRunTestExecutor struct {
+	handle         process.ProcessHandle
+	handler        process.ProcessExitHandler
+	stopErr        error
+	exitDuringStop bool
+}
+
+func (executor *stopRunTestExecutor) StartProcess(
+	_ context.Context,
+	_ *exec.Cmd,
+	handler process.ProcessExitHandler,
+	_ process.ProcessCreationFlag,
+	_ process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	executor.handler = handler
+	return executor.handle, func() {}, nil
+}
+
+func (executor *stopRunTestExecutor) StopProcess(
+	_ context.Context,
+	handle process.ProcessHandle,
+	_ ...process.ProcessStopOption,
+) error {
+	if executor.exitDuringStop && executor.handler != nil {
+		executor.handler.OnProcessExited(handle.Pid, 0, nil)
+	}
+	return executor.stopErr
+}
+
+func (*stopRunTestExecutor) CheckProcessRunning(process.ProcessHandle) error {
+	return nil
+}
+
+func (executor *stopRunTestExecutor) FindProcessHandle(process.Pid_t) (process.ProcessHandle, error) {
+	return executor.handle, nil
+}
+
+func (executor *stopRunTestExecutor) StartAndForget(*exec.Cmd, process.ProcessCreationFlag) (process.ProcessHandle, error) {
+	return executor.handle, nil
+}
+
+func (*stopRunTestExecutor) Dispose() {}
+
+type stopRunErrorPTY struct {
+	closeErr error
+}
+
+func (*stopRunErrorPTY) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (*stopRunErrorPTY) Write(data []byte) (int, error) {
+	return len(data), nil
+}
+
+func (pty *stopRunErrorPTY) Close() error {
+	return pty.closeErr
+}
+
+func (*stopRunErrorPTY) Resize(uint16, uint16) error {
+	return nil
+}
+
+func startStopRunTest(
+	t *testing.T,
+	executor *stopRunTestExecutor,
+) (*ProcessExecutableRunner, *controllers.ExecutableStartResult, *recordingRunChangeHandler) {
+	t.Helper()
+
+	runner := NewProcessExecutableRunner(executor)
+	runner.disableConsoleStop = true
+	changeHandler := newRecordingRunChangeHandler()
+	result := runner.StartRun(
+		context.Background(),
+		&apiv1.Executable{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "stop-run-test",
+				UID:  types.UID(fmt.Sprintf("stop-run-test-%d", time.Now().UnixNano())),
+			},
+			Spec: apiv1.ExecutableSpec{ExecutablePath: "unused"},
+		},
+		changeHandler,
+		logr.Discard(),
+	)
+	t.Cleanup(func() {
+		_ = runner.ReleaseRun(context.Background(), result.RunID, logr.Discard())
+		removeFileIfExists(t, result.StdOutFile)
+		removeFileIfExists(t, result.StdErrFile)
+	})
+	return runner, result, changeHandler
 }
 
 type completedRunNotification struct {
