@@ -20,12 +20,14 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+const processInspectionAccess = windows.PROCESS_QUERY_LIMITED_INFORMATION | windows.SYNCHRONIZE
+
 func nativeProcessNotFound(err error) bool {
 	return errors.Is(err, windows.ERROR_INVALID_PARAMETER)
 }
 
 func readProcessInfo(pid Pid_t) (info processInfo, returnErr error) {
-	nativeHandle, openErr := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, uint32(pid))
+	nativeHandle, openErr := windows.OpenProcess(processInspectionAccess, false, uint32(pid))
 	if openErr != nil {
 		if errors.Is(openErr, windows.ERROR_INVALID_PARAMETER) {
 			return processInfo{}, &ErrProcessNotFound{Pid: pid, Inner: openErr}
