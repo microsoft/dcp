@@ -86,7 +86,8 @@ func TestForkProcessExitsWhenMonitoredParentExits(t *testing.T) {
 		_ = parentCmd.Wait()
 	})
 
-	parentHandle := process.ProcessHandleFromCmd(parentCmd)
+	parentHandle, parentHandleErr := process.ProcessHandleFromCmd(parentCmd)
+	require.NoError(t, parentHandleErr)
 	require.False(t, parentHandle.IdentityTime.IsZero(), "parent process start time should not be zero")
 
 	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
@@ -106,14 +107,17 @@ func TestForkProcessExitsWhenMonitoredParentExits(t *testing.T) {
 	require.NoError(t, dcpProcCmd.Start(), "dcp fork-process should start without error")
 
 	stdoutText, readErr := bufio.NewReader(stdoutPipe).ReadString('\n')
-	require.NoError(t, readErr, "dcp fork-process should print a child PID; stderr: %s", stderr.String())
+	require.NoError(t, readErr, "dcp fork-process should print a child PID")
 	childPid := parseForkedPid(t, stdoutText)
-	childIdentityTime := process.ProcessIdentityTime(childPid)
+	childIdentityTime, childIdentityErr := process.ProcessIdentityTime(childPid)
+	require.NoError(t, childIdentityErr)
 	require.False(t, childIdentityTime.IsZero(), "forked process %d should be running", childPid)
 
 	cleanupExecutor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
 	t.Cleanup(func() {
-		_ = cleanupExecutor.StopProcess(process.NewHandle(childPid, childIdentityTime))
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(testCtx)
+		defer cleanupCancel()
+		_ = cleanupExecutor.StopProcess(cleanupCtx, process.NewHandle(childPid, childIdentityTime))
 		cleanupExecutor.Dispose()
 	})
 
@@ -146,11 +150,15 @@ func startForkedDelay(t *testing.T, testCtx context.Context) process.ProcessHand
 	var identityTime time.Time
 	cleanupExecutor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
 	t.Cleanup(func() {
-		_ = cleanupExecutor.StopProcess(process.NewHandle(pid, identityTime))
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(testCtx)
+		defer cleanupCancel()
+		_ = cleanupExecutor.StopProcess(cleanupCtx, process.NewHandle(pid, identityTime))
 		cleanupExecutor.Dispose()
 	})
 
-	identityTime = process.ProcessIdentityTime(pid)
+	var identityErr error
+	identityTime, identityErr = process.ProcessIdentityTime(pid)
+	require.NoError(t, identityErr)
 	require.False(t, identityTime.IsZero(), "forked process %d should still be running", pid)
 
 	return process.NewHandle(pid, identityTime)
@@ -160,7 +168,8 @@ func forkProcessArgsForCurrentProcess(t *testing.T, childArgs ...string) []strin
 	t.Helper()
 
 	currentPid := process.Pid_t(os.Getpid())
-	currentIdentityTime := process.ProcessIdentityTime(currentPid)
+	currentIdentityTime, identityErr := process.ProcessIdentityTime(currentPid)
+	require.NoError(t, identityErr)
 	require.False(t, currentIdentityTime.IsZero(), "current process start time should not be zero")
 
 	args := []string{

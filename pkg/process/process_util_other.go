@@ -11,16 +11,10 @@ import (
 	"time"
 
 	"github.com/microsoft/dcp/pkg/osutil"
-	ps "github.com/shirou/gopsutil/v4/process"
 )
 
-func processIdentityTime(proc *ps.Process) time.Time {
-	createTimestamp, err := proc.CreateTime()
-	if err != nil {
-		return time.Time{}
-	}
-
-	return time.UnixMilli(createTimestamp)
+func processDisplayTime(info processInfo) (time.Time, error) {
+	return info.handle.IdentityTime, nil
 }
 
 func formatIdentityTime(identityTime time.Time) string {

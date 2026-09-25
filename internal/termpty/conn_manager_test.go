@@ -183,7 +183,10 @@ func TestNewConnManager_FailsWhenSocketPathInUse(t *testing.T) {
 
 	first, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
 	require.NoError(t, err)
-	t.Cleanup(func() { <-first.Done() })
+	t.Cleanup(func() {
+		first.Shutdown()
+		<-first.Done()
+	})
 
 	second, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
 	require.Error(t, err, "expected error creating second manager on same socket")

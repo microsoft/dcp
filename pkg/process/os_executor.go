@@ -28,11 +28,6 @@ const (
 	waitReasonNone       waitReason = 0x0
 	waitReasonMonitoring waitReason = 0x1
 	waitReasonStopping   waitReason = 0x2
-
-	// Timeout for getting a confirmation that the child process has exited (return of a wait() call).
-	// Must be greater that 2 * signalAndWaitTimeout, because in worst case we might send up to two signals
-	// and then time out checking if the process exited.
-	waitForProcessExitTimeout = 15 * time.Second
 )
 
 var (
@@ -45,6 +40,29 @@ type waitState struct {
 	waitErr     error         // The result of the process wait. Not valid until waitEndedCh is closed.
 	waitEnded   time.Time     // The time when the wait function ended. Zero if the wait is still in progress.
 	reason      waitReason    // The reason why are waiting on the process
+	waitStarted bool
+}
+
+func (e *OSExecutor) beginProcessStart(parent context.Context) (context.Context, func(), error) {
+	e.acquireLock()
+	if e.disposed {
+		e.releaseLock()
+		return nil, nil, ErrDisposed
+	}
+	e.startsInFlight.Add(1)
+	startLifetimeCtx := e.startLifetimeCtx
+	e.releaseLock()
+
+	startCtx, cancelStart := context.WithCancelCause(parent)
+	stopLifetimeCancellation := context.AfterFunc(startLifetimeCtx, func() {
+		cancelStart(context.Cause(startLifetimeCtx))
+	})
+	finishStart := func() {
+		stopLifetimeCancellation()
+		cancelStart(nil)
+		e.startsInFlight.Done()
+	}
+	return startCtx, finishStart, nil
 }
 
 func (e *OSExecutor) StartProcess(
@@ -54,14 +72,13 @@ func (e *OSExecutor) StartProcess(
 	flags ProcessCreationFlag,
 	sysCreateProcess SysCreateProcessFunc,
 ) (ProcessHandle, func(), error) {
-	e.acquireLock()
-	if e.disposed {
-		e.releaseLock()
-		return ProcessHandle{Pid: UnknownPID}, nil, ErrDisposed
+	startCtx, finishStart, admissionErr := e.beginProcessStart(ctx)
+	if admissionErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, nil, admissionErr
 	}
-	e.releaseLock()
+	defer finishStart()
 
-	handle, waitable, startProcessErr := e.startProcess(cmd, flags, sysCreateProcess)
+	handle, waitable, startProcessErr := e.startProcess(startCtx, cmd, flags, sysCreateProcess)
 	if startProcessErr != nil {
 		return ProcessHandle{Pid: UnknownPID}, nil, startProcessErr
 	}
@@ -85,31 +102,31 @@ func (e *OSExecutor) StartProcess(
 			}
 
 		case <-ctx.Done():
-			_, shouldStopProcess := e.tryStartWaiting(handle, waitable, waitReasonStopping)
-			var stopProcessErr error = nil
-
-			if shouldStopProcess {
-				// CONSIDER: having an option to specify whether to shut down the process when the context expires.
-				log := e.log.WithValues(
-					"PID", pid,
-					"Command", cmd.Path,
-					"Args", cmd.Args[1:],
-				)
-				log.Info("Context expired, stopping process...")
-				stopProcessErr = e.stopProcessInternal(handle, optIsResponsibleForStopping)
-				if stopProcessErr != nil {
-					log.Error(stopProcessErr, "Could not stop process upon context expiration")
-					if handler != nil {
-						// Let the caller know that the process did not stop upon context expiration
-						handler.OnProcessExited(pid, UnknownExitCode, errors.Join(stopProcessErr, ctx.Err()))
-					}
-
-					// There is no point waiting for the result if the process could not be stopped and we reported the error.
-					break
+			cleanupCtx, cleanupCancel := WithDetachedStopTimeout(ctx)
+			defer cleanupCancel()
+			_, _ = e.tryStartWaiting(handle, waitable, waitReasonMonitoring)
+			cleanupLog := e.log.WithValues("PID", pid, "Command", cmd.Path, "Args", cmd.Args[1:])
+			cleanupLog.Info("Context expired, stopping process...")
+			stopProcessErr := e.stopProcessInternal(cleanupCtx, handle, optNone)
+			if IsProcessGoneErr(stopProcessErr) {
+				stopProcessErr = nil
+			}
+			if stopProcessErr != nil {
+				cleanupLog.Error(stopProcessErr, "Could not stop process upon context expiration")
+				if handler != nil {
+					handler.OnProcessExited(pid, UnknownExitCode, errors.Join(stopProcessErr, ctx.Err()))
 				}
+				break
 			}
 
-			<-ws.waitEndedCh
+			select {
+			case <-ws.waitEndedCh:
+			case <-cleanupCtx.Done():
+				if handler != nil {
+					handler.OnProcessExited(pid, UnknownExitCode, cleanupCtx.Err())
+				}
+				return
+			}
 
 			if handler != nil {
 				exitCode, execError := getProcessExecResult(ws.waitErr, ws.waitable, cmd)
@@ -126,14 +143,13 @@ func (e *OSExecutor) StartProcess(
 }
 
 func (e *OSExecutor) StartAndForget(cmd *exec.Cmd, flags ProcessCreationFlag) (ProcessHandle, error) {
-	e.acquireLock()
-	if e.disposed {
-		e.releaseLock()
-		return ProcessHandle{Pid: UnknownPID}, ErrDisposed
+	startCtx, finishStart, admissionErr := e.beginProcessStart(context.Background())
+	if admissionErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, admissionErr
 	}
-	e.releaseLock()
+	defer finishStart()
 
-	handle, waitable, startProcessErr := e.startProcess(cmd, flags, nil)
+	handle, waitable, startProcessErr := e.startProcess(startCtx, cmd, flags, nil)
 	if startProcessErr != nil {
 		return ProcessHandle{Pid: UnknownPID}, startProcessErr
 	}
@@ -149,7 +165,7 @@ func (e *OSExecutor) StartAndForget(cmd *exec.Cmd, flags ProcessCreationFlag) (P
 	return handle, nil
 }
 
-func (e *OSExecutor) StopProcess(handle ProcessHandle, options ...ProcessStopOption) error {
+func (e *OSExecutor) StopProcess(ctx context.Context, handle ProcessHandle, options ...ProcessStopOption) error {
 	e.acquireLock()
 	if e.disposed {
 		e.releaseLock()
@@ -158,40 +174,51 @@ func (e *OSExecutor) StopProcess(handle ProcessHandle, options ...ProcessStopOpt
 	e.releaseLock()
 
 	stopOptions := newProcessStopOptions(options)
-	return e.stopProcessInternal(handle, stopOptions.opts)
+	return e.stopProcessInternal(ctx, handle, stopOptions.opts)
 }
 
 // Returns the process handle, waitable process, and error.
 func (e *OSExecutor) startProcess(
+	ctx context.Context,
 	cmd *exec.Cmd,
 	flags ProcessCreationFlag,
 	sysCreateProcess SysCreateProcessFunc,
 ) (ProcessHandle, Waitable, error) {
 	e.prepareProcessStart(cmd, flags)
+	if cancellationErr := context.Cause(ctx); cancellationErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, nil, cancellationErr
+	}
 
-	var pid Pid_t
 	var handle ProcessHandle
 	var waitable Waitable
 
 	if sysCreateProcess != nil {
 		var sysCreateErr error
-		pid, waitable, sysCreateErr = sysCreateProcess(cmd)
+		handle, waitable, sysCreateErr = sysCreateProcess(ctx, cmd)
 		if sysCreateErr != nil {
-			return ProcessHandle{Pid: UnknownPID}, nil, sysCreateErr
+			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(context.Cause(ctx), sysCreateErr)
 		}
 		if waitable == nil {
-			return ProcessHandle{Pid: UnknownPID}, nil, fmt.Errorf("sysCreateProcess returned nil waitable")
+			return ProcessHandle{Pid: UnknownPID}, nil, fmt.Errorf("%w: sysCreateProcess returned nil waitable", ErrProcessStartUncertain)
 		}
-		handle = NewHandle(pid, ProcessIdentityTime(pid))
+		if handleErr := handle.Validate(); handleErr != nil {
+			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(
+				fmt.Errorf("sysCreateProcess returned an incomplete identity: %w", handleErr),
+				abortStartedProcess(waitable))
+		}
 	} else {
-		if err := cmd.Start(); err != nil {
-			return ProcessHandle{Pid: UnknownPID}, nil, err
+		if cmdStartErr := cmd.Start(); cmdStartErr != nil {
+			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(context.Cause(ctx), cmdStartErr)
 		}
-		handle = ProcessHandleFromCmd(cmd)
-		pid = handle.Pid
 		waitable = &waitableCmd{cmd, flags}
+		var handleErr error
+		handle, handleErr = ProcessHandleFromCmd(cmd)
+		if handleErr != nil {
+			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(handleErr, abortStartedProcess(waitable))
+		}
 	}
 
+	pid := handle.Pid
 	startLog := e.log.WithValues(
 		"PID", pid,
 		"Command", cmd.Path,
@@ -199,17 +226,32 @@ func (e *OSExecutor) startProcess(
 		"CreationFlags", flags,
 	)
 
+	abortForCancellation := func(cancellationErr error) (ProcessHandle, Waitable, error) {
+		abortErr := abortStartedProcess(waitable)
+		if abortErr != nil {
+			startLog.Error(abortErr, "Could not roll back process after start cancellation")
+		}
+		return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(cancellationErr, abortErr)
+	}
+
+	if cancellationErr := context.Cause(ctx); cancellationErr != nil {
+		return abortForCancellation(cancellationErr)
+	}
+
 	startCompletionErr := e.completeProcessStart(handle, flags)
 	if startCompletionErr != nil {
 		startLog.Error(startCompletionErr, "Could not complete process start")
 
-		// If we could not complete the process start, we need to stop the process.
-		// Do not try graceful stop (no optTrySignal), just kill it immediately.
-		if stopErr := e.stopProcessInternal(handle, optIsResponsibleForStopping); stopErr != nil {
-			startLog.Error(stopErr, "Could not stop process after failed start")
+		abortErr := abortStartedProcess(waitable)
+		if abortErr != nil {
+			startLog.Error(abortErr, "Could not roll back process after failed start")
 		}
+		return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(
+			fmt.Errorf("could not complete process start: %w", startCompletionErr), abortErr)
+	}
 
-		return ProcessHandle{Pid: UnknownPID}, nil, fmt.Errorf("could not complete process start: %w", startCompletionErr)
+	if cancellationErr := context.Cause(ctx); cancellationErr != nil {
+		return abortForCancellation(cancellationErr)
 	}
 
 	startLog.V(1).Info("Process started successfully", "PID", pid)
@@ -238,16 +280,15 @@ func (e *OSExecutor) tryStartWaiting(handle ProcessHandle, waitable Waitable, re
 
 		callerShouldStopProcess = (reason&waitReasonStopping) != 0 && (ws.reason&waitReasonStopping) == 0
 
-		mustStartWaiting := ws.reason == waitReasonNone && reason != waitReasonNone
+		if ws.waitable == nil {
+			ws.waitable = waitable
+		}
+		mustStartWaiting := !ws.waitStarted && reason != waitReasonNone
 		ws.reason |= reason
 
 		if mustStartWaiting {
-			// Prefer the waitable associated with process start, if available.
-			effectiveWaitable := ws.waitable
-			if effectiveWaitable == nil {
-				effectiveWaitable = waitable
-			}
-			go e.doWait(ws, effectiveWaitable, handle.Pid)
+			ws.waitStarted = true
+			go e.doWait(ws, ws.waitable, handle.Pid)
 		}
 	} else {
 		callerShouldStopProcess = (reason & waitReasonStopping) != 0
@@ -255,6 +296,7 @@ func (e *OSExecutor) tryStartWaiting(handle ProcessHandle, waitable Waitable, re
 			waitable:    waitable,
 			waitEndedCh: make(chan struct{}),
 			reason:      reason,
+			waitStarted: reason != waitReasonNone,
 		}
 		e.procsWaiting[handle] = ws
 		if reason != waitReasonNone {
@@ -263,6 +305,12 @@ func (e *OSExecutor) tryStartWaiting(handle ProcessHandle, waitable Waitable, re
 	}
 
 	return ws, callerShouldStopProcess
+}
+
+func (e *OSExecutor) finishStopAttempt(ws *waitState) {
+	e.acquireLock()
+	defer e.releaseLock()
+	ws.reason &^= waitReasonStopping
 }
 
 func (e *OSExecutor) doWait(ws *waitState, waitable Waitable, pid Pid_t) {
@@ -317,11 +365,21 @@ func (e *OSExecutor) releaseLock() {
 	e.lock.Unlock()
 }
 
-func (e *OSExecutor) stopProcessInternal(handle ProcessHandle, opts processStoppingOpts) error {
+func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHandle, opts processStoppingOpts) error {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	if handleErr := handle.Validate(); handleErr != nil {
+		return handleErr
+	}
 	procTreeLog := e.log.WithValues("Root", handle.Pid)
+	rootWasVerified := false
 
 	stopRootProcess := func() (<-chan struct{}, error, error) {
-		procEndedCh, stopErr := e.stopSingleProcess(handle, opts|optNotFoundIsError|optTrySignal|optWaitForStdio)
+		procEndedCh, stopErr := e.stopSingleProcess(ctx, handle, opts|optNotFoundIsError|optTrySignal|optWaitForStdio)
+		if rootWasVerified && IsProcessGoneErr(stopErr) {
+			return makeClosedChan(), nil, nil
+		}
 		if stopErr != nil && !errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
 			// If the root process cannot be stopped (and it is not just a timeout error), don't bother with the rest of the tree.
 			procTreeLog.Error(stopErr, "Could not stop root process")
@@ -340,11 +398,13 @@ func (e *OSExecutor) stopProcessInternal(handle ProcessHandle, opts processStopp
 		}
 
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-procEndedCh:
 			procTreeLog.Info("Root process has stopped")
 			return nil
 
-		case <-time.After(waitForProcessExitTimeout):
+		case <-time.After(processStopTimeout):
 			procTreeLog.Error(ErrTimedOutWaitingForProcessToStop, "Did not get confirmation that the root process has stopped before timeout elapsed")
 			return ErrTimedOutWaitingForProcessToStop
 		}
@@ -360,22 +420,27 @@ func (e *OSExecutor) stopProcessInternal(handle ProcessHandle, opts processStopp
 		return waitForRootProcessToEnd(procEndedCh, stopErr)
 	}
 
-	tree, treeErr := GetProcessTree(handle)
-	if treeErr != nil {
+	tree, treeErr := GetProcessTree(ctx, handle)
+	if treeErr != nil && !errors.Is(treeErr, ErrIncompleteProcessTree) {
 		return fmt.Errorf("could not get process tree for process %d: %w", handle.Pid, treeErr)
 	}
+	if len(tree) == 0 {
+		return fmt.Errorf("could not get a verified root for process %d: %w", handle.Pid, treeErr)
+	}
+	handle = tree[0]
+	rootWasVerified = true
 
 	procTreeLog.V(1).Info("Stopping process tree...", "Root", handle.Pid, "Tree", getIDs(tree))
 
 	procEndedCh, stopErr, rootStopErr := stopRootProcess()
 	if rootStopErr != nil {
-		return rootStopErr
+		return errors.Join(treeErr, rootStopErr)
 	}
 
 	tree = tree[1:] // We have processed the root
 	if len(tree) == 0 {
 		procTreeLog.V(1).Info("The root process has no children")
-		return waitForRootProcessToEnd(procEndedCh, stopErr)
+		return errors.Join(treeErr, waitForRootProcessToEnd(procEndedCh, stopErr))
 	}
 
 	procTreeLog.V(1).Info("Make sure children of the root processes are gone...")
@@ -384,10 +449,10 @@ func (e *OSExecutor) stopProcessInternal(handle ProcessHandle, opts processStopp
 		const childStopTimeout = 2 * time.Second
 		childLog := procTreeLog.WithValues("Child", p.Pid)
 
-		retryErr := resiliency.RetryExponentialWithTimeout(context.Background(), childStopTimeout, func() error {
+		retryErr := resiliency.RetryExponentialWithTimeout(ctx, childStopTimeout, func() error {
 			childLog.V(1).Info("Stopping child process...")
 
-			_, childStopErr := e.stopSingleProcess(p, opts&^optNotFoundIsError)
+			_, childStopErr := e.stopSingleProcess(ctx, p, opts&^optNotFoundIsError)
 			if childStopErr != nil {
 				childLog.V(1).Info("Error stopping child process", "Error", childStopErr.Error())
 			} else {
@@ -421,7 +486,7 @@ func (e *OSExecutor) stopProcessInternal(handle ProcessHandle, opts processStopp
 	// So that is why the following wait operation employs a timeout.
 	rootWaitErr := waitForRootProcessToEnd(procEndedCh, stopErr)
 
-	return errors.Join(append([]error{rootWaitErr}, childStoppingErrors...)...)
+	return errors.Join(append([]error{treeErr, rootWaitErr}, childStoppingErrors...)...)
 }
 
 var maxConcurrentProcessStops = runtime.NumCPU() * 5
@@ -434,12 +499,20 @@ func (e *OSExecutor) Dispose() {
 		return
 	}
 	e.disposed = true
+	e.releaseLock()
+
+	e.startLifetimeCtxCancel(ErrDisposed)
+	e.startsInFlight.Wait()
+	defer e.lifetimeCtxCancel()
+
 	// Make a shallow copy of the waiting processes map so we can safely iterate over it while stopping processes.
+	e.acquireLock()
 	currentProcs := stdlib_maps.Clone(e.procsWaiting)
 	e.releaseLock()
 
 	if len(currentProcs) == 0 {
 		e.log.V(1).Info("No processes to stop during executor disposal")
+		e.completeDispose()
 		return
 	} else {
 		e.log.V(1).Info("Stopping processes during executor disposal...", "Count", len(currentProcs))
@@ -470,7 +543,9 @@ func (e *OSExecutor) Dispose() {
 			if flags&CreationFlagEnsureKillOnDispose == CreationFlagEnsureKillOnDispose {
 				// Best effort to stop the process.
 				e.log.V(1).Info("Stopping process during executor disposal...", "PID", handle.Pid, "Command", waitable.Info())
-				stopErr := e.stopProcessInternal(handle, optIsResponsibleForStopping|optTrySignal)
+				cleanupCtx, cleanupCancel := WithStopTimeout(context.Background())
+				defer cleanupCancel()
+				stopErr := e.stopProcessInternal(cleanupCtx, handle, optIsResponsibleForStopping|optTrySignal)
 				if stopErr != nil {
 					e.log.Error(stopErr, "Could not stop process during executor disposal", "PID", handle.Pid, "Command", waitable.Info())
 				}
@@ -499,20 +574,7 @@ func (e *OSExecutor) CheckProcessRunning(handle ProcessHandle) error {
 }
 
 func (e *OSExecutor) FindProcessHandle(pid Pid_t) (ProcessHandle, error) {
-	if identityTime := ProcessIdentityTime(pid); !identityTime.IsZero() {
-		return NewHandle(pid, identityTime), nil
-	}
-
-	// ProcessIdentityTime() does not distinguish a missing process from a process whose start time
-	// could not be read, so confirm the process exists before reporting a handle with no identity time.
-	proc, findErr := FindProcess(NewHandle(pid, time.Time{}))
-	if findErr != nil {
-		return ProcessHandle{Pid: UnknownPID}, findErr
-	}
-	if releaseErr := proc.Release(); releaseErr != nil {
-		e.log.Error(releaseErr, "Failed to release process handle", "PID", pid)
-	}
-	return NewHandle(pid, time.Time{}), nil
+	return FindProcessHandle(pid)
 }
 
 type processStoppingOpts uint16

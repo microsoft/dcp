@@ -110,6 +110,8 @@ type ContainerNetworkTunnelProxyReconcilerConfig struct {
 	// Specifies how many attempts to prepare a tunnel will be made before giving up and marking the tunnel as failed.
 	// Defaults to defaultMaxTunnelPreparationAttempts, but much lower value is used for tests to simulate failures quickly.
 	MaxTunnelPreparationAttempts uint32
+
+	readServerProxyConfig func(context.Context, string) (dcptun.TunnelProxyConfig, error)
 }
 
 type ContainerNetworkTunnelProxyReconciler struct {
@@ -144,6 +146,9 @@ func NewContainerNetworkTunnelProxyReconciler(
 	}
 	if config.MaxTunnelPreparationAttempts == 0 {
 		config.MaxTunnelPreparationAttempts = defaultMaxTunnelPreparationAttempts
+	}
+	if config.readServerProxyConfig == nil {
+		config.readServerProxyConfig = readServerProxyConfig
 	}
 
 	base := NewReconcilerBase[apiv1.ContainerNetworkTunnelProxy](client, noCacheClient, log, lifetimeCtx)
@@ -1534,15 +1539,24 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		return false
 	}
 	startWaitForExit()
+	pointers.SetValue(&pd.ServerProxyProcessID, int64(handle.Pid))
+	pd.ServerProxyStartupTimestamp = metav1.NewMicroTime(handle.IdentityTime)
 
 	// Wait until the first JSON line is printed to stdout indicating server control address/port
 
-	tc, tcErr := readServerProxyConfig(ctx, stdoutFile.Name())
+	tc, tcErr := r.config.readServerProxyConfig(ctx, stdoutFile.Name())
 	if tcErr != nil {
 		log.Error(tcErr, "Failed to read connection information from the server proxy")
-		stopProcessErr := r.config.ProcessExecutor.StopProcess(handle)
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
+		defer cleanupCancel()
+		stopProcessErr := r.stopServerProxyProcess(cleanupCtx, pd)
 		if stopProcessErr != nil {
 			log.Error(stopProcessErr, "Failed to stop server proxy process after being unable to read its configuration")
+			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+			pd.Message = fmt.Sprintf(
+				"Failed to read server proxy configuration and could not confirm process cleanup: %v",
+				errors.Join(tcErr, stopProcessErr),
+			)
 		}
 		startFailed = true
 		return false
@@ -1550,9 +1564,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 
 	dcpproc.RunProcessWatcher(r.config.ProcessExecutor, handle, log)
 
-	pointers.SetValue(&pd.ServerProxyProcessID, int64(handle.Pid))
 	pd.ServerProxyControlPort = tc.ServerControlPort
-	pd.ServerProxyStartupTimestamp = metav1.NewMicroTime(handle.IdentityTime)
 	pd.ServerProxyStdOutFile = stdoutFile.Name()
 	pd.ServerProxyStdErrFile = stderrFile.Name()
 
@@ -1588,6 +1600,28 @@ func readServerProxyConfig(ctx context.Context, path string) (dcptun.TunnelProxy
 	})
 
 	return config, err
+}
+
+func (r *ContainerNetworkTunnelProxyReconciler) stopServerProxyProcess(
+	ctx context.Context,
+	pd *containerNetworkTunnelProxyData,
+) error {
+	if pd.ServerProxyProcessID == nil || *pd.ServerProxyProcessID <= 0 {
+		return nil
+	}
+
+	handle := process.NewHandle(
+		process.Pid_t(*pd.ServerProxyProcessID),
+		pd.ServerProxyStartupTimestamp.Time,
+	)
+	stopErr := r.config.ProcessExecutor.StopProcess(ctx, handle)
+	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
+		return stopErr
+	}
+
+	pd.ServerProxyProcessID = nil
+	pd.ServerProxyStartupTimestamp = metav1.MicroTime{}
+	return nil
 }
 
 // Returns a function that cleans up the resources associated with the proxy pair (client container and server process).
@@ -1640,22 +1674,17 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 	}
 
 	if pd.ServerProxyProcessID != nil && *pd.ServerProxyProcessID > 0 {
-		pid := process.Pid_t(*pd.ServerProxyProcessID)
-		startTime := pd.ServerProxyStartupTimestamp.Time
-
 		log.V(1).Info("Stopping server proxy process...")
 
 		// The process may have already exited because the client container has been stopped.
 
-		stopErr := r.config.ProcessExecutor.StopProcess(process.NewHandle(pid, startTime))
-		if stopErr != nil && !errors.Is(stopErr, process.ErrorProcessNotFound) {
+		stopErr := r.stopServerProxyProcess(ctx, pd)
+		if stopErr != nil {
 			log.Error(stopErr, "Failed to stop server proxy process")
 			pd.cleanupScheduled = false
 			cleanupCompleted = false
 		} else {
 			log.V(1).Info("Successfully stopped server proxy process")
-			pd.ServerProxyProcessID = nil
-			pd.ServerProxyStartupTimestamp = metav1.MicroTime{} // Zero value
 		}
 	}
 

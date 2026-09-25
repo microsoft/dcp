@@ -209,11 +209,20 @@ func (e *TestProcessExecutor) maybeAutoExecute(pe *ProcessExecution) error {
 }
 
 // Called by the controller (via Executor interface)
-func (e *TestProcessExecutor) StopProcess(handle process.ProcessHandle, _ ...process.ProcessStopOption) error {
+func (e *TestProcessExecutor) StopProcess(ctx context.Context, handle process.ProcessHandle, _ ...process.ProcessStopOption) error {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	if handleErr := handle.Validate(); handleErr != nil {
+		return handleErr
+	}
 	return e.stopProcessImpl(handle, KilledProcessExitCode)
 }
 
 func (e *TestProcessExecutor) CheckProcessRunning(handle process.ProcessHandle) error {
+	if handleErr := handle.Validate(); handleErr != nil {
+		return handleErr
+	}
 	e.m.RLock()
 	defer e.m.RUnlock()
 
@@ -223,7 +232,7 @@ func (e *TestProcessExecutor) CheckProcessRunning(handle process.ProcessHandle) 
 	}
 
 	execution := e.Executions[i]
-	if !handle.IdentityTime.IsZero() && !osutil.Within(handle.IdentityTime, execution.StartedAt, process.ProcessIdentityTimeMaximumDifference) {
+	if !osutil.Within(handle.IdentityTime, execution.StartedAt, process.ProcessIdentityTimeMaximumDifference) {
 		return fmt.Errorf("%w for PID %d: expected %s, actual %s",
 			process.ErrProcessIdentityMismatch,
 			handle.Pid,
@@ -259,7 +268,9 @@ func (e *TestProcessExecutor) FindProcessHandle(pid process.Pid_t) (process.Proc
 
 // Called by tests to simulate a process exit with specific exit code.
 func (e *TestProcessExecutor) SimulateProcessExit(t *testing.T, pid process.Pid_t, exitCode int32) {
-	err := e.stopProcessImpl(process.NewHandle(pid, time.Time{}), exitCode)
+	handle, handleErr := e.FindProcessHandle(pid)
+	require.NoError(t, handleErr)
+	err := e.stopProcessImpl(handle, exitCode)
 	if err != nil {
 		require.Failf(t, "invalid PID (test issue)", err.Error())
 	}

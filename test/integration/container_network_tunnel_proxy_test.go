@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	std_slices "slices"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -263,6 +264,10 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateBuildingImage && tp.Status.Message != "", nil
 	})
 	require.Contains(t, waitingTunnelProxy.Status.Message, "Waiting for")
+	waitBuildErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return testContainerOrchestrator.BuildImageCallCount(imagePlan.Image) >= 1, nil
+	})
+	require.NoError(t, waitBuildErr)
 	require.Equal(t, 1, testContainerOrchestrator.BuildImageCallCount(imagePlan.Image))
 	releaseImageBuild()
 
@@ -397,11 +402,27 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 
 // Verifies that ContainerNetworkTunnelProxy proxy pair cleanup works correctly during object deletion.
 func TestTunnelProxyCleanup(t *testing.T) {
+	tests := []struct {
+		name               string
+		testName           string
+		serverExitedOnStop bool
+	}{
+		{"running server proxy", "test-tunnel-proxy-cleanup", false},
+		{"server proxy already exited", "test-tunnel-proxy-cleanup-exited-server", true},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			testTunnelProxyCleanup(t, testCase.testName, testCase.serverExitedOnStop)
+		})
+	}
+}
+
+func testTunnelProxyCleanup(t *testing.T, testName string, serverExitedOnStop bool) {
+	t.Helper()
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
-	const testName = "test-tunnel-proxy-cleanup"
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
@@ -419,7 +440,16 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	require.NoError(t, err, "Could not create a ContainerNetwork object")
 
 	const serverControlPort int32 = 34567
-	simulateServerProxy(t, serverControlPort, teInfo.TestProcessExecutor)
+	var stopError func(*internal_testutil.ProcessExecution) error
+	if serverExitedOnStop {
+		stopError = func(execution *internal_testutil.ProcessExecution) error {
+			execution.Signal <- syscall.SIGTERM
+			execution.ExitCode = 0
+			execution.EndedAt = time.Now()
+			return fmt.Errorf("server proxy already exited: %w", &process.ErrProcessNotFound{Pid: execution.PID})
+		}
+	}
+	simulateServerProxyWithStopError(t, serverControlPort, teInfo.TestProcessExecutor, stopError)
 
 	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1598,6 +1628,15 @@ func simulateServerProxy(
 	serverControlPort int32,
 	tpe *internal_testutil.TestProcessExecutor,
 ) {
+	simulateServerProxyWithStopError(t, serverControlPort, tpe, nil)
+}
+
+func simulateServerProxyWithStopError(
+	t *testing.T,
+	serverControlPort int32,
+	tpe *internal_testutil.TestProcessExecutor,
+	stopError func(*internal_testutil.ProcessExecution) error,
+) {
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
 	require.NoError(t, dcpPathErr, "Could not get DCP executable path")
 
@@ -1617,6 +1656,7 @@ func simulateServerProxy(
 			<-pe.Signal
 			return 0
 		},
+		StopError: stopError,
 	})
 }
 

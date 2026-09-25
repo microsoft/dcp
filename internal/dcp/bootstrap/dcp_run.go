@@ -257,12 +257,11 @@ func newRunControllersService(appRootDir string, invocationFlags []string, log l
 	// Add monitor PID to the command args
 	allArgs = append(allArgs, "--monitor", strconv.Itoa(monitorPid))
 
-	// Add monitor start time if available
-	rootPid := process.Uint32_ToPidT(uint32(monitorPid))
-	identityTime := process.ProcessIdentityTime(rootPid)
-	if !identityTime.IsZero() {
-		allArgs = append(allArgs, "--monitor-identity-time", identityTime.Format(osutil.RFC3339MiliTimestampFormat))
+	monitorHandle, identityErr := process.This()
+	if identityErr != nil {
+		return nil, fmt.Errorf("could not identify controller host parent: %w", identityErr)
 	}
+	allArgs = append(allArgs, "--monitor-identity-time", monitorHandle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat))
 
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
 	if dcpPathErr != nil {

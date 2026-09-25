@@ -237,7 +237,10 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		runChangeHandler: runChangeHandler,
 	})
 
-	displayStartTime := process.StartTimeForProcess(handle.Pid)
+	displayStartTime, displayErr := process.StartTimeForProcess(handle)
+	if displayErr != nil {
+		startLog.Error(displayErr, "Could not read process display start time", "PID", handle.Pid)
+	}
 	result.RunID = pidToRunID(handle.Pid)
 	pointers.SetValue(&result.Pid, int64(handle.Pid))
 	result.ExeState = apiv1.ExecutableStateRunning
@@ -317,9 +320,17 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	attachErr := connMgr.AttachProcess(ptp)
 	if attachErr != nil {
 		startLog.Error(attachErr, "Failed to attach the process to the terminal connection manager; stopping process")
-		// Best-effort: stop the just-started process and close its PTY before reporting failure.
-		if stopErr := ptp.Stop(); stopErr != nil {
+		startupErr := attachErr
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(processCtx)
+		defer cleanupCancel()
+		if stopErr := ptp.Stop(cleanupCtx); stopErr != nil {
 			startLog.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
+			if !process.IsProcessGoneErr(stopErr) {
+				startupErr = errors.Join(
+					startupErr,
+					fmt.Errorf("%w: could not confirm terminal process cleanup: %w", process.ErrProcessStartUncertain, stopErr),
+				)
+			}
 		}
 		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			startLog.Error(closeErr, "Failed to close PTY after terminal connection manager creation failure")
@@ -327,7 +338,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 		connMgr.Shutdown()
 		result.CompletionTimestamp = metav1.NowMicro()
 		result.ExeState = apiv1.ExecutableStateFailedToStart
-		result.StartupError = attachErr
+		result.StartupError = startupErr
 		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 		return result
 	}
@@ -348,7 +359,10 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	// resources, and notify the run-change handler.
 	go r.watchTerminalRunExit(processCtx, runID, ptp, runChangeHandler, startLog)
 
-	displayStartTime := process.StartTimeForProcess(handle.Pid)
+	displayStartTime, displayErr := process.StartTimeForProcess(handle)
+	if displayErr != nil {
+		startLog.Error(displayErr, "Could not read terminal process display start time", "PID", handle.Pid)
+	}
 	result.RunID = runID
 	pointers.SetValue(&result.Pid, int64(handle.Pid))
 	result.ExeState = apiv1.ExecutableStateRunning
@@ -508,11 +522,16 @@ func (r *ProcessExecutableRunner) StopPersistentProcess(ctx context.Context, exe
 		return fmt.Errorf("cannot stop persistent process run %s without process identity time", runID)
 	}
 
-	return r.stopProcessRunState(ctx, runID, &processRunState{
+	runState := &processRunState{
 		handle:  record.ProcessHandle(),
 		cmdInfo: exe.Spec.ExecutablePath,
 		adopted: true,
-	}, log)
+	}
+	stopErr := r.stopProcessRun(ctx, runID, runState, log)
+	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
+		return stopErr
+	}
+	return errors.Join(stopErr, r.completeStoppedRun(ctx, runID, runState, log))
 }
 
 func (r *ProcessExecutableRunner) watchAdoptedProcess(
@@ -562,58 +581,54 @@ func (r *ProcessExecutableRunner) CheckProcessRunning(handle process.ProcessHand
 }
 
 func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
-	runState, found := r.runningProcesses.LoadAndDelete(runID)
+	runState, found := r.runningProcesses.Load(runID)
 	if !found {
 		log.V(1).Info("Stop of a process run requested, but the run was already stopped", "RunID", runID)
 		return nil
 	}
 
-	return r.stopProcessRunState(ctx, runID, runState, log)
+	stopErr := r.stopProcessRun(ctx, runID, runState, log)
+	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
+		return stopErr
+	}
+	if !r.runningProcesses.CompareAndDelete(runID, runState) {
+		return stopErr
+	}
+	return errors.Join(stopErr, r.completeStoppedRun(ctx, runID, runState, log))
 }
 
-func (r *ProcessExecutableRunner) stopProcessRunState(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
+func (r *ProcessExecutableRunner) stopProcessRun(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
+	stopLog := log.WithValues("RunID", runID, "Command", runState.cmdInfo)
+	stopLog.V(1).Info("Stopping run...")
+
+	stopCtx, stopCtxCancel := process.WithStopTimeout(ctx)
+	defer stopCtxCancel()
+	var stopErr error
+	if osutil.IsWindows() && !r.disableConsoleStop {
+		stopErr = dcpproc.StopProcessTree(stopCtx, r.pe, runState.handle, stopLog)
+	} else {
+		stopErr = r.pe.StopProcess(stopCtx, runState.handle)
+	}
+	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
+		stopLog.Error(stopErr, "Failed to stop run; preserving identity for retry")
+		return stopErr
+	}
+
+	return stopErr
+}
+
+func (r *ProcessExecutableRunner) completeStoppedRun(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
 	if runState.cancelWatch != nil {
 		runState.cancelWatch()
 	}
 
-	stopLog := log.WithValues("RunID", runID, "Command", runState.cmdInfo)
-	stopLog.V(1).Info("Stopping run...")
-
-	// We want to make progress eventually, so we don't want to wait indefinitely for the process to stop.
-	const ProcessStopTimeout = 15 * time.Second
-
-	timer := time.NewTimer(ProcessStopTimeout)
-	defer timer.Stop()
-	errCh := make(chan error, 1)
-
-	go func() {
-		if osutil.IsWindows() && !r.disableConsoleStop {
-			// See StartRun() for why we need to use separate console for the app process on Windows.
-			// This means we cannot send Ctrl-C to that process directly and need to use dcpproc StopProcessTree facility instead.
-			stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
-			defer stopCtxCancel()
-			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runState.handle, stopLog)
-		} else {
-			errCh <- r.pe.StopProcess(runState.handle)
-		}
-	}()
-
-	var stopErr error = nil
-	select {
-	case stopErr = <-errCh:
-		// (no falltrough in Go)
-	case <-timer.C:
-		stopErr = fmt.Errorf("timed out waiting for process associated with run %s to stop", runID)
-	}
-
-	stopErr = errors.Join(stopErr, closeRunFiles(ctx, runState))
-
-	if stopErr != nil {
-		stopLog.Error(stopErr, "Failed to stop run")
+	cleanupErr := closeRunFiles(ctx, runState)
+	if cleanupErr != nil {
+		log.Error(cleanupErr, "Failed to clean up stopped run", "RunID", runID, "Command", runState.cmdInfo)
 	} else if runState.adopted && runState.runChangeHandler != nil {
 		runState.runChangeHandler.OnRunCompleted(runID, apiv1.UnknownExitCode, nil)
 	}
-	return stopErr
+	return cleanupErr
 }
 
 func (r *ProcessExecutableRunner) ReleaseRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {

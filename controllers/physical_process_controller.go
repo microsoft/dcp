@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,8 +31,6 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
-
-const physicalProcessStopTimeout = 15 * time.Second
 
 var (
 	physicalProcessFinalizer = fmt.Sprintf("%s/physicalprocess-reconciler", apiv2.GroupVersion.Group)
@@ -567,29 +566,20 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 		data.progress = physicalResourceProgressRetryPending
 		data.failureMessage = fmt.Sprintf("Failed to launch physical process: %v", startErr)
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		if errors.Is(startErr, process.ErrProcessStartUncertain) {
+			data.progress = physicalResourceProgressFailed
+			data.retryAfter = time.Time{}
+			log.Error(startErr, "Process cleanup is unconfirmed; launch will not be retried")
+		}
 		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 		return
 	}
-	if handle.Pid <= 0 || handle.IdentityTime.IsZero() {
-		data.progress = physicalResourceProgressRetryPending
-		data.failureMessage = "Physical process launch returned an invalid process identity."
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		if handle.Pid > 0 {
-			cleanupErr := r.processExecutor.StopProcess(handle)
-			if cleanupErr == nil || process.IsProcessGoneErr(cleanupErr) {
-				data.handle = process.ProcessHandle{}
-			} else {
-				// A later stop cannot distinguish this process from a new process that reuses its PID.
-				data.handle = process.ProcessHandle{}
-				data.progress = physicalResourceProgressFailed
-				data.failureMessage = fmt.Sprintf(
-					"Physical process launch returned an invalid identity for PID %d and cleanup failed; launch will not be retried because the process cannot be stopped safely: %v",
-					handle.Pid,
-					cleanupErr,
-				)
-				data.retryAfter = time.Time{}
-			}
-		}
+	if handleErr := handle.Validate(); handleErr != nil {
+		data.progress = physicalResourceProgressFailed
+		data.handle = process.ProcessHandle{}
+		data.retryAfter = time.Time{}
+		data.failureMessage = fmt.Sprintf("Physical process launch returned an invalid identity for PID %d; the process cannot be stopped safely and launch will not be retried: %v", handle.Pid, handleErr)
+		log.Error(handleErr, "Process executor returned an invalid identity; refusing PID-only cleanup")
 		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 		if startWaitForExit != nil {
 			startWaitForExit()
@@ -747,11 +737,13 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 ) {
 	var stopErr error
 	if osutil.IsWindows() {
-		stopCtx, stopCtxCancel := context.WithTimeout(ctx, physicalProcessStopTimeout)
+		// Windows stops through an out-of-process helper so it can attach to the target console.
+		// Bound the helper invocation; direct stops on other platforms use executor-internal timeouts.
+		stopCtx, stopCtxCancel := process.WithStopTimeout(ctx)
 		stopErr = dcpproc.StopProcessTree(stopCtx, r.processExecutor, data.handle, log)
 		stopCtxCancel()
 	} else {
-		stopErr = r.processExecutor.StopProcess(data.handle)
+		stopErr = r.processExecutor.StopProcess(ctx, data.handle)
 	}
 	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
 		data.state = physicalProcessStateStop
