@@ -63,7 +63,11 @@ func FindProcess(handle ProcessHandle) (*os.Process, error) {
 	if handleErr := handle.Validate(); handleErr != nil {
 		return nil, handleErr
 	}
-	proc, findErr := os.FindProcess(int(handle.Pid))
+	pid, pidErr := PidT_ToInt(handle.Pid)
+	if pidErr != nil {
+		return nil, pidErr
+	}
+	proc, findErr := os.FindProcess(pid)
 	if findErr != nil {
 		return nil, processLookupError(handle.Pid, findErr)
 	}
