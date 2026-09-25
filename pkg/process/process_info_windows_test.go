@@ -9,6 +9,7 @@ package process
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 	"unsafe"
@@ -17,6 +18,22 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
+
+func TestCleanupJobProcessAccessSupportsInspection(t *testing.T) {
+	t.Parallel()
+
+	pid := uint32(os.Getpid())
+	nativeHandle, openErr := windows.OpenProcess(cleanupJobProcessAccess, false, pid)
+	require.NoError(t, openErr)
+	t.Cleanup(func() {
+		require.NoError(t, windows.CloseHandle(nativeHandle))
+	})
+
+	info, infoErr := readWindowsProcessInfo(nativeHandle, false)
+	require.NoError(t, infoErr)
+	require.Equal(t, Uint32_ToPidT(pid), info.handle.Pid)
+	require.False(t, info.handle.IdentityTime.IsZero())
+}
 
 func windowsRecord(pid, parent uintptr, birth int64, next uint32) []byte {
 	native := windows.SYSTEM_PROCESS_INFORMATION{

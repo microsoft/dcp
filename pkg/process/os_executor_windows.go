@@ -27,6 +27,9 @@ const (
 	signalAndWaitTimeout = 6 * time.Second
 
 	DCP_DISABLE_PROCESS_CLEANUP_JOB = "DCP_DISABLE_PROCESS_CLEANUP_JOB"
+
+	cleanupJobProcessAccess = processInspectionAccess | windows.PROCESS_SET_QUOTA | windows.PROCESS_TERMINATE
+	resumeThreadAccess      = windows.THREAD_SUSPEND_RESUME
 )
 
 var (
@@ -240,12 +243,9 @@ func (e *OSExecutor) completeProcessStart(handle ProcessHandle, flags ProcessCre
 		// We will try to assign the process to the job object. If we fail, this is not a fatal error,
 		// The process or its children may not be cleaned up when the process executor is disposed, but it will run.
 
-		// Unfortunately, even though internally the running process exec.Cmd.Process has the process handle,
-		// it is not documented, nor publicly accessible.
-		// The AssignProcessToJobObject docs say PROCESS_TERMINATE and PROCESS_SET_QUOTA are sufficient to assign a process to a job object,
-		// but in practice we need PROCESS_ALL_ACCESS to make it work.
-		const access = windows.PROCESS_ALL_ACCESS
-		processHandle, processHandleErr := windows.OpenProcess(access, false, uint32(handle.Pid))
+		// AssignProcessToJobObject requires PROCESS_SET_QUOTA and PROCESS_TERMINATE.
+		// Include inspection rights because this handle is identity-validated before assignment.
+		processHandle, processHandleErr := windows.OpenProcess(cleanupJobProcessAccess, false, uint32(handle.Pid))
 		if processHandleErr != nil {
 			e.log.V(1).Info("Could not open new process handle", "PID", handle.Pid, "Error", processHandleErr)
 		} else {
@@ -257,10 +257,6 @@ func (e *OSExecutor) completeProcessStart(handle ProcessHandle, flags ProcessCre
 			if identityErr := validateIdentity(handle, info.handle); identityErr != nil {
 				return identityErr
 			}
-
-			// Ideally we would assign the process to the job on process start, but the required access to STARTUPINFOEX structure
-			// is not available via the exec.Cmd interface as of Go 1.24.3. We would need to completely re-implement
-			// the process start logic and given that we only use the job for process termination on dispose, it is simply not worth the effort.
 
 			jobAssignmentErr := windows.AssignProcessToJobObject(pcj, processHandle)
 			if jobAssignmentErr != nil {
@@ -339,9 +335,9 @@ func resumeNewSuspendedProcess(handle ProcessHandle) error {
 	}
 
 	primaryThreadId := threadEntry.ThreadID
-	hThread, theadErr := windows.OpenThread(windows.PROCESS_ALL_ACCESS, false, primaryThreadId)
-	if theadErr != nil {
-		return fmt.Errorf("could not open primary thread for pid %d: %w", pid, theadErr)
+	hThread, threadOpenErr := windows.OpenThread(resumeThreadAccess, false, primaryThreadId)
+	if threadOpenErr != nil {
+		return fmt.Errorf("could not open primary thread for pid %d: %w", pid, threadOpenErr)
 	}
 	defer tryCloseHandle(hThread)
 
