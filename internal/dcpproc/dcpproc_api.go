@@ -227,7 +227,7 @@ func SimulateStopProcessTreeCommand(pe *internal_testutil.ProcessExecution) int3
 	if i < 0 {
 		return 1 // The command does not specify the PID to stop.
 	}
-	if len(pe.Cmd.Args) <= i+2 {
+	if len(pe.Cmd.Args) <= i+1 {
 		return 2 // The --pid flag should be followed by the PID of the process to stop.
 	}
 	pid, pidErr := process.StringToPidT(pe.Cmd.Args[i+1])
@@ -236,7 +236,10 @@ func SimulateStopProcessTreeCommand(pe *internal_testutil.ProcessExecution) int3
 	}
 	var startTime time.Time
 	i = slices.Index(pe.Cmd.Args, "--process-start-time")
-	if i >= 0 && len(pe.Cmd.Args) > i+1 {
+	if i >= 0 {
+		if len(pe.Cmd.Args) <= i+1 {
+			return 4 // The optional start time flag must have a value.
+		}
 		var startTimeErr error
 		startTime, startTimeErr = time.Parse(osutil.RFC3339MiliTimestampFormat, pe.Cmd.Args[i+1])
 		if startTimeErr != nil {

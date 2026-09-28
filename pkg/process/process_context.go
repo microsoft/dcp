@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	// Must be greater than 2 * signalAndWaitTimeout, because graceful stop can send
-	// two signals before waiting for final process-exit confirmation.
+	// The 15-second disposal timeout is shared by the root-first stop and the
+	// descendants' graceful-stop phase. Descendants receive only the time left
+	// after the root; final force-kill cleanup uses a separate bounded context.
 	processStopTimeout = 15 * time.Second
 )
 

@@ -12,7 +12,8 @@ import (
 )
 
 // GetProcessTree returns the root and verified descendants in breadth-first order.
-// ErrIncompleteProcessTree accompanies a usable partial result; other errors invalidate the result.
+// ErrIncompleteProcessTree accompanies a usable partial result but intentionally remains a fail-closed
+// result because enumeration or descendant cleanup is uncertain. Other errors invalidate the result.
 // The snapshot does not include subsequently created children, and every action still requires identity validation.
 func GetProcessTree(ctx context.Context, root ProcessHandle) ([]ProcessHandle, error) {
 	if contextErr := ctx.Err(); contextErr != nil {
@@ -38,7 +39,10 @@ func GetProcessTree(ctx context.Context, root ProcessHandle) ([]ProcessHandle, e
 		return nil, treeErr
 	}
 	if snapshotErr != nil {
-		return tree, errors.Join(treeErr, fmt.Errorf("%w: %w", ErrIncompleteProcessTree, snapshotErr))
+		return tree, errors.Join(
+			treeErr,
+			fmt.Errorf("%w: process enumeration was incomplete: %w", ErrIncompleteProcessTree, snapshotErr),
+		)
 	}
 	return tree, treeErr
 }

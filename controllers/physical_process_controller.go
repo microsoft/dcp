@@ -735,15 +735,15 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 	data *physicalProcessData,
 	log logr.Logger,
 ) {
+	cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
+	defer cleanupCancel()
+
 	var stopErr error
 	if osutil.IsWindows() {
 		// Windows stops through an out-of-process helper so it can attach to the target console.
-		// Bound the helper invocation; direct stops on other platforms use executor-internal timeouts.
-		stopCtx, stopCtxCancel := process.WithStopTimeout(ctx)
-		stopErr = dcpproc.StopProcessTree(stopCtx, r.processExecutor, data.handle, log)
-		stopCtxCancel()
+		stopErr = dcpproc.StopProcessTree(cleanupCtx, r.processExecutor, data.handle, log)
 	} else {
-		stopErr = r.processExecutor.StopProcess(ctx, data.handle)
+		stopErr = r.processExecutor.StopProcess(cleanupCtx, data.handle)
 	}
 	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
 		data.state = physicalProcessStateStop

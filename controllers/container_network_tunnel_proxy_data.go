@@ -17,6 +17,7 @@ import (
 	"github.com/microsoft/dcp/internal/dcptun"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
@@ -230,6 +231,12 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 	}
 
 	return updated
+}
+
+func (tpd *containerNetworkTunnelProxyData) hasServerProxy(handle process.ProcessHandle) bool {
+	return tpd.ServerProxyProcessID != nil &&
+		process.Pid_t(*tpd.ServerProxyProcessID) == handle.Pid &&
+		tpd.ServerProxyStartupTimestamp.Time.Equal(handle.IdentityTime)
 }
 
 func (tpd *containerNetworkTunnelProxyData) applyTo(tunnelProxy *apiv1.ContainerNetworkTunnelProxy) objectChange {

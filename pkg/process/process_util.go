@@ -34,8 +34,11 @@ var (
 	ErrorProcessNotFound          = errors.New("process does not exist")
 	ErrInvalidProcessHandle       = errors.New("invalid process handle")
 	ErrProcessIdentityUnavailable = errors.New("process identity is unavailable")
-	ErrIncompleteProcessTree      = errors.New("process tree is incomplete")
 	ErrProcessStartUncertain      = errors.New("process startup cleanup could not be confirmed")
+
+	// ErrIncompleteProcessTree reports that process enumeration or descendant cleanup was uncertain.
+	// Callers must fail closed even when the root and all verified descendants were stopped.
+	ErrIncompleteProcessTree = errors.New("process tree is incomplete")
 
 	// Returned when a process with the requested PID exists, but its identity time
 	// does not match the expected identity time. This typically means the original
@@ -228,7 +231,7 @@ func (wl waitableLite) Abort(_ context.Context) error {
 var _ Waitable = waitableCmd{}
 var _ Waitable = waitableLite{}
 
-func makeProcessWaitable(ctx context.Context, handle ProcessHandle) Waitable {
+func makeProcessWaitable(ctx context.Context, handle ProcessHandle, waitPollInterval time.Duration) Waitable {
 	return &waitableLite{
 		wait: func() error {
 			proc, findErr := FindProcess(handle)
@@ -238,7 +241,7 @@ func makeProcessWaitable(ctx context.Context, handle ProcessHandle) Waitable {
 			if findErr != nil {
 				return findErr
 			}
-			return waitForProcess(ctx, handle, proc, defaultWaitPollInterval)
+			return waitForProcess(ctx, handle, proc, waitPollInterval)
 		},
 		info: func() string {
 			return "(" + strconv.FormatInt(int64(handle.Pid), 10) + ")"

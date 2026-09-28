@@ -64,6 +64,39 @@ type tunnelProxyStateInitializerFunc = stateInitializerFunc[
 // we do not use the state key for manipulating the tunnel proxy data, but it must be unique for each tunnel proxy.
 type tunnelProxyDataMap = ObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy]
 
+type serverProxyExitType uint8
+
+const (
+	serverProxyExitTypeExpected serverProxyExitType = iota
+	serverProxyExitTypeUnexpected
+)
+
+type serverProxyRun struct {
+	handle   process.ProcessHandle
+	exitType *concurrency.ValuePromise[serverProxyExitType]
+}
+
+func newServerProxyRun() *serverProxyRun {
+	return &serverProxyRun{
+		exitType: concurrency.NewValuePromise[serverProxyExitType](),
+	}
+}
+
+func (run *serverProxyRun) expectExit() {
+	run.exitType.Set(serverProxyExitTypeExpected)
+}
+
+func (run *serverProxyRun) recordUnexpectedExit() bool {
+	return run.exitType.Set(serverProxyExitTypeUnexpected)
+}
+
+func (run *serverProxyRun) getExitType() (serverProxyExitType, bool) {
+	if !run.exitType.IsSet() {
+		return 0, false
+	}
+	return run.exitType.Get(), true
+}
+
 const (
 	containerNetworkNameKey = ".metadata.containerNetworkName"
 	serviceReferencesKey    = ".metadata.serviceReferences"
@@ -1010,6 +1043,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 	return func(ctx context.Context) {
 		nn := tunnelProxy.NamespacedName()
 		reconciliationDelay := NoDelay
+		var serverRun *serverProxyRun
 
 		certErr := r.createProxyConnectionCertificates(pd, log)
 		if certErr != nil {
@@ -1022,7 +1056,8 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 
 			if clientCtrCreated {
 				// Start server proxy now that client proxy ports are known
-				serverStarted := r.startServerProxy(ctx, tunnelProxy, pd, log)
+				var serverStarted bool
+				serverRun, serverStarted = r.startServerProxy(ctx, tunnelProxy, pd, log)
 				if serverStarted {
 					log.V(1).Info("Server proxy started successfully, scheduling reconciliation")
 					pd.State = apiv1.ContainerNetworkTunnelProxyStateRunning
@@ -1033,12 +1068,43 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 		}
 
 		pd.startupScheduled = false // Reset startupScheduled flag to allow retries
-		pdMap := r.proxyData
-		pdMap.QueueDeferredOp(nn, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
-			pdMap.Update(nn, nn, pd)
-		})
+		r.queueProxyPairStartupResult(nn, pd, serverRun)
 		r.ScheduleReconciliationWithDelay(nn, reconciliationDelay)
 	}
+}
+
+func (r *ContainerNetworkTunnelProxyReconciler) queueProxyPairStartupResult(
+	proxyName types.NamespacedName,
+	result *containerNetworkTunnelProxyData,
+	run *serverProxyRun,
+) {
+	pdMap := r.proxyData
+	pdMap.QueueDeferredOp(proxyName, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
+		_, current := pdMap.BorrowByNamespacedName(proxyName)
+		if current == nil {
+			return
+		}
+		if run != nil {
+			if !current.hasServerProxy(run.handle) {
+				return
+			}
+			recordedExitType, exited := run.getExitType()
+			if exited && recordedExitType == serverProxyExitTypeUnexpected {
+				current.startupScheduled = false
+				pdMap.Update(proxyName, proxyName, current)
+				return
+			}
+		}
+		if current.State == apiv1.ContainerNetworkTunnelProxyStateFailed ||
+			current.cleanupScheduled ||
+			current.cleanupCompleted {
+			current.startupScheduled = false
+			pdMap.Update(proxyName, proxyName, current)
+			return
+		}
+
+		pdMap.Update(proxyName, proxyName, result)
+	})
 }
 
 // Creates certificates for security tunnel proxy control connection.
@@ -1456,19 +1522,19 @@ func physicalResourceReadyConditionReason(conditions []metav1.Condition) apiv2.C
 // Assumes that the client proxy container has been started and data about it has already been applied
 // to the passed containerNetworkTunnelProxyData instance.
 // Updates the provided proxy data with process ID, startup timestamp, stdout/stderr capture files, and server control port.
-// Returns true if everything went well and the server proxy has been started successfully.
+// Returns the server proxy run, if a process was started, and whether startup completed successfully.
 func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	ctx context.Context,
 	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
 	pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
-) bool {
+) (*serverProxyRun, bool) {
 	dcpExePath, dcpExePathErr := dcppaths.GetDcpExePath()
 	if dcpExePathErr != nil {
 		log.Error(dcpExePathErr, "Failed to get DCP executable path")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 		pd.Message = fmt.Sprintf("Failed to get DCP executable path: %v", dcpExePathErr)
-		return false
+		return nil, false
 	}
 
 	startFailed := false
@@ -1494,7 +1560,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		log.Error(stdoutErr, "Failed to create stdout temp file for container tunnel server proxy")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 		pd.Message = fmt.Sprintf("Failed to create stdout temp file for container tunnel server proxy: %v", stdoutErr)
-		return false
+		return nil, false
 	} else {
 		pd.ServerProxyStdOutFile = stdoutFile.Name()
 		pd.serverStdout = stdoutFile
@@ -1506,7 +1572,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		log.Error(stderrErr, "Failed to create stderr temp file for container tunnel server proxy")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 		pd.Message = fmt.Sprintf("Failed to create stderr temp file for container tunnel server proxy: %v", stderrErr)
-		return false
+		return nil, false
 	} else {
 		pd.ServerProxyStdErrFile = stderrFile.Name()
 		pd.serverStderr = stderrFile
@@ -1526,8 +1592,10 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	cmd.Stderr = stderrFile
 	cmd.Env = os.Environ()
 	logger.WithSessionId(cmd)
+	proxyName := tunnelProxy.NamespacedName()
+	run := newServerProxyRun()
 	exitHandler := process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
-		r.onServerProcessExit(tunnelProxy.NamespacedName(), pid, exitCode, err, stdoutFile, stderrFile)
+		r.onServerProcessExit(proxyName, run, pid, exitCode, err, stdoutFile, stderrFile)
 	})
 
 	handle, startWaitForExit, startErr := r.config.ProcessExecutor.StartProcess(context.Background(), cmd, exitHandler, process.CreationFlagsNone, nil)
@@ -1536,17 +1604,21 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		startFailed = true
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 		pd.Message = fmt.Sprintf("Failed to start server proxy process: %v", startErr)
-		return false
+		return nil, false
 	}
-	startWaitForExit()
+	// Publish the process identity before enabling its exit callback.
+	run.handle = handle
 	pointers.SetValue(&pd.ServerProxyProcessID, int64(handle.Pid))
 	pd.ServerProxyStartupTimestamp = metav1.NewMicroTime(handle.IdentityTime)
+	_ = r.proxyData.Update(proxyName, proxyName, pd)
+	startWaitForExit()
 
 	// Wait until the first JSON line is printed to stdout indicating server control address/port
 
 	tc, tcErr := r.config.readServerProxyConfig(ctx, stdoutFile.Name())
 	if tcErr != nil {
 		log.Error(tcErr, "Failed to read connection information from the server proxy")
+		run.expectExit()
 		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
 		defer cleanupCancel()
 		stopProcessErr := r.stopServerProxyProcess(cleanupCtx, pd)
@@ -1559,7 +1631,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 			)
 		}
 		startFailed = true
-		return false
+		return run, false
 	}
 
 	dcpproc.RunProcessWatcher(r.config.ProcessExecutor, handle, log)
@@ -1568,7 +1640,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	pd.ServerProxyStdOutFile = stdoutFile.Name()
 	pd.ServerProxyStdErrFile = stderrFile.Name()
 
-	return true
+	return run, true
 }
 
 func readServerProxyConfig(ctx context.Context, path string) (dcptun.TunnelProxyConfig, error) {
@@ -1725,6 +1797,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupClientPhysicalResources(
 
 func (r *ContainerNetworkTunnelProxyReconciler) onServerProcessExit(
 	pName types.NamespacedName,
+	run *serverProxyRun,
 	pid process.Pid_t,
 	exitCode int32,
 	err error,
@@ -1745,11 +1818,18 @@ func (r *ContainerNetworkTunnelProxyReconciler) onServerProcessExit(
 		r.Log.Error(closeErr, "Failed to close stderr file for tunnel server proxy process", "PID", pid)
 	}
 
+	if !run.recordUnexpectedExit() {
+		return
+	}
+
 	pdMap := r.proxyData
 	pdMap.QueueDeferredOp(pName, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
 		_, pd := pdMap.BorrowByNamespacedName(pName)
 		if pd == nil {
 			return // ContainerNetworkTunnelProxy object has been deleted, nothing to do
+		}
+		if !pd.hasServerProxy(run.handle) {
+			return // This callback belongs to a server proxy process that is no longer current.
 		}
 		if pd.cleanupScheduled || pd.State == apiv1.ContainerNetworkTunnelProxyStateFailed {
 			return // Cleanup or another failure already owns the proxy's terminal status.
@@ -1759,6 +1839,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) onServerProcessExit(
 		pd.ServerProxyProcessID = nil
 		pd.ServerProxyStartupTimestamp = metav1.MicroTime{} // Zero value
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.startupScheduled = false
 		message := fmt.Sprintf("Server proxy process '%d' exited unexpectedly with exit code %d", pid, exitCode)
 		if err != nil {
 			message = fmt.Sprintf("Server proxy process '%d' exited unexpectedly with exit code %d: %v", pid, exitCode, err)

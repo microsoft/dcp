@@ -250,6 +250,46 @@ func TestStopProcessTree(t *testing.T) {
 	require.Equal(t, dcpProc.Cmd.Args[5], handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat), "Should include formatted process start time")
 }
 
+func TestSimulateStopProcessTreeCommandSupportsPIDOnly(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	handle, _, startErr := executor.StartProcess(
+		ctx,
+		exec.Command("test-process"),
+		nil,
+		process.CreationFlagsNone,
+		nil,
+	)
+	require.NoError(t, startErr)
+
+	exitCode := SimulateStopProcessTreeCommand(&internal_testutil.ProcessExecution{
+		Cmd:      exec.Command("dcp", "stop-process-tree", "--pid", strconv.FormatInt(int64(handle.Pid), 10)),
+		Executor: executor,
+	})
+
+	require.Zero(t, exitCode)
+	execution, found := executor.FindByPid(handle.Pid)
+	require.True(t, found)
+	require.True(t, execution.Finished(), "PID-only simulation must resolve the process identity before stopping")
+}
+
+func TestSimulateStopProcessTreeCommandRejectsMissingOptionalIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	exitCode := SimulateStopProcessTreeCommand(&internal_testutil.ProcessExecution{
+		Cmd:      exec.Command("dcp", "stop-process-tree", "--pid", "42", "--process-start-time"),
+		Executor: executor,
+	})
+
+	require.Equal(t, int32(4), exitCode)
+}
+
 func findRunningDcp(pe *internal_testutil.TestProcessExecutor) (*internal_testutil.ProcessExecution, error) {
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
 	if dcpPathErr != nil {

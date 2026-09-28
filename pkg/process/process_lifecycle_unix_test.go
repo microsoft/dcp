@@ -15,6 +15,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -24,6 +26,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
+
+const unixProcessLifecycleHelperMode = "DCP_PROCESS_LIFECYCLE_HELPER_MODE"
 
 func TestProcessStopContextHelper(t *testing.T) {
 	if os.Getenv("DCP_PROCESS_STOP_CONTEXT_HELPER") != "1" {
@@ -77,4 +81,287 @@ func TestCancelledStopCanBeRetriedWithoutAnotherWaiter(t *testing.T) {
 	require.NoError(t, executor.CheckProcessRunning(handle))
 	require.NoError(t, executor.StopProcess(testCtx, handle))
 	require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(handle)))
+}
+
+func TestUnixProcessLifecycleHelper(t *testing.T) {
+	mode := os.Getenv(unixProcessLifecycleHelperMode)
+	switch mode {
+	case "":
+		return
+
+	case "orphan-parent":
+		childCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
+		childCmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"=orphan-child")
+		DecoupleFromParent(childCmd)
+		childStartErr := childCmd.Start()
+		require.NoError(t, childStartErr)
+		_, writeErr := fmt.Fprintln(os.Stdout, childCmd.Process.Pid)
+		require.NoError(t, writeErr)
+
+	case "orphan-child":
+		time.Sleep(30 * time.Second)
+
+	case "tree-root", "graceful-root", "forced-root", "deadline-root":
+		childMode := "tree-child"
+		if mode == "graceful-root" {
+			childMode = "graceful-child"
+		} else if mode == "forced-root" {
+			signal.Ignore(syscall.SIGTERM)
+			childMode = "observing-child"
+		} else if mode == "deadline-root" {
+			childMode = "observing-child"
+		}
+		childCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
+		childCmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"="+childMode)
+		var signalNoticeWriter *os.File
+		if mode != "tree-root" {
+			signalNoticeWriter = os.NewFile(uintptr(4), "signal-notice")
+			require.NotNil(t, signalNoticeWriter)
+			childCmd.ExtraFiles = []*os.File{signalNoticeWriter}
+		}
+		childStartErr := childCmd.Start()
+		require.NoError(t, childStartErr)
+		if signalNoticeWriter != nil {
+			require.NoError(t, signalNoticeWriter.Close())
+		}
+		go func() {
+			_ = childCmd.Wait()
+		}()
+
+		pidWriter := os.NewFile(uintptr(3), "child-pid")
+		require.NotNil(t, pidWriter)
+		_, writeErr := fmt.Fprintln(pidWriter, childCmd.Process.Pid)
+		require.NoError(t, writeErr)
+		require.NoError(t, pidWriter.Close())
+		time.Sleep(30 * time.Second)
+
+	case "tree-child":
+		time.Sleep(30 * time.Second)
+
+	case "graceful-child", "observing-child":
+		signalCh := make(chan os.Signal, 1)
+		signal.Notify(signalCh, syscall.SIGTERM)
+		defer signal.Stop(signalCh)
+		signalNoticeWriter := os.NewFile(uintptr(3), "signal-notice")
+		require.NotNil(t, signalNoticeWriter)
+		_, readyWriteErr := fmt.Fprintln(signalNoticeWriter, "ready")
+		require.NoError(t, readyWriteErr)
+		<-signalCh
+		_, signalWriteErr := fmt.Fprintln(signalNoticeWriter, "sigterm")
+		require.NoError(t, signalWriteErr)
+		require.NoError(t, signalNoticeWriter.Close())
+		if mode == "observing-child" {
+			time.Sleep(30 * time.Second)
+		}
+
+	default:
+		t.Fatalf("unknown helper mode %q", mode)
+	}
+}
+
+func TestStopNonChildUsesShortPollingInterval(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	handle := startOrphanProcessForTest(t, testCtx)
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	defer executor.Dispose()
+
+	startedAt := time.Now()
+	stopErr := executor.StopProcess(testCtx, handle, StopRootOnly())
+	elapsed := time.Since(startedAt)
+
+	require.NoError(t, stopErr)
+	// This is the stop-latency contract: adopted processes must not inherit the two-second monitor poll floor.
+	require.Less(t, elapsed, defaultWaitPollInterval/2)
+	require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(handle)))
+}
+
+func TestIncompleteTreeStillStopsVerifiedProcesses(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	defer executor.Dispose()
+	rootHandle, childHandle := startProcessTreeForTest(t, testCtx, executor, "tree-root", nil, nil)
+	injectedSnapshotErr := fmt.Errorf(
+		"%w: process enumeration was incomplete: unrelated process metadata could not be read",
+		ErrIncompleteProcessTree,
+	)
+
+	stopErr := executor.stopProcessTreeInternal(
+		testCtx,
+		rootHandle,
+		optNone,
+		func(context.Context, ProcessHandle) ([]ProcessHandle, error) {
+			return []ProcessHandle{rootHandle, childHandle}, injectedSnapshotErr
+		},
+	)
+
+	require.ErrorIs(t, stopErr, ErrIncompleteProcessTree)
+	requireProcessGone(t, testCtx, executor, rootHandle)
+	requireProcessGone(t, testCtx, executor, childHandle)
+}
+
+func TestDisposeGivesDescendantsRemainingGracefulBudget(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 45*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	rootHandle, childHandle, signalNotices := startProcessTreeWithSignalNoticeForTest(t, testCtx, executor, "graceful-root")
+
+	startedAt := time.Now()
+	executor.Dispose()
+	elapsed := time.Since(startedAt)
+	remainingNotices, readErr := io.ReadAll(signalNotices)
+
+	require.NoError(t, readErr)
+	require.Equal(t, "sigterm\n", string(remainingNotices))
+	require.Less(t, elapsed, signalAndWaitTimeout)
+	requireProcessGone(t, testCtx, executor, rootHandle)
+	requireProcessGone(t, testCtx, executor, childHandle)
+}
+
+func TestDisposeForceKillsDescendantsWhenRootWasForceKilled(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 45*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	rootHandle, childHandle, signalNotices := startProcessTreeWithSignalNoticeForTest(t, testCtx, executor, "forced-root")
+
+	executor.Dispose()
+	remainingNotices, readErr := io.ReadAll(signalNotices)
+
+	require.NoError(t, readErr)
+	require.Empty(t, remainingNotices, "descendants must not receive a graceful signal after the root required a force kill")
+	requireProcessGone(t, testCtx, executor, rootHandle)
+	requireProcessGone(t, testCtx, executor, childHandle)
+}
+
+func TestDisposeForceKillsDescendantsAfterWholeTreeDeadline(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 45*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	rootHandle, childHandle, signalNotices := startProcessTreeWithSignalNoticeForTest(t, testCtx, executor, "deadline-root")
+
+	startedAt := time.Now()
+	// The root gets the first graceful-stop opportunity. Because it exits gracefully, the
+	// descendant receives the remaining portion of the shared 15-second budget. The descendant
+	// deliberately survives SIGTERM, so disposal force-kills it only after that budget expires.
+	executor.Dispose()
+	elapsed := time.Since(startedAt)
+	remainingNotices, readErr := io.ReadAll(signalNotices)
+
+	require.NoError(t, readErr)
+	require.Equal(t, "sigterm\n", string(remainingNotices))
+	require.GreaterOrEqual(t, elapsed, processStopTimeout-time.Second)
+	require.Less(t, elapsed, processStopTimeout+signalAndWaitTimeout+2*time.Second)
+	requireProcessGone(t, testCtx, executor, rootHandle)
+	requireProcessGone(t, testCtx, executor, childHandle)
+}
+
+func startOrphanProcessForTest(t *testing.T, ctx context.Context) ProcessHandle {
+	t.Helper()
+
+	parentCmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
+	parentCmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"=orphan-parent")
+	output, runErr := parentCmd.Output()
+	require.NoError(t, runErr)
+	childPIDText, _, found := strings.Cut(string(output), "\n")
+	require.True(t, found)
+	childPID, parseErr := strconv.ParseInt(strings.TrimSpace(childPIDText), 10, 64)
+	require.NoError(t, parseErr)
+	handle, handleErr := FindProcessHandle(Pid_t(childPID))
+	require.NoError(t, handleErr)
+	t.Cleanup(func() {
+		killProcessForTest(handle)
+	})
+	return handle
+}
+
+func startProcessTreeForTest(
+	t *testing.T,
+	ctx context.Context,
+	executor *OSExecutor,
+	mode string,
+	output io.Writer,
+	childSignalNoticeWriter *os.File,
+) (ProcessHandle, ProcessHandle) {
+	t.Helper()
+
+	pidReader, pidWriter, pipeErr := os.Pipe()
+	require.NoError(t, pipeErr)
+	defer func() {
+		_ = pidReader.Close()
+	}()
+	rootCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
+	rootCmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"="+mode)
+	rootCmd.ExtraFiles = []*os.File{pidWriter}
+	if childSignalNoticeWriter != nil {
+		rootCmd.ExtraFiles = append(rootCmd.ExtraFiles, childSignalNoticeWriter)
+	}
+	rootCmd.Stdout = output
+	rootCmd.Stderr = output
+	rootHandle, startWaitForExit, startErr := executor.StartProcess(
+		ctx,
+		rootCmd,
+		nil,
+		CreationFlagEnsureKillOnDispose,
+		nil,
+	)
+	require.NoError(t, startErr)
+	require.NoError(t, pidWriter.Close())
+	if childSignalNoticeWriter != nil {
+		require.NoError(t, childSignalNoticeWriter.Close())
+	}
+	startWaitForExit()
+
+	childPIDText, readErr := bufio.NewReader(pidReader).ReadString('\n')
+	require.NoError(t, readErr)
+	childPID, parseErr := strconv.ParseInt(strings.TrimSpace(childPIDText), 10, 64)
+	require.NoError(t, parseErr)
+	childHandle, childHandleErr := FindProcessHandle(Pid_t(childPID))
+	require.NoError(t, childHandleErr)
+	t.Cleanup(func() {
+		killProcessForTest(childHandle)
+		killProcessForTest(rootHandle)
+	})
+	return rootHandle, childHandle
+}
+
+func startProcessTreeWithSignalNoticeForTest(
+	t *testing.T,
+	ctx context.Context,
+	executor *OSExecutor,
+	mode string,
+) (ProcessHandle, ProcessHandle, *bufio.Reader) {
+	t.Helper()
+
+	signalNoticeReader, signalNoticeWriter, pipeErr := os.Pipe()
+	require.NoError(t, pipeErr)
+	t.Cleanup(func() {
+		_ = signalNoticeReader.Close()
+	})
+	rootHandle, childHandle := startProcessTreeForTest(t, ctx, executor, mode, nil, signalNoticeWriter)
+	signalNotices := bufio.NewReader(signalNoticeReader)
+	readyNotice, readyReadErr := signalNotices.ReadString('\n')
+	require.NoError(t, readyReadErr)
+	require.Equal(t, "ready\n", readyNotice)
+	return rootHandle, childHandle, signalNotices
+}
+
+func requireProcessGone(t *testing.T, ctx context.Context, executor *OSExecutor, handle ProcessHandle) {
+	t.Helper()
+
+	waitCtx, waitCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer waitCancel()
+	waitErr := wait.PollUntilContextCancel(waitCtx, 25*time.Millisecond, true, func(context.Context) (bool, error) {
+		return IsProcessGoneErr(executor.CheckProcessRunning(handle)), nil
+	})
+	require.NoError(t, waitErr)
+}
+
+func killProcessForTest(handle ProcessHandle) {
+	proc, findErr := FindProcess(handle)
+	if findErr != nil {
+		return
+	}
+	_ = proc.Kill()
+	_ = proc.Release()
 }

@@ -108,6 +108,13 @@ func waitForProcess(ctx context.Context, handle ProcessHandle, proc *os.Process,
 	if releaseErr != nil {
 		return releaseErr
 	}
+	_, initialPollErr := findProcessInfo(handle)
+	if IsProcessGoneErr(initialPollErr) {
+		return nil
+	}
+	if initialPollErr != nil {
+		return initialPollErr
+	}
 	timer := time.NewTimer(interval)
 	defer timer.Stop()
 	for {

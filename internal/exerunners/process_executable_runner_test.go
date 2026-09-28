@@ -295,6 +295,26 @@ func TestStopRunPreservesStateAfterStopFailure(t *testing.T) {
 	require.Equal(t, stopExecutor.handle, stored.handle)
 }
 
+func TestStopRunHonorsCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	stopExecutor := &stopRunTestExecutor{
+		handle:         process.NewHandle(4245, time.Unix(1003, 0).UTC()),
+		respectContext: true,
+	}
+	runner, result, _ := startStopRunTest(t, stopExecutor)
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+	stopCancel()
+
+	stopErr := runner.StopRun(stopCtx, result.RunID, logr.Discard())
+
+	require.ErrorIs(t, stopErr, context.Canceled)
+	require.ErrorIs(t, stopExecutor.stopContextErr, context.Canceled)
+	stored, found := runner.runningProcesses.Load(result.RunID)
+	require.True(t, found)
+	require.Equal(t, stopExecutor.handle, stored.handle)
+}
+
 func TestStopRunCleanupErrorDoesNotRestoreState(t *testing.T) {
 	t.Parallel()
 
@@ -609,6 +629,8 @@ type stopRunTestExecutor struct {
 	handler        process.ProcessExitHandler
 	stopErr        error
 	exitDuringStop bool
+	respectContext bool
+	stopContextErr error
 }
 
 func (executor *stopRunTestExecutor) StartProcess(
@@ -623,10 +645,14 @@ func (executor *stopRunTestExecutor) StartProcess(
 }
 
 func (executor *stopRunTestExecutor) StopProcess(
-	_ context.Context,
+	ctx context.Context,
 	handle process.ProcessHandle,
 	_ ...process.ProcessStopOption,
 ) error {
+	executor.stopContextErr = ctx.Err()
+	if executor.respectContext && executor.stopContextErr != nil {
+		return executor.stopContextErr
+	}
 	if executor.exitDuringStop && executor.handler != nil {
 		executor.handler.OnProcessExited(handle.Pid, 0, nil)
 	}

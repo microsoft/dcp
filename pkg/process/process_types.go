@@ -107,6 +107,8 @@ type Executor interface {
 
 	// Stops the process identified by the given ProcessHandle.
 	// A positive PID and nonzero identity time are required. Cancellation ends further stopping work.
+	// ErrIncompleteProcessTree is returned when enumeration or descendant cleanup is uncertain,
+	// even if the root and all verified descendants were stopped.
 	StopProcess(ctx context.Context, handle ProcessHandle, options ...ProcessStopOption) error
 
 	// Checks that the process identified by the given ProcessHandle is running.

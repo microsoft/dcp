@@ -366,6 +366,23 @@ func (e *OSExecutor) releaseLock() {
 }
 
 func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHandle, opts processStoppingOpts) error {
+	return e.stopProcessTreeInternal(ctx, handle, opts, GetProcessTree)
+}
+
+// stopProcessTreeInternal stops a verified process tree root-first.
+//
+// The root process gets the first graceful-stop opportunity and may escalate to a force kill.
+// When the caller requests graceful descendant stopping and the root exits gracefully, verified
+// descendants are given the remaining portion of the caller's deadline to stop gracefully,
+// concurrently. If the root required a force kill, or the shared graceful-stop deadline expires,
+// remaining descendants are force-killed concurrently using a separate bounded cleanup context.
+// Every signal and kill revalidates the target process identity before acting.
+func (e *OSExecutor) stopProcessTreeInternal(
+	ctx context.Context,
+	handle ProcessHandle,
+	opts processStoppingOpts,
+	resolveProcessTree func(context.Context, ProcessHandle) ([]ProcessHandle, error),
+) error {
 	if contextErr := ctx.Err(); contextErr != nil {
 		return contextErr
 	}
@@ -375,21 +392,23 @@ func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHand
 	procTreeLog := e.log.WithValues("Root", handle.Pid)
 	rootWasVerified := false
 
-	stopRootProcess := func() (<-chan struct{}, error, error) {
-		procEndedCh, stopErr := e.stopSingleProcess(ctx, handle, opts|optNotFoundIsError|optTrySignal|optWaitForStdio)
+	stopRootProcess := func(stopCtx context.Context, rootOpts processStoppingOpts) (singleProcessStopResult, error, error) {
+		stopResult, stopErr := e.stopSingleProcess(stopCtx, handle, rootOpts|optNotFoundIsError|optWaitForStdio)
 		if rootWasVerified && IsProcessGoneErr(stopErr) {
-			return makeClosedChan(), nil, nil
+			return singleProcessStopResult{waitEndedCh: makeClosedChan()}, nil, nil
 		}
-		if stopErr != nil && !errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
+		if stopErr != nil &&
+			!errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) &&
+			!errors.Is(stopErr, context.DeadlineExceeded) {
 			// If the root process cannot be stopped (and it is not just a timeout error), don't bother with the rest of the tree.
 			procTreeLog.Error(stopErr, "Could not stop root process")
-			return nil, stopErr, stopErr
+			return singleProcessStopResult{}, stopErr, stopErr
 		}
 
-		return procEndedCh, stopErr, nil
+		return stopResult, stopErr, nil
 	}
 
-	waitForRootProcessToEnd := func(procEndedCh <-chan struct{}, stopErr error) error {
+	waitForRootProcessToEnd := func(waitCtx context.Context, procEndedCh <-chan struct{}, stopErr error) error {
 		if errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
 			// Do not bother waiting for the confirmation of root process exit, it probably is not going to happen
 			// if a timeout occurred already...
@@ -398,8 +417,8 @@ func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHand
 		}
 
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-waitCtx.Done():
+			return waitCtx.Err()
 		case <-procEndedCh:
 			procTreeLog.Info("Root process has stopped")
 			return nil
@@ -412,17 +431,23 @@ func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHand
 
 	if (opts & optSkipDescendants) != 0 {
 		procTreeLog.V(1).Info("Stopping root process without enumerating descendants")
-		procEndedCh, stopErr, rootStopErr := stopRootProcess()
+		rootResult, stopErr, rootStopErr := stopRootProcess(ctx, opts|optTrySignal)
 		if rootStopErr != nil {
 			return rootStopErr
 		}
 
-		return waitForRootProcessToEnd(procEndedCh, stopErr)
+		return waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, stopErr)
 	}
 
-	tree, treeErr := GetProcessTree(ctx, handle)
+	tree, treeErr := resolveProcessTree(ctx, handle)
 	if treeErr != nil && !errors.Is(treeErr, ErrIncompleteProcessTree) {
 		return fmt.Errorf("could not get process tree for process %d: %w", handle.Pid, treeErr)
+	}
+	if errors.Is(treeErr, ErrIncompleteProcessTree) {
+		procTreeLog.Error(
+			treeErr,
+			"Process tree enumeration was incomplete; stopping verified processes, but descendant cleanup remains uncertain",
+		)
 	}
 	if len(tree) == 0 {
 		return fmt.Errorf("could not get a verified root for process %d: %w", handle.Pid, treeErr)
@@ -432,44 +457,132 @@ func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHand
 
 	procTreeLog.V(1).Info("Stopping process tree...", "Root", handle.Pid, "Tree", getIDs(tree))
 
-	procEndedCh, stopErr, rootStopErr := stopRootProcess()
-	if rootStopErr != nil {
-		return errors.Join(treeErr, rootStopErr)
+	rootResult, rootStopErr, fatalRootStopErr := stopRootProcess(ctx, opts|optTrySignal)
+	if fatalRootStopErr != nil {
+		return errors.Join(treeErr, fatalRootStopErr)
 	}
 
 	tree = tree[1:] // We have processed the root
 	if len(tree) == 0 {
 		procTreeLog.V(1).Info("The root process has no children")
-		return errors.Join(treeErr, waitForRootProcessToEnd(procEndedCh, stopErr))
+		return errors.Join(treeErr, waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, rootStopErr))
 	}
 
-	procTreeLog.V(1).Info("Make sure children of the root processes are gone...")
-	childStoppingErrors := slices.MapConcurrent[error](tree, func(p ProcessHandle) error {
-		// Retry stopping the child process as we occasionally see transient "Access Denied" errors.
-		const childStopTimeout = 2 * time.Second
-		childLog := procTreeLog.WithValues("Child", p.Pid)
-
-		retryErr := resiliency.RetryExponentialWithTimeout(ctx, childStopTimeout, func() error {
-			childLog.V(1).Info("Stopping child process...")
-
-			_, childStopErr := e.stopSingleProcess(ctx, p, opts&^optNotFoundIsError)
-			if childStopErr != nil {
-				childLog.V(1).Info("Error stopping child process", "Error", childStopErr.Error())
-			} else {
-				childLog.V(1).Info("Child process has been stopped (or is gone)")
+	stopChildren := func(
+		stopCtx context.Context,
+		childOpts processStoppingOpts,
+		retry bool,
+		action string,
+	) []error {
+		procTreeLog.V(1).Info(action)
+		childStoppingErrors := slices.MapConcurrent[error](tree, func(childHandle ProcessHandle) error {
+			childLog := procTreeLog.WithValues("Child", childHandle.Pid)
+			stopChild := func() error {
+				childLog.V(1).Info("Stopping child process...")
+				_, childStopErr := e.stopSingleProcess(stopCtx, childHandle, childOpts)
+				if childStopErr != nil {
+					childLog.V(1).Info("Error stopping child process", "Error", childStopErr.Error())
+				} else {
+					childLog.V(1).Info("Child process has been stopped (or is gone)")
+				}
+				return childStopErr
 			}
 
+			var childStopErr error
+			if retry {
+				// Retry force-killing the child process as we occasionally see transient "Access Denied" errors.
+				const childStopTimeout = 2 * time.Second
+				childStopErr = resiliency.RetryExponentialWithTimeout(stopCtx, childStopTimeout, stopChild)
+			} else {
+				childStopErr = stopChild()
+			}
+			if childStopErr != nil {
+				childLog.V(1).Info("Could not stop child process", "Error", childStopErr.Error())
+			}
 			return childStopErr
-		})
+		}, slices.MaxConcurrency)
 
-		if retryErr != nil {
-			childLog.Error(retryErr, "Could not stop child process")
+		return slices.Select(childStoppingErrors, func(stopErr error) bool { return stopErr != nil })
+	}
+
+	forceChildOpts := opts &^ (optNotFoundIsError | optTrySignal | optSignalConsoleGroup | optGracefulOnly)
+	if (opts & optTrySignal) == 0 {
+		// Preserve the legacy behavior for ordinary stops. On Windows, optSignalConsoleGroup
+		// lets descendants wait for the root's console-group signal before escalating.
+		legacyChildOpts := opts &^ optNotFoundIsError
+		childStoppingErrors := stopChildren(
+			ctx,
+			legacyChildOpts,
+			true,
+			"Making sure child processes are gone...",
+		)
+		rootWaitErr := waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, rootStopErr)
+		return errors.Join(append([]error{treeErr, rootStopErr, rootWaitErr}, childStoppingErrors...)...)
+	}
+
+	forceDescendants := rootResult.forceKillUsed || rootStopErr != nil || ctx.Err() != nil
+
+	if !forceDescendants {
+		gracefulChildOpts := opts &^ optNotFoundIsError
+		gracefulChildOpts |= optGracefulOnly
+		if (opts & optSignalConsoleGroup) == 0 {
+			gracefulChildOpts |= optTrySignal
+		} else {
+			// The root already broadcast the graceful signal to the attached console group.
+			gracefulChildOpts &^= optTrySignal
 		}
-		return retryErr
 
-	}, slices.MaxConcurrency)
+		gracefulChildErrors := stopChildren(
+			ctx,
+			gracefulChildOpts,
+			false,
+			"Giving child processes the remaining graceful-stop budget...",
+		)
+		forceDescendants = len(gracefulChildErrors) > 0 || ctx.Err() != nil
+		if !forceDescendants {
+			procTreeLog.V(1).Info("All child processes stopped gracefully")
+			rootWaitErr := waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, rootStopErr)
+			return errors.Join(treeErr, rootWaitErr)
+		}
 
-	childStoppingErrors = slices.Select(childStoppingErrors, func(e error) bool { return e != nil })
+		procTreeLog.V(1).Info("The graceful-stop budget expired before all child processes stopped")
+	}
+
+	if (opts & optIsResponsibleForStopping) == 0 {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return errors.Join(treeErr, rootStopErr, contextErr)
+		}
+		childStoppingErrors := stopChildren(
+			ctx,
+			forceChildOpts,
+			true,
+			"Force-killing remaining child processes...",
+		)
+		rootWaitErr := waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, rootStopErr)
+		return errors.Join(append([]error{treeErr, rootStopErr, rootWaitErr}, childStoppingErrors...)...)
+	}
+
+	if rootResult.forceKillUsed {
+		procTreeLog.V(1).Info("The root process required a force kill; force-killing remaining child processes")
+	}
+
+	forceCtx, forceCancel := context.WithTimeout(context.WithoutCancel(ctx), signalAndWaitTimeout)
+	defer forceCancel()
+
+	if rootStopErr != nil {
+		var fatalRootForceErr error
+		rootResult, rootStopErr, fatalRootForceErr = stopRootProcess(forceCtx, forceChildOpts)
+		if fatalRootForceErr != nil {
+			procTreeLog.Error(fatalRootForceErr, "Could not force-kill root process")
+		}
+	}
+
+	childStoppingErrors := stopChildren(
+		forceCtx,
+		forceChildOpts,
+		true,
+		"Force-killing remaining child processes...",
+	)
 	if len(childStoppingErrors) > 0 {
 		procTreeLog.V(1).Error(errors.Join(childStoppingErrors...), "Some child processes could not be stopped")
 	} else {
@@ -484,9 +597,9 @@ func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHand
 	//     b. we have a time-of-check vs time-of-use problem  with the process tree, which is a snapshot,
 	//        and may be out-of-date for processes spawn children vigorously,
 	// So that is why the following wait operation employs a timeout.
-	rootWaitErr := waitForRootProcessToEnd(procEndedCh, stopErr)
+	rootWaitErr := waitForRootProcessToEnd(forceCtx, rootResult.waitEndedCh, rootStopErr)
 
-	return errors.Join(append([]error{treeErr, rootWaitErr}, childStoppingErrors...)...)
+	return errors.Join(append([]error{treeErr, rootStopErr, rootWaitErr}, childStoppingErrors...)...)
 }
 
 var maxConcurrentProcessStops = runtime.NumCPU() * 5
@@ -543,9 +656,16 @@ func (e *OSExecutor) Dispose() {
 			if flags&CreationFlagEnsureKillOnDispose == CreationFlagEnsureKillOnDispose {
 				// Best effort to stop the process.
 				e.log.V(1).Info("Stopping process during executor disposal...", "PID", handle.Pid, "Command", waitable.Info())
+				// One 15-second graceful-stop budget covers the whole process tree. The root is
+				// handled first, and descendants receive the remaining budget only if the root
+				// exits gracefully.
 				cleanupCtx, cleanupCancel := WithStopTimeout(context.Background())
 				defer cleanupCancel()
-				stopErr := e.stopProcessInternal(cleanupCtx, handle, optIsResponsibleForStopping|optTrySignal)
+				stopErr := e.stopProcessInternal(
+					cleanupCtx,
+					handle,
+					optIsResponsibleForStopping|optTrySignal,
+				)
 				if stopErr != nil {
 					e.log.Error(stopErr, "Could not stop process during executor disposal", "PID", handle.Pid, "Command", waitable.Info())
 				}
@@ -579,6 +699,11 @@ func (e *OSExecutor) FindProcessHandle(pid Pid_t) (ProcessHandle, error) {
 
 type processStoppingOpts uint16
 
+type singleProcessStopResult struct {
+	waitEndedCh   <-chan struct{}
+	forceKillUsed bool
+}
+
 const (
 	optNone            processStoppingOpts = 0
 	optNotFoundIsError processStoppingOpts = 0x1
@@ -597,6 +722,10 @@ const (
 	// Skips descendant enumeration and cleanup after stopping the root process.
 	// Descendants may still receive signals sent to a shared console or process group.
 	optSkipDescendants processStoppingOpts = 0x20
+
+	// Attempts graceful stopping without escalating to a force kill. The caller is responsible
+	// for force-killing the process later if the graceful-stop context expires.
+	optGracefulOnly processStoppingOpts = 0x40
 )
 
 func makeClosedChan() chan struct{} {

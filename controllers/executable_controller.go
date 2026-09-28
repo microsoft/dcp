@@ -348,7 +348,9 @@ func handleNewExecutable(
 			if exe.Spec.Stop {
 				stopChange := noChange
 				if findErr == nil {
-					stopErr := persistentRunner.StopPersistentProcess(ctx, exe, record, log)
+					cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
+					stopErr := persistentRunner.StopPersistentProcess(cleanupCtx, exe, record, log)
+					cleanupCancel()
 					if stopErr != nil {
 						log.Error(stopErr, "Could not stop persistent Executable process", "PID", record.PID)
 						return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
@@ -409,7 +411,9 @@ func handleNewExecutable(
 							"OldLifecycleKey", record.LifecycleKey,
 							"NewLifecycleKey", lifecycleKey)
 					}
-					stopErr := persistentRunner.StopPersistentProcess(ctx, exe, record, log)
+					cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
+					stopErr := persistentRunner.StopPersistentProcess(cleanupCtx, exe, record, log)
+					cleanupCancel()
 					if stopErr != nil {
 						log.Error(stopErr, "Could not stop persistent Executable process with stale lifecycle key", "PID", record.PID)
 						return environmentChange | r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
@@ -734,11 +738,14 @@ func (r *ExecutableReconciler) cleanUpPersistentStartAfterRecordFailure(
 		return
 	}
 
+	cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
+	defer cleanupCancel()
+
 	if res.RunID != UnknownRunID {
 		runner, runnerNotFoundErr := r.getExecutableRunner(exe, startupStage)
 		if runnerNotFoundErr != nil {
 			log.Error(runnerNotFoundErr, "The persistent Executable cannot be stopped after process record update failed")
-		} else if stopErr := runner.StopRun(ctx, res.RunID, log); stopErr != nil {
+		} else if stopErr := runner.StopRun(cleanupCtx, res.RunID, log); stopErr != nil {
 			log.Error(stopErr, "Could not stop persistent Executable after process record update failed", "RunID", res.RunID)
 		}
 	}
@@ -747,7 +754,7 @@ func (r *ExecutableReconciler) cleanUpPersistentStartAfterRecordFailure(
 		if path == "" || osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
 			return
 		}
-		if removeErr := logs.RemoveWithRetry(ctx, path); removeErr != nil {
+		if removeErr := logs.RemoveWithRetry(cleanupCtx, path); removeErr != nil {
 			log.Error(removeErr, "Could not remove persistent Executable output file after process record update failed", "Path", path, "Stream", stream)
 		}
 	}
@@ -948,6 +955,9 @@ func (r *ExecutableReconciler) OnRunMessage(runID RunID, level RunMessageLevel, 
 // The passed runInfo is a copy that the method can modify
 func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo *ExecutableRunInfo, persistentLease *statestore.ResourceLease, log logr.Logger) func(context.Context) {
 	return func(stopCtx context.Context) {
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(stopCtx)
+		defer cleanupCancel()
+
 		if persistentLease != nil {
 			defer func() {
 				if releaseErr := persistentLease.Release(context.WithoutCancel(stopCtx)); releaseErr != nil {
@@ -963,7 +973,7 @@ func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo
 			return
 		}
 
-		stopErr := runner.StopRun(stopCtx, runInfo.RunID, log)
+		stopErr := runner.StopRun(cleanupCtx, runInfo.RunID, log)
 
 		// If the stop fails, we are not sure if the Executable is still running or not,
 		// so we queue the transition to the unknown state. But if the stop succeeds,

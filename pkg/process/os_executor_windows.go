@@ -76,14 +76,14 @@ func NewOSExecutor(log logr.Logger) Executor {
 	return e
 }
 
-func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle, opts processStoppingOpts) (<-chan struct{}, error) {
+func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle, opts processStoppingOpts) (singleProcessStopResult, error) {
 	if contextErr := ctx.Err(); contextErr != nil {
-		return nil, contextErr
+		return singleProcessStopResult{}, contextErr
 	}
 	proc, err := FindProcess(handle)
 	if err != nil {
 		if !IsProcessGoneErr(err) {
-			return nil, err
+			return singleProcessStopResult{}, err
 		}
 		e.acquireLock()
 		alreadyEnded := false
@@ -94,9 +94,9 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 		e.releaseLock()
 
 		if (opts&optNotFoundIsError) != 0 && !alreadyEnded {
-			return nil, &ErrProcessNotFound{Pid: handle.Pid, Inner: err}
+			return singleProcessStopResult{}, &ErrProcessNotFound{Pid: handle.Pid, Inner: err}
 		} else {
-			return makeClosedChan(), nil
+			return singleProcessStopResult{waitEndedCh: makeClosedChan()}, nil
 		}
 	}
 
@@ -105,7 +105,7 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 			e.log.Error(releaseErr, "Could not release process reference", "PID", handle.Pid)
 		}
 	}()
-	waitable := makeProcessWaitable(e.lifetimeCtx, handle)
+	waitable := makeProcessWaitable(e.lifetimeCtx, handle, defaultWaitPollInterval)
 	ws, shouldStopProcess := e.tryStartWaiting(handle, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh
@@ -114,7 +114,7 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 	}
 
 	if !shouldStopProcess && (opts&optIsResponsibleForStopping) == 0 {
-		return waitEndedCh, nil
+		return singleProcessStopResult{waitEndedCh: waitEndedCh}, nil
 	}
 	defer e.finishStopAttempt(ws)
 
@@ -136,10 +136,21 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 			processGroupID = uint32(proc.Pid)
 		}
 
-		err = e.signalAndWaitForExit(ctx, handle, proc, sig, processGroupID, ws)
+		waitTimeout := signalAndWaitTimeout
+		if (opts & optGracefulOnly) != 0 {
+			waitTimeout = 0
+		}
+		err = e.signalAndWaitForExit(ctx, handle, proc, sig, processGroupID, ws, waitTimeout)
 		if err == nil {
 			e.log.V(1).Info("Process stopped by signal", "PID", handle.Pid, "Signal", sig)
-			return waitEndedCh, nil
+			return singleProcessStopResult{waitEndedCh: waitEndedCh}, nil
+		}
+		if IsProcessGoneErr(e.CheckProcessRunning(handle)) {
+			e.log.V(1).Info("Process exited after signal while its wait operation was still completing", "PID", handle.Pid, "Signal", sig)
+			return singleProcessStopResult{waitEndedCh: waitEndedCh}, nil
+		}
+		if (opts & optGracefulOnly) != 0 {
+			return singleProcessStopResult{waitEndedCh: waitEndedCh}, err
 		}
 
 		e.log.V(1).Info("Process did not stop upon signal; falling back to SIGKILL", "PID", handle.Pid, "Signal", sig, "Error", err)
@@ -149,11 +160,14 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 		// time to exit from that broadcast before force-killing it.
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return singleProcessStopResult{waitEndedCh: waitEndedCh}, ctx.Err()
 		case <-ws.waitEndedCh:
 			e.log.V(1).Info("Process exited after console group signal", "PID", handle.Pid)
-			return waitEndedCh, nil
+			return singleProcessStopResult{waitEndedCh: waitEndedCh}, nil
 		case <-time.After(signalAndWaitTimeout):
+			if (opts & optGracefulOnly) != 0 {
+				return singleProcessStopResult{waitEndedCh: waitEndedCh}, ErrTimedOutWaitingForProcessToStop
+			}
 			e.log.V(1).Info("Process did not exit after console group signal, force-killing", "PID", handle.Pid)
 		}
 	}
@@ -161,18 +175,27 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 	e.log.V(1).Info("Sending SIGKILL to process...", "PID", handle.Pid)
 	err = signalProcess(ctx, handle, proc, os.Kill)
 	if err != nil && !IsProcessGoneErr(err) {
-		return nil, err
+		return singleProcessStopResult{waitEndedCh: waitEndedCh, forceKillUsed: true}, err
 	}
 
 	e.log.V(1).Info("Process stopped by SIGKILL", "PID", handle.Pid)
-	return waitEndedCh, nil
+	return singleProcessStopResult{waitEndedCh: waitEndedCh, forceKillUsed: true}, nil
 }
 
 // Sends a given signal to a process and waits for it to exit.
 // processGroupID specifies the target process group; use 0 to signal all processes
 // in the current console group (as required when attached to a foreign console).
-// If the process does not exit within 6 seconds, the function returns ErrTimedOutWaitingForProcessToStop.
-func (e *OSExecutor) signalAndWaitForExit(ctx context.Context, handle ProcessHandle, proc *os.Process, sig uint32, processGroupID uint32, ws *waitState) error {
+// If waitTimeout is positive and the process does not exit within that duration, the function
+// returns ErrTimedOutWaitingForProcessToStop. A zero timeout waits until the context expires.
+func (e *OSExecutor) signalAndWaitForExit(
+	ctx context.Context,
+	handle ProcessHandle,
+	proc *os.Process,
+	sig uint32,
+	processGroupID uint32,
+	ws *waitState,
+	waitTimeout time.Duration,
+) error {
 	err := actOnProcess(ctx, handle, func() (ProcessHandle, error) {
 		info, infoErr := readProcessInfoFromProcess(proc, false)
 		return info.handle, infoErr
@@ -184,6 +207,14 @@ func (e *OSExecutor) signalAndWaitForExit(ctx context.Context, handle ProcessHan
 	}
 	if err != nil {
 		return fmt.Errorf("could not send signal to process %d: %w", proc.Pid, err)
+	}
+
+	var timeoutCh <-chan time.Time
+	var timer *time.Timer
+	if waitTimeout > 0 {
+		timer = time.NewTimer(waitTimeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
 	}
 
 	select {
@@ -199,7 +230,7 @@ func (e *OSExecutor) signalAndWaitForExit(ctx context.Context, handle ProcessHan
 
 		return fmt.Errorf("could not wait for process %d to exit: %w", proc.Pid, err)
 
-	case <-time.After(signalAndWaitTimeout):
+	case <-timeoutCh:
 		return ErrTimedOutWaitingForProcessToStop
 	}
 }
