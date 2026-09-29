@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
+
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/maps"
@@ -41,6 +43,33 @@ type waitState struct {
 	waitEnded   time.Time     // The time when the wait function ended. Zero if the wait is still in progress.
 	reason      waitReason    // The reason why are waiting on the process
 	waitStarted bool
+}
+
+type osExecutorBase struct {
+	procsWaiting           map[ProcessHandle]*waitState
+	disposed               bool
+	lock                   sync.Locker
+	log                    logr.Logger
+	lifetimeCtx            context.Context
+	lifetimeCtxCancel      context.CancelFunc
+	startLifetimeCtx       context.Context
+	startLifetimeCtxCancel context.CancelCauseFunc
+	startsInFlight         sync.WaitGroup
+}
+
+func newOSExecutorBase(log logr.Logger) *osExecutorBase {
+	lifetimeCtx, lifetimeCtxCancel := context.WithCancel(context.Background())
+	startLifetimeCtx, startLifetimeCtxCancel := context.WithCancelCause(context.Background())
+	return &osExecutorBase{
+		procsWaiting:           make(map[ProcessHandle]*waitState),
+		disposed:               false,
+		lock:                   &sync.Mutex{},
+		log:                    log.WithName("os-executor"),
+		lifetimeCtx:            lifetimeCtx,
+		lifetimeCtxCancel:      lifetimeCtxCancel,
+		startLifetimeCtx:       startLifetimeCtx,
+		startLifetimeCtxCancel: startLifetimeCtxCancel,
+	}
 }
 
 func (e *OSExecutor) beginProcessStart(parent context.Context) (context.Context, func(), error) {

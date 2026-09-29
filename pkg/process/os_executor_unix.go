@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"sync"
 	"syscall"
 	"time"
 
@@ -29,29 +28,12 @@ const (
 )
 
 type OSExecutor struct {
-	procsWaiting           map[ProcessHandle]*waitState
-	disposed               bool
-	lock                   sync.Locker
-	log                    logr.Logger
-	lifetimeCtx            context.Context
-	lifetimeCtxCancel      context.CancelFunc
-	startLifetimeCtx       context.Context
-	startLifetimeCtxCancel context.CancelCauseFunc
-	startsInFlight         sync.WaitGroup
+	*osExecutorBase
 }
 
 func NewOSExecutor(log logr.Logger) Executor {
-	lifetimeCtx, lifetimeCtxCancel := context.WithCancel(context.Background())
-	startLifetimeCtx, startLifetimeCtxCancel := context.WithCancelCause(context.Background())
 	return &OSExecutor{
-		procsWaiting:           make(map[ProcessHandle]*waitState),
-		disposed:               false,
-		lock:                   &sync.Mutex{},
-		log:                    log.WithName("os-executor"),
-		lifetimeCtx:            lifetimeCtx,
-		lifetimeCtxCancel:      lifetimeCtxCancel,
-		startLifetimeCtx:       startLifetimeCtx,
-		startLifetimeCtxCancel: startLifetimeCtxCancel,
+		osExecutorBase: newOSExecutorBase(log),
 	}
 }
 

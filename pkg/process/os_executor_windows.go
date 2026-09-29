@@ -43,31 +43,14 @@ var (
 )
 
 type OSExecutor struct {
-	procsWaiting             map[ProcessHandle]*waitState
-	lock                     sync.Locker
-	disposed                 bool
-	log                      logr.Logger
+	*osExecutorBase
 	processCleanupJob        func() windows.Handle
 	processCleanupJobCreated bool
-	lifetimeCtx              context.Context
-	lifetimeCtxCancel        context.CancelFunc
-	startLifetimeCtx         context.Context
-	startLifetimeCtxCancel   context.CancelCauseFunc
-	startsInFlight           sync.WaitGroup
 }
 
 func NewOSExecutor(log logr.Logger) Executor {
-	lifetimeCtx, lifetimeCtxCancel := context.WithCancel(context.Background())
-	startLifetimeCtx, startLifetimeCtxCancel := context.WithCancelCause(context.Background())
 	e := &OSExecutor{
-		procsWaiting:           make(map[ProcessHandle]*waitState),
-		lock:                   &sync.Mutex{},
-		disposed:               false,
-		log:                    log.WithName("os-executor"),
-		lifetimeCtx:            lifetimeCtx,
-		lifetimeCtxCancel:      lifetimeCtxCancel,
-		startLifetimeCtx:       startLifetimeCtx,
-		startLifetimeCtxCancel: startLifetimeCtxCancel,
+		osExecutorBase: newOSExecutorBase(log),
 	}
 	e.processCleanupJob = sync.OnceValue(func() windows.Handle {
 		e.processCleanupJobCreated = true
