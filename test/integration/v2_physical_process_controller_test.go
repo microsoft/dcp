@@ -1084,6 +1084,8 @@ func TestV2PhysicalProcessControllerStopsProcessWhenDeletedDuringLaunch(t *testi
 	require.True(t, executions[0].Finished())
 }
 
+// Verifies that the V2 physical-process controller fails an invalid launch identity,
+// does not retry startup, and never targets the unidentified process by PID alone.
 func TestV2PhysicalProcessControllerRejectsInvalidLaunchIdentityWithoutRetry(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -1130,6 +1132,8 @@ func TestV2PhysicalProcessControllerDoesNotRetryUnpinnedCleanup(t *testing.T) {
 	verifyUncertainPhysicalProcessStart(t, &invalidIdentityCleanupFailureExecutor{})
 }
 
+// Verifies that the V2 physical-process controller treats uncertain startup rollback as terminal,
+// avoids repeated starts or PID-only cleanup, and allows deletion without stopping a replacement process.
 func TestV2PhysicalProcessControllerDoesNotRetryUncertainRollback(t *testing.T) {
 	verifyUncertainPhysicalProcessStart(t, &invalidIdentityCleanupFailureExecutor{
 		startErr: fmt.Errorf("%w: simulated rollback failure", process.ErrProcessStartUncertain),

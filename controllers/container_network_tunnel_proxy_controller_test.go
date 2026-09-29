@@ -78,7 +78,9 @@ func (executor *serverProxyStartTestExecutor) StartAndForget(
 	return executor.handle, nil
 }
 
-func TestServerProxyConfigFailurePreservesUnconfirmedProcess(t *testing.T) {
+// Verifies that a server proxy configuration failure preserves process identity after cleanup fails,
+// reports both failures, and allows a later cleanup attempt to clear the identity.
+func TestServerProxyConfigFailurePreservesIdentityAfterCleanupFailure(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 
 	configReadErr := errors.New("server proxy configuration is unavailable")
@@ -129,7 +131,9 @@ func TestServerProxyConfigFailurePreservesUnconfirmedProcess(t *testing.T) {
 	require.True(t, proxyData.ServerProxyStartupTimestamp.IsZero())
 }
 
-func TestServerProxyConfigFailureRetriesAfterConfirmedCleanup(t *testing.T) {
+// Verifies that confirmed cleanup after a server proxy configuration failure clears process identity,
+// keeps the proxy retryable, and does not start another process immediately.
+func TestServerProxyConfigFailureClearsIdentityAfterConfirmedCleanup(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 
 	executor := &serverProxyStartTestExecutor{
@@ -171,7 +175,9 @@ func TestServerProxyConfigFailureRetriesAfterConfirmedCleanup(t *testing.T) {
 	require.Equal(t, 1, executor.stopCalls)
 }
 
-func TestServerProxyConfigFailureExitCallbackRemainsProcessScoped(t *testing.T) {
+// Verifies that expected rollback exits do not fail startup, stale callbacks cannot affect a replacement,
+// and the current server proxy callback still records an unexpected exit.
+func TestServerProxyExitCallbacksAreRunScoped(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 
 	testCtx, testCancel := context.WithCancel(context.Background())
@@ -256,6 +262,8 @@ func TestServerProxyConfigFailureExitCallbackRemainsProcessScoped(t *testing.T) 
 	require.Nil(t, afterCurrentExit.ServerProxyProcessID)
 }
 
+// Verifies that an unexpected server proxy exit before startup-result publication remains failed,
+// clears process identity, and cannot be overwritten by the successful startup result.
 func TestServerProxyExitBeforeStartupResultPublicationRemainsFailed(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 
@@ -277,7 +285,6 @@ func TestServerProxyExitBeforeStartupResultPublicationRemainsFailed(t *testing.T
 	}
 	proxyName := proxy.NamespacedName()
 	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting)
-	proxyData.startupScheduled = true
 	reconciler := &ContainerNetworkTunnelProxyReconciler{
 		ReconcilerBase: NewReconcilerBase[apiv1.ContainerNetworkTunnelProxy](
 			nil,
@@ -299,14 +306,17 @@ func TestServerProxyExitBeforeStartupResultPublicationRemainsFailed(t *testing.T
 	require.True(t, started)
 	require.NotNil(t, run)
 	require.Equal(t, 1, executor.startCalls)
+	_, storedBeforeResult := reconciler.proxyData.BorrowByNamespacedName(proxyName)
+	require.NotNil(t, storedBeforeResult)
+	require.Nil(t, storedBeforeResult.ServerProxyProcessID)
+	require.True(t, storedBeforeResult.ServerProxyStartupTimestamp.IsZero())
 
 	proxyData.State = apiv1.ContainerNetworkTunnelProxyStateRunning
-	proxyData.startupScheduled = false
 	executor.exitHandlers[0].OnProcessExited(executor.handle.Pid, 1, errors.New("unexpected exit"))
 	recordedExitType, exited := run.getExitType()
 	require.True(t, exited)
 	require.Equal(t, serverProxyExitTypeUnexpected, recordedExitType)
-	reconciler.queueProxyPairStartupResult(proxyName, proxyData, run)
+	reconciler.queueProxyPairStartupResult(proxyName, proxy.UID, proxyData, run)
 
 	reconciler.proxyData.RunDeferredOps(proxyName, proxy)
 	_, currentData := reconciler.proxyData.BorrowByNamespacedName(proxyName)
@@ -314,5 +324,4 @@ func TestServerProxyExitBeforeStartupResultPublicationRemainsFailed(t *testing.T
 	require.Equal(t, apiv1.ContainerNetworkTunnelProxyStateFailed, currentData.State)
 	require.Nil(t, currentData.ServerProxyProcessID)
 	require.True(t, currentData.ServerProxyStartupTimestamp.IsZero())
-	require.False(t, currentData.startupScheduled)
 }

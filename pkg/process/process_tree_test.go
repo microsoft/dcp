@@ -25,6 +25,8 @@ func treeProcess(pid, parent Pid_t, birth uint64) processInfo {
 	}
 }
 
+// Verifies that process-tree construction is breadth-first, rejects reused or unverifiable identities,
+// handles cycles and ambiguous records, and excludes stale or disconnected ancestry.
 func TestBuildProcessTree(t *testing.T) {
 	t.Parallel()
 	root := treeProcess(10, 0, 10)
@@ -63,6 +65,8 @@ func TestBuildProcessTree(t *testing.T) {
 	}
 }
 
+// Verifies that process-tree ancestry uses native birth ordering
+// rather than rounded identity timestamps when excluding an older child.
 func TestProcessTreeUsesNativeBirthOrdering(t *testing.T) {
 	t.Parallel()
 	root := treeProcess(10, 0, 10000)
@@ -73,6 +77,8 @@ func TestProcessTreeUsesNativeBirthOrdering(t *testing.T) {
 	require.Equal(t, []Pid_t{10}, getIDs(tree))
 }
 
+// Verifies that process-tree construction handles deep ancestry iteratively,
+// preserves breadth-first order, and exits promptly for a canceled context.
 func TestProcessTreeDeepAndCancelled(t *testing.T) {
 	t.Parallel()
 	const count = 10000
@@ -92,6 +98,8 @@ func TestProcessTreeDeepAndCancelled(t *testing.T) {
 	require.ErrorIs(t, cancelledErr, context.Canceled)
 }
 
+// Verifies that every process action re-inspects identity before dispatch,
+// rejects PID reuse and inspection errors, and honors cancellation before inspection.
 func TestProcessActionRevalidatesEveryDispatch(t *testing.T) {
 	t.Parallel()
 	expected := treeProcess(10, 0, 10).handle
@@ -124,7 +132,9 @@ func TestProcessActionRevalidatesEveryDispatch(t *testing.T) {
 	require.Equal(t, 2, inspections)
 }
 
-func TestStrictProcessIdentity(t *testing.T) {
+// Verifies that process lookup, stopping, waiting, and tree APIs reject incomplete identities,
+// and that nil process and command inputs return invalid-handle errors.
+func TestProcessAPIsRejectIncompleteIdentity(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	executor := NewOSExecutor(logr.Discard())
@@ -143,7 +153,9 @@ func TestStrictProcessIdentity(t *testing.T) {
 	require.ErrorIs(t, nilCmdErr, ErrInvalidProcessHandle)
 }
 
-func TestIdentityCompatibilityAndGoneClassification(t *testing.T) {
+// Verifies that process identity comparison accepts only the configured timestamp tolerance,
+// distinguishes unavailable identity, and classifies joined gone errors only when every cause is gone.
+func TestIdentityToleranceAndGoneClassification(t *testing.T) {
 	t.Parallel()
 	actual := treeProcess(10, 0, 10).handle
 	expected := actual

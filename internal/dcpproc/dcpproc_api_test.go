@@ -250,6 +250,8 @@ func TestStopProcessTree(t *testing.T) {
 	require.Equal(t, dcpProc.Cmd.Args[5], handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat), "Should include formatted process start time")
 }
 
+// Verifies that the simulated stop-process-tree command resolves a PID-only argument,
+// stops the matching process instance, and returns a successful exit code.
 func TestSimulateStopProcessTreeCommandSupportsPIDOnly(t *testing.T) {
 	t.Parallel()
 
@@ -276,7 +278,9 @@ func TestSimulateStopProcessTreeCommandSupportsPIDOnly(t *testing.T) {
 	require.True(t, execution.Finished(), "PID-only simulation must resolve the process identity before stopping")
 }
 
-func TestSimulateStopProcessTreeCommandRejectsMissingOptionalIdentity(t *testing.T) {
+// Verifies that the simulated stop-process-tree command rejects an identity-time flag
+// that is present without a value and returns the command-line usage exit code.
+func TestSimulateStopProcessTreeCommandRejectsIdentityFlagWithoutValue(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)

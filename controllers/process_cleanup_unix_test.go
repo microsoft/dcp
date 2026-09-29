@@ -55,6 +55,8 @@ func (*processTreeCleanupRunner) ReleaseRun(context.Context, RunID, logr.Logger)
 	return nil
 }
 
+// Verifies that the subprocess helper creates the requested process tree, reports its child,
+// and coordinates delayed root termination for controller cleanup tests.
 func TestControllerCleanupProcessHelper(t *testing.T) {
 	mode := os.Getenv(controllerCleanupHelperMode)
 	switch mode {
@@ -105,6 +107,8 @@ func TestControllerCleanupProcessHelper(t *testing.T) {
 	}
 }
 
+// Verifies that physical-process cleanup continues after queue cancellation,
+// stops the root process, and removes its child process.
 func TestPhysicalProcessCleanupContinuesAfterQueueCancellation(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
 	defer testCancel()
@@ -135,6 +139,8 @@ func TestPhysicalProcessCleanupContinuesAfterQueueCancellation(t *testing.T) {
 	requireProcessStoppedByController(t, testCtx, executor, childHandle)
 }
 
+// Verifies that queued executable stops and persistent-start rollback continue after queue cancellation,
+// complete process-tree cleanup, and report no stop error.
 func TestExecutableCleanupContinuesAfterQueueCancellation(t *testing.T) {
 	for _, testCase := range []struct {
 		name   string

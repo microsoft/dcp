@@ -28,6 +28,8 @@ func darwinRecord(pid, parent int32, seconds int64, microseconds int32) []byte {
 	return buffer
 }
 
+// Verifies that Darwin process records preserve millisecond identity and native birth precision,
+// report the parent PID, and reject malformed sizes and timestamps.
 func TestDarwinProcessRecordPrecision(t *testing.T) {
 	t.Parallel()
 	info, infoErr := decodeDarwinProcessInfo(darwinRecord(12, 10, 1000, 123456))
@@ -41,7 +43,9 @@ func TestDarwinProcessRecordPrecision(t *testing.T) {
 	require.Error(t, invalidTimeErr)
 }
 
-func TestDarwinSnapshotResizeAndCancellation(t *testing.T) {
+// Verifies that Darwin process snapshots retry transient sizing failures, honor cancellation,
+// decode complete records, and propagate malformed-table and permission errors.
+func TestDarwinSnapshotRetriesAndPropagatesErrors(t *testing.T) {
 	t.Parallel()
 	calls := 0
 	records, snapshotErr := snapshotDarwinProcesses(context.Background(), func() ([]byte, error) {

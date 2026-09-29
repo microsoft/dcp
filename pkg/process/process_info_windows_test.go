@@ -21,6 +21,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// Verifies that cleanup-job process access rights can open the current process,
+// inspect its PID, and read a nonzero process identity.
 func TestCleanupJobProcessAccessSupportsInspection(t *testing.T) {
 	t.Parallel()
 
@@ -50,6 +52,8 @@ func windowsRecord(pid, parent uintptr, birth int64, next uint32) []byte {
 	return buffer
 }
 
+// Verifies that Windows snapshot decoding preserves identity precision and parent relationships,
+// rejects invalid record bounds, and honors cancellation.
 func TestWindowsSnapshotRecordBoundsAndPrecision(t *testing.T) {
 	t.Parallel()
 	creation := windows.NsecToFiletime(time.Unix(1000, 123456700).UnixNano())
@@ -79,6 +83,7 @@ func TestWindowsSnapshotRecordBoundsAndPrecision(t *testing.T) {
 	require.ErrorIs(t, cancelledErr, context.Canceled)
 }
 
+// Verifies that executor disposal closes a cleanup job even when no tracked process forced its creation.
 func TestDisposeClosesUntrackedProcessCleanupJob(t *testing.T) {
 	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 	executor.acquireLock()
@@ -92,7 +97,9 @@ func TestDisposeClosesUntrackedProcessCleanupJob(t *testing.T) {
 	require.ErrorIs(t, queryErr, windows.ERROR_INVALID_HANDLE)
 }
 
-func TestNativeProcessRollbackResultKeepsConfirmedExitCertain(t *testing.T) {
+// Verifies that native rollback result handling keeps close-only failures certain,
+// while rollback failures remain uncertain and preserve all contributing errors.
+func TestNativeProcessRollbackResultDistinguishesCloseErrors(t *testing.T) {
 	t.Parallel()
 
 	closeErr := errors.New("close failed")
@@ -107,6 +114,8 @@ func TestNativeProcessRollbackResultKeepsConfirmedExitCertain(t *testing.T) {
 	require.ErrorIs(t, uncertainResult, ErrProcessStartUncertain)
 }
 
+// Verifies that disposal cancels an admitted process start, waits for that start to finish,
+// and closes the cleanup job created while the start was in flight.
 func TestDisposeClosesCleanupJobCreatedByAdmittedStart(t *testing.T) {
 	t.Parallel()
 

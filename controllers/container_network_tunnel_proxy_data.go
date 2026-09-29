@@ -7,14 +7,17 @@ package controllers
 
 import (
 	"cmp"
+	"context"
 	"os"
 	std_slices "slices"
+	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/dcptun"
+	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/pointers"
 	"github.com/microsoft/dcp/pkg/process"
@@ -59,13 +62,43 @@ func (ted tunnelExtraData) Equal(other tunnelExtraData) bool {
 	return true
 }
 
+// startupLease serializes proxy-pair startup work across cloned in-memory state.
+type startupLease struct {
+	lock *concurrency.ContextAwareLock
+}
+
+func newStartupLease() *startupLease {
+	return &startupLease{
+		lock: concurrency.NewContextAwareLock(),
+	}
+}
+
+func (lease *startupLease) TryAcquire(lifetimeCtx context.Context) (func(), bool) {
+	if lifetimeCtx.Err() != nil || !lease.lock.TryLock() {
+		return nil, false
+	}
+
+	unlock := sync.OnceFunc(lease.lock.Unlock)
+	stopUnlockOnShutdown := context.AfterFunc(lifetimeCtx, unlock)
+	release := sync.OnceFunc(func() {
+		stopUnlockOnShutdown()
+		unlock()
+	})
+
+	if lifetimeCtx.Err() != nil {
+		release()
+		return nil, false
+	}
+
+	return release, true
+}
+
 // Data we keep in memory for ContainerNetworkTunnelProxy instances.
 type containerNetworkTunnelProxyData struct {
 	apiv1.ContainerNetworkTunnelProxyStatus
 
-	// Whether the startup of the proxy pair has been scheduled.
-	// This is checked and updated when we enter the starting state.
-	startupScheduled bool
+	// Coordinates asynchronous startup work. Clones share this lease by pointer.
+	startup *startupLease
 
 	// Whether the cleanup of the proxy pair has been scheduled.
 	// Graceful shutdown of the client proxy container and the server proxy process
@@ -98,6 +131,7 @@ func newContainerNetworkTunnelProxyData(state apiv1.ContainerNetworkTunnelProxyS
 		ContainerNetworkTunnelProxyStatus: apiv1.ContainerNetworkTunnelProxyStatus{
 			State: state,
 		},
+		startup:     newStartupLease(),
 		tunnelExtra: make(map[string]tunnelExtraData),
 	}
 }
@@ -105,7 +139,7 @@ func newContainerNetworkTunnelProxyData(state apiv1.ContainerNetworkTunnelProxyS
 func (tpd *containerNetworkTunnelProxyData) Clone() *containerNetworkTunnelProxyData {
 	clone := containerNetworkTunnelProxyData{
 		ContainerNetworkTunnelProxyStatus: *tpd.ContainerNetworkTunnelProxyStatus.DeepCopy(),
-		startupScheduled:                  tpd.startupScheduled,
+		startup:                           tpd.startup,
 		cleanupScheduled:                  tpd.cleanupScheduled,
 		cleanupCompleted:                  tpd.cleanupCompleted,
 		serverStdout:                      tpd.serverStdout,
@@ -186,11 +220,6 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 
 	if tpd.Message != other.Message {
 		tpd.Message = other.Message
-		updated = true
-	}
-
-	if tpd.startupScheduled != other.startupScheduled {
-		tpd.startupScheduled = other.startupScheduled
 		updated = true
 	}
 

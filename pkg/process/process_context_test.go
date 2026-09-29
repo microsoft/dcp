@@ -15,6 +15,8 @@ import (
 
 type processContextTestKey struct{}
 
+// Verifies that WithStopTimeout adds the process-stop deadline
+// and still propagates cancellation from its parent context.
 func TestWithStopTimeoutPreservesParentCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -30,6 +32,8 @@ func TestWithStopTimeoutPreservesParentCancellation(t *testing.T) {
 	require.ErrorIs(t, ctx.Err(), context.Canceled)
 }
 
+// Verifies that WithDetachedStopTimeout ignores parent cancellation, retains context values,
+// and creates a fresh bounded process-stop deadline.
 func TestWithDetachedStopTimeoutUsesFreshDeadlineAndRetainsValues(t *testing.T) {
 	t.Parallel()
 

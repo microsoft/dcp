@@ -86,6 +86,8 @@ func (executor *cleanupContextProcessExecutor) StopProcess(
 	return executor.stopErr
 }
 
+// Verifies that queued executable stops and persistent-start rollback detach parent cancellation,
+// retain context values, and apply a bounded cleanup deadline.
 func TestExecutableCleanupBoundariesDetachCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -140,6 +142,8 @@ func TestExecutableCleanupBoundariesDetachCancellation(t *testing.T) {
 	}
 }
 
+// Verifies that physical-process cleanup detaches queue cancellation, retains context values,
+// and leaves an incomplete-tree stop in retry-pending state with its failure recorded.
 func TestPhysicalProcessIncompleteTreeStopRemainsRetryable(t *testing.T) {
 	t.Parallel()
 

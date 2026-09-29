@@ -41,6 +41,8 @@ func (executor *terminalCleanupTestExecutor) StopProcess(
 	return nil
 }
 
+// Verifies that terminal cleanup detaches a canceled parent context, retains its values,
+// applies a stop deadline, and clears the stored terminal resources.
 func TestCloseTerminalResourcesDetachesStopFromCanceledContext(t *testing.T) {
 	t.Parallel()
 

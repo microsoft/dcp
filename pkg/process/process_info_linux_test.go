@@ -33,6 +33,8 @@ func linuxStatFixture(pid, parent int, name, ticks string) []byte {
 	return fmt.Appendf(nil, "%d (%s) %s\n", pid, name, strings.Join(fields, " "))
 }
 
+// Verifies that Linux stat parsing accepts simple and unusual process names
+// while preserving PID, parent PID, native birth ticks, and identity time.
 func TestParseLinuxProcessStat(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"simple", "a name", "a ) strange (name)", "line\nbreak"} {
@@ -48,6 +50,8 @@ func TestParseLinuxProcessStat(t *testing.T) {
 	}
 }
 
+// Verifies that Linux stat parsing rejects malformed identifiers, fields, tick values, and frequencies,
+// while keeping zero-tick kernel records explicitly unidentifiable.
 func TestParseLinuxProcessStatRejectsMalformedRecords(t *testing.T) {
 	t.Parallel()
 	valid := string(linuxStatFixture(12, 10, "name", "12345"))
@@ -74,6 +78,8 @@ func TestParseLinuxProcessStatRejectsMalformedRecords(t *testing.T) {
 	require.True(t, zeroInfo.handle.IdentityTime.IsZero(), "unidentifiable kernel records must not become valid handles")
 }
 
+// Verifies that Linux process snapshots use the supplied proc root, return valid partial results,
+// classify missing processes, and honor cancellation.
 func TestLinuxSnapshotUsesSuppliedProcRoot(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -104,6 +110,8 @@ func TestLinuxSnapshotUsesSuppliedProcRoot(t *testing.T) {
 	require.ErrorIs(t, cancellationErr, context.Canceled)
 }
 
+// Verifies that Linux identity conversion rejects overflowing start ticks
+// and precisely handles extreme tick and frequency values that remain representable.
 func TestLinuxIdentityConversionLimits(t *testing.T) {
 	t.Parallel()
 	_, overflowErr := linuxIdentityTime(math.MaxUint64, 1)

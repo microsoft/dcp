@@ -31,6 +31,8 @@ func (w *startupWaitable) Abort(context.Context) error {
 	return w.abortErr
 }
 
+// Verifies that custom process creation with an incomplete identity is rolled back,
+// returns no usable handle, and classifies failed rollback as an uncertain start.
 func TestCustomCreationIncompleteIdentityIsRolledBack(t *testing.T) {
 	t.Parallel()
 	rollbackErr := errors.New("rollback denied")
@@ -60,6 +62,7 @@ func TestCustomCreationIncompleteIdentityIsRolledBack(t *testing.T) {
 	}
 }
 
+// Verifies that cancellation detected after process inspection prevents the process action from dispatching.
 func TestProcessActionCancellationDuringInspection(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -77,7 +80,9 @@ func TestProcessActionCancellationDuringInspection(t *testing.T) {
 	require.False(t, actionCalled)
 }
 
-func TestRollbackProcessStartUsesConfirmedExit(t *testing.T) {
+// Verifies that process-start rollback uses the wait result to confirm cleanup,
+// ignores a kill error after confirmed exit, and marks a failed wait as uncertain.
+func TestRollbackProcessStartUsesWaitToConfirmExit(t *testing.T) {
 	t.Parallel()
 
 	killErr := errors.New("kill failed")
@@ -111,6 +116,8 @@ func TestRollbackProcessStartUsesConfirmedExit(t *testing.T) {
 	}
 }
 
+// Verifies that executor disposal cancels an in-flight process creation,
+// waits for it to return, and rejects later process starts.
 func TestDisposeCancelsInFlightProcessCreation(t *testing.T) {
 	t.Parallel()
 
@@ -173,6 +180,8 @@ func TestDisposeCancelsInFlightProcessCreation(t *testing.T) {
 	require.ErrorIs(t, rejectedErr, ErrDisposed)
 }
 
+// Verifies that disposal signals cancellation to a noncooperative process creator,
+// remains blocked until creation returns, and preserves both disposal and creation errors.
 func TestDisposeWaitsForNonCooperativeProcessCreation(t *testing.T) {
 	t.Parallel()
 

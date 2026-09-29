@@ -254,7 +254,9 @@ func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
 	require.Equal(t, int32(internal_testutil.KilledProcessExitCode), execution.ExitCode)
 }
 
-func TestStopRunDoesNotRestoreCompletedRun(t *testing.T) {
+// Verifies that a concurrent completion removes the run, reports completion, and is not reinserted
+// when the stop operation also reports an incomplete process tree.
+func TestStopRunDoesNotReinsertCompletedRun(t *testing.T) {
 	t.Parallel()
 
 	stopExecutor := &stopRunTestExecutor{
@@ -277,6 +279,7 @@ func TestStopRunDoesNotRestoreCompletedRun(t *testing.T) {
 	}
 }
 
+// Verifies that a genuine stop failure is returned and preserves the run identity for a later retry.
 func TestStopRunPreservesStateAfterStopFailure(t *testing.T) {
 	t.Parallel()
 
@@ -295,6 +298,51 @@ func TestStopRunPreservesStateAfterStopFailure(t *testing.T) {
 	require.Equal(t, stopExecutor.handle, stored.handle)
 }
 
+// Verifies that an already-gone process is treated as a successful stop,
+// removes the run, and completes resource cleanup without returning the stale lookup error.
+func TestStopRunTreatsGoneProcessAsStopped(t *testing.T) {
+	t.Parallel()
+
+	stopExecutor := &stopRunTestExecutor{
+		handle:  process.NewHandle(4246, time.Unix(1004, 0).UTC()),
+		stopErr: &process.ErrProcessNotFound{Pid: 4246},
+	}
+	runner, result, _ := startStopRunTest(t, stopExecutor)
+
+	require.NoError(t, runner.StopRun(context.Background(), result.RunID, logr.Discard()))
+	_, found := runner.runningProcesses.Load(result.RunID)
+	require.False(t, found)
+}
+
+// Verifies that stopping an already-gone persistent process succeeds,
+// uses the persisted process identity, and does not surface the stale lookup error.
+func TestStopPersistentProcessTreatsGoneProcessAsStopped(t *testing.T) {
+	t.Parallel()
+
+	handle := process.NewHandle(4247, time.Unix(1005, 0).UTC())
+	stopExecutor := &stopRunTestExecutor{
+		handle:  handle,
+		stopErr: &process.ErrProcessNotFound{Pid: handle.Pid},
+	}
+	runner := NewProcessExecutableRunner(stopExecutor)
+	runner.disableConsoleStop = true
+	record := &statestore.PersistentProcessRecord{
+		PID:          handle.Pid,
+		IdentityTime: handle.IdentityTime,
+		RunID:        "persistent-gone",
+	}
+
+	stopErr := runner.StopPersistentProcess(
+		context.Background(),
+		&apiv1.Executable{Spec: apiv1.ExecutableSpec{ExecutablePath: "persistent-gone"}},
+		record,
+		logr.Discard(),
+	)
+	require.NoError(t, stopErr)
+}
+
+// Verifies that StopRun propagates caller cancellation to the process executor,
+// returns the cancellation error, and preserves the run for retry.
 func TestStopRunHonorsCallerCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -315,7 +363,8 @@ func TestStopRunHonorsCallerCancellation(t *testing.T) {
 	require.Equal(t, stopExecutor.handle, stored.handle)
 }
 
-func TestStopRunCleanupErrorDoesNotRestoreState(t *testing.T) {
+// Verifies that a cleanup error is returned after a confirmed stop while the stopped run remains removed.
+func TestStopRunRemovesStateDespiteCleanupError(t *testing.T) {
 	t.Parallel()
 
 	cleanupErr := errors.New("cleanup failed")
@@ -339,6 +388,8 @@ func TestStopRunCleanupErrorDoesNotRestoreState(t *testing.T) {
 	require.False(t, found)
 }
 
+// Verifies that terminal attach failure distinguishes confirmed cleanup and already-gone processes
+// from cleanup failures whose startup outcome remains uncertain.
 func TestTerminalAttachFailureClassifiesUnconfirmedCleanup(t *testing.T) {
 	t.Parallel()
 

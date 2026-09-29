@@ -613,6 +613,9 @@ func (r *ProcessExecutableRunner) stopProcessRun(ctx context.Context, runID cont
 		stopLog.Error(stopErr, "Failed to stop run; preserving identity for retry")
 		return stopErr
 	}
+	if process.IsProcessGoneErr(stopErr) {
+		return nil
+	}
 
 	return stopErr
 }

@@ -188,6 +188,8 @@ func TestStartTimeForProcess(t *testing.T) {
 		creationTime, now)
 }
 
+// Verifies that StartTimeForProcess converts a captured identity to a nonzero display time
+// even after the process has exited and been waited on.
 func TestStartTimeForExitedProcess(t *testing.T) {
 	t.Parallel()
 

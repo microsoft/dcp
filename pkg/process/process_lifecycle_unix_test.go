@@ -29,6 +29,8 @@ import (
 
 const unixProcessLifecycleHelperMode = "DCP_PROCESS_LIFECYCLE_HELPER_MODE"
 
+// Verifies that the stop-context subprocess helper reports readiness, ignores SIGTERM,
+// and remains alive until its standard input is closed.
 func TestProcessStopContextHelper(t *testing.T) {
 	if os.Getenv("DCP_PROCESS_STOP_CONTEXT_HELPER") != "1" {
 		return
@@ -40,6 +42,8 @@ func TestProcessStopContextHelper(t *testing.T) {
 	require.NoError(t, readErr)
 }
 
+// Verifies that canceling a stop attempt releases stop ownership,
+// leaves the process running, and permits a later stop to complete without another waiter.
 func TestCancelledStopCanBeRetriedWithoutAnotherWaiter(t *testing.T) {
 	t.Parallel()
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
@@ -83,6 +87,8 @@ func TestCancelledStopCanBeRetriedWithoutAnotherWaiter(t *testing.T) {
 	require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(handle)))
 }
 
+// Verifies that the Unix lifecycle subprocess helper creates the requested orphan or process tree,
+// reports child PIDs and signals, and models graceful and signal-resistant descendants.
 func TestUnixProcessLifecycleHelper(t *testing.T) {
 	mode := os.Getenv(unixProcessLifecycleHelperMode)
 	switch mode {
@@ -159,6 +165,8 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 	}
 }
 
+// Verifies that stopping a non-child process uses the short stop polling interval,
+// completes below the monitoring poll floor, and confirms the process is gone.
 func TestStopNonChildUsesShortPollingInterval(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
 	defer testCancel()
@@ -176,6 +184,8 @@ func TestStopNonChildUsesShortPollingInterval(t *testing.T) {
 	require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(handle)))
 }
 
+// Verifies that an incomplete process-tree result is returned to the caller
+// while every verified process in the partial tree is still stopped.
 func TestIncompleteTreeStillStopsVerifiedProcesses(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
 	defer testCancel()
@@ -201,6 +211,8 @@ func TestIncompleteTreeStillStopsVerifiedProcesses(t *testing.T) {
 	requireProcessGone(t, testCtx, executor, childHandle)
 }
 
+// Verifies that executor disposal gives descendants the root process's remaining graceful-stop budget,
+// observes their SIGTERM handling, and stops the complete tree without force-kill delay.
 func TestDisposeGivesDescendantsRemainingGracefulBudget(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 45*time.Second)
 	defer testCancel()
@@ -219,6 +231,8 @@ func TestDisposeGivesDescendantsRemainingGracefulBudget(t *testing.T) {
 	requireProcessGone(t, testCtx, executor, childHandle)
 }
 
+// Verifies that when disposal force-kills the root, descendants skip graceful signaling
+// and are force-killed with the entire process tree confirmed gone.
 func TestDisposeForceKillsDescendantsWhenRootWasForceKilled(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 45*time.Second)
 	defer testCancel()
@@ -234,6 +248,8 @@ func TestDisposeForceKillsDescendantsWhenRootWasForceKilled(t *testing.T) {
 	requireProcessGone(t, testCtx, executor, childHandle)
 }
 
+// Verifies that disposal shares one graceful deadline across the process tree,
+// then force-kills a surviving descendant within the bounded force-cleanup interval.
 func TestDisposeForceKillsDescendantsAfterWholeTreeDeadline(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 45*time.Second)
 	defer testCancel()
