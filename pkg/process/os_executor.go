@@ -336,6 +336,21 @@ func (e *OSExecutor) tryStartWaiting(handle ProcessHandle, waitable Waitable, re
 	return ws, callerShouldStopProcess
 }
 
+// Starts an existing executor-owned wait without claiming stop ownership.
+func (e *OSExecutor) ensureTrackedWaitStarted(handle ProcessHandle) {
+	e.acquireLock()
+	defer e.releaseLock()
+
+	ws, found := e.procsWaiting[handle]
+	if !found || ws.waitStarted || ws.waitable == nil || !ws.waitEnded.IsZero() {
+		return
+	}
+
+	ws.waitStarted = true
+	ws.reason |= waitReasonMonitoring
+	go e.doWait(ws, ws.waitable, handle.Pid)
+}
+
 func (e *OSExecutor) finishStopAttempt(ws *waitState) {
 	e.acquireLock()
 	defer e.releaseLock()
@@ -401,11 +416,11 @@ func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHand
 // stopProcessTreeInternal stops a verified process tree root-first.
 //
 // The root process gets the first graceful-stop opportunity and may escalate to a force kill.
-// When the caller requests graceful descendant stopping and the root exits gracefully, verified
-// descendants are given the remaining portion of the caller's deadline to stop gracefully,
-// concurrently. If the root required a force kill, or the shared graceful-stop deadline expires,
-// remaining descendants are force-killed concurrently using a separate bounded cleanup context.
-// Every signal and kill revalidates the target process identity before acting.
+// If the root exits gracefully, verified descendants are given the remainder of the shared
+// graceful-stop budget to stop concurrently. If the root required a force kill, or the graceful
+// budget expires, remaining descendants are force-killed concurrently during the final bounded
+// cleanup phase. Caller cancellation stops further work. Every signal and kill revalidates the
+// target process identity before acting.
 func (e *OSExecutor) stopProcessTreeInternal(
 	ctx context.Context,
 	handle ProcessHandle,
@@ -418,6 +433,11 @@ func (e *OSExecutor) stopProcessTreeInternal(
 	if handleErr := handle.Validate(); handleErr != nil {
 		return handleErr
 	}
+	e.ensureTrackedWaitStarted(handle)
+
+	graceCtx, graceCancel := context.WithTimeout(ctx, gracefulProcessStopTimeout)
+	defer graceCancel()
+
 	procTreeLog := e.log.WithValues("Root", handle.Pid)
 	rootWasVerified := false
 
@@ -458,18 +478,69 @@ func (e *OSExecutor) stopProcessTreeInternal(
 		}
 	}
 
+	forceProcessOpts := opts &^ (optNotFoundIsError | optTrySignal | optSignalConsoleGroup | optGracefulOnly)
+
+	forceRootAfterIncompleteEnumeration := func(treeErr error) error {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return errors.Join(treeErr, contextErr)
+		}
+
+		forceCtx, forceCancel := context.WithTimeout(ctx, signalAndWaitTimeout)
+		defer forceCancel()
+		rootResult, rootStopErr := e.stopSingleProcess(
+			forceCtx,
+			handle,
+			forceProcessOpts|optWaitForStdio,
+		)
+		if rootStopErr != nil &&
+			!errors.Is(rootStopErr, ErrTimedOutWaitingForProcessToStop) &&
+			!errors.Is(rootStopErr, context.DeadlineExceeded) {
+			return errors.Join(
+				fmt.Errorf("%w: process tree enumeration did not complete before the graceful-stop deadline", ErrIncompleteProcessTree),
+				treeErr,
+				rootStopErr,
+			)
+		}
+		rootWaitErr := waitForRootProcessToEnd(forceCtx, rootResult.waitEndedCh, rootStopErr)
+		incompleteErr := fmt.Errorf(
+			"%w: process tree enumeration did not complete before the graceful-stop deadline",
+			ErrIncompleteProcessTree,
+		)
+		return errors.Join(incompleteErr, treeErr, rootStopErr, rootWaitErr)
+	}
+
 	if (opts & optSkipDescendants) != 0 {
 		procTreeLog.V(1).Info("Stopping root process without enumerating descendants")
-		rootResult, stopErr, rootStopErr := stopRootProcess(ctx, opts|optTrySignal)
+		rootResult, stopErr, rootStopErr := stopRootProcess(graceCtx, opts|optTrySignal)
 		if rootStopErr != nil {
 			return rootStopErr
 		}
+		if stopErr == nil && !rootResult.forceKillUsed {
+			return waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, nil)
+		}
+		if contextErr := ctx.Err(); contextErr != nil {
+			return errors.Join(stopErr, contextErr)
+		}
 
-		return waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, stopErr)
+		forceCtx, forceCancel := context.WithTimeout(ctx, signalAndWaitTimeout)
+		defer forceCancel()
+		if stopErr != nil {
+			var fatalForceErr error
+			rootResult, stopErr, fatalForceErr = stopRootProcess(forceCtx, forceProcessOpts)
+			if fatalForceErr != nil {
+				return errors.Join(stopErr, fatalForceErr)
+			}
+		}
+
+		return waitForRootProcessToEnd(forceCtx, rootResult.waitEndedCh, stopErr)
 	}
 
-	tree, treeErr := resolveProcessTree(ctx, handle)
+	tree, treeErr := resolveProcessTree(graceCtx, handle)
 	if treeErr != nil && !errors.Is(treeErr, ErrIncompleteProcessTree) {
+		if errors.Is(treeErr, context.DeadlineExceeded) && ctx.Err() == nil {
+			procTreeLog.Error(treeErr, "Process tree enumeration exceeded the graceful-stop deadline; force-stopping only the root")
+			return forceRootAfterIncompleteEnumeration(treeErr)
+		}
 		return fmt.Errorf("could not get process tree for process %d: %w", handle.Pid, treeErr)
 	}
 	if errors.Is(treeErr, ErrIncompleteProcessTree) {
@@ -486,16 +557,12 @@ func (e *OSExecutor) stopProcessTreeInternal(
 
 	procTreeLog.V(1).Info("Stopping process tree...", "Root", handle.Pid, "Tree", getIDs(tree))
 
-	rootResult, rootStopErr, fatalRootStopErr := stopRootProcess(ctx, opts|optTrySignal)
+	rootResult, rootStopErr, fatalRootStopErr := stopRootProcess(graceCtx, opts|optTrySignal)
 	if fatalRootStopErr != nil {
 		return errors.Join(treeErr, fatalRootStopErr)
 	}
 
 	tree = tree[1:] // We have processed the root
-	if len(tree) == 0 {
-		procTreeLog.V(1).Info("The root process has no children")
-		return errors.Join(treeErr, waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, rootStopErr))
-	}
 
 	stopChildren := func(
 		stopCtx context.Context,
@@ -534,24 +601,14 @@ func (e *OSExecutor) stopProcessTreeInternal(
 		return slices.Select(childStoppingErrors, func(stopErr error) bool { return stopErr != nil })
 	}
 
-	forceChildOpts := opts &^ (optNotFoundIsError | optTrySignal | optSignalConsoleGroup | optGracefulOnly)
-	if (opts & optTrySignal) == 0 {
-		// Preserve the legacy behavior for ordinary stops. On Windows, optSignalConsoleGroup
-		// lets descendants wait for the root's console-group signal before escalating.
-		legacyChildOpts := opts &^ optNotFoundIsError
-		childStoppingErrors := stopChildren(
-			ctx,
-			legacyChildOpts,
-			true,
-			"Making sure child processes are gone...",
-		)
-		rootWaitErr := waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, rootStopErr)
-		return errors.Join(append([]error{treeErr, rootStopErr, rootWaitErr}, childStoppingErrors...)...)
+	if len(tree) == 0 && rootStopErr == nil && !rootResult.forceKillUsed {
+		procTreeLog.V(1).Info("The root process has no children")
+		return errors.Join(treeErr, waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, nil))
 	}
 
-	forceDescendants := rootResult.forceKillUsed || rootStopErr != nil || ctx.Err() != nil
+	forceDescendants := rootResult.forceKillUsed || rootStopErr != nil || graceCtx.Err() != nil
 
-	if !forceDescendants {
+	if len(tree) > 0 && !forceDescendants {
 		gracefulChildOpts := opts &^ optNotFoundIsError
 		gracefulChildOpts |= optGracefulOnly
 		if (opts & optSignalConsoleGroup) == 0 {
@@ -562,12 +619,12 @@ func (e *OSExecutor) stopProcessTreeInternal(
 		}
 
 		gracefulChildErrors := stopChildren(
-			ctx,
+			graceCtx,
 			gracefulChildOpts,
 			false,
 			"Giving child processes the remaining graceful-stop budget...",
 		)
-		forceDescendants = len(gracefulChildErrors) > 0 || ctx.Err() != nil
+		forceDescendants = len(gracefulChildErrors) > 0 || graceCtx.Err() != nil
 		if !forceDescendants {
 			procTreeLog.V(1).Info("All child processes stopped gracefully")
 			rootWaitErr := waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, rootStopErr)
@@ -577,44 +634,37 @@ func (e *OSExecutor) stopProcessTreeInternal(
 		procTreeLog.V(1).Info("The graceful-stop budget expired before all child processes stopped")
 	}
 
-	if (opts & optIsResponsibleForStopping) == 0 {
-		if contextErr := ctx.Err(); contextErr != nil {
-			return errors.Join(treeErr, rootStopErr, contextErr)
-		}
-		childStoppingErrors := stopChildren(
-			ctx,
-			forceChildOpts,
-			true,
-			"Force-killing remaining child processes...",
-		)
-		rootWaitErr := waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, rootStopErr)
-		return errors.Join(append([]error{treeErr, rootStopErr, rootWaitErr}, childStoppingErrors...)...)
+	if contextErr := ctx.Err(); contextErr != nil {
+		return errors.Join(treeErr, rootStopErr, contextErr)
 	}
 
 	if rootResult.forceKillUsed {
 		procTreeLog.V(1).Info("The root process required a force kill; force-killing remaining child processes")
 	}
 
-	forceCtx, forceCancel := context.WithTimeout(context.WithoutCancel(ctx), signalAndWaitTimeout)
+	forceCtx, forceCancel := context.WithTimeout(ctx, signalAndWaitTimeout)
 	defer forceCancel()
 
 	if rootStopErr != nil {
 		var fatalRootForceErr error
-		rootResult, rootStopErr, fatalRootForceErr = stopRootProcess(forceCtx, forceChildOpts)
+		rootResult, rootStopErr, fatalRootForceErr = stopRootProcess(forceCtx, forceProcessOpts)
 		if fatalRootForceErr != nil {
 			procTreeLog.Error(fatalRootForceErr, "Could not force-kill root process")
 		}
 	}
 
-	childStoppingErrors := stopChildren(
-		forceCtx,
-		forceChildOpts,
-		true,
-		"Force-killing remaining child processes...",
-	)
+	var childStoppingErrors []error
+	if len(tree) > 0 && forceDescendants {
+		childStoppingErrors = stopChildren(
+			forceCtx,
+			forceProcessOpts,
+			true,
+			"Force-killing remaining child processes...",
+		)
+	}
 	if len(childStoppingErrors) > 0 {
 		procTreeLog.V(1).Error(errors.Join(childStoppingErrors...), "Some child processes could not be stopped")
-	} else {
+	} else if len(tree) > 0 {
 		procTreeLog.V(1).Info("All child processes have stopped")
 	}
 
@@ -693,7 +743,7 @@ func (e *OSExecutor) Dispose() {
 				stopErr := e.stopProcessInternal(
 					cleanupCtx,
 					handle,
-					optIsResponsibleForStopping|optTrySignal,
+					optIsResponsibleForStopping,
 				)
 				if stopErr != nil {
 					e.log.Error(stopErr, "Could not stop process during executor disposal", "PID", handle.Pid, "Command", waitable.Info())

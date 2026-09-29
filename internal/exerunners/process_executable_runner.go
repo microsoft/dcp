@@ -528,10 +528,10 @@ func (r *ProcessExecutableRunner) StopPersistentProcess(ctx context.Context, exe
 		adopted: true,
 	}
 	stopErr := r.stopProcessRun(ctx, runID, runState, log)
-	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
+	if stopErr != nil {
 		return stopErr
 	}
-	return errors.Join(stopErr, r.completeStoppedRun(ctx, runID, runState, log))
+	return r.completeStoppedRun(ctx, runID, runState, log)
 }
 
 func (r *ProcessExecutableRunner) watchAdoptedProcess(
@@ -588,13 +588,13 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 	}
 
 	stopErr := r.stopProcessRun(ctx, runID, runState, log)
-	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
+	if stopErr != nil {
 		return stopErr
 	}
 	if !r.runningProcesses.CompareAndDelete(runID, runState) {
-		return stopErr
+		return nil
 	}
-	return errors.Join(stopErr, r.completeStoppedRun(ctx, runID, runState, log))
+	return r.completeStoppedRun(ctx, runID, runState, log)
 }
 
 func (r *ProcessExecutableRunner) stopProcessRun(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
@@ -609,15 +609,14 @@ func (r *ProcessExecutableRunner) stopProcessRun(ctx context.Context, runID cont
 	} else {
 		stopErr = r.pe.StopProcess(stopCtx, runState.handle)
 	}
-	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
-		stopLog.Error(stopErr, "Failed to stop run; preserving identity for retry")
-		return stopErr
-	}
 	if process.IsProcessGoneErr(stopErr) {
 		return nil
 	}
-
-	return stopErr
+	if stopErr != nil {
+		stopLog.Error(stopErr, "Failed to stop run; keeping run state until the process exits")
+		return stopErr
+	}
+	return nil
 }
 
 func (r *ProcessExecutableRunner) completeStoppedRun(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {

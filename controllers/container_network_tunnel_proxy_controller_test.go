@@ -316,7 +316,7 @@ func TestServerProxyExitBeforeStartupResultPublicationRemainsFailed(t *testing.T
 	recordedExitType, exited := run.getExitType()
 	require.True(t, exited)
 	require.Equal(t, serverProxyExitTypeUnexpected, recordedExitType)
-	reconciler.queueProxyPairStartupResult(proxyName, proxy.UID, proxyData, run)
+	reconciler.queueProxyPairStartupResult(proxyName, proxy.UID, proxyData, run, func() {})
 
 	reconciler.proxyData.RunDeferredOps(proxyName, proxy)
 	_, currentData := reconciler.proxyData.BorrowByNamespacedName(proxyName)
@@ -324,4 +324,75 @@ func TestServerProxyExitBeforeStartupResultPublicationRemainsFailed(t *testing.T
 	require.Equal(t, apiv1.ContainerNetworkTunnelProxyStateFailed, currentData.State)
 	require.Nil(t, currentData.ServerProxyProcessID)
 	require.True(t, currentData.ServerProxyStartupTimestamp.IsZero())
+}
+
+// Verifies that startup ownership remains held until the queued startup result is published.
+func TestProxyStartupLeaseReleasedAfterResultPublication(t *testing.T) {
+	t.Parallel()
+
+	proxy := &apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "startup-publication",
+			UID:  types.UID("startup-publication-uid"),
+		},
+	}
+	proxyName := proxy.NamespacedName()
+	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting)
+	reconciler := &ContainerNetworkTunnelProxyReconciler{
+		proxyData: NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy](),
+	}
+	reconciler.proxyData.Store(proxyName, proxyName, proxyData.Clone())
+
+	releaseStartup, acquired := proxyData.startup.TryAcquire(t.Context())
+	require.True(t, acquired)
+
+	serverPID := int64(4200)
+	result := proxyData.Clone()
+	result.State = apiv1.ContainerNetworkTunnelProxyStateRunning
+	result.ServerProxyProcessID = &serverPID
+	reconciler.queueProxyPairStartupResult(proxyName, proxy.UID, result, nil, releaseStartup)
+
+	_, acquiredBeforePublication := proxyData.startup.TryAcquire(t.Context())
+	require.False(t, acquiredBeforePublication)
+
+	reconciler.proxyData.RunDeferredOps(proxyName, proxy)
+
+	releaseAfterPublication, acquiredAfterPublication := proxyData.startup.TryAcquire(t.Context())
+	require.True(t, acquiredAfterPublication)
+	releaseAfterPublication()
+
+	_, currentData := reconciler.proxyData.BorrowByNamespacedName(proxyName)
+	require.NotNil(t, currentData)
+	require.Equal(t, apiv1.ContainerNetworkTunnelProxyStateRunning, currentData.State)
+	require.NotNil(t, currentData.ServerProxyProcessID)
+	require.Equal(t, serverPID, *currentData.ServerProxyProcessID)
+}
+
+func TestProxyStartupLeaseReleasedWhenResultCannotBeQueued(t *testing.T) {
+	t.Parallel()
+
+	proxy := &apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "missing-startup-state",
+			UID:  types.UID("missing-startup-state-uid"),
+		},
+	}
+	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting)
+	reconciler := &ContainerNetworkTunnelProxyReconciler{
+		proxyData: NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy](),
+	}
+
+	releaseStartup, acquired := proxyData.startup.TryAcquire(t.Context())
+	require.True(t, acquired)
+	reconciler.queueProxyPairStartupResult(
+		proxy.NamespacedName(),
+		proxy.UID,
+		proxyData,
+		nil,
+		releaseStartup,
+	)
+
+	releaseAfterQueueFailure, acquiredAfterQueueFailure := proxyData.startup.TryAcquire(t.Context())
+	require.True(t, acquiredAfterQueueFailure)
+	releaseAfterQueueFailure()
 }

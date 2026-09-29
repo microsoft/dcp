@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -137,7 +138,7 @@ func TestExecutableCleanupBoundariesDetachCancellation(t *testing.T) {
 			require.NoError(t, runner.observation.err)
 			require.Equal(t, "retained", runner.observation.value)
 			require.True(t, runner.observation.hasDeadline)
-			require.WithinDuration(t, time.Now().Add(15*time.Second), runner.observation.deadline, time.Second)
+			require.WithinDuration(t, time.Now().Add(21*time.Second), runner.observation.deadline, time.Second)
 		})
 	}
 }
@@ -190,6 +191,50 @@ func TestPhysicalProcessIncompleteTreeStopRemainsRetryable(t *testing.T) {
 	require.NotNil(t, currentData)
 	require.Equal(t, physicalProcessStateStop, currentData.state)
 	require.Equal(t, physicalResourceProgressRetryPending, currentData.progress)
+	require.True(t, currentData.cleanupUnconfirmed)
+	require.Equal(t, apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed, currentData.failureReason)
 	require.Contains(t, currentData.failureMessage, process.ErrIncompleteProcessTree.Error())
 	require.False(t, currentData.retryAfter.IsZero())
+
+	executor.stopErr = &process.ErrProcessNotFound{Pid: handle.Pid}
+	reconciler.stopPhysicalProcess(cancelledCtx, physicalProcess, stateKey, currentData.Clone(), logr.Discard())
+	reconciler.processData.RunDeferredOps(physicalProcess.NamespacedName(), physicalProcess)
+
+	_, missingData := reconciler.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
+	require.NotNil(t, missingData)
+	require.Equal(t, physicalProcessStateRuntime, missingData.state)
+	require.Equal(t, physicalResourceProgressMissing, missingData.progress)
+	require.True(t, missingData.cleanupUnconfirmed)
+	require.Equal(t, apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed, missingData.failureReason)
+	require.Equal(t, descendantCleanupUnconfirmedMessage, missingData.failureMessage)
+
+	now := metav1.Now()
+	physicalProcess.DeletionTimestamp = &now
+	physicalProcess.Finalizers = []string{physicalProcessFinalizer}
+	firstDeleteChange, _ := reconciler.handleDeletionRequest(physicalProcess, missingData, logr.Discard())
+	require.Equal(t, noChange, firstDeleteChange)
+	require.Contains(t, physicalProcess.Finalizers, physicalProcessFinalizer)
+
+	statusChange, _, valid := missingData.applyTo(physicalProcess)
+	require.True(t, valid)
+	require.NotEqual(t, noChange, statusChange)
+	readyCondition := apimeta.FindStatusCondition(
+		physicalProcess.Status.Conditions,
+		string(apiv2.ConditionReady),
+	)
+	require.NotNil(t, readyCondition)
+	require.Equal(t, string(apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed), readyCondition.Reason)
+	require.Equal(t, descendantCleanupUnconfirmedMessage, readyCondition.Message)
+
+	restoredStateKey, restoredData := initialPhysicalProcessData(physicalProcess)
+	require.Equal(t, stateKey, restoredStateKey)
+	require.Equal(t, physicalProcessStateStop, restoredData.state)
+	require.Equal(t, physicalResourceProgressRetryPending, restoredData.progress)
+	require.Equal(t, handle, restoredData.handle)
+	require.True(t, restoredData.cleanupUnconfirmed)
+	require.Equal(t, apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed, restoredData.failureReason)
+
+	secondDeleteChange, _ := reconciler.handleDeletionRequest(physicalProcess, missingData, logr.Discard())
+	require.NotEqual(t, noChange, secondDeleteChange)
+	require.NotContains(t, physicalProcess.Finalizers, physicalProcessFinalizer)
 }

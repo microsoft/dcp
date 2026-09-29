@@ -7,6 +7,7 @@ package dcpproc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 
 	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/dcpproc/protocol"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -182,12 +184,28 @@ func StopProcessTree(
 		log.Error(err, "Failed to stop process tree", "ExitCode", exitCode)
 		return err
 	} else if exitCode != 0 {
-		err = fmt.Errorf("'dcp stop-process-tree --pid %d' command returned non-zero exit code: %d", root.Pid, exitCode)
+		err = stopProcessTreeExitError(root, exitCode)
 		log.Error(err, "Failed to stop process tree", "ExitCode", exitCode)
 		return err
 	}
 
 	return nil
+}
+
+func stopProcessTreeExitError(root process.ProcessHandle, exitCode int32) error {
+	commandErr := fmt.Errorf(
+		"'dcp stop-process-tree --pid %d' command returned non-zero exit code: %d",
+		root.Pid,
+		exitCode,
+	)
+	switch exitCode {
+	case protocol.StopProcessTreeIncompleteExitCode:
+		return errors.Join(process.ErrIncompleteProcessTree, commandErr)
+	case protocol.StopProcessTreeProcessGoneExitCode:
+		return &process.ErrProcessNotFound{Pid: root.Pid, Inner: commandErr}
+	default:
+		return commandErr
+	}
 }
 
 func getMonitorCmdArgs(monitor process.ProcessHandle) []string {

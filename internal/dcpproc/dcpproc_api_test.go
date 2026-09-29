@@ -20,6 +20,7 @@ import (
 
 	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/dcpproc/protocol"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -248,6 +249,22 @@ func TestStopProcessTree(t *testing.T) {
 	require.Equal(t, dcpProc.Cmd.Args[3], strconv.FormatInt(int64(handle.Pid), 10), "Should include test process ID")
 	require.Equal(t, dcpProc.Cmd.Args[4], "--process-start-time", "Should include --process-start-time flag")
 	require.Equal(t, dcpProc.Cmd.Args[5], handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat), "Should include formatted process start time")
+}
+
+func TestStopProcessTreeExitErrorPreservesOutcomeClassification(t *testing.T) {
+	t.Parallel()
+
+	handle := process.NewHandle(28900, time.Unix(1200, 0).UTC())
+
+	incompleteErr := stopProcessTreeExitError(handle, protocol.StopProcessTreeIncompleteExitCode)
+	require.ErrorIs(t, incompleteErr, process.ErrIncompleteProcessTree)
+
+	goneErr := stopProcessTreeExitError(handle, protocol.StopProcessTreeProcessGoneExitCode)
+	require.True(t, process.IsProcessGoneErr(goneErr))
+
+	genericErr := stopProcessTreeExitError(handle, 42)
+	require.NotErrorIs(t, genericErr, process.ErrIncompleteProcessTree)
+	require.False(t, process.IsProcessGoneErr(genericErr))
 }
 
 // Verifies that the simulated stop-process-tree command resolves a PID-only argument,

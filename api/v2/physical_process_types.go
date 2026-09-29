@@ -73,6 +73,10 @@ const (
 	// PhysicalProcessReasonStopFailed indicates that process termination failed and will be retried.
 	PhysicalProcessReasonStopFailed ConditionReason = "StopFailed"
 
+	// PhysicalProcessReasonDescendantCleanupUnconfirmed indicates that the root process is gone,
+	// but incomplete process-tree inspection prevented confirmation that all descendants stopped.
+	PhysicalProcessReasonDescendantCleanupUnconfirmed ConditionReason = "DescendantCleanupUnconfirmed"
+
 	// PhysicalProcessReasonStopRequested indicates that process launch was skipped because stop was requested.
 	PhysicalProcessReasonStopRequested ConditionReason = "StopRequested"
 )
@@ -137,7 +141,7 @@ type PhysicalProcessStatus struct {
 	PID *int64 `json:"pid,omitempty"`
 
 	// IdentityTimestamp reports the process identity captured by the controller for PID-reuse protection.
-	// This diagnostic value is not used to reconstruct controller state.
+	// The controller may use this value with PID to resume an unconfirmed cleanup after restart.
 	// On Linux this value represents elapsed time since boot rather than wall-clock time.
 	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
 

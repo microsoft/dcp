@@ -18,6 +18,26 @@ const (
 	defaultWaitPollInterval = time.Second * 2
 )
 
+type waitPollPolicy struct {
+	initialInterval time.Duration
+	initialDuration time.Duration
+	steadyInterval  time.Duration
+}
+
+func fixedWaitPollPolicy(interval time.Duration) waitPollPolicy {
+	return waitPollPolicy{
+		initialInterval: interval,
+		steadyInterval:  interval,
+	}
+}
+
+func (policy waitPollPolicy) intervalAfter(elapsed time.Duration) time.Duration {
+	if policy.initialDuration > 0 && elapsed >= policy.initialDuration {
+		return policy.steadyInterval
+	}
+	return policy.initialInterval
+}
+
 type WaitableProcess struct {
 	WaitPollInterval time.Duration
 	process          *os.Process
@@ -62,7 +82,7 @@ func (p *WaitableProcess) pollingWait(ctx context.Context) {
 		p.waitChan = make(chan struct{})
 		go func() {
 			defer close(p.waitChan)
-			p.err = waitForProcess(ctx, p.handle, p.process, p.WaitPollInterval)
+			p.err = waitForProcess(ctx, p.handle, p.process, fixedWaitPollPolicy(p.WaitPollInterval))
 		}()
 	}
 }
@@ -96,7 +116,7 @@ func (p *WaitableProcess) Kill() error {
 	return errors.Join(killErr, proc.Release())
 }
 
-func waitForProcess(ctx context.Context, handle ProcessHandle, proc *os.Process, interval time.Duration) error {
+func waitForProcess(ctx context.Context, handle ProcessHandle, proc *os.Process, pollPolicy waitPollPolicy) error {
 	_, waitErr := proc.Wait()
 	if waitErr == nil {
 		return nil
@@ -115,7 +135,8 @@ func waitForProcess(ctx context.Context, handle ProcessHandle, proc *os.Process,
 	if initialPollErr != nil {
 		return initialPollErr
 	}
-	timer := time.NewTimer(interval)
+	pollStartedAt := time.Now()
+	timer := time.NewTimer(pollPolicy.intervalAfter(0))
 	defer timer.Stop()
 	for {
 		select {
@@ -129,7 +150,7 @@ func waitForProcess(ctx context.Context, handle ProcessHandle, proc *os.Process,
 			if pollErr != nil {
 				return pollErr
 			}
-			timer.Reset(interval)
+			timer.Reset(pollPolicy.intervalAfter(time.Since(pollStartedAt)))
 		}
 	}
 }

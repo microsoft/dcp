@@ -1062,8 +1062,6 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 	log logr.Logger,
 ) func(context.Context) {
 	return func(ctx context.Context) {
-		defer releaseStartup()
-
 		nn := tunnelProxy.NamespacedName()
 		reconciliationDelay := NoDelay
 		var serverRun *serverProxyRun
@@ -1090,8 +1088,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 			}
 		}
 
-		r.queueProxyPairStartupResult(nn, tunnelProxy.UID, pd, serverRun)
-		releaseStartup()
+		r.queueProxyPairStartupResult(nn, tunnelProxy.UID, pd, serverRun, releaseStartup)
 		r.ScheduleReconciliationWithDelay(nn, reconciliationDelay)
 	}
 }
@@ -1101,9 +1098,11 @@ func (r *ContainerNetworkTunnelProxyReconciler) queueProxyPairStartupResult(
 	proxyUID types.UID,
 	result *containerNetworkTunnelProxyData,
 	run *serverProxyRun,
+	releaseStartup func(),
 ) {
 	pdMap := r.proxyData
-	pdMap.QueueDeferredOp(proxyName, func(_ types.NamespacedName, _ types.NamespacedName, proxy *apiv1.ContainerNetworkTunnelProxy) {
+	queued := pdMap.QueueDeferredOp(proxyName, func(_ types.NamespacedName, _ types.NamespacedName, proxy *apiv1.ContainerNetworkTunnelProxy) {
+		defer releaseStartup()
 		if proxy.UID != proxyUID {
 			return
 		}
@@ -1128,6 +1127,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) queueProxyPairStartupResult(
 
 		pdMap.Update(proxyName, proxyName, result)
 	})
+	if !queued {
+		releaseStartup()
+	}
 }
 
 // Creates certificates for security tunnel proxy control connection.

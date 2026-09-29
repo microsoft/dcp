@@ -107,6 +107,9 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 	case "orphan-child":
 		time.Sleep(30 * time.Second)
 
+	case "exit-immediately":
+		return
+
 	case "tree-root", "graceful-root", "forced-root", "deadline-root":
 		childMode := "tree-child"
 		if mode == "graceful-root" {
@@ -165,6 +168,48 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 	}
 }
 
+// Verifies that stopping an executor-owned child starts its tracked wait even if
+// the child already exited before exit monitoring was enabled.
+func TestStopStartsTrackedWaitForExitedChild(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	defer executor.Dispose()
+
+	exitResults := make(chan ProcessExitInfo, 1)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
+	cmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"=exit-immediately")
+	handle, _, startErr := executor.StartProcess(
+		context.Background(),
+		cmd,
+		ProcessExitHandlerFunc(func(pid Pid_t, exitCode int32, exitErr error) {
+			exitResults <- ProcessExitInfo{PID: pid, ExitCode: exitCode, Err: exitErr}
+		}),
+		CreationFlagEnsureKillOnDispose,
+		nil,
+	)
+	require.NoError(t, startErr)
+
+	exitObservedErr := wait.PollUntilContextCancel(testCtx, time.Millisecond, true, func(context.Context) (bool, error) {
+		return IsProcessGoneErr(executor.CheckProcessRunning(handle)), nil
+	})
+	require.NoError(t, exitObservedErr)
+
+	stopErr := executor.StopProcess(testCtx, handle)
+	require.True(t, stopErr == nil || IsProcessGoneErr(stopErr), "unexpected stop error: %v", stopErr)
+
+	select {
+	case exitResult := <-exitResults:
+		require.Equal(t, handle.Pid, exitResult.PID)
+		require.Equal(t, int32(0), exitResult.ExitCode)
+		require.NoError(t, exitResult.Err)
+	case <-testCtx.Done():
+		t.Fatal("timed out waiting for tracked process exit notification")
+	}
+}
+
 // Verifies that stopping a non-child process uses the short stop polling interval,
 // completes below the monitoring poll floor, and confirms the process is gone.
 func TestStopNonChildUsesShortPollingInterval(t *testing.T) {
@@ -211,6 +256,38 @@ func TestIncompleteTreeStillStopsVerifiedProcesses(t *testing.T) {
 	requireProcessGone(t, testCtx, executor, childHandle)
 }
 
+// Verifies that expiration of the internal graceful enumeration budget still
+// force-stops the root while reporting descendant cleanup as incomplete.
+func TestEnumerationDeadlineForceStopsRoot(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	defer executor.Dispose()
+	rootCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
+	rootCmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"=tree-child")
+	rootHandle, startWaitForExit, startErr := executor.StartProcess(
+		testCtx,
+		rootCmd,
+		nil,
+		CreationFlagEnsureKillOnDispose,
+		nil,
+	)
+	require.NoError(t, startErr)
+	startWaitForExit()
+
+	stopErr := executor.stopProcessTreeInternal(
+		testCtx,
+		rootHandle,
+		optNone,
+		func(context.Context, ProcessHandle) ([]ProcessHandle, error) {
+			return nil, context.DeadlineExceeded
+		},
+	)
+
+	require.ErrorIs(t, stopErr, ErrIncompleteProcessTree)
+	requireProcessGone(t, testCtx, executor, rootHandle)
+}
+
 // Verifies that executor disposal gives descendants the root process's remaining graceful-stop budget,
 // observes their SIGTERM handling, and stops the complete tree without force-kill delay.
 func TestDisposeGivesDescendantsRemainingGracefulBudget(t *testing.T) {
@@ -224,6 +301,27 @@ func TestDisposeGivesDescendantsRemainingGracefulBudget(t *testing.T) {
 	elapsed := time.Since(startedAt)
 	remainingNotices, readErr := io.ReadAll(signalNotices)
 
+	require.NoError(t, readErr)
+	require.Equal(t, "sigterm\n", string(remainingNotices))
+	require.Less(t, elapsed, signalAndWaitTimeout)
+	requireProcessGone(t, testCtx, executor, rootHandle)
+	requireProcessGone(t, testCtx, executor, childHandle)
+}
+
+// Verifies that an explicit stop gives descendants the same remaining graceful budget as disposal.
+func TestStopProcessGivesDescendantsRemainingGracefulBudget(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 45*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	defer executor.Dispose()
+	rootHandle, childHandle, signalNotices := startProcessTreeWithSignalNoticeForTest(t, testCtx, executor, "graceful-root")
+
+	startedAt := time.Now()
+	stopErr := executor.StopProcess(testCtx, rootHandle)
+	elapsed := time.Since(startedAt)
+	remainingNotices, readErr := io.ReadAll(signalNotices)
+
+	require.NoError(t, stopErr)
 	require.NoError(t, readErr)
 	require.Equal(t, "sigterm\n", string(remainingNotices))
 	require.Less(t, elapsed, signalAndWaitTimeout)
@@ -266,8 +364,8 @@ func TestDisposeForceKillsDescendantsAfterWholeTreeDeadline(t *testing.T) {
 
 	require.NoError(t, readErr)
 	require.Equal(t, "sigterm\n", string(remainingNotices))
-	require.GreaterOrEqual(t, elapsed, processStopTimeout-time.Second)
-	require.Less(t, elapsed, processStopTimeout+signalAndWaitTimeout+2*time.Second)
+	require.GreaterOrEqual(t, elapsed, gracefulProcessStopTimeout-time.Second)
+	require.Less(t, elapsed, processStopTimeout+2*time.Second)
 	requireProcessGone(t, testCtx, executor, rootHandle)
 	requireProcessGone(t, testCtx, executor, childHandle)
 }

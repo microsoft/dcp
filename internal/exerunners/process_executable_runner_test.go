@@ -279,7 +279,30 @@ func TestStopRunDoesNotReinsertCompletedRun(t *testing.T) {
 	}
 }
 
-// Verifies that a genuine stop failure is returned and preserves the run identity for a later retry.
+// Verifies that a concurrent successful completion wins cleanup without turning
+// the failed compare-and-delete into a synthetic stop error.
+func TestStopRunSucceedsWhenConcurrentCompletionWins(t *testing.T) {
+	t.Parallel()
+
+	stopExecutor := &stopRunTestExecutor{
+		handle:         process.NewHandle(4248, time.Unix(1006, 0).UTC()),
+		exitDuringStop: true,
+	}
+	runner, result, changeHandler := startStopRunTest(t, stopExecutor)
+
+	require.NoError(t, runner.StopRun(context.Background(), result.RunID, logr.Discard()))
+
+	_, found := runner.runningProcesses.Load(result.RunID)
+	require.False(t, found)
+	select {
+	case completed := <-changeHandler.completedRuns:
+		require.Equal(t, result.RunID, completed.runID)
+	default:
+		require.Fail(t, "expected process completion notification")
+	}
+}
+
+// Verifies that a genuine stop failure is returned and preserves the run identity until exit.
 func TestStopRunPreservesStateAfterStopFailure(t *testing.T) {
 	t.Parallel()
 

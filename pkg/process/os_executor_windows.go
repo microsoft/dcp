@@ -88,7 +88,7 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 			e.log.Error(releaseErr, "Could not release process reference", "PID", handle.Pid)
 		}
 	}()
-	waitable := makeProcessWaitable(e.lifetimeCtx, handle, defaultWaitPollInterval)
+	waitable := makeProcessWaitable(e.lifetimeCtx, handle, fixedWaitPollPolicy(defaultWaitPollInterval))
 	ws, shouldStopProcess := e.tryStartWaiting(handle, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh
@@ -141,16 +141,20 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 		// The process was not signaled directly here, but a CTRL_C_EVENT was already
 		// broadcast to the entire console group (for the root process). Give this process
 		// time to exit from that broadcast before force-killing it.
+		var timeoutCh <-chan time.Time
+		var timer *time.Timer
+		if (opts & optGracefulOnly) == 0 {
+			timer = time.NewTimer(signalAndWaitTimeout)
+			defer timer.Stop()
+			timeoutCh = timer.C
+		}
 		select {
 		case <-ctx.Done():
 			return singleProcessStopResult{waitEndedCh: waitEndedCh}, ctx.Err()
 		case <-ws.waitEndedCh:
 			e.log.V(1).Info("Process exited after console group signal", "PID", handle.Pid)
 			return singleProcessStopResult{waitEndedCh: waitEndedCh}, nil
-		case <-time.After(signalAndWaitTimeout):
-			if (opts & optGracefulOnly) != 0 {
-				return singleProcessStopResult{waitEndedCh: waitEndedCh}, ErrTimedOutWaitingForProcessToStop
-			}
+		case <-timeoutCh:
 			e.log.V(1).Info("Process did not exit after console group signal, force-killing", "PID", handle.Pid)
 		}
 	}

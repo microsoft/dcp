@@ -231,7 +231,7 @@ func (wl waitableLite) Abort(_ context.Context) error {
 var _ Waitable = waitableCmd{}
 var _ Waitable = waitableLite{}
 
-func makeProcessWaitable(ctx context.Context, handle ProcessHandle, waitPollInterval time.Duration) Waitable {
+func makeProcessWaitable(ctx context.Context, handle ProcessHandle, pollPolicy waitPollPolicy) Waitable {
 	return &waitableLite{
 		wait: func() error {
 			proc, findErr := FindProcess(handle)
@@ -241,7 +241,7 @@ func makeProcessWaitable(ctx context.Context, handle ProcessHandle, waitPollInte
 			if findErr != nil {
 				return findErr
 			}
-			return waitForProcess(ctx, handle, proc, waitPollInterval)
+			return waitForProcess(ctx, handle, proc, pollPolicy)
 		},
 		info: func() string {
 			return "(" + strconv.FormatInt(int64(handle.Pid), 10) + ")"

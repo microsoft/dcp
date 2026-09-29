@@ -11,10 +11,14 @@ import (
 )
 
 const (
-	// The 15-second disposal timeout is shared by the root-first stop and the
+	// The graceful-stop timeout is shared by the root-first stop and the
 	// descendants' graceful-stop phase. Descendants receive only the time left
-	// after the root; final force-kill cleanup uses a separate bounded context.
-	processStopTimeout = 15 * time.Second
+	// after the root.
+	gracefulProcessStopTimeout = 15 * time.Second
+
+	// The default stop timeout includes the graceful phase and the final
+	// force-kill cleanup phase.
+	processStopTimeout = gracefulProcessStopTimeout + signalAndWaitTimeout
 )
 
 // WithStopTimeout bounds process stopping while preserving parent cancellation.

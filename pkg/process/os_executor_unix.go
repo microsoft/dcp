@@ -23,7 +23,8 @@ const (
 	// The timeout for sending a signal and waiting for the process to exit.
 	signalAndWaitTimeout = 6 * time.Second
 
-	// Stop confirmation should be responsive; long-lived monitoring retains defaultWaitPollInterval.
+	// Stop confirmation should be responsive; polling falls back to the
+	// long-lived monitoring interval after the bounded stop window.
 	stopWaitPollInterval = 100 * time.Millisecond
 )
 
@@ -69,7 +70,11 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 			e.log.Error(releaseErr, "Could not release process reference", "PID", handle.Pid)
 		}
 	}()
-	waitable := makeProcessWaitable(e.lifetimeCtx, handle, stopWaitPollInterval)
+	waitable := makeProcessWaitable(e.lifetimeCtx, handle, waitPollPolicy{
+		initialInterval: stopWaitPollInterval,
+		initialDuration: processStopTimeout,
+		steadyInterval:  defaultWaitPollInterval,
+	})
 	ws, shouldStopProcess := e.tryStartWaiting(handle, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh

@@ -6,12 +6,14 @@
 package commands
 
 import (
+	"errors"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
 	cmds "github.com/microsoft/dcp/internal/commands"
+	"github.com/microsoft/dcp/internal/dcpproc/protocol"
 	"github.com/microsoft/dcp/internal/flags"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -55,7 +57,7 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 		handle, handleErr := cmds.ResolveProcessHandle(stopPid, stopProcessStartTime)
 		if handleErr != nil {
 			log.Error(handleErr, "Could not resolve the process to stop")
-			return handleErr
+			return stopProcessTreeCommandError(handleErr)
 		}
 
 		pe := process.NewOSExecutor(log)
@@ -68,9 +70,20 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 		stopErr := process.StopViaConsole(cmd.Context(), log, pe, handle, stopOptions...)
 		if stopErr != nil {
 			log.Error(stopErr, "Failed to stop process tree")
-			return stopErr
+			return stopProcessTreeCommandError(stopErr)
 		}
 
 		return nil
+	}
+}
+
+func stopProcessTreeCommandError(err error) error {
+	switch {
+	case errors.Is(err, process.ErrIncompleteProcessTree):
+		return cmds.NewExitCodeError(err, protocol.StopProcessTreeIncompleteExitCode)
+	case process.IsProcessGoneErr(err):
+		return cmds.NewExitCodeError(err, protocol.StopProcessTreeProcessGoneExitCode)
+	default:
+		return err
 	}
 }
