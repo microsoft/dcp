@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/testutil/containertest"
@@ -86,6 +87,7 @@ func TestContainerLifecycleMethods(t *testing.T) {
 	})
 }
 
+// Verifies on each healthy runtime that duplicate container label keys retain the last supplied value.
 func TestCreateContainerLabelsUseLastValue(t *testing.T) {
 	t.Parallel()
 
@@ -111,6 +113,7 @@ func TestCreateContainerLabelsUseLastValue(t *testing.T) {
 	})
 }
 
+// Verifies on each healthy runtime that inspecting existing and missing containers preserves successful results and reports partial failure.
 func TestInspectContainersPreservesPartialResults(t *testing.T) {
 	t.Parallel()
 
@@ -129,6 +132,7 @@ func TestInspectContainersPreservesPartialResults(t *testing.T) {
 	})
 }
 
+// Verifies on each healthy runtime that starting existing containers around a missing reference preserves successes and reports partial failure.
 func TestStartContainersPreservesPartialResults(t *testing.T) {
 	t.Parallel()
 
@@ -182,6 +186,54 @@ func TestRunAndExecContainerMethods(t *testing.T) {
 		require.Equal(t, int32(0), exitCode)
 		require.Equal(t, "exec-value:/tmp", stdout)
 		require.Equal(t, "exec-stderr", stderr)
+	})
+}
+
+// Verifies that native health inspection observes unhealthy-to-healthy transitions after an exec command changes the probe input.
+// This exercises health execution and inspection without requiring health-status notifications.
+func TestContainerHealthInspectionMethods(t *testing.T) {
+	t.Parallel()
+
+	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
+		tracker := containertest.NewResourceTracker(t, runtime)
+		containerName := containertest.UniqueName(t, "health-inspection")
+		require.NoError(t, tracker.TrackContainer(containerName))
+		containerID, runErr := runtime.Orchestrator.RunContainer(ctx, containers.RunContainerOptions{
+			CreateContainerOptions: containers.CreateContainerOptions{
+				Name: containerName, Image: "busybox:latest",
+				Command: []string{"sh", "-c", "trap 'exit 0' TERM; while :; do sleep 1; done"},
+				Labels:  tracker.Labels(), PullPolicy: containers.PullPolicyMissing,
+				Healthcheck: containers.ContainerHealthcheck{
+					Command:  []string{"test", "-f", "/tmp/dcp-healthy"},
+					Interval: time.Second,
+					Timeout:  time.Second,
+					Retries:  1,
+				},
+			},
+		})
+		require.NoError(t, runErr)
+
+		waitForHealth := func(status string) {
+			t.Helper()
+			waitErr := wait.PollUntilContextCancel(ctx, 200*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+				inspected, inspectErr := runtime.Orchestrator.InspectContainers(pollCtx, containers.InspectContainersOptions{Containers: []string{containerID}})
+				if inspectErr != nil {
+					return false, inspectErr
+				}
+				return len(inspected) == 1 && inspected[0].Health != nil && inspected[0].Health.Status == status, nil
+			})
+			require.NoError(t, waitErr)
+		}
+		waitForHealth("unhealthy")
+		exitCode, stdout, stderr := execContainer(t, ctx, runtime.Orchestrator, containers.ExecContainerOptions{
+			Container: containerID,
+			Command:   "touch",
+			Args:      []string{"/tmp/dcp-healthy"},
+		})
+		require.Zero(t, exitCode)
+		require.Empty(t, stdout)
+		require.Empty(t, stderr)
+		waitForHealth("healthy")
 	})
 }
 
@@ -310,7 +362,6 @@ func TestWatchContainersMethod(t *testing.T) {
 	t.Parallel()
 
 	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
-		containertest.SkipIfNativeRuntimeEventsUnavailable(t, runtime)
 		tracker := containertest.NewResourceTracker(t, runtime)
 
 		events := concurrency.NewUnboundedChan[containers.EventMessage](ctx)
@@ -359,6 +410,41 @@ func TestWatchContainersMethod(t *testing.T) {
 
 		subscription.Cancel()
 		waitForEventChannelClosed(t, ctx, events.Out)
+	})
+}
+
+// Verifies that native container watches report creation, startup, and spontaneous exit without issuing a stop or remove command.
+func TestWatchSpontaneousContainerExit(t *testing.T) {
+	t.Parallel()
+
+	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
+		tracker := containertest.NewResourceTracker(t, runtime)
+		events := concurrency.NewUnboundedChan[containers.EventMessage](ctx)
+		subscription, watchErr := runtime.Orchestrator.WatchContainers(events.In)
+		require.NoError(t, watchErr)
+		t.Cleanup(subscription.Cancel)
+		warmContainerWatcher(t, ctx, runtime, tracker, events.Out)
+
+		containerName := containertest.UniqueName(t, "spontaneous-exit")
+		require.NoError(t, tracker.TrackContainer(containerName))
+		containerID, runErr := runtime.Orchestrator.RunContainer(ctx, containers.RunContainerOptions{
+			CreateContainerOptions: containers.CreateContainerOptions{
+				Name: containerName, Image: ensureTestImage(t, ctx, runtime),
+				Command: []string{"wait", "1s"}, Labels: tracker.Labels(),
+				PullPolicy: containers.PullPolicyNever,
+			},
+		})
+		require.NoError(t, runErr)
+		exited := waitForContainerStatus(t, ctx, runtime.Orchestrator, containerID, containers.ContainerStatusExited)
+		require.Zero(t, exited.ExitCode)
+
+		collectionCtx, collectionCancel := context.WithTimeout(ctx, eventCollectionTimeout)
+		defer collectionCancel()
+		actions, collectionErr := collectContainerActions(collectionCtx, events.Out, containerID)
+		require.NoError(t, collectionErr, "spontaneous exit events: %v", actions)
+		require.Contains(t, actions, containers.EventActionCreate)
+		require.Contains(t, actions, containers.EventActionStart)
+		require.True(t, actions[containers.EventActionStop] || actions[containers.EventActionDie] || actions[containers.EventActionDied])
 	})
 }
 

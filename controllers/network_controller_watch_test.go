@@ -29,6 +29,7 @@ func (orchestrator networkWatchTestOrchestrator) WatchNetworks(sink chan<- conta
 	return orchestrator.watch(sink)
 }
 
+// Verifies that unsupported, partial, and missing network subscriptions release their forwarding channels and workers on every retry.
 func TestNetworkWatchFailureReleasesChannels(t *testing.T) {
 	t.Parallel()
 
@@ -83,6 +84,7 @@ func TestNetworkWatchFailureReleasesChannels(t *testing.T) {
 	}
 }
 
+// Verifies that networks share a watch until the last resource releases it, then close its channels without controller shutdown.
 func TestNetworkWatchReleaseClosesChannelsBeforeShutdown(t *testing.T) {
 	t.Parallel()
 

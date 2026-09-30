@@ -106,6 +106,7 @@ func TestNetworkMethods(t *testing.T) {
 	})
 }
 
+// Verifies that real create and run operations accept full network IDs and preserve the requested initial attachments and aliases.
 func TestContainerCreationAcceptsNetworkIDs(t *testing.T) {
 	t.Parallel()
 
@@ -178,7 +179,6 @@ func TestWatchNetworksMethod(t *testing.T) {
 	t.Parallel()
 
 	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
-		containertest.SkipIfNativeRuntimeEventsUnavailable(t, runtime)
 		tracker := containertest.NewResourceTracker(t, runtime)
 
 		events := concurrency.NewUnboundedChan[containers.EventMessage](ctx)

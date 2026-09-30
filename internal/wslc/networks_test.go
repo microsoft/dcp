@@ -14,6 +14,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 )
 
+// Verifies that network creation resolves the native name response through inspection and returns the full network ID.
 func TestCreateNetworkReturnsInspectedFullID(t *testing.T) {
 	t.Parallel()
 
@@ -44,6 +45,7 @@ func TestCreateNetworkReturnsInspectedFullID(t *testing.T) {
 	require.Equal(t, "full-network-id", networkID)
 }
 
+// Verifies that unsupported IPv6 enablement returns an error without issuing a native network-create command.
 func TestCreateNetworkRejectsIPv6WithoutInvokingCli(t *testing.T) {
 	t.Parallel()
 
@@ -57,6 +59,7 @@ func TestCreateNetworkRejectsIPv6WithoutInvokingCli(t *testing.T) {
 	require.Empty(t, executor.Executions)
 }
 
+// Verifies normalization of native network identity, IPv6/attachment flags, subnets, gateways, and connected-container addresses.
 func TestInspectNetworksMapsDockerLikeWslcShape(t *testing.T) {
 	t.Parallel()
 
@@ -101,6 +104,7 @@ func TestInspectNetworksMapsDockerLikeWslcShape(t *testing.T) {
 	}, inspected[0].Containers[0])
 }
 
+// Verifies that network inspection retains a valid network while reporting missing references and incomplete results.
 func TestInspectNetworksPreservesValidObjectAlongsideMissingReference(t *testing.T) {
 	t.Parallel()
 
@@ -124,6 +128,7 @@ func TestInspectNetworksPreservesValidObjectAlongsideMissingReference(t *testing
 	require.ErrorIs(t, inspectErr, containers.ErrIncomplete)
 }
 
+// Verifies that network removal resolves IDs to native names but returns the identifiers originally requested by the caller.
 func TestRemoveNetworkResolvesIDToNativeNameAndReturnsRequestedID(t *testing.T) {
 	t.Parallel()
 
@@ -155,6 +160,7 @@ func TestRemoveNetworkResolvesIDToNativeNameAndReturnsRequestedID(t *testing.T) 
 	require.Empty(t, executor.FindAll([]string{"wslc", "network", "remove", "--force", "network-id"}, "", nil))
 }
 
+// Verifies that network connection uses the resolved native name and preserves requested aliases in WSLC syntax.
 func TestConnectNetworkUsesResolvedNameAndNativeAliasFlag(t *testing.T) {
 	t.Parallel()
 
@@ -185,6 +191,7 @@ func TestConnectNetworkUsesResolvedNameAndNativeAliasFlag(t *testing.T) {
 	require.NoError(t, connectErr)
 }
 
+// Verifies that force-disconnect accepts an ordinary-command failure only after detachment is verified, without sending an unsupported force flag.
 func TestForcedDisconnectAcceptsAlreadyDetachedContainerAfterVerification(t *testing.T) {
 	t.Parallel()
 
@@ -232,6 +239,7 @@ func TestForcedDisconnectAcceptsAlreadyDetachedContainerAfterVerification(t *tes
 	require.Empty(t, executor.FindAll([]string{"wslc", "network", "disconnect", "--force"}, "", nil))
 }
 
+// Verifies that an apparently detached container returned alongside an inspection error does not establish successful forced disconnection.
 func TestForcedDisconnectRejectsDetachedContainerReturnedWithInspectError(t *testing.T) {
 	t.Parallel()
 
@@ -272,6 +280,7 @@ func TestForcedDisconnectRejectsDetachedContainerReturnedWithInspectError(t *tes
 	require.ErrorContains(t, disconnectErr, "container inspection failed")
 }
 
+// Verifies that forced disconnection checks a stopped container's configured networks rather than relying only on active network endpoints.
 func TestForcedDisconnectVerifiesExitedContainerConfiguration(t *testing.T) {
 	t.Parallel()
 
@@ -318,6 +327,7 @@ func TestForcedDisconnectVerifiesExitedContainerConfiguration(t *testing.T) {
 	require.NoError(t, disconnectErr)
 }
 
+// Verifies that post-disconnect inspection lacking a network ID cannot establish detachment from the intended network.
 func TestForcedDisconnectRejectsPostNetworkWithoutID(t *testing.T) {
 	t.Parallel()
 
@@ -364,6 +374,7 @@ func TestForcedDisconnectRejectsPostNetworkWithoutID(t *testing.T) {
 	require.ErrorContains(t, disconnectErr, "inspection returned an empty ID")
 }
 
+// Verifies that a same-named replacement network with a different ID is not accepted as verification of the original disconnection.
 func TestForcedDisconnectRejectsChangedNetworkIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -410,6 +421,7 @@ func TestForcedDisconnectRejectsChangedNetworkIdentity(t *testing.T) {
 	require.ErrorContains(t, disconnectErr, `identity changed from "network-id" to "replacement-id"`)
 }
 
+// Verifies that forced disconnection fails when the target network remains in the container configuration.
 func TestForcedDisconnectReportsIncompleteContainerConfiguration(t *testing.T) {
 	t.Parallel()
 
@@ -448,6 +460,7 @@ func TestForcedDisconnectReportsIncompleteContainerConfiguration(t *testing.T) {
 	require.ErrorContains(t, disconnectErr, "remains in container")
 }
 
+// Verifies that empty container-inspection output without a not-found error is not treated as confirmed detachment.
 func TestForcedDisconnectDoesNotTreatEmptyContainerInspectionAsVerified(t *testing.T) {
 	t.Parallel()
 
@@ -486,6 +499,7 @@ func TestForcedDisconnectDoesNotTreatEmptyContainerInspectionAsVerified(t *testi
 	require.ErrorContains(t, disconnectErr, "inspection returned no object")
 }
 
+// Verifies that container inspection without an ID cannot establish successful forced disconnection.
 func TestForcedDisconnectRejectsMalformedContainerInspection(t *testing.T) {
 	t.Parallel()
 
@@ -524,6 +538,7 @@ func TestForcedDisconnectRejectsMalformedContainerInspection(t *testing.T) {
 	require.ErrorContains(t, disconnectErr, "inspection returned an empty ID")
 }
 
+// Verifies that a confirmed missing container is accepted as a successful forced-disconnect outcome.
 func TestForcedDisconnectAcceptsGenuineMissingContainer(t *testing.T) {
 	t.Parallel()
 
@@ -570,6 +585,7 @@ func TestForcedDisconnectAcceptsGenuineMissingContainer(t *testing.T) {
 	require.NoError(t, disconnectErr)
 }
 
+// Verifies that a confirmed missing network after a detach attempt is accepted as a successful forced-disconnect outcome.
 func TestForcedDisconnectAcceptsGenuineMissingNetworkAfterDetach(t *testing.T) {
 	t.Parallel()
 
@@ -616,6 +632,7 @@ func TestForcedDisconnectAcceptsGenuineMissingNetworkAfterDetach(t *testing.T) {
 	require.NoError(t, disconnectErr)
 }
 
+// Verifies that network listing obtains labels through inspection so commas and equals signs in values are preserved.
 func TestListNetworksUsesInspectionForAuthoritativeLabels(t *testing.T) {
 	t.Parallel()
 
@@ -649,6 +666,7 @@ func TestListNetworksUsesInspectionForAuthoritativeLabels(t *testing.T) {
 	require.Equal(t, "one,two=three", listed[0].Labels["value"])
 }
 
+// Verifies that network removal retains successful requests while reporting missing networks and incomplete results.
 func TestRemoveNetworksPreservesPartialResults(t *testing.T) {
 	t.Parallel()
 
@@ -680,6 +698,7 @@ func TestRemoveNetworksPreservesPartialResults(t *testing.T) {
 	require.True(t, errors.Is(removeErr, containers.ErrIncomplete))
 }
 
+// Verifies that bridge, host, and none are recognized as built-in WSLC networks while application networks are not.
 func TestIsBuiltInNetwork(t *testing.T) {
 	t.Parallel()
 

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Verifies that runtime info serializes an unsupported host address as an explicit empty field without marking WSLC unhealthy.
 func TestContainerRuntimeInfoPreservesUnsupportedHostAddress(t *testing.T) {
 	t.Parallel()
 
@@ -21,6 +22,7 @@ func TestContainerRuntimeInfoPreservesUnsupportedHostAddress(t *testing.T) {
 	require.JSONEq(t, `{"runtime":"wslc","hostName":"","installed":true,"running":true}`, string(encoded))
 }
 
+// Verifies that Docker and Podman runtime info retain their supported host addresses through JSON serialization.
 func TestContainerRuntimeInfoPreservesSupportedHostAddress(t *testing.T) {
 	t.Parallel()
 

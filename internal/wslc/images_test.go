@@ -20,6 +20,8 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
+// Verifies that WSLC builds map directory, tag, argument, secret, stage, and label options to native CLI syntax and validate IID output.
+// Environment-secret values must be passed through the environment rather than exposed in command arguments.
 func TestBuildImageUsesDirectoryContextPlainProgressAndIIDFile(t *testing.T) {
 	t.Parallel()
 
@@ -79,6 +81,7 @@ func TestBuildImageUsesDirectoryContextPlainProgressAndIIDFile(t *testing.T) {
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 
+// Verifies that unsupported platforms are rejected before launching WSLC and successful builds still fail when requested IID output is missing.
 func TestBuildImageRejectsUnsupportedPlatformAndMissingIID(t *testing.T) {
 	t.Parallel()
 
@@ -110,6 +113,7 @@ func TestBuildImageRejectsUnsupportedPlatformAndMissingIID(t *testing.T) {
 	require.ErrorContains(t, iidErr, "inspecting image ID file")
 }
 
+// Verifies that WSLC builds reject short, nonhexadecimal, oversized, and nonregular IID output.
 func TestBuildImageRejectsInvalidIIDFileResults(t *testing.T) {
 	t.Parallel()
 
@@ -185,6 +189,7 @@ func TestBuildImageRejectsInvalidIIDFileResults(t *testing.T) {
 	}
 }
 
+// Verifies that image inspection retains valid image metadata while reporting missing images and incomplete results from a failed command.
 func TestInspectImagesPreservesPartialResultsFromFailedCommand(t *testing.T) {
 	t.Parallel()
 
@@ -210,6 +215,7 @@ func TestInspectImagesPreservesPartialResultsFromFailedCommand(t *testing.T) {
 	require.ErrorIs(t, inspectErr, containers.ErrIncomplete)
 }
 
+// Verifies that a successful pull with empty quiet output resolves its image identifier through inspection.
 func TestPullImageFallsBackToInspectionWhenQuietOutputIsEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -239,6 +245,7 @@ func TestPullImageFallsBackToInspectionWhenQuietOutputIsEmpty(t *testing.T) {
 	require.Equal(t, "sha256:pulled-image", imageID)
 }
 
+// Verifies that image removal reports successfully requested references rather than CLI deletion messages while retaining missing-image errors.
 func TestRemoveImagesReturnsRequestedReferencesWithPartialErrors(t *testing.T) {
 	t.Parallel()
 
@@ -270,6 +277,7 @@ func TestRemoveImagesReturnsRequestedReferencesWithPartialErrors(t *testing.T) {
 	require.True(t, errors.Is(removeErr, containers.ErrIncomplete))
 }
 
+// Verifies that WSLC image layers invoke a directory-backed native build with plain progress and return the requested tag.
 func TestApplyImageLayersUsesDiskBackedBuildContext(t *testing.T) {
 	t.Parallel()
 

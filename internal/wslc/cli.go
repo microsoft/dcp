@@ -70,6 +70,7 @@ func makeWslcCommand(args ...string) *exec.Cmd {
 	if cmd.Path != "" {
 		cmd.Args[0] = cmd.Path
 	}
+	configureWslcCommand(cmd)
 	return cmd
 }
 

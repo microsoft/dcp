@@ -19,6 +19,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
+// Verifies native CLI encoding of container networks, mounts, ports, environment, labels, health checks, and terminal options.
 func TestApplyCreateContainerOptionsUsesNativeWslcSyntax(t *testing.T) {
 	t.Parallel()
 
@@ -75,6 +76,7 @@ func TestApplyCreateContainerOptionsUsesNativeWslcSyntax(t *testing.T) {
 	}, args)
 }
 
+// Verifies rejection of unsupported restart policies and health start intervals, and health settings without a command.
 func TestApplyCreateContainerOptionsRejectsUnsupportedSettings(t *testing.T) {
 	t.Parallel()
 
@@ -101,6 +103,7 @@ func TestApplyCreateContainerOptionsRejectsUnsupportedSettings(t *testing.T) {
 	require.ErrorContains(t, commandErr, "require a health-check command")
 }
 
+// Verifies that duplicate label keys produce one native argument per key using the last supplied value.
 func TestApplyCreateContainerOptionsDeduplicatesLabelsLastValueWins(t *testing.T) {
 	t.Parallel()
 
@@ -131,6 +134,7 @@ func TestApplyCreateContainerOptionsDeduplicatesLabelsLastValueWins(t *testing.T
 	}, args)
 }
 
+// Verifies that container creation resolves a full network ID to its native name without mutating the requested network options.
 func TestCreateContainerResolvesInitialNetworkIDWithoutAliases(t *testing.T) {
 	t.Parallel()
 
@@ -166,6 +170,7 @@ func TestCreateContainerResolvesInitialNetworkIDWithoutAliases(t *testing.T) {
 	require.Equal(t, []containers.CreateContainerNetworkOptions{{Name: "full-network-id"}}, requestedNetworks)
 }
 
+// Verifies that container run resolves multiple network IDs to native names while preserving aliases and caller-owned options.
 func TestRunContainerResolvesMultipleInitialNetworkIDsAndPreservesAliases(t *testing.T) {
 	t.Parallel()
 
@@ -222,6 +227,7 @@ func TestRunContainerResolvesMultipleInitialNetworkIDsAndPreservesAliases(t *tes
 	require.Equal(t, expectedRequestedNetworks, requestedNetworks)
 }
 
+// Verifies that create and run report failed initial-network resolution without issuing a container creation command.
 func TestContainerCreationReturnsInitialNetworkResolutionErrors(t *testing.T) {
 	t.Parallel()
 
@@ -262,6 +268,8 @@ func TestContainerCreationReturnsInitialNetworkResolutionErrors(t *testing.T) {
 	}
 }
 
+// Verifies normalization of WSLC container state, arguments, environment, health, ports, mounts, labels, and network aliases.
+// Native network names must be resolved to full IDs in the inspected result.
 func TestInspectContainersMapsWslcLayoutAndResolvesNetworkIDs(t *testing.T) {
 	t.Parallel()
 
@@ -348,6 +356,7 @@ func TestInspectContainersMapsWslcLayoutAndResolvesNetworkIDs(t *testing.T) {
 	require.Equal(t, "dcp", container.Labels["owner"])
 }
 
+// Verifies that failed network resolution preserves the inspected container and network name without inventing an ID.
 func TestInspectContainersDoesNotInventMissingNetworkIDs(t *testing.T) {
 	t.Parallel()
 
@@ -380,6 +389,7 @@ func TestInspectContainersDoesNotInventMissingNetworkIDs(t *testing.T) {
 	require.Empty(t, inspected[0].Networks[0].Id)
 }
 
+// Verifies that container inspection retains a valid object and resolved network ID while reporting missing and incomplete results.
 func TestInspectContainersPreservesValidObjectAlongsideMissingReference(t *testing.T) {
 	t.Parallel()
 
@@ -412,6 +422,7 @@ func TestInspectContainersPreservesValidObjectAlongsideMissingReference(t *testi
 	require.ErrorIs(t, inspectErr, containers.ErrIncomplete)
 }
 
+// Verifies that container listing obtains authoritative labels and network names through inspection rather than parsing comma-delimited label text.
 func TestListContainersUsesInspectionForLabelsWithCommas(t *testing.T) {
 	t.Parallel()
 
@@ -446,6 +457,7 @@ func TestListContainersUsesInspectionForLabelsWithCommas(t *testing.T) {
 	require.Equal(t, []string{"bridge", "custom"}, listed[0].Networks)
 }
 
+// Verifies that container-list network filters resolve full IDs to native network names before invoking WSLC.
 func TestListContainersResolvesNetworkIDFiltersToNativeNames(t *testing.T) {
 	t.Parallel()
 
@@ -483,6 +495,7 @@ func TestListContainersResolvesNetworkIDFiltersToNativeNames(t *testing.T) {
 	))
 }
 
+// Verifies that a failed create command still returns a reported container ID alongside its error for subsequent cleanup.
 func TestCreateContainerReturnsPartialIDOnCommandFailure(t *testing.T) {
 	t.Parallel()
 
@@ -505,6 +518,7 @@ func TestCreateContainerReturnsPartialIDOnCommandFailure(t *testing.T) {
 	require.Error(t, createErr)
 }
 
+// Verifies that container run requests native detached execution and returns the resulting container identifier.
 func TestRunContainerUsesDetachAndReturnsID(t *testing.T) {
 	t.Parallel()
 
@@ -538,6 +552,7 @@ func TestRunContainerUsesDetachAndReturnsID(t *testing.T) {
 	require.Equal(t, "container-id", containerID)
 }
 
+// Verifies that multi-container start issues one native command per input and preserves successful results around a missing container.
 func TestStartContainersRunsOneNativeCommandPerContainer(t *testing.T) {
 	t.Parallel()
 
@@ -563,6 +578,7 @@ func TestStartContainersRunsOneNativeCommandPerContainer(t *testing.T) {
 	require.Len(t, executor.FindAll([]string{"wslc", "container", "start"}, "", nil), 3)
 }
 
+// Verifies that container stop maps the requested grace period to WSLC's native timeout flag and returns the requested identifier.
 func TestStopContainersUsesNativeTimeoutFlag(t *testing.T) {
 	t.Parallel()
 
@@ -585,6 +601,7 @@ func TestStopContainersUsesNativeTimeoutFlag(t *testing.T) {
 	require.Equal(t, []string{"container"}, stopped)
 }
 
+// Verifies that exec keeps stdout and stderr separate and delivers one buffered exit code before closing its result channel.
 func TestExecContainerKeepsStreamsSeparateAndBuffersExitCode(t *testing.T) {
 	t.Parallel()
 
@@ -614,13 +631,16 @@ func TestExecContainerKeepsStreamsSeparateAndBuffersExitCode(t *testing.T) {
 
 	require.NoError(t, execErr)
 	require.Equal(t, 1, cap(exitCodes))
-	require.Equal(t, int32(7), <-exitCodes)
+	exitCode, hasExitCode := <-exitCodes
+	require.True(t, hasExitCode)
+	require.Equal(t, int32(7), exitCode)
 	_, open := <-exitCodes
 	require.False(t, open)
 	require.Equal(t, "stdout-value", stdout.String())
 	require.Equal(t, "stderr-value", stderr.String())
 }
 
+// Verifies that structured container files are assembled into a nonempty archive and passed to native copy through stdin.
 func TestCreateFilesCopiesGeneratedArchiveOnStdin(t *testing.T) {
 	t.Parallel()
 
@@ -652,6 +672,7 @@ func TestCreateFilesCopiesGeneratedArchiveOnStdin(t *testing.T) {
 	require.Positive(t, archiveSize)
 }
 
+// Verifies that an empty file-entry request returns an error without invoking the WSLC CLI.
 func TestCreateFilesRejectsEmptyEntries(t *testing.T) {
 	t.Parallel()
 
@@ -664,6 +685,7 @@ func TestCreateFilesRejectsEmptyEntries(t *testing.T) {
 	require.Empty(t, executor.Executions)
 }
 
+// Verifies that log capture preserves separate stdout/stderr data and closes both destinations when the native command exits.
 func TestCaptureContainerLogsSeparatesAndClosesStreams(t *testing.T) {
 	t.Parallel()
 
@@ -704,6 +726,7 @@ func TestCaptureContainerLogsSeparatesAndClosesStreams(t *testing.T) {
 	require.Equal(t, int32(0), stderr.syncCount.Load())
 }
 
+// Verifies that sequential container removal retains successful identifiers while reporting missing and incomplete results.
 func TestSequentialOperationsPreservePartialResults(t *testing.T) {
 	t.Parallel()
 

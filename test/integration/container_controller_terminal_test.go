@@ -402,6 +402,7 @@ func TestContainerTerminalEndToEndWithRealOrchestrator(t *testing.T) {
 	containertest.ForEachHealthyRuntime(t, testCtx, testContainerTerminalWithRealOrchestrator)
 }
 
+// Verifies a shell echo round trip and terminal-exit notification through the container controller for one real runtime.
 func testContainerTerminalWithRealOrchestrator(
 	t *testing.T,
 	runtimeCtx context.Context,

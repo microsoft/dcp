@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Verifies that runtime flags accept Docker, Podman, and WSLC case-insensitively and preserve the unspecified-runtime value.
 func TestRuntimeFlagValues(t *testing.T) {
 	t.Parallel()
 
@@ -35,6 +36,7 @@ func TestRuntimeFlagValues(t *testing.T) {
 	}
 }
 
+// Verifies that an invalid runtime value reports supported choices without changing the previously selected runtime.
 func TestRuntimeFlagRejectsUnknownWithoutChangingValue(t *testing.T) {
 	t.Parallel()
 
@@ -43,6 +45,7 @@ func TestRuntimeFlagRejectsUnknownWithoutChangingValue(t *testing.T) {
 	require.Equal(t, WslcRuntime, value)
 }
 
+// Verifies that the registered container-runtime flag advertises WSLC alongside Docker and Podman.
 func TestRuntimeFlagHelpIncludesWSLC(t *testing.T) {
 	flagSet := pflag.NewFlagSet(t.Name(), pflag.ContinueOnError)
 	EnsureRuntimeFlag(flagSet)

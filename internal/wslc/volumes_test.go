@@ -15,6 +15,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 )
 
+// Verifies native volume create, JSON inspect/list, label filtering, and forced removal commands while preserving names and inspected metadata.
 func TestVolumeLifecycleCommandsUseJsonAndPreserveRequestedNames(t *testing.T) {
 	t.Parallel()
 
@@ -83,6 +84,7 @@ func TestVolumeLifecycleCommandsUseJsonAndPreserveRequestedNames(t *testing.T) {
 	require.Equal(t, []string{"volume-name"}, removed)
 }
 
+// Verifies that volume inspection retains successful objects while reporting missing volumes and incomplete results.
 func TestInspectVolumesPreservesPartialSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -105,6 +107,7 @@ func TestInspectVolumesPreservesPartialSuccess(t *testing.T) {
 	require.ErrorIs(t, inspectErr, containers.ErrIncomplete)
 }
 
+// Verifies that volume removal returns successfully removed names alongside not-found and incomplete-result errors.
 func TestRemoveVolumesPreservesPartialSuccess(t *testing.T) {
 	t.Parallel()
 

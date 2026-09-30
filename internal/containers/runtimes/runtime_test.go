@@ -66,6 +66,7 @@ func TestFindAvailableContainerRuntimeRecordsImplicitSelection(t *testing.T) {
 	require.Equal(t, flags.PodmanRuntime, flags.GetRuntimeFlagValue())
 }
 
+// Verifies that runtime selection favors healthy and installed candidates, then Docker, Podman, and WSLC independently of discovery order.
 func TestRuntimeSelectionPriorities(t *testing.T) {
 	t.Parallel()
 
@@ -114,6 +115,7 @@ func TestRuntimeSelectionPriorities(t *testing.T) {
 	}
 }
 
+// Verifies that the registered WSLC factory creates a non-default orchestrator with no supported container-to-host address.
 func TestRegisteredWSLCFactory(t *testing.T) {
 	t.Parallel()
 
@@ -128,6 +130,7 @@ func TestRegisteredWSLCFactory(t *testing.T) {
 	require.Empty(t, orchestrator.ContainerHost())
 }
 
+// Verifies that explicit WSLC selection invokes only its factory and never falls back to another runtime when WSLC is unhealthy.
 func TestExplicitWSLCSelectionDoesNotFallBack(t *testing.T) {
 	originalFactories := supportedRuntimes
 	originalRuntime := flags.GetRuntimeFlagValue()
@@ -163,6 +166,7 @@ func TestExplicitWSLCSelectionDoesNotFallBack(t *testing.T) {
 	}
 }
 
+// Verifies that empty, whitespace-only, and unknown runtime names return an error without an orchestrator.
 func TestFindContainerRuntimeRejectsInvalidName(t *testing.T) {
 	t.Parallel()
 

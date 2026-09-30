@@ -95,7 +95,7 @@ func BuildImageImpl(
 	var buildContextArchive io.ReadCloser
 	if options.ContextArchive != nil {
 		var archiveErr error
-		buildContextArchive, archiveErr = OpenBuildContextArchive(options.ContextArchive)
+		buildContextArchive, archiveErr = OpenBuildContextArchive(ctx, options.ContextArchive)
 		if archiveErr != nil {
 			return nil, archiveErr
 		}

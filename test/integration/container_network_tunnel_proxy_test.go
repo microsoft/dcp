@@ -1423,7 +1423,6 @@ func testTunnelProxyWithRealOrchestrator(
 	runtimeCtx context.Context,
 	runtime containertest.Runtime,
 ) {
-	containertest.SkipIfNativeRuntimeEventsUnavailable(t, runtime)
 	const parrotTimeout = 3 * time.Minute
 
 	ctx, cancel := context.WithCancel(runtimeCtx)

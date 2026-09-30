@@ -18,6 +18,7 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
+// Verifies that IID files accept a whitespace-padded SHA256 identifier and reject oversized, short, or nonhexadecimal contents.
 func TestReadImageIDFile(t *testing.T) {
 	t.Parallel()
 
@@ -71,6 +72,7 @@ func TestReadImageIDFile(t *testing.T) {
 	}
 }
 
+// Verifies that a directory cannot be read as an IID file and yields no image identifier.
 func TestReadImageIDFileRejectsNonRegularFile(t *testing.T) {
 	t.Parallel()
 
