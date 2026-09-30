@@ -52,7 +52,9 @@ func TestContainerRuntimeExitEventsWithRealOrchestrator(t *testing.T) {
 		defer shutdownAdvancedTestEnvironment(t, ctx, cancel, serverInfo)
 
 		const exitFile = "/tmp/dcp-exit"
-		const waitCommand = "while [ ! -f " + exitFile + " ]; do sleep 0.1; done"
+		const releaseFile = "/tmp/dcp-release"
+		const waitCommand = "while [ ! -f " + exitFile + " ]; do sleep 0.1; done; " +
+			"while [ ! -f " + releaseFile + " ]; do sleep 0.1; done"
 		for _, apiVersion := range []string{"v1", "v2"} {
 			t.Run(apiVersion, func(t *testing.T) {
 				containerName := containertest.UniqueName(t, "runtime-exit-"+apiVersion)
@@ -148,6 +150,12 @@ func TestContainerRuntimeExitEventsWithRealOrchestrator(t *testing.T) {
 				case <-ctx.Done():
 					t.Fatalf("waiting for exit trigger: %v", ctx.Err())
 				}
+				releaseErr := runtime.Orchestrator.CreateFiles(ctx, containers.CreateFilesOptions{
+					Container:   containerID,
+					Destination: "/tmp",
+					Entries:     []containers.FileSystemEntry{{Name: "dcp-release"}},
+				})
+				require.NoError(t, releaseErr)
 				observeExit()
 			})
 		}
