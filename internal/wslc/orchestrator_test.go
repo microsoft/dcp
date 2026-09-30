@@ -62,29 +62,42 @@ func TestStatusHealthyWithDefaultSession(t *testing.T) {
 func TestStatusAllowsLazyDefaultSessionCreation(t *testing.T) {
 	t.Parallel()
 
-	ctx, orchestrator, executor := newTestOrchestrator(t)
-	installAutoCommand(
-		t,
-		executor,
-		[]string{"wslc", "version", "--format", "json"},
-		`{"Client":{"Version":"3.0.1.0"}}`,
-		"",
-		0,
-	)
-	installAutoCommand(
-		t,
-		executor,
-		[]string{"wslc", "info", "--format", "json"},
-		`{"Client":{"Version":"3.0.1.0"},"Server":{"SessionManagerVersion":"3.0.1","Sessions":[]}}`,
-		"",
-		0,
-	)
+	for _, testCase := range []struct {
+		name     string
+		sessions string
+	}{
+		{name: "no sessions", sessions: `[]`},
+		{name: "named session only", sessions: `[{"ID":1,"Name":"named"}]`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 
-	status := orchestrator.getStatusForOS(ctx, "windows")
+			ctx, orchestrator, executor := newTestOrchestrator(t)
+			installAutoCommand(
+				t,
+				executor,
+				[]string{"wslc", "version", "--format", "json"},
+				`{"Client":{"Version":"3.0.1.0"}}`,
+				"",
+				0,
+			)
+			installAutoCommand(
+				t,
+				executor,
+				[]string{"wslc", "info", "--format", "json"},
+				`{"Client":{"Version":"3.0.1.0"},"Server":{"SessionManagerVersion":"3.0.1","Sessions":`+
+					testCase.sessions+`}}`,
+				"",
+				0,
+			)
 
-	require.True(t, status.Installed)
-	require.True(t, status.Running)
-	require.Empty(t, status.Error)
+			status := orchestrator.getStatusForOS(ctx, "windows")
+
+			require.True(t, status.Installed)
+			require.True(t, status.Running)
+			require.Empty(t, status.Error)
+		})
+	}
 }
 
 // Verifies that missing client-version data prevents WSLC from being reported as installed and avoids a session-status query.
