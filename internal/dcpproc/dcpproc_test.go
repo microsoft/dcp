@@ -209,10 +209,10 @@ func TestMonitorProcessExitsCleanlyIfChildStartTimeDoesNotMatch(t *testing.T) {
 
 	// The child process must still be alive: dcpproc must NOT kill a process it could not
 	// positively identify.
-	childStillAlive, childIdentityErr := process.ProcessIdentityTime(childHandle.Pid)
-	require.NoError(t, childIdentityErr)
-	require.False(t, childStillAlive.IsZero(), "child process should still be running")
-	require.True(t, childStillAlive.Equal(childIdentityTime), "child process should still be the same instance")
+	childStillAlive, childLookupErr := process.FindProcessHandle(childHandle.Pid)
+	require.NoError(t, childLookupErr)
+	require.False(t, childStillAlive.IdentityTime.IsZero(), "child process should still be running")
+	require.True(t, childStillAlive.IdentityTime.Equal(childIdentityTime), "child process should still be the same instance")
 }
 
 // TestMonitorProcessCleansUpChildIfMonitorStartTimeDoesNotMatch covers the case where

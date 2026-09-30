@@ -9,20 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 )
-
-// RollbackProcess terminates and reaps an owned, not-yet-waited-on process after failed creation.
-// Cancellation bounds the caller's wait; an outstanding child reaper continues until the child exits.
-func RollbackProcess(ctx context.Context, proc *os.Process) error {
-	if proc == nil {
-		return fmt.Errorf("%w: rollback process is nil", ErrInvalidProcessHandle)
-	}
-	return rollbackProcessStart(ctx, proc.Kill, func() error {
-		_, waitErr := proc.Wait()
-		return waitErr
-	})
-}
 
 func rollbackProcessStart(ctx context.Context, kill func() error, wait func() error) (returnErr error) {
 	defer func() { returnErr = uncertainProcessStart(returnErr) }()

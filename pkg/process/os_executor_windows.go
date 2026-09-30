@@ -97,6 +97,11 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 	}
 
 	if !shouldStopProcess && (opts&optIsResponsibleForStopping) == 0 {
+		if (opts & optWaitForStdio) == 0 {
+			// Another stop owns signaling, but descendants must still be confirmed exited.
+			waitErr := waitForTrackedProcessExit(ctx, handle.Pid, ws, 0)
+			return singleProcessStopResult{waitEndedCh: waitEndedCh}, waitErr
+		}
 		return singleProcessStopResult{waitEndedCh: waitEndedCh}, nil
 	}
 	defer e.finishStopAttempt(ws)
@@ -106,9 +111,9 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 		//
 		// When attached to the target's console group, send CTRL_C_EVENT to
 		// process group 0 to signal all processes in that console group.
-		// Otherwise send CTRL_BREAK_EVENT to the specific PID, which is valid
-		// because DCP-started processes are always created with
-		// CREATE_NEW_PROCESS_GROUP (via DecoupleFromParent).
+		// Otherwise send CTRL_BREAK_EVENT to the root's process group. Only roots
+		// started with CREATE_NEW_PROCESS_GROUP have their PID as the group ID;
+		// descendants must not be signaled by PID.
 		var sig uint32
 		var processGroupID uint32
 		if (opts & optSignalConsoleGroup) != 0 {
@@ -137,26 +142,22 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 		}
 
 		e.log.V(1).Info("Process did not stop upon signal; falling back to SIGKILL", "PID", handle.Pid, "Signal", sig, "Error", err)
-	} else if (opts & optSignalConsoleGroup) != 0 {
-		// The process was not signaled directly here, but a CTRL_C_EVENT was already
-		// broadcast to the entire console group (for the root process). Give this process
-		// time to exit from that broadcast before force-killing it.
-		var timeoutCh <-chan time.Time
-		var timer *time.Timer
-		if (opts & optGracefulOnly) == 0 {
-			timer = time.NewTimer(signalAndWaitTimeout)
-			defer timer.Stop()
-			timeoutCh = timer.C
+	} else if (opts & (optGracefulOnly | optSignalConsoleGroup)) != 0 {
+		// The root already signaled its group or console. Allow descendants to exit
+		// without dispatching another event to an unverified process group.
+		waitTimeout := signalAndWaitTimeout
+		if (opts & optGracefulOnly) != 0 {
+			waitTimeout = 0
 		}
-		select {
-		case <-ctx.Done():
-			return singleProcessStopResult{waitEndedCh: waitEndedCh}, ctx.Err()
-		case <-ws.waitEndedCh:
-			e.log.V(1).Info("Process exited after console group signal", "PID", handle.Pid)
+		gracefulWaitErr := waitForTrackedProcessExit(ctx, handle.Pid, ws, waitTimeout)
+		if gracefulWaitErr == nil {
+			e.log.V(1).Info("Process exited after root group signal", "PID", handle.Pid)
 			return singleProcessStopResult{waitEndedCh: waitEndedCh}, nil
-		case <-timeoutCh:
-			e.log.V(1).Info("Process did not exit after console group signal, force-killing", "PID", handle.Pid)
 		}
+		if (opts&optGracefulOnly) != 0 || gracefulWaitErr != ErrTimedOutWaitingForProcessToStop {
+			return singleProcessStopResult{waitEndedCh: waitEndedCh}, gracefulWaitErr
+		}
+		e.log.V(1).Info("Process did not exit after root group signal, force-killing", "PID", handle.Pid)
 	}
 
 	e.log.V(1).Info("Sending SIGKILL to process...", "PID", handle.Pid)
@@ -196,6 +197,10 @@ func (e *OSExecutor) signalAndWaitForExit(
 		return fmt.Errorf("could not send signal to process %d: %w", proc.Pid, err)
 	}
 
+	return waitForTrackedProcessExit(ctx, handle.Pid, ws, waitTimeout)
+}
+
+func waitForTrackedProcessExit(ctx context.Context, pid Pid_t, ws *waitState, waitTimeout time.Duration) error {
 	var timeoutCh <-chan time.Time
 	var timer *time.Timer
 	if waitTimeout > 0 {
@@ -209,13 +214,11 @@ func (e *OSExecutor) signalAndWaitForExit(
 		return ctx.Err()
 
 	case <-ws.waitEndedCh:
-		err = ws.waitErr
-		if err == nil || IsEarlyProcessExitError(err) {
-			// No error or the process exited successfully.
+		if ws.waitErr == nil || IsEarlyProcessExitError(ws.waitErr) {
 			return nil
 		}
 
-		return fmt.Errorf("could not wait for process %d to exit: %w", proc.Pid, err)
+		return fmt.Errorf("could not wait for process %d to exit: %w", pid, ws.waitErr)
 
 	case <-timeoutCh:
 		return ErrTimedOutWaitingForProcessToStop

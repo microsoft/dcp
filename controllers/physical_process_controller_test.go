@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"sync/atomic"
@@ -32,6 +33,7 @@ type recordingPhysicalProcessExecutor struct {
 	process.Executor
 	findProcessHandleCalls atomic.Int32
 	startProcessCalls      atomic.Int32
+	stopProcessCalls       atomic.Int32
 }
 
 func TestPhysicalProcessEnvironment(t *testing.T) {
@@ -91,7 +93,16 @@ func (e *recordingPhysicalProcessExecutor) StartProcess(
 	process.SysCreateProcessFunc,
 ) (process.ProcessHandle, func(), error) {
 	e.startProcessCalls.Add(1)
-	return process.ProcessHandle{}, nil, nil
+	return process.ProcessHandle{}, nil, errors.New("unexpected process start")
+}
+
+func (e *recordingPhysicalProcessExecutor) StopProcess(
+	context.Context,
+	process.ProcessHandle,
+	...process.ProcessStopOption,
+) error {
+	e.stopProcessCalls.Add(1)
+	return errors.New("unexpected process stop")
 }
 
 func TestPhysicalProcessLaunchCanceledBeforeStart(t *testing.T) {

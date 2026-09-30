@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"time"
 	"unsafe"
 
@@ -155,25 +154,6 @@ func decodeWindowsProcessSnapshot(ctx context.Context, contents []byte) ([]proce
 		}
 		offset += int(next)
 	}
-}
-
-// ProcessName returns the executable's base name after validating the process identity.
-func ProcessName(handle ProcessHandle) (string, error) {
-	proc, findErr := FindProcess(handle)
-	if findErr != nil {
-		return "", findErr
-	}
-	var name string
-	var nameErr error
-	handleErr := proc.WithHandle(func(nativeHandle uintptr) {
-		buffer := make([]uint16, 32768)
-		size := uint32(len(buffer))
-		nameErr = windows.QueryFullProcessImageName(windows.Handle(nativeHandle), 0, &buffer[0], &size)
-		if nameErr == nil {
-			name = filepath.Base(windows.UTF16ToString(buffer[:size]))
-		}
-	})
-	return name, errors.Join(handleErr, nameErr, proc.Release())
 }
 
 // RollbackNativeProcess terminates and closes an owned Windows process whose startup failed.

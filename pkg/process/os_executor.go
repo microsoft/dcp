@@ -611,11 +611,11 @@ func (e *OSExecutor) stopProcessTreeInternal(
 	if len(tree) > 0 && !forceDescendants {
 		gracefulChildOpts := opts &^ optNotFoundIsError
 		gracefulChildOpts |= optGracefulOnly
-		if (opts & optSignalConsoleGroup) == 0 {
-			gracefulChildOpts |= optTrySignal
-		} else {
-			// The root already broadcast the graceful signal to the attached console group.
+		if runtime.GOOS == "windows" || (opts&optSignalConsoleGroup) != 0 {
+			// Windows descendants may share the root's group; their PIDs are not necessarily group IDs.
 			gracefulChildOpts &^= optTrySignal
+		} else {
+			gracefulChildOpts |= optTrySignal
 		}
 
 		gracefulChildErrors := stopChildren(

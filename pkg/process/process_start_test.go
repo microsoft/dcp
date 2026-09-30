@@ -8,6 +8,7 @@ package process
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"testing"
@@ -253,3 +254,110 @@ func TestDisposeWaitsForNonCooperativeProcessCreation(t *testing.T) {
 		t.Fatal("executor disposal did not complete")
 	}
 }
+
+const customCreationHelper = "DCP_CUSTOM_CREATION_HELPER"
+
+// Runs a custom-creation child that waits for standard input to close before exiting,
+// keeping its owned identity available until the parent has captured it.
+func TestCustomCreationProcessHelper(t *testing.T) {
+	if os.Getenv(customCreationHelper) != "1" {
+		return
+	}
+	_, inputErr := io.Copy(io.Discard, os.Stdin)
+	require.NoError(t, inputErr)
+}
+
+// Verifies that custom creation captures an owned identity without starting the original exec.Cmd
+// and reports the exit code supplied by its Waitable.
+func TestSysCreateProcess(t *testing.T) {
+	t.Parallel()
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard())
+	defer executor.Dispose()
+	childInput, parentInput, pipeErr := os.Pipe()
+	require.NoError(t, pipeErr)
+	defer func() { _ = childInput.Close() }()
+	defer func() { _ = parentInput.Close() }()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCustomCreationProcessHelper$")
+	cmd.Env = append(os.Environ(), customCreationHelper+"=1")
+	const overrideExitCode int32 = 77
+	var capturedWaitable *customCreationWaitable
+	creator := func(creationCtx context.Context, command *exec.Cmd) (ProcessHandle, Waitable, error) {
+		createdProcess, createErr := os.StartProcess(command.Path, command.Args, &os.ProcAttr{
+			Env:   command.Env,
+			Files: []*os.File{childInput, os.Stdout, os.Stderr},
+			Sys:   command.SysProcAttr,
+		})
+		if createErr != nil {
+			return ProcessHandle{Pid: UnknownPID}, nil, createErr
+		}
+		capturedWaitable = &customCreationWaitable{
+			process:       createdProcess,
+			overrideCode:  overrideExitCode,
+			captureDoneCh: make(chan struct{}),
+		}
+		handle, handleErr := ProcessHandleFromProcess(createdProcess)
+		if handleErr != nil {
+			abortErr := capturedWaitable.Abort(context.WithoutCancel(creationCtx))
+			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(handleErr, abortErr)
+		}
+		return handle, capturedWaitable, nil
+	}
+	exitResults := make(chan ProcessExitInfo, 1)
+	handler := ProcessExitHandlerFunc(func(pid Pid_t, exitCode int32, exitErr error) {
+		exitResults <- ProcessExitInfo{PID: pid, ExitCode: exitCode, Err: exitErr}
+	})
+	handle, startWaiting, startErr := executor.StartProcess(testCtx, cmd, handler, CreationFlagsNone, creator)
+	require.NoError(t, startErr)
+	require.NotNil(t, capturedWaitable)
+	require.NoError(t, handle.Validate())
+	require.Nil(t, cmd.Process, "custom creation must not start the original exec.Cmd")
+	require.NoError(t, childInput.Close())
+	require.NoError(t, parentInput.Close())
+	startWaiting()
+	select {
+	case exitResult, received := <-exitResults:
+		require.True(t, received)
+		require.Equal(t, handle.Pid, exitResult.PID)
+		require.NoError(t, exitResult.Err)
+		require.Equal(t, overrideExitCode, exitResult.ExitCode)
+	case <-testCtx.Done():
+		t.Fatal("custom process exit was not reported")
+	}
+}
+
+type customCreationWaitable struct {
+	process       *os.Process
+	overrideCode  int32
+	captured      int32
+	captureDoneCh chan struct{}
+}
+
+func (waitable *customCreationWaitable) Wait() error {
+	defer close(waitable.captureDoneCh)
+	_, waitErr := waitable.process.Wait()
+	if waitErr != nil {
+		waitable.captured = UnknownExitCode
+		return waitErr
+	}
+	waitable.captured = waitable.overrideCode
+	return nil
+}
+
+func (*customCreationWaitable) Info() string               { return "custom creation fixture" }
+func (*customCreationWaitable) Flags() ProcessCreationFlag { return CreationFlagsNone }
+func (waitable *customCreationWaitable) Abort(ctx context.Context) error {
+	return rollbackProcessStart(ctx, waitable.process.Kill, func() error {
+		_, waitErr := waitable.process.Wait()
+		return waitErr
+	})
+}
+
+func (waitable *customCreationWaitable) ExitCode() int32 {
+	<-waitable.captureDoneCh
+	return waitable.captured
+}
+
+var _ Waitable = (*customCreationWaitable)(nil)
+var _ ExitCodeSource = (*customCreationWaitable)(nil)

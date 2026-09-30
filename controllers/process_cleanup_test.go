@@ -7,7 +7,9 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,6 +57,7 @@ type cleanupContextProcessExecutor struct {
 	process.Executor
 	observation cleanupContextObservation
 	stopErr     error
+	waitForStop func(context.Context) error
 }
 
 func (executor *cleanupContextProcessExecutor) observeContext(ctx context.Context) {
@@ -73,7 +76,11 @@ func (executor *cleanupContextProcessExecutor) StartProcess(
 	executor.observeContext(ctx)
 	handle := process.NewHandle(4301, time.Unix(1101, 0).UTC())
 	startWaitForExit := func() {
-		handler.OnProcessExited(handle.Pid, process.UnknownExitCode, executor.stopErr)
+		stopErr := executor.stopErr
+		if executor.waitForStop != nil {
+			stopErr = executor.waitForStop(ctx)
+		}
+		handler.OnProcessExited(handle.Pid, 0, stopErr)
 	}
 	return handle, startWaitForExit, nil
 }
@@ -84,6 +91,9 @@ func (executor *cleanupContextProcessExecutor) StopProcess(
 	_ ...process.ProcessStopOption,
 ) error {
 	executor.observeContext(ctx)
+	if executor.waitForStop != nil {
+		return executor.waitForStop(ctx)
+	}
 	return executor.stopErr
 }
 
@@ -226,15 +236,195 @@ func TestPhysicalProcessIncompleteTreeStopRemainsRetryable(t *testing.T) {
 	require.Equal(t, string(apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed), readyCondition.Reason)
 	require.Equal(t, descendantCleanupUnconfirmedMessage, readyCondition.Message)
 
-	restoredStateKey, restoredData := initialPhysicalProcessData(physicalProcess)
-	require.Equal(t, stateKey, restoredStateKey)
-	require.Equal(t, physicalProcessStateStop, restoredData.state)
-	require.Equal(t, physicalResourceProgressRetryPending, restoredData.progress)
-	require.Equal(t, handle, restoredData.handle)
-	require.True(t, restoredData.cleanupUnconfirmed)
-	require.Equal(t, apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed, restoredData.failureReason)
-
 	secondDeleteChange, _ := reconciler.handleDeletionRequest(physicalProcess, missingData, logr.Discard())
 	require.NotEqual(t, noChange, secondDeleteChange)
 	require.NotContains(t, physicalProcess.Finalizers, physicalProcessFinalizer)
+}
+
+// Verifies that PhysicalProcess initialization ignores diagnostic status, including JSON-round-tripped timestamps.
+// Deletion by a fresh controller must not claim, inspect, start, or stop a runtime process.
+func TestPhysicalProcessDiagnosticStatusDoesNotRestoreOwnership(t *testing.T) {
+	t.Parallel()
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+
+	pid := int64(4300)
+	exitCode := int32(0)
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "diagnostic-status",
+			Namespace: "test",
+			UID:       types.UID("diagnostic-status"),
+		},
+		Spec: apiv2.PhysicalProcessSpec{
+			Process: &apiv2.PhysicalProcessConfig{ExecutablePath: "unused"},
+		},
+		Status: apiv2.PhysicalProcessStatus{
+			Phase:             apiv2.PhysicalProcessPhaseExited,
+			PID:               &pid,
+			IdentityTimestamp: metav1.NewMicroTime(time.Unix(1100, 0).UTC()),
+			ExitCode:          &exitCode,
+			Conditions: []metav1.Condition{{
+				Type:   string(apiv2.ConditionReady),
+				Status: metav1.ConditionFalse,
+				Reason: string(apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed),
+			}},
+		},
+	}
+	encoded, marshalErr := json.Marshal(physicalProcess)
+	require.NoError(t, marshalErr)
+	var decoded apiv2.PhysicalProcess
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+
+	for _, fixture := range []*apiv2.PhysicalProcess{physicalProcess, &decoded} {
+		stateKey, data := initialPhysicalProcessData(fixture)
+		require.Equal(t, physicalProcessDataKey(fixture), stateKey)
+		require.Equal(t, &physicalProcessData{
+			resourceUID: fixture.UID,
+			state:       physicalProcessStateNamespace,
+			progress:    physicalResourceProgressNotReady,
+		}, data)
+
+		deleting := fixture.DeepCopy()
+		deletedAt := metav1.Now()
+		deleting.DeletionTimestamp = &deletedAt
+		deleting.Finalizers = []string{physicalProcessFinalizer}
+		executor := &recordingPhysicalProcessExecutor{}
+		reconciler := NewPhysicalProcessReconciler(testCtx, nil, nil, logr.Discard(), executor)
+		change, _ := reconciler.managePhysicalProcess(testCtx, deleting, logr.Discard())
+
+		require.NotEqual(t, noChange, change)
+		require.NotContains(t, deleting.Finalizers, physicalProcessFinalizer)
+		require.Zero(t, executor.startProcessCalls.Load())
+		require.Zero(t, executor.stopProcessCalls.Load())
+		require.Zero(t, executor.findProcessHandleCalls.Load())
+		_, remaining := reconciler.processData.BorrowByNamespacedName(deleting.NamespacedName())
+		require.Nil(t, remaining)
+	}
+}
+
+// Verifies that root-exit notifications preserve in-flight tree cleanup and the root's exit metadata.
+// Finalization waits for confirmed cleanup or publication of an incomplete-cleanup warning after root disappearance.
+func TestPhysicalProcessRootExitDoesNotFinishTreeCleanup(t *testing.T) {
+	t.Parallel()
+
+	for _, incomplete := range []bool{false, true} {
+		name := "confirmed"
+		if incomplete {
+			name = "incomplete"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+			defer testCancel()
+
+			stopStarted := make(chan struct{})
+			releaseStop := make(chan struct{})
+			stopFinished := make(chan struct{})
+			var releaseOnce sync.Once
+			finishStop := func() { releaseOnce.Do(func() { close(releaseStop) }) }
+			executor := &cleanupContextProcessExecutor{
+				waitForStop: func(ctx context.Context) error {
+					close(stopStarted)
+					select {
+					case <-releaseStop:
+						if incomplete {
+							return process.ErrIncompleteProcessTree
+						}
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				},
+			}
+			reconciler := NewPhysicalProcessReconciler(testCtx, nil, nil, logr.Discard(), executor)
+			deletedAt := metav1.Now()
+			physicalProcess := &apiv2.PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              name,
+					Namespace:         "test",
+					UID:               types.UID(name),
+					DeletionTimestamp: &deletedAt,
+					Finalizers:        []string{physicalProcessFinalizer},
+				},
+				Spec: apiv2.PhysicalProcessSpec{
+					Process: &apiv2.PhysicalProcessConfig{ExecutablePath: "unused"},
+				},
+			}
+			handle := process.NewHandle(4300, time.Unix(1100, 0).UTC())
+			stateKey := physicalProcessHandleDataKey(handle)
+			stopping := &physicalProcessData{
+				resourceUID: physicalProcess.UID,
+				state:       physicalProcessStateStop,
+				progress:    physicalResourceProgressInProgress,
+				handle:      handle,
+			}
+			reconciler.processData.Store(physicalProcess.NamespacedName(), stateKey, stopping.Clone())
+			go func() {
+				reconciler.stopPhysicalProcess(testCtx, physicalProcess.DeepCopy(), stateKey, stopping.Clone(), logr.Discard())
+				close(stopFinished)
+			}()
+			defer func() {
+				finishStop()
+				select {
+				case <-stopFinished:
+				case <-testCtx.Done():
+					t.Error("cleanup worker did not finish")
+				}
+			}()
+			select {
+			case <-stopStarted:
+			case <-testCtx.Done():
+				t.Fatal("cleanup worker did not start")
+			}
+
+			const rootExitCode int32 = 17
+			reconciler.processExited(physicalProcess.NamespacedName(), physicalProcess.UID, handle, handle.Pid, rootExitCode, nil)
+			reconciler.processData.RunDeferredOps(physicalProcess.NamespacedName(), physicalProcess)
+			_, rootExited := reconciler.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
+			require.NotNil(t, rootExited)
+			change, _ := reconciler.handleDeletionRequest(physicalProcess, rootExited, logr.Discard())
+			require.Contains(t, physicalProcess.Finalizers, physicalProcessFinalizer)
+			require.Equal(t, additionalReconciliationNeeded, change)
+			require.Equal(t, physicalProcessStateStop, rootExited.state)
+			require.True(t, rootExited.operationInProgress())
+			require.NotNil(t, rootExited.exitCode)
+			require.Equal(t, rootExitCode, *rootExited.exitCode)
+			require.False(t, rootExited.finishedAt.IsZero())
+
+			finishStop()
+			select {
+			case <-stopFinished:
+			case <-testCtx.Done():
+				t.Fatal("cleanup result did not arrive")
+			}
+			reconciler.processData.RunDeferredOps(physicalProcess.NamespacedName(), physicalProcess)
+			_, completed := reconciler.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
+			require.NotNil(t, completed)
+			require.NotNil(t, completed.exitCode)
+			require.Equal(t, rootExitCode, *completed.exitCode)
+			if incomplete {
+				require.Equal(t, physicalResourceProgressRetryPending, completed.progress)
+				require.True(t, completed.cleanupUnconfirmed)
+				require.Equal(t, rootExited.finishedAt, completed.finishedAt)
+				_, _, valid := completed.applyTo(physicalProcess)
+				require.True(t, valid)
+				require.True(t, physicalProcessReportsDescendantCleanupUnconfirmed(physicalProcess))
+
+				executor.waitForStop = nil
+				executor.stopErr = &process.ErrProcessNotFound{Pid: handle.Pid}
+				reconciler.stopPhysicalProcess(testCtx, physicalProcess, stateKey, completed.Clone(), logr.Discard())
+				reconciler.processData.RunDeferredOps(physicalProcess.NamespacedName(), physicalProcess)
+				_, completed = reconciler.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
+				require.NotNil(t, completed)
+				require.True(t, completed.cleanupUnconfirmed)
+			} else {
+				require.Equal(t, physicalResourceProgressExited, completed.progress)
+				require.False(t, completed.cleanupUnconfirmed)
+			}
+			finalChange, _ := reconciler.handleDeletionRequest(physicalProcess, completed, logr.Discard())
+			require.NotEqual(t, noChange, finalChange)
+			require.NotContains(t, physicalProcess.Finalizers, physicalProcessFinalizer)
+		})
+	}
 }

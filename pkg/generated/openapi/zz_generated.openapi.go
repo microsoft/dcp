@@ -6452,7 +6452,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref common.ReferenceCallb
 					},
 					"identityTimestamp": {
 						SchemaProps: spec.SchemaProps{
-							Description: "IdentityTimestamp reports the process identity captured by the controller for PID-reuse protection. The controller may use this value with PID to resume an unconfirmed cleanup after restart. On Linux this value represents elapsed time since boot rather than wall-clock time.",
+							Description: "IdentityTimestamp reports the process identity captured by the controller for PID-reuse protection. It is diagnostic and is not used to reconstruct controller state. On Linux this value represents elapsed time since boot rather than wall-clock time.",
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},

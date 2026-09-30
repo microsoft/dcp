@@ -39,15 +39,6 @@ func FindProcessHandle(pid Pid_t) (ProcessHandle, error) {
 	return info.handle, nil
 }
 
-// ProcessIdentityTime returns the stable identity timestamp, not a display timestamp.
-func ProcessIdentityTime(pid Pid_t) (time.Time, error) {
-	handle, handleErr := FindProcessHandle(pid)
-	if handleErr != nil {
-		return time.Time{}, handleErr
-	}
-	return handle.IdentityTime, nil
-}
-
 // StartTimeForProcess converts a captured process identity to a wall-clock display time.
 // It does not require the process to still be running.
 func StartTimeForProcess(handle ProcessHandle) (time.Time, error) {

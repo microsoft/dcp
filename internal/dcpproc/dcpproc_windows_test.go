@@ -10,8 +10,10 @@ package dcpproc_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -224,9 +226,23 @@ func tryGetProcessInfo(item process.ProcessHandle) (uint32, string, error) {
 		return 0, "", fmt.Errorf("could not convert PID %d to Windows PID: %w", item.Pid, pidErr)
 	}
 
-	processName, nameErr := process.ProcessName(item)
-	if nameErr != nil {
-		return 0, "", fmt.Errorf("could not get process name for PID %d: %w", osPid, nameErr)
+	foundProcess, findErr := process.FindProcess(item)
+	if findErr != nil {
+		return 0, "", fmt.Errorf("could not inspect process PID %d: %w", osPid, findErr)
+	}
+	var processName string
+	var nameErr error
+	handleErr := foundProcess.WithHandle(func(nativeHandle uintptr) {
+		buffer := make([]uint16, 32768)
+		size := uint32(len(buffer))
+		nameErr = windows.QueryFullProcessImageName(windows.Handle(nativeHandle), 0, &buffer[0], &size)
+		if nameErr == nil {
+			processName = filepath.Base(windows.UTF16ToString(buffer[:size]))
+		}
+	})
+	inspectionErr := errors.Join(handleErr, nameErr, foundProcess.Release())
+	if inspectionErr != nil {
+		return 0, "", fmt.Errorf("could not get process name for PID %d: %w", osPid, inspectionErr)
 	}
 
 	return osPid, processName, nil

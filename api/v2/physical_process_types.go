@@ -141,7 +141,7 @@ type PhysicalProcessStatus struct {
 	PID *int64 `json:"pid,omitempty"`
 
 	// IdentityTimestamp reports the process identity captured by the controller for PID-reuse protection.
-	// The controller may use this value with PID to resume an unconfirmed cleanup after restart.
+	// It is diagnostic and is not used to reconstruct controller state.
 	// On Linux this value represents elapsed time since boot rather than wall-clock time.
 	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
 

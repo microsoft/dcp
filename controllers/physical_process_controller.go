@@ -170,24 +170,11 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(
 }
 
 func initialPhysicalProcessData(physicalProcess *apiv2.PhysicalProcess) (physicalProcessDataStateKey, *physicalProcessData) {
-	stateKey := physicalProcessDataKey(physicalProcess)
-	data := &physicalProcessData{
+	return physicalProcessDataKey(physicalProcess), &physicalProcessData{
 		resourceUID: physicalProcess.UID,
 		state:       physicalProcessStateNamespace,
 		progress:    physicalResourceProgressNotReady,
 	}
-	if !physicalProcessReportsDescendantCleanupUnconfirmed(physicalProcess) {
-		return stateKey, data
-	}
-
-	markDescendantCleanupUnconfirmed(data, descendantCleanupUnconfirmedMessage)
-	if persistedHandle, found := physicalProcessStatusHandle(physicalProcess); found {
-		data.state = physicalProcessStateStop
-		data.progress = physicalResourceProgressRetryPending
-		data.handle = persistedHandle
-		stateKey = physicalProcessHandleDataKey(persistedHandle)
-	}
-	return stateKey, data
 }
 
 func handlePhysicalProcessNamespace(
@@ -667,13 +654,21 @@ func (r *PhysicalProcessReconciler) queuePhysicalProcessDataResult(
 	queued := r.processData.QueueDeferredOpForStateKey(physicalProcess.NamespacedName(), stateKey, func(name types.NamespacedName, currentStateKey physicalProcessDataStateKey, _ *apiv2.PhysicalProcess) {
 		resultToStore := result
 		_, currentData := r.processData.BorrowByNamespacedName(name)
-		if currentData != nil &&
-			result.state == physicalProcessStateRuntime &&
-			result.progress == physicalResourceProgressExited &&
-			result.exitCode == nil &&
-			currentData.exitCode != nil {
+		preserveExitInfo := currentData != nil && currentData.handle == result.handle &&
+			(result.state == physicalProcessStateStop ||
+				(result.state == physicalProcessStateRuntime && result.progress == physicalResourceProgressExited))
+		preserveExitCode := preserveExitInfo && result.exitCode == nil && currentData.exitCode != nil
+		preserveFinishedAt := preserveExitInfo && result.state == physicalProcessStateStop &&
+			result.finishedAt.IsZero() && !currentData.finishedAt.IsZero()
+		if preserveExitCode || preserveFinishedAt {
+			// Root exit notifications can arrive while a tree stop is still producing its result.
 			resultToStore = result.Clone()
-			resultToStore.exitCode = cloneInt32Pointer(currentData.exitCode)
+			if preserveExitCode {
+				resultToStore.exitCode = cloneInt32Pointer(currentData.exitCode)
+			}
+			if preserveFinishedAt {
+				resultToStore.finishedAt = currentData.finishedAt
+			}
 		}
 		newStateKey := currentStateKey
 		if resultToStore.handle.Pid > 0 {
@@ -715,15 +710,17 @@ func (r *PhysicalProcessReconciler) processExited(
 			currentData.handle != expectedHandle || expectedHandle.Pid != pid {
 			return
 		}
-		currentData.state = physicalProcessStateRuntime
-		currentData.progress = physicalResourceProgressExited
-		currentData.finishedAt = time.Now()
-		if currentData.cleanupUnconfirmed {
-			markDescendantCleanupUnconfirmed(currentData, descendantCleanupUnconfirmedMessage)
-		} else {
-			currentData.failureReason = ""
-			currentData.failureMessage = ""
+		if currentData.state != physicalProcessStateStop || !currentData.operationInProgress() {
+			currentData.state = physicalProcessStateRuntime
+			currentData.progress = physicalResourceProgressExited
+			if currentData.cleanupUnconfirmed {
+				markDescendantCleanupUnconfirmed(currentData, descendantCleanupUnconfirmedMessage)
+			} else {
+				currentData.failureReason = ""
+				currentData.failureMessage = ""
+			}
 		}
+		currentData.finishedAt = time.Now()
 		if exitErr == nil && exitCode != process.UnknownExitCode {
 			currentData.exitCode = &exitCode
 		}
@@ -857,7 +854,7 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(
 		if cleanupFinished {
 			log.Info("Deleting PhysicalProcess after root exit with unconfirmed descendant cleanup")
 		} else {
-			log.Info("Deleting PhysicalProcess with unconfirmed descendant cleanup because no persisted process identity is available")
+			log.Info("Deleting PhysicalProcess with unconfirmed descendant cleanup because no captured process identity is available")
 		}
 	}
 
@@ -890,18 +887,6 @@ func physicalProcessReportsDescendantCleanupUnconfirmed(physicalProcess *apiv2.P
 	)
 	return readyCondition != nil &&
 		readyCondition.Reason == string(apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed)
-}
-
-func physicalProcessStatusHandle(physicalProcess *apiv2.PhysicalProcess) (process.ProcessHandle, bool) {
-	if physicalProcess.Status.PID == nil || physicalProcess.Status.IdentityTimestamp.IsZero() {
-		return process.ProcessHandle{}, false
-	}
-	pid, pidErr := process.Int64_ToPidT(*physicalProcess.Status.PID)
-	if pidErr != nil {
-		return process.ProcessHandle{}, false
-	}
-	handle := process.NewHandle(pid, physicalProcess.Status.IdentityTimestamp.Time)
-	return handle, handle.Validate() == nil
 }
 
 func handlePIDString(handle process.ProcessHandle) string {
