@@ -15,15 +15,29 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/go-logr/logr"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
+const buildWorkspaceCleanupTimeout = 5 * time.Second
+
+type removeAllFunc func(string) error
+
 // BuildImageFromArchiveDirectory stages regular files and directories in a restricted
 // workspace and builds from that directory. Archive ownership and Unix modes are not preserved.
-func BuildImageFromArchiveDirectory(ctx context.Context, options BuildImageOptions, builder BuildImage) error {
-	return buildImageFromArchiveDirectory(ctx, options, builder, usvc_io.DcpTempDir())
+func BuildImageFromArchiveDirectory(ctx context.Context, log logr.Logger, options BuildImageOptions, builder BuildImage) error {
+	return buildImageFromArchiveDirectoryWithCleanup(
+		ctx,
+		log,
+		options,
+		builder,
+		usvc_io.DcpTempDir(),
+		buildWorkspaceCleanupTimeout,
+		os.RemoveAll,
+	)
 }
 
 func buildImageFromArchiveDirectory(
@@ -31,6 +45,26 @@ func buildImageFromArchiveDirectory(
 	options BuildImageOptions,
 	builder BuildImage,
 	tempDirectory string,
+) error {
+	return buildImageFromArchiveDirectoryWithCleanup(
+		ctx,
+		logr.Discard(),
+		options,
+		builder,
+		tempDirectory,
+		buildWorkspaceCleanupTimeout,
+		os.RemoveAll,
+	)
+}
+
+func buildImageFromArchiveDirectoryWithCleanup(
+	ctx context.Context,
+	log logr.Logger,
+	options BuildImageOptions,
+	builder BuildImage,
+	tempDirectory string,
+	cleanupTimeout time.Duration,
+	removeAll removeAllFunc,
 ) (returnErr error) {
 	if options.ContainerBuildContext == nil || options.ContextArchive == nil {
 		return fmt.Errorf("build context archive is required")
@@ -68,7 +102,7 @@ func buildImageFromArchiveDirectory(
 		return workspaceErr
 	}
 	defer func() {
-		returnErr = errors.Join(returnErr, wrapBuildWorkspaceCleanupError(workspace, os.RemoveAll(workspace)))
+		returnErr = cleanupBuildWorkspace(ctx, log, workspace, returnErr, cleanupTimeout, removeAll)
 	}()
 
 	if extractErr := extractBuildContextArchive(buildCtx, options.ContextArchive, workspace); extractErr != nil {
@@ -149,15 +183,15 @@ func extractBuildContextArchive(
 		}
 
 		destination := filepath.Join(directory, relativePath)
+		if ancestorErr := ensureBuildContextAncestors(directory, relativePath); ancestorErr != nil {
+			return fmt.Errorf("create build context parent directories for %q: %w", header.Name, ancestorErr)
+		}
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if directoryErr := usvc_io.EnsureRestrictedDirectory(destination, osutil.PermissionOnlyOwnerReadWriteTraverse); directoryErr != nil {
 				return fmt.Errorf("stage build context directory %q: %w", header.Name, directoryErr)
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			if parentErr := usvc_io.EnsureRestrictedDirectory(filepath.Dir(destination), osutil.PermissionOnlyOwnerReadWriteTraverse); parentErr != nil {
-				return fmt.Errorf("create build context parent directory for %q: %w", header.Name, parentErr)
-			}
 			if stageErr := writeBuildContextFile(ctx, destination, archiveReader, nil); stageErr != nil {
 				return fmt.Errorf("stage build context file %q: %w", header.Name, stageErr)
 			}
@@ -165,6 +199,23 @@ func extractBuildContextArchive(
 			return fmt.Errorf("unsupported build context archive entry type %d for %q", header.Typeflag, header.Name)
 		}
 	}
+}
+
+func ensureBuildContextAncestors(directory string, relativePath string) error {
+	ancestors := make([]string, 0)
+	for ancestor := filepath.Dir(relativePath); ancestor != "."; ancestor = filepath.Dir(ancestor) {
+		ancestors = append(ancestors, ancestor)
+	}
+	for index := len(ancestors) - 1; index >= 0; index-- {
+		ancestorPath := filepath.Join(directory, ancestors[index])
+		if directoryErr := usvc_io.EnsureRestrictedDirectory(
+			ancestorPath,
+			osutil.PermissionOnlyOwnerReadWriteTraverse,
+		); directoryErr != nil {
+			return directoryErr
+		}
+	}
+	return nil
 }
 
 func archiveBuildContextPath(name string) (string, error) {

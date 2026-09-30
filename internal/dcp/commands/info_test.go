@@ -32,6 +32,7 @@ func TestContainerRuntimeInfoPreservesSupportedHostAddress(t *testing.T) {
 	}{
 		{runtime: "docker", host: "host.docker.internal"},
 		{runtime: "podman", host: "host.containers.internal"},
+		{runtime: "wslc", host: "host.wslc.internal"},
 	} {
 		t.Run(testCase.runtime, func(t *testing.T) {
 			t.Parallel()

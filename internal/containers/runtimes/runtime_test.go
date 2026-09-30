@@ -22,19 +22,19 @@ import (
 
 type selectionTestOrchestrator struct {
 	containers.ContainerOrchestrator
-	name   string
-	status containers.ContainerRuntimeStatus
-}
-
-func (orchestrator selectionTestOrchestrator) IsDefault() bool {
-	return false
+	name        string
+	status      containers.ContainerRuntimeStatus
+	checkStatus func(context.Context) containers.ContainerRuntimeStatus
 }
 
 func (orchestrator selectionTestOrchestrator) Name() string {
 	return orchestrator.name
 }
 
-func (orchestrator selectionTestOrchestrator) CheckStatus(context.Context, containers.CachedRuntimeStatusUsage) containers.ContainerRuntimeStatus {
+func (orchestrator selectionTestOrchestrator) CheckStatus(ctx context.Context, _ containers.CachedRuntimeStatusUsage) containers.ContainerRuntimeStatus {
+	if orchestrator.checkStatus != nil {
+		return orchestrator.checkStatus(ctx)
+	}
 	return orchestrator.status
 }
 
@@ -115,7 +115,7 @@ func TestRuntimeSelectionPriorities(t *testing.T) {
 	}
 }
 
-// Verifies that the registered WSLC factory creates a non-default orchestrator with no supported container-to-host address.
+// Verifies that the registered WSLC factory exposes its native container-to-host address.
 func TestRegisteredWSLCFactory(t *testing.T) {
 	t.Parallel()
 
@@ -126,8 +126,154 @@ func TestRegisteredWSLCFactory(t *testing.T) {
 
 	orchestrator := factory(logr.Discard(), executor)
 	require.Equal(t, "wslc", orchestrator.Name())
-	require.False(t, orchestrator.IsDefault())
-	require.Empty(t, orchestrator.ContainerHost())
+	require.Equal(t, "host.wslc.internal", orchestrator.ContainerHost())
+}
+
+// Verifies that a healthy highest-priority runtime returns immediately and cancels lower-priority probes.
+func TestFindAvailableContainerRuntimeCancelsLowerPriorityProbes(t *testing.T) {
+	originalRuntime := flags.GetRuntimeFlagValue()
+	originalSupportedRuntimes := supportedRuntimes
+	t.Cleanup(func() {
+		supportedRuntimes = originalSupportedRuntimes
+		require.NoError(t, flags.SetRuntimeFlagValue(originalRuntime))
+	})
+	require.NoError(t, flags.SetRuntimeFlagValue(flags.UnknownRuntime))
+
+	lowerProbeStarted := make(chan struct{})
+	lowerProbeCancelled := make(chan struct{})
+	supportedRuntimes = map[flags.RuntimeFlagValue]ContainerOrchestratorFactory{
+		flags.DockerRuntime: func(logr.Logger, process.Executor) containers.ContainerOrchestrator {
+			return selectionTestOrchestrator{
+				name:   string(flags.DockerRuntime),
+				status: containers.ContainerRuntimeStatus{Installed: true, Running: true},
+			}
+		},
+		flags.WslcRuntime: func(logr.Logger, process.Executor) containers.ContainerOrchestrator {
+			return selectionTestOrchestrator{
+				name: string(flags.WslcRuntime),
+				checkStatus: func(ctx context.Context) containers.ContainerRuntimeStatus {
+					close(lowerProbeStarted)
+					<-ctx.Done()
+					close(lowerProbeCancelled)
+					return containers.ContainerRuntimeStatus{Installed: true, Error: ctx.Err().Error()}
+				},
+			}
+		},
+	}
+
+	type findResult struct {
+		orchestrator containers.ContainerOrchestrator
+		err          error
+	}
+	result := make(chan findResult, 1)
+	go func() {
+		orchestrator, findErr := FindAvailableContainerRuntime(t.Context(), logr.Discard(), nil)
+		result <- findResult{orchestrator: orchestrator, err: findErr}
+	}()
+
+	select {
+	case <-lowerProbeStarted:
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
+	var selected findResult
+	select {
+	case selected = <-result:
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
+	require.NoError(t, selected.err)
+	require.Equal(t, string(flags.DockerRuntime), selected.orchestrator.Name())
+	select {
+	case <-lowerProbeCancelled:
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
+}
+
+// Verifies that a healthy runtime is not selected until all higher-priority probes are resolved.
+func TestFindAvailableContainerRuntimeWaitsForHigherPriorityProbe(t *testing.T) {
+	originalRuntime := flags.GetRuntimeFlagValue()
+	originalSupportedRuntimes := supportedRuntimes
+	t.Cleanup(func() {
+		supportedRuntimes = originalSupportedRuntimes
+		require.NoError(t, flags.SetRuntimeFlagValue(originalRuntime))
+	})
+	require.NoError(t, flags.SetRuntimeFlagValue(flags.UnknownRuntime))
+
+	dockerStarted := make(chan struct{})
+	releaseDocker := make(chan struct{})
+	podmanCompleted := make(chan struct{})
+	wslcCancelled := make(chan struct{})
+	supportedRuntimes = map[flags.RuntimeFlagValue]ContainerOrchestratorFactory{
+		flags.DockerRuntime: func(logr.Logger, process.Executor) containers.ContainerOrchestrator {
+			return selectionTestOrchestrator{
+				name: string(flags.DockerRuntime),
+				checkStatus: func(context.Context) containers.ContainerRuntimeStatus {
+					close(dockerStarted)
+					<-releaseDocker
+					return containers.ContainerRuntimeStatus{}
+				},
+			}
+		},
+		flags.PodmanRuntime: func(logr.Logger, process.Executor) containers.ContainerOrchestrator {
+			return selectionTestOrchestrator{
+				name: string(flags.PodmanRuntime),
+				checkStatus: func(context.Context) containers.ContainerRuntimeStatus {
+					close(podmanCompleted)
+					return containers.ContainerRuntimeStatus{Installed: true, Running: true}
+				},
+			}
+		},
+		flags.WslcRuntime: func(logr.Logger, process.Executor) containers.ContainerOrchestrator {
+			return selectionTestOrchestrator{
+				name: string(flags.WslcRuntime),
+				checkStatus: func(ctx context.Context) containers.ContainerRuntimeStatus {
+					<-ctx.Done()
+					close(wslcCancelled)
+					return containers.ContainerRuntimeStatus{Installed: true, Error: ctx.Err().Error()}
+				},
+			}
+		},
+	}
+
+	type findResult struct {
+		orchestrator containers.ContainerOrchestrator
+		err          error
+	}
+	result := make(chan findResult, 1)
+	go func() {
+		orchestrator, findErr := FindAvailableContainerRuntime(t.Context(), logr.Discard(), nil)
+		result <- findResult{orchestrator: orchestrator, err: findErr}
+	}()
+
+	for _, ready := range []<-chan struct{}{dockerStarted, podmanCompleted} {
+		select {
+		case <-ready:
+		case <-t.Context().Done():
+			t.Fatal(t.Context().Err())
+		}
+	}
+	select {
+	case earlyResult := <-result:
+		t.Fatalf("selected %v before Docker status was known", earlyResult.orchestrator)
+	default:
+	}
+
+	close(releaseDocker)
+	var selected findResult
+	select {
+	case selected = <-result:
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
+	require.NoError(t, selected.err)
+	require.Equal(t, string(flags.PodmanRuntime), selected.orchestrator.Name())
+	select {
+	case <-wslcCancelled:
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	}
 }
 
 // Verifies that explicit WSLC selection invokes only its factory and never falls back to another runtime when WSLC is unhealthy.

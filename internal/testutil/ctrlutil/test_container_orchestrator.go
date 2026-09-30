@@ -724,10 +724,6 @@ func getID() string {
 	return uuid.New().String()
 }
 
-func (*TestContainerOrchestrator) IsDefault() bool {
-	return true
-}
-
 func (*TestContainerOrchestrator) Name() string {
 	return "test"
 }

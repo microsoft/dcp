@@ -7,6 +7,7 @@ package containers
 
 import (
 	"crypto/sha256"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,4 +82,18 @@ func TestReadImageIDFileRejectsNonRegularFile(t *testing.T) {
 	require.Error(t, readErr)
 	assert.Contains(t, readErr.Error(), "is not a regular file")
 	assert.Empty(t, imageID)
+}
+
+// Verifies that an IID file created by an external runtime can be read without DCP restricted-file ownership or ACL validation.
+func TestReadImageIDFileAllowsExternallyCreatedFile(t *testing.T) {
+	t.Parallel()
+
+	expectedImageID := "sha256:" + strings.Repeat("a", sha256.Size*2)
+	path := filepath.Join(t.TempDir(), "external-image.iid")
+	require.NoError(t, os.WriteFile(path, []byte(expectedImageID+"\n"), 0o600))
+
+	imageID, readErr := ReadImageIDFile(path)
+
+	require.NoError(t, readErr)
+	require.Equal(t, expectedImageID, imageID)
 }

@@ -7,12 +7,17 @@ package wslc
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/dcp/internal/containers"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 // Verifies that JSON-line decoding accepts empty listings and retains valid objects while reporting malformed lines.
@@ -105,6 +110,132 @@ func TestNormalizeCliErrorsRestrictsRuntimeHealthClassification(t *testing.T) {
 		"default session is unavailable\n",
 	))
 	require.ErrorIs(t, defaultSessionErr, containers.ErrRuntimeNotHealthy)
+}
+
+// Verifies that cancellation uses the console-aware stop hook and returns without the generic Windows signal delay.
+func TestRunBufferedWslcCommandUsesConsoleAwareCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	commandStarted := make(chan struct{})
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{Command: []string{"wslc", "version"}},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			close(commandStarted)
+			select {
+			case <-execution.Signal:
+				return 0
+			case <-ctx.Done():
+				return 1
+			}
+		},
+	})
+
+	stopCalled := make(chan process.ProcessHandle, 1)
+	orchestrator.stopProcessTree = func(
+		stopCtx context.Context,
+		stopExecutor process.Executor,
+		handle process.ProcessHandle,
+		_ logr.Logger,
+	) error {
+		stopCalled <- handle
+		return stopExecutor.StopProcess(stopCtx, handle)
+	}
+
+	commandCtx, commandCancel := context.WithCancel(ctx)
+	result := make(chan error, 1)
+	go func() {
+		_, _, runErr := orchestrator.runBufferedWslcCommand(
+			commandCtx,
+			"Version",
+			makeWslcCommand("version"),
+			nil,
+			nil,
+			time.Minute,
+		)
+		result <- runErr
+	}()
+
+	select {
+	case <-commandStarted:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	startedAt := time.Now()
+	commandCancel()
+
+	select {
+	case handle := <-stopCalled:
+		require.NoError(t, handle.Validate())
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case runErr := <-result:
+		require.ErrorIs(t, runErr, context.Canceled)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	require.Less(t, time.Since(startedAt), time.Second)
+}
+
+// Verifies that helper failure is surfaced while executor cleanup still stops the command.
+func TestRunBufferedWslcCommandFallsBackAfterStopHelperFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	commandStarted := make(chan struct{})
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{Command: []string{"wslc", "info"}},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			close(commandStarted)
+			select {
+			case <-execution.Signal:
+				return 0
+			case <-ctx.Done():
+				return 1
+			}
+		},
+	})
+
+	expectedStopErr := errors.New("stop helper failed")
+	orchestrator.stopProcessTree = func(
+		context.Context,
+		process.Executor,
+		process.ProcessHandle,
+		logr.Logger,
+	) error {
+		return expectedStopErr
+	}
+
+	commandCtx, commandCancel := context.WithCancel(ctx)
+	result := make(chan error, 1)
+	go func() {
+		_, _, runErr := orchestrator.runBufferedWslcCommand(
+			commandCtx,
+			"Info",
+			makeWslcCommand("info"),
+			nil,
+			nil,
+			time.Minute,
+		)
+		result <- runErr
+	}()
+
+	select {
+	case <-commandStarted:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	commandCancel()
+
+	select {
+	case runErr := <-result:
+		require.ErrorIs(t, runErr, context.Canceled)
+		require.ErrorIs(t, runErr, expectedStopErr)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
 }
 
 // Verifies that identifier parsing trims surrounding whitespace but rejects empty output and multiple identifiers.

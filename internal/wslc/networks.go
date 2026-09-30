@@ -49,7 +49,7 @@ func (wco *WslcCliOrchestrator) CreateNetwork(ctx context.Context, options conta
 	if runErr != nil {
 		return "", errors.Join(
 			runErr,
-			normalizeCliErrors(errBuf, networkNotFoundMatch, alreadyExistsMatch, allocationFailureMatch),
+			normalizeCliErrors(errBuf, networkNotFoundMatch, allocationFailureMatch, alreadyExistsMatch),
 		)
 	}
 
@@ -486,14 +486,26 @@ func (wco *WslcCliOrchestrator) ListNetworks(ctx context.Context, options contai
 		for _, inspectedNetwork := range inspectedNetworks {
 			labelsByID[inspectedNetwork.Id] = inspectedNetwork.Labels
 		}
+		survivingNetworks := make([]containers.ListedNetwork, 0, len(listedNetworks))
 		for index := range listedNetworks {
-			listedNetworks[index].Labels = labelsByID[listedNetworks[index].ID]
+			labels, found := labelsByID[listedNetworks[index].ID]
+			if found {
+				listedNetworks[index].Labels = labels
+				survivingNetworks = append(survivingNetworks, listedNetworks[index])
+			}
 		}
-		if inspectErr != nil || len(inspectedNetworks) < len(labelInspectionIDs) {
+		inspectionResultErr := errors.Join(
+			inspectErr,
+			incompleteError("networks", len(inspectedNetworks), len(labelInspectionIDs)),
+			incompleteError("listed networks", len(survivingNetworks), len(listedNetworks)),
+		)
+		if isBenignListInspectionRace(inspectionResultErr) {
+			listedNetworks = survivingNetworks
+		} else if inspectionResultErr != nil {
 			decodeErr = errors.Join(
 				decodeErr,
 				fmt.Errorf("resolving authoritative labels for listed WSLC networks: %w",
-					errors.Join(inspectErr, incompleteError("networks", len(inspectedNetworks), len(labelInspectionIDs)))),
+					inspectionResultErr),
 			)
 		}
 	}

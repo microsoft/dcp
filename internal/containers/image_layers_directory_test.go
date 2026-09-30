@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -101,6 +102,36 @@ func TestApplyImageLayersFromDirectoryStagesRawAndSourceLayers(t *testing.T) {
 	assert.Equal(t, options.Tag, imageRef)
 	require.NotEmpty(t, workspace)
 	assertPathRemoved(t, workspace)
+}
+
+// Verifies that a successful derived image remains usable when bounded workspace cleanup still fails.
+func TestApplyImageLayersFromDirectoryPreservesSuccessAfterCleanupFailure(t *testing.T) {
+	cleanupErr := errors.New("workspace remains locked")
+	var messages []string
+	log := funcr.New(func(_, message string) { messages = append(messages, message) }, funcr.Options{})
+	options := ApplyImageLayersOptions{
+		BaseImage: InspectedImage{Id: "sha256:base-id"},
+		Layers: []ImageLayer{{
+			Digest:      "raw",
+			RawContents: base64.StdEncoding.EncodeToString([]byte("layer")),
+		}},
+		Tag: "derived:tag",
+	}
+
+	imageRef, applyErr := applyImageLayersFromDirectoryWithCleanup(
+		t.Context(),
+		log,
+		options,
+		buildImageFunc(func(context.Context, BuildImageOptions) error { return nil }),
+		t.TempDir(),
+		10*time.Millisecond,
+		func(string) error { return cleanupErr },
+	)
+
+	require.NoError(t, applyErr)
+	require.Equal(t, options.Tag, imageRef)
+	require.Len(t, messages, 1)
+	require.Contains(t, messages[0], "Could not remove image build workspace")
 }
 
 // Verifies that a source-layer hash mismatch prevents the builder from running and removes staged files.

@@ -22,6 +22,7 @@ import (
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 const (
@@ -200,6 +201,26 @@ func applyImageLayersFromDirectory(
 	options ApplyImageLayersOptions,
 	builder BuildImage,
 	tempDirectory string,
+) (string, error) {
+	return applyImageLayersFromDirectoryWithCleanup(
+		ctx,
+		log,
+		options,
+		builder,
+		tempDirectory,
+		buildWorkspaceCleanupTimeout,
+		os.RemoveAll,
+	)
+}
+
+func applyImageLayersFromDirectoryWithCleanup(
+	ctx context.Context,
+	log logr.Logger,
+	options ApplyImageLayersOptions,
+	builder BuildImage,
+	tempDirectory string,
+	cleanupTimeout time.Duration,
+	removeAll removeAllFunc,
 ) (imageRef string, returnErr error) {
 	if cancellationErr := ctx.Err(); cancellationErr != nil {
 		return "", cancellationErr
@@ -215,10 +236,7 @@ func applyImageLayersFromDirectory(
 		return "", workspaceErr
 	}
 	defer func() {
-		if cleanupErr := os.RemoveAll(workspace); cleanupErr != nil {
-			imageRef = ""
-			returnErr = errors.Join(returnErr, fmt.Errorf("removing image layer build workspace %q: %w", workspace, cleanupErr))
-		}
+		returnErr = cleanupBuildWorkspace(ctx, log, workspace, returnErr, cleanupTimeout, removeAll)
 	}()
 
 	contextDirectory := filepath.Join(workspace, "context")
@@ -358,6 +376,33 @@ func wrapBuildWorkspaceCleanupError(workspace string, cleanupErr error) error {
 	return fmt.Errorf("removing image build workspace %q: %w", workspace, cleanupErr)
 }
 
+func cleanupBuildWorkspace(
+	ctx context.Context,
+	log logr.Logger,
+	workspace string,
+	operationErr error,
+	timeout time.Duration,
+	removeAll removeAllFunc,
+) error {
+	cleanupErr := resiliency.RetryExponentialWithTimeout(context.WithoutCancel(ctx), timeout, func() error {
+		removeErr := removeAll(workspace)
+		if errors.Is(removeErr, os.ErrNotExist) {
+			return nil
+		}
+		return removeErr
+	})
+	if cleanupErr == nil {
+		return operationErr
+	}
+
+	wrappedCleanupErr := wrapBuildWorkspaceCleanupError(workspace, cleanupErr)
+	if operationErr != nil {
+		return errors.Join(operationErr, wrappedCleanupErr)
+	}
+	log.Error(wrappedCleanupErr, "Could not remove image build workspace", "Workspace", workspace)
+	return nil
+}
+
 func writeBuildContextFile(ctx context.Context, name string, source io.Reader, observer io.Writer) error {
 	file, createErr := usvc_io.CreateNewFile(name, osutil.PermissionOnlyOwnerReadWrite)
 	if createErr != nil {
@@ -457,7 +502,7 @@ func ReadImageIDFile(name string) (string, error) {
 		return "", fmt.Errorf("image ID file %q is not a regular file", name)
 	}
 
-	file, openErr := usvc_io.EnsureFile(name, osutil.PermissionOnlyOwnerReadWrite)
+	file, openErr := usvc_io.OpenFileReadOnly(name)
 	if openErr != nil {
 		return "", fmt.Errorf("opening image ID file %q: %w", name, openErr)
 	}

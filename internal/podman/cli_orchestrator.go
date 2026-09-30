@@ -120,10 +120,6 @@ func NewPodmanCliOrchestrator(log logr.Logger, executor process.Executor) contai
 	return pco
 }
 
-func (*PodmanCliOrchestrator) IsDefault() bool {
-	return false
-}
-
 func (*PodmanCliOrchestrator) Name() string {
 	return "podman"
 }
