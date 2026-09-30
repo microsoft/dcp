@@ -29,6 +29,11 @@ type missingPhysicalProcessExecutor struct {
 	process.Executor
 }
 
+type failingPhysicalProcessInspectionExecutor struct {
+	process.Executor
+	err error
+}
+
 type recordingPhysicalProcessExecutor struct {
 	process.Executor
 	findProcessHandleCalls atomic.Int32
@@ -78,6 +83,10 @@ func TestPhysicalProcessEnvironment(t *testing.T) {
 
 func (*missingPhysicalProcessExecutor) CheckProcessRunning(process.ProcessHandle) error {
 	return process.ErrorProcessNotFound
+}
+
+func (executor *failingPhysicalProcessInspectionExecutor) CheckProcessRunning(process.ProcessHandle) error {
+	return executor.err
 }
 
 func (e *recordingPhysicalProcessExecutor) FindProcessHandle(process.Pid_t) (process.ProcessHandle, error) {
@@ -396,6 +405,7 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 		state:          physicalProcessStateRuntime,
 		progress:       physicalResourceProgressRetryPending,
 		handle:         handle,
+		failureReason:  apiv2.PhysicalProcessReasonStopFailed,
 		failureMessage: "stale inspection failure",
 		retryAfter:     time.Now().Add(-time.Second),
 	}
@@ -423,5 +433,97 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 
 	require.Equal(t, noChange, change)
 	require.Equal(t, physicalResourceProgressMissing, data.progress)
+	require.Empty(t, data.failureReason)
+	require.Empty(t, data.failureMessage)
+}
+
+// Verifies that runtime inspection failures replace any stale condition reason
+// with RuntimeProcessInspectFailed.
+func TestHandlePhysicalProcessRuntimeSetsInspectionFailureReason(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+
+	inspectionErr := errors.New("inspection failed")
+	handle := process.NewHandle(42, time.Now())
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-process",
+			Namespace: "test",
+			UID:       types.UID("test-process"),
+		},
+	}
+	data := &physicalProcessData{
+		resourceUID:   physicalProcess.UID,
+		state:         physicalProcessStateRuntime,
+		progress:      physicalResourceProgressRetryPending,
+		handle:        handle,
+		failureReason: apiv2.PhysicalProcessReasonStopFailed,
+		retryAfter:    time.Now().Add(-time.Second),
+	}
+	reconciler := NewPhysicalProcessReconciler(
+		ctx,
+		nil,
+		nil,
+		logr.Discard(),
+		&failingPhysicalProcessInspectionExecutor{err: inspectionErr},
+	)
+
+	change := handlePhysicalProcessRuntime(
+		ctx,
+		reconciler,
+		physicalProcess,
+		physicalProcessStateRuntime,
+		data,
+		logr.Discard(),
+	)
+
+	require.Equal(t, noChange, change)
+	require.Equal(t, physicalResourceProgressRetryPending, data.progress)
+	require.Equal(t, apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed, data.failureReason)
+	require.Contains(t, data.failureMessage, inspectionErr.Error())
+}
+
+// Verifies that starting a new stop attempt clears stale failure diagnostics
+// so the in-progress projection reports the Stopping reason.
+func TestSchedulePhysicalProcessStopClearsStaleFailureReason(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+
+	handle := process.NewHandle(43, time.Now())
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-process",
+			Namespace: "test",
+			UID:       types.UID("test-process"),
+		},
+	}
+	data := &physicalProcessData{
+		resourceUID:    physicalProcess.UID,
+		state:          physicalProcessStateRuntime,
+		progress:       physicalResourceProgressRunning,
+		handle:         handle,
+		failureReason:  apiv2.PhysicalProcessReasonStopFailed,
+		failureMessage: "stale stop failure",
+	}
+	reconciler := NewPhysicalProcessReconciler(
+		ctx,
+		nil,
+		nil,
+		logr.Discard(),
+		&recordingPhysicalProcessExecutor{},
+	)
+	reconciler.processData.Store(
+		physicalProcess.NamespacedName(),
+		physicalProcessHandleDataKey(handle),
+		data.Clone(),
+	)
+
+	_, _ = reconciler.schedulePhysicalProcessStop(physicalProcess, data, logr.Discard())
+
+	require.Equal(t, physicalProcessStateStop, data.state)
+	require.Equal(t, physicalResourceProgressInProgress, data.progress)
+	require.Empty(t, data.failureReason)
 	require.Empty(t, data.failureMessage)
 }

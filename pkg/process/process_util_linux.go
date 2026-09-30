@@ -142,7 +142,7 @@ func snapshotLinuxProcesses(ctx context.Context, root string, frequency uint64) 
 	var inspectionErrors []error
 	for _, entry := range entries {
 		if contextErr := ctx.Err(); contextErr != nil {
-			return processes, errors.Join(append(inspectionErrors, contextErr)...)
+			return processes, errors.Join(summarizeProcessErrors(inspectionErrors), contextErr)
 		}
 		if !entry.IsDir() {
 			continue
@@ -160,7 +160,7 @@ func snapshotLinuxProcesses(ctx context.Context, root string, frequency uint64) 
 		}
 		processes = append(processes, info)
 	}
-	return processes, errors.Join(inspectionErrors...)
+	return processes, summarizeProcessErrors(inspectionErrors)
 }
 
 func processDisplayTime(info processInfo) (time.Time, error) {

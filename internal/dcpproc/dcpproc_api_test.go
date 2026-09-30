@@ -333,6 +333,78 @@ func TestSimulateStopProcessTreeCommandRejectsIdentityFlagWithoutValue(t *testin
 	require.Equal(t, int32(4), exitCode)
 }
 
+// Verifies that the simulated stop-process-tree command maps incomplete, gone,
+// and generic failures to the same exit codes as the real command.
+func TestSimulateStopProcessTreeCommandPreservesOutcomeClassification(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name     string
+		stopErr  error
+		gone     bool
+		pidOnly  bool
+		exitCode int32
+	}{
+		{
+			name:     "incomplete tree",
+			stopErr:  process.ErrIncompleteProcessTree,
+			exitCode: protocol.StopProcessTreeIncompleteExitCode,
+		},
+		{
+			name:     "process gone",
+			gone:     true,
+			pidOnly:  true,
+			exitCode: protocol.StopProcessTreeProcessGoneExitCode,
+		},
+		{
+			name:     "generic failure",
+			stopErr:  errors.New("stop failed"),
+			exitCode: 5,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+			defer cancel()
+			executor := internal_testutil.NewTestProcessExecutor(ctx)
+			handle, _, startErr := executor.StartProcess(
+				ctx,
+				exec.Command("test-process"),
+				nil,
+				process.CreationFlagsNone,
+				nil,
+			)
+			require.NoError(t, startErr)
+			if testCase.gone {
+				executor.ClearHistory()
+			} else {
+				executor.InstallAutoExecution(internal_testutil.AutoExecution{
+					Condition: internal_testutil.ProcessSearchCriteria{
+						Command: []string{"test-process"},
+					},
+					StopError: func(*internal_testutil.ProcessExecution) error {
+						return testCase.stopErr
+					},
+				})
+			}
+			args := []string{
+				"stop-process-tree",
+				"--pid", strconv.FormatInt(int64(handle.Pid), 10),
+			}
+			if !testCase.pidOnly {
+				args = append(args,
+					"--process-start-time", handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+				)
+			}
+			exitCode := SimulateStopProcessTreeCommand(&internal_testutil.ProcessExecution{
+				Cmd:      exec.Command("dcp", args...),
+				Executor: executor,
+			})
+			require.Equal(t, testCase.exitCode, exitCode)
+		})
+	}
+}
+
 func findRunningDcp(pe *internal_testutil.TestProcessExecutor) (*internal_testutil.ProcessExecution, error) {
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
 	if dcpPathErr != nil {

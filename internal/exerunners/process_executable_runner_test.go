@@ -38,7 +38,37 @@ import (
 
 const (
 	defaultExerunnerTestTimeout = 20 * time.Second
+	executableWaitDelayMode     = "DCP_EXECUTABLE_WAIT_DELAY_MODE"
+	executableWaitDelayChildPID = "DCP_EXECUTABLE_WAIT_DELAY_CHILD_PID"
 )
+
+// Provides root and escaped-child subprocess modes for verifying that inherited
+// output handles are bounded by Cmd.WaitDelay.
+func TestProcessExecutableRunnerWaitDelayFixture(t *testing.T) {
+	switch os.Getenv(executableWaitDelayMode) {
+	case "":
+		return
+	case "root":
+		childCmd := exec.Command(os.Args[0], "-test.run=^TestProcessExecutableRunnerWaitDelayFixture$")
+		childCmd.Env = append(os.Environ(), executableWaitDelayMode+"=child")
+		childCmd.Stdout = os.Stdout
+		childCmd.Stderr = os.Stderr
+		process.DecoupleFromParent(childCmd)
+		require.NoError(t, childCmd.Start())
+		pidPath := os.Getenv(executableWaitDelayChildPID)
+		require.NotEmpty(t, pidPath)
+		require.NoError(t, usvc_io.WriteFile(
+			pidPath,
+			[]byte(strconv.Itoa(childCmd.Process.Pid)),
+			osutil.PermissionOnlyOwnerReadWrite,
+		))
+		require.NoError(t, childCmd.Process.Release())
+	case "child":
+		time.Sleep(30 * time.Second)
+	default:
+		t.Fatalf("unknown wait-delay fixture mode %q", os.Getenv(executableWaitDelayMode))
+	}
+}
 
 func TestProcessExecutableRunnerStartsLifecycleMonitor(t *testing.T) {
 	monitorPID := int64(12345)
@@ -205,6 +235,11 @@ func TestProcessExecutableRunnerSkipsTimestampsForPersistentOutput(t *testing.T)
 
 			executions := processExecutor.FindAll([]string{"/test/app"}, "", nil)
 			require.Len(t, executions, 1)
+			if testCase.persistent {
+				require.Zero(t, executions[0].Cmd.WaitDelay)
+			} else {
+				require.Equal(t, defaultProcessCleanupTimeout, executions[0].Cmd.WaitDelay)
+			}
 			_, writeErr := executions[0].Cmd.Stdout.Write([]byte("hello\n"))
 			require.NoError(t, writeErr)
 			if syncer, ok := executions[0].Cmd.Stdout.(interface{ Sync() error }); ok {
@@ -221,6 +256,93 @@ func TestProcessExecutableRunnerSkipsTimestampsForPersistentOutput(t *testing.T)
 			}
 		})
 	}
+}
+
+// Verifies that an escaped descendant holding the root process's output pipes
+// cannot delay completion beyond the configured wait delay.
+func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultExerunnerTestTimeout)
+	defer cancel()
+	t.Setenv("DCP_DISABLE_MONITOR_PROCESS", "1")
+
+	childPIDPath := filepath.Join(t.TempDir(), "child.pid")
+	effectiveEnv := make([]apiv1.EnvVar, 0, len(os.Environ())+2)
+	for _, entry := range os.Environ() {
+		name, value, found := strings.Cut(entry, "=")
+		if found {
+			effectiveEnv = append(effectiveEnv, apiv1.EnvVar{Name: name, Value: value})
+		}
+	}
+	effectiveEnv = append(effectiveEnv,
+		apiv1.EnvVar{Name: executableWaitDelayMode, Value: "root"},
+		apiv1.EnvVar{Name: executableWaitDelayChildPID, Value: childPIDPath},
+	)
+
+	executor := process.NewOSExecutor(logr.Discard())
+	defer executor.Dispose()
+	runner := NewProcessExecutableRunner(executor)
+	changeHandler := newRecordingRunChangeHandler()
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "wait-delay",
+			UID:  "wait-delay",
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: os.Args[0],
+		},
+		Status: apiv1.ExecutableStatus{
+			EffectiveArgs: []string{"-test.run=^TestProcessExecutableRunnerWaitDelayFixture$"},
+			EffectiveEnv:  effectiveEnv,
+		},
+	}
+
+	result := runner.StartRun(ctx, exe, changeHandler, logr.Discard())
+	require.Equal(t, apiv1.ExecutableStateRunning, result.ExeState)
+	require.NotNil(t, result.StartWaitForRunCompletion)
+	result.StartWaitForRunCompletion()
+
+	startedAt := time.Now()
+	select {
+	case completed := <-changeHandler.completedRuns:
+		require.Equal(t, result.RunID, completed.runID)
+		require.NotNil(t, completed.exitCode)
+		require.Zero(t, *completed.exitCode)
+		require.NoError(t, completed.err)
+		require.Less(t, time.Since(startedAt), defaultProcessCleanupTimeout+3*time.Second)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for root process completion")
+	}
+
+	var childHandle process.ProcessHandle
+	for childHandle.Pid == 0 {
+		pidBytes, readErr := os.ReadFile(childPIDPath)
+		if readErr == nil {
+			childPID, parseErr := strconv.ParseInt(strings.TrimSpace(string(pidBytes)), 10, 64)
+			require.NoError(t, parseErr)
+			var handleErr error
+			childHandle, handleErr = process.FindProcessHandle(process.Pid_t(childPID))
+			if process.IsProcessGoneErr(handleErr) {
+				break
+			}
+			require.NoError(t, handleErr)
+			break
+		}
+		require.ErrorIs(t, readErr, os.ErrNotExist)
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for escaped child PID")
+		}
+	}
+	if childHandle.Pid > 0 {
+		stopCtx, stopCancel := process.WithStopTimeout(context.Background())
+		stopErr := executor.StopProcess(stopCtx, childHandle)
+		stopCancel()
+		require.True(t, stopErr == nil || process.IsProcessGoneErr(stopErr), "failed to stop escaped child: %v", stopErr)
+	}
+
+	removeFileIfExists(t, result.StdOutFile)
+	removeFileIfExists(t, result.StdErrFile)
 }
 
 func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {

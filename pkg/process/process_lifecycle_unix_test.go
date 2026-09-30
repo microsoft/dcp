@@ -27,12 +27,15 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
-const unixProcessLifecycleHelperMode = "DCP_PROCESS_LIFECYCLE_HELPER_MODE"
+const (
+	unixProcessLifecycleFixtureMode = "DCP_PROCESS_LIFECYCLE_FIXTURE_MODE"
+	delayedRootExitDuration         = 4 * time.Second
+)
 
-// Verifies that the stop-context subprocess helper reports readiness, ignores SIGTERM,
+// Verifies that the stop-context subprocess fixture reports readiness, ignores SIGTERM,
 // and remains alive until its standard input is closed.
-func TestProcessStopContextHelper(t *testing.T) {
-	if os.Getenv("DCP_PROCESS_STOP_CONTEXT_HELPER") != "1" {
+func TestProcessStopContextFixture(t *testing.T) {
+	if os.Getenv("DCP_PROCESS_STOP_CONTEXT_FIXTURE") != "1" {
 		return
 	}
 	signal.Ignore(syscall.SIGTERM)
@@ -50,8 +53,8 @@ func TestCancelledStopCanBeRetriedWithoutAnotherWaiter(t *testing.T) {
 	defer testCancel()
 	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 	defer executor.Dispose()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessStopContextHelper$")
-	cmd.Env = append(os.Environ(), "DCP_PROCESS_STOP_CONTEXT_HELPER=1")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestProcessStopContextFixture$")
+	cmd.Env = append(os.Environ(), "DCP_PROCESS_STOP_CONTEXT_FIXTURE=1")
 	stdout, stdoutErr := cmd.StdoutPipe()
 	require.NoError(t, stdoutErr)
 	stdin, stdinErr := cmd.StdinPipe()
@@ -87,17 +90,17 @@ func TestCancelledStopCanBeRetriedWithoutAnotherWaiter(t *testing.T) {
 	require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(handle)))
 }
 
-// Verifies that the Unix lifecycle subprocess helper creates the requested orphan or process tree,
+// Verifies that the Unix lifecycle subprocess fixture creates the requested orphan or process tree,
 // reports child PIDs and signals, and models graceful and signal-resistant descendants.
-func TestUnixProcessLifecycleHelper(t *testing.T) {
-	mode := os.Getenv(unixProcessLifecycleHelperMode)
+func TestUnixProcessLifecycleFixture(t *testing.T) {
+	mode := os.Getenv(unixProcessLifecycleFixtureMode)
 	switch mode {
 	case "":
 		return
 
 	case "orphan-parent":
-		childCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
-		childCmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"=orphan-child")
+		childCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleFixture$")
+		childCmd.Env = append(os.Environ(), unixProcessLifecycleFixtureMode+"=orphan-child")
 		DecoupleFromParent(childCmd)
 		childStartErr := childCmd.Start()
 		require.NoError(t, childStartErr)
@@ -110,12 +113,14 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 	case "exit-immediately":
 		return
 
-	case "tree-root", "graceful-root", "forced-root", "deadline-root", "concurrent-root", "concurrent-graceful-root", "pipe-held-root":
+	case "tree-root", "graceful-root", "forced-root", "deadline-root", "delayed-root", "concurrent-root", "concurrent-graceful-root", "pipe-held-root":
 		childMode := "tree-child"
 		if mode == "graceful-root" || mode == "concurrent-graceful-root" {
 			childMode = "graceful-child"
 		} else if mode == "forced-root" {
 			signal.Ignore(syscall.SIGTERM)
+			childMode = "observing-child"
+		} else if mode == "delayed-root" {
 			childMode = "observing-child"
 		} else if mode == "pipe-held-root" {
 			signal.Ignore(syscall.SIGTERM)
@@ -126,18 +131,22 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 			childMode = "observing-child"
 		}
 		var rootSignalCh chan os.Signal
-		if mode == "concurrent-root" || mode == "concurrent-graceful-root" {
+		if mode == "concurrent-root" || mode == "concurrent-graceful-root" || mode == "delayed-root" {
 			rootSignalCh = make(chan os.Signal, 1)
 			signal.Notify(rootSignalCh, syscall.SIGTERM)
 			defer signal.Stop(rootSignalCh)
 		}
-		childCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
-		childCmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"="+childMode)
+		childCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleFixture$")
+		childCmd.Env = append(os.Environ(), unixProcessLifecycleFixtureMode+"="+childMode)
 		var signalNoticeWriter *os.File
 		if mode != "tree-root" && mode != "pipe-held-root" {
 			signalNoticeWriter = os.NewFile(uintptr(4), "signal-notice")
 			require.NotNil(t, signalNoticeWriter)
 			childCmd.ExtraFiles = []*os.File{signalNoticeWriter}
+		}
+		if mode == "pipe-held-root" {
+			childCmd.Stdout = os.Stdout
+			childCmd.Stderr = os.Stderr
 		}
 		childStartErr := childCmd.Start()
 		require.NoError(t, childStartErr)
@@ -153,13 +162,19 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 		_, writeErr := fmt.Fprintln(pidWriter, childCmd.Process.Pid)
 		require.NoError(t, writeErr)
 		require.NoError(t, pidWriter.Close())
-		if mode == "concurrent-root" || mode == "concurrent-graceful-root" {
+		if mode == "concurrent-root" || mode == "concurrent-graceful-root" || mode == "delayed-root" {
 			<-rootSignalCh
-			_, signalWriteErr := fmt.Fprintln(signalNoticeWriter, "root-sigterm")
-			require.NoError(t, signalWriteErr)
-			require.NoError(t, signalNoticeWriter.Close())
+			if mode != "delayed-root" {
+				_, signalWriteErr := fmt.Fprintln(signalNoticeWriter, "root-sigterm")
+				require.NoError(t, signalWriteErr)
+				require.NoError(t, signalNoticeWriter.Close())
+			}
 			if mode == "concurrent-graceful-root" {
 				time.Sleep(250 * time.Millisecond)
+				return
+			}
+			if mode == "delayed-root" {
+				time.Sleep(delayedRootExitDuration)
 				return
 			}
 		}
@@ -185,7 +200,7 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 		}
 
 	default:
-		t.Fatalf("unknown helper mode %q", mode)
+		t.Fatalf("unknown fixture mode %q", mode)
 	}
 }
 
@@ -200,8 +215,8 @@ func TestStopStartsTrackedWaitForExitedChild(t *testing.T) {
 	defer executor.Dispose()
 
 	exitResults := make(chan ProcessExitInfo, 1)
-	cmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
-	cmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"=exit-immediately")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleFixture$")
+	cmd.Env = append(os.Environ(), unixProcessLifecycleFixtureMode+"=exit-immediately")
 	handle, _, startErr := executor.StartProcess(
 		context.Background(),
 		cmd,
@@ -284,8 +299,8 @@ func TestEnumerationDeadlineForceStopsRoot(t *testing.T) {
 	defer testCancel()
 	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 	defer executor.Dispose()
-	rootCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
-	rootCmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"=tree-child")
+	rootCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleFixture$")
+	rootCmd.Env = append(os.Environ(), unixProcessLifecycleFixtureMode+"=tree-child")
 	rootHandle, startWaitForExit, startErr := executor.StartProcess(
 		testCtx,
 		rootCmd,
@@ -346,6 +361,29 @@ func TestStopProcessGivesDescendantsRemainingGracefulBudget(t *testing.T) {
 	require.NoError(t, readErr)
 	require.Equal(t, "sigterm\n", string(remainingNotices))
 	require.Less(t, elapsed, signalAndWaitTimeout)
+	requireProcessGone(t, testCtx, executor, rootHandle)
+	requireProcessGone(t, testCtx, executor, childHandle)
+}
+
+// Verifies that time spent gracefully stopping the root is deducted from the
+// descendants' graceful-stop budget instead of starting a fresh deadline.
+func TestStopProcessSharesGracefulBudgetAfterDelayedRootExit(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	defer executor.Dispose()
+	rootHandle, childHandle, signalNotices := startProcessTreeWithSignalNoticeForTest(t, testCtx, executor, "delayed-root")
+
+	startedAt := time.Now()
+	stopErr := executor.StopProcess(testCtx, rootHandle)
+	elapsed := time.Since(startedAt)
+	remainingNotices, readErr := io.ReadAll(signalNotices)
+
+	require.NoError(t, stopErr)
+	require.NoError(t, readErr)
+	require.Equal(t, "sigterm\n", string(remainingNotices))
+	require.GreaterOrEqual(t, elapsed, gracefulProcessStopTimeout-time.Second)
+	require.Less(t, elapsed, gracefulProcessStopTimeout+delayedRootExitDuration/2)
 	requireProcessGone(t, testCtx, executor, rootHandle)
 	requireProcessGone(t, testCtx, executor, childHandle)
 }
@@ -463,8 +501,8 @@ func TestDisposeForceKillsDescendantsAfterWholeTreeDeadline(t *testing.T) {
 func startOrphanProcessForTest(t *testing.T, ctx context.Context) ProcessHandle {
 	t.Helper()
 
-	parentCmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
-	parentCmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"=orphan-parent")
+	parentCmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestUnixProcessLifecycleFixture$")
+	parentCmd.Env = append(os.Environ(), unixProcessLifecycleFixtureMode+"=orphan-parent")
 	output, runErr := parentCmd.Output()
 	require.NoError(t, runErr)
 	childPIDText, _, found := strings.Cut(string(output), "\n")
@@ -494,8 +532,8 @@ func startProcessTreeForTest(
 	defer func() {
 		_ = pidReader.Close()
 	}()
-	rootCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
-	rootCmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"="+mode)
+	rootCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleFixture$")
+	rootCmd.Env = append(os.Environ(), unixProcessLifecycleFixtureMode+"="+mode)
 	rootCmd.ExtraFiles = []*os.File{pidWriter}
 	if childSignalNoticeWriter != nil {
 		rootCmd.ExtraFiles = append(rootCmd.ExtraFiles, childSignalNoticeWriter)

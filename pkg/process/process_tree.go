@@ -131,7 +131,7 @@ func buildProcessTree(ctx context.Context, root processInfo, snapshot []processI
 		}
 	}
 	if len(issues) != 0 {
-		return tree, fmt.Errorf("%w: %w", ErrIncompleteProcessTree, errors.Join(issues...))
+		return tree, fmt.Errorf("%w: %w", ErrIncompleteProcessTree, summarizeProcessErrors(issues))
 	}
 	return tree, nil
 }

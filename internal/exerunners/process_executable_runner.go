@@ -191,6 +191,9 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		cmd.Stderr = executableOutputWriter(exe, stdErrFile)
 		result.StdErrFile = stdErrFile.Name()
 	}
+	if !executableIsPersistent(exe) && (cmd.Stdout != nil || cmd.Stderr != nil) {
+		cmd.WaitDelay = defaultProcessCleanupTimeout
+	}
 
 	var processExitHandler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
 		ec := new(int32)

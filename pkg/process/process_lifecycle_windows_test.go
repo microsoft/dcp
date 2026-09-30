@@ -27,10 +27,14 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
-const windowsProcessLifecycleHelperMode = "DCP_WINDOWS_PROCESS_LIFECYCLE_HELPER_MODE"
+const (
+	windowsProcessLifecycleFixtureMode = "DCP_WINDOWS_PROCESS_LIFECYCLE_FIXTURE_MODE"
+	delayedRootExitDuration            = 4 * time.Second
+)
 
-func TestWindowsProcessLifecycleHelper(t *testing.T) {
-	mode := os.Getenv(windowsProcessLifecycleHelperMode)
+// Verifies the Windows subprocess modes used by process lifecycle tests.
+func TestWindowsProcessLifecycleFixture(t *testing.T) {
+	mode := os.Getenv(windowsProcessLifecycleFixtureMode)
 	if mode == "" {
 		return
 	}
@@ -40,9 +44,13 @@ func TestWindowsProcessLifecycleHelper(t *testing.T) {
 	defer signal.Stop(signalCh)
 
 	switch mode {
-	case "console-root":
-		childCmd := exec.Command(os.Args[0], "-test.run=^TestWindowsProcessLifecycleHelper$")
-		childCmd.Env = append(os.Environ(), windowsProcessLifecycleHelperMode+"=console-child")
+	case "console-root", "delayed-console-root":
+		childMode := "console-child"
+		if mode == "delayed-console-root" {
+			childMode = "delayed-console-child"
+		}
+		childCmd := exec.Command(os.Args[0], "-test.run=^TestWindowsProcessLifecycleFixture$")
+		childCmd.Env = append(os.Environ(), windowsProcessLifecycleFixtureMode+"="+childMode)
 		childStdout, stdoutErr := childCmd.StdoutPipe()
 		require.NoError(t, stdoutErr)
 		childStartErr := childCmd.Start()
@@ -53,6 +61,9 @@ func TestWindowsProcessLifecycleHelper(t *testing.T) {
 		_, writeErr := fmt.Fprintln(os.Stdout, childCmd.Process.Pid)
 		require.NoError(t, writeErr)
 		<-signalCh
+		if mode == "delayed-console-root" {
+			time.Sleep(delayedRootExitDuration)
+		}
 
 	case "console-child":
 		_, readyErr := fmt.Fprintln(os.Stdout, "ready")
@@ -63,6 +74,12 @@ func TestWindowsProcessLifecycleHelper(t *testing.T) {
 		require.NotEmpty(t, markerPath)
 		require.NoError(t, usvc_io.WriteFile(markerPath, []byte("graceful"), 0o600))
 
+	case "delayed-console-child":
+		_, readyErr := fmt.Fprintln(os.Stdout, "ready")
+		require.NoError(t, readyErr)
+		<-signalCh
+		time.Sleep(30 * time.Second)
+
 	case "signal-resistant-root":
 		_, readyErr := fmt.Fprintln(os.Stdout, "ready")
 		require.NoError(t, readyErr)
@@ -70,7 +87,7 @@ func TestWindowsProcessLifecycleHelper(t *testing.T) {
 		time.Sleep(30 * time.Second)
 
 	default:
-		t.Fatalf("unknown helper mode %q", mode)
+		t.Fatalf("unknown fixture mode %q", mode)
 	}
 }
 
@@ -81,10 +98,10 @@ func TestStopViaConsoleUsesRemainingTreeGracePeriod(t *testing.T) {
 	defer testCancel()
 
 	markerPath := filepath.Join(t.TempDir(), "graceful-exit")
-	rootCmd := exec.Command(os.Args[0], "-test.run=^TestWindowsProcessLifecycleHelper$")
+	rootCmd := exec.Command(os.Args[0], "-test.run=^TestWindowsProcessLifecycleFixture$")
 	rootCmd.Env = append(
 		os.Environ(),
-		windowsProcessLifecycleHelperMode+"=console-root",
+		windowsProcessLifecycleFixtureMode+"=console-root",
 		"DCP_WINDOWS_PROCESS_LIFECYCLE_MARKER="+markerPath,
 	)
 	ForkFromParent(rootCmd)
@@ -135,14 +152,68 @@ func TestStopViaConsoleUsesRemainingTreeGracePeriod(t *testing.T) {
 	require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(childHandle)))
 }
 
+// Verifies that time spent gracefully stopping the console root is deducted
+// from the descendants' shared graceful-stop budget.
+func TestStopViaConsoleSharesGracefulBudgetAfterDelayedRootExit(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+
+	rootCmd := exec.Command(os.Args[0], "-test.run=^TestWindowsProcessLifecycleFixture$")
+	rootCmd.Env = append(os.Environ(), windowsProcessLifecycleFixtureMode+"=delayed-console-root")
+	ForkFromParent(rootCmd)
+	rootStdout, stdoutErr := rootCmd.StdoutPipe()
+	require.NoError(t, stdoutErr)
+	require.NoError(t, rootCmd.Start())
+	t.Cleanup(func() {
+		if rootCmd.Process != nil {
+			_ = rootCmd.Process.Kill()
+		}
+	})
+
+	childPIDText, readErr := bufio.NewReader(rootStdout).ReadString('\n')
+	require.NoError(t, readErr)
+	childPID, parseErr := strconv.ParseInt(strings.TrimSpace(childPIDText), 10, 64)
+	require.NoError(t, parseErr)
+
+	rootHandle, rootHandleErr := ProcessHandleFromCmd(rootCmd)
+	require.NoError(t, rootHandleErr)
+	childHandle, childHandleErr := FindProcessHandle(Pid_t(childPID))
+	require.NoError(t, childHandleErr)
+	t.Cleanup(func() {
+		childProc, findErr := FindProcess(childHandle)
+		if findErr == nil {
+			_ = childProc.Kill()
+			_ = childProc.Release()
+		}
+	})
+
+	treeReadyErr := wait.PollUntilContextCancel(testCtx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
+		tree, treeErr := GetProcessTree(testCtx, rootHandle)
+		return treeErr == nil && len(tree) >= 2, nil
+	})
+	require.NoError(t, treeReadyErr)
+
+	executor := NewOSExecutor(logr.Discard())
+	defer executor.Dispose()
+	startedAt := time.Now()
+	stopErr := StopViaConsole(testCtx, logr.Discard(), executor, rootHandle)
+	elapsed := time.Since(startedAt)
+
+	require.NoError(t, stopErr)
+	require.GreaterOrEqual(t, elapsed, gracefulProcessStopTimeout-time.Second)
+	require.Less(t, elapsed, gracefulProcessStopTimeout+delayedRootExitDuration/2)
+	require.NoError(t, rootCmd.Wait())
+	require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(childHandle)))
+}
+
 // Verifies that a root-only console stop force-kills a signal-resistant root
 // and confirms its exit within the bounded full stop window.
 func TestStopViaConsoleRootOnlyBoundsForceConfirmation(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
 	defer testCancel()
 
-	rootCmd := exec.Command(os.Args[0], "-test.run=^TestWindowsProcessLifecycleHelper$")
-	rootCmd.Env = append(os.Environ(), windowsProcessLifecycleHelperMode+"=signal-resistant-root")
+	rootCmd := exec.Command(os.Args[0], "-test.run=^TestWindowsProcessLifecycleFixture$")
+	rootCmd.Env = append(os.Environ(), windowsProcessLifecycleFixtureMode+"=signal-resistant-root")
 	ForkFromParent(rootCmd)
 	rootStdout, stdoutErr := rootCmd.StdoutPipe()
 	require.NoError(t, stdoutErr)

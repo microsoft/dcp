@@ -451,6 +451,8 @@ func getProcessExecResult(waitErr error, w Waitable, cmd *exec.Cmd) (int32, erro
 		return ecs.ExitCode(), nil
 	case waitErr == nil && cmd.ProcessState != nil:
 		return int32(cmd.ProcessState.ExitCode()), nil
+	case errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil:
+		return int32(cmd.ProcessState.ExitCode()), nil
 	case waitErr != nil && errors.As(waitErr, &ee):
 		return int32(ee.ExitCode()), nil
 	default:
@@ -743,7 +745,7 @@ func (e *OSExecutor) stopProcessTreeInternal(
 		)
 	}
 	if len(childStoppingErrors) > 0 {
-		procTreeLog.V(1).Error(errors.Join(childStoppingErrors...), "Some child processes could not be stopped")
+		procTreeLog.V(1).Error(summarizeProcessErrors(childStoppingErrors), "Some child processes could not be stopped")
 	} else if len(tree) > 0 {
 		procTreeLog.V(1).Info("All child processes have stopped")
 	}
@@ -775,10 +777,13 @@ func joinProcessTreeStopErrors(
 		)
 	}
 
-	return errors.Join(append(
-		[]error{treeErr, rootStopErr, rootWaitErr, descendantCleanupErr},
-		childStoppingErrors...,
-	)...)
+	return errors.Join(
+		treeErr,
+		rootStopErr,
+		rootWaitErr,
+		descendantCleanupErr,
+		summarizeProcessErrors(childStoppingErrors),
+	)
 }
 
 var maxConcurrentProcessStops = runtime.NumCPU() * 5

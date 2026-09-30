@@ -365,13 +365,14 @@ func (e *TestProcessExecutor) stopProcessImpl(handle process.ProcessHandle, exit
 	i := e.findByPid(handle.Pid)
 	if i == NotFound {
 		e.m.Unlock()
-		return fmt.Errorf("no process with PID %d found", handle.Pid)
+		return &process.ErrProcessNotFound{Pid: handle.Pid}
 	}
 
 	if !handle.IdentityTime.IsZero() {
 		if !osutil.Within(handle.IdentityTime, e.Executions[i].StartedAt, process.ProcessIdentityTimeMaximumDifference) {
 			e.m.Unlock()
-			return fmt.Errorf("process start time mismatch for PID %d: expected %s, actual %s",
+			return fmt.Errorf("%w for PID %d: expected %s, actual %s",
+				process.ErrProcessIdentityMismatch,
 				handle.Pid,
 				handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 				e.Executions[i].StartedAt.Format(osutil.RFC3339MiliTimestampFormat),
@@ -380,6 +381,10 @@ func (e *TestProcessExecutor) stopProcessImpl(handle process.ProcessHandle, exit
 	}
 
 	pe := e.Executions[i]
+	if pe.Finished() {
+		e.m.Unlock()
+		return nil
+	}
 	pe.stopInitiated = true
 
 	if len(e.AutoExecutions) > 0 {

@@ -307,6 +307,7 @@ func handlePhysicalProcessRuntime(
 		log.Error(runningErr, "Failed to inspect runtime process", "PID", data.handle.Pid)
 		data.state = physicalProcessStateRuntime
 		data.progress = physicalResourceProgressRetryPending
+		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime process: %v", runningErr)
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		return noChange
@@ -656,11 +657,17 @@ func (r *PhysicalProcessReconciler) queuePhysicalProcessDataResult(
 		_, currentData := r.processData.BorrowByNamespacedName(name)
 		preserveExitInfo := currentData != nil && currentData.handle == result.handle &&
 			(result.state == physicalProcessStateStop ||
-				(result.state == physicalProcessStateRuntime && result.progress == physicalResourceProgressExited))
+				(result.state == physicalProcessStateRuntime &&
+					(result.progress == physicalResourceProgressExited ||
+						result.progress == physicalResourceProgressMissing)))
 		preserveExitCode := preserveExitInfo && result.exitCode == nil && currentData.exitCode != nil
-		preserveFinishedAt := preserveExitInfo && result.state == physicalProcessStateStop &&
-			result.finishedAt.IsZero() && !currentData.finishedAt.IsZero()
-		if preserveExitCode || preserveFinishedAt {
+		preserveFinishedAt := preserveExitInfo && !currentData.finishedAt.IsZero() &&
+			(result.finishedAt.IsZero() || currentData.finishedAt.Before(result.finishedAt))
+		preserveObservedExit := preserveExitInfo &&
+			result.state == physicalProcessStateRuntime &&
+			result.progress == physicalResourceProgressMissing &&
+			!currentData.finishedAt.IsZero()
+		if preserveExitCode || preserveFinishedAt || preserveObservedExit {
 			// Root exit notifications can arrive while a tree stop is still producing its result.
 			resultToStore = result.Clone()
 			if preserveExitCode {
@@ -668,6 +675,9 @@ func (r *PhysicalProcessReconciler) queuePhysicalProcessDataResult(
 			}
 			if preserveFinishedAt {
 				resultToStore.finishedAt = currentData.finishedAt
+			}
+			if preserveObservedExit {
+				resultToStore.progress = physicalResourceProgressExited
 			}
 		}
 		newStateKey := currentStateKey
@@ -746,6 +756,7 @@ func (r *PhysicalProcessReconciler) schedulePhysicalProcessStop(
 	stoppingData := data.Clone()
 	stoppingData.state = physicalProcessStateStop
 	stoppingData.progress = physicalResourceProgressInProgress
+	stoppingData.failureReason = ""
 	stoppingData.failureMessage = ""
 	if !r.processData.Update(physicalProcess.NamespacedName(), stateKey, stoppingData) {
 		return additionalReconciliationNeeded, StandardDelay
@@ -758,6 +769,7 @@ func (r *PhysicalProcessReconciler) schedulePhysicalProcessStop(
 	})
 	if enqueueErr != nil {
 		stoppingData.progress = physicalResourceProgressRetryPending
+		stoppingData.failureReason = apiv2.PhysicalProcessReasonStopFailed
 		stoppingData.failureMessage = fmt.Sprintf("Failed to queue physical process termination: %v", enqueueErr)
 		stoppingData.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		data.UpdateFrom(stoppingData)
@@ -785,12 +797,27 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 		stopErr = r.processExecutor.StopProcess(cleanupCtx, data.handle)
 	}
 	if errors.Is(stopErr, process.ErrIncompleteProcessTree) {
+		rootRunningErr := r.processExecutor.CheckProcessRunning(data.handle)
+		if process.IsProcessGoneErr(rootRunningErr) {
+			finalizePhysicalProcessWithUnconfirmedDescendants(
+				data,
+				fmt.Sprintf("Physical process root exited, but descendant cleanup could not be confirmed: %v", stopErr),
+			)
+			r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
+			return
+		}
+
 		data.state = physicalProcessStateStop
 		data.progress = physicalResourceProgressRetryPending
-		markDescendantCleanupUnconfirmed(
-			data,
-			fmt.Sprintf("Physical process cleanup is incomplete and will be rechecked: %v", stopErr),
-		)
+		data.cleanupUnconfirmed = true
+		data.failureReason = apiv2.PhysicalProcessReasonStopFailed
+		data.failureMessage = fmt.Sprintf("Failed to stop physical process after incomplete process-tree cleanup: %v", stopErr)
+		if rootRunningErr != nil {
+			data.failureMessage = fmt.Sprintf(
+				"Failed to stop physical process and could not confirm whether the root is still running: %v",
+				errors.Join(stopErr, rootRunningErr),
+			)
+		}
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 		return
@@ -798,25 +825,14 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
 		data.state = physicalProcessStateStop
 		data.progress = physicalResourceProgressRetryPending
-		if data.cleanupUnconfirmed {
-			markDescendantCleanupUnconfirmed(
-				data,
-				fmt.Sprintf("Physical process cleanup remains unconfirmed after a later stop failure: %v", stopErr),
-			)
-		} else {
-			data.failureReason = apiv2.PhysicalProcessReasonStopFailed
-			data.failureMessage = fmt.Sprintf("Failed to stop physical process: %v", stopErr)
-		}
+		data.failureReason = apiv2.PhysicalProcessReasonStopFailed
+		data.failureMessage = fmt.Sprintf("Failed to stop physical process: %v", stopErr)
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 		return
 	}
 	if process.IsProcessGoneErr(stopErr) && data.cleanupUnconfirmed {
-		data.state = physicalProcessStateRuntime
-		data.progress = physicalResourceProgressMissing
-		data.finishedAt = time.Now()
-		data.retryAfter = time.Time{}
-		markDescendantCleanupUnconfirmed(data, descendantCleanupUnconfirmedMessage)
+		finalizePhysicalProcessWithUnconfirmedDescendants(data, descendantCleanupUnconfirmedMessage)
 		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 		log.Info("Physical process root is gone, but descendant cleanup remains unconfirmed", "PID", data.handle.Pid)
 		return
@@ -842,26 +858,26 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(
 		return additionalReconciliationNeeded, StandardDelay
 	}
 
+	retain := physicalProcess.Spec.Process == nil || physicalProcess.Spec.Process.RetainRuntimeProcess
 	if data != nil && data.cleanupUnconfirmed {
 		cleanupFinished := data.progress == physicalResourceProgressExited ||
 			data.progress == physicalResourceProgressMissing
-		if !cleanupFinished && data.handle.Pid > 0 && !data.handle.IdentityTime.IsZero() {
+		if !retain && !cleanupFinished && data.handle.Pid > 0 && !data.handle.IdentityTime.IsZero() {
 			return r.schedulePhysicalProcessStop(physicalProcess, data, log)
 		}
-		if !physicalProcessReportsDescendantCleanupUnconfirmed(physicalProcess) {
+		if cleanupFinished && !physicalProcessReportsDescendantCleanupUnconfirmed(physicalProcess) {
 			log.Info("Publishing unconfirmed descendant cleanup warning before deleting PhysicalProcess finalizer")
 			return noChange, StandardDelay
 		}
 		if cleanupFinished {
 			log.Info("Deleting PhysicalProcess after root exit with unconfirmed descendant cleanup")
-		} else {
+		} else if data.handle.Pid <= 0 || data.handle.IdentityTime.IsZero() {
 			log.Info("Deleting PhysicalProcess with unconfirmed descendant cleanup because no captured process identity is available")
 		}
 	}
 
 	// A resource that never took ownership of a running process has nothing to stop, so deletion
 	// only needs to drop the finalizer.
-	retain := physicalProcess.Spec.Process == nil || physicalProcess.Spec.Process.RetainRuntimeProcess
 	if data == nil || data.handle.Pid <= 0 || retain ||
 		data.progress == physicalResourceProgressExited ||
 		data.progress == physicalResourceProgressMissing {
@@ -879,6 +895,18 @@ func markDescendantCleanupUnconfirmed(data *physicalProcessData, message string)
 		message = descendantCleanupUnconfirmedMessage
 	}
 	data.failureMessage = message
+}
+
+func finalizePhysicalProcessWithUnconfirmedDescendants(data *physicalProcessData, message string) {
+	data.state = physicalProcessStateRuntime
+	if data.finishedAt.IsZero() {
+		data.progress = physicalResourceProgressMissing
+		data.finishedAt = time.Now()
+	} else {
+		data.progress = physicalResourceProgressExited
+	}
+	data.retryAfter = time.Time{}
+	markDescendantCleanupUnconfirmed(data, message)
 }
 
 func physicalProcessReportsDescendantCleanupUnconfirmed(physicalProcess *apiv2.PhysicalProcess) bool {

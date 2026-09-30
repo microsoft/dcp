@@ -74,7 +74,7 @@ const (
 	PhysicalProcessReasonStopFailed ConditionReason = "StopFailed"
 
 	// PhysicalProcessReasonDescendantCleanupUnconfirmed indicates that the root process is gone,
-	// but incomplete process-tree inspection prevented confirmation that all descendants stopped.
+	// but one or more descendants could not be discovered or confirmed stopped.
 	PhysicalProcessReasonDescendantCleanupUnconfirmed ConditionReason = "DescendantCleanupUnconfirmed"
 
 	// PhysicalProcessReasonStopRequested indicates that process launch was skipped because stop was requested.

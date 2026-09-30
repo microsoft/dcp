@@ -16,12 +16,18 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/dcptun"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 type serverProxyStartTestExecutor struct {
@@ -33,6 +39,7 @@ type serverProxyStartTestExecutor struct {
 	stopErrors        []error
 	exitHandlers      []process.ProcessExitHandler
 	exitDuringStop    bool
+	stopNotifications chan process.ProcessHandle
 	outputFiles       []string
 	outputFileHandles []*os.File
 }
@@ -67,6 +74,9 @@ func (executor *serverProxyStartTestExecutor) StopProcess(
 	}
 	if stopIndex < len(executor.stopErrors) {
 		return executor.stopErrors[stopIndex]
+	}
+	if executor.stopNotifications != nil {
+		executor.stopNotifications <- handle
 	}
 	return nil
 }
@@ -109,7 +119,7 @@ func TestServerProxyConfigFailurePreservesIdentityAfterCleanupFailure(t *testing
 			UID:  types.UID("config-failure-uid"),
 		},
 	}
-	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting)
+	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting, proxy.UID)
 
 	_, started := reconciler.startServerProxy(context.Background(), proxy, proxyData, logr.Discard())
 
@@ -153,7 +163,7 @@ func TestServerProxyConfigFailureClearsIdentityAfterConfirmedCleanup(t *testing.
 		},
 		proxyData: NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy](),
 	}
-	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting)
+	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting, "confirmed-cleanup-uid")
 
 	_, started := reconciler.startServerProxy(
 		context.Background(),
@@ -198,7 +208,7 @@ func TestServerProxyExitCallbacksAreRunScoped(t *testing.T) {
 		},
 	}
 	proxyName := proxy.NamespacedName()
-	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting)
+	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting, proxy.UID)
 	reconciler := &ContainerNetworkTunnelProxyReconciler{
 		ReconcilerBase: NewReconcilerBase[apiv1.ContainerNetworkTunnelProxy](
 			nil,
@@ -284,7 +294,7 @@ func TestServerProxyExitBeforeStartupResultPublicationRemainsFailed(t *testing.T
 		},
 	}
 	proxyName := proxy.NamespacedName()
-	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting)
+	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting, proxy.UID)
 	reconciler := &ContainerNetworkTunnelProxyReconciler{
 		ReconcilerBase: NewReconcilerBase[apiv1.ContainerNetworkTunnelProxy](
 			nil,
@@ -316,7 +326,7 @@ func TestServerProxyExitBeforeStartupResultPublicationRemainsFailed(t *testing.T
 	recordedExitType, exited := run.getExitType()
 	require.True(t, exited)
 	require.Equal(t, serverProxyExitTypeUnexpected, recordedExitType)
-	reconciler.queueProxyPairStartupResult(proxyName, proxy.UID, proxyData, run, func() {})
+	reconciler.queueProxyPairStartupResult(proxyName, proxy.UID, proxyData, run, func() {}, logr.Discard())
 
 	reconciler.proxyData.RunDeferredOps(proxyName, proxy)
 	_, currentData := reconciler.proxyData.BorrowByNamespacedName(proxyName)
@@ -337,7 +347,7 @@ func TestProxyStartupLeaseReleasedAfterResultPublication(t *testing.T) {
 		},
 	}
 	proxyName := proxy.NamespacedName()
-	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting)
+	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting, proxy.UID)
 	reconciler := &ContainerNetworkTunnelProxyReconciler{
 		proxyData: NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy](),
 	}
@@ -350,7 +360,7 @@ func TestProxyStartupLeaseReleasedAfterResultPublication(t *testing.T) {
 	result := proxyData.Clone()
 	result.State = apiv1.ContainerNetworkTunnelProxyStateRunning
 	result.ServerProxyProcessID = &serverPID
-	reconciler.queueProxyPairStartupResult(proxyName, proxy.UID, result, nil, releaseStartup)
+	reconciler.queueProxyPairStartupResult(proxyName, proxy.UID, result, nil, releaseStartup, logr.Discard())
 
 	_, acquiredBeforePublication := proxyData.startup.TryAcquire(t.Context())
 	require.False(t, acquiredBeforePublication)
@@ -377,7 +387,7 @@ func TestProxyStartupLeaseReleasedWhenResultCannotBeQueued(t *testing.T) {
 			UID:  types.UID("missing-startup-state-uid"),
 		},
 	}
-	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting)
+	proxyData := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting, proxy.UID)
 	reconciler := &ContainerNetworkTunnelProxyReconciler{
 		proxyData: NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy](),
 	}
@@ -390,9 +400,127 @@ func TestProxyStartupLeaseReleasedWhenResultCannotBeQueued(t *testing.T) {
 		proxyData,
 		nil,
 		releaseStartup,
+		logr.Discard(),
 	)
 
 	releaseAfterQueueFailure, acquiredAfterQueueFailure := proxyData.startup.TryAcquire(t.Context())
 	require.True(t, acquiredAfterQueueFailure)
 	releaseAfterQueueFailure()
+}
+
+// Verifies that a newly created proxy with the same name discards completed
+// in-memory state owned by the previous resource UID.
+func TestRecreatedProxyDropsCompletedStateFromPreviousUID(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	proxyName := types.NamespacedName{Name: "recreated", Namespace: "test"}
+	oldData := newContainerNetworkTunnelProxyData(
+		apiv1.ContainerNetworkTunnelProxyStateStarting,
+		types.UID("old"),
+	)
+	oldData.cleanupScheduled = true
+	oldData.cleanupCompleted = true
+	reconciler := &ContainerNetworkTunnelProxyReconciler{
+		ReconcilerBase: NewReconcilerBase[apiv1.ContainerNetworkTunnelProxy](
+			nil,
+			nil,
+			logr.Discard(),
+			testCtx,
+		),
+		proxyData: NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy](),
+	}
+	reconciler.proxyData.Store(proxyName, proxyName, oldData)
+
+	waiting := reconciler.resetRecreatedTunnelProxyState(
+		&apiv1.ContainerNetworkTunnelProxy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      proxyName.Name,
+				Namespace: proxyName.Namespace,
+				UID:       types.UID("new"),
+			},
+		},
+		logr.Discard(),
+	)
+
+	require.False(t, waiting)
+	_, remaining := reconciler.proxyData.BorrowByNamespacedName(proxyName)
+	require.Nil(t, remaining)
+}
+
+// Verifies that a startup result rejected by current proxy state releases its
+// startup lease and stops the unpublished server proxy process.
+func TestDiscardedProxyStartupResultIsCleanedUp(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	executor := &serverProxyStartTestExecutor{
+		handle:            process.NewHandle(4300, time.Unix(1300, 0).UTC()),
+		stopNotifications: make(chan process.ProcessHandle, 1),
+	}
+	proxy := &apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "discarded",
+			Namespace: "test",
+			UID:       types.UID("discarded"),
+		},
+	}
+	proxyName := proxy.NamespacedName()
+	current := newContainerNetworkTunnelProxyData(
+		apiv1.ContainerNetworkTunnelProxyStateStarting,
+		proxy.UID,
+	)
+	current.cleanupCompleted = true
+	reconciler := &ContainerNetworkTunnelProxyReconciler{
+		ReconcilerBase: NewReconcilerBase[apiv1.ContainerNetworkTunnelProxy](
+			client,
+			client,
+			logr.Discard(),
+			testCtx,
+		),
+		config: ContainerNetworkTunnelProxyReconcilerConfig{
+			ProcessExecutor: executor,
+		},
+		proxyData: NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy](),
+		workQueue: resiliency.NewWorkQueue(testCtx, 1),
+	}
+	reconciler.proxyData.Store(proxyName, proxyName, current)
+
+	result := current.Clone()
+	result.cleanupCompleted = false
+	serverPID := int64(executor.handle.Pid)
+	result.ServerProxyProcessID = &serverPID
+	result.ServerProxyStartupTimestamp = metav1.NewMicroTime(executor.handle.IdentityTime)
+	releaseStartup, acquired := current.startup.TryAcquire(testCtx)
+	require.True(t, acquired)
+
+	reconciler.queueProxyPairStartupResult(
+		proxyName,
+		proxy.UID,
+		result,
+		nil,
+		releaseStartup,
+		logr.Discard(),
+	)
+	reconciler.proxyData.RunDeferredOps(proxyName, proxy)
+
+	select {
+	case stoppedHandle := <-executor.stopNotifications:
+		require.Equal(t, executor.handle, stoppedHandle)
+	case <-testCtx.Done():
+		t.Fatal("discarded server proxy process was not stopped")
+	}
+	var releaseAfterCleanup func()
+	acquireErr := wait.PollUntilContextCancel(testCtx, time.Millisecond, true, func(context.Context) (bool, error) {
+		var leaseAcquired bool
+		releaseAfterCleanup, leaseAcquired = current.startup.TryAcquire(testCtx)
+		return leaseAcquired, nil
+	})
+	require.NoError(t, acquireErr)
+	releaseAfterCleanup()
 }

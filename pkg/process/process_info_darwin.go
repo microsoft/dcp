@@ -67,7 +67,7 @@ func snapshotDarwinProcesses(ctx context.Context, query func() ([]byte, error)) 
 		var inspectionErrors []error
 		for offset := 0; offset < len(contents); offset += unix.SizeofKinfoProc {
 			if contextErr := ctx.Err(); contextErr != nil {
-				return processes, errors.Join(append(inspectionErrors, contextErr)...)
+				return processes, errors.Join(summarizeProcessErrors(inspectionErrors), contextErr)
 			}
 			info, infoErr := decodeDarwinProcessInfo(contents[offset : offset+unix.SizeofKinfoProc])
 			if infoErr != nil {
@@ -76,7 +76,7 @@ func snapshotDarwinProcesses(ctx context.Context, query func() ([]byte, error)) 
 				processes = append(processes, info)
 			}
 		}
-		return processes, errors.Join(inspectionErrors...)
+		return processes, summarizeProcessErrors(inspectionErrors)
 	}
 }
 

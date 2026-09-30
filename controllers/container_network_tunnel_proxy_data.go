@@ -97,6 +97,8 @@ func (lease *startupLease) TryAcquire(lifetimeCtx context.Context) (func(), bool
 type containerNetworkTunnelProxyData struct {
 	apiv1.ContainerNetworkTunnelProxyStatus
 
+	resourceUID types.UID
+
 	// Coordinates asynchronous startup work. Clones share this lease by pointer.
 	startup *startupLease
 
@@ -126,11 +128,15 @@ type containerNetworkTunnelProxyData struct {
 	securityConfig *dcptun.TunnelProxySecurityConfig
 }
 
-func newContainerNetworkTunnelProxyData(state apiv1.ContainerNetworkTunnelProxyState) *containerNetworkTunnelProxyData {
+func newContainerNetworkTunnelProxyData(
+	state apiv1.ContainerNetworkTunnelProxyState,
+	resourceUID types.UID,
+) *containerNetworkTunnelProxyData {
 	return &containerNetworkTunnelProxyData{
 		ContainerNetworkTunnelProxyStatus: apiv1.ContainerNetworkTunnelProxyStatus{
 			State: state,
 		},
+		resourceUID: resourceUID,
 		startup:     newStartupLease(),
 		tunnelExtra: make(map[string]tunnelExtraData),
 	}
@@ -139,6 +145,7 @@ func newContainerNetworkTunnelProxyData(state apiv1.ContainerNetworkTunnelProxyS
 func (tpd *containerNetworkTunnelProxyData) Clone() *containerNetworkTunnelProxyData {
 	clone := containerNetworkTunnelProxyData{
 		ContainerNetworkTunnelProxyStatus: *tpd.ContainerNetworkTunnelProxyStatus.DeepCopy(),
+		resourceUID:                       tpd.resourceUID,
 		startup:                           tpd.startup,
 		cleanupScheduled:                  tpd.cleanupScheduled,
 		cleanupCompleted:                  tpd.cleanupCompleted,
@@ -155,8 +162,16 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 	if other == nil {
 		return false
 	}
+	if tpd.resourceUID != "" && other.resourceUID != "" && tpd.resourceUID != other.resourceUID {
+		return false
+	}
 
 	updated := false
+
+	if tpd.resourceUID == "" && other.resourceUID != "" {
+		tpd.resourceUID = other.resourceUID
+		updated = true
+	}
 
 	if tpd.State != other.State {
 		tpd.State = other.State

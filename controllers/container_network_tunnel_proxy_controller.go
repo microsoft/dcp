@@ -387,6 +387,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) Reconcile(ctx context.Context, r
 
 	if err != nil {
 		if apimachinery_errors.IsNotFound(err) {
+			r.discardMissingTunnelProxyState(req.NamespacedName, log)
 			log.V(1).Info("ContainerNetworkTunnelProxy object was not found")
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
@@ -400,6 +401,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) Reconcile(ctx context.Context, r
 	}
 
 	r.proxyData.RunDeferredOps(req.NamespacedName, &tproxy)
+	if r.resetRecreatedTunnelProxyState(&tproxy, log) {
+		return ctrl.Result{RequeueAfter: delayDuration(StandardDelay)}, nil
+	}
 
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(tproxy.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
@@ -422,7 +426,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) handleDeletionRequest(ctx contex
 	namespacedName := tunnelProxy.NamespacedName()
 	_, pd := r.proxyData.BorrowByNamespacedName(namespacedName)
 	if pd == nil {
-		pd = newContainerNetworkTunnelProxyData(tunnelProxy.Status.State)
+		pd = newContainerNetworkTunnelProxyData(tunnelProxy.Status.State, tunnelProxy.UID)
 		pd.ContainerNetworkTunnelProxyStatus = *tunnelProxy.Status.DeepCopy()
 		r.proxyData.Store(namespacedName, namespacedName, pd)
 	}
@@ -438,6 +442,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) handleDeletionRequest(ctx contex
 	switch {
 	case pd.cleanupCompleted && pd.ServerProxyProcessID == nil && pd.ClientProxyContainerID == "":
 		log.V(1).Info("ContainerNetworkTunnelProxy is being deleted (resource cleanup finished, deleting finalizer)...")
+		r.proxyData.DeleteByNamespacedName(namespacedName)
 		change = deleteFinalizer(tunnelProxy, tunnelProxyFinalizer, log)
 
 	default:
@@ -453,6 +458,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) handleDeletionRequest(ctx contex
 				// with some tunnel proxy instances still running. Just give up on the cleanup here
 				// and rely on the dcpproc to do the cleanup instead.
 				log.Error(cleanupErr, "Failed to schedule tunnel proxy cleanup work, deleting instance without cleanup...")
+				r.proxyData.DeleteByNamespacedName(namespacedName)
 				change = deleteFinalizer(tunnelProxy, tunnelProxyFinalizer, log)
 			} else {
 				log.V(1).Info("Scheduled asynchronous cleanup for ContainerNetworkTunnelProxy proxy pair")
@@ -543,7 +549,7 @@ func ensureTunnelProxyBuildingImageState(
 
 	if pd == nil {
 		log.V(1).Info("Ensuring the shared tunnel proxy PhysicalContainerImage exists...")
-		pd = newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateBuildingImage)
+		pd = newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateBuildingImage, tunnelProxy.UID)
 		r.proxyData.Store(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd)
 	}
 
@@ -1088,7 +1094,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 			}
 		}
 
-		r.queueProxyPairStartupResult(nn, tunnelProxy.UID, pd, serverRun, releaseStartup)
+		r.queueProxyPairStartupResult(nn, tunnelProxy.UID, pd, serverRun, releaseStartup, log)
 		r.ScheduleReconciliationWithDelay(nn, reconciliationDelay)
 	}
 }
@@ -1099,15 +1105,18 @@ func (r *ContainerNetworkTunnelProxyReconciler) queueProxyPairStartupResult(
 	result *containerNetworkTunnelProxyData,
 	run *serverProxyRun,
 	releaseStartup func(),
+	log logr.Logger,
 ) {
 	pdMap := r.proxyData
 	queued := pdMap.QueueDeferredOp(proxyName, func(_ types.NamespacedName, _ types.NamespacedName, proxy *apiv1.ContainerNetworkTunnelProxy) {
 		defer releaseStartup()
 		if proxy.UID != proxyUID {
+			r.queueDiscardedProxyPairCleanup(proxyUID, result, run, log)
 			return
 		}
 		_, current := pdMap.BorrowByNamespacedName(proxyName)
-		if current == nil {
+		if current == nil || current.resourceUID != proxyUID {
+			r.queueDiscardedProxyPairCleanup(proxyUID, result, run, log)
 			return
 		}
 		if run != nil {
@@ -1122,6 +1131,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) queueProxyPairStartupResult(
 		if current.State == apiv1.ContainerNetworkTunnelProxyStateFailed ||
 			current.cleanupScheduled ||
 			current.cleanupCompleted {
+			r.queueDiscardedProxyPairCleanup(proxyUID, result, run, log)
 			return
 		}
 
@@ -1129,7 +1139,107 @@ func (r *ContainerNetworkTunnelProxyReconciler) queueProxyPairStartupResult(
 	})
 	if !queued {
 		releaseStartup()
+		r.queueDiscardedProxyPairCleanup(proxyUID, result, run, log)
 	}
+}
+
+func (r *ContainerNetworkTunnelProxyReconciler) queueDiscardedProxyPairCleanup(
+	proxyUID types.UID,
+	result *containerNetworkTunnelProxyData,
+	run *serverProxyRun,
+	log logr.Logger,
+) {
+	if result == nil {
+		return
+	}
+	if run != nil {
+		run.expectExit()
+	}
+	if r.workQueue == nil {
+		return
+	}
+
+	cleanupData := result.Clone()
+	cleanupErr := r.workQueue.Enqueue(func(ctx context.Context) {
+		for {
+			r.cleanupProxyPair(ctx, cleanupData, proxyUID, log)
+			if cleanupData.cleanupCompleted {
+				return
+			}
+
+			retryTimer := time.NewTimer(delayDuration(StandardDelay))
+			select {
+			case <-ctx.Done():
+				retryTimer.Stop()
+				return
+			case <-retryTimer.C:
+			}
+		}
+	})
+	if cleanupErr != nil {
+		log.Error(cleanupErr, "Failed to schedule cleanup for discarded tunnel proxy startup result", "ResourceUID", proxyUID)
+	}
+}
+
+func (r *ContainerNetworkTunnelProxyReconciler) discardMissingTunnelProxyState(
+	name types.NamespacedName,
+	log logr.Logger,
+) {
+	_, data := r.proxyData.BorrowByNamespacedName(name)
+	if data == nil {
+		return
+	}
+
+	tombstone := &apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name.Name,
+			Namespace: name.Namespace,
+			UID:       data.resourceUID,
+		},
+	}
+	r.proxyData.RunDeferredOps(name, tombstone)
+	_, data = r.proxyData.BorrowByNamespacedName(name)
+	if data == nil {
+		return
+	}
+
+	releaseStartup, acquiredStartup := data.startup.TryAcquire(r.LifetimeCtx)
+	if !acquiredStartup {
+		r.ScheduleReconciliationWithDelay(name, StandardDelay)
+		return
+	}
+	releaseStartup()
+
+	r.queueDiscardedProxyPairCleanup(data.resourceUID, data, nil, log)
+	r.proxyData.DeleteByNamespacedName(name)
+}
+
+// resetRecreatedTunnelProxyState removes state owned by a previous object with the same name.
+// It returns true while startup publication for the previous object is still in flight.
+func (r *ContainerNetworkTunnelProxyReconciler) resetRecreatedTunnelProxyState(
+	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
+	log logr.Logger,
+) bool {
+	name := tunnelProxy.NamespacedName()
+	_, data := r.proxyData.BorrowByNamespacedName(name)
+	if data == nil || data.resourceUID == "" || data.resourceUID == tunnelProxy.UID {
+		return false
+	}
+
+	releaseStartup, acquiredStartup := data.startup.TryAcquire(r.LifetimeCtx)
+	if !acquiredStartup {
+		log.V(1).Info(
+			"Waiting for startup work owned by a previous ContainerNetworkTunnelProxy instance",
+			"PreviousUID", data.resourceUID,
+			"CurrentUID", tunnelProxy.UID,
+		)
+		return true
+	}
+	releaseStartup()
+
+	r.queueDiscardedProxyPairCleanup(data.resourceUID, data, nil, log)
+	r.proxyData.DeleteByNamespacedName(name)
+	return false
 }
 
 // Creates certificates for security tunnel proxy control connection.

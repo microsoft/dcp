@@ -276,13 +276,22 @@ func SimulateStopProcessTreeCommand(pe *internal_testutil.ProcessExecution) int3
 		var handleErr error
 		handle, handleErr = pe.Executor.FindProcessHandle(pid)
 		if handleErr != nil {
-			return 5
+			return simulatedStopProcessTreeExitCode(handleErr)
 		}
 	}
 	stopErr := pe.Executor.StopProcess(context.Background(), handle)
-	if stopErr != nil {
-		return 5 // Failed to stop the process
-	}
+	return simulatedStopProcessTreeExitCode(stopErr)
+}
 
-	return 0 // Success
+func simulatedStopProcessTreeExitCode(stopErr error) int32 {
+	switch {
+	case stopErr == nil:
+		return 0
+	case errors.Is(stopErr, process.ErrIncompleteProcessTree):
+		return protocol.StopProcessTreeIncompleteExitCode
+	case process.IsProcessGoneErr(stopErr):
+		return protocol.StopProcessTreeProcessGoneExitCode
+	default:
+		return 5
+	}
 }
