@@ -348,7 +348,7 @@ func handleNewExecutable(
 			if exe.Spec.Stop {
 				stopChange := noChange
 				if findErr == nil {
-					cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
+					cleanupCtx, cleanupCancel := withDetachedExecutableStopTimeout(ctx)
 					stopErr := persistentRunner.StopPersistentProcess(cleanupCtx, exe, record, log)
 					cleanupCancel()
 					if stopErr != nil {
@@ -411,7 +411,7 @@ func handleNewExecutable(
 							"OldLifecycleKey", record.LifecycleKey,
 							"NewLifecycleKey", lifecycleKey)
 					}
-					cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
+					cleanupCtx, cleanupCancel := withDetachedExecutableStopTimeout(ctx)
 					stopErr := persistentRunner.StopPersistentProcess(cleanupCtx, exe, record, log)
 					cleanupCancel()
 					if stopErr != nil {
@@ -738,7 +738,7 @@ func (r *ExecutableReconciler) cleanUpPersistentStartAfterRecordFailure(
 		return
 	}
 
-	cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
+	cleanupCtx, cleanupCancel := withDetachedExecutableStopTimeout(ctx)
 	defer cleanupCancel()
 
 	if res.RunID != UnknownRunID {
@@ -955,7 +955,7 @@ func (r *ExecutableReconciler) OnRunMessage(runID RunID, level RunMessageLevel, 
 // The passed runInfo is a copy that the method can modify
 func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo *ExecutableRunInfo, persistentLease *statestore.ResourceLease, log logr.Logger) func(context.Context) {
 	return func(stopCtx context.Context) {
-		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(stopCtx)
+		cleanupCtx, cleanupCancel := withDetachedExecutableStopTimeout(stopCtx)
 		defer cleanupCancel()
 
 		if persistentLease != nil {
@@ -995,6 +995,13 @@ func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo
 			r.ScheduleReconciliation(exeName)
 		}
 	}
+}
+
+func withDetachedExecutableStopTimeout(parent context.Context) (context.Context, context.CancelFunc) {
+	if osutil.IsWindows() {
+		return process.WithDetachedMonitoredProcessStopTimeout(parent)
+	}
+	return process.WithDetachedStopTimeout(parent)
 }
 
 func (r *ExecutableReconciler) getExecutableRunner(exe *apiv1.Executable, startupStage ExecutableStartuptStage) (ExecutableRunner, error) {

@@ -6,6 +6,7 @@
 package dcpproc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -26,6 +27,23 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+type contextObservingExecutor struct {
+	process.Executor
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (executor *contextObservingExecutor) StartProcess(
+	ctx context.Context,
+	cmd *exec.Cmd,
+	handler process.ProcessExitHandler,
+	flags process.ProcessCreationFlag,
+	sysCreateProcess process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	executor.deadline, executor.hasDeadline = ctx.Deadline()
+	return executor.Executor.StartProcess(ctx, cmd, handler, flags, sysCreateProcess)
+}
 
 func TestMonitorTargetFromFieldsRequiresTimestamp(t *testing.T) {
 	monitorPID := int64(12345)
@@ -197,9 +215,10 @@ func TestRunContainerWatcherPassesSelectedRuntime(t *testing.T) {
 
 func TestStopProcessTree(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
-	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	ctx, cancel := testutil.GetTestContext(t, 45*time.Second)
 	defer cancel()
 	pex := internal_testutil.NewTestProcessExecutor(ctx)
+	observingExecutor := &contextObservingExecutor{Executor: pex}
 	dcppaths.EnableTestPathProbing()
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
 	require.NoError(t, dcpPathErr, "Could not determine DCP executable path")
@@ -236,9 +255,12 @@ func TestStopProcessTree(t *testing.T) {
 		},
 	})
 
-	stopProcessTreeErr := StopProcessTree(ctx, pex, handle, log)
+	before := time.Now()
+	stopProcessTreeErr := StopProcessTree(ctx, observingExecutor, handle, log)
 	require.NoError(t, stopProcessTreeErr, "Could not stop the process tree")
 	require.True(t, testProc.Finished(), "The test processed should have been stopped")
+	require.True(t, observingExecutor.hasDeadline)
+	require.WithinDuration(t, before.Add(26*time.Second), observingExecutor.deadline, time.Second)
 
 	require.NotNil(t, dcpProc, "dcp stop-process-tree should have been invoked")
 	require.True(t, len(dcpProc.Cmd.Args) >= 5, "Command should have at least 5 arguments")

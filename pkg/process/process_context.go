@@ -19,6 +19,10 @@ const (
 	// The default stop timeout includes the graceful phase and the final
 	// force-kill cleanup phase.
 	processStopTimeout = gracefulProcessStopTimeout + signalAndWaitTimeout
+
+	// The monitored process stop timeout includes the target stop budget plus
+	// time to launch dcpproc and receive its structured exit result.
+	monitoredProcessStopTimeout = processStopTimeout + 5*time.Second
 )
 
 // WithStopTimeout bounds process stopping while preserving parent cancellation.
@@ -29,4 +33,14 @@ func WithStopTimeout(parent context.Context) (context.Context, context.CancelFun
 // WithDetachedStopTimeout bounds process cleanup without inheriting parent cancellation.
 func WithDetachedStopTimeout(parent context.Context) (context.Context, context.CancelFunc) {
 	return WithStopTimeout(context.WithoutCancel(parent))
+}
+
+// WithMonitoredProcessStopTimeout bounds a dcpproc-monitored process stop while preserving parent cancellation.
+func WithMonitoredProcessStopTimeout(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, monitoredProcessStopTimeout)
+}
+
+// WithDetachedMonitoredProcessStopTimeout bounds dcpproc-monitored cleanup without inheriting parent cancellation.
+func WithDetachedMonitoredProcessStopTimeout(parent context.Context) (context.Context, context.CancelFunc) {
+	return WithMonitoredProcessStopTimeout(context.WithoutCancel(parent))
 }

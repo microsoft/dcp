@@ -179,7 +179,10 @@ func StopProcessTree(
 	stopProcessTreeCmd.Env = os.Environ()    // Use DCP CLI environment
 	logger.WithSessionId(stopProcessTreeCmd) // Ensure the session ID is passed to the monitor command
 
-	exitCode, err := process.RunWithTimeout(ctx, pe, stopProcessTreeCmd)
+	monitoredStopCtx, monitoredStopCancel := process.WithMonitoredProcessStopTimeout(ctx)
+	defer monitoredStopCancel()
+
+	exitCode, err := process.RunWithTimeout(monitoredStopCtx, pe, stopProcessTreeCmd)
 	if err != nil {
 		log.Error(err, "Failed to stop process tree", "ExitCode", exitCode)
 		return err

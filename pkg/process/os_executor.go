@@ -37,12 +37,13 @@ var (
 )
 
 type waitState struct {
-	waitable    Waitable      // The waitable that is being waited on
-	waitEndedCh chan struct{} // A channel that gets closed when the wait ends
-	waitErr     error         // The result of the process wait. Not valid until waitEndedCh is closed.
-	waitEnded   time.Time     // The time when the wait function ended. Zero if the wait is still in progress.
-	reason      waitReason    // The reason why are waiting on the process
-	waitStarted bool
+	waitable      Waitable      // The waitable that is being waited on
+	waitEndedCh   chan struct{} // A channel that gets closed when the wait ends
+	waitErr       error         // The result of the process wait. Not valid until waitEndedCh is closed.
+	waitEnded     time.Time     // The time when the wait function ended. Zero if the wait is still in progress.
+	reason        waitReason    // The reason why are waiting on the process
+	waitStarted   bool
+	forceKillUsed bool
 }
 
 type osExecutorBase struct {
@@ -308,6 +309,9 @@ func (e *OSExecutor) tryStartWaiting(handle ProcessHandle, waitable Waitable, re
 		}
 
 		callerShouldStopProcess = (reason&waitReasonStopping) != 0 && (ws.reason&waitReasonStopping) == 0
+		if callerShouldStopProcess {
+			ws.forceKillUsed = false
+		}
 
 		if ws.waitable == nil {
 			ws.waitable = waitable
@@ -357,6 +361,12 @@ func (e *OSExecutor) finishStopAttempt(ws *waitState) {
 	ws.reason &^= waitReasonStopping
 }
 
+func (e *OSExecutor) markForceKillUsed(ws *waitState) {
+	e.acquireLock()
+	defer e.releaseLock()
+	ws.forceKillUsed = true
+}
+
 func (e *OSExecutor) doWait(ws *waitState, waitable Waitable, pid Pid_t) {
 	e.log.V(1).Info("Starting waiting for process to exit", "PID", pid)
 	err := waitable.Wait()
@@ -368,6 +378,62 @@ func (e *OSExecutor) doWait(ws *waitState, waitable Waitable, pid Pid_t) {
 	ws.waitEnded = time.Now()
 	ws.waitErr = err
 	close(ws.waitEndedCh)
+}
+
+func waitForTrackedProcessExit(ctx context.Context, pid Pid_t, ws *waitState, waitTimeout time.Duration) error {
+	var timeoutCh <-chan time.Time
+	var timer *time.Timer
+	if waitTimeout > 0 {
+		timer = time.NewTimer(waitTimeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+
+	case <-ws.waitEndedCh:
+		if ws.waitErr == nil || IsEarlyProcessExitError(ws.waitErr) {
+			return nil
+		}
+
+		return fmt.Errorf("could not wait for process %d to exit: %w", pid, ws.waitErr)
+
+	case <-timeoutCh:
+		return ErrTimedOutWaitingForProcessToStop
+	}
+}
+
+func waitForProcessStopConfirmation(
+	ctx context.Context,
+	processEndedCh <-chan struct{},
+	stopErr error,
+	waitTimeout time.Duration,
+) error {
+	if errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
+		return ErrTimedOutWaitingForProcessToStop
+	}
+	if processEndedCh == nil {
+		return nil
+	}
+
+	var timeoutCh <-chan time.Time
+	var timer *time.Timer
+	if waitTimeout > 0 {
+		timer = time.NewTimer(waitTimeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-processEndedCh:
+		return nil
+	case <-timeoutCh:
+		return ErrTimedOutWaitingForProcessToStop
+	}
 }
 
 // Returns the process execution error and process exit code depending on the result
@@ -458,24 +524,18 @@ func (e *OSExecutor) stopProcessTreeInternal(
 	}
 
 	waitForRootProcessToEnd := func(waitCtx context.Context, procEndedCh <-chan struct{}, stopErr error) error {
-		if errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
-			// Do not bother waiting for the confirmation of root process exit, it probably is not going to happen
-			// if a timeout occurred already...
+		waitErr := waitForProcessStopConfirmation(waitCtx, procEndedCh, stopErr, processStopTimeout)
+		switch {
+		case errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop):
 			procTreeLog.V(1).Info("Timed out waiting for root process to stop")
-			return ErrTimedOutWaitingForProcessToStop
-		}
-
-		select {
-		case <-waitCtx.Done():
-			return waitCtx.Err()
-		case <-procEndedCh:
+		case procEndedCh == nil:
+			procTreeLog.V(1).Info("Skipping root process exit confirmation because no wait channel is available")
+		case waitErr == nil:
 			procTreeLog.Info("Root process has stopped")
-			return nil
-
-		case <-time.After(processStopTimeout):
+		case errors.Is(waitErr, ErrTimedOutWaitingForProcessToStop):
 			procTreeLog.Error(ErrTimedOutWaitingForProcessToStop, "Did not get confirmation that the root process has stopped before timeout elapsed")
-			return ErrTimedOutWaitingForProcessToStop
 		}
+		return waitErr
 	}
 
 	forceProcessOpts := opts &^ (optNotFoundIsError | optTrySignal | optSignalConsoleGroup | optGracefulOnly)
@@ -647,7 +707,11 @@ func (e *OSExecutor) stopProcessTreeInternal(
 
 	if rootStopErr != nil {
 		var fatalRootForceErr error
-		rootResult, rootStopErr, fatalRootForceErr = stopRootProcess(forceCtx, forceProcessOpts)
+		var forceRootResult singleProcessStopResult
+		forceRootResult, rootStopErr, fatalRootForceErr = stopRootProcess(forceCtx, forceProcessOpts)
+		if forceRootResult.waitEndedCh != nil {
+			rootResult = forceRootResult
+		}
 		if fatalRootForceErr != nil {
 			procTreeLog.Error(fatalRootForceErr, "Could not force-kill root process")
 		}
@@ -678,7 +742,27 @@ func (e *OSExecutor) stopProcessTreeInternal(
 	// So that is why the following wait operation employs a timeout.
 	rootWaitErr := waitForRootProcessToEnd(forceCtx, rootResult.waitEndedCh, rootStopErr)
 
-	return errors.Join(append([]error{treeErr, rootStopErr, rootWaitErr}, childStoppingErrors...)...)
+	return joinProcessTreeStopErrors(treeErr, rootStopErr, rootWaitErr, childStoppingErrors)
+}
+
+func joinProcessTreeStopErrors(
+	treeErr error,
+	rootStopErr error,
+	rootWaitErr error,
+	childStoppingErrors []error,
+) error {
+	var descendantCleanupErr error
+	if len(childStoppingErrors) > 0 {
+		descendantCleanupErr = fmt.Errorf(
+			"%w: one or more descendant processes could not be confirmed stopped",
+			ErrIncompleteProcessTree,
+		)
+	}
+
+	return errors.Join(append(
+		[]error{treeErr, rootStopErr, rootWaitErr, descendantCleanupErr},
+		childStoppingErrors...,
+	)...)
 }
 
 var maxConcurrentProcessStops = runtime.NumCPU() * 5

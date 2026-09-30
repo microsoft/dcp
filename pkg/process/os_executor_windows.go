@@ -161,9 +161,16 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 	}
 
 	e.log.V(1).Info("Sending SIGKILL to process...", "PID", handle.Pid)
+	e.markForceKillUsed(ws)
 	err = signalProcess(ctx, handle, proc, os.Kill)
 	if err != nil && !IsProcessGoneErr(err) {
 		return singleProcessStopResult{waitEndedCh: waitEndedCh, forceKillUsed: true}, err
+	}
+	if (opts & optWaitForStdio) == 0 {
+		waitErr := waitForTrackedProcessExit(ctx, handle.Pid, ws, 0)
+		if waitErr != nil {
+			return singleProcessStopResult{waitEndedCh: waitEndedCh, forceKillUsed: true}, waitErr
+		}
 	}
 
 	e.log.V(1).Info("Process stopped by SIGKILL", "PID", handle.Pid)
@@ -199,32 +206,6 @@ func (e *OSExecutor) signalAndWaitForExit(
 
 	return waitForTrackedProcessExit(ctx, handle.Pid, ws, waitTimeout)
 }
-
-func waitForTrackedProcessExit(ctx context.Context, pid Pid_t, ws *waitState, waitTimeout time.Duration) error {
-	var timeoutCh <-chan time.Time
-	var timer *time.Timer
-	if waitTimeout > 0 {
-		timer = time.NewTimer(waitTimeout)
-		defer timer.Stop()
-		timeoutCh = timer.C
-	}
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-
-	case <-ws.waitEndedCh:
-		if ws.waitErr == nil || IsEarlyProcessExitError(ws.waitErr) {
-			return nil
-		}
-
-		return fmt.Errorf("could not wait for process %d to exit: %w", pid, ws.waitErr)
-
-	case <-timeoutCh:
-		return ErrTimedOutWaitingForProcessToStop
-	}
-}
-
 func (e *OSExecutor) completeDispose() {
 	e.acquireLock()
 	defer e.releaseLock()

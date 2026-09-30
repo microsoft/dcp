@@ -50,3 +50,39 @@ func TestWithDetachedStopTimeoutUsesFreshDeadlineAndRetainsValues(t *testing.T) 
 	require.True(t, hasDeadline)
 	require.WithinDuration(t, before.Add(processStopTimeout), deadline, time.Second)
 }
+
+// Verifies that the monitored process stop timeout includes the reporting margin
+// while still propagating parent cancellation.
+func TestWithMonitoredProcessStopTimeoutPreservesParentCancellation(t *testing.T) {
+	t.Parallel()
+
+	parent, parentCancel := context.WithCancel(context.Background())
+	before := time.Now()
+	ctx, cancel := WithMonitoredProcessStopTimeout(parent)
+	defer cancel()
+
+	deadline, hasDeadline := ctx.Deadline()
+	require.True(t, hasDeadline)
+	require.WithinDuration(t, before.Add(monitoredProcessStopTimeout), deadline, time.Second)
+	parentCancel()
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+}
+
+// Verifies that detached monitored process cleanup ignores parent cancellation,
+// retains context values, and receives a fresh bounded deadline.
+func TestWithDetachedMonitoredProcessStopTimeoutUsesFreshDeadlineAndRetainsValues(t *testing.T) {
+	t.Parallel()
+
+	parent, parentCancel := context.WithCancel(context.WithValue(context.Background(), processContextTestKey{}, "value"))
+	parentCancel()
+
+	before := time.Now()
+	ctx, cancel := WithDetachedMonitoredProcessStopTimeout(parent)
+	defer cancel()
+
+	require.NoError(t, ctx.Err())
+	require.Equal(t, "value", ctx.Value(processContextTestKey{}))
+	deadline, hasDeadline := ctx.Deadline()
+	require.True(t, hasDeadline)
+	require.WithinDuration(t, before.Add(monitoredProcessStopTimeout), deadline, time.Second)
+}

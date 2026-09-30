@@ -8,6 +8,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os/exec"
 	"sync"
 	"testing"
@@ -21,6 +22,7 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -148,7 +150,11 @@ func TestExecutableCleanupBoundariesDetachCancellation(t *testing.T) {
 			require.NoError(t, runner.observation.err)
 			require.Equal(t, "retained", runner.observation.value)
 			require.True(t, runner.observation.hasDeadline)
-			require.WithinDuration(t, time.Now().Add(21*time.Second), runner.observation.deadline, time.Second)
+			expectedTimeout := 21 * time.Second
+			if osutil.IsWindows() {
+				expectedTimeout = 26 * time.Second
+			}
+			require.WithinDuration(t, time.Now().Add(expectedTimeout), runner.observation.deadline, time.Second)
 		})
 	}
 }
@@ -165,8 +171,9 @@ func TestPhysicalProcessIncompleteTreeStopRemainsRetryable(t *testing.T) {
 	cancel()
 
 	handle := process.NewHandle(4300, time.Unix(1100, 0).UTC())
+	descendantStopErr := errors.New("descendant stop failed")
 	executor := &cleanupContextProcessExecutor{
-		stopErr: process.ErrIncompleteProcessTree,
+		stopErr: errors.Join(process.ErrIncompleteProcessTree, descendantStopErr),
 	}
 	reconciler := NewPhysicalProcessReconciler(
 		testCtx,
@@ -197,6 +204,11 @@ func TestPhysicalProcessIncompleteTreeStopRemainsRetryable(t *testing.T) {
 	require.NoError(t, executor.observation.err)
 	require.Equal(t, "retained", executor.observation.value)
 	require.True(t, executor.observation.hasDeadline)
+	expectedTimeout := 21 * time.Second
+	if osutil.IsWindows() {
+		expectedTimeout = 26 * time.Second
+	}
+	require.WithinDuration(t, time.Now().Add(expectedTimeout), executor.observation.deadline, time.Second)
 	_, currentData := reconciler.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
 	require.NotNil(t, currentData)
 	require.Equal(t, physicalProcessStateStop, currentData.state)
@@ -204,6 +216,7 @@ func TestPhysicalProcessIncompleteTreeStopRemainsRetryable(t *testing.T) {
 	require.True(t, currentData.cleanupUnconfirmed)
 	require.Equal(t, apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed, currentData.failureReason)
 	require.Contains(t, currentData.failureMessage, process.ErrIncompleteProcessTree.Error())
+	require.Contains(t, currentData.failureMessage, descendantStopErr.Error())
 	require.False(t, currentData.retryAfter.IsZero())
 
 	executor.stopErr = &process.ErrProcessNotFound{Pid: handle.Pid}

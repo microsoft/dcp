@@ -38,6 +38,12 @@ func NewOSExecutor(log logr.Logger) Executor {
 	}
 }
 
+func (e *OSExecutor) forceKillWasUsed(ws *waitState) bool {
+	e.acquireLock()
+	defer e.releaseLock()
+	return ws.forceKillUsed
+}
+
 func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle, opts processStoppingOpts) (singleProcessStopResult, error) {
 	if contextErr := ctx.Err(); contextErr != nil {
 		return singleProcessStopResult{}, contextErr
@@ -83,7 +89,11 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 	}
 
 	if !shouldStopProcess && (opts&optIsResponsibleForStopping) == 0 {
-		return singleProcessStopResult{waitEndedCh: waitEndedCh}, nil
+		waitErr := waitForTrackedProcessExit(ctx, handle.Pid, ws, 0)
+		return singleProcessStopResult{
+			waitEndedCh:   waitEndedCh,
+			forceKillUsed: e.forceKillWasUsed(ws),
+		}, waitErr
 	}
 	defer e.finishStopAttempt(ws)
 
@@ -113,6 +123,7 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 	}
 
 	e.log.V(1).Info("Sending SIGKILL to process...", "PID", handle.Pid)
+	e.markForceKillUsed(ws)
 	err = e.signalAndWaitForExit(ctx, handle, proc, syscall.SIGKILL, ws, signalAndWaitTimeout)
 	if err != nil {
 		return singleProcessStopResult{waitEndedCh: waitEndedCh, forceKillUsed: true}, err
@@ -141,29 +152,7 @@ func (e *OSExecutor) signalAndWaitForExit(
 		return fmt.Errorf("could not send signal %s to process %d: %w", sig.String(), proc.Pid, err)
 	}
 
-	var timeoutCh <-chan time.Time
-	var timer *time.Timer
-	if waitTimeout > 0 {
-		timer = time.NewTimer(waitTimeout)
-		defer timer.Stop()
-		timeoutCh = timer.C
-	}
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-
-	case <-ws.waitEndedCh:
-		err = ws.waitErr
-		if err == nil || IsEarlyProcessExitError(err) {
-			return nil
-		}
-
-		return fmt.Errorf("could not wait for process %d to exit: %w", proc.Pid, err)
-
-	case <-timeoutCh:
-		return ErrTimedOutWaitingForProcessToStop
-	}
+	return waitForTrackedProcessExit(ctx, handle.Pid, ws, waitTimeout)
 }
 
 func (e *OSExecutor) completeDispose() {

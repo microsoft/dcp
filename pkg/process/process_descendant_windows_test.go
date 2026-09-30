@@ -247,6 +247,12 @@ func runWindowsDescendantStopCoordinator(t *testing.T, ctx context.Context, sign
 	elapsed := time.Since(startedAt)
 	require.Less(t, elapsed, processStopTimeout)
 	if action == "force" {
+		for _, handle := range descendants {
+			require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(handle)),
+				"force stop must confirm descendant exit before returning")
+		}
+	}
+	if action == "force" {
 		require.GreaterOrEqual(t, elapsed, gracefulProcessStopTimeout)
 	} else {
 		require.GreaterOrEqual(t, elapsed, signalAndWaitTimeout)

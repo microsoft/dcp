@@ -110,15 +110,23 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 	case "exit-immediately":
 		return
 
-	case "tree-root", "graceful-root", "forced-root", "deadline-root":
+	case "tree-root", "graceful-root", "forced-root", "deadline-root", "concurrent-root", "concurrent-graceful-root":
 		childMode := "tree-child"
-		if mode == "graceful-root" {
+		if mode == "graceful-root" || mode == "concurrent-graceful-root" {
 			childMode = "graceful-child"
 		} else if mode == "forced-root" {
 			signal.Ignore(syscall.SIGTERM)
 			childMode = "observing-child"
+		} else if mode == "concurrent-root" {
+			childMode = "observing-child"
 		} else if mode == "deadline-root" {
 			childMode = "observing-child"
+		}
+		var rootSignalCh chan os.Signal
+		if mode == "concurrent-root" || mode == "concurrent-graceful-root" {
+			rootSignalCh = make(chan os.Signal, 1)
+			signal.Notify(rootSignalCh, syscall.SIGTERM)
+			defer signal.Stop(rootSignalCh)
 		}
 		childCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
 		childCmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"="+childMode)
@@ -130,7 +138,7 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 		}
 		childStartErr := childCmd.Start()
 		require.NoError(t, childStartErr)
-		if signalNoticeWriter != nil {
+		if signalNoticeWriter != nil && mode != "concurrent-root" && mode != "concurrent-graceful-root" {
 			require.NoError(t, signalNoticeWriter.Close())
 		}
 		go func() {
@@ -142,6 +150,16 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 		_, writeErr := fmt.Fprintln(pidWriter, childCmd.Process.Pid)
 		require.NoError(t, writeErr)
 		require.NoError(t, pidWriter.Close())
+		if mode == "concurrent-root" || mode == "concurrent-graceful-root" {
+			<-rootSignalCh
+			_, signalWriteErr := fmt.Fprintln(signalNoticeWriter, "root-sigterm")
+			require.NoError(t, signalWriteErr)
+			require.NoError(t, signalNoticeWriter.Close())
+			if mode == "concurrent-graceful-root" {
+				time.Sleep(250 * time.Millisecond)
+				return
+			}
+		}
 		time.Sleep(30 * time.Second)
 
 	case "tree-child":
@@ -327,6 +345,55 @@ func TestStopProcessGivesDescendantsRemainingGracefulBudget(t *testing.T) {
 	require.Less(t, elapsed, signalAndWaitTimeout)
 	requireProcessGone(t, testCtx, executor, rootHandle)
 	requireProcessGone(t, testCtx, executor, childHandle)
+}
+
+// Verifies that overlapping Unix stops wait for the owning root stop before processing descendants,
+// and that every caller confirms descendant exit before returning.
+func TestConcurrentStopsPreserveRootFirstOrdering(t *testing.T) {
+	for _, testCase := range []struct {
+		name            string
+		mode            string
+		expectedNotices string
+	}{
+		{name: "forced root", mode: "concurrent-root"},
+		{name: "graceful root", mode: "concurrent-graceful-root", expectedNotices: "sigterm\n"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			testCtx, testCancel := testutil.GetTestContext(t, 45*time.Second)
+			defer testCancel()
+			executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+			defer executor.Dispose()
+			rootHandle, childHandle, signalNotices := startProcessTreeWithSignalNoticeForTest(t, testCtx, executor, testCase.mode)
+
+			stopResults := make(chan error, 2)
+			go func() {
+				stopResults <- executor.StopProcess(testCtx, rootHandle)
+			}()
+			rootSignalNotice, rootSignalReadErr := signalNotices.ReadString('\n')
+			require.NoError(t, rootSignalReadErr)
+			require.Equal(t, "root-sigterm\n", rootSignalNotice)
+
+			go func() {
+				stopResults <- executor.StopProcess(testCtx, rootHandle)
+			}()
+			for range 2 {
+				select {
+				case stopErr := <-stopResults:
+					require.NoError(t, stopErr)
+					require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(childHandle)),
+						"each concurrent stop must confirm descendant exit")
+				case <-testCtx.Done():
+					t.Fatal("concurrent process stop did not finish")
+				}
+			}
+
+			remainingNotices, readErr := io.ReadAll(signalNotices)
+			require.NoError(t, readErr)
+			require.Equal(t, testCase.expectedNotices, string(remainingNotices))
+			requireProcessGone(t, testCtx, executor, rootHandle)
+			requireProcessGone(t, testCtx, executor, childHandle)
+		})
+	}
 }
 
 // Verifies that when disposal force-kills the root, descendants skip graceful signaling

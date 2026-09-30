@@ -601,12 +601,12 @@ func (r *ProcessExecutableRunner) stopProcessRun(ctx context.Context, runID cont
 	stopLog := log.WithValues("RunID", runID, "Command", runState.cmdInfo)
 	stopLog.V(1).Info("Stopping run...")
 
-	stopCtx, stopCtxCancel := process.WithStopTimeout(ctx)
-	defer stopCtxCancel()
 	var stopErr error
 	if osutil.IsWindows() && !r.disableConsoleStop {
-		stopErr = dcpproc.StopProcessTree(stopCtx, r.pe, runState.handle, stopLog)
+		stopErr = dcpproc.StopProcessTree(ctx, r.pe, runState.handle, stopLog)
 	} else {
+		stopCtx, stopCtxCancel := process.WithStopTimeout(ctx)
+		defer stopCtxCancel()
 		stopErr = r.pe.StopProcess(stopCtx, runState.handle)
 	}
 	if process.IsProcessGoneErr(stopErr) {
