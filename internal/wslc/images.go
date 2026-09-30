@@ -20,14 +20,17 @@ func (wco *WslcCliOrchestrator) BuildImage(ctx context.Context, options containe
 	if options.ContainerBuildContext == nil {
 		return fmt.Errorf("must specify a container build context")
 	}
+	if options.Platform != "" {
+		return fmt.Errorf("wslc does not support selecting build platform %q", options.Platform)
+	}
+	if options.ContextArchive != nil {
+		return containers.BuildImageFromArchiveDirectory(ctx, options, wco)
+	}
 	if options.Context == "" {
 		return fmt.Errorf("container build context path cannot be empty")
 	}
 	if options.Context == "-" {
 		return fmt.Errorf("wslc requires a directory build context; stdin build contexts are unsupported")
-	}
-	if options.Platform != "" {
-		return fmt.Errorf("wslc does not support selecting build platform %q", options.Platform)
 	}
 
 	args := []string{"image", "build"}

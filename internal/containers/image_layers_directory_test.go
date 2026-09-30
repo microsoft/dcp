@@ -32,6 +32,8 @@ func (f buildImageFunc) BuildImage(ctx context.Context, options BuildImageOption
 	return f(ctx, options)
 }
 
+// Verifies that directory-backed layer builds stage raw and hash-verified source layers with restricted permissions and preserve build options.
+// The generated Dockerfile and layer contents are checked, and the temporary workspace must be removed after success.
 func TestApplyImageLayersFromDirectoryStagesRawAndSourceLayers(t *testing.T) {
 	t.Parallel()
 
@@ -101,6 +103,7 @@ func TestApplyImageLayersFromDirectoryStagesRawAndSourceLayers(t *testing.T) {
 	assertPathRemoved(t, workspace)
 }
 
+// Verifies that a source-layer hash mismatch prevents the builder from running and removes staged files.
 func TestApplyImageLayersFromDirectoryRejectsStagedSourceHashMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -136,6 +139,7 @@ func TestApplyImageLayersFromDirectoryRejectsStagedSourceHashMismatch(t *testing
 	assertDirectoryEmpty(t, tempDirectory)
 }
 
+// Verifies that an untagged layer build uses and validates an IID file, returns its identifier, and removes its workspace.
 func TestApplyImageLayersFromDirectoryReturnsValidatedImageID(t *testing.T) {
 	t.Parallel()
 
@@ -172,6 +176,7 @@ func TestApplyImageLayersFromDirectoryReturnsValidatedImageID(t *testing.T) {
 	assertDirectoryEmpty(t, tempDirectory)
 }
 
+// Verifies that missing, malformed, or oversized IID output fails a directory-backed layer build and leaves no staged files.
 func TestApplyImageLayersFromDirectoryRejectsMissingOrInvalidImageID(t *testing.T) {
 	testCases := []struct {
 		name          string
@@ -234,6 +239,7 @@ func TestApplyImageLayersFromDirectoryRejectsMissingOrInvalidImageID(t *testing.
 	}
 }
 
+// Verifies that a builder error is preserved, no image reference is returned, and the layer workspace is removed.
 func TestApplyImageLayersFromDirectoryReturnsBuilderFailureAndCleansUp(t *testing.T) {
 	t.Parallel()
 
@@ -265,6 +271,7 @@ func TestApplyImageLayersFromDirectoryReturnsBuilderFailureAndCleansUp(t *testin
 	assertDirectoryEmpty(t, tempDirectory)
 }
 
+// Verifies that cancellation during a nominally successful build still returns cancellation and cleans the layer workspace.
 func TestApplyImageLayersFromDirectoryHonorsBuilderCancellationAndCleansUp(t *testing.T) {
 	t.Parallel()
 

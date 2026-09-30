@@ -15,6 +15,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 )
 
+// Verifies that JSON-line decoding accepts empty listings and retains valid objects while reporting malformed lines.
 func TestDecodeJSONLinesAllowsEmptyListingsAndPreservesValidLines(t *testing.T) {
 	t.Parallel()
 
@@ -29,6 +30,7 @@ func TestDecodeJSONLinesAllowsEmptyListingsAndPreservesValidLines(t *testing.T) 
 	require.Equal(t, []wslcListedVolume{{Name: "first"}, {Name: "second"}}, decoded)
 }
 
+// Verifies that JSON-array decoding preserves valid image objects when another element has an invalid field type.
 func TestDecodeJSONArrayPreservesValidObjects(t *testing.T) {
 	t.Parallel()
 
@@ -42,6 +44,7 @@ func TestDecodeJSONArrayPreservesValidObjects(t *testing.T) {
 	require.Equal(t, "sha256:second", decoded[1].ID)
 }
 
+// Verifies that native missing-container, image, network, and volume diagnostics map to the shared not-found error.
 func TestNormalizeCliErrorsRecognizesWslcMissingObjects(t *testing.T) {
 	t.Parallel()
 
@@ -82,6 +85,7 @@ func TestNormalizeCliErrorsRecognizesWslcMissingObjects(t *testing.T) {
 	}
 }
 
+// Verifies that session/control failures mark WSLC unhealthy while unrelated registry connection failures do not.
 func TestNormalizeCliErrorsRestrictsRuntimeHealthClassification(t *testing.T) {
 	t.Parallel()
 
@@ -103,6 +107,7 @@ func TestNormalizeCliErrorsRestrictsRuntimeHealthClassification(t *testing.T) {
 	require.ErrorIs(t, defaultSessionErr, containers.ErrRuntimeNotHealthy)
 }
 
+// Verifies that identifier parsing trims surrounding whitespace but rejects empty output and multiple identifiers.
 func TestParseSingleIdentifierRejectsEmptyAndAmbiguousOutput(t *testing.T) {
 	t.Parallel()
 
@@ -117,6 +122,7 @@ func TestParseSingleIdentifierRejectsEmptyAndAmbiguousOutput(t *testing.T) {
 	require.Error(t, multipleErr)
 }
 
+// Verifies that WSLC network decoding accepts both string-encoded and ordinary JSON boolean values.
 func TestWslcBoolAcceptsStringsAndBooleans(t *testing.T) {
 	t.Parallel()
 

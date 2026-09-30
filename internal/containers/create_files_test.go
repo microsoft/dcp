@@ -28,6 +28,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
+// Verifies that shared archive assembly preserves files, directories, symlinks, ownership, modes, and certificate hash links.
 func TestCreateFilesArchiveMatchesExistingAssembly(t *testing.T) {
 	t.Parallel()
 
@@ -104,6 +105,7 @@ func TestCreateFilesArchiveMatchesExistingAssembly(t *testing.T) {
 	assert.True(t, strings.HasSuffix(certificateLinks[1], ".1"))
 }
 
+// Verifies that an archive containing only failed ContinueOnError entries returns neither data nor an error.
 func TestCreateFilesArchiveReturnsNilWhenAllIgnorableEntriesFail(t *testing.T) {
 	t.Parallel()
 
@@ -119,6 +121,7 @@ func TestCreateFilesArchiveReturnsNilWhenAllIgnorableEntriesFail(t *testing.T) {
 	assert.Nil(t, buffer)
 }
 
+// Verifies that a non-ignorable entry decoding failure returns its error without a partial archive.
 func TestCreateFilesArchiveReturnsEntryError(t *testing.T) {
 	t.Parallel()
 
@@ -134,6 +137,7 @@ func TestCreateFilesArchiveReturnsEntryError(t *testing.T) {
 	assert.Nil(t, buffer)
 }
 
+// Verifies that archive creation returns context cancellation without producing data.
 func TestCreateFilesArchiveHonorsCancellation(t *testing.T) {
 	t.Parallel()
 

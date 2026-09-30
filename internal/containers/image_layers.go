@@ -210,7 +210,7 @@ func applyImageLayersFromDirectory(
 		return "", prepareErr
 	}
 
-	workspace, workspaceErr := createImageLayerWorkspace(tempDirectory)
+	workspace, workspaceErr := createBuildWorkspace(tempDirectory, "dcp-image-layers-")
 	if workspaceErr != nil {
 		return "", workspaceErr
 	}
@@ -227,7 +227,7 @@ func applyImageLayersFromDirectory(
 	}
 
 	dockerfilePath := filepath.Join(contextDirectory, "Dockerfile")
-	if dockerfileErr := writeImageLayerBuildFile(ctx, dockerfilePath, strings.NewReader(dockerfile), nil); dockerfileErr != nil {
+	if dockerfileErr := writeBuildContextFile(ctx, dockerfilePath, strings.NewReader(dockerfile), nil); dockerfileErr != nil {
 		return "", fmt.Errorf("writing Dockerfile to image layer build context: %w", dockerfileErr)
 	}
 
@@ -245,7 +245,7 @@ func applyImageLayersFromDirectory(
 			log.V(1).Info("Layer source SHA256 verified", "Source", layer.Source, "Digest", layer.Digest)
 		} else {
 			decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(layer.RawContents))
-			if stageErr := writeImageLayerBuildFile(ctx, layerPath, decoder, nil); stageErr != nil {
+			if stageErr := writeBuildContextFile(ctx, layerPath, decoder, nil); stageErr != nil {
 				return "", fmt.Errorf("staging base64 rawContents for layer %d (%q): %w", layerIndex, layer.Digest, stageErr)
 			}
 		}
@@ -335,30 +335,30 @@ func imageLayerFileName(layerIndex int) string {
 	return fmt.Sprintf("layer%d.tar", layerIndex)
 }
 
-func createImageLayerWorkspace(tempDirectory string) (string, error) {
-	workspace, createErr := os.MkdirTemp(tempDirectory, "dcp-image-layers-")
+func createBuildWorkspace(tempDirectory, prefix string) (string, error) {
+	workspace, createErr := os.MkdirTemp(tempDirectory, prefix)
 	if createErr != nil {
-		return "", fmt.Errorf("creating image layer build workspace: %w", createErr)
+		return "", fmt.Errorf("creating image build workspace: %w", createErr)
 	}
 
 	if restrictErr := usvc_io.EnsureRestrictedDirectory(workspace, osutil.PermissionOnlyOwnerReadWriteTraverse); restrictErr != nil {
 		cleanupErr := os.RemoveAll(workspace)
 		return "", errors.Join(
-			fmt.Errorf("restricting image layer build workspace %q: %w", workspace, restrictErr),
-			wrapImageLayerCleanupError(workspace, cleanupErr),
+			fmt.Errorf("restricting image build workspace %q: %w", workspace, restrictErr),
+			wrapBuildWorkspaceCleanupError(workspace, cleanupErr),
 		)
 	}
 	return workspace, nil
 }
 
-func wrapImageLayerCleanupError(workspace string, cleanupErr error) error {
+func wrapBuildWorkspaceCleanupError(workspace string, cleanupErr error) error {
 	if cleanupErr == nil {
 		return nil
 	}
-	return fmt.Errorf("removing image layer build workspace %q: %w", workspace, cleanupErr)
+	return fmt.Errorf("removing image build workspace %q: %w", workspace, cleanupErr)
 }
 
-func writeImageLayerBuildFile(ctx context.Context, name string, source io.Reader, observer io.Writer) error {
+func writeBuildContextFile(ctx context.Context, name string, source io.Reader, observer io.Writer) error {
 	file, createErr := usvc_io.CreateNewFile(name, osutil.PermissionOnlyOwnerReadWrite)
 	if createErr != nil {
 		return fmt.Errorf("creating build context file %q: %w", name, createErr)
@@ -369,7 +369,7 @@ func writeImageLayerBuildFile(ctx context.Context, name string, source io.Reader
 		destination = io.MultiWriter(file, observer)
 	}
 
-	_, copyErr := copyImageLayerContents(ctx, destination, source)
+	_, copyErr := copyBuildContextContents(ctx, destination, source)
 	closeErr := file.Close()
 	if copyErr != nil {
 		return errors.Join(
@@ -390,7 +390,7 @@ func wrapImageLayerFileCloseError(name string, closeErr error) error {
 	return fmt.Errorf("closing build context file %q: %w", name, closeErr)
 }
 
-func copyImageLayerContents(ctx context.Context, destination io.Writer, source io.Reader) (int64, error) {
+func copyBuildContextContents(ctx context.Context, destination io.Writer, source io.Reader) (int64, error) {
 	buffer := make([]byte, 128*1024)
 	var total int64
 
@@ -427,7 +427,7 @@ func stageImageLayerSource(ctx context.Context, destination string, layer *Image
 	}
 
 	hasher := sha256.New()
-	stageErr := writeImageLayerBuildFile(ctx, destination, sourceFile, hasher)
+	stageErr := writeBuildContextFile(ctx, destination, sourceFile, hasher)
 	closeErr := sourceFile.Close()
 	if stageErr != nil {
 		return errors.Join(stageErr, wrapImageLayerSourceCloseError(layer.Source, closeErr))

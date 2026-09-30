@@ -7,12 +7,19 @@ package containers_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/testutil/containertest"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 func TestBuildInspectAndRemoveImageMethods(t *testing.T) {
@@ -56,6 +63,62 @@ func TestBuildInspectAndRemoveImageMethods(t *testing.T) {
 		)
 		require.Equal(t, marker, stdout)
 		require.Empty(t, stderr)
+	})
+}
+
+// Verifies real image builds from source-file and raw archives, including a nested Dockerfile, ownership labels, and matching IID output.
+// Running each built image must expose the expected archived marker contents.
+func TestBuildImageFromArchive(t *testing.T) {
+	t.Parallel()
+
+	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
+		tracker := containertest.NewResourceTracker(t, runtime)
+		baseImage := ensureTestImage(t, ctx, runtime)
+		marker := containertest.UniqueName(t, "archive-marker")
+		writer := usvc_io.NewTarWriter()
+		now := time.Now()
+		dockerfile := fmt.Sprintf("FROM %s\nCOPY marker /dcp-build-marker\n", baseImage)
+		require.NoError(t, writer.WriteFile([]byte(dockerfile), "nested/Containerfile", 0, 0, 0644, now, now, now))
+		require.NoError(t, writer.WriteFile([]byte(marker), "marker", 0, 0, 0644, now, now, now))
+		buffer, archiveErr := writer.Buffer()
+		require.NoError(t, archiveErr)
+		contents := buffer.Bytes()
+
+		for _, representation := range []string{"source", "raw"} {
+			t.Run(representation, func(t *testing.T) {
+				image := imageReference(t, "archive-image")
+				require.NoError(t, tracker.TrackImage(image))
+				archive := &containers.ContainerBuildContextArchive{}
+				if representation == "raw" {
+					archive.RawContents = base64.StdEncoding.EncodeToString(contents)
+				} else {
+					archive.Source = filepath.Join(t.TempDir(), "context.tar")
+					archive.SHA256 = fmt.Sprintf("sha256:%x", sha256.Sum256(contents))
+					require.NoError(t, usvc_io.WriteFile(archive.Source, contents, osutil.PermissionOnlyOwnerReadWrite))
+				}
+				iidFile := filepath.Join(t.TempDir(), "image.iid")
+				buildErr := runtime.Orchestrator.BuildImage(ctx, containers.BuildImageOptions{
+					IidFile: iidFile,
+					ContainerBuildContext: &containers.ContainerBuildContext{
+						ContextArchive: archive,
+						Dockerfile:     "nested/Containerfile",
+						Tags:           []string{image},
+						Labels:         tracker.Labels(),
+					},
+				})
+				require.NoError(t, buildErr)
+				imageID, iidErr := containers.ReadImageIDFile(iidFile)
+				require.NoError(t, iidErr)
+				inspected, inspectErr := runtime.Orchestrator.InspectImages(ctx, containers.InspectImagesOptions{Images: []string{image}})
+				require.NoError(t, inspectErr)
+				require.Len(t, inspected, 1)
+				require.Equal(t, imageID, inspected[0].Id)
+				require.Equal(t, tracker.RunID(), inspected[0].Labels[containertest.TestRunLabel])
+				stdout, stderr := runImageAndCapture(t, ctx, runtime, tracker, "archive-container", image, []string{"cat", "/dcp-build-marker"})
+				require.Equal(t, marker, stdout)
+				require.Empty(t, stderr)
+			})
+		}
 	})
 }
 

@@ -753,6 +753,8 @@ func (wco *WslcCliOrchestrator) AttachContainer(
 	}
 
 	cmd := makeWslcCommand("container", "attach", options.Container)
+	// The terminal supplies its own isolated console.
+	cmd.SysProcAttr = nil
 	return termpty.StartProcessWithTerminal(ctx, wco.executor, &termpty.CommandSpec{
 		Cmd:           cmd,
 		CreationFlags: process.CreationFlagEnsureKillOnDispose,

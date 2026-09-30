@@ -24,6 +24,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+// Verifies that deleting a real V2 physical network removes stopped-container attachments and the network while preserving the container.
 func TestPhysicalContainerNetworkRemovesStoppedAttachmentsWithRealOrchestrator(t *testing.T) {
 	t.Parallel()
 

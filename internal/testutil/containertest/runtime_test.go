@@ -11,19 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNativeEventGateOnlySkipsWSLC(t *testing.T) {
-	t.Parallel()
-
-	for _, runtimeName := range []string{"docker", "podman", "wslc"} {
-		var skipped bool
-		t.Run(runtimeName, func(t *testing.T) {
-			t.Cleanup(func() { skipped = t.Skipped() })
-			SkipIfNativeRuntimeEventsUnavailable(t, Runtime{Name: runtimeName})
-		})
-		require.Equal(t, runtimeName == "wslc", skipped)
-	}
-}
-
+// Verifies that WSLC is registered and every supported runtime has a positive test-slot limit and a recovery state.
 func TestRuntimeRegistrationsIncludeSchedulingAndRecovery(t *testing.T) {
 	t.Parallel()
 

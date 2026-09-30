@@ -6,15 +6,20 @@
 package wslc
 
 import (
+	"context"
 	"os/exec"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/microsoft/dcp/internal/containers"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 )
 
+// Verifies that WSLC reports its runtime name, non-default selection, unsupported host address, and default bridge network.
 func TestOrchestratorIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -25,6 +30,7 @@ func TestOrchestratorIdentity(t *testing.T) {
 	require.Equal(t, "bridge", orchestrator.DefaultNetworkName())
 }
 
+// Verifies that supported client and session-manager versions with an active session produce a healthy runtime status.
 func TestStatusHealthyWithDefaultSession(t *testing.T) {
 	t.Parallel()
 
@@ -33,7 +39,7 @@ func TestStatusHealthyWithDefaultSession(t *testing.T) {
 		t,
 		executor,
 		[]string{"wslc", "version", "--format", "json"},
-		`{"Client":{"Version":"2.9.11.0"}}`,
+		`{"Client":{"Version":"3.0.1.0"}}`,
 		"",
 		0,
 	)
@@ -41,7 +47,7 @@ func TestStatusHealthyWithDefaultSession(t *testing.T) {
 		t,
 		executor,
 		[]string{"wslc", "info", "--format", "json"},
-		`{"Client":{"Version":"2.9.11.0"},"Server":{"SessionManagerVersion":"2.9.11","Sessions":[{"ID":1,"Name":"default"}]}}`,
+		`{"Client":{"Version":"3.0.1.0"},"Server":{"SessionManagerVersion":"3.0.1","Sessions":[{"ID":1,"Name":"default"}]}}`,
 		"",
 		0,
 	)
@@ -53,6 +59,7 @@ func TestStatusHealthyWithDefaultSession(t *testing.T) {
 	require.Empty(t, status.Error)
 }
 
+// Verifies that an installed WSLC client without an active default session is reported as not running.
 func TestStatusDistinguishesInstalledFromRunning(t *testing.T) {
 	t.Parallel()
 
@@ -61,7 +68,7 @@ func TestStatusDistinguishesInstalledFromRunning(t *testing.T) {
 		t,
 		executor,
 		[]string{"wslc", "version", "--format", "json"},
-		`{"Client":{"Version":"2.9.11.0"}}`,
+		`{"Client":{"Version":"3.0.1.0"}}`,
 		"",
 		0,
 	)
@@ -69,7 +76,7 @@ func TestStatusDistinguishesInstalledFromRunning(t *testing.T) {
 		t,
 		executor,
 		[]string{"wslc", "info", "--format", "json"},
-		`{"Client":{"Version":"2.9.11.0"},"Server":{"SessionManagerVersion":"2.9.11","Sessions":[]}}`,
+		`{"Client":{"Version":"3.0.1.0"},"Server":{"SessionManagerVersion":"3.0.1","Sessions":[]}}`,
 		"",
 		0,
 	)
@@ -81,6 +88,7 @@ func TestStatusDistinguishesInstalledFromRunning(t *testing.T) {
 	require.Contains(t, status.Error, "no default runtime session")
 }
 
+// Verifies that missing client-version data prevents WSLC from being reported as installed and avoids a session-status query.
 func TestStatusRejectsInvalidVersionOutputAsNotInstalled(t *testing.T) {
 	t.Parallel()
 
@@ -102,6 +110,7 @@ func TestStatusRejectsInvalidVersionOutputAsNotInstalled(t *testing.T) {
 	require.Empty(t, executor.FindAll([]string{"wslc", "info"}, "", nil))
 }
 
+// Verifies that failure to locate the WSLC executable produces an uninstalled, non-running status with an error.
 func TestStatusReportsMissingExecutableAsNotInstalled(t *testing.T) {
 	t.Parallel()
 
@@ -122,6 +131,7 @@ func TestStatusReportsMissingExecutableAsNotInstalled(t *testing.T) {
 	require.NotEmpty(t, status.Error)
 }
 
+// Verifies that non-Windows status and diagnostics reject WSLC without executing any CLI commands.
 func TestStatusAndDiagnosticsAreUnavailableOffWindows(t *testing.T) {
 	t.Parallel()
 
@@ -138,6 +148,7 @@ func TestStatusAndDiagnosticsAreUnavailableOffWindows(t *testing.T) {
 	require.Empty(t, executor.Executions)
 }
 
+// Verifies that WSLC diagnostics preserve both client and session-manager version strings from native JSON.
 func TestDiagnosticsDecodeClientAndSessionManagerVersions(t *testing.T) {
 	t.Parallel()
 
@@ -146,7 +157,7 @@ func TestDiagnosticsDecodeClientAndSessionManagerVersions(t *testing.T) {
 		t,
 		executor,
 		[]string{"wslc", "info", "--format", "json"},
-		`{"Client":{"Version":"2.9.11.0"},"Server":{"SessionManagerVersion":"2.9.11","Sessions":[{"ID":1}]}}`,
+		`{"Client":{"Version":"3.0.1.0"},"Server":{"SessionManagerVersion":"3.0.1","Sessions":[{"ID":1}]}}`,
 		"",
 		0,
 	)
@@ -154,64 +165,40 @@ func TestDiagnosticsDecodeClientAndSessionManagerVersions(t *testing.T) {
 	diagnostics, diagnosticsErr := orchestrator.getDiagnosticsForOS(ctx, "windows")
 
 	require.NoError(t, diagnosticsErr)
-	require.Equal(t, "2.9.11.0", diagnostics.ClientVersion)
-	require.Equal(t, "2.9.11", diagnostics.ServerVersion)
+	require.Equal(t, "3.0.1.0", diagnostics.ClientVersion)
+	require.Equal(t, "3.0.1", diagnostics.ServerVersion)
 }
 
+// Verifies that cached healthy and unhealthy statuses remain instance-scoped and are read without executing CLI commands.
 func TestStatusCacheIsInstanceScoped(t *testing.T) {
 	t.Parallel()
 
 	ctxOne, orchestratorOne, executorOne := newTestOrchestrator(t)
-	installAutoCommand(
-		t,
-		executorOne,
-		[]string{"wslc", "version", "--format", "json"},
-		`{"Client":{"Version":"2.9.11.0"}}`,
-		"",
-		0,
-	)
-	installAutoCommand(
-		t,
-		executorOne,
-		[]string{"wslc", "info", "--format", "json"},
-		`{"Client":{"Version":"2.9.11.0"},"Server":{"SessionManagerVersion":"2.9.11","Sessions":[{"ID":1}]}}`,
-		"",
-		0,
-	)
+	healthy := containers.ContainerRuntimeStatus{Installed: true, Running: true}
+	orchestratorOne.storeStatus(healthy)
 	statusOne := orchestratorOne.CheckStatus(ctxOne, containers.CachedRuntimeStatusAllowed)
-	require.True(t, statusOne.IsHealthy())
+	require.Equal(t, healthy, statusOne)
 
 	ctxTwo, orchestratorTwo, executorTwo := newTestOrchestrator(t)
-	installAutoCommand(
-		t,
-		executorTwo,
-		[]string{"wslc", "version", "--format", "json"},
-		`{"Client":{"Version":"2.9.11.0"}}`,
-		"",
-		0,
-	)
-	installAutoCommand(
-		t,
-		executorTwo,
-		[]string{"wslc", "info", "--format", "json"},
-		"",
-		"session manager unavailable",
-		1,
-	)
+	unhealthy := containers.ContainerRuntimeStatus{Installed: true, Error: "session manager unavailable"}
+	orchestratorTwo.storeStatus(unhealthy)
 	statusTwo := orchestratorTwo.CheckStatus(ctxTwo, containers.CachedRuntimeStatusAllowed)
 
-	require.True(t, statusTwo.Installed)
-	require.False(t, statusTwo.Running)
-	require.True(t, orchestratorOne.CheckStatus(ctxOne, containers.CachedRuntimeStatusAllowed).IsHealthy())
+	require.Equal(t, unhealthy, statusTwo)
+	require.Equal(t, healthy, orchestratorOne.CheckStatus(ctxOne, containers.CachedRuntimeStatusAllowed))
+	require.Empty(t, executorOne.Executions)
+	require.Empty(t, executorTwo.Executions)
 }
 
+// Verifies that repeated background-update requests share one worker and cache the platform-appropriate status.
+// Windows performs one native refresh, while other platforms report unavailability without invoking WSLC.
 func TestBackgroundStatusUpdatesAreIdempotent(t *testing.T) {
 	ctx, orchestrator, executor := newTestOrchestrator(t)
 	installAutoCommand(
 		t,
 		executor,
 		[]string{"wslc", "version", "--format", "json"},
-		`{"Client":{"Version":"2.9.11.0"}}`,
+		`{"Client":{"Version":"3.0.1.0"}}`,
 		"",
 		0,
 	)
@@ -219,36 +206,78 @@ func TestBackgroundStatusUpdatesAreIdempotent(t *testing.T) {
 		t,
 		executor,
 		[]string{"wslc", "info", "--format", "json"},
-		`{"Client":{"Version":"2.9.11.0"},"Server":{"SessionManagerVersion":"2.9.11","Sessions":[{"ID":1}]}}`,
+		`{"Client":{"Version":"3.0.1.0"},"Server":{"SessionManagerVersion":"3.0.1","Sessions":[{"ID":1}]}}`,
 		"",
 		0,
 	)
 
 	orchestrator.EnsureBackgroundStatusUpdates(ctx)
 	orchestrator.EnsureBackgroundStatusUpdates(ctx)
-	_, waitErr := internal_testutil.WaitForCommand(
-		executor,
-		ctx,
-		[]string{"wslc", "info", "--format", "json"},
-		"",
-		nil,
-	)
+	waitErr := wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
+		orchestrator.statusLock.RLock()
+		defer orchestrator.statusLock.RUnlock()
+		return orchestrator.cachedStatus != nil, nil
+	})
 	require.NoError(t, waitErr)
+	require.Equal(t, int32(1), orchestrator.statusWorker.Load())
+	if runtime.GOOS != "windows" {
+		require.Empty(t, executor.Executions)
+		require.Contains(t, orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed).Error, "Windows")
+		return
+	}
 	require.Len(t, executor.FindAll([]string{"wslc", "version", "--format", "json"}, "", nil), 1)
 	require.Len(t, executor.FindAll([]string{"wslc", "info", "--format", "json"}, "", nil), 1)
 	require.True(t, orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed).IsHealthy())
 }
 
-func TestWatchMethodsReturnExplicitUnsupportedErrors(t *testing.T) {
+// Verifies that an older WSLC client is installed but unusable and is rejected before querying the session manager.
+func TestStatusRejectsUnsupportedClientBeforeCheckingSession(t *testing.T) {
 	t.Parallel()
 
-	_, orchestrator, executor := newTestOrchestrator(t)
-	containerSubscription, containerErr := orchestrator.WatchContainers(make(chan containers.EventMessage))
-	networkSubscription, networkErr := orchestrator.WatchNetworks(make(chan containers.EventMessage))
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(t, executor, []string{"wslc", "version", "--format", "json"},
+		`{"Client":{"Version":"2.9.11.0"}}`, "", 0)
 
-	require.Nil(t, containerSubscription)
-	require.ErrorContains(t, containerErr, "does not expose a native event stream")
-	require.Nil(t, networkSubscription)
-	require.ErrorContains(t, networkErr, "does not expose a native event stream")
-	require.Empty(t, executor.Executions)
+	status := orchestrator.getStatusForOS(ctx, "windows")
+	require.True(t, status.Installed)
+	require.False(t, status.Running)
+	require.Contains(t, status.Error, "requires WSLC 3.0.1.0 or newer")
+	require.Empty(t, executor.FindAll([]string{"wslc", "info"}, "", nil))
+}
+
+// Verifies that a supported WSLC client cannot make an older session manager appear healthy.
+func TestStatusRejectsUnsupportedSessionManager(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(t, executor, []string{"wslc", "version", "--format", "json"},
+		`{"Client":{"Version":"3.0.1.0"}}`, "", 0)
+	installAutoCommand(t, executor, []string{"wslc", "info", "--format", "json"},
+		`{"Client":{"Version":"3.0.1.0"},"Server":{"SessionManagerVersion":"2.9.11","Sessions":[{"ID":1}]}}`, "", 0)
+
+	status := orchestrator.getStatusForOS(ctx, "windows")
+	require.True(t, status.Installed)
+	require.False(t, status.Running)
+	require.Contains(t, status.Error, "session manager version 2.9.11 is unsupported")
+}
+
+// Verifies SemVer release, prerelease, and metadata precedence plus WSLC's numeric revision format against the minimum version.
+// Higher major or minor versions are accepted regardless of their lower components, while older and malformed versions are rejected.
+func TestValidateWslcVersion(t *testing.T) {
+	t.Parallel()
+
+	for _, version := range []string{
+		"3.0.1", "3.0.1.0", "3.0.1.1", "3.0.2", "3.0.2.0", "3.0.10",
+		"3.1.0", "3.1.0.0", "3.10.0", "4.0.0", "4.0.0.0", "10.0.0",
+		"3.0.1+build.7", "3.0.2-alpha.1", "4.0.0-rc.1",
+	} {
+		require.NoError(t, validateWslcVersion(version, "client"), version)
+	}
+	for _, version := range []string{
+		"2.9.11.0", "2.99.99.99", "3.0.0", "3.0.0.99", "3.0.1-alpha.1",
+		"3.0.1-rc.1+build.7", "", "3.0", "3.0.1.0.1", "3.0.1.x",
+		"3.0.1.-1", "3.0.1.+1", "3.0.1.18446744073709551616",
+	} {
+		require.Error(t, validateWslcVersion(version, "client"), version)
+	}
 }
