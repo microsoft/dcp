@@ -22,6 +22,7 @@ import (
 	k8s_version "k8s.io/apimachinery/pkg/util/version"
 
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/pubsub"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/process"
@@ -37,16 +38,18 @@ const (
 	defaultRunTimeout        = 10 * time.Minute
 	statusRefreshInterval    = 5 * time.Second
 	minimumWslcVersion       = "3.0.1.0"
+	defaultWslcContainerHost = "host.wslc.internal"
 )
 
 var (
 	nativeWslcVersionPattern    = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$`)
-	minimumSupportedWslcVersion = k8s_version.MustParseSemantic(strings.TrimSuffix(minimumWslcVersion, ".0"))
+	minimumSupportedWslcVersion = k8s_version.MustParseGeneric(minimumWslcVersion)
 )
 
 type WslcCliOrchestrator struct {
-	log      logr.Logger
-	executor process.Executor
+	log             logr.Logger
+	executor        process.Executor
+	stopProcessTree stopProcessTreeFunc
 
 	cachedStatus    *containers.ContainerRuntimeStatus
 	checkStatusLock *concurrency.ContextAwareLock
@@ -62,14 +65,11 @@ func NewWslcCliOrchestrator(log logr.Logger, executor process.Executor) containe
 		log:             log,
 		executor:        executor,
 		checkStatusLock: concurrency.NewContextAwareLock(),
+		stopProcessTree: dcpproc.StopProcessTree,
 	}
 	orchestrator.containerEvtWatcher = pubsub.NewSubscriptionSet(orchestrator.doWatchContainers, context.Background())
 	orchestrator.networkEvtWatcher = pubsub.NewSubscriptionSet(orchestrator.doWatchNetworks, context.Background())
 	return orchestrator
-}
-
-func (*WslcCliOrchestrator) IsDefault() bool {
-	return false
 }
 
 func (*WslcCliOrchestrator) Name() string {
@@ -77,7 +77,7 @@ func (*WslcCliOrchestrator) Name() string {
 }
 
 func (*WslcCliOrchestrator) ContainerHost() string {
-	return ""
+	return defaultWslcContainerHost
 }
 
 func (wco *WslcCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage containers.CachedRuntimeStatusUsage) containers.ContainerRuntimeStatus {
@@ -236,13 +236,6 @@ func (wco *WslcCliOrchestrator) getStatusForOS(ctx context.Context, goos string)
 	if serverVersionErr := validateWslcVersion(info.Server.SessionManagerVersion, "session manager"); serverVersionErr != nil {
 		return containers.ContainerRuntimeStatus{Installed: true, Error: serverVersionErr.Error()}
 	}
-	if len(info.Server.Sessions) == 0 {
-		return containers.ContainerRuntimeStatus{
-			Installed: true,
-			Error:     "WSLC is installed, but no default runtime session is available",
-		}
-	}
-
 	return containers.ContainerRuntimeStatus{
 		Installed: true,
 		Running:   true,
@@ -260,7 +253,11 @@ func validateWslcVersion(version, component string) error {
 	if parseErr != nil {
 		return fmt.Errorf("parsing wslc %s version %q: %w", component, version, parseErr)
 	}
-	if !parsedVersion.AtLeast(minimumSupportedWslcVersion) {
+	// Generic parsing preserves the four-part WSLC minimum; prereleases of that same numeric
+	// release still sort below the supported release.
+	isUnsupportedPrerelease := parsedVersion.PreRelease() != "" &&
+		!parsedVersion.WithPreRelease("").GreaterThan(minimumSupportedWslcVersion)
+	if isUnsupportedPrerelease || !parsedVersion.AtLeast(minimumSupportedWslcVersion) {
 		return fmt.Errorf("wslc %s version %s is unsupported; DCP requires WSLC %s or newer", component, version, minimumWslcVersion)
 	}
 	return nil

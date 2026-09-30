@@ -649,9 +649,6 @@ type RuntimeStatusChecker interface {
 
 // Represents portion of container orchestrator functionality that is related to container management
 type ContainerOrchestrator interface {
-	// Is this the default orchestrator?
-	IsDefault() bool
-
 	// Get the name of the runtime
 	Name() string
 

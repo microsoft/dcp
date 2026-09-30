@@ -135,10 +135,6 @@ func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) contai
 	return dco
 }
 
-func (*DockerCliOrchestrator) IsDefault() bool {
-	return true
-}
-
 func (*DockerCliOrchestrator) Name() string {
 	return "docker"
 }

@@ -666,6 +666,37 @@ func TestListNetworksUsesInspectionForAuthoritativeLabels(t *testing.T) {
 	require.Equal(t, "one,two=three", listed[0].Labels["value"])
 }
 
+// Verifies that a network removed between list and label inspection is omitted without failing the list operation.
+func TestListNetworksIgnoresRemovalDuringLabelInspection(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "network", "list", "--no-trunc", "--format", "json"},
+		"{\"ID\":\"first-id\",\"Name\":\"first\",\"Driver\":\"bridge\"}\n"+
+			"{\"ID\":\"removed-id\",\"Name\":\"removed\",\"Driver\":\"bridge\"}\n",
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "network", "inspect", "--format", "json", "first-id", "removed-id"},
+		`[{"Id":"first-id","Name":"first","Driver":"bridge","IPAM":{"Config":[]},"Labels":{"owner":"dcp"},"Containers":{}}]`,
+		"Network not found: 'removed-id'\n",
+		1,
+	)
+
+	listed, listErr := orchestrator.ListNetworks(ctx, containers.ListNetworksOptions{})
+
+	require.NoError(t, listErr)
+	require.Len(t, listed, 1)
+	require.Equal(t, "first-id", listed[0].ID)
+	require.Equal(t, "dcp", listed[0].Labels["owner"])
+}
+
 // Verifies that network removal retains successful requests while reporting missing networks and incomplete results.
 func TestRemoveNetworksPreservesPartialResults(t *testing.T) {
 	t.Parallel()

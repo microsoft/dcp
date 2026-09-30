@@ -198,7 +198,7 @@ func (wco *WslcCliOrchestrator) CreateContainer(ctx context.Context, options con
 	if runErr != nil {
 		operationErr := errors.Join(
 			runErr,
-			normalizeCliErrors(errBuf, containerNotFoundMatch, imageNotFoundMatch, alreadyExistsMatch, allocationFailureMatch),
+			normalizeCliErrors(errBuf, containerNotFoundMatch, imageNotFoundMatch, allocationFailureMatch, alreadyExistsMatch),
 		)
 		containerID, idErr := parseSingleIdentifier(outBuf)
 		if idErr == nil {
@@ -245,7 +245,7 @@ func (wco *WslcCliOrchestrator) RunContainer(ctx context.Context, options contai
 	if runErr != nil {
 		operationErr := errors.Join(
 			runErr,
-			normalizeCliErrors(errBuf, containerNotFoundMatch, imageNotFoundMatch, alreadyExistsMatch, allocationFailureMatch),
+			normalizeCliErrors(errBuf, containerNotFoundMatch, imageNotFoundMatch, allocationFailureMatch, alreadyExistsMatch),
 		)
 		containerID, idErr := parseSingleIdentifier(outBuf)
 		if idErr == nil {
@@ -355,14 +355,26 @@ func (wco *WslcCliOrchestrator) ListContainers(ctx context.Context, options cont
 		for _, inspectedContainer := range inspectedContainers {
 			labelsByID[inspectedContainer.ID] = inspectedContainer.Config.Labels
 		}
+		survivingContainers := make([]containers.ListedContainer, 0, len(listedContainers))
 		for index := range listedContainers {
-			listedContainers[index].Labels = labelsByID[listedContainers[index].Id]
+			labels, found := labelsByID[listedContainers[index].Id]
+			if found {
+				listedContainers[index].Labels = labels
+				survivingContainers = append(survivingContainers, listedContainers[index])
+			}
 		}
-		if inspectErr != nil || len(inspectedContainers) < len(labelInspectionIDs) {
+		inspectionResultErr := errors.Join(
+			inspectErr,
+			incompleteError("containers", len(inspectedContainers), len(labelInspectionIDs)),
+			incompleteError("listed containers", len(survivingContainers), len(listedContainers)),
+		)
+		if isBenignListInspectionRace(inspectionResultErr) {
+			listedContainers = survivingContainers
+		} else if inspectionResultErr != nil {
 			decodeErr = errors.Join(
 				decodeErr,
 				fmt.Errorf("resolving authoritative labels for listed WSLC containers: %w",
-					errors.Join(inspectErr, incompleteError("containers", len(inspectedContainers), len(labelInspectionIDs)))),
+					inspectionResultErr),
 			)
 		}
 	}
@@ -412,7 +424,6 @@ func (wco *WslcCliOrchestrator) InspectContainers(ctx context.Context, options c
 	}
 
 	networkIDs := make(map[string]string, len(networkNamesSet))
-	var networkResolutionErr error
 	if len(networkNamesSet) > 0 {
 		networkNames := make([]string, 0, len(networkNamesSet))
 		for networkName := range networkNamesSet {
@@ -427,7 +438,13 @@ func (wco *WslcCliOrchestrator) InspectContainers(ctx context.Context, options c
 			networkIDs[inspectedNetwork.Name] = inspectedNetwork.Id
 		}
 		if resolveErr != nil {
-			networkResolutionErr = fmt.Errorf("resolving WSLC container network IDs: %w", resolveErr)
+			wco.log.V(1).Info(
+				"Could not resolve all WSLC container network IDs",
+				"Networks",
+				networkNames,
+				"Error",
+				resolveErr,
+			)
 		}
 	}
 
@@ -444,7 +461,6 @@ func (wco *WslcCliOrchestrator) InspectContainers(ctx context.Context, options c
 
 	return inspectedContainers, errors.Join(
 		inspectErr,
-		networkResolutionErr,
 		conversionErr,
 		incompleteError("containers", len(inspectedContainers), len(options.Containers)),
 	)

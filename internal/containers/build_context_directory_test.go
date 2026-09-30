@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/require"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
@@ -58,9 +59,8 @@ func TestBuildImageFromArchiveDirectoryPreservesBuildOptions(t *testing.T) {
 
 	contents := buildArchiveTestContents(t,
 		buildArchiveTestEntry{name: "./", kind: tar.TypeDir},
-		buildArchiveTestEntry{name: "nested/", kind: tar.TypeDir},
-		buildArchiveTestEntry{name: "nested/Containerfile", kind: tar.TypeReg, contents: "FROM scratch\n"},
-		buildArchiveTestEntry{name: "data/marker", kind: tar.TypeReg, contents: "archive marker"},
+		buildArchiveTestEntry{name: "nested/deeper/Containerfile", kind: tar.TypeReg, contents: "FROM scratch\n"},
+		buildArchiveTestEntry{name: "data/nested/marker", kind: tar.TypeReg, contents: "archive marker"},
 	)
 	for _, representation := range []string{"source", "raw"} {
 		t.Run(representation, func(t *testing.T) {
@@ -79,7 +79,7 @@ func TestBuildImageFromArchiveDirectoryPreservesBuildOptions(t *testing.T) {
 				Pull:    true,
 				ContainerBuildContext: &ContainerBuildContext{
 					ContextArchive: archive,
-					Dockerfile:     "nested/Containerfile",
+					Dockerfile:     "nested/deeper/Containerfile",
 					Digest:         "context-digest",
 					Tags:           []string{"first:tag", "second:tag"},
 					Args:           []EnvVar{{Name: "ARG", Value: "value"}},
@@ -99,9 +99,9 @@ func TestBuildImageFromArchiveDirectoryPreservesBuildOptions(t *testing.T) {
 				require.Equal(t, tempDirectory, filepath.Dir(workspace))
 				require.NoError(t, usvc_io.ValidateRestrictedDirectory(workspace, osutil.PermissionOnlyOwnerReadWriteTraverse))
 				require.Nil(t, staged.ContextArchive)
-				require.Equal(t, filepath.Join(workspace, "nested", "Containerfile"), staged.Dockerfile)
+				require.Equal(t, filepath.Join(workspace, "nested", "deeper", "Containerfile"), staged.Dockerfile)
 				require.Equal(t, "FROM scratch\n", string(readImageLayerTestFile(t, staged.Dockerfile)))
-				require.Equal(t, "archive marker", string(readImageLayerTestFile(t, filepath.Join(workspace, "data", "marker"))))
+				require.Equal(t, "archive marker", string(readImageLayerTestFile(t, filepath.Join(workspace, "data", "nested", "marker"))))
 				require.Equal(t, options.IidFile, staged.IidFile)
 				require.Equal(t, options.Pull, staged.Pull)
 				require.Equal(t, options.Timeout, staged.Timeout)
@@ -120,7 +120,7 @@ func TestBuildImageFromArchiveDirectoryPreservesBuildOptions(t *testing.T) {
 			require.NoDirExists(t, workspace)
 			require.Empty(t, options.Context)
 			require.Same(t, archive, options.ContextArchive)
-			require.Equal(t, "nested/Containerfile", options.Dockerfile)
+			require.Equal(t, "nested/deeper/Containerfile", options.Dockerfile)
 			if archive.Source != "" {
 				require.Equal(t, contents, readImageLayerTestFile(t, archive.Source))
 			}
@@ -285,4 +285,80 @@ func TestBuildImageFromArchiveDirectoryCleansFailureAndCancellation(t *testing.T
 	entries, listErr := os.ReadDir(tempDirectory)
 	require.NoError(t, listErr)
 	require.Empty(t, entries)
+}
+
+// Verifies retry of transient cleanup failures and preserves successful build results when cleanup remains blocked.
+func TestBuildImageFromArchiveDirectoryCleanupPolicy(t *testing.T) {
+	validContents := buildArchiveTestContents(t, buildArchiveTestEntry{
+		name: "Dockerfile", kind: tar.TypeReg, contents: "FROM scratch\n",
+	})
+	options := BuildImageOptions{ContainerBuildContext: &ContainerBuildContext{
+		ContextArchive: &ContainerBuildContextArchive{
+			RawContents: base64.StdEncoding.EncodeToString(validContents),
+		},
+	}}
+
+	t.Run("transient cleanup failure", func(t *testing.T) {
+		tempDirectory := t.TempDir()
+		attempts := 0
+		buildErr := buildImageFromArchiveDirectoryWithCleanup(
+			t.Context(),
+			funcr.New(func(_, _ string) {}, funcr.Options{}),
+			options,
+			buildImageFunc(func(context.Context, BuildImageOptions) error { return nil }),
+			tempDirectory,
+			time.Second,
+			func(workspace string) error {
+				attempts++
+				if attempts == 1 {
+					return errors.New("sharing violation")
+				}
+				return os.RemoveAll(workspace)
+			},
+		)
+
+		require.NoError(t, buildErr)
+		require.Equal(t, 2, attempts)
+		entries, listErr := os.ReadDir(tempDirectory)
+		require.NoError(t, listErr)
+		require.Empty(t, entries)
+	})
+
+	t.Run("persistent cleanup failure after success", func(t *testing.T) {
+		cleanupErr := errors.New("workspace remains locked")
+		var messages []string
+		log := funcr.New(func(_, message string) { messages = append(messages, message) }, funcr.Options{})
+
+		buildErr := buildImageFromArchiveDirectoryWithCleanup(
+			t.Context(),
+			log,
+			options,
+			buildImageFunc(func(context.Context, BuildImageOptions) error { return nil }),
+			t.TempDir(),
+			10*time.Millisecond,
+			func(string) error { return cleanupErr },
+		)
+
+		require.NoError(t, buildErr)
+		require.Len(t, messages, 1)
+		require.Contains(t, messages[0], "Could not remove image build workspace")
+	})
+
+	t.Run("persistent cleanup failure after build failure", func(t *testing.T) {
+		buildFailure := errors.New("builder failed")
+		cleanupFailure := errors.New("workspace remains locked")
+
+		buildErr := buildImageFromArchiveDirectoryWithCleanup(
+			t.Context(),
+			funcr.New(func(_, _ string) {}, funcr.Options{}),
+			options,
+			buildImageFunc(func(context.Context, BuildImageOptions) error { return buildFailure }),
+			t.TempDir(),
+			10*time.Millisecond,
+			func(string) error { return cleanupFailure },
+		)
+
+		require.ErrorIs(t, buildErr, buildFailure)
+		require.ErrorIs(t, buildErr, cleanupFailure)
+	})
 }

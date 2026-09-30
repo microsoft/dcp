@@ -249,6 +249,8 @@ func TestWatchEventsSharesSourceAndCancelsLastSubscriber(t *testing.T) {
 						select {
 						case <-commandCtx.Done():
 							return 0
+						case <-execution.Signal:
+							return 0
 						case line, open := <-command.lines:
 							if !open {
 								return 0
@@ -298,8 +300,8 @@ func TestWatchEventsSharesSourceAndCancelsLastSubscriber(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("last subscription did not cancel the native event command")
 			}
-			handler, isConcurrentHandler := command.execution.ExitHandler.(*process.ConcurrentProcessExitHandler)
-			require.True(t, isConcurrentHandler)
+			handler, isContextualHandler := command.execution.ExitHandler.(*contextualProcessExitHandler)
+			require.True(t, isContextualHandler)
 			select {
 			case <-handler.Exited():
 			case <-ctx.Done():
@@ -315,7 +317,7 @@ func TestWatchEventsSharesSourceAndCancelsLastSubscriber(t *testing.T) {
 			restarted.lines <- line
 			require.Equal(t, eventID, receiveTestValue(t, ctx, thirdSink).Actor.ID)
 			thirdSubscription.Cancel()
-			restartedHandler, isRestartedHandler := restarted.execution.ExitHandler.(*process.ConcurrentProcessExitHandler)
+			restartedHandler, isRestartedHandler := restarted.execution.ExitHandler.(*contextualProcessExitHandler)
 			require.True(t, isRestartedHandler)
 			select {
 			case <-restartedHandler.Exited():
@@ -378,8 +380,8 @@ func TestWatchEventsReportsFailuresAndReleasesSource(t *testing.T) {
 			if testCase.startError == nil {
 				executions := executor.FindAll([]string{"wslc", "events"}, "", nil)
 				require.Len(t, executions, 1)
-				handler, isConcurrentHandler := executions[0].ExitHandler.(*process.ConcurrentProcessExitHandler)
-				require.True(t, isConcurrentHandler)
+				handler, isContextualHandler := executions[0].ExitHandler.(*contextualProcessExitHandler)
+				require.True(t, isContextualHandler)
 				select {
 				case <-handler.Exited():
 				case <-ctx.Done():

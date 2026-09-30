@@ -14,10 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/require"
 
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/pkg/process"
 	pkg_testutil "github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -33,6 +35,14 @@ func newTestOrchestrator(
 		require.NoError(t, executor.Close())
 	})
 	orchestrator := NewWslcCliOrchestrator(testr.New(t), executor).(*WslcCliOrchestrator)
+	orchestrator.stopProcessTree = func(
+		ctx context.Context,
+		executor process.Executor,
+		handle process.ProcessHandle,
+		_ logr.Logger,
+	) error {
+		return executor.StopProcess(ctx, handle)
+	}
 	return ctx, orchestrator, executor
 }
 

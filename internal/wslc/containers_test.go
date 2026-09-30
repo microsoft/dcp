@@ -134,6 +134,50 @@ func TestApplyCreateContainerOptionsDeduplicatesLabelsLastValueWins(t *testing.T
 	}, args)
 }
 
+// Verifies that overlapping native diagnostics classify allocation failures before generic already-in-use errors.
+func TestCreateContainerClassifiesAllocationFailuresBeforeAlreadyExists(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name          string
+		message       string
+		expectedError error
+		rejectedError error
+	}{
+		{
+			name:          "address already in use",
+			message:       "failed to bind: address already in use\n",
+			expectedError: containers.ErrCouldNotAllocate,
+			rejectedError: containers.ErrAlreadyExists,
+		},
+		{
+			name:          "container already exists",
+			message:       "container already exists\n",
+			expectedError: containers.ErrAlreadyExists,
+			rejectedError: containers.ErrCouldNotAllocate,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, orchestrator, executor := newTestOrchestrator(t)
+			installAutoCommand(
+				t,
+				executor,
+				[]string{"wslc", "container", "create", "image"},
+				"",
+				testCase.message,
+				1,
+			)
+
+			_, createErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{Image: "image"})
+
+			require.ErrorIs(t, createErr, testCase.expectedError)
+			require.NotErrorIs(t, createErr, testCase.rejectedError)
+		})
+	}
+}
+
 // Verifies that container creation resolves a full network ID to its native name without mutating the requested network options.
 func TestCreateContainerResolvesInitialNetworkIDWithoutAliases(t *testing.T) {
 	t.Parallel()
@@ -356,7 +400,7 @@ func TestInspectContainersMapsWslcLayoutAndResolvesNetworkIDs(t *testing.T) {
 	require.Equal(t, "dcp", container.Labels["owner"])
 }
 
-// Verifies that failed network resolution preserves the inspected container and network name without inventing an ID.
+// Verifies that failed network enrichment preserves the inspected container and network name without inventing an ID or container error.
 func TestInspectContainersDoesNotInventMissingNetworkIDs(t *testing.T) {
 	t.Parallel()
 
@@ -382,7 +426,7 @@ func TestInspectContainersDoesNotInventMissingNetworkIDs(t *testing.T) {
 		Containers: []string{"container-name"},
 	})
 
-	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+	require.NoError(t, inspectErr)
 	require.Len(t, inspected, 1)
 	require.Len(t, inspected[0].Networks, 1)
 	require.Equal(t, "gone", inspected[0].Networks[0].Name)
@@ -455,6 +499,66 @@ func TestListContainersUsesInspectionForLabelsWithCommas(t *testing.T) {
 	require.Len(t, listed, 1)
 	require.Equal(t, "one,two=three", listed[0].Labels["value"])
 	require.Equal(t, []string{"bridge", "custom"}, listed[0].Networks)
+}
+
+// Verifies that a container removed between list and label inspection is omitted without failing the list operation.
+func TestListContainersIgnoresRemovalDuringLabelInspection(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "list", "--no-trunc", "--all", "--format", "json"},
+		"{\"ID\":\"first-id\",\"Names\":\"first\",\"Image\":\"image\",\"State\":\"running\"}\n"+
+			"{\"ID\":\"removed-id\",\"Names\":\"removed\",\"Image\":\"image\",\"State\":\"running\"}\n",
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "inspect", "--format", "json", "first-id", "removed-id"},
+		`[{"Id":"first-id","Name":"/first","Config":{"Labels":{"owner":"dcp"}}}]`,
+		"Container 'removed-id' not found.\n",
+		1,
+	)
+
+	listed, listErr := orchestrator.ListContainers(ctx, containers.ListContainersOptions{All: true})
+
+	require.NoError(t, listErr)
+	require.Len(t, listed, 1)
+	require.Equal(t, "first-id", listed[0].Id)
+	require.Equal(t, "dcp", listed[0].Labels["owner"])
+}
+
+// Verifies that list label inspection still reports failures unrelated to an object removal race.
+func TestListContainersReportsUnexpectedLabelInspectionFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "list", "--no-trunc", "--all", "--format", "json"},
+		"{\"ID\":\"container-id\",\"Names\":\"container\",\"Image\":\"image\",\"State\":\"running\"}\n",
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "inspect", "--format", "json", "container-id"},
+		"",
+		"session manager unavailable\n",
+		1,
+	)
+
+	listed, listErr := orchestrator.ListContainers(ctx, containers.ListContainersOptions{All: true})
+
+	require.Error(t, listErr)
+	require.ErrorIs(t, listErr, containers.ErrRuntimeNotHealthy)
+	require.Len(t, listed, 1)
 }
 
 // Verifies that container-list network filters resolve full IDs to native network names before invoking WSLC.

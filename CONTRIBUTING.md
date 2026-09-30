@@ -193,17 +193,17 @@ On Windows, DCP can use the native Windows Subsystem for Linux container CLI, `w
 go run .\cmd\dcp info --container-runtime wslc --diagnostics
 ```
 
-Automatic selection prefers healthy Docker, then healthy Podman, then healthy WSLC. WSLC can therefore be selected automatically on a machine where it is the only healthy runtime. DCP uses WSLC's default session and leaves its lifecycle and configuration to WSLC; it does not create or terminate sessions.
+Automatic selection prefers healthy Docker, then healthy Podman, then healthy WSLC. WSLC can therefore be selected automatically on a machine where it is the only healthy runtime. Runtime status validates the WSLC client and session manager without requiring a pre-existing default session. Normal WSLC commands let WSLC create its default session lazily; DCP does not terminate or configure that session.
 
-Non-PTY WSLC commands use separate hidden Windows consoles so console-wide shutdown signals cannot interrupt unrelated commands. They remain subject to executor cleanup; terminal attachment uses its existing ConPTY console.
+Non-PTY WSLC commands use separate hidden Windows consoles so console-wide shutdown signals cannot interrupt unrelated commands. On cancellation, DCP uses its `stop-process-tree` helper to attach to that console, deliver the shutdown signal, and clean the verified process tree. Terminal attachment continues to use its existing ConPTY console.
 
-`ContainerHost()` returns an empty string when a runtime does not provide a default container-to-host address. For WSLC, `dcp info` preserves the `hostName` field with an empty string. This is an unsupported addressing capability, not an unhealthy runtime. Consumers must handle that value rather than assume `host.docker.internal` exists on WSLC-only machines.
+WSLC exposes `host.wslc.internal` as its default container-to-host address. `ContainerHost()` and the `hostName` field from `dcp info` return that value for WSLC; consumers must not substitute Docker- or Podman-specific host names.
 
 **WSLC 3.0.1.0 or newer is required.** Older clients or session managers are reported as unsupported rather than healthy. The following limitations were observed with WSLC 3.0.1.0; a missing CLI option does not imply that the underlying WSL runtime lacks the corresponding capability.
 
 | Area | CLI limitation | DCP behavior |
 | --- | --- | --- |
-| Native events | The native event stream has no JSON output mode, and text attributes are not escaped. | Parse the required lifecycle and network identity fields without assuming arbitrary labels can be decoded losslessly. Malformed events are logged; parser panics are recovered and logged with a stack trace without publishing partial events. Switch to structured output when WSLC exposes it; do not substitute polling or synthetic events. |
+| Native events | The native event stream has no JSON output mode, and text attributes are not escaped. | Parse the required lifecycle and network identity fields without assuming arbitrary labels can be decoded losslessly. Malformed events are logged; parser panics are recovered and logged with a stack trace without publishing partial events. Switch to structured output when WSLC exposes it; do not substitute polling or synthetic events. As with Docker and Podman, an unexpected stream exit is logged but not restarted while the existing subscriptions remain. |
 | Runtime health and exec notifications | Native health checks and exec work, but corresponding events were not observed. | Live runtime-based health reporting in DCP is unsupported: image `HEALTHCHECK` status can remain stale until another event triggers inspection. DCP-configured HTTP probes still execute normally. Exec completion is obtained from the CLI process, not native exec events. |
 | Archive and image-layer builds | Tar build contexts on stdin, tar-file contexts, and `build --quiet` are unavailable. | Stage a restricted temporary directory, build through the native CLI, and obtain the image ID through `--iidfile`. Docker/Podman keep their streaming path. |
 | Build platform | `build --platform` is rejected. | Default/native builds work; unsupported platform requests fail explicitly. |
@@ -215,7 +215,7 @@ Non-PTY WSLC commands use separate hidden Windows consoles so console-wide shutd
 
 The adapter normalizes native CLI differences such as JSON-line listings versus array inspections, full network IDs versus name-only mutations, container port/mount layouts, structured labels, repeated typed label keys (last value wins), and single-container `start` commands. These are not reasons to disable the corresponding conformance cases.
 
-Archive-backed WSLC builds support regular files and directories from a hash-verified source file or base64 raw contents. Unsafe paths, links, special files, and duplicate or case-colliding paths are rejected explicitly. The Dockerfile must be inside the archive. Staging uses ordinary Windows directory-context metadata, not the archive's Unix ownership or permission bits; use Dockerfile options such as `COPY --chmod` when executable permissions are required. Temporary contexts are removed after success, failure, or cancellation, and caller-owned archives are not modified.
+Archive-backed WSLC builds support regular files and directories from a hash-verified source file or base64 raw contents. Unsafe paths, links, special files, and duplicate or case-colliding paths are rejected explicitly. The Dockerfile must be inside the archive. Staging uses ordinary Windows directory-context metadata, not the archive's Unix ownership or permission bits; use Dockerfile options such as `COPY --chmod` when executable permissions are required. Temporary-context removal is retried after success, failure, or cancellation. A persistent cleanup failure is joined to an existing operation error; after a successful build it is logged without hiding the usable image result. Caller-owned archives are not modified.
 
 To run real-runtime tests, first build prerequisites, then enable the opt-in in the same PowerShell invocation:
 

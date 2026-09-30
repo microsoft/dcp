@@ -25,8 +25,7 @@ func TestOrchestratorIdentity(t *testing.T) {
 
 	_, orchestrator, _ := newTestOrchestrator(t)
 	require.Equal(t, "wslc", orchestrator.Name())
-	require.False(t, orchestrator.IsDefault())
-	require.Empty(t, orchestrator.ContainerHost())
+	require.Equal(t, "host.wslc.internal", orchestrator.ContainerHost())
 	require.Equal(t, "bridge", orchestrator.DefaultNetworkName())
 }
 
@@ -59,8 +58,8 @@ func TestStatusHealthyWithDefaultSession(t *testing.T) {
 	require.Empty(t, status.Error)
 }
 
-// Verifies that an installed WSLC client without an active default session is reported as not running.
-func TestStatusDistinguishesInstalledFromRunning(t *testing.T) {
+// Verifies that a responsive supported session manager is healthy before a default session is created.
+func TestStatusAllowsLazyDefaultSessionCreation(t *testing.T) {
 	t.Parallel()
 
 	ctx, orchestrator, executor := newTestOrchestrator(t)
@@ -84,8 +83,8 @@ func TestStatusDistinguishesInstalledFromRunning(t *testing.T) {
 	status := orchestrator.getStatusForOS(ctx, "windows")
 
 	require.True(t, status.Installed)
-	require.False(t, status.Running)
-	require.Contains(t, status.Error, "no default runtime session")
+	require.True(t, status.Running)
+	require.Empty(t, status.Error)
 }
 
 // Verifies that missing client-version data prevents WSLC from being reported as installed and avoids a session-status query.

@@ -17,10 +17,54 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/process"
 )
+
+type stopProcessTreeFunc func(context.Context, process.Executor, process.ProcessHandle, logr.Logger) error
+
+type contextualProcessExitHandler struct {
+	ctx   context.Context
+	inner *process.ConcurrentProcessExitHandler
+}
+
+func newContextualProcessExitHandler(ctx context.Context) *contextualProcessExitHandler {
+	return &contextualProcessExitHandler{
+		ctx:   ctx,
+		inner: process.NewConcurrentProcessExitHandler(),
+	}
+}
+
+func (handler *contextualProcessExitHandler) Exited() <-chan struct{} {
+	return handler.inner.Exited()
+}
+
+func (handler *contextualProcessExitHandler) ExitInfo() process.ProcessExitInfo {
+	return handler.inner.ExitInfo()
+}
+
+func (handler *contextualProcessExitHandler) OnProcessExited(pid process.Pid_t, exitCode int32, err error) {
+	handler.inner.OnProcessExited(pid, exitCode, errors.Join(context.Cause(handler.ctx), err))
+}
+
+type startedWslcProcess struct {
+	exitHandler *contextualProcessExitHandler
+	stopResult  <-chan error
+}
+
+func (started *startedWslcProcess) Exited() <-chan struct{} {
+	return started.exitHandler.Exited()
+}
+
+func (started *startedWslcProcess) ExitInfo() process.ProcessExitInfo {
+	return started.exitHandler.ExitInfo()
+}
+
+func (started *startedWslcProcess) stopError() error {
+	return <-started.stopResult
+}
 
 var (
 	containerNotFoundMatch = containers.NewCliErrorMatch(
@@ -72,21 +116,6 @@ func makeWslcCommand(args ...string) *exec.Cmd {
 	}
 	configureWslcCommand(cmd)
 	return cmd
-}
-
-func (wco *WslcCliOrchestrator) MakeCommand(args ...string) *exec.Cmd {
-	return makeWslcCommand(args...)
-}
-
-func (wco *WslcCliOrchestrator) RunBufferedCommand(
-	ctx context.Context,
-	opName string,
-	cmd *exec.Cmd,
-	stdout io.WriteCloser,
-	stderr io.WriteCloser,
-	timeout time.Duration,
-) (*bytes.Buffer, *bytes.Buffer, error) {
-	return wco.runBufferedWslcCommand(ctx, opName, cmd, stdout, stderr, timeout)
 }
 
 func (wco *WslcCliOrchestrator) runBufferedWslcCommand(
@@ -151,26 +180,20 @@ func (wco *WslcCliOrchestrator) runBufferedWslcCommandInternal(
 		return stdoutBuffer, stderrBuffer, contextErr
 	}
 
-	exitHandler := process.NewConcurrentProcessExitHandler()
 	wco.log.V(1).Info("Running WSLC command", "Command", cmd.String())
-	_, startWaitForExit, startErr := wco.executor.StartProcess(
+	startedProcess, startErr := wco.startWslcProcess(
 		effectiveCtx,
+		commandName,
 		cmd,
-		exitHandler,
 		process.CreationFlagsNone,
-		nil,
 	)
 	if startErr != nil {
 		return stdoutBuffer, stderrBuffer, fmt.Errorf("failed to start WSLC command %q: %w", commandName, startErr)
 	}
-	startWaitForExit()
 
-	<-exitHandler.Exited()
-	exitInfo := exitHandler.ExitInfo()
-	var commandErr error
-	if exitInfo.Err != nil {
-		commandErr = exitInfo.Err
-	}
+	<-startedProcess.Exited()
+	exitInfo := startedProcess.ExitInfo()
+	commandErr := errors.Join(exitInfo.Err, startedProcess.stopError())
 	if exitInfo.ExitCode != 0 {
 		commandErr = errors.Join(
 			commandErr,
@@ -187,7 +210,7 @@ func (wco *WslcCliOrchestrator) startStreamingWslcCommand(
 	cmd *exec.Cmd,
 	stdout io.Writer,
 	stderr io.Writer,
-) (*process.ConcurrentProcessExitHandler, error) {
+) (*startedWslcProcess, error) {
 	if contextErr := ctx.Err(); contextErr != nil {
 		return nil, contextErr
 	}
@@ -195,20 +218,86 @@ func (wco *WslcCliOrchestrator) startStreamingWslcCommand(
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	exitHandler := process.NewConcurrentProcessExitHandler()
 	wco.log.V(1).Info("Running WSLC command", "Command", cmd.String())
-	_, startWaitForExit, startErr := wco.executor.StartProcess(
+	startedProcess, startErr := wco.startWslcProcess(
 		ctx,
+		commandName,
 		cmd,
-		exitHandler,
 		process.CreationFlagEnsureKillOnDispose,
-		nil,
 	)
 	if startErr != nil {
 		return nil, fmt.Errorf("failed to start WSLC command %q: %w", commandName, startErr)
 	}
+	return startedProcess, nil
+}
+
+func (wco *WslcCliOrchestrator) startWslcProcess(
+	ctx context.Context,
+	commandName string,
+	cmd *exec.Cmd,
+	creationFlags process.ProcessCreationFlag,
+) (*startedWslcProcess, error) {
+	// Generic executor cancellation cannot signal a separate Windows console. Keep cancellation
+	// ownership here so dcpproc can attach to that console and stop the verified process tree.
+	processCtx, processCancel := context.WithCancel(context.WithoutCancel(ctx))
+	exitHandler := newContextualProcessExitHandler(ctx)
+	handle, startWaitForExit, startErr := wco.executor.StartProcess(
+		processCtx,
+		cmd,
+		exitHandler,
+		creationFlags,
+		nil,
+	)
+	if startErr != nil {
+		processCancel()
+		return nil, startErr
+	}
 	startWaitForExit()
-	return exitHandler, nil
+
+	stopResult := make(chan error, 1)
+	go func() {
+		defer processCancel()
+
+		select {
+		case <-exitHandler.Exited():
+			stopResult <- nil
+			return
+		case <-ctx.Done():
+		}
+
+		stopErr := wco.stopCancelledWslcProcess(ctx, commandName, handle)
+		if stopErr != nil {
+			wco.log.Error(stopErr, "Could not stop cancelled WSLC command", "Command", commandName, "PID", handle.Pid)
+		}
+		stopResult <- stopErr
+	}()
+
+	return &startedWslcProcess{
+		exitHandler: exitHandler,
+		stopResult:  stopResult,
+	}, nil
+}
+
+func (wco *WslcCliOrchestrator) stopCancelledWslcProcess(
+	ctx context.Context,
+	commandName string,
+	handle process.ProcessHandle,
+) error {
+	stopParentCtx := context.WithoutCancel(ctx)
+	stopErr := wco.stopProcessTree(stopParentCtx, wco.executor, handle, wco.log)
+	if stopErr == nil || process.IsProcessGoneErr(stopErr) {
+		return nil
+	}
+
+	wrappedStopErr := fmt.Errorf("stop cancelled WSLC command %q through dcpproc: %w", commandName, stopErr)
+
+	fallbackCtx, fallbackCancel := process.WithDetachedStopTimeout(ctx)
+	defer fallbackCancel()
+	fallbackErr := wco.executor.StopProcess(fallbackCtx, handle)
+	if process.IsProcessGoneErr(fallbackErr) {
+		fallbackErr = nil
+	}
+	return errors.Join(wrappedStopErr, fallbackErr)
 }
 
 func normalizeCliErrors(errBuf *bytes.Buffer, extraMatches ...containers.ErrorMatch) error {
@@ -276,10 +365,31 @@ func incompleteError(objectKind string, actual int, expected int) error {
 	)
 }
 
+func isBenignListInspectionRace(err error) bool {
+	if err == nil || !errors.Is(err, containers.ErrNotFound) {
+		return false
+	}
+
+	unexpectedErrors := []error{
+		context.Canceled,
+		context.DeadlineExceeded,
+		containers.ErrUnmatched,
+		containers.ErrUnmarshalling,
+		containers.ErrRuntimeNotHealthy,
+		containers.ErrAlreadyExists,
+		containers.ErrCouldNotAllocate,
+		containers.ErrObjectInUse,
+	}
+	for _, unexpectedErr := range unexpectedErrors {
+		if errors.Is(err, unexpectedErr) {
+			return false
+		}
+	}
+	return true
+}
+
 func closeWriteCloser(closer io.WriteCloser) {
 	if closer != nil {
 		_ = closer.Close()
 	}
 }
-
-var _ containers.CLICommandRunner = (*WslcCliOrchestrator)(nil)
