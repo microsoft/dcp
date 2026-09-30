@@ -128,6 +128,7 @@ func TestStopViaConsoleUsesRemainingTreeGracePeriod(t *testing.T) {
 
 	require.NoError(t, stopErr)
 	require.GreaterOrEqual(t, elapsed, signalAndWaitTimeout)
+	require.Less(t, elapsed, signalAndWaitTimeout+4*time.Second)
 	_, markerErr := os.Stat(markerPath)
 	require.NoError(t, markerErr, "descendant should exit naturally after the console signal")
 	require.NoError(t, rootCmd.Wait())

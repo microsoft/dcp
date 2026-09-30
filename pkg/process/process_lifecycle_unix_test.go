@@ -110,13 +110,16 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 	case "exit-immediately":
 		return
 
-	case "tree-root", "graceful-root", "forced-root", "deadline-root", "concurrent-root", "concurrent-graceful-root":
+	case "tree-root", "graceful-root", "forced-root", "deadline-root", "concurrent-root", "concurrent-graceful-root", "pipe-held-root":
 		childMode := "tree-child"
 		if mode == "graceful-root" || mode == "concurrent-graceful-root" {
 			childMode = "graceful-child"
 		} else if mode == "forced-root" {
 			signal.Ignore(syscall.SIGTERM)
 			childMode = "observing-child"
+		} else if mode == "pipe-held-root" {
+			signal.Ignore(syscall.SIGTERM)
+			childMode = "pipe-holder-child"
 		} else if mode == "concurrent-root" {
 			childMode = "observing-child"
 		} else if mode == "deadline-root" {
@@ -131,7 +134,7 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 		childCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleHelper$")
 		childCmd.Env = append(os.Environ(), unixProcessLifecycleHelperMode+"="+childMode)
 		var signalNoticeWriter *os.File
-		if mode != "tree-root" {
+		if mode != "tree-root" && mode != "pipe-held-root" {
 			signalNoticeWriter = os.NewFile(uintptr(4), "signal-notice")
 			require.NotNil(t, signalNoticeWriter)
 			childCmd.ExtraFiles = []*os.File{signalNoticeWriter}
@@ -162,7 +165,7 @@ func TestUnixProcessLifecycleHelper(t *testing.T) {
 		}
 		time.Sleep(30 * time.Second)
 
-	case "tree-child":
+	case "tree-child", "pipe-holder-child":
 		time.Sleep(30 * time.Second)
 
 	case "graceful-child", "observing-child":
@@ -263,7 +266,7 @@ func TestIncompleteTreeStillStopsVerifiedProcesses(t *testing.T) {
 	stopErr := executor.stopProcessTreeInternal(
 		testCtx,
 		rootHandle,
-		optNone,
+		processStopOptions{opts: optNone},
 		func(context.Context, ProcessHandle) ([]ProcessHandle, error) {
 			return []ProcessHandle{rootHandle, childHandle}, injectedSnapshotErr
 		},
@@ -296,7 +299,7 @@ func TestEnumerationDeadlineForceStopsRoot(t *testing.T) {
 	stopErr := executor.stopProcessTreeInternal(
 		testCtx,
 		rootHandle,
-		optNone,
+		processStopOptions{opts: optNone},
 		func(context.Context, ProcessHandle) ([]ProcessHandle, error) {
 			return nil, context.DeadlineExceeded
 		},
@@ -343,6 +346,26 @@ func TestStopProcessGivesDescendantsRemainingGracefulBudget(t *testing.T) {
 	require.NoError(t, readErr)
 	require.Equal(t, "sigterm\n", string(remainingNotices))
 	require.Less(t, elapsed, signalAndWaitTimeout)
+	requireProcessGone(t, testCtx, executor, rootHandle)
+	requireProcessGone(t, testCtx, executor, childHandle)
+}
+
+// Verifies that SIGKILL confirmation uses process identity rather than waiting
+// for descendant-held stdio pipes to let the root's cmd.Wait complete.
+func TestForceKillDoesNotWaitForDescendantHeldStdio(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	defer executor.Dispose()
+	rootHandle, childHandle := startProcessTreeForTest(t, testCtx, executor, "pipe-held-root", io.Discard, nil)
+
+	startedAt := time.Now()
+	stopErr := executor.StopProcess(testCtx, rootHandle)
+	elapsed := time.Since(startedAt)
+
+	require.NoError(t, stopErr)
+	require.GreaterOrEqual(t, elapsed, signalAndWaitTimeout)
+	require.Less(t, elapsed, signalAndWaitTimeout+3*time.Second)
 	requireProcessGone(t, testCtx, executor, rootHandle)
 	requireProcessGone(t, testCtx, executor, childHandle)
 }

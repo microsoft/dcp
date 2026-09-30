@@ -137,7 +137,7 @@ func (e *OSExecutor) StartProcess(
 			_, _ = e.tryStartWaiting(handle, waitable, waitReasonMonitoring)
 			cleanupLog := e.log.WithValues("PID", pid, "Command", cmd.Path, "Args", cmd.Args[1:])
 			cleanupLog.Info("Context expired, stopping process...")
-			stopProcessErr := e.stopProcessInternal(cleanupCtx, handle, optNone)
+			stopProcessErr := e.stopProcessInternal(cleanupCtx, handle, processStopOptions{opts: optNone})
 			if IsProcessGoneErr(stopProcessErr) {
 				stopProcessErr = nil
 			}
@@ -204,7 +204,7 @@ func (e *OSExecutor) StopProcess(ctx context.Context, handle ProcessHandle, opti
 	e.releaseLock()
 
 	stopOptions := newProcessStopOptions(options)
-	return e.stopProcessInternal(ctx, handle, stopOptions.opts)
+	return e.stopProcessInternal(ctx, handle, stopOptions)
 }
 
 // Returns the process handle, waitable process, and error.
@@ -394,15 +394,19 @@ func waitForTrackedProcessExit(ctx context.Context, pid Pid_t, ws *waitState, wa
 		return ctx.Err()
 
 	case <-ws.waitEndedCh:
-		if ws.waitErr == nil || IsEarlyProcessExitError(ws.waitErr) {
-			return nil
-		}
-
-		return fmt.Errorf("could not wait for process %d to exit: %w", pid, ws.waitErr)
+		return trackedProcessWaitResult(pid, ws)
 
 	case <-timeoutCh:
 		return ErrTimedOutWaitingForProcessToStop
 	}
+}
+
+func trackedProcessWaitResult(pid Pid_t, ws *waitState) error {
+	if ws.waitErr == nil || IsEarlyProcessExitError(ws.waitErr) {
+		return nil
+	}
+
+	return fmt.Errorf("could not wait for process %d to exit: %w", pid, ws.waitErr)
 }
 
 func waitForProcessStopConfirmation(
@@ -475,8 +479,8 @@ func (e *OSExecutor) releaseLock() {
 	e.lock.Unlock()
 }
 
-func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHandle, opts processStoppingOpts) error {
-	return e.stopProcessTreeInternal(ctx, handle, opts, GetProcessTree)
+func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHandle, options processStopOptions) error {
+	return e.stopProcessTreeInternal(ctx, handle, options, GetProcessTree)
 }
 
 // stopProcessTreeInternal stops a verified process tree root-first.
@@ -490,7 +494,7 @@ func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHand
 func (e *OSExecutor) stopProcessTreeInternal(
 	ctx context.Context,
 	handle ProcessHandle,
-	opts processStoppingOpts,
+	options processStopOptions,
 	resolveProcessTree func(context.Context, ProcessHandle) ([]ProcessHandle, error),
 ) error {
 	if contextErr := ctx.Err(); contextErr != nil {
@@ -499,12 +503,20 @@ func (e *OSExecutor) stopProcessTreeInternal(
 	if handleErr := handle.Validate(); handleErr != nil {
 		return handleErr
 	}
+	opts := options.opts
 	e.ensureTrackedWaitStarted(handle)
 
 	graceCtx, graceCancel := context.WithTimeout(ctx, gracefulProcessStopTimeout)
 	defer graceCancel()
 
 	procTreeLog := e.log.WithValues("Root", handle.Pid)
+	notifyRootExit := func() {
+		if options.afterRootExit == nil || !IsProcessGoneErr(e.CheckProcessRunning(handle)) {
+			return
+		}
+		options.afterRootExit()
+		options.afterRootExit = nil
+	}
 	rootWasVerified := false
 
 	stopRootProcess := func(stopCtx context.Context, rootOpts processStoppingOpts) (singleProcessStopResult, error, error) {
@@ -576,6 +588,7 @@ func (e *OSExecutor) stopProcessTreeInternal(
 			return rootStopErr
 		}
 		if stopErr == nil && !rootResult.forceKillUsed {
+			notifyRootExit()
 			return waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, nil)
 		}
 		if contextErr := ctx.Err(); contextErr != nil {
@@ -620,6 +633,9 @@ func (e *OSExecutor) stopProcessTreeInternal(
 	rootResult, rootStopErr, fatalRootStopErr := stopRootProcess(graceCtx, opts|optTrySignal)
 	if fatalRootStopErr != nil {
 		return errors.Join(treeErr, fatalRootStopErr)
+	}
+	if rootStopErr == nil && !rootResult.forceKillUsed {
+		notifyRootExit()
 	}
 
 	tree = tree[1:] // We have processed the root
@@ -827,7 +843,7 @@ func (e *OSExecutor) Dispose() {
 				stopErr := e.stopProcessInternal(
 					cleanupCtx,
 					handle,
-					optIsResponsibleForStopping,
+					processStopOptions{opts: optIsResponsibleForStopping},
 				)
 				if stopErr != nil {
 					e.log.Error(stopErr, "Could not stop process during executor disposal", "PID", handle.Pid, "Command", waitable.Info())

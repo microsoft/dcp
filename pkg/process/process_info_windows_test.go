@@ -10,7 +10,9 @@ package process
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"testing"
 	"time"
 	"unsafe"
@@ -20,6 +22,17 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 )
+
+const cleanupJobAssignmentTargetEnvVar = "DCP_TEST_CLEANUP_JOB_ASSIGNMENT_TARGET"
+
+var kernel32IsProcessInJob = kernel32.NewProc("IsProcessInJob")
+
+func TestCleanupJobAssignmentTargetProcess(t *testing.T) {
+	if os.Getenv(cleanupJobAssignmentTargetEnvVar) != "1" {
+		return
+	}
+	time.Sleep(30 * time.Second)
+}
 
 // Verifies that cleanup-job process access rights can open the current process,
 // inspect its PID, and read a nonzero process identity.
@@ -37,6 +50,60 @@ func TestCleanupJobProcessAccessSupportsInspection(t *testing.T) {
 	require.NoError(t, infoErr)
 	require.Equal(t, Uint32_ToPidT(pid), info.handle.Pid)
 	require.False(t, info.handle.IdentityTime.IsZero())
+}
+
+// Verifies that the narrowed cleanup-job access mask still supports the actual
+// identity-validated assignment performed for executor-started processes.
+func TestStartedProcessIsAssignedToCleanupJob(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	defer executor.Dispose()
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCleanupJobAssignmentTargetProcess$")
+	cmd.Env = append(os.Environ(), cleanupJobAssignmentTargetEnvVar+"=1")
+	handle, startWaiting, startErr := executor.StartProcess(
+		testCtx,
+		cmd,
+		nil,
+		CreationFlagEnsureKillOnDispose,
+		nil,
+	)
+	require.NoError(t, startErr)
+	startWaiting()
+
+	proc, findErr := FindProcess(handle)
+	require.NoError(t, findErr)
+	defer func() {
+		require.NoError(t, proc.Release())
+	}()
+
+	executor.acquireLock()
+	job := executor.processCleanupJob()
+	executor.releaseLock()
+	require.NotEqual(t, windows.InvalidHandle, job)
+
+	inJob, queryErr := isProcessInJob(proc, job)
+	require.NoError(t, queryErr)
+	require.True(t, inJob)
+}
+
+func isProcessInJob(proc *os.Process, job windows.Handle) (bool, error) {
+	var result int32
+	var queryErr error
+	handleErr := proc.WithHandle(func(nativeHandle uintptr) {
+		success, _, callErr := kernel32IsProcessInJob.Call(
+			nativeHandle,
+			uintptr(job),
+			uintptr(unsafe.Pointer(&result)),
+		)
+		if success == 0 {
+			queryErr = fmt.Errorf("could not query process job membership: %w", callErr)
+		}
+	})
+	return result != 0, errors.Join(handleErr, queryErr)
 }
 
 func windowsRecord(pid, parent uintptr, birth int64, next uint32) []byte {

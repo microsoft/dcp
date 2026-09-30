@@ -152,7 +152,54 @@ func (e *OSExecutor) signalAndWaitForExit(
 		return fmt.Errorf("could not send signal %s to process %d: %w", sig.String(), proc.Pid, err)
 	}
 
+	if sig == syscall.SIGKILL {
+		// cmd.Wait can remain blocked by descendant-held pipes after the target process exits.
+		return e.waitForTrackedProcessExitOrGone(ctx, handle, ws, waitTimeout)
+	}
 	return waitForTrackedProcessExit(ctx, handle.Pid, ws, waitTimeout)
+}
+
+func (e *OSExecutor) waitForTrackedProcessExitOrGone(
+	ctx context.Context,
+	handle ProcessHandle,
+	ws *waitState,
+	waitTimeout time.Duration,
+) error {
+	var timeoutCh <-chan time.Time
+	var timeoutTimer *time.Timer
+	if waitTimeout > 0 {
+		timeoutTimer = time.NewTimer(waitTimeout)
+		defer timeoutTimer.Stop()
+		timeoutCh = timeoutTimer.C
+	}
+
+	pollTimer := time.NewTimer(0)
+	defer pollTimer.Stop()
+	var inspectionErr error
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ws.waitEndedCh:
+			return trackedProcessWaitResult(handle.Pid, ws)
+		case <-pollTimer.C:
+			runningErr := e.CheckProcessRunning(handle)
+			if IsProcessGoneErr(runningErr) {
+				return nil
+			}
+			if runningErr != nil {
+				inspectionErr = fmt.Errorf("could not confirm process %d exit: %w", handle.Pid, runningErr)
+			} else {
+				inspectionErr = nil
+			}
+			pollTimer.Reset(stopWaitPollInterval)
+		case <-timeoutCh:
+			if inspectionErr != nil {
+				return errors.Join(ErrTimedOutWaitingForProcessToStop, inspectionErr)
+			}
+			return ErrTimedOutWaitingForProcessToStop
+		}
+	}
 }
 
 func (e *OSExecutor) completeDispose() {

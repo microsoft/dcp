@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/go-logr/logr"
 	"golang.org/x/sys/windows"
@@ -54,7 +55,13 @@ func StopViaConsole(ctx context.Context, log logr.Logger, executor Executor, han
 	if !attached {
 		return executor.StopProcess(ctx, handle, options...)
 	}
-	defer restoreParentConsole(log)
+	restoreConsole := sync.OnceFunc(func() {
+		// Once the root has exited, DCP no longer needs the target console to deliver Ctrl+C.
+		// Detach before waiting on descendants because Windows keeps the console host alive
+		// while DCP remains attached, which would consume the full graceful-stop budget.
+		restoreParentConsole(log)
+	})
+	defer restoreConsole()
 
 	handlerErr := installIgnoreConsoleCtrlEventHandler()
 	if handlerErr != nil {
@@ -63,9 +70,9 @@ func StopViaConsole(ctx context.Context, log logr.Logger, executor Executor, han
 	// No explicit removal: StopViaConsole detaches from the target console,
 	// which resets the process control-handler table.
 
-	consoleOptions := make([]ProcessStopOption, 0, len(options)+1)
+	consoleOptions := make([]ProcessStopOption, 0, len(options)+2)
 	consoleOptions = append(consoleOptions, options...)
-	consoleOptions = append(consoleOptions, stopConsoleGroup())
+	consoleOptions = append(consoleOptions, stopConsoleGroup(), afterRootExit(restoreConsole))
 	return executor.StopProcess(ctx, handle, consoleOptions...)
 }
 

@@ -39,7 +39,8 @@ const (
 type ProcessStopOption func(*processStopOptions)
 
 type processStopOptions struct {
-	opts processStoppingOpts
+	opts          processStoppingOpts
+	afterRootExit func()
 }
 
 // StopRootOnly skips descendant enumeration and cleanup after stopping the requested process.
@@ -47,6 +48,12 @@ type processStopOptions struct {
 func StopRootOnly() ProcessStopOption {
 	return func(options *processStopOptions) {
 		options.opts |= optSkipDescendants
+	}
+}
+
+func afterRootExit(callback func()) ProcessStopOption {
+	return func(options *processStopOptions) {
+		options.afterRootExit = callback
 	}
 }
 
