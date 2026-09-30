@@ -82,6 +82,12 @@ func stopConsoleGroup() ProcessStopOption {
 	}
 }
 
+func afterRootExit(callback func()) ProcessStopOption {
+	return func(options *processStopOptions) {
+		options.afterRootExit = callback
+	}
+}
+
 // attachToTargetProcessConsole detaches from the current console and attaches to the console
 // of the target process. Returns true if attachment was successful, or false if the target
 // process has no console or has already exited.

@@ -51,12 +51,6 @@ func StopRootOnly() ProcessStopOption {
 	}
 }
 
-func afterRootExit(callback func()) ProcessStopOption {
-	return func(options *processStopOptions) {
-		options.afterRootExit = callback
-	}
-}
-
 func newProcessStopOptions(options []ProcessStopOption) processStopOptions {
 	stopOptions := processStopOptions{opts: optNone}
 	for _, option := range options {
