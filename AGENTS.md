@@ -38,6 +38,13 @@ This codebase implements several custom Kubernetes types and controllers. Implem
 ### Avoid variable reuse (especially for errors)
 - If a function invokes multiple error-returning functions, use a different variable name for each error to avoid confusion.
 
+### Names of types, members and functions should reflect their PURPOSE
+- Names should reflect what things ARE and what they DO. They should be descriptive but concise. A developer reading code should be able to determine the purpose of a member/function/type from their name, without referring to the implementation.
+- Do not use meaningless, filler words such as "helper" or "fixture". For example, a component that creates sub-processes should be named `subprocessLauncher`, not `subprocessHelper`.
+
+### No single-line wrapper functions
+Do not create "convenience" functions that merely wrap the underlying call to another function, without doing any additional work. Instead, call the target function directly.
+
 ## Prefer extending existing interfaces over creating new ones
 - It's safe to extend existing interfaces when we need new functionality; we don't need to worry about breaking existing implementations because we control all of them. This also helps to keep the codebase simpler and more consistent.
 
@@ -63,6 +70,7 @@ Place new code in the correct location according to the project's structure:
 - Run `make generate-grpc` after making changes to protobuf definitions (files with `.proto` extension).
 
 ## Test authoring
+- Every test function should have a 1-3 sentence documentation comment describing its purpose. Use the following template for the test comments: "Verifies that [name of a type/method/function] does A, B, and C". The name of the test function should reflect its purpose too. Both the test function name, and the documentation comment, should be updated as necessary if the test function implementation is changed substantially.
 - Unless a tight, specific timeout is ESSENTIAL for testing a specific function, avoid using hard-coded timeouts (e.g. obtained via `time.After()`). Instead, use test context (created via `testutil.GetTestContext()`) and test context `Done()` channel for timeouts in tests.
 
 ## Commenting code
@@ -74,11 +82,6 @@ Place new code in the correct location according to the project's structure:
 # Working inside the repository
 
 ## Running commands
-- CONFIRM WITH THE DEVELOPER THAT ANY COMMANDS YOU INTEND TO RUN ARE SAFE BEFORE ACTUALLY RUNNING THEM.
-- Commands that are safe to run in the repository are:
-    - Any command that invokes `make` utility
-    - Any command that invokes `go` utility
-  Do not prompt for confirmation before running commands above. ANY OTHER COMMANDS MAY BE UNSAFE AND SHOULD NOT BE RUN WITHOUT CONFIRMATION.
 - Do not run `make` without a target. It does not do anything useful (just displays a list of available targets, in human-readable form).
 
 ## Running tests
@@ -88,3 +91,4 @@ Place new code in the correct location according to the project's structure:
 - If working on a change involving a lot of goroutine synchronization, channel operations, and locking, run tests with `-race` flag to enable race detection. This works on MacOS and Linux ONLY, do not try this when the current OS is Windows.
 - Our test context (obtained via `GetTestContext` function from `pkg/testutil` package) can be adjusted via an environment variable to use non-standard test timeout. Set `TEST_CONTEXT_TIMEOUT` environment variable to number of seconds that will be used as timeout value. For example, `TEST_CONTEXT_TIMEOUT=30` will make the test context expire after 30 seconds. 30 seconds is a good value when running individual tests.
 - No single test (not even those classified as "advanced" e.g. tests using real container orchestrator) should take more than 3 minutes (180 seconds) to run. Use AT MOST 3 minutes as a timeout when running individual tests, or subset of tests, with "go test" command ("-timeout" flag).
+- When doing final change verification, leverage a container runtime, if available, to verify the change on Linux too. E.g. on a Windows or a Mac machine with Docker, Podman, or WSLC, do final test run (and any other, change-specific verification, as applicable) using a Linux container. One container-based test run is sufficient unless the change affects container runtime support in DCP; in the latter case, do a test run with all available container runtimes. 
