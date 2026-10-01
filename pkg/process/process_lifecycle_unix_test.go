@@ -388,8 +388,8 @@ func TestStopProcessSharesGracefulBudgetAfterDelayedRootExit(t *testing.T) {
 	requireProcessGone(t, testCtx, executor, childHandle)
 }
 
-// Verifies that SIGKILL confirmation uses process identity rather than waiting
-// for descendant-held stdio pipes to let the root's cmd.Wait complete.
+// Verifies that force escalation uses the full graceful budget, then confirms
+// SIGKILL by identity instead of waiting for descendant-held stdio pipes.
 func TestForceKillDoesNotWaitForDescendantHeldStdio(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
 	defer testCancel()
@@ -402,8 +402,8 @@ func TestForceKillDoesNotWaitForDescendantHeldStdio(t *testing.T) {
 	elapsed := time.Since(startedAt)
 
 	require.NoError(t, stopErr)
-	require.GreaterOrEqual(t, elapsed, signalAndWaitTimeout)
-	require.Less(t, elapsed, signalAndWaitTimeout+3*time.Second)
+	require.GreaterOrEqual(t, elapsed, gracefulProcessStopTimeout)
+	require.Less(t, elapsed, processStopTimeout+2*time.Second)
 	requireProcessGone(t, testCtx, executor, rootHandle)
 	requireProcessGone(t, testCtx, executor, childHandle)
 }

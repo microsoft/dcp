@@ -237,7 +237,7 @@ func TestStopViaConsoleRootOnlyBoundsForceConfirmation(t *testing.T) {
 	elapsed := time.Since(startedAt)
 
 	require.NoError(t, stopErr)
-	require.GreaterOrEqual(t, elapsed, signalAndWaitTimeout)
+	require.GreaterOrEqual(t, elapsed, gracefulProcessStopTimeout)
 	require.Less(t, elapsed, processStopTimeout)
 	waitErr := rootCmd.Wait()
 	require.True(t, waitErr == nil || IsEarlyProcessExitError(waitErr))

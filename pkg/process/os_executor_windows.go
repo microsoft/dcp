@@ -125,7 +125,7 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 		}
 
 		waitTimeout := signalAndWaitTimeout
-		if (opts & optGracefulOnly) != 0 {
+		if (opts & (optGracefulOnly | optWaitForGracefulDeadline)) != 0 {
 			waitTimeout = 0
 		}
 		err = e.signalAndWaitForExit(ctx, handle, proc, sig, processGroupID, ws, waitTimeout)

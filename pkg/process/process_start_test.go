@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"testing"
 	"time"
 
@@ -114,6 +115,65 @@ func TestRollbackProcessStartUsesWaitToConfirmExit(t *testing.T) {
 				require.NoError(t, rollbackErr)
 			}
 		})
+	}
+}
+
+// Verifies that a canceled rollback retains its waiter so the child can still be reaped later.
+func TestRollbackProcessStartRetainsWaiterAfterCancellation(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	rollbackCtx, rollbackCancel := context.WithCancel(testCtx)
+	defer rollbackCancel()
+
+	waitStarted := make(chan struct{})
+	releaseWait := make(chan struct{})
+	waitFinished := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseWait)
+		})
+	}
+	t.Cleanup(release)
+
+	killErr := errors.New("kill failed")
+	rollbackResult := make(chan error, 1)
+	go func() {
+		rollbackResult <- rollbackProcessStart(
+			rollbackCtx,
+			func() error { return killErr },
+			func() error {
+				close(waitStarted)
+				<-releaseWait
+				close(waitFinished)
+				return nil
+			},
+		)
+	}()
+
+	select {
+	case <-waitStarted:
+	case <-testCtx.Done():
+		t.Fatal("rollback waiter did not start")
+	}
+
+	rollbackCancel()
+	select {
+	case rollbackErr := <-rollbackResult:
+		require.ErrorIs(t, rollbackErr, ErrProcessStartUncertain)
+		require.ErrorIs(t, rollbackErr, killErr)
+		require.ErrorIs(t, rollbackErr, context.Canceled)
+	case <-testCtx.Done():
+		t.Fatal("rollback did not return after cancellation")
+	}
+
+	release()
+	select {
+	case <-waitFinished:
+	case <-testCtx.Done():
+		t.Fatal("retained rollback waiter did not finish")
 	}
 }
 

@@ -20,6 +20,7 @@ func rollbackProcessStart(ctx context.Context, kill func() error, wait func() er
 		killErr = nil
 	}
 	waitResult := make(chan error, 1)
+	// Retain reaping ownership after rollback returns; abandoning Wait can leave a Unix zombie.
 	go func() {
 		waitErr := wait()
 		if IsEarlyProcessExitError(waitErr) {

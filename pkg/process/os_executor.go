@@ -552,7 +552,8 @@ func (e *OSExecutor) stopProcessTreeInternal(
 		return waitErr
 	}
 
-	forceProcessOpts := opts &^ (optNotFoundIsError | optTrySignal | optSignalConsoleGroup | optGracefulOnly)
+	gracefulRootOpts := opts | optTrySignal | optWaitForGracefulDeadline
+	forceProcessOpts := opts &^ (optNotFoundIsError | optTrySignal | optSignalConsoleGroup | optGracefulOnly | optWaitForGracefulDeadline)
 
 	forceRootAfterIncompleteEnumeration := func(treeErr error) error {
 		if contextErr := ctx.Err(); contextErr != nil {
@@ -585,7 +586,7 @@ func (e *OSExecutor) stopProcessTreeInternal(
 
 	if (opts & optSkipDescendants) != 0 {
 		procTreeLog.V(1).Info("Stopping root process without enumerating descendants")
-		rootResult, stopErr, rootStopErr := stopRootProcess(graceCtx, opts|optTrySignal)
+		rootResult, stopErr, rootStopErr := stopRootProcess(graceCtx, gracefulRootOpts)
 		if rootStopErr != nil {
 			return rootStopErr
 		}
@@ -632,7 +633,7 @@ func (e *OSExecutor) stopProcessTreeInternal(
 
 	procTreeLog.V(1).Info("Stopping process tree...", "Root", handle.Pid, "Tree", getIDs(tree))
 
-	rootResult, rootStopErr, fatalRootStopErr := stopRootProcess(graceCtx, opts|optTrySignal)
+	rootResult, rootStopErr, fatalRootStopErr := stopRootProcess(graceCtx, gracefulRootOpts)
 	if fatalRootStopErr != nil {
 		return errors.Join(treeErr, fatalRootStopErr)
 	}
@@ -910,6 +911,10 @@ const (
 	// Attempts graceful stopping without escalating to a force kill. The caller is responsible
 	// for force-killing the process later if the graceful-stop context expires.
 	optGracefulOnly processStoppingOpts = 0x40
+
+	// Uses the caller's context deadline instead of the per-signal timeout for graceful waiting.
+	// Unlike optGracefulOnly, a graceful signal dispatch failure may still fall back to a force kill.
+	optWaitForGracefulDeadline processStoppingOpts = 0x80
 )
 
 func makeClosedChan() chan struct{} {

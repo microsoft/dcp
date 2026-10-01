@@ -102,7 +102,7 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 		// There is no established standard for what signals are used for graceful shutdown,
 		// but SIGTERM and SIGQUIT are commonly used.
 		waitTimeout := signalAndWaitTimeout
-		if (opts & optGracefulOnly) != 0 {
+		if (opts & (optGracefulOnly | optWaitForGracefulDeadline)) != 0 {
 			waitTimeout = 0
 		}
 		err = e.signalAndWaitForExit(ctx, handle, proc, syscall.SIGTERM, ws, waitTimeout)
