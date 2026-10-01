@@ -42,6 +42,9 @@ This codebase implements several custom Kubernetes types and controllers. Implem
 - Names should reflect what things ARE and what they DO. They should be descriptive but concise. A developer reading code should be able to determine the purpose of a member/function/type from their name, without referring to the implementation.
 - Do not use meaningless, filler words such as "helper" or "fixture". For example, a component that creates sub-processes should be named `subprocessLauncher`, not `subprocessHelper`.
 
+### No single-line wrapper functions
+Do not create "convenience" functions that merely wrap the underlying call to another function, without doing any additional work. Instead, call the target function directly.
+
 ## Prefer extending existing interfaces over creating new ones
 - It's safe to extend existing interfaces when we need new functionality; we don't need to worry about breaking existing implementations because we control all of them. This also helps to keep the codebase simpler and more consistent.
 
