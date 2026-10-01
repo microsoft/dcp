@@ -649,13 +649,10 @@ type RuntimeStatusChecker interface {
 
 // Represents portion of container orchestrator functionality that is related to container management
 type ContainerOrchestrator interface {
-	// Is this the default orchestrator?
-	IsDefault() bool
-
 	// Get the name of the runtime
 	Name() string
 
-	// Get the container machine host name for the runtime
+	// Get the default container-to-host address, or an empty string if the runtime does not provide one.
 	ContainerHost() string
 
 	// Start running background checks for the runtime status

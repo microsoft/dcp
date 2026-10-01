@@ -181,9 +181,57 @@ Not all tests are run by default. A small subset of tests aren't suitable for ru
 | --- | --------- |
 | `DCP_TEST_ENABLE_ADVANCED_NETWORKING` | Set to true to enable advanced networking tests such as those that require access to all network interfaces and try to open ports that are accessible to requests originating from outside of the machine, or tests that evaluate network performance against a baseline (these are unreliable on CI machines). |
 | `DCP_TEST_ENABLE_ADVANCED_CERTIFICATES`| Set to true to enable advanced certificate file tests such as those that require openssl installed to verify behavior. |
-| `DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR` | Set to true to enable tests that require real container orchestrator (Docker or Podman). |
+| `DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR` | Set to true to enable tests that require a real container orchestrator (Docker, Podman, or WSLC). |
 
 > You may need to install [Azure Artifacts Credentials Provider](https://github.com/microsoft/artifacts-credprovider#azure-artifacts-credential-provider) to be able to build some of the test artifacts for tests in this set.
+
+### WSLC container runtime
+
+On Windows, DCP can use the native Windows Subsystem for Linux container CLI, `wslc`, from PATH. Select it explicitly with `--container-runtime wslc`, for example:
+
+```powershell
+go run .\cmd\dcp info --container-runtime wslc --diagnostics
+```
+
+Automatic selection prefers healthy Docker, then healthy Podman, then healthy WSLC. WSLC can therefore be selected automatically on a machine where it is the only healthy runtime. Each WSLC status refresh uses `wslc version`, `wslc info`, and `wslc network list --no-trunc --format json` to validate the client, session manager, and operational runtime.
+
+The network status probe may open or create the caller's default session and initialize or wake WSLC, including during automatic discovery and recurring status polling. DCP does not configure or terminate the session.
+
+Non-PTY WSLC commands use separate hidden Windows consoles so console-wide shutdown signals cannot interrupt unrelated commands. On cancellation, DCP uses its `stop-process-tree` helper to attach to that console, deliver the shutdown signal, and clean the verified process tree. Terminal attachment continues to use its existing ConPTY console.
+
+WSLC exposes `host.wslc.internal` as its default container-to-host address. `ContainerHost()` and the `hostName` field from `dcp info` return that value for WSLC; consumers must not substitute Docker- or Podman-specific host names.
+
+**WSLC 3.0.1.0 or newer is required.** Older clients or session managers are reported as unsupported rather than healthy. The following limitations were observed with WSLC 3.0.1.0; a missing CLI option does not imply that the underlying WSL runtime lacks the corresponding capability.
+
+| Area | CLI limitation | DCP behavior |
+| --- | --- | --- |
+| Native events | The native event stream has no JSON output mode, and text attributes are not escaped. | Parse the required lifecycle and network identity fields without assuming arbitrary labels can be decoded losslessly. Malformed events are logged; parser panics are recovered and logged with a stack trace without publishing partial events. Switch to structured output when WSLC exposes it; do not substitute polling or synthetic events. As with Docker and Podman, an unexpected stream exit is logged but not restarted while the existing subscriptions remain. |
+| Runtime health and exec notifications | Native health checks and exec work, but corresponding events were not observed. | Live runtime-based health reporting in DCP is unsupported: image `HEALTHCHECK` status can remain stale until another event triggers inspection. DCP-configured HTTP probes still execute normally. Exec completion is obtained from the CLI process, not native exec events. |
+| Archive and image-layer builds | Tar build contexts on stdin, tar-file contexts, and `build --quiet` are unavailable. | Stage a restricted temporary directory, build through the native CLI, and obtain the image ID through `--iidfile`. Docker/Podman keep their streaming path. |
+| Build platform | `build --platform` is rejected. | Default/native builds work; unsupported platform requests fail explicitly. |
+| Restart policy | `create --restart` is rejected. | Empty/`no` policy is supported; non-default requests fail explicitly. |
+| Health-check start interval | `--health-start-interval` is rejected. | Supported health settings are retained; unsupported requested settings fail explicitly. |
+| IPv6 networks | `network create --ipv6` is rejected. | IPv6 requests are not silently converted to IPv4-only networks. |
+| Forced disconnect | `network disconnect --force` is rejected. | Attempt ordinary disconnect and verify detachment, including stopped-container configuration. Report failure if the requested result cannot be verified; stale-endpoint force parity is not assumed. |
+| Raw capabilities | `--cap-add NET_RAW` is rejected. | Raw runtime arguments are not silently stripped. The tunnel test's optional ping/debug argument is omitted for WSLC, without removing its TCP assertions. |
+
+The adapter normalizes native CLI differences such as JSON-line listings versus array inspections, full network IDs versus name-only mutations, container port/mount layouts, structured labels, repeated typed label keys (last value wins), and single-container `start` commands. These are not reasons to disable the corresponding conformance cases.
+
+Archive-backed WSLC builds support regular files and directories from a hash-verified source file or base64 raw contents. Unsafe paths, links, special files, and duplicate or case-colliding paths are rejected explicitly. The Dockerfile must be inside the archive. Staging uses ordinary Windows directory-context metadata, not the archive's Unix ownership or permission bits; use Dockerfile options such as `COPY --chmod` when executable permissions are required. Temporary-context removal is retried after success, failure, or cancellation. A persistent cleanup failure is joined to an existing operation error; after a successful build it is logged without hiding the usable image result. Caller-owned archives are not modified.
+
+To run real-runtime tests, first build prerequisites, then enable the opt-in in the same PowerShell invocation:
+
+```powershell
+make test-prereqs
+$env:DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR = 'true'
+$env:TEST_CONTEXT_TIMEOUT = '180'
+go test -count 1 -parallel 32 -timeout 3m .\test\containers
+make test
+```
+
+The shared runner exercises every healthy installed runtime and uses ownership labels, unique names, and cleanup journals. Confirm that WSLC subtests actually ran rather than relying only on the test process's exit code. Do not use runtime-wide prune or terminate a WSLC session to clean test resources.
+
+Container/network watch tests, spontaneous-exit coverage, archive builds, and `TestTunnelProxyWithRealOrchestrator/wslc` are enabled alongside ordinary conformance, image-layer builds, and terminal coverage. These cases must actually run rather than pass through a blanket WSLC skip. Any additional exception needs specific evidence and an explicit removal condition.
 
 ### Taking performance traces
 

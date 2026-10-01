@@ -1,0 +1,1002 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+package wslc
+
+import (
+	"context"
+	"errors"
+	"io"
+	"testing"
+	"time"
+
+	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/require"
+
+	"github.com/microsoft/dcp/internal/containers"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/pkg/process"
+)
+
+// Verifies native CLI encoding of container networks, mounts, ports, environment, labels, health checks, and terminal options.
+func TestApplyCreateContainerOptionsUsesNativeWslcSyntax(t *testing.T) {
+	t.Parallel()
+
+	args, applyErr := applyCreateContainerOptions([]string{"container", "create"}, containers.CreateContainerOptions{
+		Name:       "test-container",
+		Image:      "example.test/image:latest",
+		Entrypoint: "/entrypoint",
+		Command:    []string{"arg"},
+		Env:        []containers.EnvVar{{Name: "ONE", Value: "two"}},
+		EnvFiles:   []string{`C:\config path\env.list`},
+		Ports: []containers.CreateContainerPort{{
+			ContainerPort: 8080,
+			Protocol:      "tcp",
+		}},
+		VolumeMounts: []containers.CreateContainerVolumeMount{{
+			Type:     containers.BindMount,
+			Source:   `C:\host path\data`,
+			Target:   "/data",
+			ReadOnly: true,
+		}},
+		Labels:     []containers.Label{{Key: "owner", Value: "dcp"}},
+		PullPolicy: containers.PullPolicyMissing,
+		Networks: []containers.CreateContainerNetworkOptions{
+			{Name: "first", Aliases: []string{"one", "two"}},
+			{Name: "second", Aliases: []string{"three"}},
+		},
+		Healthcheck: containers.ContainerHealthcheck{
+			Command: []string{"CMD-SHELL", "test -f /ready"},
+			Timeout: 2 * time.Second,
+		},
+		AttachTerminal: true,
+		RunArgs:        []string{"--custom-option"},
+	})
+
+	require.NoError(t, applyErr)
+	require.Equal(t, []string{
+		"container", "create",
+		"--name", "test-container",
+		"--network", "name=first,alias=one,alias=two",
+		"--network", "name=second,alias=three",
+		"--mount", `type=bind,src=C:\host path\data,target=/data,readonly`,
+		"--publish", "127.0.0.1::8080/tcp",
+		"--env", "ONE=two",
+		"--env-file", `C:\config path\env.list`,
+		"--label", "owner=dcp",
+		"--pull", "missing",
+		"--entrypoint", "/entrypoint",
+		"--health-cmd", "CMD-SHELL test -f /ready",
+		"--health-interval", "30s",
+		"--health-timeout", "2s",
+		"--health-retries", "3",
+		"--interactive", "--tty",
+		"--custom-option",
+	}, args)
+}
+
+// Verifies rejection of unsupported restart policies and health start intervals, and health settings without a command.
+func TestApplyCreateContainerOptionsRejectsUnsupportedSettings(t *testing.T) {
+	t.Parallel()
+
+	_, restartErr := applyCreateContainerOptions(nil, containers.CreateContainerOptions{
+		Image:         "image",
+		RestartPolicy: containers.RestartPolicyAlways,
+	})
+	require.ErrorContains(t, restartErr, "restart policy")
+
+	_, startIntervalErr := applyCreateContainerOptions(nil, containers.CreateContainerOptions{
+		Image: "image",
+		Healthcheck: containers.ContainerHealthcheck{
+			StartInterval: time.Second,
+		},
+	})
+	require.ErrorContains(t, startIntervalErr, "start intervals")
+
+	_, commandErr := applyCreateContainerOptions(nil, containers.CreateContainerOptions{
+		Image: "image",
+		Healthcheck: containers.ContainerHealthcheck{
+			Timeout: time.Second,
+		},
+	})
+	require.ErrorContains(t, commandErr, "require a health-check command")
+}
+
+// Verifies that duplicate label keys produce one native argument per key using the last supplied value.
+func TestApplyCreateContainerOptionsDeduplicatesLabelsLastValueWins(t *testing.T) {
+	t.Parallel()
+
+	args, applyErr := applyCreateContainerOptions(
+		[]string{"container", "create"},
+		containers.CreateContainerOptions{
+			Image:          "busybox:latest",
+			Entrypoint:     "sh",
+			AttachTerminal: true,
+			Labels: []containers.Label{
+				{Key: "persistent", Value: "tracker"},
+				{Key: "owner", Value: "dcp"},
+				{Key: "creator", Value: "first"},
+				{Key: "persistent", Value: "controller"},
+				{Key: "creator", Value: "last"},
+			},
+		},
+	)
+
+	require.NoError(t, applyErr)
+	require.Equal(t, []string{
+		"container", "create",
+		"--label", "creator=last",
+		"--label", "owner=dcp",
+		"--label", "persistent=controller",
+		"--entrypoint", "sh",
+		"--interactive", "--tty",
+	}, args)
+}
+
+// Verifies that overlapping native diagnostics classify allocation failures before generic already-in-use errors.
+func TestCreateContainerClassifiesAllocationFailuresBeforeAlreadyExists(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name          string
+		message       string
+		expectedError error
+		rejectedError error
+	}{
+		{
+			name:          "address already in use",
+			message:       "failed to bind: address already in use\n",
+			expectedError: containers.ErrCouldNotAllocate,
+			rejectedError: containers.ErrAlreadyExists,
+		},
+		{
+			name:          "container already exists",
+			message:       "container already exists\n",
+			expectedError: containers.ErrAlreadyExists,
+			rejectedError: containers.ErrCouldNotAllocate,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, orchestrator, executor := newTestOrchestrator(t)
+			installAutoCommand(
+				t,
+				executor,
+				[]string{"wslc", "container", "create", "image"},
+				"",
+				testCase.message,
+				1,
+			)
+
+			_, createErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{Image: "image"})
+
+			require.ErrorIs(t, createErr, testCase.expectedError)
+			require.NotErrorIs(t, createErr, testCase.rejectedError)
+		})
+	}
+}
+
+// Verifies that container creation resolves a full network ID to its native name without mutating the requested network options.
+func TestCreateContainerResolvesInitialNetworkIDWithoutAliases(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "network", "inspect", "--format", "json", "full-network-id"},
+		`[{"Id":"full-network-id","Name":"network-name","IPAM":{"Config":[]},"Containers":{}}]`,
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "create", "--network", "network-name", "image", "command"},
+		"container-id\n",
+		"",
+		0,
+	)
+	requestedNetworks := []containers.CreateContainerNetworkOptions{{
+		Name: "full-network-id",
+	}}
+
+	containerID, createErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Image:    "image",
+		Command:  []string{"command"},
+		Networks: requestedNetworks,
+	})
+
+	require.NoError(t, createErr)
+	require.Equal(t, "container-id", containerID)
+	require.Equal(t, []containers.CreateContainerNetworkOptions{{Name: "full-network-id"}}, requestedNetworks)
+}
+
+// Verifies that container run resolves multiple network IDs to native names while preserving aliases and caller-owned options.
+func TestRunContainerResolvesMultipleInitialNetworkIDsAndPreservesAliases(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "network", "inspect", "--format", "json", "first-network-id"},
+		`[{"Id":"first-network-id","Name":"first-network","IPAM":{"Config":[]},"Containers":{}}]`,
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "network", "inspect", "--format", "json", "second-network-id"},
+		`[{"Id":"second-network-id","Name":"second-network","IPAM":{"Config":[]},"Containers":{}}]`,
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{
+			"wslc", "container", "run",
+			"--network", "name=first-network,alias=first-alias",
+			"--network", "name=second-network,alias=second-alias,alias=extra-alias",
+			"--detach",
+			"image", "command",
+		},
+		"container-id\n",
+		"",
+		0,
+	)
+	requestedNetworks := []containers.CreateContainerNetworkOptions{
+		{Name: "first-network-id", Aliases: []string{"first-alias"}},
+		{Name: "second-network-id", Aliases: []string{"second-alias", "extra-alias"}},
+	}
+	expectedRequestedNetworks := []containers.CreateContainerNetworkOptions{
+		{Name: "first-network-id", Aliases: []string{"first-alias"}},
+		{Name: "second-network-id", Aliases: []string{"second-alias", "extra-alias"}},
+	}
+
+	containerID, runErr := orchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Image:    "image",
+			Command:  []string{"command"},
+			Networks: requestedNetworks,
+		},
+	})
+
+	require.NoError(t, runErr)
+	require.Equal(t, "container-id", containerID)
+	require.Equal(t, expectedRequestedNetworks, requestedNetworks)
+}
+
+// Verifies that create and run report failed initial-network resolution without issuing a container creation command.
+func TestContainerCreationReturnsInitialNetworkResolutionErrors(t *testing.T) {
+	t.Parallel()
+
+	for _, operation := range []string{"create", "run"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, orchestrator, executor := newTestOrchestrator(t)
+			installAutoCommand(
+				t,
+				executor,
+				[]string{"wslc", "network", "inspect", "--format", "json", "missing-network-id"},
+				`[]`,
+				"Network not found: 'missing-network-id'\n",
+				1,
+			)
+			options := containers.CreateContainerOptions{
+				Image: "image",
+				Networks: []containers.CreateContainerNetworkOptions{{
+					Name:    "missing-network-id",
+					Aliases: []string{"alias"},
+				}},
+			}
+
+			var creationErr error
+			if operation == "create" {
+				_, creationErr = orchestrator.CreateContainer(ctx, options)
+			} else {
+				_, creationErr = orchestrator.RunContainer(ctx, containers.RunContainerOptions{
+					CreateContainerOptions: options,
+				})
+			}
+
+			require.ErrorIs(t, creationErr, containers.ErrNotFound)
+			require.ErrorContains(t, creationErr, `resolving initial container network "missing-network-id"`)
+			require.Empty(t, executor.FindAll([]string{"wslc", "container", operation}, "", nil))
+		})
+	}
+}
+
+// Verifies normalization of WSLC container state, arguments, environment, health, ports, mounts, labels, and network aliases.
+// Native network names must be resolved to full IDs in the inspected result.
+func TestInspectContainersMapsWslcLayoutAndResolvesNetworkIDs(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "inspect", "--format", "json", "container-name"},
+		`[{
+			"Id":"container-id",
+			"Name":"/container-name",
+			"Created":"2026-01-02T03:04:05Z",
+			"Config":{
+				"Image":"example.test/image:tag",
+				"Cmd":["arg1","arg2"],
+				"Entrypoint":["/entrypoint"],
+				"Env":["ONE=two","EMPTY","WITH_EQUALS=a=b"],
+				"Labels":{"owner":"dcp"},
+				"Healthcheck":{"Test":["CMD-SHELL","test -f /ready"]}
+			},
+			"State":{
+				"Status":"running",
+				"Running":true,
+				"StartedAt":"2026-01-02T03:05:05Z",
+				"FinishedAt":"0001-01-01T00:00:00Z",
+				"ExitCode":0,
+				"Error":"",
+				"Health":{"Status":"healthy","FailingStreak":0,"Log":[]}
+			},
+			"Ports":{"8080/tcp":[{"HostIp":"127.0.0.1","HostPort":"49152"}]},
+			"Mounts":[
+				{"Type":"bind","Source":"C:\\host path\\data","Destination":"/bind","ReadWrite":false},
+				{"Type":"volume","Source":"/ignored","Name":"named-volume","Destination":"/volume","ReadWrite":true}
+			],
+			"NetworkSettings":{"Networks":{
+				"bridge":{"Aliases":["container-name"],"Gateway":"172.20.0.1","IPAddress":"172.20.0.2","MacAddress":"00:11:22:33:44:55"},
+				"custom":{"Aliases":["alias"],"Gateway":"172.21.0.1","IPAddress":"172.21.0.2","MacAddress":"00:11:22:33:44:66"}
+			}}
+		}]`,
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "network", "inspect", "--format", "json", "bridge", "custom"},
+		`[
+			{"Id":"bridge-id","Name":"bridge","Driver":"bridge","IPAM":{"Config":[]},"Containers":{}},
+			{"Id":"custom-id","Name":"custom","Driver":"bridge","IPAM":{"Config":[]},"Containers":{}}
+		]`,
+		"",
+		0,
+	)
+
+	inspected, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{"container-name"},
+	})
+
+	require.NoError(t, inspectErr)
+	require.Len(t, inspected, 1)
+	container := inspected[0]
+	require.Equal(t, "container-id", container.Id)
+	require.Equal(t, "container-name", container.Name)
+	require.Equal(t, "example.test/image:tag", container.Image)
+	require.Equal(t, containers.ContainerStatusRunning, container.Status)
+	require.Equal(t, []string{"/entrypoint", "arg1", "arg2"}, container.Args)
+	require.Equal(t, "two", container.Env["ONE"])
+	require.Equal(t, "", container.Env["EMPTY"])
+	require.Equal(t, "a=b", container.Env["WITH_EQUALS"])
+	require.Equal(t, []string{"CMD-SHELL", "test -f /ready"}, container.Healthcheck)
+	require.NotNil(t, container.Health)
+	require.Equal(t, "healthy", container.Health.Status)
+	require.Equal(t, "49152", container.Ports["8080/tcp"][0].HostPort)
+	require.Equal(t, containers.VolumeMount{
+		Type:     containers.BindMount,
+		Source:   `C:\host path\data`,
+		Target:   "/bind",
+		ReadOnly: true,
+	}, container.Mounts[0])
+	require.Equal(t, "named-volume", container.Mounts[1].Source)
+	require.Equal(t, "bridge-id", container.Networks[0].Id)
+	require.Equal(t, "custom-id", container.Networks[1].Id)
+	require.Equal(t, "alias", container.Networks[1].Aliases[0])
+	require.Equal(t, "dcp", container.Labels["owner"])
+}
+
+// Verifies that failed network enrichment preserves the inspected container and network name without inventing an ID or container error.
+func TestInspectContainersDoesNotInventMissingNetworkIDs(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "inspect", "--format", "json", "container-name"},
+		`[{"Id":"container-id","Name":"/container-name","Config":{"Image":"image"},"State":{"Status":"created"},"NetworkSettings":{"Networks":{"gone":{}}}}]`,
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "network", "inspect", "--format", "json", "gone"},
+		`[]`,
+		"Network not found: 'gone'\n",
+		1,
+	)
+
+	inspected, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{"container-name"},
+	})
+
+	require.NoError(t, inspectErr)
+	require.Len(t, inspected, 1)
+	require.Len(t, inspected[0].Networks, 1)
+	require.Equal(t, "gone", inspected[0].Networks[0].Name)
+	require.Empty(t, inspected[0].Networks[0].Id)
+}
+
+// Verifies that container inspection retains a valid object and resolved network ID while reporting missing and incomplete results.
+func TestInspectContainersPreservesValidObjectAlongsideMissingReference(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "inspect", "--format", "json", "present", "missing"},
+		`[{"Id":"container-id","Name":"/present","Config":{"Image":"image"},"State":{"Status":"running"},"NetworkSettings":{"Networks":{"bridge":{}}}}]`,
+		"Container 'missing' not found.\n",
+		1,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "network", "inspect", "--format", "json", "bridge"},
+		`[{"Id":"bridge-id","Name":"bridge","IPAM":{"Config":[]},"Containers":{"container-id":{"Name":"present"}}}]`,
+		"",
+		0,
+	)
+
+	inspected, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{"present", "missing"},
+	})
+
+	require.Len(t, inspected, 1)
+	require.Equal(t, "container-id", inspected[0].Id)
+	require.Equal(t, "bridge-id", inspected[0].Networks[0].Id)
+	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+	require.ErrorIs(t, inspectErr, containers.ErrIncomplete)
+}
+
+// Verifies that container listing obtains authoritative labels and network names through inspection rather than parsing comma-delimited label text.
+func TestListContainersUsesInspectionForLabelsWithCommas(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "list", "--no-trunc", "--all", "--filter", "label=owner=dcp", "--format", "json"},
+		`{"ID":"container-id","Names":"container-name","Image":"image","State":"running","Networks":"bridge, custom","Labels":"owner=dcp,com.microsoft.wslc.metadata={\"one\":1,\"two\":2}"}`+"\n",
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "inspect", "--format", "json", "container-id"},
+		`[{"Id":"container-id","Name":"/container-name","Config":{"Labels":{"owner":"dcp","value":"one,two=three"}}}]`,
+		"",
+		0,
+	)
+
+	listed, listErr := orchestrator.ListContainers(ctx, containers.ListContainersOptions{
+		All: true,
+		Filters: containers.ListContainersFilters{
+			LabelFilters: []containers.LabelFilter{{Key: "owner", Value: "dcp"}},
+		},
+	})
+
+	require.NoError(t, listErr)
+	require.Len(t, listed, 1)
+	require.Equal(t, "one,two=three", listed[0].Labels["value"])
+	require.Equal(t, []string{"bridge", "custom"}, listed[0].Networks)
+}
+
+// Verifies that a container removed between list and label inspection is omitted without failing the list operation.
+func TestListContainersIgnoresRemovalDuringLabelInspection(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "list", "--no-trunc", "--all", "--format", "json"},
+		"{\"ID\":\"first-id\",\"Names\":\"first\",\"Image\":\"image\",\"State\":\"running\"}\n"+
+			"{\"ID\":\"removed-id\",\"Names\":\"removed\",\"Image\":\"image\",\"State\":\"running\"}\n",
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "inspect", "--format", "json", "first-id", "removed-id"},
+		`[{"Id":"first-id","Name":"/first","Config":{"Labels":{"owner":"dcp"}}}]`,
+		"Container 'removed-id' not found.\n",
+		1,
+	)
+
+	listed, listErr := orchestrator.ListContainers(ctx, containers.ListContainersOptions{All: true})
+
+	require.NoError(t, listErr)
+	require.Len(t, listed, 1)
+	require.Equal(t, "first-id", listed[0].Id)
+	require.Equal(t, "dcp", listed[0].Labels["owner"])
+}
+
+// Verifies that list label inspection still reports failures unrelated to an object removal race.
+func TestListContainersReportsUnexpectedLabelInspectionFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "list", "--no-trunc", "--all", "--format", "json"},
+		"{\"ID\":\"container-id\",\"Names\":\"container\",\"Image\":\"image\",\"State\":\"running\"}\n",
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "inspect", "--format", "json", "container-id"},
+		"",
+		"session manager unavailable\n",
+		1,
+	)
+
+	listed, listErr := orchestrator.ListContainers(ctx, containers.ListContainersOptions{All: true})
+
+	require.Error(t, listErr)
+	require.ErrorIs(t, listErr, containers.ErrRuntimeNotHealthy)
+	require.Len(t, listed, 1)
+}
+
+// Verifies that container-list network filters resolve full IDs to native network names before invoking WSLC.
+func TestListContainersResolvesNetworkIDFiltersToNativeNames(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "network", "inspect", "--format", "json", "network-id"},
+		`[{"Id":"network-id","Name":"network-name","IPAM":{"Config":[]},"Containers":{}}]`,
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "list", "--no-trunc", "--all", "--filter", "network=network-name", "--format", "json"},
+		"",
+		"",
+		0,
+	)
+
+	listed, listErr := orchestrator.ListContainers(ctx, containers.ListContainersOptions{
+		All: true,
+		Filters: containers.ListContainersFilters{
+			NetworkFilters: []string{"network-id"},
+		},
+	})
+
+	require.NoError(t, listErr)
+	require.Empty(t, listed)
+	require.Empty(t, executor.FindAll(
+		[]string{"wslc", "container", "list", "--no-trunc", "--all", "--filter", "network=network-id"},
+		"",
+		nil,
+	))
+}
+
+// Verifies that a failed create command still returns a reported container ID alongside its error for subsequent cleanup.
+func TestCreateContainerReturnsPartialIDOnCommandFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "create", "--name", "container-name", "image"},
+		"container-id\n",
+		"unexpected post-create failure\n",
+		1,
+	)
+
+	containerID, createErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:  "container-name",
+		Image: "image",
+	})
+
+	require.Equal(t, "container-id", containerID)
+	require.Error(t, createErr)
+}
+
+// Verifies that container run requests native detached execution and returns the resulting container identifier.
+func TestRunContainerUsesDetachAndReturnsID(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{
+			"wslc", "container", "run",
+			"--name", "container-name",
+			"--detach",
+			"--custom-option",
+			"image",
+			"command", "arg",
+		},
+		"container-id\n",
+		"",
+		0,
+	)
+
+	containerID, runErr := orchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:    "container-name",
+			Image:   "image",
+			Command: []string{"command", "arg"},
+			RunArgs: []string{"--custom-option"},
+		},
+	})
+
+	require.NoError(t, runErr)
+	require.Equal(t, "container-id", containerID)
+}
+
+// Verifies that multi-container start issues one native command per input and preserves successful results around a missing container.
+func TestStartContainersRunsOneNativeCommandPerContainer(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(t, executor, []string{"wslc", "container", "start", "first"}, "first\n", "", 0)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "start", "missing"},
+		"",
+		"Container 'missing' not found.\n",
+		1,
+	)
+	installAutoCommand(t, executor, []string{"wslc", "container", "start", "third"}, "third\n", "", 0)
+
+	started, startErr := orchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{"first", "missing", "third"},
+	})
+
+	require.Equal(t, []string{"first", "third"}, started)
+	require.ErrorIs(t, startErr, containers.ErrNotFound)
+	require.ErrorIs(t, startErr, containers.ErrIncomplete)
+	require.Len(t, executor.FindAll([]string{"wslc", "container", "start"}, "", nil), 3)
+}
+
+// Verifies that container stop maps the requested grace period to WSLC's native timeout flag and returns the requested identifier.
+func TestStopContainersUsesNativeTimeoutFlag(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "stop", "-t", "5", "container"},
+		"container\n",
+		"",
+		0,
+	)
+
+	stopped, stopErr := orchestrator.StopContainers(ctx, containers.StopContainersOptions{
+		Containers:    []string{"container"},
+		SecondsToKill: 5,
+	})
+
+	require.NoError(t, stopErr)
+	require.Equal(t, []string{"container"}, stopped)
+}
+
+// Verifies that exec keeps stdout and stderr separate and delivers one buffered exit code before closing its result channel.
+func TestExecContainerKeepsStreamsSeparateAndBuffersExitCode(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "exec", "--workdir", "/work", "--env", "ONE=two", "container", "command", "arg"},
+		"stdout-value",
+		"stderr-value",
+		7,
+	)
+
+	stdout := newTestWriteSyncCloser()
+	stderr := newTestWriteSyncCloser()
+	exitCodes, execErr := orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
+		Container:        "container",
+		WorkingDirectory: "/work",
+		Env:              []containers.EnvVar{{Name: "ONE", Value: "two"}},
+		Command:          "command",
+		Args:             []string{"arg"},
+		StreamCommandOptions: containers.StreamCommandOptions{
+			StdOutStream: stdout,
+			StdErrStream: stderr,
+		},
+	})
+
+	require.NoError(t, execErr)
+	require.Equal(t, 1, cap(exitCodes))
+	exitCode, hasExitCode := <-exitCodes
+	require.True(t, hasExitCode)
+	require.Equal(t, int32(7), exitCode)
+	_, open := <-exitCodes
+	require.False(t, open)
+	require.Equal(t, "stdout-value", stdout.String())
+	require.Equal(t, "stderr-value", stderr.String())
+	select {
+	case <-stdout.closed:
+		t.Fatal("stdout was closed by ExecContainer")
+	default:
+	}
+	select {
+	case <-stderr.closed:
+		t.Fatal("stderr was closed by ExecContainer")
+	default:
+	}
+}
+
+// Verifies that an exec startup error is returned synchronously without a completion channel.
+func TestExecContainerStartupFailureReturnsNilChannel(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	expectedStartErr := errors.New("exec startup failed")
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"wslc", "container", "exec", "container", "command"},
+		},
+		StartupError: func(*internal_testutil.ProcessExecution) error {
+			return expectedStartErr
+		},
+	})
+
+	exitCodes, execErr := orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
+		Container: "container",
+		Command:   "command",
+	})
+
+	require.Nil(t, exitCodes)
+	require.ErrorIs(t, execErr, expectedStartErr)
+}
+
+// Verifies that exec cancellation uses the console-aware stop hook, reports one result, and surfaces stop failures.
+func TestExecContainerCancellationUsesConsoleAwareStop(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	commandStarted := make(chan struct{})
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"wslc", "container", "exec", "container", "command"},
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			close(commandStarted)
+			<-execution.Signal
+			return 0
+		},
+	})
+
+	expectedStopErr := errors.New("stop helper failed")
+	stopCalled := make(chan process.ProcessHandle, 1)
+	orchestrator.stopProcessTree = func(
+		_ context.Context,
+		_ process.Executor,
+		handle process.ProcessHandle,
+		_ logr.Logger,
+	) error {
+		stopCalled <- handle
+		return expectedStopErr
+	}
+	logSink := &errorCaptureLogSink{}
+	orchestrator.log = logr.New(logSink)
+
+	execCtx, execCancel := context.WithCancel(ctx)
+	exitCodes, execErr := orchestrator.ExecContainer(execCtx, containers.ExecContainerOptions{
+		Container: "container",
+		Command:   "command",
+	})
+	require.NoError(t, execErr)
+
+	select {
+	case <-commandStarted:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	execCancel()
+
+	select {
+	case handle := <-stopCalled:
+		require.NoError(t, handle.Validate())
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	exitCode, hasExitCode := <-exitCodes
+	require.True(t, hasExitCode)
+	require.Equal(t, int32(internal_testutil.KilledProcessExitCode), exitCode)
+	_, open := <-exitCodes
+	require.False(t, open)
+
+	stopErrObserved := false
+	for _, loggedErr := range logSink.capturedErrors() {
+		if errors.Is(loggedErr, expectedStopErr) {
+			stopErrObserved = true
+			break
+		}
+	}
+	require.True(t, stopErrObserved)
+}
+
+// Verifies that process-exit tracking errors remain observable while the completion channel still resolves once.
+func TestExecContainerReportsProcessExitError(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "exec", "container", "command"},
+		"",
+		"",
+		19,
+	)
+
+	expectedExitErr := errors.New("exit tracking failed")
+	orchestrator.executor = processExitErrorExecutor{
+		Executor: executor,
+		exitErr:  expectedExitErr,
+	}
+	logSink := &errorCaptureLogSink{}
+	orchestrator.log = logr.New(logSink)
+
+	exitCodes, execErr := orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
+		Container: "container",
+		Command:   "command",
+	})
+	require.NoError(t, execErr)
+
+	exitCode, hasExitCode := <-exitCodes
+	require.True(t, hasExitCode)
+	require.Equal(t, int32(19), exitCode)
+	_, open := <-exitCodes
+	require.False(t, open)
+
+	exitErrObserved := false
+	for _, loggedErr := range logSink.capturedErrors() {
+		if errors.Is(loggedErr, expectedExitErr) {
+			exitErrObserved = true
+			break
+		}
+	}
+	require.True(t, exitErrObserved)
+}
+
+// Verifies that structured container files are assembled into a nonempty archive and passed to native copy through stdin.
+func TestCreateFilesCopiesGeneratedArchiveOnStdin(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	var archiveSize int
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"wslc", "container", "cp", "-a=false", "-", "container:/"},
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			archive, readErr := io.ReadAll(execution.Cmd.Stdin)
+			require.NoError(t, readErr)
+			archiveSize = len(archive)
+			return 0
+		},
+	})
+
+	createErr := orchestrator.CreateFiles(ctx, containers.CreateFilesOptions{
+		Container:   "container",
+		Destination: "/data",
+		ModTime:     time.Unix(1, 0),
+		Entries: []containers.FileSystemEntry{{
+			Name:     "file.txt",
+			Contents: "contents",
+		}},
+	})
+
+	require.NoError(t, createErr)
+	require.Positive(t, archiveSize)
+}
+
+// Verifies that an empty file-entry request returns an error without invoking the WSLC CLI.
+func TestCreateFilesRejectsEmptyEntries(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	createErr := orchestrator.CreateFiles(ctx, containers.CreateFilesOptions{
+		Container: "container",
+	})
+
+	require.ErrorContains(t, createErr, "at least one file-system entry")
+	require.Empty(t, executor.Executions)
+}
+
+// Verifies that log capture preserves separate stdout/stderr data and closes both destinations when the native command exits.
+func TestCaptureContainerLogsSeparatesAndClosesStreams(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "logs", "--follow", "--timestamps", "container"},
+		"stdout-log",
+		"stderr-log",
+		0,
+	)
+	stdout := newTestWriteSyncCloser()
+	stderr := newTestWriteSyncCloser()
+
+	captureErr := orchestrator.CaptureContainerLogs(
+		ctx,
+		"container",
+		stdout,
+		stderr,
+		containers.StreamContainerLogsOptions{Follow: true, Timestamps: true},
+	)
+	require.NoError(t, captureErr)
+
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case <-stdout.closed:
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case <-stderr.closed:
+	}
+	require.Equal(t, "stdout-log", stdout.String())
+	require.Equal(t, "stderr-log", stderr.String())
+	require.Equal(t, int32(0), stdout.syncCount.Load())
+	require.Equal(t, int32(0), stderr.syncCount.Load())
+}
+
+// Verifies that sequential container removal retains successful identifiers while reporting missing and incomplete results.
+func TestSequentialOperationsPreservePartialResults(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(t, executor, []string{"wslc", "container", "remove", "--volumes", "--force", "first"}, "", "", 0)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "remove", "--volumes", "--force", "missing"},
+		"",
+		"Container 'missing' not found.\n",
+		1,
+	)
+
+	removed, removeErr := orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
+		Containers: []string{"first", "missing"},
+		Force:      true,
+	})
+
+	require.Equal(t, []string{"first"}, removed)
+	require.True(t, errors.Is(removeErr, containers.ErrNotFound))
+	require.True(t, errors.Is(removeErr, containers.ErrIncomplete))
+}
