@@ -193,7 +193,9 @@ On Windows, DCP can use the native Windows Subsystem for Linux container CLI, `w
 go run .\cmd\dcp info --container-runtime wslc --diagnostics
 ```
 
-Automatic selection prefers healthy Docker, then healthy Podman, then healthy WSLC. WSLC can therefore be selected automatically on a machine where it is the only healthy runtime. Runtime status validates the WSLC client and session manager without requiring a pre-existing default session. Normal WSLC commands let WSLC create its default session lazily; DCP does not terminate or configure that session.
+Automatic selection prefers healthy Docker, then healthy Podman, then healthy WSLC. WSLC can therefore be selected automatically on a machine where it is the only healthy runtime. Each WSLC status refresh uses `wslc version`, `wslc info`, and `wslc network list --no-trunc --format json` to validate the client, session manager, and operational runtime.
+
+The network status probe may open or create the caller's default session and initialize or wake WSLC, including during automatic discovery and recurring status polling. DCP does not configure or terminate the session.
 
 Non-PTY WSLC commands use separate hidden Windows consoles so console-wide shutdown signals cannot interrupt unrelated commands. On cancellation, DCP uses its `stop-process-tree` helper to attach to that console, deliver the shutdown signal, and clean the verified process tree. Terminal attachment continues to use its existing ConPTY console.
 

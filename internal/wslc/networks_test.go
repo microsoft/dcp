@@ -6,12 +6,14 @@
 package wslc
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/dcp/internal/containers"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 )
 
 // Verifies that network creation resolves the native name response through inspection and returns the full network ID.
@@ -695,6 +697,165 @@ func TestListNetworksIgnoresRemovalDuringLabelInspection(t *testing.T) {
 	require.Len(t, listed, 1)
 	require.Equal(t, "first-id", listed[0].ID)
 	require.Equal(t, "dcp", listed[0].Labels["owner"])
+}
+
+// Verifies that status uses only the raw, unfiltered network-list command and validates its JSON-line records.
+func TestStatusUsesRawNetworkListWithoutInspection(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name             string
+		stdout           string
+		stderr           string
+		exitCode         int32
+		wantError        bool
+		wantUnmarshalErr bool
+	}{
+		{
+			name:     "valid network",
+			stdout:   "{\"ID\":\"network-id\",\"Name\":\"network-name\"}\n",
+			exitCode: 0,
+		},
+		{
+			name:     "empty output",
+			exitCode: 0,
+		},
+		{
+			name:             "malformed JSON",
+			stdout:           "not-json\n",
+			exitCode:         0,
+			wantError:        true,
+			wantUnmarshalErr: true,
+		},
+		{
+			name:             "missing ID",
+			stdout:           "{\"Name\":\"network-name\"}\n",
+			exitCode:         0,
+			wantError:        true,
+			wantUnmarshalErr: true,
+		},
+		{
+			name:             "missing name",
+			stdout:           "{\"ID\":\"network-id\"}\n",
+			exitCode:         0,
+			wantError:        true,
+			wantUnmarshalErr: true,
+		},
+		{
+			name:      "command failure",
+			stderr:    "default session is unavailable\n",
+			exitCode:  1,
+			wantError: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, orchestrator, executor := newTestOrchestrator(t)
+			installAutoCommand(
+				t,
+				executor,
+				[]string{"wslc", "version", "--format", "json"},
+				`{"Client":{"Version":"3.0.1.0"}}`,
+				"",
+				0,
+			)
+			installAutoCommand(
+				t,
+				executor,
+				[]string{"wslc", "info", "--format", "json"},
+				`{"Client":{"Version":"3.0.1.0"},"Server":{"SessionManagerVersion":"3.0.1","Sessions":[]}}`,
+				"",
+				0,
+			)
+			installAutoCommand(
+				t,
+				executor,
+				[]string{"wslc", "network", "list", "--no-trunc", "--format", "json"},
+				testCase.stdout,
+				testCase.stderr,
+				testCase.exitCode,
+			)
+
+			status := orchestrator.getStatusForOS(ctx, "windows")
+
+			if testCase.wantError {
+				require.True(t, status.Installed)
+				require.False(t, status.Running)
+				require.NotEmpty(t, status.Error)
+			} else {
+				require.True(t, status.Installed)
+				require.True(t, status.Running)
+				require.Empty(t, status.Error)
+			}
+			if testCase.wantUnmarshalErr {
+				require.Contains(t, status.Error, containers.ErrUnmarshalling.Error())
+			}
+			require.Len(
+				t,
+				executor.FindAll([]string{"wslc", "network", "list", "--no-trunc", "--format", "json"}, "", nil),
+				1,
+			)
+			require.Empty(t, executor.FindAll([]string{"wslc", "network", "inspect"}, "", nil))
+		})
+	}
+}
+
+// Verifies that cancellation stops the raw status command and reports the context error without inspecting networks.
+func TestStatusNetworkListCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "version", "--format", "json"},
+		`{"Client":{"Version":"3.0.1.0"}}`,
+		"",
+		0,
+	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "info", "--format", "json"},
+		`{"Client":{"Version":"3.0.1.0"},"Server":{"SessionManagerVersion":"3.0.1","Sessions":[]}}`,
+		"",
+		0,
+	)
+	commandStarted := make(chan struct{})
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"wslc", "network", "list", "--no-trunc", "--format", "json"},
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			close(commandStarted)
+			<-execution.Signal
+			return 0
+		},
+	})
+
+	statusCtx, statusCancel := context.WithCancel(ctx)
+	result := make(chan containers.ContainerRuntimeStatus, 1)
+	go func() {
+		result <- orchestrator.getStatusForOS(statusCtx, "windows")
+	}()
+
+	select {
+	case <-commandStarted:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	statusCancel()
+
+	select {
+	case status := <-result:
+		require.True(t, status.Installed)
+		require.False(t, status.Running)
+		require.Contains(t, status.Error, context.Canceled.Error())
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	require.Empty(t, executor.FindAll([]string{"wslc", "network", "inspect"}, "", nil))
 }
 
 // Verifies that network removal retains successful requests while reporting missing networks and incomplete results.

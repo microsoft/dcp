@@ -50,6 +50,14 @@ func TestStatusHealthyWithDefaultSession(t *testing.T) {
 		"",
 		0,
 	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "network", "list", "--no-trunc", "--format", "json"},
+		"{\"ID\":\"bridge-id\",\"Name\":\"bridge\"}\n",
+		"",
+		0,
+	)
 
 	status := orchestrator.getStatusForOS(ctx, "windows")
 
@@ -58,8 +66,8 @@ func TestStatusHealthyWithDefaultSession(t *testing.T) {
 	require.Empty(t, status.Error)
 }
 
-// Verifies that a responsive supported session manager is healthy before a default session is created.
-func TestStatusAllowsLazyDefaultSessionCreation(t *testing.T) {
+// Verifies that status relies on the operational network probe rather than the session inventory.
+func TestStatusDoesNotRequireDefaultSessionInInfo(t *testing.T) {
 	t.Parallel()
 
 	for _, testCase := range []struct {
@@ -90,12 +98,25 @@ func TestStatusAllowsLazyDefaultSessionCreation(t *testing.T) {
 				"",
 				0,
 			)
+			installAutoCommand(
+				t,
+				executor,
+				[]string{"wslc", "network", "list", "--no-trunc", "--format", "json"},
+				"{\"ID\":\"bridge-id\",\"Name\":\"bridge\"}\n",
+				"",
+				0,
+			)
 
 			status := orchestrator.getStatusForOS(ctx, "windows")
 
 			require.True(t, status.Installed)
 			require.True(t, status.Running)
 			require.Empty(t, status.Error)
+			require.Len(
+				t,
+				executor.FindAll([]string{"wslc", "network", "list", "--no-trunc", "--format", "json"}, "", nil),
+				1,
+			)
 		})
 	}
 }
@@ -173,7 +194,6 @@ func TestDiagnosticsDecodeClientAndSessionManagerVersions(t *testing.T) {
 		"",
 		0,
 	)
-
 	diagnostics, diagnosticsErr := orchestrator.getDiagnosticsForOS(ctx, "windows")
 
 	require.NoError(t, diagnosticsErr)
@@ -222,6 +242,14 @@ func TestBackgroundStatusUpdatesAreIdempotent(t *testing.T) {
 		"",
 		0,
 	)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "network", "list", "--no-trunc", "--format", "json"},
+		"{\"ID\":\"bridge-id\",\"Name\":\"bridge\"}\n",
+		"",
+		0,
+	)
 
 	orchestrator.EnsureBackgroundStatusUpdates(ctx)
 	orchestrator.EnsureBackgroundStatusUpdates(ctx)
@@ -239,6 +267,7 @@ func TestBackgroundStatusUpdatesAreIdempotent(t *testing.T) {
 	}
 	require.Len(t, executor.FindAll([]string{"wslc", "version", "--format", "json"}, "", nil), 1)
 	require.Len(t, executor.FindAll([]string{"wslc", "info", "--format", "json"}, "", nil), 1)
+	require.Len(t, executor.FindAll([]string{"wslc", "network", "list", "--no-trunc", "--format", "json"}, "", nil), 1)
 	require.True(t, orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed).IsHealthy())
 }
 

@@ -432,9 +432,13 @@ func identifiersMatch(first string, second string) bool {
 		(strings.HasPrefix(first, second) || strings.HasPrefix(second, first))
 }
 
-func (wco *WslcCliOrchestrator) ListNetworks(ctx context.Context, options containers.ListNetworksOptions) ([]containers.ListedNetwork, error) {
+func (wco *WslcCliOrchestrator) listNetworksRaw(
+	ctx context.Context,
+	commandName string,
+	labelFilters []containers.LabelFilter,
+) ([]wslcListedNetwork, error) {
 	args := []string{"network", "list", "--no-trunc"}
-	for _, label := range options.Filters.LabelFilters {
+	for _, label := range labelFilters {
 		filter := "label=" + label.Key
 		if label.Value != "" {
 			filter += "=" + label.Value
@@ -446,7 +450,7 @@ func (wco *WslcCliOrchestrator) ListNetworks(ctx context.Context, options contai
 	cmd := makeWslcCommand(args...)
 	outBuf, errBuf, runErr := wco.runBufferedWslcCommand(
 		ctx,
-		"ListNetworks",
+		commandName,
 		cmd,
 		nil,
 		nil,
@@ -457,8 +461,7 @@ func (wco *WslcCliOrchestrator) ListNetworks(ctx context.Context, options contai
 	}
 
 	rawNetworks, decodeErr := decodeJSONLines[wslcListedNetwork](outBuf)
-	listedNetworks := make([]containers.ListedNetwork, 0, len(rawNetworks))
-	labelInspectionIDs := make([]string, 0, len(rawNetworks))
+	validNetworks := make([]wslcListedNetwork, 0, len(rawNetworks))
 	for _, rawNetwork := range rawNetworks {
 		if rawNetwork.ID == "" || rawNetwork.Name == "" {
 			decodeErr = errors.Join(
@@ -468,6 +471,21 @@ func (wco *WslcCliOrchestrator) ListNetworks(ctx context.Context, options contai
 			)
 			continue
 		}
+		validNetworks = append(validNetworks, rawNetwork)
+	}
+
+	return validNetworks, decodeErr
+}
+
+func (wco *WslcCliOrchestrator) ListNetworks(ctx context.Context, options containers.ListNetworksOptions) ([]containers.ListedNetwork, error) {
+	rawNetworks, listErr := wco.listNetworksRaw(ctx, "ListNetworks", options.Filters.LabelFilters)
+	if rawNetworks == nil && listErr != nil {
+		return nil, listErr
+	}
+
+	listedNetworks := make([]containers.ListedNetwork, 0, len(rawNetworks))
+	labelInspectionIDs := make([]string, 0, len(rawNetworks))
+	for _, rawNetwork := range rawNetworks {
 		listedNetworks = append(listedNetworks, containers.ListedNetwork{
 			Driver:   rawNetwork.Driver,
 			ID:       rawNetwork.ID,
@@ -502,15 +520,15 @@ func (wco *WslcCliOrchestrator) ListNetworks(ctx context.Context, options contai
 		if isBenignListInspectionRace(inspectionResultErr) {
 			listedNetworks = survivingNetworks
 		} else if inspectionResultErr != nil {
-			decodeErr = errors.Join(
-				decodeErr,
+			listErr = errors.Join(
+				listErr,
 				fmt.Errorf("resolving authoritative labels for listed WSLC networks: %w",
 					inspectionResultErr),
 			)
 		}
 	}
 
-	return listedNetworks, decodeErr
+	return listedNetworks, listErr
 }
 
 func (wco *WslcCliOrchestrator) resolveNetwork(

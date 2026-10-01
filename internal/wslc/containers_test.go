@@ -6,17 +6,18 @@
 package wslc
 
 import (
-	"bytes"
+	"context"
 	"errors"
 	"io"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/dcp/internal/containers"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
-	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 // Verifies native CLI encoding of container networks, mounts, ports, environment, labels, health checks, and terminal options.
@@ -719,8 +720,8 @@ func TestExecContainerKeepsStreamsSeparateAndBuffersExitCode(t *testing.T) {
 		7,
 	)
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	stdout := newTestWriteSyncCloser()
+	stderr := newTestWriteSyncCloser()
 	exitCodes, execErr := orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
 		Container:        "container",
 		WorkingDirectory: "/work",
@@ -728,8 +729,8 @@ func TestExecContainerKeepsStreamsSeparateAndBuffersExitCode(t *testing.T) {
 		Command:          "command",
 		Args:             []string{"arg"},
 		StreamCommandOptions: containers.StreamCommandOptions{
-			StdOutStream: usvc_io.NopWriteCloser(&stdout),
-			StdErrStream: usvc_io.NopWriteCloser(&stderr),
+			StdOutStream: stdout,
+			StdErrStream: stderr,
 		},
 	})
 
@@ -742,6 +743,151 @@ func TestExecContainerKeepsStreamsSeparateAndBuffersExitCode(t *testing.T) {
 	require.False(t, open)
 	require.Equal(t, "stdout-value", stdout.String())
 	require.Equal(t, "stderr-value", stderr.String())
+	select {
+	case <-stdout.closed:
+		t.Fatal("stdout was closed by ExecContainer")
+	default:
+	}
+	select {
+	case <-stderr.closed:
+		t.Fatal("stderr was closed by ExecContainer")
+	default:
+	}
+}
+
+// Verifies that an exec startup error is returned synchronously without a completion channel.
+func TestExecContainerStartupFailureReturnsNilChannel(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	expectedStartErr := errors.New("exec startup failed")
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"wslc", "container", "exec", "container", "command"},
+		},
+		StartupError: func(*internal_testutil.ProcessExecution) error {
+			return expectedStartErr
+		},
+	})
+
+	exitCodes, execErr := orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
+		Container: "container",
+		Command:   "command",
+	})
+
+	require.Nil(t, exitCodes)
+	require.ErrorIs(t, execErr, expectedStartErr)
+}
+
+// Verifies that exec cancellation uses the console-aware stop hook, reports one result, and surfaces stop failures.
+func TestExecContainerCancellationUsesConsoleAwareStop(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	commandStarted := make(chan struct{})
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"wslc", "container", "exec", "container", "command"},
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			close(commandStarted)
+			<-execution.Signal
+			return 0
+		},
+	})
+
+	expectedStopErr := errors.New("stop helper failed")
+	stopCalled := make(chan process.ProcessHandle, 1)
+	orchestrator.stopProcessTree = func(
+		_ context.Context,
+		_ process.Executor,
+		handle process.ProcessHandle,
+		_ logr.Logger,
+	) error {
+		stopCalled <- handle
+		return expectedStopErr
+	}
+	logSink := &errorCaptureLogSink{}
+	orchestrator.log = logr.New(logSink)
+
+	execCtx, execCancel := context.WithCancel(ctx)
+	exitCodes, execErr := orchestrator.ExecContainer(execCtx, containers.ExecContainerOptions{
+		Container: "container",
+		Command:   "command",
+	})
+	require.NoError(t, execErr)
+
+	select {
+	case <-commandStarted:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	execCancel()
+
+	select {
+	case handle := <-stopCalled:
+		require.NoError(t, handle.Validate())
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	exitCode, hasExitCode := <-exitCodes
+	require.True(t, hasExitCode)
+	require.Equal(t, int32(internal_testutil.KilledProcessExitCode), exitCode)
+	_, open := <-exitCodes
+	require.False(t, open)
+
+	stopErrObserved := false
+	for _, loggedErr := range logSink.capturedErrors() {
+		if errors.Is(loggedErr, expectedStopErr) {
+			stopErrObserved = true
+			break
+		}
+	}
+	require.True(t, stopErrObserved)
+}
+
+// Verifies that process-exit tracking errors remain observable while the completion channel still resolves once.
+func TestExecContainerReportsProcessExitError(t *testing.T) {
+	t.Parallel()
+
+	ctx, orchestrator, executor := newTestOrchestrator(t)
+	installAutoCommand(
+		t,
+		executor,
+		[]string{"wslc", "container", "exec", "container", "command"},
+		"",
+		"",
+		19,
+	)
+
+	expectedExitErr := errors.New("exit tracking failed")
+	orchestrator.executor = processExitErrorExecutor{
+		Executor: executor,
+		exitErr:  expectedExitErr,
+	}
+	logSink := &errorCaptureLogSink{}
+	orchestrator.log = logr.New(logSink)
+
+	exitCodes, execErr := orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
+		Container: "container",
+		Command:   "command",
+	})
+	require.NoError(t, execErr)
+
+	exitCode, hasExitCode := <-exitCodes
+	require.True(t, hasExitCode)
+	require.Equal(t, int32(19), exitCode)
+	_, open := <-exitCodes
+	require.False(t, open)
+
+	exitErrObserved := false
+	for _, loggedErr := range logSink.capturedErrors() {
+		if errors.Is(loggedErr, expectedExitErr) {
+			exitErrObserved = true
+			break
+		}
+	}
+	require.True(t, exitErrObserved)
 }
 
 // Verifies that structured container files are assembled into a nonempty archive and passed to native copy through stdin.
