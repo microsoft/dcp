@@ -21,7 +21,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/process"
@@ -114,7 +116,8 @@ func TestNetworkCreatePersistentInstance(t *testing.T) {
 	_ = ensureNetworkCreated(t, ctx, &net)
 }
 
-func TestPersistentNetworkRecordsWorkloadID(t *testing.T) {
+// Verifies that NetworkReconciler stores the workload ID in persistent network records and labels newly created networks.
+func TestPersistentNetworkRecordsAndLabelsWorkloadID(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -143,6 +146,33 @@ func TestPersistentNetworkRecordsWorkloadID(t *testing.T) {
 	require.NoError(t, getErr)
 	require.Equal(t, commonapi.WorkloadID("workload-a"), record.WorkloadID)
 	require.Equal(t, updatedNet.Status.ID, record.NetworkID)
+	inspected, inspectErr := serverInfo.ContainerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{updatedNet.Status.ID}})
+	require.NoError(t, inspectErr)
+	require.Equal(t, "workload-a", inspected[0].Labels[controllers.WorkloadIDLabel])
+}
+
+// Verifies that NetworkReconciler labels session networks with the workload ID without creating persistence records.
+func TestSessionNetworkReceivesWorkloadIDLabel(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(t, ctx, NetworkController, "SessionNetworkWorkloadID", t.TempDir(), TestEnvironmentOptions{
+		WorkloadID: "workload-a",
+	})
+	require.NoError(t, envStartErr)
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "session-network-workload-id"},
+		Spec:       apiv1.ContainerNetworkSpec{Mode: apiv1.ContainerNetworkModeSession},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, &net))
+	updatedNet := ensureNetworkCreatedEx(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, &net)
+	inspected, inspectErr := serverInfo.ContainerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{updatedNet.Status.ID}})
+	require.NoError(t, inspectErr)
+	require.Equal(t, "workload-a", inspected[0].Labels[controllers.WorkloadIDLabel])
+	_, getErr := teInfo.StateStore.GetPersistentNetwork(ctx, net.GetLeaseKey())
+	require.ErrorIs(t, getErr, statestore.ErrPersistentNetworkNotFound)
 }
 
 func TestNetworkCreateExistingPersistentInstance(t *testing.T) {

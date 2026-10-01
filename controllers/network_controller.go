@@ -490,6 +490,9 @@ func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *
 			PersistentLabel: fmt.Sprintf("%t", effectiveMode == apiv1.ContainerNetworkModePersistent),
 		},
 	}
+	if workloadID := r.config.WorkloadID.Normalized(); workloadID != "" {
+		createOptions.Labels[WorkloadIDLabel] = string(workloadID)
+	}
 
 	thisProcess, thisProcessErr := process.This()
 	if thisProcessErr != nil {

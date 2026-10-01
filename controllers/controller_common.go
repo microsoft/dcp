@@ -53,6 +53,7 @@ const (
 	PersistentLabel              = "com.microsoft.developer.usvc-dev.persistent"
 	CreatorProcessIdLabel        = "com.microsoft.developer.usvc-dev.creatorProcessId"
 	CreatorProcessStartTimeLabel = "com.microsoft.developer.usvc-dev.creatorProcessStartTime"
+	WorkloadIDLabel              = "com.microsoft.developer.usvc-dev.workloadId"
 	ContainerIdLabel             = "com.microsoft.developer.usvc-dev.containerId"
 
 	// V1PhysicalResourcesNamespaceName is the shared V2 namespace for physical resources created by V1 controllers.
