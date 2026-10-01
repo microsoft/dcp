@@ -24,7 +24,7 @@ func AddWorkloadIDFlag(cmd *cobra.Command) {
 	cmd.Flags().String(
 		WorkloadIDFlagName,
 		"",
-		fmt.Sprintf("Associates newly-created persistent Containers, Executables, ContainerNetworks, and ContainerVolumes with the specified workload ID. Overrides %s. The value must be no longer than %d bytes.", DCPWorkloadIDEnvVar, commonapi.MaxWorkloadIDLength),
+		fmt.Sprintf("Labels newly-created V1 Containers and ContainerNetworks (session and persistent) with the specified workload ID and records persistent Containers, Executables, ContainerNetworks, and ContainerVolumes for cleanup. Overrides %s. The value must be no longer than %d bytes.", DCPWorkloadIDEnvVar, commonapi.MaxWorkloadIDLength),
 	)
 }
 
