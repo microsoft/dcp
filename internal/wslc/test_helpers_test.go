@@ -8,7 +8,9 @@ package wslc
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"os/exec"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,6 +24,60 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	pkg_testutil "github.com/microsoft/dcp/pkg/testutil"
 )
+
+type errorCaptureLogSink struct {
+	lock   sync.Mutex
+	errors []error
+}
+
+func (*errorCaptureLogSink) Init(logr.RuntimeInfo) {}
+
+func (*errorCaptureLogSink) Enabled(int) bool {
+	return true
+}
+
+func (*errorCaptureLogSink) Info(int, string, ...any) {}
+
+func (sink *errorCaptureLogSink) Error(err error, _ string, _ ...any) {
+	sink.lock.Lock()
+	defer sink.lock.Unlock()
+	sink.errors = append(sink.errors, err)
+}
+
+func (sink *errorCaptureLogSink) WithValues(...any) logr.LogSink {
+	return sink
+}
+
+func (sink *errorCaptureLogSink) WithName(string) logr.LogSink {
+	return sink
+}
+
+func (sink *errorCaptureLogSink) capturedErrors() []error {
+	sink.lock.Lock()
+	defer sink.lock.Unlock()
+	return append([]error(nil), sink.errors...)
+}
+
+type processExitErrorExecutor struct {
+	process.Executor
+	exitErr error
+}
+
+func (executor processExitErrorExecutor) StartProcess(
+	ctx context.Context,
+	cmd *exec.Cmd,
+	exitHandler process.ProcessExitHandler,
+	creationFlags process.ProcessCreationFlag,
+	sysCreateProcess process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	wrappedExitHandler := exitHandler
+	if exitHandler != nil {
+		wrappedExitHandler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, exitErr error) {
+			exitHandler.OnProcessExited(pid, exitCode, errors.Join(exitErr, executor.exitErr))
+		})
+	}
+	return executor.Executor.StartProcess(ctx, cmd, wrappedExitHandler, creationFlags, sysCreateProcess)
+}
 
 func newTestOrchestrator(
 	t *testing.T,

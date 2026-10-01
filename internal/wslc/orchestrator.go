@@ -236,6 +236,15 @@ func (wco *WslcCliOrchestrator) getStatusForOS(ctx context.Context, goos string)
 	if serverVersionErr := validateWslcVersion(info.Server.SessionManagerVersion, "session manager"); serverVersionErr != nil {
 		return containers.ContainerRuntimeStatus{Installed: true, Error: serverVersionErr.Error()}
 	}
+
+	_, networkListErr := wco.listNetworksRaw(ctx, "StatusNetworkList", nil)
+	if networkListErr != nil {
+		return containers.ContainerRuntimeStatus{
+			Installed: true,
+			Error:     fmt.Sprintf("checking WSLC network status: %v", networkListErr),
+		}
+	}
+
 	return containers.ContainerRuntimeStatus{
 		Installed: true,
 		Running:   true,

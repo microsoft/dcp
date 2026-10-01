@@ -730,30 +730,29 @@ func (wco *WslcCliOrchestrator) ExecContainer(ctx context.Context, options conta
 	args = append(args, options.Args...)
 
 	cmd := makeWslcCommand(args...)
-	cmd.Stdout = options.StdOutStream
-	cmd.Stderr = options.StdErrStream
-
-	exitCodes := make(chan int32, 1)
-	exitHandler := process.ProcessExitHandlerFunc(func(_ process.Pid_t, exitCode int32, exitErr error) {
-		if exitErr != nil && !errors.Is(exitErr, context.Canceled) && !errors.Is(exitErr, context.DeadlineExceeded) {
-			wco.log.Error(exitErr, "WSLC container exec command failed", "Container", options.Container)
-		}
-		exitCodes <- exitCode
-		close(exitCodes)
-	})
-
-	wco.log.V(1).Info("Running WSLC command", "Command", cmd.String())
-	_, startWaitForExit, startErr := wco.executor.StartProcess(
+	startedProcess, startErr := wco.startStreamingWslcCommand(
 		ctx,
+		"ExecContainer",
 		cmd,
-		exitHandler,
-		process.CreationFlagEnsureKillOnDispose,
-		nil,
+		options.StdOutStream,
+		options.StdErrStream,
 	)
 	if startErr != nil {
-		return nil, fmt.Errorf("failed to start WSLC container exec command: %w", startErr)
+		return nil, fmt.Errorf("starting WSLC container exec: %w", startErr)
 	}
-	startWaitForExit()
+
+	exitCodes := make(chan int32, 1)
+	go func() {
+		defer close(exitCodes)
+
+		processResult := startedProcess.wait()
+		completionErr := processResult.err()
+		if hasNonCancellationError(completionErr) {
+			wco.log.Error(completionErr, "WSLC container exec command failed", "Container", options.Container)
+		}
+		exitCodes <- processResult.exitInfo.ExitCode
+	}()
+
 	return exitCodes, nil
 }
 

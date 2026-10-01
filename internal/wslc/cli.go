@@ -54,6 +54,15 @@ type startedWslcProcess struct {
 	stopResult  <-chan error
 }
 
+type wslcProcessResult struct {
+	exitInfo process.ProcessExitInfo
+	stopErr  error
+}
+
+type nonClosingWriter struct {
+	io.Writer
+}
+
 func (started *startedWslcProcess) Exited() <-chan struct{} {
 	return started.exitHandler.Exited()
 }
@@ -64,6 +73,46 @@ func (started *startedWslcProcess) ExitInfo() process.ProcessExitInfo {
 
 func (started *startedWslcProcess) stopError() error {
 	return <-started.stopResult
+}
+
+func (started *startedWslcProcess) wait() wslcProcessResult {
+	<-started.Exited()
+	return wslcProcessResult{
+		exitInfo: started.ExitInfo(),
+		stopErr:  started.stopError(),
+	}
+}
+
+func (result wslcProcessResult) err() error {
+	return errors.Join(result.exitInfo.Err, result.stopErr)
+}
+
+func preserveWriterOwnership(writer io.Writer) io.Writer {
+	if writer == nil {
+		return nil
+	}
+	return nonClosingWriter{Writer: writer}
+}
+
+func hasNonCancellationError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if joinedErr, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, innerErr := range joinedErr.Unwrap() {
+			if hasNonCancellationError(innerErr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if innerErr := errors.Unwrap(err); innerErr != nil {
+		return hasNonCancellationError(innerErr)
+	}
+
+	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
 var (
@@ -191,13 +240,12 @@ func (wco *WslcCliOrchestrator) runBufferedWslcCommandInternal(
 		return stdoutBuffer, stderrBuffer, fmt.Errorf("failed to start WSLC command %q: %w", commandName, startErr)
 	}
 
-	<-startedProcess.Exited()
-	exitInfo := startedProcess.ExitInfo()
-	commandErr := errors.Join(exitInfo.Err, startedProcess.stopError())
-	if exitInfo.ExitCode != 0 {
+	processResult := startedProcess.wait()
+	commandErr := processResult.err()
+	if processResult.exitInfo.ExitCode != 0 {
 		commandErr = errors.Join(
 			commandErr,
-			fmt.Errorf("wslc command %q returned non-zero exit code %d", commandName, exitInfo.ExitCode),
+			fmt.Errorf("wslc command %q returned non-zero exit code %d", commandName, processResult.exitInfo.ExitCode),
 		)
 	}
 
@@ -215,8 +263,8 @@ func (wco *WslcCliOrchestrator) startStreamingWslcCommand(
 		return nil, contextErr
 	}
 
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stdout = preserveWriterOwnership(stdout)
+	cmd.Stderr = preserveWriterOwnership(stderr)
 
 	wco.log.V(1).Info("Running WSLC command", "Command", cmd.String())
 	startedProcess, startErr := wco.startWslcProcess(
@@ -257,6 +305,7 @@ func (wco *WslcCliOrchestrator) startWslcProcess(
 	stopResult := make(chan error, 1)
 	go func() {
 		defer processCancel()
+		defer close(stopResult)
 
 		select {
 		case <-exitHandler.Exited():
