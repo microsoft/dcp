@@ -35,6 +35,32 @@ const (
 	CreationFlagEnsureKillOnDispose = 0x1
 )
 
+// WindowsConsoleAvailability describes whether an executor-owned Windows process has a
+// classic console that can receive a console control event. Other platforms retain the
+// value only as runtime metadata.
+type WindowsConsoleAvailability uint8
+
+const (
+	// WindowsConsoleAvailabilityUnknown means the creator did not report enough console
+	// topology to determine whether a Windows console control event can reach the process.
+	WindowsConsoleAvailabilityUnknown WindowsConsoleAvailability = iota
+
+	// WindowsConsoleAvailabilityInherited means the process inherited the executor's classic
+	// Windows console and started a new process group. The executor can therefore send
+	// CTRL_BREAK_EVENT directly to that process group.
+	WindowsConsoleAvailabilityInherited
+
+	// WindowsConsoleAvailabilityRequiresAttach means the process owns a different classic
+	// Windows console. A helper must attach to that console and send CTRL_C_EVENT to process
+	// group zero before delivery can be treated as confirmed.
+	WindowsConsoleAvailabilityRequiresAttach
+
+	// WindowsConsoleAvailabilityUnavailable means the process uses ConPTY or was created
+	// detached/without a classic Windows console, so CTRL_C_EVENT and CTRL_BREAK_EVENT cannot
+	// be delivered through the classic console APIs.
+	WindowsConsoleAvailabilityUnavailable
+)
+
 // ProcessStopOption configures how a process is stopped.
 type ProcessStopOption func(*processStopOptions)
 
@@ -79,6 +105,13 @@ type Waitable interface {
 	Flags() ProcessCreationFlag
 	// Abort rolls back owned process creation before Wait has been started.
 	Abort(ctx context.Context) error
+}
+
+// WindowsConsoleAvailabilitySource optionally reports classic Windows console availability
+// for a custom-created process. SysCreateProcessFunc remains unchanged; creators that do not
+// implement this interface are treated as having unknown topology.
+type WindowsConsoleAvailabilitySource interface {
+	WindowsConsoleAvailability() WindowsConsoleAvailability
 }
 
 // ExitCodeSource is an interface that provides access to a process's exit code.

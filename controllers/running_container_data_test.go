@@ -7,6 +7,9 @@ package controllers
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +30,7 @@ type terminalCleanupTestExecutor struct {
 	stopValue      any
 	hasDeadline    bool
 	stopCalls      int
+	stopErr        error
 }
 
 func (executor *terminalCleanupTestExecutor) StopProcess(
@@ -38,7 +42,43 @@ func (executor *terminalCleanupTestExecutor) StopProcess(
 	executor.stopContextErr = ctx.Err()
 	executor.stopValue = ctx.Value(terminalCleanupContextKey{})
 	_, executor.hasDeadline = ctx.Deadline()
-	return nil
+	return executor.stopErr
+}
+
+type terminalCleanupLogCounts struct {
+	lock       sync.Mutex
+	errorCalls int
+	infoCalls  int
+}
+
+type terminalCleanupLogSink struct {
+	counts *terminalCleanupLogCounts
+}
+
+func (*terminalCleanupLogSink) Init(logr.RuntimeInfo) {}
+
+func (*terminalCleanupLogSink) Enabled(int) bool {
+	return true
+}
+
+func (sink *terminalCleanupLogSink) Info(int, string, ...any) {
+	sink.counts.lock.Lock()
+	defer sink.counts.lock.Unlock()
+	sink.counts.infoCalls++
+}
+
+func (sink *terminalCleanupLogSink) Error(error, string, ...any) {
+	sink.counts.lock.Lock()
+	defer sink.counts.lock.Unlock()
+	sink.counts.errorCalls++
+}
+
+func (sink *terminalCleanupLogSink) WithValues(...any) logr.LogSink {
+	return sink
+}
+
+func (sink *terminalCleanupLogSink) WithName(string) logr.LogSink {
+	return sink
 }
 
 // Verifies that terminal cleanup detaches a canceled parent context, retains its values,
@@ -73,4 +113,53 @@ func TestCloseTerminalResourcesDetachesStopFromCanceledContext(t *testing.T) {
 	require.True(t, executor.hasDeadline)
 	require.Nil(t, rcd.ptp)
 	require.Nil(t, rcd.connMgr)
+}
+
+// Verifies that terminal attach stop races classified as process-gone stay informational.
+// Access and other genuine stop failures must remain error-level diagnostics.
+func TestCloseTerminalResourcesClassifiesStopFailures(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name               string
+		stopErr            error
+		expectedErrorCalls int
+		expectedInfoCalls  int
+	}{
+		{
+			name:              "process gone",
+			stopErr:           fmt.Errorf("identity check: %w", process.ErrProcessIdentityMismatch),
+			expectedInfoCalls: 1,
+		},
+		{
+			name:               "genuine failure",
+			stopErr:            errors.New("access denied"),
+			expectedErrorCalls: 1,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			testPty := internal_testutil.NewTestPty()
+			t.Cleanup(func() { _ = testPty.Close() })
+			executor := &terminalCleanupTestExecutor{stopErr: testCase.stopErr}
+			rcd := &runningContainerData{
+				ptp: &termpty.PseudoTerminalProcess{
+					PTY:         testPty,
+					Handle:      process.NewHandle(4301, time.Unix(1001, 0).UTC()),
+					ExitHandler: process.NewConcurrentProcessExitHandler(),
+					Executor:    executor,
+				},
+			}
+			counts := &terminalCleanupLogCounts{}
+			log := logr.New(&terminalCleanupLogSink{counts: counts})
+
+			rcd.closeTerminalResources(context.Background(), executor, log)
+
+			counts.lock.Lock()
+			defer counts.lock.Unlock()
+			require.Equal(t, testCase.expectedErrorCalls, counts.errorCalls)
+			require.Equal(t, testCase.expectedInfoCalls, counts.infoCalls)
+		})
+	}
 }

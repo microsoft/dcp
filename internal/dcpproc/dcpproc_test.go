@@ -26,6 +26,7 @@ import (
 
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/dcpproc/protocol"
 	int_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -203,9 +204,10 @@ func TestMonitorProcessExitsCleanlyIfChildStartTimeDoesNotMatch(t *testing.T) {
 
 	require.NoError(t, dcpProcCmd.Wait(), "dcpproc should have exited without an error")
 	stderr := dcpProcOut.Stderr()
-	require.True(t,
-		strings.Contains(stderr, "process start time mismatch") && strings.Contains(stderr, "Child process could not be monitored"),
-		"dcpproc should have reported invalid child process start time; stderr: %s", stderr)
+	require.Contains(t, stderr, "process start time mismatch",
+		"dcpproc should have reported invalid child process start time")
+	require.Contains(t, stderr, "Child process already exited or its PID was reused; skipping cleanup",
+		"dcpproc should have classified the child identity mismatch as an informational gone race")
 
 	// The child process must still be alive: dcpproc must NOT kill a process it could not
 	// positively identify.
@@ -888,6 +890,41 @@ func exeSuffix() string {
 		return ".exe"
 	}
 	return ""
+}
+
+// Verifies that a process-gone stop remains a structured exit-code 21 result without a generic error-level footer.
+// This guards the command-to-main handoff even when informational logs are filtered by verbosity.
+func TestStopProcessTreeProcessGoneExitsWithoutErrorLog(t *testing.T) {
+	t.Parallel()
+
+	dcpProc, dcpProcErr := getDcpProcExecutablePath()
+	require.NoError(t, dcpProcErr)
+	delayToolDir, delayToolErr := int_testutil.GetTestToolDir("delay")
+	require.NoError(t, delayToolErr)
+
+	testCtx, testCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer testCancel()
+
+	targetCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s")
+	targetCmd.Dir = delayToolDir
+	require.NoError(t, targetCmd.Start())
+	targetHandle, targetHandleErr := process.ProcessHandleFromCmd(targetCmd)
+	require.NoError(t, targetHandleErr)
+	require.NoError(t, targetCmd.Process.Kill())
+	_ = targetCmd.Wait()
+
+	stopCmd := exec.CommandContext(testCtx, dcpProc,
+		"stop-process-tree",
+		"--pid", strconv.FormatInt(int64(targetHandle.Pid), 10),
+		"--process-start-time", targetHandle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+	)
+	output, stopErr := stopCmd.CombinedOutput()
+
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, stopErr, &exitErr)
+	require.Equal(t, protocol.StopProcessTreeProcessGoneExitCode, exitErr.ExitCode())
+	require.NotContains(t, string(output), "\terror\t")
+	require.NotContains(t, string(output), "the program finished with an error")
 }
 
 func TestStopProcessTreeWorks(t *testing.T) {

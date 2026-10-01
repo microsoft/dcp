@@ -182,17 +182,25 @@ func StopProcessTree(
 	monitoredStopCtx, monitoredStopCancel := process.WithMonitoredProcessStopTimeout(ctx)
 	defer monitoredStopCancel()
 
-	exitCode, err := process.RunWithTimeout(monitoredStopCtx, pe, stopProcessTreeCmd)
-	if err != nil {
-		log.Error(err, "Failed to stop process tree", "ExitCode", exitCode)
-		return err
+	exitCode, runErr := process.RunWithTimeout(monitoredStopCtx, pe, stopProcessTreeCmd)
+	if runErr != nil {
+		log.Error(runErr, "Failed to stop process tree", "ExitCode", exitCode)
+		return runErr
 	} else if exitCode != 0 {
-		err = stopProcessTreeExitError(root, exitCode)
-		log.Error(err, "Failed to stop process tree", "ExitCode", exitCode)
-		return err
+		stopErr := stopProcessTreeExitError(root, exitCode)
+		logStopProcessTreeFailure(log, stopErr, exitCode)
+		return stopErr
 	}
 
 	return nil
+}
+
+func logStopProcessTreeFailure(log logr.Logger, err error, exitCode int32) {
+	if process.IsProcessGoneErr(err) {
+		log.V(1).Info("Process tree already stopped", "Error", err, "ExitCode", exitCode)
+		return
+	}
+	log.Error(err, "Failed to stop process tree", "ExitCode", exitCode)
 }
 
 func stopProcessTreeExitError(root process.ProcessHandle, exitCode int32) error {

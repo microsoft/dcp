@@ -33,6 +33,53 @@ func (w *startupWaitable) Abort(context.Context) error {
 	return w.abortErr
 }
 
+type windowsConsoleAvailabilityWaitable struct {
+	startupWaitable
+	availability WindowsConsoleAvailability
+}
+
+func (w *windowsConsoleAvailabilityWaitable) WindowsConsoleAvailability() WindowsConsoleAvailability {
+	return w.availability
+}
+
+// Verifies that a custom creator can report classic Windows console availability through its returned
+// waitable without changing the SysCreateProcessFunc signature.
+func TestCustomCreationReportsWindowsConsoleAvailability(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	defer executor.Dispose()
+	handle := NewHandle(1234, time.Unix(1, 0).UTC())
+	waitable := &windowsConsoleAvailabilityWaitable{
+		availability: WindowsConsoleAvailabilityUnavailable,
+	}
+	startedHandle, startWaiting, startErr := executor.StartProcess(
+		testCtx,
+		exec.Command("unused"),
+		nil,
+		CreationFlagsNone,
+		func(context.Context, *exec.Cmd) (ProcessHandle, Waitable, error) {
+			return handle, waitable, nil
+		},
+	)
+	require.NoError(t, startErr)
+	require.Equal(t, handle, startedHandle)
+
+	executor.acquireLock()
+	state := executor.procsWaiting[handle]
+	executor.releaseLock()
+	require.NotNil(t, state)
+	require.Equal(t, WindowsConsoleAvailabilityUnavailable, state.winConsoleAvailability)
+	startWaiting()
+	select {
+	case <-state.waitEndedCh:
+	case <-testCtx.Done():
+		t.Fatal("custom waitable was not observed")
+	}
+}
+
 // Verifies that custom process creation with an incomplete identity is rolled back,
 // returns no usable handle, and classifies failed rollback as an uncertain start.
 func TestCustomCreationIncompleteIdentityIsRolledBack(t *testing.T) {

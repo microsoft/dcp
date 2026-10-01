@@ -6,6 +6,7 @@
 package commands
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -56,7 +57,7 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 
 		handle, handleErr := cmds.ResolveProcessHandle(stopPid, stopProcessStartTime)
 		if handleErr != nil {
-			log.Error(handleErr, "Could not resolve the process to stop")
+			logProcessStopFailure(log, handleErr, "Process to stop already exited", "Could not resolve the process to stop")
 			return stopProcessTreeCommandError(handleErr)
 		}
 
@@ -67,9 +68,11 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 			stopOptions = append(stopOptions, process.StopRootOnly())
 		}
 
-		stopErr := process.StopViaConsole(cmd.Context(), log, pe, handle, stopOptions...)
+		stopErr := runDetachedProcessCleanup(cmd.Context(), func(stopCtx context.Context) error {
+			return process.StopViaConsole(stopCtx, log, pe, handle, stopOptions...)
+		})
 		if stopErr != nil {
-			log.Error(stopErr, "Failed to stop process tree")
+			logProcessStopFailure(log, stopErr, "Process tree already stopped", "Failed to stop process tree")
 			return stopProcessTreeCommandError(stopErr)
 		}
 
@@ -77,12 +80,20 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 	}
 }
 
+func logProcessStopFailure(log logr.Logger, err error, goneMessage string, failureMessage string) {
+	if process.IsProcessGoneErr(err) {
+		log.V(1).Info(goneMessage, "Error", err)
+		return
+	}
+	log.Error(err, failureMessage)
+}
+
 func stopProcessTreeCommandError(err error) error {
 	switch {
 	case errors.Is(err, process.ErrIncompleteProcessTree):
 		return cmds.NewExitCodeError(err, protocol.StopProcessTreeIncompleteExitCode)
 	case process.IsProcessGoneErr(err):
-		return cmds.NewExitCodeError(err, protocol.StopProcessTreeProcessGoneExitCode)
+		return cmds.NewSilentExitCodeError(err, protocol.StopProcessTreeProcessGoneExitCode)
 	default:
 		return err
 	}

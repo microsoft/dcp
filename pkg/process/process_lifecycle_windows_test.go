@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/testutil"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/windows"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
@@ -91,9 +93,77 @@ func TestWindowsProcessLifecycleFixture(t *testing.T) {
 	}
 }
 
-// Verifies that StopViaConsole gives descendants the remaining shared graceful budget
-// instead of force-killing them after the per-process signal timeout.
-func TestStopViaConsoleUsesRemainingTreeGracePeriod(t *testing.T) {
+// Verifies with real Windows process identities that a root exiting immediately
+// after the snapshot does not discard an already verified descendant.
+func TestGetProcessTreePreservesWindowsDescendantAfterRootExitPostSnapshot(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	rootCmd := exec.Command(os.Args[0], "-test.run=^TestWindowsProcessLifecycleFixture$")
+	rootCmd.Env = append(
+		os.Environ(),
+		windowsProcessLifecycleFixtureMode+"=console-root",
+		"DCP_WINDOWS_PROCESS_LIFECYCLE_MARKER="+filepath.Join(t.TempDir(), "unused-marker"),
+	)
+	ForkFromParent(rootCmd)
+	rootStdout, stdoutErr := rootCmd.StdoutPipe()
+	require.NoError(t, stdoutErr)
+	require.NoError(t, rootCmd.Start())
+	t.Cleanup(func() {
+		if rootCmd.Process != nil {
+			_ = rootCmd.Process.Kill()
+		}
+	})
+
+	childPIDText, childReadErr := bufio.NewReader(rootStdout).ReadString('\n')
+	require.NoError(t, childReadErr)
+	childPID, childParseErr := strconv.ParseInt(strings.TrimSpace(childPIDText), 10, 64)
+	require.NoError(t, childParseErr)
+	rootHandle, rootHandleErr := ProcessHandleFromCmd(rootCmd)
+	require.NoError(t, rootHandleErr)
+	childHandle, childHandleErr := FindProcessHandle(Pid_t(childPID))
+	require.NoError(t, childHandleErr)
+	t.Cleanup(func() {
+		childProcess, findErr := FindProcess(childHandle)
+		if findErr == nil {
+			_ = childProcess.Kill()
+			_ = childProcess.Release()
+		}
+	})
+
+	tree, treeErr := getProcessTree(
+		testCtx,
+		rootHandle,
+		findProcessInfo,
+		func(snapshotCtx context.Context) ([]processInfo, error) {
+			snapshot, snapshotErr := snapshotProcesses(snapshotCtx)
+			require.NoError(t, rootCmd.Process.Kill())
+			rootGoneErr := wait.PollUntilContextCancel(
+				snapshotCtx,
+				time.Millisecond,
+				true,
+				func(context.Context) (bool, error) {
+					_, rootInfoErr := findProcessInfo(rootHandle)
+					return IsProcessGoneErr(rootInfoErr), nil
+				},
+			)
+			require.NoError(t, rootGoneErr)
+			return snapshot, snapshotErr
+		},
+	)
+
+	require.ErrorIs(t, treeErr, ErrIncompleteProcessTree)
+	require.NotEmpty(t, tree)
+	require.Equal(t, rootHandle, tree[0])
+	require.Contains(t, tree, childHandle)
+	rootWaitErr := rootCmd.Wait()
+	require.True(t, rootWaitErr == nil || IsEarlyProcessExitError(rootWaitErr))
+}
+
+// Verifies that a descendant whose receipt of the root's CTRL_C_EVENT is not represented
+// in executor runtime state receives only the six-second passive fallback.
+func TestStopViaConsoleUsesPassiveFallbackForUnknownDescendant(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
 	defer testCancel()
 
@@ -144,17 +214,18 @@ func TestStopViaConsoleUsesRemainingTreeGracePeriod(t *testing.T) {
 	elapsed := time.Since(startedAt)
 
 	require.NoError(t, stopErr)
-	require.GreaterOrEqual(t, elapsed, signalAndWaitTimeout)
-	require.Less(t, elapsed, signalAndWaitTimeout+4*time.Second)
+	require.GreaterOrEqual(t, elapsed, signalAndWaitTimeout-time.Second)
+	require.Less(t, elapsed, signalAndWaitTimeout+3*time.Second)
 	_, markerErr := os.Stat(markerPath)
-	require.NoError(t, markerErr, "descendant should exit naturally after the console signal")
+	require.ErrorIs(t, markerErr, os.ErrNotExist,
+		"unknown descendant should be force-killed when it outlives the six-second passive fallback")
 	require.NoError(t, rootCmd.Wait())
 	require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(childHandle)))
 }
 
-// Verifies that time spent gracefully stopping the console root is deducted
-// from the descendants' shared graceful-stop budget.
-func TestStopViaConsoleSharesGracefulBudgetAfterDelayedRootExit(t *testing.T) {
+// Verifies that a confirmed CTRL_C_EVENT lets the root exit on its own, after which an
+// unknown descendant gets a separate six-second passive fallback rather than 15 seconds.
+func TestStopViaConsoleUsesPassiveFallbackAfterDelayedRootExit(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
 	defer testCancel()
 
@@ -200,10 +271,75 @@ func TestStopViaConsoleSharesGracefulBudgetAfterDelayedRootExit(t *testing.T) {
 	elapsed := time.Since(startedAt)
 
 	require.NoError(t, stopErr)
-	require.GreaterOrEqual(t, elapsed, gracefulProcessStopTimeout-time.Second)
-	require.Less(t, elapsed, gracefulProcessStopTimeout+delayedRootExitDuration/2)
+	require.GreaterOrEqual(t, elapsed, delayedRootExitDuration+signalAndWaitTimeout-time.Second)
+	require.Less(t, elapsed, gracefulProcessStopTimeout)
 	require.NoError(t, rootCmd.Wait())
 	require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(childHandle)))
+}
+
+// Verifies that a new-console process stopped without an attach helper, and a detached
+// process for which AttachConsole cannot succeed, both use the six-second passive fallback.
+func TestWindowsUnconfirmedConsoleDeliveryUsesPassiveFallback(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*exec.Cmd)
+		stop      func(context.Context, *OSExecutor, ProcessHandle) error
+	}{
+		{
+			name: "new console without helper",
+			configure: func(command *exec.Cmd) {
+				ForkFromParent(command)
+			},
+			stop: func(ctx context.Context, executor *OSExecutor, handle ProcessHandle) error {
+				return executor.StopProcess(ctx, handle, StopRootOnly())
+			},
+		},
+		{
+			name: "detached process attach failure",
+			configure: func(command *exec.Cmd) {
+				command.SysProcAttr = &syscall.SysProcAttr{
+					CreationFlags: windows.DETACHED_PROCESS,
+				}
+			},
+			stop: func(ctx context.Context, executor *OSExecutor, handle ProcessHandle) error {
+				return StopViaConsole(ctx, logr.Discard(), executor, handle, StopRootOnly())
+			},
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			testCtx, testCancel := testutil.GetTestContext(t, 20*time.Second)
+			defer testCancel()
+			executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+			defer executor.Dispose()
+			rootCmd := exec.Command(os.Args[0], "-test.run=^TestWindowsProcessLifecycleFixture$")
+			rootCmd.Env = append(os.Environ(), windowsProcessLifecycleFixtureMode+"=signal-resistant-root")
+			testCase.configure(rootCmd)
+			rootStdout, stdoutErr := rootCmd.StdoutPipe()
+			require.NoError(t, stdoutErr)
+			rootHandle, startWaiting, startErr := executor.StartProcess(
+				testCtx,
+				rootCmd,
+				nil,
+				CreationFlagsNone,
+				nil,
+			)
+			require.NoError(t, startErr)
+			startWaiting()
+			readyText, readyErr := bufio.NewReader(rootStdout).ReadString('\n')
+			require.NoError(t, readyErr)
+			require.Equal(t, "ready\n", readyText)
+
+			startedAt := time.Now()
+			stopErr := testCase.stop(testCtx, executor, rootHandle)
+			elapsed := time.Since(startedAt)
+
+			require.NoError(t, stopErr)
+			require.GreaterOrEqual(t, elapsed, signalAndWaitTimeout-time.Second)
+			require.Less(t, elapsed, signalAndWaitTimeout+3*time.Second)
+			require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(rootHandle)))
+		})
+	}
 }
 
 // Verifies that a root-only console stop force-kills a signal-resistant root

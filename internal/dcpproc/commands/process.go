@@ -6,6 +6,7 @@
 package commands
 
 import (
+	"context"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -22,6 +23,8 @@ var (
 	childPid              process.Pid_t = process.UnknownPID
 	childProcessStartTime time.Time
 )
+
+const childProcessGoneLogMessage = "Child process already exited or its PID was reused; skipping cleanup"
 
 func NewProcessCommand(log logr.Logger) (*cobra.Command, error) {
 	processCmd := &cobra.Command{
@@ -66,7 +69,7 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 		childHandle, childIdentityErr := cmds.ResolveProcessHandle(childPid, childProcessStartTime)
 		if childIdentityErr != nil {
 			if process.IsProcessGoneErr(childIdentityErr) {
-				log.Info("Child process already exited", "Error", childIdentityErr)
+				log.Info(childProcessGoneLogMessage, "Error", childIdentityErr)
 				return nil
 			}
 			log.Error(childIdentityErr, "Could not resolve child process identity")
@@ -85,8 +88,14 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 				log.Info("Monitored process already exited, shutting down child process", "Reason", monitorCtxErr)
 				executor := process.NewOSExecutor(log)
 				defer executor.Dispose()
-				stopErr := process.StopViaConsole(cmd.Context(), log, executor, childHandle)
+				stopErr := runDetachedProcessCleanup(cmd.Context(), func(stopCtx context.Context) error {
+					return process.StopViaConsole(stopCtx, log, executor, childHandle)
+				})
 				if stopErr != nil {
+					if process.IsProcessGoneErr(stopErr) {
+						log.V(1).Info("Child process exited before cleanup completed", "Error", stopErr)
+						return nil
+					}
 					log.Error(stopErr, "Failed to stop child process")
 					return stopErr
 				}
@@ -101,30 +110,50 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 		childProcessCtx, childProcessCtxCancel, childMonitorErr := cmds.MonitorPid(cmd.Context(), childHandle, monitorInterval, log)
 		defer childProcessCtxCancel()
 		if childMonitorErr != nil {
-			// Log as Info--we might leak the child process if regular cleanup fails, but this should be rare.
-			log.Info("Child process could not be monitored", "Error", childMonitorErr)
+			if process.IsProcessGoneErr(childMonitorErr) {
+				log.Info(childProcessGoneLogMessage, "Error", childMonitorErr)
+				return nil
+			}
+			log.Error(childMonitorErr, "Child process could not be monitored")
 			return nil
 		}
 
 		select {
-
 		case <-monitorCtx.Done():
-			if childProcessCtx.Err() == nil {
+		case <-childProcessCtx.Done():
+		}
+
+		if cmd.Context().Err() != nil || childProcessCtx.Err() == nil {
+			if cmd.Context().Err() != nil {
+				log.Info("Process monitor interrupted, shutting down child process")
+			} else {
 				log.Info("Monitored process exited, shutting down child process")
-				executor := process.NewOSExecutor(log)
-				defer executor.Dispose()
-				stopErr := process.StopViaConsole(cmd.Context(), log, executor, childHandle)
-				if stopErr != nil {
-					log.Error(stopErr, "Failed to stop child service process")
-					return stopErr
-				}
 			}
 
-		case <-childProcessCtx.Done():
-			// This is what we expect most of the time
+			executor := process.NewOSExecutor(log)
+			defer executor.Dispose()
+			stopErr := runDetachedProcessCleanup(cmd.Context(), func(stopCtx context.Context) error {
+				return process.StopViaConsole(stopCtx, log, executor, childHandle)
+			})
+			if stopErr != nil {
+				if process.IsProcessGoneErr(stopErr) {
+					log.V(1).Info("Child service process exited before cleanup completed", "Error", stopErr)
+					return nil
+				}
+				log.Error(stopErr, "Failed to stop child service process")
+				return stopErr
+			}
+		} else {
+			// This is what we expect most of the time.
 			log.V(1).Info("Child service process exited, DCPPROC is done")
 		}
 
 		return nil
 	}
+}
+
+func runDetachedProcessCleanup(parent context.Context, cleanup func(context.Context) error) error {
+	stopCtx, stopCancel := process.WithDetachedStopTimeout(parent)
+	defer stopCancel()
+	return cleanup(stopCtx)
 }

@@ -425,7 +425,8 @@ func testTunnelProxyCleanup(t *testing.T, testName string, serverExitedOnStop bo
 	dcppaths.EnableTestPathProbing()
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
+	instanceTag := containertest.UniqueName(t, t.Name())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, instanceTag, t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	network := apiv1.ContainerNetwork{

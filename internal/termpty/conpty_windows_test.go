@@ -154,18 +154,15 @@ func TestStartProcessWithTerminal_AbnormalExitCode(t *testing.T) {
 // exit notification. The child blocks in --wait so the only path to exit is
 // signal delivery (or forced termination) initiated by the executor.
 //
-// Windows-specific behavior: OSExecutor first attempts a graceful shutdown by
-// calling GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, processGroupID). That
-// API only signals processes that share the SAME console as the caller. The
-// test process runs in its own console (or none at all), while the ConPTY
-// child runs attached to a separate console host — they do not share a
-// console, so the CTRL_BREAK signal never reaches the child. The executor's
-// graceful-stop timeout therefore elapses and it falls back to
-// os.Process.Kill, which on Windows is TerminateProcess(handle, 1) and
-// yields exit code 1.
+// Windows-specific behavior: the ConPTY waitable reports
+// WindowsConsoleAvailabilityUnavailable. OSExecutor therefore does not call
+// GenerateConsoleCtrlEvent: CTRL_C_EVENT and CTRL_BREAK_EVENT target classic
+// console topology and cannot reach a ConPTY process. The executor waits for
+// the six-second unconfirmed-delivery fallback, then calls os.Process.Kill,
+// which uses TerminateProcess(handle, 1) and yields exit code 1.
 //
-// In other words, on Windows this scenario currently exercises the executor
-// escalation path more than the graceful shutdown path.
+// In other words, this scenario exercises the console-availability-aware escalation path
+// rather than pretending that a classic-console control event was delivered.
 // Routing signals through the pseudo-console (e.g. writing 0x03 to the PTY input) would be
 // a public-API change to either internal/termpty or pkg/process,
 // and might be considered for future DCP release.
@@ -186,14 +183,13 @@ func TestStartProcessWithTerminal_ContextCancellationStopsProcess(t *testing.T) 
 
 	ei := awaitExit(t, testCtx, sp.ExitHandler)
 	require.Equal(t, int32(1), ei.ExitCode,
-		"expected exit code 1 from TerminateProcess fallback (CTRL_BREAK does not cross consoles), got %d", ei.ExitCode)
+		"expected exit code 1 from the ConPTY no-console TerminateProcess fallback, got %d", ei.ExitCode)
 }
 
-// TestStartProcessWithTerminal_BreakIgnoredEscalatesToKill verifies that when
-// the child ignores CTRL_BREAK_EVENT, the executor escalates to forced
-// termination (proc.Kill -> TerminateProcess) within a bounded time and
-// still produces an exit notification. TerminateProcess uses exit code 1.
-func TestStartProcessWithTerminal_BreakIgnoredEscalatesToKill(t *testing.T) {
+// TestStartProcessWithTerminal_NoConsoleControlEscalatesToKill verifies that a
+// child which remains alive through the six-second ConPTY fallback is forcibly
+// terminated and still produces an exit notification.
+func TestStartProcessWithTerminal_NoConsoleControlEscalatesToKill(t *testing.T) {
 	t.Parallel()
 	testCtx, testCancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer testCancel()
@@ -202,7 +198,6 @@ func TestStartProcessWithTerminal_BreakIgnoredEscalatesToKill(t *testing.T) {
 	defer procCancel()
 
 	sp := startTermchildWithPTY(t, procCtx,
-		"--ignore-sigterm",
 		"--print", "READY",
 		"--wait",
 	)
@@ -216,7 +211,7 @@ func TestStartProcessWithTerminal_BreakIgnoredEscalatesToKill(t *testing.T) {
 	// Go's os.Process.Kill on Windows calls TerminateProcess(handle, 1),
 	// which yields exit code 1.
 	require.Equal(t, int32(1), ei.ExitCode,
-		"expected exit code 1 from TerminateProcess after CTRL_BREAK was ignored, got %d", ei.ExitCode)
+		"expected exit code 1 from TerminateProcess after the no-console fallback, got %d", ei.ExitCode)
 }
 
 // TestStartProcessWithTerminal_PTYCloseDeliversCloseEvent verifies that

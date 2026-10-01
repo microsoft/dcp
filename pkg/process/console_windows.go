@@ -25,10 +25,11 @@ var (
 	freeConsoleProc   = kernel32.NewProc("FreeConsole")
 )
 
-// StopViaConsole attaches to the target process's console, then stops the process tree.
-// If attachment succeeds, it sends CTRL_C_EVENT to the entire console group and protects
-// the caller from its own signal.
-// If the target has no console or has already exited, it falls back to a regular StopProcess call.
+// StopViaConsole attaches to the target process's classic console, then sends CTRL_C_EVENT
+// to every process attached to that console while protecting the helper from its own event.
+// A successful dispatch permits the shared 15-second graceful deadline. If attachment or
+// handler setup cannot confirm that CTRL_C_EVENT will be delivered, StopProcess uses the
+// six-second passive fallback before force-killing the identity-validated process tree.
 func StopViaConsole(ctx context.Context, log logr.Logger, executor Executor, handle ProcessHandle, options ...ProcessStopOption) error {
 	if contextErr := ctx.Err(); contextErr != nil {
 		return contextErr
@@ -65,7 +66,17 @@ func StopViaConsole(ctx context.Context, log logr.Logger, executor Executor, han
 
 	handlerErr := installIgnoreConsoleCtrlEventHandler()
 	if handlerErr != nil {
-		return fmt.Errorf("could not install console ctrl handler: %w", handlerErr)
+		// Sending CTRL_C_EVENT without the ignore handler could terminate this helper instead
+		// of completing cleanup. Detach and use the six-second passive StopProcess fallback.
+		restoreConsole()
+		stopErr := executor.StopProcess(ctx, handle, options...)
+		if stopErr != nil {
+			return errors.Join(
+				fmt.Errorf("could not install console ctrl handler: %w", handlerErr),
+				stopErr,
+			)
+		}
+		return nil
 	}
 	// No explicit removal: StopViaConsole detaches from the target console,
 	// which resets the process control-handler table.

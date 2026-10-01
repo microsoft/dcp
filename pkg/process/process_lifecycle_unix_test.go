@@ -28,8 +28,9 @@ import (
 )
 
 const (
-	unixProcessLifecycleFixtureMode = "DCP_PROCESS_LIFECYCLE_FIXTURE_MODE"
-	delayedRootExitDuration         = 4 * time.Second
+	unixProcessLifecycleFixtureMode  = "DCP_PROCESS_LIFECYCLE_FIXTURE_MODE"
+	unixProcessLifecycleRootExitGate = "DCP_PROCESS_LIFECYCLE_ROOT_EXIT_GATE"
+	delayedRootExitDuration          = 4 * time.Second
 )
 
 // Verifies that the stop-context subprocess fixture reports readiness, ignores SIGTERM,
@@ -170,7 +171,9 @@ func TestUnixProcessLifecycleFixture(t *testing.T) {
 				require.NoError(t, signalNoticeWriter.Close())
 			}
 			if mode == "concurrent-graceful-root" {
-				time.Sleep(250 * time.Millisecond)
+				require.Equal(t, "1", os.Getenv(unixProcessLifecycleRootExitGate))
+				_, gateReadErr := io.Copy(io.Discard, os.Stdin)
+				require.NoError(t, gateReadErr)
 				return
 			}
 			if mode == "delayed-root" {
@@ -292,6 +295,44 @@ func TestIncompleteTreeStillStopsVerifiedProcesses(t *testing.T) {
 	requireProcessGone(t, testCtx, executor, childHandle)
 }
 
+// Verifies with real process identities that a root exiting immediately after the
+// snapshot leaves the already verified descendant available for cleanup.
+func TestGetProcessTreePreservesDescendantAfterRootExitPostSnapshot(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	defer executor.Dispose()
+	rootHandle, childHandle := startProcessTreeForTest(t, testCtx, executor, "tree-root", nil, nil)
+
+	tree, treeErr := getProcessTree(
+		testCtx,
+		rootHandle,
+		findProcessInfo,
+		func(snapshotCtx context.Context) ([]processInfo, error) {
+			snapshot, snapshotErr := snapshotProcesses(snapshotCtx)
+			rootProcess, findErr := FindProcess(rootHandle)
+			require.NoError(t, findErr)
+			require.NoError(t, rootProcess.Kill())
+			require.NoError(t, rootProcess.Release())
+			rootGoneErr := wait.PollUntilContextCancel(
+				snapshotCtx,
+				time.Millisecond,
+				true,
+				func(context.Context) (bool, error) {
+					return IsProcessGoneErr(executor.CheckProcessRunning(rootHandle)), nil
+				},
+			)
+			require.NoError(t, rootGoneErr)
+			return snapshot, snapshotErr
+		},
+	)
+
+	require.ErrorIs(t, treeErr, ErrIncompleteProcessTree)
+	require.Equal(t, []Pid_t{rootHandle.Pid, childHandle.Pid}, getIDs(tree))
+}
+
 // Verifies that expiration of the internal graceful enumeration budget still
 // force-stops the root while reporting descendant cleanup as incomplete.
 func TestEnumerationDeadlineForceStopsRoot(t *testing.T) {
@@ -409,7 +450,8 @@ func TestForceKillDoesNotWaitForDescendantHeldStdio(t *testing.T) {
 }
 
 // Verifies that overlapping Unix stops wait for the owning root stop before processing descendants,
-// and that every caller confirms descendant exit before returning.
+// and that every caller confirms descendant exit before returning. The graceful-root fixture is
+// gated until both callers finish enumeration, avoiding timing-based assumptions about root lifetime.
 func TestConcurrentStopsPreserveRootFirstOrdering(t *testing.T) {
 	for _, testCase := range []struct {
 		name            string
@@ -424,19 +466,55 @@ func TestConcurrentStopsPreserveRootFirstOrdering(t *testing.T) {
 			defer testCancel()
 			executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 			defer executor.Dispose()
-			rootHandle, childHandle, signalNotices := startProcessTreeWithSignalNoticeForTest(t, testCtx, executor, testCase.mode)
+			var rootHandle ProcessHandle
+			var childHandle ProcessHandle
+			var signalNotices *bufio.Reader
+			var rootExitGate *os.File
+			if testCase.mode == "concurrent-graceful-root" {
+				rootHandle, childHandle, signalNotices, rootExitGate =
+					startGatedProcessTreeWithSignalNoticeForTest(t, testCtx, executor, testCase.mode)
+			} else {
+				rootHandle, childHandle, signalNotices =
+					startProcessTreeWithSignalNoticeForTest(t, testCtx, executor, testCase.mode)
+			}
 
 			stopResults := make(chan error, 2)
+			enumerationFinished := make(chan struct{}, 2)
+			resolveTree := func(resolveCtx context.Context, handle ProcessHandle) ([]ProcessHandle, error) {
+				tree, treeErr := GetProcessTree(resolveCtx, handle)
+				enumerationFinished <- struct{}{}
+				return tree, treeErr
+			}
 			go func() {
-				stopResults <- executor.StopProcess(testCtx, rootHandle)
+				stopResults <- executor.stopProcessTreeInternal(
+					testCtx,
+					rootHandle,
+					processStopOptions{opts: optNone},
+					resolveTree,
+				)
 			}()
 			rootSignalNotice, rootSignalReadErr := signalNotices.ReadString('\n')
 			require.NoError(t, rootSignalReadErr)
 			require.Equal(t, "root-sigterm\n", rootSignalNotice)
 
 			go func() {
-				stopResults <- executor.StopProcess(testCtx, rootHandle)
+				stopResults <- executor.stopProcessTreeInternal(
+					testCtx,
+					rootHandle,
+					processStopOptions{opts: optNone},
+					resolveTree,
+				)
 			}()
+			for range 2 {
+				select {
+				case <-enumerationFinished:
+				case <-testCtx.Done():
+					t.Fatal("concurrent process-tree enumeration did not finish")
+				}
+			}
+			if rootExitGate != nil {
+				require.NoError(t, rootExitGate.Close())
+			}
 			for range 2 {
 				select {
 				case stopErr := <-stopResults:
@@ -526,6 +604,19 @@ func startProcessTreeForTest(
 	childSignalNoticeWriter *os.File,
 ) (ProcessHandle, ProcessHandle) {
 	t.Helper()
+	return startProcessTreeForTestWithInput(t, ctx, executor, mode, output, childSignalNoticeWriter, nil)
+}
+
+func startProcessTreeForTestWithInput(
+	t *testing.T,
+	ctx context.Context,
+	executor *OSExecutor,
+	mode string,
+	output io.Writer,
+	childSignalNoticeWriter *os.File,
+	rootInput *os.File,
+) (ProcessHandle, ProcessHandle) {
+	t.Helper()
 
 	pidReader, pidWriter, pipeErr := os.Pipe()
 	require.NoError(t, pipeErr)
@@ -534,6 +625,10 @@ func startProcessTreeForTest(
 	}()
 	rootCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleFixture$")
 	rootCmd.Env = append(os.Environ(), unixProcessLifecycleFixtureMode+"="+mode)
+	if rootInput != nil {
+		rootCmd.Env = append(rootCmd.Env, unixProcessLifecycleRootExitGate+"=1")
+		rootCmd.Stdin = rootInput
+	}
 	rootCmd.ExtraFiles = []*os.File{pidWriter}
 	if childSignalNoticeWriter != nil {
 		rootCmd.ExtraFiles = append(rootCmd.ExtraFiles, childSignalNoticeWriter)
@@ -548,6 +643,9 @@ func startProcessTreeForTest(
 		nil,
 	)
 	require.NoError(t, startErr)
+	if rootInput != nil {
+		require.NoError(t, rootInput.Close())
+	}
 	require.NoError(t, pidWriter.Close())
 	if childSignalNoticeWriter != nil {
 		require.NoError(t, childSignalNoticeWriter.Close())
@@ -586,6 +684,40 @@ func startProcessTreeWithSignalNoticeForTest(
 	require.NoError(t, readyReadErr)
 	require.Equal(t, "ready\n", readyNotice)
 	return rootHandle, childHandle, signalNotices
+}
+
+func startGatedProcessTreeWithSignalNoticeForTest(
+	t *testing.T,
+	ctx context.Context,
+	executor *OSExecutor,
+	mode string,
+) (ProcessHandle, ProcessHandle, *bufio.Reader, *os.File) {
+	t.Helper()
+
+	signalNoticeReader, signalNoticeWriter, signalPipeErr := os.Pipe()
+	require.NoError(t, signalPipeErr)
+	t.Cleanup(func() {
+		_ = signalNoticeReader.Close()
+	})
+	rootGateReader, rootGateWriter, gatePipeErr := os.Pipe()
+	require.NoError(t, gatePipeErr)
+	t.Cleanup(func() {
+		_ = rootGateWriter.Close()
+	})
+	rootHandle, childHandle := startProcessTreeForTestWithInput(
+		t,
+		ctx,
+		executor,
+		mode,
+		nil,
+		signalNoticeWriter,
+		rootGateReader,
+	)
+	signalNotices := bufio.NewReader(signalNoticeReader)
+	readyNotice, readyReadErr := signalNotices.ReadString('\n')
+	require.NoError(t, readyReadErr)
+	require.Equal(t, "ready\n", readyNotice)
+	return rootHandle, childHandle, signalNotices, rootGateWriter
 }
 
 func requireProcessGone(t *testing.T, ctx context.Context, executor *OSExecutor, handle ProcessHandle) {

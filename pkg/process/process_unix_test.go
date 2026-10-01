@@ -8,60 +8,77 @@
 package process_test
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	wait "k8s.io/apimachinery/pkg/util/wait"
 
-	int_testutil "github.com/microsoft/dcp/internal/testutil"
-	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+const sigtermResistantFixture = "DCP_SIGTERM_RESISTANT_FIXTURE"
+
+// Provides a SIGTERM-resistant child with a readiness handshake so the stop test cannot
+// pass because the fixture exited naturally or received SIGTERM before installing its handler.
+func TestSigtermResistantFixture(t *testing.T) {
+	if os.Getenv(sigtermResistantFixture) != "1" {
+		return
+	}
+	signal.Ignore(syscall.SIGTERM)
+	_, readyErr := fmt.Fprintln(os.Stdout, "ready")
+	require.NoError(t, readyErr)
+	_, inputErr := io.Copy(io.Discard, os.Stdin)
+	require.NoError(t, inputErr)
+}
+
 // Tests that processes that ignore SIGTERM can still be terminated.
 // Run on Unix-like systems only, because Windows does not have signals.
 func TestStopProcessIgnoreSigterm(t *testing.T) {
 	t.Parallel()
-	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	testCtx, testCancel := testutil.GetTestContext(t, 35*time.Second)
 	defer testCancel()
 
-	delayToolDir, err := getDelayToolDir()
-	require.NoError(t, err)
-
-	const delay = 20 * time.Second
-	cmd := exec.Command("./delay", fmt.Sprintf("--delay=%s", delay.String()), "--ignore-sigterm")
-	cmd.Dir = delayToolDir
-
-	err = cmd.Start()
-	require.NoError(t, err, "could not start the 'delay' test program")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSigtermResistantFixture$")
+	cmd.Env = append(os.Environ(), sigtermResistantFixture+"=1")
+	stdout, stdoutErr := cmd.StdoutPipe()
+	require.NoError(t, stdoutErr)
+	stdin, stdinErr := cmd.StdinPipe()
+	require.NoError(t, stdinErr)
+	defer func() { _ = stdin.Close() }()
+	startErr := cmd.Start()
+	require.NoError(t, startErr, "could not start the SIGTERM-resistant fixture")
 	defer func() {
 		_ = cmd.Wait()
 	}()
+	ready, readyErr := bufio.NewReader(stdout).ReadString('\n')
+	require.NoError(t, readyErr)
+	require.Equal(t, "ready\n", ready, "the test must not signal before the SIGTERM handler is installed")
 
 	rootP, handleErr := process.ProcessHandleFromCmd(cmd)
 	require.NoError(t, handleErr)
 	require.False(t, rootP.IdentityTime.IsZero(), "process start time should not be zero")
 
-	// Only one process should be running, so the "tree" size is 1.
-	int_testutil.EnsureProcessTree(t, rootP, 1, 5*time.Second)
-
 	executor := process.NewOSExecutor(log)
+	defer executor.Dispose()
 	start := time.Now()
-	err = executor.StopProcess(testCtx, rootP)
-	require.NoError(t, err)
+	stopErr := executor.StopProcess(testCtx, rootP)
+	require.NoError(t, stopErr)
 	elapsed := time.Since(start)
-	elapsedStr := osutil.FormatDuration(elapsed)
-	if elapsed > delay {
-		// It is expected that the process will not exit immediately, because it will ignore SIGTERM.
-		// It should not take more than `signalAndWaitTimeout` though.
-		t.Fatal("Process was not terminated timely, elapsed time was ", elapsedStr)
-	}
+	require.GreaterOrEqual(t, elapsed, 14*time.Second,
+		"the fixture must remain alive through the graceful SIGTERM phase")
+	require.Less(t, elapsed, 20*time.Second,
+		"force-kill confirmation must finish before the complete 21-second stop budget")
 	ensureAllStopped(t, []process.ProcessHandle{rootP}, 5*time.Second)
 }
 

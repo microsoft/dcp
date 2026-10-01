@@ -37,13 +37,14 @@ var (
 )
 
 type waitState struct {
-	waitable      Waitable      // The waitable that is being waited on
-	waitEndedCh   chan struct{} // A channel that gets closed when the wait ends
-	waitErr       error         // The result of the process wait. Not valid until waitEndedCh is closed.
-	waitEnded     time.Time     // The time when the wait function ended. Zero if the wait is still in progress.
-	reason        waitReason    // The reason why are waiting on the process
-	waitStarted   bool
-	forceKillUsed bool
+	waitable               Waitable      // The waitable that is being waited on
+	waitEndedCh            chan struct{} // A channel that gets closed when the wait ends
+	waitErr                error         // The result of the process wait. Not valid until waitEndedCh is closed.
+	waitEnded              time.Time     // The time when the wait function ended. Zero if the wait is still in progress.
+	reason                 waitReason    // The reason why are waiting on the process
+	waitStarted            bool
+	forceKillUsed          bool
+	winConsoleAvailability WindowsConsoleAvailability
 }
 
 type osExecutorBase struct {
@@ -185,12 +186,9 @@ func (e *OSExecutor) StartAndForget(cmd *exec.Cmd, flags ProcessCreationFlag) (P
 	}
 
 	// We have to wait (not cmd.Process.Release()) because if we don't, then if the child process exits
-	// before the parent process exist, the child becomes a zombie (on non-Windows platforms).
-	if waitable != nil {
-		go func() {
-			_ = waitable.Wait()
-		}()
-	}
+	// before the parent process exits, the child becomes a zombie on non-Windows platforms. Keeping the
+	// regular wait state also retains the small amount of launch topology needed by a later Windows stop.
+	_, _ = e.tryStartWaiting(handle, waitable, waitReasonMonitoring)
 
 	return handle, nil
 }
@@ -215,6 +213,7 @@ func (e *OSExecutor) startProcess(
 	sysCreateProcess SysCreateProcessFunc,
 ) (ProcessHandle, Waitable, error) {
 	e.prepareProcessStart(cmd, flags)
+	winConsoleAvailability := windowsConsoleAvailabilityForCmd(cmd)
 	if cancellationErr := context.Cause(ctx); cancellationErr != nil {
 		return ProcessHandle{Pid: UnknownPID}, nil, cancellationErr
 	}
@@ -240,7 +239,11 @@ func (e *OSExecutor) startProcess(
 		if cmdStartErr := cmd.Start(); cmdStartErr != nil {
 			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(context.Cause(ctx), cmdStartErr)
 		}
-		waitable = &waitableCmd{cmd, flags}
+		waitable = &waitableCmd{
+			Cmd:                    cmd,
+			flags:                  flags,
+			winConsoleAvailability: winConsoleAvailability,
+		}
 		var handleErr error
 		handle, handleErr = ProcessHandleFromCmd(cmd)
 		if handleErr != nil {
@@ -300,6 +303,7 @@ func (e *OSExecutor) tryStartWaiting(handle ProcessHandle, waitable Waitable, re
 
 	ws, found := e.procsWaiting[handle]
 	callerShouldStopProcess := false
+	reportedWinConsoleAvailability := waitableWindowsConsoleAvailability(waitable)
 
 	if found {
 		if !ws.waitEnded.IsZero() {
@@ -316,6 +320,10 @@ func (e *OSExecutor) tryStartWaiting(handle ProcessHandle, waitable Waitable, re
 		if ws.waitable == nil {
 			ws.waitable = waitable
 		}
+		if ws.winConsoleAvailability == WindowsConsoleAvailabilityUnknown &&
+			reportedWinConsoleAvailability != WindowsConsoleAvailabilityUnknown {
+			ws.winConsoleAvailability = reportedWinConsoleAvailability
+		}
 		mustStartWaiting := !ws.waitStarted && reason != waitReasonNone
 		ws.reason |= reason
 
@@ -326,10 +334,11 @@ func (e *OSExecutor) tryStartWaiting(handle ProcessHandle, waitable Waitable, re
 	} else {
 		callerShouldStopProcess = (reason & waitReasonStopping) != 0
 		ws = &waitState{
-			waitable:    waitable,
-			waitEndedCh: make(chan struct{}),
-			reason:      reason,
-			waitStarted: reason != waitReasonNone,
+			waitable:               waitable,
+			waitEndedCh:            make(chan struct{}),
+			reason:                 reason,
+			waitStarted:            reason != waitReasonNone,
+			winConsoleAvailability: reportedWinConsoleAvailability,
 		}
 		e.procsWaiting[handle] = ws
 		if reason != waitReasonNone {
@@ -338,6 +347,24 @@ func (e *OSExecutor) tryStartWaiting(handle ProcessHandle, waitable Waitable, re
 	}
 
 	return ws, callerShouldStopProcess
+}
+
+func waitableWindowsConsoleAvailability(waitable Waitable) WindowsConsoleAvailability {
+	source, reportsAvailability := waitable.(WindowsConsoleAvailabilitySource)
+	if !reportsAvailability {
+		return WindowsConsoleAvailabilityUnknown
+	}
+
+	availability := source.WindowsConsoleAvailability()
+	switch availability {
+	case WindowsConsoleAvailabilityUnknown,
+		WindowsConsoleAvailabilityInherited,
+		WindowsConsoleAvailabilityRequiresAttach,
+		WindowsConsoleAvailabilityUnavailable:
+		return availability
+	default:
+		return WindowsConsoleAvailabilityUnknown
+	}
 }
 
 // Starts an existing executor-owned wait without claiming stop ownership.
@@ -688,14 +715,8 @@ func (e *OSExecutor) stopProcessTreeInternal(
 	forceDescendants := rootResult.forceKillUsed || rootStopErr != nil || graceCtx.Err() != nil
 
 	if len(tree) > 0 && !forceDescendants {
-		gracefulChildOpts := opts &^ optNotFoundIsError
-		gracefulChildOpts |= optGracefulOnly
-		if runtime.GOOS == "windows" || (opts&optSignalConsoleGroup) != 0 {
-			// Windows descendants may share the root's group; their PIDs are not necessarily group IDs.
-			gracefulChildOpts &^= optTrySignal
-		} else {
-			gracefulChildOpts |= optTrySignal
-		}
+		gracefulChildOpts := opts &^ (optNotFoundIsError | optSignalConsoleGroup | optWaitForGracefulDeadline)
+		gracefulChildOpts |= optGracefulOnly | optTrySignal
 
 		gracefulChildErrors := stopChildren(
 			graceCtx,
@@ -841,9 +862,10 @@ func (e *OSExecutor) Dispose() {
 			if flags&CreationFlagEnsureKillOnDispose == CreationFlagEnsureKillOnDispose {
 				// Best effort to stop the process.
 				e.log.V(1).Info("Stopping process during executor disposal...", "PID", handle.Pid, "Command", waitable.Info())
-				// One 15-second graceful-stop budget covers the whole process tree. The root is
-				// handled first, and descendants receive the remaining budget only if the root
-				// exits gracefully.
+				// One 15-second deadline bounds the graceful phase for the whole tree. On Windows,
+				// a process uses that full remaining deadline only after CTRL_C_EVENT or
+				// CTRL_BREAK_EVENT delivery is confirmed; foreign-console, ConPTY, detached, and
+				// unknown-descendant cases use the six-second passive fallback before force-kill.
 				cleanupCtx, cleanupCancel := WithStopTimeout(context.Background())
 				defer cleanupCancel()
 				stopErr := e.stopProcessInternal(
@@ -913,7 +935,9 @@ const (
 	optGracefulOnly processStoppingOpts = 0x40
 
 	// Uses the caller's context deadline instead of the per-signal timeout for graceful waiting.
-	// Unlike optGracefulOnly, a graceful signal dispatch failure may still fall back to a force kill.
+	// On Windows this applies only after CTRL_C_EVENT or CTRL_BREAK_EVENT delivery is confirmed;
+	// otherwise the six-second passive fallback applies. Unlike optGracefulOnly, a graceful
+	// signal dispatch failure may still fall back to a force kill.
 	optWaitForGracefulDeadline processStoppingOpts = 0x80
 )
 

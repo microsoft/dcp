@@ -26,6 +26,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/termpty"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
@@ -40,6 +41,10 @@ const (
 	defaultExerunnerTestTimeout = 20 * time.Second
 	executableWaitDelayMode     = "DCP_EXECUTABLE_WAIT_DELAY_MODE"
 	executableWaitDelayChildPID = "DCP_EXECUTABLE_WAIT_DELAY_CHILD_PID"
+	executableWaitDelayReady    = "DCP_EXECUTABLE_WAIT_DELAY_READY"
+	executableWaitDelayTrigger  = "DCP_EXECUTABLE_WAIT_DELAY_TRIGGER"
+	executableWaitDelayResult   = "DCP_EXECUTABLE_WAIT_DELAY_RESULT"
+	executableWaitDelayIdentity = "DCP_EXECUTABLE_WAIT_DELAY_IDENTITY"
 )
 
 // Provides root and escaped-child subprocess modes for verifying that inherited
@@ -49,6 +54,8 @@ func TestProcessExecutableRunnerWaitDelayFixture(t *testing.T) {
 	case "":
 		return
 	case "root":
+		identity := os.Getenv(executableWaitDelayIdentity)
+		require.NotEmpty(t, identity)
 		childCmd := exec.Command(os.Args[0], "-test.run=^TestProcessExecutableRunnerWaitDelayFixture$")
 		childCmd.Env = append(os.Environ(), executableWaitDelayMode+"=child")
 		childCmd.Stdout = os.Stdout
@@ -63,7 +70,63 @@ func TestProcessExecutableRunnerWaitDelayFixture(t *testing.T) {
 			osutil.PermissionOnlyOwnerReadWrite,
 		))
 		require.NoError(t, childCmd.Process.Release())
+
+		readyPath := os.Getenv(executableWaitDelayReady)
+		require.NotEmpty(t, readyPath)
+		readyDeadline := time.NewTimer(5 * time.Second)
+		defer readyDeadline.Stop()
+		readyPoll := time.NewTicker(10 * time.Millisecond)
+		defer readyPoll.Stop()
+		for {
+			readyBytes, readyErr := os.ReadFile(readyPath)
+			if readyErr == nil && strings.TrimSpace(string(readyBytes)) == identity {
+				break
+			}
+			if readyErr != nil {
+				require.ErrorIs(t, readyErr, os.ErrNotExist)
+			}
+			select {
+			case <-readyPoll.C:
+			case <-readyDeadline.C:
+				t.Fatal("timed out waiting for escaped child readiness")
+			}
+		}
+		_, rootWriteErr := fmt.Fprintf(os.Stdout, "%s root-before-exit\n", identity)
+		require.NoError(t, rootWriteErr)
 	case "child":
+		identity := os.Getenv(executableWaitDelayIdentity)
+		require.NotEmpty(t, identity)
+		_, preCutoffWriteErr := fmt.Fprintf(os.Stdout, "%s child-before-cutoff\n", identity)
+		require.NoError(t, preCutoffWriteErr)
+		require.NoError(t, usvc_io.WriteFile(
+			os.Getenv(executableWaitDelayReady),
+			[]byte(identity),
+			osutil.PermissionOnlyOwnerReadWrite,
+		))
+
+		triggerPath := os.Getenv(executableWaitDelayTrigger)
+		require.NotEmpty(t, triggerPath)
+		triggerPoll := time.NewTicker(10 * time.Millisecond)
+		defer triggerPoll.Stop()
+		for {
+			_, triggerErr := os.Stat(triggerPath)
+			if triggerErr == nil {
+				break
+			}
+			require.ErrorIs(t, triggerErr, os.ErrNotExist)
+			<-triggerPoll.C
+		}
+
+		_, postCutoffWriteErr := fmt.Fprintf(os.Stdout, "%s child-after-cutoff\n", identity)
+		result := "write-succeeded"
+		if postCutoffWriteErr != nil {
+			result = "write-error: " + postCutoffWriteErr.Error()
+		}
+		require.NoError(t, usvc_io.WriteFile(
+			os.Getenv(executableWaitDelayResult),
+			[]byte(result),
+			osutil.PermissionOnlyOwnerReadWrite,
+		))
 		time.Sleep(30 * time.Second)
 	default:
 		t.Fatalf("unknown wait-delay fixture mode %q", os.Getenv(executableWaitDelayMode))
@@ -265,8 +328,16 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 	defer cancel()
 	t.Setenv("DCP_DISABLE_MONITOR_PROCESS", "1")
 
-	childPIDPath := filepath.Join(t.TempDir(), "child.pid")
-	effectiveEnv := make([]apiv1.EnvVar, 0, len(os.Environ())+2)
+	fixtureDir := t.TempDir()
+	childPIDPath := filepath.Join(fixtureDir, "child.pid")
+	readyPath := filepath.Join(fixtureDir, "child.ready")
+	triggerPath := filepath.Join(fixtureDir, "post-cutoff.trigger")
+	resultPath := filepath.Join(fixtureDir, "post-cutoff.result")
+	identityBytes, identityErr := usvc_random.MakeRandomString(12)
+	require.NoError(t, identityErr)
+	identity := string(identityBytes)
+
+	effectiveEnv := make([]apiv1.EnvVar, 0, len(os.Environ())+6)
 	for _, entry := range os.Environ() {
 		name, value, found := strings.Cut(entry, "=")
 		if found {
@@ -276,16 +347,20 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 	effectiveEnv = append(effectiveEnv,
 		apiv1.EnvVar{Name: executableWaitDelayMode, Value: "root"},
 		apiv1.EnvVar{Name: executableWaitDelayChildPID, Value: childPIDPath},
+		apiv1.EnvVar{Name: executableWaitDelayReady, Value: readyPath},
+		apiv1.EnvVar{Name: executableWaitDelayTrigger, Value: triggerPath},
+		apiv1.EnvVar{Name: executableWaitDelayResult, Value: resultPath},
+		apiv1.EnvVar{Name: executableWaitDelayIdentity, Value: identity},
 	)
 
 	executor := process.NewOSExecutor(logr.Discard())
-	defer executor.Dispose()
+	t.Cleanup(executor.Dispose)
 	runner := NewProcessExecutableRunner(executor)
 	changeHandler := newRecordingRunChangeHandler()
 	exe := &apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "wait-delay",
-			UID:  "wait-delay",
+			UID:  types.UID("wait-delay-" + identity),
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: os.Args[0],
@@ -297,11 +372,48 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 	}
 
 	result := runner.StartRun(ctx, exe, changeHandler, logr.Discard())
+	var childHandle process.ProcessHandle
+	t.Cleanup(func() {
+		if childHandle.Pid == process.UnknownPID || childHandle.Pid == 0 {
+			if pidBytes, readErr := os.ReadFile(childPIDPath); readErr == nil {
+				if childPID, parseErr := strconv.ParseInt(strings.TrimSpace(string(pidBytes)), 10, 64); parseErr == nil {
+					if resolvedHandle, handleErr := process.FindProcessHandle(process.Pid_t(childPID)); handleErr == nil {
+						childHandle = resolvedHandle
+					}
+				}
+			}
+		}
+		if childHandle.Pid > 0 {
+			stopCtx, stopCancel := process.WithDetachedStopTimeout(context.Background())
+			stopErr := executor.StopProcess(stopCtx, childHandle)
+			stopCancel()
+			require.True(t, stopErr == nil || process.IsProcessGoneErr(stopErr), "failed to stop escaped child: %v", stopErr)
+		}
+		require.NoError(t, runner.ReleaseRun(context.Background(), result.RunID, logr.Discard()))
+		removeFileIfExists(t, result.StdOutFile)
+		removeFileIfExists(t, result.StdErrFile)
+	})
+
 	require.Equal(t, apiv1.ExecutableStateRunning, result.ExeState)
 	require.NotNil(t, result.StartWaitForRunCompletion)
-	result.StartWaitForRunCompletion()
+	require.NotEmpty(t, result.StdOutFile)
+	require.NotEmpty(t, result.StdErrFile)
+	_, stdoutStatErr := os.Stat(result.StdOutFile)
+	require.NoError(t, stdoutStatErr)
+	_, stderrStatErr := os.Stat(result.StdErrFile)
+	require.NoError(t, stderrStatErr)
 
 	startedAt := time.Now()
+	result.StartWaitForRunCompletion()
+
+	childPIDBytes := waitForFileContents(t, ctx, childPIDPath)
+	childPID, childPIDErr := strconv.ParseInt(strings.TrimSpace(string(childPIDBytes)), 10, 64)
+	require.NoError(t, childPIDErr)
+	childHandle, identityLookupErr := process.FindProcessHandle(process.Pid_t(childPID))
+	require.NoError(t, identityLookupErr)
+	require.NoError(t, executor.CheckProcessRunning(childHandle))
+	require.Equal(t, identity, strings.TrimSpace(string(waitForFileContents(t, ctx, readyPath))))
+
 	select {
 	case completed := <-changeHandler.completedRuns:
 		require.Equal(t, result.RunID, completed.runID)
@@ -313,36 +425,66 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 		t.Fatal("timed out waiting for root process completion")
 	}
 
-	var childHandle process.ProcessHandle
-	for childHandle.Pid == 0 {
-		pidBytes, readErr := os.ReadFile(childPIDPath)
+	require.NoError(t, executor.CheckProcessRunning(childHandle), "escaped child should still hold the inherited output handles")
+
+	preCutoffOutput, preCutoffReadErr := os.ReadFile(result.StdOutFile)
+	require.NoError(t, preCutoffReadErr)
+	require.Contains(t, string(preCutoffOutput), identity+" child-before-cutoff")
+	require.Contains(t, string(preCutoffOutput), identity+" root-before-exit")
+	require.NotContains(t, string(preCutoffOutput), identity+" child-after-cutoff")
+
+	require.NoError(t, usvc_io.WriteFile(triggerPath, []byte(identity), osutil.PermissionOnlyOwnerReadWrite))
+
+	postCutoffResult := ""
+	postCutoffPoll := time.NewTicker(10 * time.Millisecond)
+	defer postCutoffPoll.Stop()
+	for postCutoffResult == "" {
+		resultBytes, readErr := os.ReadFile(resultPath)
 		if readErr == nil {
-			childPID, parseErr := strconv.ParseInt(strings.TrimSpace(string(pidBytes)), 10, 64)
-			require.NoError(t, parseErr)
-			var handleErr error
-			childHandle, handleErr = process.FindProcessHandle(process.Pid_t(childPID))
-			if process.IsProcessGoneErr(handleErr) {
-				break
-			}
-			require.NoError(t, handleErr)
+			postCutoffResult = strings.TrimSpace(string(resultBytes))
 			break
 		}
 		require.ErrorIs(t, readErr, os.ErrNotExist)
+
+		childRunningErr := executor.CheckProcessRunning(childHandle)
+		if process.IsProcessGoneErr(childRunningErr) {
+			postCutoffResult = "child-exited-on-broken-pipe"
+			break
+		}
+		require.NoError(t, childRunningErr)
+
 		select {
-		case <-time.After(10 * time.Millisecond):
+		case <-postCutoffPoll.C:
 		case <-ctx.Done():
-			t.Fatal("timed out waiting for escaped child PID")
+			t.Fatal("timed out waiting for escaped child's post-cutoff write")
 		}
 	}
-	if childHandle.Pid > 0 {
-		stopCtx, stopCancel := process.WithStopTimeout(context.Background())
-		stopErr := executor.StopProcess(stopCtx, childHandle)
-		stopCancel()
-		require.True(t, stopErr == nil || process.IsProcessGoneErr(stopErr), "failed to stop escaped child: %v", stopErr)
-	}
+	require.NotEqual(t, "write-succeeded", postCutoffResult)
 
-	removeFileIfExists(t, result.StdOutFile)
-	removeFileIfExists(t, result.StdErrFile)
+	postCutoffOutput, postCutoffReadErr := os.ReadFile(result.StdOutFile)
+	require.NoError(t, postCutoffReadErr)
+	require.NotContains(t, string(postCutoffOutput), identity+" child-after-cutoff")
+}
+
+func waitForFileContents(t *testing.T, ctx context.Context, path string) []byte {
+	t.Helper()
+
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		data, readErr := os.ReadFile(path)
+		if readErr == nil && len(data) > 0 {
+			return data
+		}
+		if readErr != nil {
+			require.ErrorIs(t, readErr, os.ErrNotExist)
+		}
+		select {
+		case <-poll.C:
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %s", path)
+		}
+	}
 }
 
 func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
@@ -457,6 +599,110 @@ func TestStopRunTreatsGoneProcessAsStopped(t *testing.T) {
 	require.NoError(t, runner.StopRun(context.Background(), result.RunID, logr.Discard()))
 	_, found := runner.runningProcesses.Load(result.RunID)
 	require.False(t, found)
+}
+
+// Verifies that deletion requested while Windows output handles are still open is completed after process exit closes them.
+func TestDeleteRunOutputRemovesFilesAfterProcessExit(t *testing.T) {
+	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "")
+
+	stopExecutor := &stopRunTestExecutor{
+		handle: process.NewHandle(4251, time.Unix(1007, 0).UTC()),
+	}
+	runner, result, changeHandler := startStopRunTest(t, stopExecutor)
+
+	require.FileExists(t, result.StdOutFile)
+	require.FileExists(t, result.StdErrFile)
+	require.NoError(t, runner.DeleteRunOutput(
+		context.Background(),
+		result.RunID,
+		result.StdOutFile,
+		result.StdErrFile,
+	))
+
+	// The runner still owns open handles until exit, so Windows-safe deletion is deferred.
+	require.FileExists(t, result.StdOutFile)
+	require.FileExists(t, result.StdErrFile)
+
+	stopExecutor.handler.OnProcessExited(stopExecutor.handle.Pid, 0, nil)
+
+	require.NoFileExists(t, result.StdOutFile)
+	require.NoFileExists(t, result.StdErrFile)
+	select {
+	case completed := <-changeHandler.completedRuns:
+		require.Equal(t, result.RunID, completed.runID)
+		require.NoError(t, completed.err)
+	default:
+		require.Fail(t, "expected process completion notification")
+	}
+}
+
+// Verifies that deferred runner cleanup does not remove output when executable log preservation is enabled.
+func TestDeleteRunOutputHonorsLogPreservation(t *testing.T) {
+	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "1")
+
+	stopExecutor := &stopRunTestExecutor{
+		handle: process.NewHandle(4252, time.Unix(1008, 0).UTC()),
+	}
+	runner, result, changeHandler := startStopRunTest(t, stopExecutor)
+
+	require.NoError(t, runner.DeleteRunOutput(
+		context.Background(),
+		result.RunID,
+		result.StdOutFile,
+		result.StdErrFile,
+	))
+	stopExecutor.handler.OnProcessExited(stopExecutor.handle.Pid, 0, nil)
+
+	require.FileExists(t, result.StdOutFile)
+	require.FileExists(t, result.StdErrFile)
+	select {
+	case completed := <-changeHandler.completedRuns:
+		require.Equal(t, result.RunID, completed.runID)
+		require.NoError(t, completed.err)
+	default:
+		require.Fail(t, "expected process completion notification")
+	}
+}
+
+// Verifies that eventual cleanup tolerates Unix output files being unlinked while their handles remain open.
+// Repeated deletion requests and the later close path must both treat the missing files as success.
+func TestDeleteRunOutputIsIdempotentAfterUnixUnlink(t *testing.T) {
+	if osutil.IsWindows() {
+		t.Skip("Unix permits unlinking files while the runner still has them open")
+	}
+	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "")
+
+	stopExecutor := &stopRunTestExecutor{
+		handle: process.NewHandle(4253, time.Unix(1009, 0).UTC()),
+	}
+	runner, result, changeHandler := startStopRunTest(t, stopExecutor)
+
+	require.NoError(t, runner.DeleteRunOutput(
+		context.Background(),
+		result.RunID,
+		result.StdOutFile,
+		result.StdErrFile,
+	))
+	require.NoError(t, logs.RemoveWithRetry(context.Background(), result.StdOutFile))
+	require.NoError(t, logs.RemoveWithRetry(context.Background(), result.StdErrFile))
+	require.NoError(t, runner.DeleteRunOutput(
+		context.Background(),
+		result.RunID,
+		result.StdOutFile,
+		result.StdErrFile,
+	))
+
+	stopExecutor.handler.OnProcessExited(stopExecutor.handle.Pid, 0, nil)
+
+	require.NoFileExists(t, result.StdOutFile)
+	require.NoFileExists(t, result.StdErrFile)
+	select {
+	case completed := <-changeHandler.completedRuns:
+		require.Equal(t, result.RunID, completed.runID)
+		require.NoError(t, completed.err)
+	default:
+		require.Fail(t, "expected process completion notification")
+	}
 }
 
 // Verifies that stopping an already-gone persistent process succeeds,

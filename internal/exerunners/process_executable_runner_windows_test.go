@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/termpty"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -64,4 +65,42 @@ func TestProcessExecutableRunnerWindowsNotHiddenIfTerminalEnabledn(t *testing.T)
 			require.Equal(t, testCase.expectHideWindow, hideWindow)
 		})
 	}
+}
+
+// Verifies that adopted and executor-owned new-console processes use the isolated dcpproc attach path.
+// ConPTY runs must stay in-process so core stopping applies its no-console fallback.
+func TestProcessExecutableRunnerUsesDcpProcForClassicConsoleRuns(t *testing.T) {
+	t.Parallel()
+
+	runner := NewProcessExecutableRunner(nil)
+	for _, testCase := range []struct {
+		name     string
+		runState *processRunState
+		expected bool
+	}{
+		{
+			name:     "executor-owned new-console process",
+			runState: &processRunState{},
+			expected: true,
+		},
+		{
+			name:     "adopted process with unknown console topology",
+			runState: &processRunState{adopted: true},
+			expected: true,
+		},
+		{
+			name: "ConPTY process",
+			runState: &processRunState{
+				ptp: &termpty.PseudoTerminalProcess{},
+			},
+			expected: false,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			require.Equal(t, testCase.expected, runner.shouldUseDcpProcStop(testCase.runState))
+		})
+	}
+
+	runner.disableConsoleStop = true
+	require.False(t, runner.shouldUseDcpProcStop(&processRunState{adopted: true}))
 }

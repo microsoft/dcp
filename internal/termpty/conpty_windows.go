@@ -325,8 +325,8 @@ func createEnvironmentBlock(env []string) ([]uint16, error) {
 	return utf16.Encode([]rune(block)), nil
 }
 
-// windowsProcessHandle represents a Windows process handle.
-// Implements process.Waitable (specifically process.WaitableWithExitCode) and io.Closer.
+// windowsProcessHandle represents a ConPTY-backed Windows process handle.
+// It reports that classic-console control events cannot reach the process.
 // All methods are goroutine-safe.
 type windowsProcessHandle struct {
 	hProcess windows.Handle
@@ -409,6 +409,10 @@ func (wph *windowsProcessHandle) Flags() process.ProcessCreationFlag {
 	return wph.flags
 }
 
+func (*windowsProcessHandle) WindowsConsoleAvailability() process.WindowsConsoleAvailability {
+	return process.WindowsConsoleAvailabilityUnavailable
+}
+
 func (wph *windowsProcessHandle) Close() error {
 	wph.lock.Lock()
 	defer wph.lock.Unlock()
@@ -422,3 +426,4 @@ func (wph *windowsProcessHandle) Close() error {
 
 var _ process.Waitable = (*windowsProcessHandle)(nil)
 var _ process.ExitCodeSource = (*windowsProcessHandle)(nil)
+var _ process.WindowsConsoleAvailabilitySource = (*windowsProcessHandle)(nil)

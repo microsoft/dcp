@@ -9,6 +9,7 @@ package process
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -44,19 +45,32 @@ var (
 
 type OSExecutor struct {
 	*osExecutorBase
-	processCleanupJob        func() windows.Handle
-	processCleanupJobCreated bool
+	processCleanupJob         func() windows.Handle
+	processCleanupJobCreated  bool
+	processCleanupJobErr      error
+	openProcessForCleanupJob  func(uint32, bool, uint32) (windows.Handle, error)
+	assignProcessToCleanupJob func(windows.Handle, windows.Handle) error
 }
 
 func NewOSExecutor(log logr.Logger) Executor {
 	e := &OSExecutor{
-		osExecutorBase: newOSExecutorBase(log),
+		osExecutorBase:            newOSExecutorBase(log),
+		openProcessForCleanupJob:  windows.OpenProcess,
+		assignProcessToCleanupJob: windows.AssignProcessToJobObject,
 	}
 	e.processCleanupJob = sync.OnceValue(func() windows.Handle {
 		e.processCleanupJobCreated = true
-		return e.createProcessCleanupJob()
+		job, jobErr := e.createProcessCleanupJob()
+		e.processCleanupJobErr = jobErr
+		return job
 	})
 	return e
+}
+
+func (e *OSExecutor) getWindowsConsoleAvailability(ws *waitState) WindowsConsoleAvailability {
+	e.acquireLock()
+	defer e.releaseLock()
+	return ws.winConsoleAvailability
 }
 
 func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle, opts processStoppingOpts) (singleProcessStopResult, error) {
@@ -106,60 +120,80 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 	}
 	defer e.finishStopAttempt(ws)
 
-	if (opts & optTrySignal) == optTrySignal {
-		// Give the process a chance to gracefully exit.
-		//
-		// When attached to the target's console group, send CTRL_C_EVENT to
-		// process group 0 to signal all processes in that console group.
-		// Otherwise send CTRL_BREAK_EVENT to the root's process group. Only roots
-		// started with CREATE_NEW_PROCESS_GROUP have their PID as the group ID;
-		// descendants must not be signaled by PID.
-		var sig uint32
-		var processGroupID uint32
-		if (opts & optSignalConsoleGroup) != 0 {
-			sig = windows.CTRL_C_EVENT
-			processGroupID = 0
-		} else {
-			sig = windows.CTRL_BREAK_EVENT
-			processGroupID = uint32(proc.Pid)
+	if (opts & optTrySignal) != 0 {
+		winConsoleAvailability := e.getWindowsConsoleAvailability(ws)
+		consoleEvent, processGroupID, shouldSendEvent := consoleControlEventForStop(
+			winConsoleAvailability,
+			opts,
+			proc.Pid,
+		)
+		deliveryConfirmed := false
+		var dispatchErr error
+		if shouldSendEvent {
+			// StopViaConsole first attaches the helper to a foreign classic console and then sends
+			// CTRL_C_EVENT to process group zero. A normal executor-owned process that inherited
+			// this executor's classic console instead receives CTRL_BREAK_EVENT for the new process
+			// group created at launch. A process in another console, a ConPTY process, a detached
+			// process, or an adopted process with unknown launch topology may not receive either
+			// event, so those scenarios do not attempt a direct dispatch here.
+			dispatchErr = e.sendConsoleControlEvent(ctx, handle, proc, consoleEvent, processGroupID)
+			if IsProcessGoneErr(dispatchErr) {
+				return singleProcessStopResult{waitEndedCh: waitEndedCh}, nil
+			}
+			deliveryConfirmed = dispatchErr == nil
 		}
 
-		waitTimeout := signalAndWaitTimeout
-		if (opts & (optGracefulOnly | optWaitForGracefulDeadline)) != 0 {
-			waitTimeout = 0
-		}
-		err = e.signalAndWaitForExit(ctx, handle, proc, sig, processGroupID, ws, waitTimeout)
-		if err == nil {
-			e.log.V(1).Info("Process stopped by signal", "PID", handle.Pid, "Signal", sig)
+		// A successful GenerateConsoleCtrlEvent call confirms dispatch of CTRL_C_EVENT or
+		// CTRL_BREAK_EVENT, so the process may use the full shared 15-second graceful deadline.
+		// Without that confirmation, wait passively for at most six seconds: the target may be
+		// in a foreign/new console without an attach helper, attached to ConPTY, detached from
+		// every console, or an unknown descendant that never received the root's console event.
+		waitTimeout := consoleControlWaitTimeout(deliveryConfirmed, opts)
+		gracefulWaitErr := waitForTrackedProcessExit(ctx, handle.Pid, ws, waitTimeout)
+		if gracefulWaitErr == nil {
+			if deliveryConfirmed {
+				e.log.V(1).Info("Process stopped after confirmed console control event",
+					"PID", handle.Pid, "Event", consoleControlEventName(consoleEvent))
+			} else {
+				e.log.V(1).Info("Process exited during passive console-control fallback", "PID", handle.Pid)
+			}
 			return singleProcessStopResult{waitEndedCh: waitEndedCh}, nil
 		}
 		if IsProcessGoneErr(e.CheckProcessRunning(handle)) {
-			e.log.V(1).Info("Process exited after signal while its wait operation was still completing", "PID", handle.Pid, "Signal", sig)
+			e.log.V(1).Info("Process exited while its wait operation was still completing", "PID", handle.Pid)
 			return singleProcessStopResult{waitEndedCh: waitEndedCh}, nil
 		}
+		if contextErr := ctx.Err(); contextErr != nil {
+			return singleProcessStopResult{waitEndedCh: waitEndedCh}, errors.Join(dispatchErr, contextErr)
+		}
 		if (opts & optGracefulOnly) != 0 {
-			return singleProcessStopResult{waitEndedCh: waitEndedCh}, err
+			return singleProcessStopResult{waitEndedCh: waitEndedCh}, errors.Join(dispatchErr, gracefulWaitErr)
 		}
 
-		e.log.V(1).Info("Process did not stop upon signal; falling back to SIGKILL", "PID", handle.Pid, "Signal", sig, "Error", err)
-	} else if (opts & (optGracefulOnly | optSignalConsoleGroup)) != 0 {
-		// The root already signaled its group or console. Allow descendants to exit
-		// without dispatching another event to an unverified process group.
-		waitTimeout := signalAndWaitTimeout
-		if (opts & optGracefulOnly) != 0 {
-			waitTimeout = 0
+		if deliveryConfirmed {
+			e.log.V(1).Info("Process did not exit after the confirmed console control event; force-killing",
+				"PID", handle.Pid, "Event", consoleControlEventName(consoleEvent), "Error", gracefulWaitErr)
+		} else {
+			e.log.V(1).Info("Process did not exit during the six-second passive fallback; force-killing",
+				"PID", handle.Pid, "DispatchError", dispatchErr, "WaitError", gracefulWaitErr)
 		}
-		gracefulWaitErr := waitForTrackedProcessExit(ctx, handle.Pid, ws, waitTimeout)
+	} else if (opts & optGracefulOnly) != 0 {
+		// No console control event was sent to this process. This is the descendant path when
+		// receipt of the root's CTRL_C_EVENT or CTRL_BREAK_EVENT cannot be established, so wait
+		// passively for six seconds rather than consuming the full 15-second graceful deadline.
+		gracefulWaitErr := waitForTrackedProcessExit(ctx, handle.Pid, ws, signalAndWaitTimeout)
 		if gracefulWaitErr == nil {
-			e.log.V(1).Info("Process exited after root group signal", "PID", handle.Pid)
+			e.log.V(1).Info("Process exited during passive console-control fallback", "PID", handle.Pid)
 			return singleProcessStopResult{waitEndedCh: waitEndedCh}, nil
 		}
-		if (opts&optGracefulOnly) != 0 || gracefulWaitErr != ErrTimedOutWaitingForProcessToStop {
-			return singleProcessStopResult{waitEndedCh: waitEndedCh}, gracefulWaitErr
-		}
-		e.log.V(1).Info("Process did not exit after root group signal, force-killing", "PID", handle.Pid)
+		return singleProcessStopResult{waitEndedCh: waitEndedCh}, gracefulWaitErr
 	}
 
+	// Force escalation starts only after either (a) a confirmed CTRL_C_EVENT/CTRL_BREAK_EVENT
+	// consumed the allowed graceful deadline, or (b) event delivery could not be confirmed and
+	// the six-second passive fallback elapsed. This prevents foreign-console, ConPTY, detached,
+	// no-console, and unknown-descendant cases from waiting the full 15 seconds without evidence
+	// that a graceful console event reached the target.
 	e.log.V(1).Info("Sending SIGKILL to process...", "PID", handle.Pid)
 	e.markForceKillUsed(ws)
 	err = signalProcess(ctx, handle, proc, os.Kill)
@@ -177,34 +211,59 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 	return singleProcessStopResult{waitEndedCh: waitEndedCh, forceKillUsed: true}, nil
 }
 
-// Sends a given signal to a process and waits for it to exit.
-// processGroupID specifies the target process group; use 0 to signal all processes
-// in the current console group (as required when attached to a foreign console).
-// If waitTimeout is positive and the process does not exit within that duration, the function
-// returns ErrTimedOutWaitingForProcessToStop. A zero timeout waits until the context expires.
-func (e *OSExecutor) signalAndWaitForExit(
+func consoleControlEventForStop(
+	winConsoleAvailability WindowsConsoleAvailability,
+	opts processStoppingOpts,
+	pid int,
+) (consoleEvent uint32, processGroupID uint32, shouldSend bool) {
+	if (opts & optSignalConsoleGroup) != 0 {
+		return windows.CTRL_C_EVENT, 0, true
+	}
+	if winConsoleAvailability == WindowsConsoleAvailabilityInherited {
+		return windows.CTRL_BREAK_EVENT, uint32(pid), true
+	}
+	return 0, 0, false
+}
+
+func consoleControlWaitTimeout(deliveryConfirmed bool, opts processStoppingOpts) time.Duration {
+	if deliveryConfirmed && (opts&(optGracefulOnly|optWaitForGracefulDeadline)) != 0 {
+		return 0
+	}
+	return signalAndWaitTimeout
+}
+
+func consoleControlEventName(consoleEvent uint32) string {
+	switch consoleEvent {
+	case windows.CTRL_C_EVENT:
+		return "CTRL_C_EVENT"
+	case windows.CTRL_BREAK_EVENT:
+		return "CTRL_BREAK_EVENT"
+	default:
+		return fmt.Sprintf("console event %d", consoleEvent)
+	}
+}
+
+// sendConsoleControlEvent revalidates the process identity immediately before dispatch.
+// processGroupID zero sends CTRL_C_EVENT to every process attached to the helper's current
+// console; a nonzero ID sends CTRL_BREAK_EVENT only to that classic-console process group.
+func (e *OSExecutor) sendConsoleControlEvent(
 	ctx context.Context,
 	handle ProcessHandle,
 	proc *os.Process,
-	sig uint32,
+	consoleEvent uint32,
 	processGroupID uint32,
-	ws *waitState,
-	waitTimeout time.Duration,
 ) error {
 	err := actOnProcess(ctx, handle, func() (ProcessHandle, error) {
 		info, infoErr := readProcessInfoFromProcess(proc, false)
 		return info.handle, infoErr
 	}, func() error {
-		return windows.GenerateConsoleCtrlEvent(sig, processGroupID)
+		return windows.GenerateConsoleCtrlEvent(consoleEvent, processGroupID)
 	})
-	if IsProcessGoneErr(err) {
-		return nil
-	}
 	if err != nil {
-		return fmt.Errorf("could not send signal to process %d: %w", proc.Pid, err)
+		return fmt.Errorf("could not send %s to process %d: %w",
+			consoleControlEventName(consoleEvent), proc.Pid, err)
 	}
-
-	return waitForTrackedProcessExit(ctx, handle.Pid, ws, waitTimeout)
+	return nil
 }
 func (e *OSExecutor) completeDispose() {
 	e.acquireLock()
@@ -238,6 +297,32 @@ func (e *OSExecutor) prepareProcessStart(cmd *exec.Cmd, flags ProcessCreationFla
 	}
 }
 
+func windowsConsoleAvailabilityForCmd(cmd *exec.Cmd) WindowsConsoleAvailability {
+	if cmd == nil || cmd.SysProcAttr == nil {
+		return WindowsConsoleAvailabilityUnknown
+	}
+
+	creationFlags := cmd.SysProcAttr.CreationFlags
+	switch {
+	case creationFlags&windows.CREATE_NEW_CONSOLE != 0:
+		// CREATE_NEW_CONSOLE places the process in a foreign console. The long-lived
+		// executor cannot send CTRL_BREAK_EVENT across that console boundary; an isolated
+		// helper must AttachConsole and then send CTRL_C_EVENT to process group zero.
+		return WindowsConsoleAvailabilityRequiresAttach
+	case creationFlags&(windows.DETACHED_PROCESS|windows.CREATE_NO_WINDOW) != 0:
+		// Detached and CREATE_NO_WINDOW processes have no classic console. CTRL_C_EVENT
+		// and CTRL_BREAK_EVENT therefore cannot reach them; ConPTY creators report the
+		// same availability through WindowsConsoleAvailabilitySource.
+		return WindowsConsoleAvailabilityUnavailable
+	case creationFlags&windows.CREATE_NEW_PROCESS_GROUP != 0:
+		// The process inherited this executor's classic console and its PID names the new
+		// process group, so a successful CTRL_BREAK_EVENT dispatch confirms delivery.
+		return WindowsConsoleAvailabilityInherited
+	default:
+		return WindowsConsoleAvailabilityUnknown
+	}
+}
+
 func (e *OSExecutor) completeProcessStart(handle ProcessHandle, flags ProcessCreationFlag) error {
 	if cleanupJobDisabled() || (flags&CreationFlagEnsureKillOnDispose) == 0 {
 		return nil
@@ -247,30 +332,44 @@ func (e *OSExecutor) completeProcessStart(handle ProcessHandle, flags ProcessCre
 	defer e.releaseLock()
 
 	pcj := e.processCleanupJob()
-	if pcj != windows.InvalidHandle {
-		// We will try to assign the process to the job object. If we fail, this is not a fatal error,
-		// The process or its children may not be cleaned up when the process executor is disposed, but it will run.
-
-		// AssignProcessToJobObject requires PROCESS_SET_QUOTA and PROCESS_TERMINATE.
-		// Include inspection rights because this handle is identity-validated before assignment.
-		processHandle, processHandleErr := windows.OpenProcess(cleanupJobProcessAccess, false, uint32(handle.Pid))
-		if processHandleErr != nil {
-			e.log.V(1).Info("Could not open new process handle", "PID", handle.Pid, "Error", processHandleErr)
-		} else {
-			defer tryCloseHandle(processHandle)
-			info, infoErr := readWindowsProcessInfo(processHandle, false)
-			if infoErr != nil {
-				return infoErr
-			}
-			if identityErr := validateIdentity(handle, info.handle); identityErr != nil {
-				return identityErr
-			}
-
-			jobAssignmentErr := windows.AssignProcessToJobObject(pcj, processHandle)
-			if jobAssignmentErr != nil {
-				e.log.V(1).Info("Could not assign process to job object", "PID", handle.Pid, "Error", jobAssignmentErr)
-			}
+	if pcj == windows.InvalidHandle {
+		if e.processCleanupJobErr != nil {
+			return fmt.Errorf("could not establish process cleanup job for pid %d: %w",
+				handle.Pid, e.processCleanupJobErr)
 		}
+		return fmt.Errorf("process cleanup job is unavailable for pid %d", handle.Pid)
+	}
+
+	// CreationFlagEnsureKillOnDispose starts the process suspended. Do not resume it unless
+	// identity-validated job assignment succeeds: resuming after OpenProcess or
+	// AssignProcessToJobObject fails would leave a running process outside cleanup ownership.
+	// AssignProcessToJobObject requires PROCESS_SET_QUOTA and PROCESS_TERMINATE; inspection
+	// rights are also needed to verify that PID reuse did not replace the suspended process.
+	processHandle, processHandleErr := e.openProcessForCleanupJob(
+		cleanupJobProcessAccess,
+		false,
+		uint32(handle.Pid),
+	)
+	if processHandleErr != nil {
+		return fmt.Errorf("could not open process %d for cleanup job assignment: %w",
+			handle.Pid, processHandleErr)
+	}
+	defer tryCloseHandle(processHandle)
+
+	info, infoErr := readWindowsProcessInfo(processHandle, false)
+	if infoErr != nil {
+		return fmt.Errorf("could not inspect process %d for cleanup job assignment: %w",
+			handle.Pid, infoErr)
+	}
+	if identityErr := validateIdentity(handle, info.handle); identityErr != nil {
+		return fmt.Errorf("could not validate process %d for cleanup job assignment: %w",
+			handle.Pid, identityErr)
+	}
+
+	jobAssignmentErr := e.assignProcessToCleanupJob(pcj, processHandle)
+	if jobAssignmentErr != nil {
+		return fmt.Errorf("could not assign process %d to cleanup job: %w",
+			handle.Pid, jobAssignmentErr)
 	}
 
 	resumptionErr := resumeNewSuspendedProcess(handle)
@@ -282,15 +381,15 @@ func (e *OSExecutor) completeProcessStart(handle ProcessHandle, flags ProcessCre
 	return nil
 }
 
-func (e *OSExecutor) createProcessCleanupJob() windows.Handle {
+func (e *OSExecutor) createProcessCleanupJob() (windows.Handle, error) {
 	if cleanupJobDisabled() {
-		return windows.InvalidHandle
+		return windows.InvalidHandle, nil
 	}
 
 	job, jobCreationErr := windows.CreateJobObject(nil, nil)
 	if jobCreationErr != nil {
 		e.log.Error(jobCreationErr, "Could not create process cleanup job")
-		return windows.InvalidHandle
+		return windows.InvalidHandle, fmt.Errorf("could not create process cleanup job: %w", jobCreationErr)
 	}
 
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
@@ -308,10 +407,10 @@ func (e *OSExecutor) createProcessCleanupJob() windows.Handle {
 	if setJobInfoErr != nil {
 		e.log.Error(setJobInfoErr, "Could not set process cleanup job information")
 		tryCloseHandle(job)
-		return windows.InvalidHandle
+		return windows.InvalidHandle, fmt.Errorf("could not configure process cleanup job: %w", setJobInfoErr)
 	}
 
-	return job
+	return job, nil
 }
 
 func resumeNewSuspendedProcess(handle ProcessHandle) error {

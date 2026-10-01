@@ -13,7 +13,9 @@ import (
 const (
 	// The graceful-stop timeout is shared by the root-first stop and the
 	// descendants' graceful-stop phase. Descendants receive only the time left
-	// after the root.
+	// after the root. On Windows, the full remainder is used only after delivery
+	// of CTRL_C_EVENT or CTRL_BREAK_EVENT is confirmed; otherwise each passive
+	// wait is capped by the six-second signalAndWaitTimeout.
 	gracefulProcessStopTimeout = 15 * time.Second
 
 	// The default stop timeout includes the graceful phase and the final

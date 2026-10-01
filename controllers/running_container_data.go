@@ -536,9 +536,12 @@ func (rcd *runningContainerData) closeTerminalResources(ctx context.Context, pe 
 			stopCtx, stopCancel := process.WithDetachedStopTimeout(ctx)
 			stopErr := pe.StopProcess(stopCtx, ptp.Handle)
 			stopCancel()
-			var notFound *process.ErrProcessNotFound
-			if stopErr != nil && !errors.As(stopErr, &notFound) {
-				log.V(1).Info("Failed to stop container terminal attach process", "PID", ptp.Handle.Pid, "Error", stopErr.Error())
+			if stopErr != nil {
+				if process.IsProcessGoneErr(stopErr) {
+					log.V(1).Info("Container terminal attach process already exited", "PID", ptp.Handle.Pid, "Error", stopErr)
+				} else {
+					log.Error(stopErr, "Failed to stop container terminal attach process", "PID", ptp.Handle.Pid)
+				}
 			}
 		}
 	}

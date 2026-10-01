@@ -461,13 +461,12 @@ func (r *PhysicalProcessReconciler) claimPhysicalProcessTracking(
 ) objectChange {
 	oldStateKey := physicalProcessDataKey(physicalProcess)
 	claimedData := &physicalProcessData{
-		resourceUID:        physicalProcess.UID,
-		state:              physicalProcessStateRuntime,
-		progress:           physicalResourceProgressRunning,
-		handle:             handle,
-		cleanupUnconfirmed: data.cleanupUnconfirmed,
+		resourceUID: physicalProcess.UID,
+		state:       physicalProcessStateRuntime,
+		progress:    physicalResourceProgressRunning,
+		handle:      handle,
 	}
-	if claimedData.cleanupUnconfirmed {
+	if data.handle == handle && data.cleanupUnconfirmed {
 		markDescendantCleanupUnconfirmed(claimedData, data.failureMessage)
 	}
 	newStateKey := physicalProcessHandleDataKey(handle)
@@ -667,7 +666,11 @@ func (r *PhysicalProcessReconciler) queuePhysicalProcessDataResult(
 			result.state == physicalProcessStateRuntime &&
 			result.progress == physicalResourceProgressMissing &&
 			!currentData.finishedAt.IsZero()
-		if preserveExitCode || preserveFinishedAt || preserveObservedExit {
+		preserveCleanupUnconfirmed := currentData != nil &&
+			currentData.handle == result.handle &&
+			currentData.cleanupUnconfirmed &&
+			!result.cleanupUnconfirmed
+		if preserveExitCode || preserveFinishedAt || preserveObservedExit || preserveCleanupUnconfirmed {
 			// Root exit notifications can arrive while a tree stop is still producing its result.
 			resultToStore = result.Clone()
 			if preserveExitCode {
@@ -678,6 +681,15 @@ func (r *PhysicalProcessReconciler) queuePhysicalProcessDataResult(
 			}
 			if preserveObservedExit {
 				resultToStore.progress = physicalResourceProgressExited
+			}
+			if preserveCleanupUnconfirmed {
+				if resultToStore.state == physicalProcessStateRuntime &&
+					(resultToStore.progress == physicalResourceProgressExited ||
+						resultToStore.progress == physicalResourceProgressMissing) {
+					markDescendantCleanupUnconfirmed(resultToStore, descendantCleanupUnconfirmedMessage)
+				} else {
+					resultToStore.cleanupUnconfirmed = true
+				}
 			}
 		}
 		newStateKey := currentStateKey
@@ -825,16 +837,20 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
 		data.state = physicalProcessStateStop
 		data.progress = physicalResourceProgressRetryPending
+		data.cleanupUnconfirmed = true
 		data.failureReason = apiv2.PhysicalProcessReasonStopFailed
 		data.failureMessage = fmt.Sprintf("Failed to stop physical process: %v", stopErr)
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 		return
 	}
-	if process.IsProcessGoneErr(stopErr) && data.cleanupUnconfirmed {
+	if data.cleanupUnconfirmed {
+		if stopErr == nil && data.finishedAt.IsZero() {
+			data.finishedAt = time.Now()
+		}
 		finalizePhysicalProcessWithUnconfirmedDescendants(data, descendantCleanupUnconfirmedMessage)
 		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
-		log.Info("Physical process root is gone, but descendant cleanup remains unconfirmed", "PID", data.handle.Pid)
+		log.Info("Physical process root cleanup finished, but descendant cleanup remains unconfirmed", "PID", data.handle.Pid)
 		return
 	}
 
@@ -843,7 +859,6 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 	data.finishedAt = time.Now()
 	data.failureReason = ""
 	data.failureMessage = ""
-	data.cleanupUnconfirmed = false
 	data.retryAfter = time.Time{}
 	r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 	log.V(1).Info("Physical process stopped", "PID", data.handle.Pid)

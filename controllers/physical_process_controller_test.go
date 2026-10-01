@@ -387,6 +387,84 @@ func TestPhysicalProcessTerminalResultDoesNotRequireHandleOwnership(t *testing.T
 	require.Equal(t, finishedAt, launchedData.finishedAt)
 }
 
+// Verifies that cleanup uncertainty remains monotonic for the same process identity
+// but does not contaminate a replacement process that reuses the PID.
+func TestPhysicalProcessCleanupUncertaintyIsScopedToProcessIdentity(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name                      string
+		replacementIdentityOffset time.Duration
+		expectCleanupUnconfirmed  bool
+	}{
+		{
+			name:                     "same identity preserves uncertainty",
+			expectCleanupUnconfirmed: true,
+		},
+		{
+			name:                      "replacement identity clears uncertainty",
+			replacementIdentityOffset: time.Second,
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+			defer cancel()
+			physicalProcess := &apiv2.PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "identity-scope",
+					Namespace: "test",
+					UID:       types.UID("identity-scope-" + testCase.name),
+				},
+			}
+			originalHandle := process.NewHandle(44, time.Unix(1200, 0).UTC())
+			claimedHandle := process.NewHandle(
+				originalHandle.Pid,
+				originalHandle.IdentityTime.Add(testCase.replacementIdentityOffset),
+			)
+			data := &physicalProcessData{
+				resourceUID:        physicalProcess.UID,
+				state:              physicalProcessStateResolve,
+				progress:           physicalResourceProgressRetryPending,
+				handle:             originalHandle,
+				failureReason:      apiv2.PhysicalProcessReasonStopFailed,
+				failureMessage:     "cleanup was not confirmed",
+				cleanupUnconfirmed: true,
+			}
+			reconciler := NewPhysicalProcessReconciler(
+				ctx,
+				nil,
+				nil,
+				logr.Discard(),
+				&missingPhysicalProcessExecutor{},
+			)
+			reconciler.processData.Store(
+				physicalProcess.NamespacedName(),
+				physicalProcessDataKey(physicalProcess),
+				data.Clone(),
+			)
+
+			change := reconciler.claimPhysicalProcessTracking(physicalProcess, data, claimedHandle)
+
+			require.Equal(t, noChange, change)
+			currentStateKey, claimedData := reconciler.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
+			require.Equal(t, physicalProcessHandleDataKey(claimedHandle), currentStateKey)
+			require.NotNil(t, claimedData)
+			require.Equal(t, claimedHandle, claimedData.handle)
+			require.Equal(t, testCase.expectCleanupUnconfirmed, claimedData.cleanupUnconfirmed)
+			if testCase.expectCleanupUnconfirmed {
+				require.Equal(t, apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed, claimedData.failureReason)
+				require.Equal(t, data.failureMessage, claimedData.failureMessage)
+			} else {
+				require.Empty(t, claimedData.failureReason)
+				require.Empty(t, claimedData.failureMessage)
+			}
+		})
+	}
+}
+
 func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)

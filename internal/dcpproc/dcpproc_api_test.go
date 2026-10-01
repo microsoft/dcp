@@ -13,9 +13,11 @@ import (
 	"os/exec"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -43,6 +45,42 @@ func (executor *contextObservingExecutor) StartProcess(
 ) (process.ProcessHandle, func(), error) {
 	executor.deadline, executor.hasDeadline = ctx.Deadline()
 	return executor.Executor.StartProcess(ctx, cmd, handler, flags, sysCreateProcess)
+}
+
+type stopProcessTreeLogCounts struct {
+	lock       sync.Mutex
+	errorCalls int
+	infoCalls  int
+}
+
+type stopProcessTreeLogSink struct {
+	counts *stopProcessTreeLogCounts
+}
+
+func (*stopProcessTreeLogSink) Init(logr.RuntimeInfo) {}
+
+func (*stopProcessTreeLogSink) Enabled(int) bool {
+	return true
+}
+
+func (sink *stopProcessTreeLogSink) Info(int, string, ...any) {
+	sink.counts.lock.Lock()
+	defer sink.counts.lock.Unlock()
+	sink.counts.infoCalls++
+}
+
+func (sink *stopProcessTreeLogSink) Error(error, string, ...any) {
+	sink.counts.lock.Lock()
+	defer sink.counts.lock.Unlock()
+	sink.counts.errorCalls++
+}
+
+func (sink *stopProcessTreeLogSink) WithValues(...any) logr.LogSink {
+	return sink
+}
+
+func (sink *stopProcessTreeLogSink) WithName(string) logr.LogSink {
+	return sink
 }
 
 func TestMonitorTargetFromFieldsRequiresTimestamp(t *testing.T) {
@@ -271,6 +309,86 @@ func TestStopProcessTree(t *testing.T) {
 	require.Equal(t, dcpProc.Cmd.Args[3], strconv.FormatInt(int64(handle.Pid), 10), "Should include test process ID")
 	require.Equal(t, dcpProc.Cmd.Args[4], "--process-start-time", "Should include --process-start-time flag")
 	require.Equal(t, dcpProc.Cmd.Args[5], handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat), "Should include formatted process start time")
+}
+
+// Verifies that dcpproc uses the caller's earlier deadline instead of extending it to the helper timeout.
+func TestStopProcessTreeUsesEarlierParentDeadline(t *testing.T) {
+	executorCtx, executorCancel := testutil.GetTestContext(t, 20*time.Second)
+	defer executorCancel()
+	processExecutor := internal_testutil.NewTestProcessExecutor(executorCtx)
+	observingExecutor := &contextObservingExecutor{Executor: processExecutor}
+	dcppaths.EnableTestPathProbing()
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+	require.NoError(t, dcpPathErr)
+
+	processExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{dcpPath},
+		},
+		RunCommand: func(*internal_testutil.ProcessExecution) int32 {
+			return 0
+		},
+	})
+
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer parentCancel()
+	parentDeadline, hasParentDeadline := parentCtx.Deadline()
+	require.True(t, hasParentDeadline)
+
+	stopErr := StopProcessTree(
+		parentCtx,
+		observingExecutor,
+		process.NewHandle(28901, time.Unix(1201, 0).UTC()),
+		logr.Discard(),
+	)
+
+	require.NoError(t, stopErr)
+	require.True(t, observingExecutor.hasDeadline)
+	require.WithinDuration(t, parentDeadline, observingExecutor.deadline, 100*time.Millisecond)
+}
+
+// Verifies that structured process-gone exits are informational while incomplete and generic failures are error-level.
+func TestLogStopProcessTreeFailureClassifiesStructuredOutcomes(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name               string
+		err                error
+		expectedErrorCalls int
+		expectedInfoCalls  int
+	}{
+		{
+			name:              "process gone",
+			err:               stopProcessTreeExitError(process.NewHandle(28902, time.Unix(1202, 0).UTC()), protocol.StopProcessTreeProcessGoneExitCode),
+			expectedInfoCalls: 1,
+		},
+		{
+			name:               "incomplete process tree",
+			err:                stopProcessTreeExitError(process.NewHandle(28903, time.Unix(1203, 0).UTC()), protocol.StopProcessTreeIncompleteExitCode),
+			expectedErrorCalls: 1,
+		},
+		{
+			name:               "generic failure",
+			err:                errors.New("access denied"),
+			expectedErrorCalls: 1,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			counts := &stopProcessTreeLogCounts{}
+			logStopProcessTreeFailure(
+				logr.New(&stopProcessTreeLogSink{counts: counts}),
+				testCase.err,
+				42,
+			)
+
+			counts.lock.Lock()
+			defer counts.lock.Unlock()
+			require.Equal(t, testCase.expectedErrorCalls, counts.errorCalls)
+			require.Equal(t, testCase.expectedInfoCalls, counts.infoCalls)
+		})
+	}
 }
 
 func TestStopProcessTreeExitErrorPreservesOutcomeClassification(t *testing.T) {

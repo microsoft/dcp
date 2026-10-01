@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/dcppaths"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -55,10 +58,36 @@ func (*cleanupContextRunner) ReleaseRun(context.Context, RunID, logr.Logger) err
 	return nil
 }
 
+type outputCleanupRunner struct {
+	cleanupContextRunner
+	deleteCalls int
+	deleteErr   error
+	runID       RunID
+	stdOutPath  string
+	stdErrPath  string
+	contextErr  error
+}
+
+func (runner *outputCleanupRunner) DeleteRunOutput(
+	ctx context.Context,
+	runID RunID,
+	stdOutPath string,
+	stdErrPath string,
+) error {
+	runner.deleteCalls++
+	runner.runID = runID
+	runner.stdOutPath = stdOutPath
+	runner.stdErrPath = stdErrPath
+	runner.contextErr = ctx.Err()
+	return runner.deleteErr
+}
+
 type cleanupContextProcessExecutor struct {
 	process.Executor
 	observation cleanupContextObservation
 	stopErr     error
+	stopErrors  []error
+	stopCalls   atomic.Int32
 	checkErr    error
 	waitForStop func(context.Context) error
 }
@@ -79,7 +108,7 @@ func (executor *cleanupContextProcessExecutor) StartProcess(
 	executor.observeContext(ctx)
 	handle := process.NewHandle(4301, time.Unix(1101, 0).UTC())
 	startWaitForExit := func() {
-		stopErr := executor.stopErr
+		stopErr := executor.nextStopError()
 		if executor.waitForStop != nil {
 			stopErr = executor.waitForStop(ctx)
 		}
@@ -97,11 +126,78 @@ func (executor *cleanupContextProcessExecutor) StopProcess(
 	if executor.waitForStop != nil {
 		return executor.waitForStop(ctx)
 	}
-	return executor.stopErr
+	return executor.nextStopError()
 }
 
 func (executor *cleanupContextProcessExecutor) CheckProcessRunning(process.ProcessHandle) error {
 	return executor.checkErr
+}
+
+func (executor *cleanupContextProcessExecutor) nextStopError() error {
+	callIndex := int(executor.stopCalls.Add(1)) - 1
+	if callIndex < len(executor.stopErrors) {
+		return executor.stopErrors[callIndex]
+	}
+	return executor.stopErr
+}
+
+// Verifies that deletion after an unconfirmed stop transfers output ownership to the runner before finalization.
+// The handoff uses a detached context so eventual handle closure can remove Windows output files.
+func TestExecutableDeletionTransfersOutputCleanupToRunnerAfterFailedStop(t *testing.T) {
+	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "")
+
+	runner := &outputCleanupRunner{}
+	reconciler := &ExecutableReconciler{
+		ExecutableRunners: map[apiv1.ExecutionType]ExecutableRunner{
+			apiv1.ExecutionTypeProcess: runner,
+		},
+	}
+	executable := &apiv1.Executable{
+		Status: apiv1.ExecutableStatus{
+			StdOutFile: "stdout.log",
+			StdErrFile: "stderr.log",
+		},
+	}
+	runInfo := &ExecutableRunInfo{
+		RunID:        "failed-stop",
+		ExeState:     apiv1.ExecutableStateUnknown,
+		startupStage: StartupStageDefaultRunner,
+	}
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	require.True(t, reconciler.runnerOwnsOutputDeletion(cancelledCtx, executable, runInfo, logr.Discard()))
+	require.Equal(t, 1, runner.deleteCalls)
+	require.Equal(t, runInfo.RunID, runner.runID)
+	require.Equal(t, executable.Status.StdOutFile, runner.stdOutPath)
+	require.Equal(t, executable.Status.StdErrFile, runner.stdErrPath)
+	require.NoError(t, runner.contextErr)
+}
+
+// Verifies that the controller does not request runner-owned deletion when executable logs must be preserved.
+func TestExecutableDeletionPreservesOutputWhenConfigured(t *testing.T) {
+	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "1")
+
+	runner := &outputCleanupRunner{}
+	reconciler := &ExecutableReconciler{
+		ExecutableRunners: map[apiv1.ExecutionType]ExecutableRunner{
+			apiv1.ExecutionTypeProcess: runner,
+		},
+	}
+	executable := &apiv1.Executable{
+		Status: apiv1.ExecutableStatus{
+			StdOutFile: "stdout.log",
+			StdErrFile: "stderr.log",
+		},
+	}
+	runInfo := &ExecutableRunInfo{
+		RunID:        "preserved-output",
+		ExeState:     apiv1.ExecutableStateUnknown,
+		startupStage: StartupStageDefaultRunner,
+	}
+
+	require.False(t, reconciler.runnerOwnsOutputDeletion(context.Background(), executable, runInfo, logr.Discard()))
+	require.Zero(t, runner.deleteCalls)
 }
 
 // Verifies that queued executable stops and persistent-start rollback detach parent cancellation,
@@ -287,6 +383,101 @@ func TestPhysicalProcessIncompleteTreeStopRetriesWhileRootIsRunning(t *testing.T
 	require.Equal(t, apiv2.PhysicalProcessReasonStopFailed, currentData.failureReason)
 	require.Contains(t, currentData.failureMessage, process.ErrIncompleteProcessTree.Error())
 	require.False(t, currentData.retryAfter.IsZero())
+}
+
+// Verifies that any stop failure latches cleanup uncertainty and that a later successful
+// or process-gone retry publishes the warning before deletion can remove the finalizer.
+func TestPhysicalProcessStopFailureRemainsUnconfirmedAfterRetry(t *testing.T) {
+	t.Parallel()
+	dcppaths.EnableTestPathProbing()
+
+	firstStopErrors := map[string]error{
+		"helper timeout":       context.DeadlineExceeded,
+		"helper abnormal exit": errors.New("stop helper exited abnormally"),
+	}
+	finalStopErrors := map[string]error{
+		"success":      nil,
+		"process gone": &process.ErrProcessNotFound{Pid: 4303},
+	}
+	for firstName, firstStopErr := range firstStopErrors {
+		for finalName, finalStopErr := range finalStopErrors {
+			t.Run(firstName+"/"+finalName, func(t *testing.T) {
+				t.Parallel()
+
+				testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+				defer testCancel()
+				handle := process.NewHandle(4303, time.Unix(1103, 0).UTC())
+				executor := &cleanupContextProcessExecutor{
+					stopErrors: []error{firstStopErr, finalStopErr},
+				}
+				reconciler := NewPhysicalProcessReconciler(testCtx, nil, nil, logr.Discard(), executor)
+				physicalProcess := &apiv2.PhysicalProcess{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "retry-unconfirmed",
+						Namespace: "test",
+						UID:       types.UID("retry-unconfirmed-" + firstName + "-" + finalName),
+					},
+				}
+				stateKey := physicalProcessHandleDataKey(handle)
+				data := &physicalProcessData{
+					resourceUID: physicalProcess.UID,
+					state:       physicalProcessStateStop,
+					progress:    physicalResourceProgressInProgress,
+					handle:      handle,
+				}
+				reconciler.processData.Store(physicalProcess.NamespacedName(), stateKey, data.Clone())
+
+				reconciler.stopPhysicalProcess(testCtx, physicalProcess, stateKey, data.Clone(), logr.Discard())
+				reconciler.processData.RunDeferredOps(physicalProcess.NamespacedName(), physicalProcess)
+				_, retryData := reconciler.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
+				require.NotNil(t, retryData)
+				require.Equal(t, physicalProcessStateStop, retryData.state)
+				require.Equal(t, physicalResourceProgressRetryPending, retryData.progress)
+				require.True(t, retryData.cleanupUnconfirmed)
+				require.Equal(t, apiv2.PhysicalProcessReasonStopFailed, retryData.failureReason)
+				require.Contains(t, retryData.failureMessage, firstStopErr.Error())
+
+				retryData.progress = physicalResourceProgressInProgress
+				retryData.retryAfter = time.Time{}
+				require.True(t, reconciler.processData.Update(
+					physicalProcess.NamespacedName(),
+					stateKey,
+					retryData,
+				))
+				reconciler.stopPhysicalProcess(testCtx, physicalProcess, stateKey, retryData.Clone(), logr.Discard())
+				reconciler.processData.RunDeferredOps(physicalProcess.NamespacedName(), physicalProcess)
+
+				_, completedData := reconciler.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
+				require.NotNil(t, completedData)
+				require.Equal(t, physicalProcessStateRuntime, completedData.state)
+				if finalStopErr == nil {
+					require.Equal(t, physicalResourceProgressExited, completedData.progress)
+				} else {
+					require.Equal(t, physicalResourceProgressMissing, completedData.progress)
+				}
+				require.True(t, completedData.cleanupUnconfirmed)
+				require.Equal(t, apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed, completedData.failureReason)
+				require.Equal(t, descendantCleanupUnconfirmedMessage, completedData.failureMessage)
+				require.Equal(t, int32(2), executor.stopCalls.Load())
+
+				deletedAt := metav1.Now()
+				physicalProcess.DeletionTimestamp = &deletedAt
+				physicalProcess.Finalizers = []string{physicalProcessFinalizer}
+				firstDeleteChange, _ := reconciler.handleDeletionRequest(physicalProcess, completedData, logr.Discard())
+				require.Equal(t, noChange, firstDeleteChange)
+				require.Contains(t, physicalProcess.Finalizers, physicalProcessFinalizer)
+
+				statusChange, _, valid := completedData.applyTo(physicalProcess)
+				require.True(t, valid)
+				require.NotEqual(t, noChange, statusChange)
+				require.True(t, physicalProcessReportsDescendantCleanupUnconfirmed(physicalProcess))
+
+				secondDeleteChange, _ := reconciler.handleDeletionRequest(physicalProcess, completedData, logr.Discard())
+				require.NotEqual(t, noChange, secondDeleteChange)
+				require.NotContains(t, physicalProcess.Finalizers, physicalProcessFinalizer)
+			})
+		}
+	}
 }
 
 // Verifies that deletion honors RetainRuntimeProcess even when a prior stop

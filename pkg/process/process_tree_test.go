@@ -65,6 +65,106 @@ func TestBuildProcessTree(t *testing.T) {
 	}
 }
 
+// Verifies that a root which exits or is replaced after the snapshot does not discard
+// descendants whose identities were already verified from that snapshot. It also ensures
+// that a replacement process using the root PID never enters the usable tree.
+func TestGetProcessTreePreservesVerifiedDescendantsWhenRootChangesAfterSnapshot(t *testing.T) {
+	t.Parallel()
+
+	root := treeProcess(10, 0, 10)
+	child := treeProcess(11, 10, 11)
+	replacement := treeProcess(10, 0, 20)
+	tests := []struct {
+		name      string
+		after     processInfo
+		afterErr  error
+		changeErr error
+	}{
+		{
+			name:      "root exited",
+			afterErr:  &ErrProcessNotFound{Pid: root.handle.Pid, Inner: ErrorProcessNotFound},
+			changeErr: ErrorProcessNotFound,
+		},
+		{
+			name:      "root pid reused",
+			afterErr:  fmt.Errorf("%w during revalidation", ErrProcessIdentityMismatch),
+			changeErr: ErrProcessIdentityMismatch,
+		},
+		{
+			name:      "native identity changed within timestamp tolerance",
+			after:     replacement,
+			changeErr: ErrProcessIdentityMismatch,
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			lookupCount := 0
+			tree, treeErr := getProcessTree(
+				context.Background(),
+				root.handle,
+				func(ProcessHandle) (processInfo, error) {
+					lookupCount++
+					if lookupCount == 1 {
+						return root, nil
+					}
+					return testCase.after, testCase.afterErr
+				},
+				func(context.Context) ([]processInfo, error) {
+					return []processInfo{root, child}, nil
+				},
+			)
+
+			require.ErrorIs(t, treeErr, ErrIncompleteProcessTree)
+			require.ErrorIs(t, treeErr, testCase.changeErr)
+			require.Equal(t, []Pid_t{root.handle.Pid, child.handle.Pid}, getIDs(tree))
+			require.Equal(t, root.handle, tree[0], "a replacement using the root PID must never enter the usable tree")
+		})
+	}
+}
+
+// Verifies that cancellation and non-lifecycle revalidation failures remain fatal
+// even when a snapshot had enough information to construct a process tree.
+func TestGetProcessTreePreservesFatalRevalidationBehavior(t *testing.T) {
+	t.Parallel()
+
+	root := treeProcess(10, 0, 10)
+	child := treeProcess(11, 10, 11)
+	fatalErr := errors.New("process metadata access denied")
+	lookupCount := 0
+	tree, treeErr := getProcessTree(
+		context.Background(),
+		root.handle,
+		func(ProcessHandle) (processInfo, error) {
+			lookupCount++
+			if lookupCount == 1 {
+				return root, nil
+			}
+			return processInfo{}, fatalErr
+		},
+		func(context.Context) ([]processInfo, error) {
+			return []processInfo{root, child}, nil
+		},
+	)
+	require.Nil(t, tree)
+	require.ErrorIs(t, treeErr, fatalErr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelledTree, cancelledErr := getProcessTree(
+		ctx,
+		root.handle,
+		func(ProcessHandle) (processInfo, error) {
+			return root, nil
+		},
+		func(context.Context) ([]processInfo, error) {
+			cancel()
+			return []processInfo{root, child}, nil
+		},
+	)
+	require.Nil(t, cancelledTree)
+	require.ErrorIs(t, cancelledErr, context.Canceled)
+}
+
 // Verifies that process-tree ancestry uses native birth ordering
 // rather than rounded identity timestamps when excluding an older child.
 func TestProcessTreeUsesNativeBirthOrdering(t *testing.T) {

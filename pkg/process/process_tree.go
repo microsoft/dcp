@@ -15,36 +15,73 @@ import (
 // ErrIncompleteProcessTree accompanies a usable partial result but intentionally remains a fail-closed
 // result because enumeration or descendant cleanup is uncertain. Other errors invalidate the result.
 // The snapshot does not include subsequently created children, and every action still requires identity validation.
+// If the root exits or its PID is reused after the snapshot, the result retains only the original
+// root identity and its verified descendants; callers must not substitute the replacement process.
 func GetProcessTree(ctx context.Context, root ProcessHandle) ([]ProcessHandle, error) {
+	return getProcessTree(ctx, root, findProcessInfo, snapshotProcesses)
+}
+
+func getProcessTree(
+	ctx context.Context,
+	root ProcessHandle,
+	findInfo func(ProcessHandle) (processInfo, error),
+	snapshotAll func(context.Context) ([]processInfo, error),
+) ([]ProcessHandle, error) {
 	if contextErr := ctx.Err(); contextErr != nil {
 		return nil, contextErr
 	}
-	before, beforeErr := findProcessInfo(root)
+	before, beforeErr := findInfo(root)
 	if beforeErr != nil {
 		return nil, beforeErr
 	}
-	snapshot, snapshotErr := snapshotProcesses(ctx)
+	snapshot, snapshotErr := snapshotAll(ctx)
 	if contextErr := ctx.Err(); contextErr != nil {
 		return nil, contextErr
-	}
-	after, afterErr := findProcessInfo(before.handle)
-	if afterErr != nil {
-		return nil, afterErr
-	}
-	if before.birth != after.birth {
-		return nil, fmt.Errorf("%w during enumeration for pid %d", ErrProcessIdentityMismatch, root.Pid)
 	}
 	tree, treeErr := buildProcessTree(ctx, before, snapshot)
 	if treeErr != nil && !errors.Is(treeErr, ErrIncompleteProcessTree) {
 		return nil, treeErr
 	}
+
+	resultErr := treeErr
 	if snapshotErr != nil {
-		return tree, errors.Join(
-			treeErr,
+		resultErr = errors.Join(
+			resultErr,
 			fmt.Errorf("%w: process enumeration was incomplete: %w", ErrIncompleteProcessTree, snapshotErr),
 		)
 	}
-	return tree, treeErr
+
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
+	after, afterErr := findInfo(before.handle)
+	if afterErr != nil {
+		if !IsProcessGoneErr(afterErr) {
+			return nil, afterErr
+		}
+		return tree, errors.Join(
+			resultErr,
+			fmt.Errorf(
+				"%w: root process %d exited or changed identity after the process snapshot: %w",
+				ErrIncompleteProcessTree,
+				root.Pid,
+				afterErr,
+			),
+		)
+	}
+	if before.birth != after.birth {
+		identityErr := fmt.Errorf("%w during enumeration for pid %d", ErrProcessIdentityMismatch, root.Pid)
+		return tree, errors.Join(
+			resultErr,
+			fmt.Errorf(
+				"%w: root process %d changed identity after the process snapshot: %w",
+				ErrIncompleteProcessTree,
+				root.Pid,
+				identityErr,
+			),
+		)
+	}
+	return tree, resultErr
 }
 
 func buildProcessTree(ctx context.Context, root processInfo, snapshot []processInfo) ([]ProcessHandle, error) {

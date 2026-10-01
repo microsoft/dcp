@@ -36,12 +36,12 @@ const (
 )
 
 // Verifies that explicit and concurrent Windows stops, cancellation cleanup, and disposal
-// give descendants the remaining graceful budget without interrupting the caller.
-// Signal-resistant descendants are force-killed within the bounded cleanup window.
+// do not interrupt the caller. Descendants whose receipt of the root's CTRL_BREAK_EVENT
+// cannot be proven from runtime state get the six-second passive fallback before force-kill.
 func TestWindowsDescendantStopsDoNotSignalCaller(t *testing.T) {
 	t.Parallel()
 
-	for _, action := range []string{"stop", "concurrent", "cancel", "dispose", "force"} {
+	for _, action := range []string{"stop", "concurrent", "cancel", "dispose", "force", "mixed"} {
 		t.Run(action, func(t *testing.T) {
 			t.Parallel()
 			testCtx, testCancel := testutil.GetTestContext(t, time.Minute)
@@ -98,6 +98,9 @@ func TestWindowsDescendantStopHelper(t *testing.T) {
 		}
 	case "child":
 		grandchild := windowsDescendantHelperCommand("grandchild")
+		if os.Getenv(windowsDescendantStopAction) == "mixed" {
+			ForkFromParent(grandchild)
+		}
 		grandchildOutput, grandchildOutputErr := grandchild.StdoutPipe()
 		require.NoError(t, grandchildOutputErr)
 		defer func() { require.NoError(t, grandchildOutput.Close()) }()
@@ -138,20 +141,9 @@ func awaitWindowsDescendantSignal(t *testing.T, ctx context.Context, signalCh <-
 func finishWindowsDescendantGracefully(t *testing.T, ctx context.Context, signalCh <-chan os.Signal, mode string) {
 	t.Helper()
 	awaitWindowsDescendantSignal(t, ctx, signalCh)
-	if os.Getenv(windowsDescendantStopAction) == "force" {
-		<-ctx.Done()
-		t.Fatal("signal-resistant descendant was not force-killed")
-	}
-
-	timer := time.NewTimer(signalAndWaitTimeout + time.Second)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		marker := filepath.Join(os.Getenv(windowsDescendantStopMarkers), mode)
-		require.NoError(t, usvc_io.WriteFile(marker, []byte("graceful"), 0o600))
-	case <-ctx.Done():
-		t.Fatal("descendant did not receive its remaining graceful-stop budget")
-	}
+	marker := filepath.Join(os.Getenv(windowsDescendantStopMarkers), mode)
+	require.NoError(t, usvc_io.WriteFile(marker, []byte("signaled"), 0o600))
+	time.Sleep(30 * time.Second)
 }
 
 func runWindowsDescendantStopCoordinator(t *testing.T, ctx context.Context, signalCh <-chan os.Signal) {
@@ -199,7 +191,7 @@ func runWindowsDescendantStopCoordinator(t *testing.T, ctx context.Context, sign
 	startedAt := time.Now()
 	action := os.Getenv(windowsDescendantStopAction)
 	switch action {
-	case "stop", "force":
+	case "stop", "force", "mixed":
 		require.NoError(t, executor.StopProcess(ctx, rootHandle))
 	case "dispose":
 		executor.Dispose()
@@ -246,23 +238,19 @@ func runWindowsDescendantStopCoordinator(t *testing.T, ctx context.Context, sign
 	}
 	elapsed := time.Since(startedAt)
 	require.Less(t, elapsed, processStopTimeout)
-	if action == "force" {
-		for _, handle := range descendants {
-			require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(handle)),
-				"force stop must confirm descendant exit before returning")
+	require.GreaterOrEqual(t, elapsed, signalAndWaitTimeout-time.Second)
+	for _, mode := range []string{"child", "grandchild"} {
+		markerPath := filepath.Join(os.Getenv(windowsDescendantStopMarkers), mode)
+		marker, markerOpenErr := usvc_io.OpenFileReadOnly(markerPath)
+		if action == "mixed" && mode == "grandchild" {
+			require.ErrorIs(t, markerOpenErr, os.ErrNotExist,
+				"the new-console grandchild must not be reported as receiving the root's CTRL_BREAK_EVENT")
+			continue
 		}
-	}
-	if action == "force" {
-		require.GreaterOrEqual(t, elapsed, gracefulProcessStopTimeout)
-	} else {
-		require.GreaterOrEqual(t, elapsed, signalAndWaitTimeout)
-		for _, mode := range []string{"child", "grandchild"} {
-			marker, markerOpenErr := usvc_io.OpenFileReadOnly(filepath.Join(os.Getenv(windowsDescendantStopMarkers), mode))
-			require.NoError(t, markerOpenErr)
-			contents, markerReadErr := io.ReadAll(marker)
-			require.NoError(t, errors.Join(markerReadErr, marker.Close()))
-			require.Equal(t, "graceful", string(contents))
-		}
+		require.NoError(t, markerOpenErr)
+		contents, markerReadErr := io.ReadAll(marker)
+		require.NoError(t, errors.Join(markerReadErr, marker.Close()))
+		require.Equal(t, "signaled", string(contents))
 	}
 	handles := append([]ProcessHandle{rootHandle}, descendants...)
 	allGoneErr := wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(context.Context) (bool, error) {

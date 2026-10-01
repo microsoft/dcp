@@ -268,7 +268,7 @@ func (r *ExecutableReconciler) handleDeletionRequest(ctx context.Context, exe *a
 	default:
 		log.V(1).Info("Executable is being deleted (in final state; releasing resources and deleting finalizer)...",
 			"CurrentState", runInfo.ExeState)
-		r.releaseExecutableResources(ctx, exe, log)
+		r.releaseExecutableResources(ctx, exe, runInfo, log)
 		r.runs.DeleteByNamespacedName(exe.NamespacedName())
 		return deleteFinalizer(exe, executableFinalizer, log)
 	}
@@ -1033,10 +1033,53 @@ func allRunnersAttempted(currentStage ExecutableStartuptStage, exe *apiv1.Execut
 	return int(currentStage) == len(exe.Spec.FallbackExecutionTypes)
 }
 
-func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
+func (r *ExecutableReconciler) releaseExecutableResources(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	runInfo *ExecutableRunInfo,
+	log logr.Logger,
+) {
 	r.releaseExecutableControllerResources(ctx, exe, log)
-	r.deleteOutputFiles(exe, log)
+	if !r.runnerOwnsOutputDeletion(ctx, exe, runInfo, log) {
+		r.deleteOutputFiles(exe, log)
+	}
 	r.deleteCertificateFiles(exe, log)
+}
+
+func (r *ExecutableReconciler) runnerOwnsOutputDeletion(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	runInfo *ExecutableRunInfo,
+	log logr.Logger,
+) bool {
+	if runInfo == nil ||
+		runInfo.ExeState != apiv1.ExecutableStateUnknown ||
+		osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) ||
+		(exe.Status.StdOutFile == "" && exe.Status.StdErrFile == "") {
+		return false
+	}
+
+	runner, runnerErr := r.getExecutableRunner(exe, runInfo.startupStage)
+	if runnerErr != nil {
+		log.Error(runnerErr, "Could not coordinate Executable output deletion with its runner", "RunID", runInfo.RunID)
+		return false
+	}
+	outputCleanupRunner, supported := runner.(ExecutableOutputCleanupRunner)
+	if !supported {
+		return false
+	}
+
+	deleteErr := outputCleanupRunner.DeleteRunOutput(
+		context.WithoutCancel(ctx),
+		runInfo.RunID,
+		exe.Status.StdOutFile,
+		exe.Status.StdErrFile,
+	)
+	if deleteErr != nil {
+		log.Error(deleteErr, "Could not coordinate Executable output deletion with its runner", "RunID", runInfo.RunID)
+		return false
+	}
+	return true
 }
 
 func (r *ExecutableReconciler) releaseExecutableControllerResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {

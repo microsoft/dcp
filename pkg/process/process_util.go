@@ -188,7 +188,8 @@ func IsEarlyProcessExitError(err error) bool {
 
 type waitableCmd struct {
 	*exec.Cmd
-	flags ProcessCreationFlag
+	flags                  ProcessCreationFlag
+	winConsoleAvailability WindowsConsoleAvailability
 }
 
 func (cmd waitableCmd) Info() string {
@@ -197,6 +198,10 @@ func (cmd waitableCmd) Info() string {
 
 func (cmd waitableCmd) Flags() ProcessCreationFlag {
 	return cmd.flags
+}
+
+func (cmd waitableCmd) WindowsConsoleAvailability() WindowsConsoleAvailability {
+	return cmd.winConsoleAvailability
 }
 
 func (cmd waitableCmd) Abort(ctx context.Context) error {
@@ -230,6 +235,7 @@ func (wl waitableLite) Abort(_ context.Context) error {
 
 var _ Waitable = waitableCmd{}
 var _ Waitable = waitableLite{}
+var _ WindowsConsoleAvailabilitySource = waitableCmd{}
 
 func makeProcessWaitable(ctx context.Context, handle ProcessHandle, pollPolicy waitPollPolicy) Waitable {
 	return &waitableLite{

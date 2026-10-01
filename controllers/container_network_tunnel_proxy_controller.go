@@ -15,6 +15,8 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -78,8 +80,9 @@ type serverProxyExit struct {
 }
 
 type serverProxyRun struct {
-	handle process.ProcessHandle
-	exit   *concurrency.ValuePromise[serverProxyExit]
+	handle              process.ProcessHandle
+	exit                *concurrency.ValuePromise[serverProxyExit]
+	removeOutputOnClose atomic.Bool
 }
 
 func newServerProxyRun() *serverProxyRun {
@@ -113,6 +116,10 @@ func (run *serverProxyRun) getExitType() (serverProxyExitType, bool) {
 		return 0, false
 	}
 	return exit.exitType, true
+}
+
+func (run *serverProxyRun) requestOutputRemoval() {
+	run.removeOutputOnClose.Store(true)
 }
 
 const (
@@ -177,6 +184,7 @@ type ContainerNetworkTunnelProxyReconciler struct {
 	workQueue *resiliency.WorkQueue
 
 	sharedImagePreparationLock *concurrency.ContextAwareLock
+	discardedCleanupTasks      *concurrency.CountdownLatch
 }
 
 func NewContainerNetworkTunnelProxyReconciler(
@@ -210,12 +218,18 @@ func NewContainerNetworkTunnelProxyReconciler(
 		proxyData:                  NewObjectStateMap[types.NamespacedName, containerNetworkTunnelProxyData, *containerNetworkTunnelProxyData, *apiv1.ContainerNetworkTunnelProxy](),
 		workQueue:                  resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
 		sharedImagePreparationLock: concurrency.NewContextAwareLock(),
+		discardedCleanupTasks:      concurrency.NewCountdownLatch(),
 	}
 
 	return &r
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
+	addLatchErr := mgr.Add(r.discardedCleanupTasks)
+	if addLatchErr != nil {
+		return fmt.Errorf("add discarded tunnel proxy cleanup countdown latch: %w", addLatchErr)
+	}
+
 	indexer := mgr.GetFieldIndexer()
 
 	err := indexer.IndexField(context.Background(), &apiv1.ContainerNetworkTunnelProxy{}, containerNetworkNameKey, func(rawObj ctrl_client.Object) []string {
@@ -1121,7 +1135,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) queueProxyPairStartupResult(
 		}
 		if run != nil {
 			exit, exited := run.getExit()
-			if exited && exit.exitType == serverProxyExitTypeUnexpected {
+			if exited &&
+				exit.exitType == serverProxyExitTypeUnexpected &&
+				result.State != apiv1.ContainerNetworkTunnelProxyStateFailed {
 				current.UpdateFrom(result)
 				applyUnexpectedServerProxyExit(current, run.handle.Pid, exit)
 				pdMap.Update(proxyName, proxyName, current)
@@ -1149,36 +1165,156 @@ func (r *ContainerNetworkTunnelProxyReconciler) queueDiscardedProxyPairCleanup(
 	run *serverProxyRun,
 	log logr.Logger,
 ) {
+	tunnelProxyDiscardedStartupResultCounter.Add(context.Background(), 1)
 	if result == nil {
 		return
 	}
 	if run != nil {
 		run.expectExit()
 	}
+
+	cleanupData := result.Clone()
+	containerName := tunnelProxyPhysicalContainerNameForUID(proxyUID)
+	serverHandle, _ := serverProxyHandle(cleanupData)
+	cleanupLog := log.WithValues(
+		"OldProxyUID", proxyUID,
+		"PhysicalContainer", containerName.String(),
+		"ServerPID", serverHandle.Pid,
+		"ServerIdentityTime", process.FormatIdentityTime(serverHandle.IdentityTime),
+	)
+	if !discardedProxyPairHasCleanupWork(cleanupData) {
+		closeErr := closeServerProxyLocalFiles(cleanupData)
+		if closeErr != nil {
+			tunnelProxyCleanupUnconfirmedCounter.Add(context.Background(), 1)
+			cleanupLog.Error(
+				closeErr,
+				"Failed to close files for empty discarded tunnel proxy startup result",
+				"CleanupStage", "close-output",
+				"CleanupConfirmed", false,
+			)
+		} else {
+			cleanupLog.V(1).Info(
+				"Discarded tunnel proxy startup result owns no cleanup resources",
+				"CleanupStage", "complete",
+				"CleanupConfirmed", true,
+			)
+		}
+		return
+	}
 	if r.workQueue == nil {
+		cleanupLog.Info(
+			"Running discarded tunnel proxy startup cleanup synchronously because no work queue is available",
+			"CleanupStage", "schedule",
+		)
+		r.cleanupDiscardedProxyPair(context.Background(), cleanupData, proxyUID, cleanupLog)
 		return
 	}
 
-	cleanupData := result.Clone()
-	cleanupErr := r.workQueue.Enqueue(func(ctx context.Context) {
-		for {
-			r.cleanupProxyPair(ctx, cleanupData, proxyUID, log)
-			if cleanupData.cleanupCompleted {
-				return
-			}
+	lifetimeCtx := r.LifetimeCtx
+	if lifetimeCtx == nil {
+		lifetimeCtx = context.Background()
+	}
+	completeCleanup, registered := r.discardedCleanupTasks.Register()
+	cleanup := func() {
+		r.cleanupDiscardedProxyPair(lifetimeCtx, cleanupData, proxyUID, cleanupLog)
+	}
+	if !registered {
+		cleanupLog.Info(
+			"Running discarded tunnel proxy startup cleanup synchronously during controller shutdown",
+			"CleanupStage", "schedule",
+		)
+		r.cleanupDiscardedProxyPair(context.Background(), cleanupData, proxyUID, cleanupLog)
+		return
+	}
 
-			retryTimer := time.NewTimer(delayDuration(StandardDelay))
-			select {
-			case <-ctx.Done():
-				retryTimer.Stop()
-				return
-			case <-retryTimer.C:
-			}
-		}
+	executeCleanup := sync.OnceFunc(func() {
+		defer completeCleanup()
+		cleanup()
+	})
+	stopShutdownFallback := context.AfterFunc(lifetimeCtx, executeCleanup)
+	cleanupErr := r.workQueue.Enqueue(func(ctx context.Context) {
+		stopShutdownFallback()
+		executeCleanup()
 	})
 	if cleanupErr != nil {
-		log.Error(cleanupErr, "Failed to schedule cleanup for discarded tunnel proxy startup result", "ResourceUID", proxyUID)
+		stopShutdownFallback()
+		cleanupLog.Info(
+			"Work queue rejected discarded tunnel proxy startup cleanup; running the owned cleanup directly",
+			"Error", cleanupErr,
+			"CleanupStage", "schedule",
+		)
+		executeCleanup()
 	}
+}
+
+func (r *ContainerNetworkTunnelProxyReconciler) cleanupDiscardedProxyPair(
+	ctx context.Context,
+	pd *containerNetworkTunnelProxyData,
+	proxyUID types.UID,
+	log logr.Logger,
+) (cleanupConfirmed bool) {
+	cleanupConfirmed = true
+	defer func() {
+		closeErr := closeServerProxyLocalFiles(pd)
+		if closeErr != nil {
+			cleanupConfirmed = false
+			log.Error(
+				closeErr,
+				"Failed to close local output files for discarded tunnel proxy startup result",
+				"CleanupStage", "close-output",
+				"CleanupConfirmed", false,
+			)
+		}
+		if !cleanupConfirmed {
+			tunnelProxyCleanupUnconfirmedCounter.Add(context.Background(), 1)
+		}
+		log.Info(
+			"Completed one-shot cleanup for discarded tunnel proxy startup result",
+			"CleanupStage", "complete",
+			"CleanupConfirmed", cleanupConfirmed,
+		)
+	}()
+
+	if _, found := serverProxyHandle(pd); found {
+		stopCtx, stopCancel := process.WithDetachedStopTimeout(ctx)
+		stopErr := r.stopServerProxyProcess(stopCtx, pd)
+		stopCancel()
+		if stopErr != nil {
+			cleanupConfirmed = false
+			tunnelProxyProcessStopFailureCounter.Add(context.Background(), 1)
+			log.Error(
+				stopErr,
+				"Failed to stop server process for discarded tunnel proxy startup result",
+				"CleanupStage", "server-process-stop",
+				"CleanupConfirmed", false,
+			)
+		}
+	}
+
+	containerName := tunnelProxyPhysicalContainerNameForUID(proxyUID)
+	physicalContainer := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: containerName.Name, Namespace: containerName.Namespace},
+	}
+	deleteCtx, deleteCancel := context.WithTimeout(context.WithoutCancel(ctx), tunnelOperationTimeout)
+	var deleteErr error
+	if r.ReconcilerBase == nil || r.Client == nil {
+		deleteErr = errors.New("controller client is unavailable")
+	} else {
+		deleteErr = r.Client.Delete(deleteCtx, physicalContainer)
+	}
+	deleteCancel()
+	if deleteErr != nil && !apimachinery_errors.IsNotFound(deleteErr) {
+		cleanupConfirmed = false
+		tunnelProxyDeleteSubmissionFailureCounter.Add(context.Background(), 1)
+		log.Error(
+			deleteErr,
+			"Failed to submit PhysicalContainer deletion for discarded tunnel proxy startup result",
+			"CleanupStage", "physical-container-delete",
+			"CleanupConfirmed", false,
+		)
+	}
+
+	return cleanupConfirmed
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) discardMissingTunnelProxyState(
@@ -1670,45 +1806,47 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		return nil, false
 	}
 
-	startFailed := false
+	startCompleted := false
+	var stdoutFile *os.File
+	var stderrFile *os.File
+	var serverHandle process.ProcessHandle
 	defer func() {
-		if !startFailed {
+		if startCompleted {
 			return
 		}
-		if pd.serverStdout != nil {
-			_ = pd.serverStdout.Close()
-			pd.serverStdout = nil
-			pd.ServerProxyStdOutFile = ""
-		}
-		if pd.serverStderr != nil {
-			_ = pd.serverStderr.Close()
-			pd.serverStderr = nil
-			pd.ServerProxyStdErrFile = ""
+		cleanupErr := closeAndRemoveServerProxyOutputFiles(stdoutFile, stderrFile)
+		if cleanupErr != nil {
+			tunnelProxyCleanupUnconfirmedCounter.Add(context.Background(), 1)
+			log.WithValues(
+				"OldProxyUID", tunnelProxy.UID,
+				"PhysicalContainer", tunnelProxyPhysicalContainerName(tunnelProxy).String(),
+				"ServerPID", serverHandle.Pid,
+				"ServerIdentityTime", process.FormatIdentityTime(serverHandle.IdentityTime),
+			).Error(
+				cleanupErr,
+				"Failed to remove output files from unsuccessful tunnel server proxy startup",
+				"CleanupStage", "remove-output",
+				"CleanupConfirmed", false,
+			)
 		}
 	}()
 
-	stdoutFile, stdoutErr := usvc_io.CreateNewTempFile(fmt.Sprintf("%s_out_%s", tunnelProxy.Name, tunnelProxy.UID), osutil.PermissionOnlyOwnerReadWrite)
+	var stdoutErr error
+	stdoutFile, stdoutErr = usvc_io.CreateNewTempFile(fmt.Sprintf("%s_out_%s", tunnelProxy.Name, tunnelProxy.UID), osutil.PermissionOnlyOwnerReadWrite)
 	if stdoutErr != nil {
-		startFailed = true
 		log.Error(stdoutErr, "Failed to create stdout temp file for container tunnel server proxy")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 		pd.Message = fmt.Sprintf("Failed to create stdout temp file for container tunnel server proxy: %v", stdoutErr)
 		return nil, false
-	} else {
-		pd.ServerProxyStdOutFile = stdoutFile.Name()
-		pd.serverStdout = stdoutFile
 	}
 
-	stderrFile, stderrErr := usvc_io.CreateNewTempFile(fmt.Sprintf("%s_err_%s", tunnelProxy.Name, tunnelProxy.UID), osutil.PermissionOnlyOwnerReadWrite)
+	var stderrErr error
+	stderrFile, stderrErr = usvc_io.CreateNewTempFile(fmt.Sprintf("%s_err_%s", tunnelProxy.Name, tunnelProxy.UID), osutil.PermissionOnlyOwnerReadWrite)
 	if stderrErr != nil {
-		startFailed = true
 		log.Error(stderrErr, "Failed to create stderr temp file for container tunnel server proxy")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 		pd.Message = fmt.Sprintf("Failed to create stderr temp file for container tunnel server proxy: %v", stderrErr)
 		return nil, false
-	} else {
-		pd.ServerProxyStdErrFile = stderrFile.Name()
-		pd.serverStderr = stderrFile
 	}
 
 	args := append([]string{
@@ -1731,46 +1869,71 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		r.onServerProcessExit(proxyName, run, pid, exitCode, err, stdoutFile, stderrFile)
 	})
 
-	handle, startWaitForExit, startErr := r.config.ProcessExecutor.StartProcess(context.Background(), cmd, exitHandler, process.CreationFlagsNone, nil)
+	// StartProcess establishes kill-on-dispose ownership before returning. On Windows it
+	// fails closed and reaps the suspended child if cleanup-job ownership cannot be established.
+	handle, startWaitForExit, startErr := r.config.ProcessExecutor.StartProcess(
+		context.Background(),
+		cmd,
+		exitHandler,
+		process.CreationFlagEnsureKillOnDispose,
+		nil,
+	)
 	if startErr != nil {
 		log.Error(startErr, "Failed to start server proxy process")
-		startFailed = true
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 		pd.Message = fmt.Sprintf("Failed to start server proxy process: %v", startErr)
 		return nil, false
 	}
 	// Record the process identity before enabling its exit callback.
+	serverHandle = handle
 	run.handle = handle
 	pointers.SetValue(&pd.ServerProxyProcessID, int64(handle.Pid))
 	pd.ServerProxyStartupTimestamp = metav1.NewMicroTime(handle.IdentityTime)
 	startWaitForExit()
+	dcpproc.RunProcessWatcher(r.config.ProcessExecutor, handle, log)
 
 	// Wait until the first JSON line is printed to stdout indicating server control address/port
 
 	tc, tcErr := r.config.readServerProxyConfig(ctx, stdoutFile.Name())
 	if tcErr != nil {
-		log.Error(tcErr, "Failed to read connection information from the server proxy")
+		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to read server proxy configuration: %v", tcErr)
+		cleanupLog := log.WithValues(
+			"OldProxyUID", tunnelProxy.UID,
+			"PhysicalContainer", tunnelProxyPhysicalContainerName(tunnelProxy).String(),
+			"ServerPID", handle.Pid,
+			"ServerIdentityTime", process.FormatIdentityTime(handle.IdentityTime),
+		)
+		run.requestOutputRemoval()
 		run.expectExit()
 		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
-		defer cleanupCancel()
 		stopProcessErr := r.stopServerProxyProcess(cleanupCtx, pd)
+		cleanupCancel()
+		cleanupLog.Error(
+			tcErr,
+			"Failed to read connection information from the server proxy",
+			"CleanupStage", "read-server-configuration",
+			"CleanupConfirmed", stopProcessErr == nil,
+		)
 		if stopProcessErr != nil {
-			log.Error(stopProcessErr, "Failed to stop server proxy process after being unable to read its configuration")
-			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-			pd.Message = fmt.Sprintf(
-				"Failed to read server proxy configuration and could not confirm process cleanup: %v",
-				errors.Join(tcErr, stopProcessErr),
+			tunnelProxyProcessStopFailureCounter.Add(context.Background(), 1)
+			tunnelProxyCleanupUnconfirmedCounter.Add(context.Background(), 1)
+			cleanupLog.Error(
+				stopProcessErr,
+				"Failed to stop server proxy process after being unable to read its configuration",
+				"CleanupStage", "server-process-stop",
+				"CleanupConfirmed", false,
 			)
 		}
-		startFailed = true
 		return run, false
 	}
-
-	dcpproc.RunProcessWatcher(r.config.ProcessExecutor, handle, log)
 
 	pd.ServerProxyControlPort = tc.ServerControlPort
 	pd.ServerProxyStdOutFile = stdoutFile.Name()
 	pd.ServerProxyStdErrFile = stderrFile.Name()
+	pd.serverStdout = stdoutFile
+	pd.serverStderr = stderrFile
+	startCompleted = true
 
 	return run, true
 }
@@ -1810,14 +1973,14 @@ func (r *ContainerNetworkTunnelProxyReconciler) stopServerProxyProcess(
 	ctx context.Context,
 	pd *containerNetworkTunnelProxyData,
 ) error {
-	if pd.ServerProxyProcessID == nil || *pd.ServerProxyProcessID <= 0 {
+	handle, found := serverProxyHandle(pd)
+	if !found {
 		return nil
 	}
+	if r.config.ProcessExecutor == nil {
+		return errors.New("process executor is unavailable")
+	}
 
-	handle := process.NewHandle(
-		process.Pid_t(*pd.ServerProxyProcessID),
-		pd.ServerProxyStartupTimestamp.Time,
-	)
 	stopErr := r.config.ProcessExecutor.StopProcess(ctx, handle)
 	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
 		return stopErr
@@ -1826,6 +1989,81 @@ func (r *ContainerNetworkTunnelProxyReconciler) stopServerProxyProcess(
 	pd.ServerProxyProcessID = nil
 	pd.ServerProxyStartupTimestamp = metav1.MicroTime{}
 	return nil
+}
+
+func serverProxyHandle(pd *containerNetworkTunnelProxyData) (process.ProcessHandle, bool) {
+	if pd == nil || pd.ServerProxyProcessID == nil || *pd.ServerProxyProcessID <= 0 {
+		return process.ProcessHandle{}, false
+	}
+	return process.NewHandle(
+		process.Pid_t(*pd.ServerProxyProcessID),
+		pd.ServerProxyStartupTimestamp.Time,
+	), true
+}
+
+func discardedProxyPairHasCleanupWork(pd *containerNetworkTunnelProxyData) bool {
+	if pd == nil {
+		return false
+	}
+	if _, found := serverProxyHandle(pd); found {
+		return true
+	}
+	return pd.ClientProxyContainerImage != "" ||
+		pd.ClientProxyContainerID != "" ||
+		pd.ClientProxyControlPort != 0 ||
+		pd.ClientProxyDataPort != 0 ||
+		pd.ServerProxyControlPort != 0 ||
+		pd.ServerProxyStdOutFile != "" ||
+		pd.ServerProxyStdErrFile != "" ||
+		pd.serverStdout != nil ||
+		pd.serverStderr != nil ||
+		pd.securityConfig != nil
+}
+
+func closeServerProxyLocalFiles(pd *containerNetworkTunnelProxyData) error {
+	if pd == nil {
+		return nil
+	}
+	stdoutFile := pd.serverStdout
+	stderrFile := pd.serverStderr
+	pd.serverStdout = nil
+	pd.serverStderr = nil
+	return closeServerProxyOutputFiles(stdoutFile, stderrFile, false)
+}
+
+func closeAndRemoveServerProxyOutputFiles(stdoutFile *os.File, stderrFile *os.File) error {
+	return closeServerProxyOutputFiles(stdoutFile, stderrFile, true)
+}
+
+func closeServerProxyOutputFiles(stdoutFile *os.File, stderrFile *os.File, remove bool) error {
+	stdoutErr := closeServerProxyOutputFile(stdoutFile, remove)
+	if stdoutErr != nil {
+		stdoutErr = fmt.Errorf("clean up server proxy stdout file: %w", stdoutErr)
+	}
+	stderrErr := closeServerProxyOutputFile(stderrFile, remove)
+	if stderrErr != nil {
+		stderrErr = fmt.Errorf("clean up server proxy stderr file: %w", stderrErr)
+	}
+	return errors.Join(stdoutErr, stderrErr)
+}
+
+func closeServerProxyOutputFile(file *os.File, remove bool) error {
+	if file == nil {
+		return nil
+	}
+	path := file.Name()
+	closeErr := file.Close()
+	if errors.Is(closeErr, os.ErrClosed) {
+		closeErr = nil
+	}
+	if !remove {
+		return closeErr
+	}
+	removeErr := os.Remove(path)
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil
+	}
+	return errors.Join(closeErr, removeErr)
 }
 
 // Returns a function that cleans up the resources associated with the proxy pair (client container and server process).
@@ -1862,10 +2100,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 	log logr.Logger,
 ) {
 	cleanupCompleted := true
+	cleanupUnconfirmed := false
 	log.V(1).Info("Removing client proxy physical resources...")
 	physicalResourcesRemoved, removeErr := r.cleanupClientPhysicalResources(ctx, proxyObjectID)
 	if removeErr != nil {
 		log.Error(removeErr, "Failed to remove client proxy physical resources")
+		tunnelProxyDeleteSubmissionFailureCounter.Add(context.Background(), 1)
+		cleanupUnconfirmed = true
 		pd.cleanupScheduled = false
 		cleanupCompleted = false
 	} else if !physicalResourcesRemoved {
@@ -1885,6 +2126,8 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 		stopErr := r.stopServerProxyProcess(ctx, pd)
 		if stopErr != nil {
 			log.Error(stopErr, "Failed to stop server proxy process")
+			tunnelProxyProcessStopFailureCounter.Add(context.Background(), 1)
+			cleanupUnconfirmed = true
 			pd.cleanupScheduled = false
 			cleanupCompleted = false
 		} else {
@@ -1892,19 +2135,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 		}
 	}
 
-	if pd.serverStdout != nil {
-		if closeErr := pd.serverStdout.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			log.V(1).Info("Error closing server stdout file", "error", closeErr)
-		}
-		pd.serverStdout = nil
-	}
-	if pd.serverStderr != nil {
-		if closeErr := pd.serverStderr.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			log.V(1).Info("Error closing server stderr file", "error", closeErr)
-		}
-		pd.serverStderr = nil
+	if closeErr := closeServerProxyLocalFiles(pd); closeErr != nil {
+		log.V(1).Info("Error closing server proxy output files", "error", closeErr)
 	}
 
+	if cleanupUnconfirmed {
+		tunnelProxyCleanupUnconfirmedCounter.Add(context.Background(), 1)
+	}
 	pd.cleanupCompleted = cleanupCompleted
 }
 
@@ -1942,12 +2179,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) onServerProcessExit(
 		r.Log.Error(fmt.Errorf("tunnel server proxy process exited with non-zero exit code %d", exitCode), "Tunnel server proxy process exited abnormally", "PID", pid)
 	}
 
-	if closeErr := stdoutFile.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-		r.Log.Error(closeErr, "Failed to close stdout file for tunnel server proxy process", "PID", pid)
-	}
-
-	if closeErr := stderrFile.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-		r.Log.Error(closeErr, "Failed to close stderr file for tunnel server proxy process", "PID", pid)
+	outputCleanupErr := closeServerProxyOutputFiles(
+		stdoutFile,
+		stderrFile,
+		run.removeOutputOnClose.Load(),
+	)
+	if outputCleanupErr != nil {
+		r.Log.Error(outputCleanupErr, "Failed to clean up output files for tunnel server proxy process", "PID", pid)
 	}
 
 	if !run.recordUnexpectedExit(exitCode, err) {
