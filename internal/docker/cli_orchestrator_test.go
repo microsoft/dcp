@@ -363,6 +363,70 @@ func TestUnmarshalListedNetworks(t *testing.T) {
 	require.NoError(t, timestampErr)
 }
 
+// Verifies that parseListedLabels preserves commas within values when subsequent segments are not labels.
+func TestParseListedLabelsPreservesCommaValues(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		raw      string
+		expected map[string]string
+	}{
+		{
+			name:     "empty labels",
+			expected: map[string]string{},
+		},
+		{
+			name: "comma in value with following label",
+			raw:  "workload=one,two,owner=dcp",
+			expected: map[string]string{
+				"workload": "one,two",
+				"owner":    "dcp",
+			},
+		},
+		{
+			name: "empty and equals-containing values",
+			raw:  "empty=,token=a=b,c,,d",
+			expected: map[string]string{
+				"empty": "",
+				"token": "a=b,c,,d",
+			},
+		},
+		{
+			name:     "leading fragment",
+			raw:      "fragment,owner=dcp",
+			expected: map[string]string{"owner": "dcp"},
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, testCase.expected, parseListedLabels(testCase.raw))
+		})
+	}
+}
+
+// Verifies that Docker container and network list adapters both preserve comma-containing label values.
+func TestUnmarshalListedResourcesPreservesCommaValues(t *testing.T) {
+	t.Parallel()
+
+	const listedLabels = "com.microsoft.developer.usvc-dev.workloadId=workload-a,segment,owner=dcp"
+	expected := map[string]string{
+		"com.microsoft.developer.usvc-dev.workloadId": "workload-a,segment",
+		"owner": "dcp",
+	}
+
+	var container ct.ListedContainer
+	containerErr := unmarshalListedContainer([]byte(`{"ID":"container-id","Labels":"`+listedLabels+`"}`), &container)
+	require.NoError(t, containerErr)
+	require.Equal(t, expected, container.Labels)
+
+	var network ct.ListedNetwork
+	networkErr := unmarshalListedNetwork([]byte(`{"ID":"network-id","Labels":"`+listedLabels+`","Name":"network-name"}`), &network)
+	require.NoError(t, networkErr)
+	require.Equal(t, expected, network.Labels)
+}
+
 func TestUnmarshalInspectedNetworkReportsIPv6(t *testing.T) {
 	t.Parallel()
 

@@ -216,7 +216,7 @@ type ContainerBuildContext struct {
 
 // +k8s:openapi-gen=true
 type ContainerLabel struct {
-	// The label key
+	// The label key must not contain commas.
 	Key string `json:"key"`
 
 	// The label value
@@ -1363,6 +1363,9 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 			if label.Key == "" {
 				errorList = append(errorList, field.Required(field.NewPath("spec", "build", "labels").Index(i).Child("name"), "name must be set to a non-empty value"))
 			}
+			if strings.ContainsRune(label.Key, ',') {
+				errorList = append(errorList, field.Invalid(field.NewPath("spec", "build", "labels").Index(i).Child("key"), label.Key, "key must not contain commas"))
+			}
 
 			if label.Value == "" {
 				errorList = append(errorList, field.Required(field.NewPath("spec", "build", "labels").Index(i).Child("value"), "value must be set to a non-empty value"))
@@ -1374,6 +1377,9 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		// TODO: Validate key format?
 		if label.Key == "" {
 			errorList = append(errorList, field.Required(field.NewPath("spec", "labels").Index(i).Child("name"), "name must be set to a non-empty value"))
+		}
+		if strings.ContainsRune(label.Key, ',') {
+			errorList = append(errorList, field.Invalid(field.NewPath("spec", "labels").Index(i).Child("key"), label.Key, "key must not contain commas"))
 		}
 
 		if label.Value == "" {

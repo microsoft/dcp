@@ -404,6 +404,55 @@ func TestContainerValidateImageOnlyRequiredForCreationModes(t *testing.T) {
 	}
 }
 
+// Verifies that Container.Validate rejects commas in container and build label keys without rejecting comma-containing values.
+func TestContainerValidateRejectsCommaInLabelKeys(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		spec          ContainerSpec
+		expectedField string
+	}{
+		{
+			name: "container label key",
+			spec: ContainerSpec{
+				Image:  "test-image",
+				Labels: []ContainerLabel{{Key: "invalid,key", Value: "value"}},
+			},
+			expectedField: "spec.labels[0].key",
+		},
+		{
+			name: "build label key",
+			spec: ContainerSpec{
+				Build: &ContainerBuildContext{
+					Context: "test-context",
+					Labels:  []ContainerLabel{{Key: "invalid,key", Value: "value"}},
+				},
+			},
+			expectedField: "spec.build.labels[0].key",
+		},
+		{
+			name: "comma in label value",
+			spec: ContainerSpec{
+				Image:  "test-image",
+				Labels: []ContainerLabel{{Key: "valid-key", Value: "part-one,part-two"}},
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			validationErrors := (&Container{Spec: testCase.spec}).Validate(nil)
+			if testCase.expectedField == "" {
+				require.Empty(t, validationErrors)
+			} else {
+				require.ErrorContains(t, validationErrors.ToAggregate(), testCase.expectedField)
+			}
+		})
+	}
+}
+
 func TestImageLayerValidate(t *testing.T) {
 	t.Parallel()
 
