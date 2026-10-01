@@ -6,6 +6,7 @@
 package process
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"time"
@@ -23,7 +24,7 @@ type ProcessHandle struct {
 	IdentityTime time.Time
 }
 
-// NewHandle creates a ProcessHandle from a PID and identity time.
+// NewHandle creates a value; operations require a positive PID and nonzero identity time.
 func NewHandle(pid Pid_t, identityTime time.Time) ProcessHandle {
 	return ProcessHandle{
 		Pid:          pid,
@@ -31,28 +32,33 @@ func NewHandle(pid Pid_t, identityTime time.Time) ProcessHandle {
 	}
 }
 
-// ProcessHandleFromCmd creates a ProcessHandle from a started exec.Cmd.
-func ProcessHandleFromCmd(cmd *exec.Cmd) ProcessHandle {
-	if cmd.Process == nil {
-		return ProcessHandle{Pid: UnknownPID}
+// Validate checks whether the handle contains a usable process identity.
+func (handle ProcessHandle) Validate() error {
+	if _, pidErr := PidT_ToUint32(handle.Pid); pidErr != nil || handle.Pid == 0 {
+		return fmt.Errorf("%w: invalid pid %d", ErrInvalidProcessHandle, handle.Pid)
 	}
-
-	pid := Uint32_ToPidT(uint32(cmd.Process.Pid))
-	return ProcessHandle{
-		Pid:          pid,
-		IdentityTime: ProcessIdentityTime(pid),
+	if handle.IdentityTime.IsZero() {
+		return fmt.Errorf("%w: identity time is missing for pid %d", ErrInvalidProcessHandle, handle.Pid)
 	}
+	return nil
 }
 
-// ProcessHandleFromProcess creates a ProcessHandle from a running os.Process.
-func ProcessHandleFromProcess(p *os.Process) ProcessHandle {
-	if p == nil {
-		return ProcessHandle{Pid: UnknownPID}
+// ProcessHandleFromCmd creates a ProcessHandle from a started exec.Cmd.
+func ProcessHandleFromCmd(cmd *exec.Cmd) (ProcessHandle, error) {
+	if cmd == nil {
+		return ProcessHandle{Pid: UnknownPID}, fmt.Errorf("%w: command is nil", ErrInvalidProcessHandle)
 	}
+	return ProcessHandleFromProcess(cmd.Process)
+}
 
-	pid := Uint32_ToPidT(uint32(p.Pid))
-	return ProcessHandle{
-		Pid:          pid,
-		IdentityTime: ProcessIdentityTime(pid),
+// ProcessHandleFromProcess captures identity before the owned process is waited on or released.
+func ProcessHandleFromProcess(p *os.Process) (ProcessHandle, error) {
+	if p == nil {
+		return ProcessHandle{Pid: UnknownPID}, fmt.Errorf("%w: process is nil", ErrInvalidProcessHandle)
 	}
+	info, infoErr := readProcessInfoFromProcess(p, true)
+	if infoErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, infoErr
+	}
+	return info.handle, info.handle.Validate()
 }

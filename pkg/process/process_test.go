@@ -11,8 +11,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -174,7 +172,10 @@ func TestStartTimeForProcess(t *testing.T) {
 	}()
 
 	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-	creationTime := process.StartTimeForProcess(pid)
+	handle, handleErr := process.FindProcessHandle(pid)
+	require.NoError(t, handleErr)
+	creationTime, creationErr := process.StartTimeForProcess(handle)
+	require.NoError(t, creationErr)
 
 	require.False(t, creationTime.IsZero(), "process start time should not be zero")
 
@@ -183,6 +184,29 @@ func TestStartTimeForProcess(t *testing.T) {
 	require.True(t, osutil.Within(creationTime, now, 2*time.Second),
 		"process creation time %v should be roughly equivalent to current time %v",
 		creationTime, now)
+}
+
+// Verifies that StartTimeForProcess converts a captured identity to a nonzero display time
+// even after the process has exited and been waited on.
+func TestStartTimeForExitedProcess(t *testing.T) {
+	t.Parallel()
+
+	delayToolDir, toolLaunchErr := getDelayToolDir()
+	require.NoError(t, toolLaunchErr)
+
+	cmd := exec.Command("./delay", "-d", "30s")
+	cmd.Dir = delayToolDir
+	require.NoError(t, cmd.Start())
+
+	handle, handleErr := process.ProcessHandleFromCmd(cmd)
+	require.NoError(t, handleErr)
+	require.NoError(t, cmd.Process.Kill())
+	waitErr := cmd.Wait()
+	require.True(t, waitErr == nil || process.IsEarlyProcessExitError(waitErr))
+
+	creationTime, creationErr := process.StartTimeForProcess(handle)
+	require.NoError(t, creationErr)
+	require.False(t, creationTime.IsZero())
 }
 
 func TestFindProcessHandle(t *testing.T) {
@@ -211,7 +235,7 @@ func TestFindProcessHandle(t *testing.T) {
 	require.True(t, osutil.Within(foundHandle.IdentityTime, handle.IdentityTime, process.ProcessIdentityTimeMaximumDifference),
 		"resolved identity time %v should match the identity time reported at start %v", foundHandle.IdentityTime, handle.IdentityTime)
 
-	require.NoError(t, pe.StopProcess(handle))
+	require.NoError(t, pe.StopProcess(ctx, handle))
 
 	_, goneErr := pe.FindProcessHandle(handle.Pid)
 	require.Error(t, goneErr)
@@ -286,7 +310,8 @@ func TestChildrenTerminated(t *testing.T) {
 		{"external start", func(t *testing.T, cmd *exec.Cmd, _ process.Executor) process.ProcessHandle {
 			err := cmd.Start()
 			require.NoError(t, err, "could not start the 'delay' test program")
-			handle := process.ProcessHandleFromCmd(cmd)
+			handle, handleErr := process.ProcessHandleFromCmd(cmd)
+			require.NoError(t, handleErr)
 			require.False(t, handle.IdentityTime.IsZero(), "process identity time should not be zero")
 			return handle
 		}},
@@ -316,6 +341,8 @@ func TestChildrenTerminated(t *testing.T) {
 	for _, tc := range testcases {
 		t.Run(tc.description, func(t *testing.T) {
 			t.Parallel()
+			testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+			defer testCancel()
 
 			// All commands will return on its own after 20 seconds. This prevents the test from launching a bunch of processes
 			// that turn into zombies.
@@ -330,10 +357,10 @@ func TestChildrenTerminated(t *testing.T) {
 			// for a total of 4 child processes, so the expected tree size is 5.
 			int_testutil.EnsureProcessTree(t, rootP, 5, 10*time.Second)
 
-			processTree, err := process.GetProcessTree(rootP)
+			processTree, err := process.GetProcessTree(testCtx, rootP)
 			require.NoError(t, err)
 
-			err = executor.StopProcess(rootP)
+			err = executor.StopProcess(testCtx, rootP)
 			require.NoError(t, err)
 
 			// Wait up to 10 seconds for all processes to exit. This guarantees that the test will only pass if StopProcess()
@@ -397,8 +424,9 @@ func TestWatchCatchesProcessExit(t *testing.T) {
 	err := cmd.Start()
 	require.NoError(t, err)
 
-	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-	delayProc, err := process.FindWaitableProcess(process.NewHandle(pid, time.Time{}))
+	handle, handleErr := process.ProcessHandleFromCmd(cmd)
+	require.NoError(t, handleErr)
+	delayProc, err := process.FindWaitableProcess(handle)
 	require.NoError(t, err)
 
 	err = delayProc.Wait(ctx)
@@ -424,8 +452,9 @@ func TestContextCancelsWatch(t *testing.T) {
 
 	require.NoError(t, err, "command should start without error")
 
-	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-	delayProc, err := process.FindWaitableProcess(process.NewHandle(pid, time.Time{}))
+	handle, handleErr := process.ProcessHandleFromCmd(cmd)
+	require.NoError(t, handleErr)
+	delayProc, err := process.FindWaitableProcess(handle)
 	require.NoError(t, err, "find process should succeed without error")
 
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second*5)
@@ -441,104 +470,6 @@ func TestContextCancelsWatch(t *testing.T) {
 	}
 }
 
-// Ensures that the SysCreateProcessFunc is used to start a process and that the returned Waitable is used for waiting.
-func TestSysCreateProcess(t *testing.T) {
-	t.Parallel()
-
-	delayToolDir, err := getDelayToolDir()
-	require.NoError(t, err)
-
-	executor := process.NewOSExecutor(log)
-	defer executor.Dispose()
-
-	testCtx, cancel := testutil.GetTestContext(t, 30*time.Second)
-	defer cancel()
-
-	const overrideExitCode int32 = 77
-
-	// Build a cmd that we'll never Start()
-	// (SysCreateProcessFunc launches the process directly via os.StartProcess).
-	delayBin := filepath.Join(delayToolDir, "delay")
-	if runtime.GOOS == "windows" {
-		delayBin += ".exe"
-	}
-	cmd := exec.Command(delayBin, "-d", "500ms", "-e", "0")
-	cmd.Dir = delayToolDir
-
-	var capturedWaitable *testProcessWaitable
-	sysCreate := process.SysCreateProcessFunc(func(c *exec.Cmd) (process.Pid_t, process.Waitable, error) {
-		proc, startErr := os.StartProcess(c.Path, c.Args, &os.ProcAttr{
-			Dir:   c.Dir,
-			Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
-		})
-		if startErr != nil {
-			return process.UnknownPID, nil, startErr
-		}
-		w := &testProcessWaitable{
-			proc:          proc,
-			overrideCode:  overrideExitCode,
-			flags:         process.CreationFlagsNone,
-			captureDoneCh: make(chan struct{}),
-		}
-		capturedWaitable = w
-		return process.ProcessHandleFromProcess(proc).Pid, w, nil
-	})
-
-	exitInfoChan := make(chan process.ProcessExitInfo, 1)
-	handler := process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, exitErr error) {
-		exitInfoChan <- process.ProcessExitInfo{PID: pid, ExitCode: exitCode, Err: exitErr}
-	})
-
-	_, startWaitForExit, startErr := executor.StartProcess(
-		testCtx, cmd, handler, process.CreationFlagsNone, sysCreate,
-	)
-	require.NoError(t, startErr, "StartProcess should succeed")
-	require.NotNil(t, capturedWaitable, "SysCreateProcessFunc must have populated the waitable")
-
-	startWaitForExit()
-
-	select {
-	case <-testCtx.Done():
-		t.Fatal("timed out waiting for exit notification")
-	case ei := <-exitInfoChan:
-		require.NoError(t, ei.Err, "exit error should be nil (no synthetic 'exec: not started')")
-		require.Equal(t, overrideExitCode, ei.ExitCode,
-			"exit code must come from Waitable, not from the process")
-	}
-}
-
 func getDelayToolDir() (string, error) {
 	return int_testutil.GetTestToolDir("delay")
 }
-
-// testProcessWaitable wraps a directly-spawned process and allows waiting for its exit.
-// The reported exit code is set by the overrideCode field--it is used to simulate specific exit code,
-// and is not the actual exit code of the process.
-type testProcessWaitable struct {
-	proc          *os.Process
-	overrideCode  int32
-	flags         process.ProcessCreationFlag
-	captured      int32
-	captureDoneCh chan struct{}
-}
-
-func (w *testProcessWaitable) Wait() error {
-	defer close(w.captureDoneCh)
-	_, err := w.proc.Wait()
-	if err != nil {
-		w.captured = process.UnknownExitCode
-		return err
-	}
-	w.captured = w.overrideCode
-	return nil
-}
-
-func (w *testProcessWaitable) Info() string                       { return "customWaitable" }
-func (w *testProcessWaitable) Flags() process.ProcessCreationFlag { return w.flags }
-func (w *testProcessWaitable) ExitCode() int32 {
-	<-w.captureDoneCh
-	return w.captured
-}
-
-var _ process.Waitable = (*testProcessWaitable)(nil)
-var _ process.ExitCodeSource = (*testProcessWaitable)(nil)

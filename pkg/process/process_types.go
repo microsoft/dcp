@@ -35,11 +35,38 @@ const (
 	CreationFlagEnsureKillOnDispose = 0x1
 )
 
+// WindowsConsoleAvailability describes whether an executor-owned Windows process has a
+// classic console that can receive a console control event. Other platforms retain the
+// value only as runtime metadata.
+type WindowsConsoleAvailability uint8
+
+const (
+	// WindowsConsoleAvailabilityUnknown means the creator did not report enough console
+	// topology to determine whether a Windows console control event can reach the process.
+	WindowsConsoleAvailabilityUnknown WindowsConsoleAvailability = iota
+
+	// WindowsConsoleAvailabilityInherited means the process inherited the executor's classic
+	// Windows console and started a new process group. The executor can therefore send
+	// CTRL_BREAK_EVENT directly to that process group.
+	WindowsConsoleAvailabilityInherited
+
+	// WindowsConsoleAvailabilityRequiresAttach means the process owns a different classic
+	// Windows console. A helper must attach to that console and send CTRL_C_EVENT to process
+	// group zero before delivery can be treated as confirmed.
+	WindowsConsoleAvailabilityRequiresAttach
+
+	// WindowsConsoleAvailabilityUnavailable means the process uses ConPTY or was created
+	// detached/without a classic Windows console, so CTRL_C_EVENT and CTRL_BREAK_EVENT cannot
+	// be delivered through the classic console APIs.
+	WindowsConsoleAvailabilityUnavailable
+)
+
 // ProcessStopOption configures how a process is stopped.
 type ProcessStopOption func(*processStopOptions)
 
 type processStopOptions struct {
-	opts processStoppingOpts
+	opts          processStoppingOpts
+	afterRootExit func()
 }
 
 // StopRootOnly skips descendant enumeration and cleanup after stopping the requested process.
@@ -66,15 +93,25 @@ type Pid_t int64
 // the sysCreateProcessFunc function can be used to replace exec.Cmd.Start() call
 // and create the process using a different approach.
 // In most circumstance the standard library's implementation should be sufficient.
-// Upon success, the function returns the started process ID and a Waitable object
-// that can be used to wait for the process to exit.
-type SysCreateProcessFunc func(cmd *exec.Cmd) (Pid_t, Waitable, error)
+// Upon success, the function returns a complete process identity and its Waitable.
+// The context controls the creation phase. On cancellation or any failure after creation,
+// the creator must clean up its owned process before returning.
+type SysCreateProcessFunc func(ctx context.Context, cmd *exec.Cmd) (ProcessHandle, Waitable, error)
 
 // Waitable represents a process-like object that can be waited on for completion.
 type Waitable interface {
 	Wait() error
 	Info() string
 	Flags() ProcessCreationFlag
+	// Abort rolls back owned process creation before Wait has been started.
+	Abort(ctx context.Context) error
+}
+
+// WindowsConsoleAvailabilitySource optionally reports classic Windows console availability
+// for a custom-created process. SysCreateProcessFunc remains unchanged; creators that do not
+// implement this interface are treated as having unknown topology.
+type WindowsConsoleAvailabilitySource interface {
+	WindowsConsoleAvailability() WindowsConsoleAvailability
 }
 
 // ExitCodeSource is an interface that provides access to a process's exit code.
@@ -103,16 +140,16 @@ type Executor interface {
 	) (handle ProcessHandle, startWaitForProcessExit func(), err error)
 
 	// Stops the process identified by the given ProcessHandle.
-	// The handle's IdentityTime, if provided (time.IsZero() returns false), is used to further validate the process to be stopped
-	// (to protect against stopping a wrong process, if the PID was reused).
-	StopProcess(handle ProcessHandle, options ...ProcessStopOption) error
+	// A positive PID and nonzero identity time are required. Cancellation ends further stopping work.
+	// ErrIncompleteProcessTree is returned when enumeration or descendant cleanup is uncertain,
+	// even if the root and all verified descendants were stopped.
+	StopProcess(ctx context.Context, handle ProcessHandle, options ...ProcessStopOption) error
 
 	// Checks that the process identified by the given ProcessHandle is running.
 	CheckProcessRunning(handle ProcessHandle) error
 
 	// Resolves a process ID into a handle for a currently running process.
-	// The returned handle carries the process identity time when it can be determined; callers that
-	// need to guard against PID reuse must check whether the returned IdentityTime is zero.
+	// The returned handle always carries a nonzero identity time on success.
 	// If the process does not exist, the returned error satisfies IsProcessGoneErr().
 	FindProcessHandle(pid Pid_t) (ProcessHandle, error)
 

@@ -268,7 +268,7 @@ func (r *ExecutableReconciler) handleDeletionRequest(ctx context.Context, exe *a
 	default:
 		log.V(1).Info("Executable is being deleted (in final state; releasing resources and deleting finalizer)...",
 			"CurrentState", runInfo.ExeState)
-		r.releaseExecutableResources(ctx, exe, log)
+		r.releaseExecutableResources(ctx, exe, runInfo, log)
 		r.runs.DeleteByNamespacedName(exe.NamespacedName())
 		return deleteFinalizer(exe, executableFinalizer, log)
 	}
@@ -348,7 +348,9 @@ func handleNewExecutable(
 			if exe.Spec.Stop {
 				stopChange := noChange
 				if findErr == nil {
-					stopErr := persistentRunner.StopPersistentProcess(ctx, exe, record, log)
+					cleanupCtx, cleanupCancel := withDetachedExecutableStopTimeout(ctx)
+					stopErr := persistentRunner.StopPersistentProcess(cleanupCtx, exe, record, log)
+					cleanupCancel()
 					if stopErr != nil {
 						log.Error(stopErr, "Could not stop persistent Executable process", "PID", record.PID)
 						return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
@@ -409,7 +411,9 @@ func handleNewExecutable(
 							"OldLifecycleKey", record.LifecycleKey,
 							"NewLifecycleKey", lifecycleKey)
 					}
-					stopErr := persistentRunner.StopPersistentProcess(ctx, exe, record, log)
+					cleanupCtx, cleanupCancel := withDetachedExecutableStopTimeout(ctx)
+					stopErr := persistentRunner.StopPersistentProcess(cleanupCtx, exe, record, log)
+					cleanupCancel()
 					if stopErr != nil {
 						log.Error(stopErr, "Could not stop persistent Executable process with stale lifecycle key", "PID", record.PID)
 						return environmentChange | r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
@@ -660,8 +664,13 @@ func (r *ExecutableReconciler) startExecutable(
 
 	// Try to start the Executable using available runner(s)
 	for {
-		if allRunnersAttempted(ri.startupStage, exe) {
-			log.Error(errors.New("all available Executable runners have been tried and failed"), "The Executable failed to start")
+		uncertainStart := startResult != nil && errors.Is(startResult.StartupError, process.ErrProcessStartUncertain)
+		if uncertainStart || allRunnersAttempted(ri.startupStage, exe) {
+			if uncertainStart {
+				log.Error(startResult.StartupError, "Process cleanup is unconfirmed; fallback execution will not be attempted")
+			} else {
+				log.Error(errors.New("all available Executable runners have been tried and failed"), "The Executable failed to start")
+			}
 			ri.ApplyTo(exe, log)
 			exe.Status.ExecutionID = "" // Clear the starting execution ID
 			r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
@@ -729,11 +738,14 @@ func (r *ExecutableReconciler) cleanUpPersistentStartAfterRecordFailure(
 		return
 	}
 
+	cleanupCtx, cleanupCancel := withDetachedExecutableStopTimeout(ctx)
+	defer cleanupCancel()
+
 	if res.RunID != UnknownRunID {
 		runner, runnerNotFoundErr := r.getExecutableRunner(exe, startupStage)
 		if runnerNotFoundErr != nil {
 			log.Error(runnerNotFoundErr, "The persistent Executable cannot be stopped after process record update failed")
-		} else if stopErr := runner.StopRun(ctx, res.RunID, log); stopErr != nil {
+		} else if stopErr := runner.StopRun(cleanupCtx, res.RunID, log); stopErr != nil {
 			log.Error(stopErr, "Could not stop persistent Executable after process record update failed", "RunID", res.RunID)
 		}
 	}
@@ -742,7 +754,7 @@ func (r *ExecutableReconciler) cleanUpPersistentStartAfterRecordFailure(
 		if path == "" || osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
 			return
 		}
-		if removeErr := logs.RemoveWithRetry(ctx, path); removeErr != nil {
+		if removeErr := logs.RemoveWithRetry(cleanupCtx, path); removeErr != nil {
 			log.Error(removeErr, "Could not remove persistent Executable output file after process record update failed", "Path", path, "Stream", stream)
 		}
 	}
@@ -943,6 +955,9 @@ func (r *ExecutableReconciler) OnRunMessage(runID RunID, level RunMessageLevel, 
 // The passed runInfo is a copy that the method can modify
 func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo *ExecutableRunInfo, persistentLease *statestore.ResourceLease, log logr.Logger) func(context.Context) {
 	return func(stopCtx context.Context) {
+		cleanupCtx, cleanupCancel := withDetachedExecutableStopTimeout(stopCtx)
+		defer cleanupCancel()
+
 		if persistentLease != nil {
 			defer func() {
 				if releaseErr := persistentLease.Release(context.WithoutCancel(stopCtx)); releaseErr != nil {
@@ -958,7 +973,7 @@ func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo
 			return
 		}
 
-		stopErr := runner.StopRun(stopCtx, runInfo.RunID, log)
+		stopErr := runner.StopRun(cleanupCtx, runInfo.RunID, log)
 
 		// If the stop fails, we are not sure if the Executable is still running or not,
 		// so we queue the transition to the unknown state. But if the stop succeeds,
@@ -980,6 +995,13 @@ func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo
 			r.ScheduleReconciliation(exeName)
 		}
 	}
+}
+
+func withDetachedExecutableStopTimeout(parent context.Context) (context.Context, context.CancelFunc) {
+	if osutil.IsWindows() {
+		return process.WithDetachedMonitoredProcessStopTimeout(parent)
+	}
+	return process.WithDetachedStopTimeout(parent)
 }
 
 func (r *ExecutableReconciler) getExecutableRunner(exe *apiv1.Executable, startupStage ExecutableStartuptStage) (ExecutableRunner, error) {
@@ -1011,10 +1033,53 @@ func allRunnersAttempted(currentStage ExecutableStartuptStage, exe *apiv1.Execut
 	return int(currentStage) == len(exe.Spec.FallbackExecutionTypes)
 }
 
-func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
+func (r *ExecutableReconciler) releaseExecutableResources(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	runInfo *ExecutableRunInfo,
+	log logr.Logger,
+) {
 	r.releaseExecutableControllerResources(ctx, exe, log)
-	r.deleteOutputFiles(exe, log)
+	if !r.runnerOwnsOutputDeletion(ctx, exe, runInfo, log) {
+		r.deleteOutputFiles(exe, log)
+	}
 	r.deleteCertificateFiles(exe, log)
+}
+
+func (r *ExecutableReconciler) runnerOwnsOutputDeletion(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	runInfo *ExecutableRunInfo,
+	log logr.Logger,
+) bool {
+	if runInfo == nil ||
+		runInfo.ExeState != apiv1.ExecutableStateUnknown ||
+		osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) ||
+		(exe.Status.StdOutFile == "" && exe.Status.StdErrFile == "") {
+		return false
+	}
+
+	runner, runnerErr := r.getExecutableRunner(exe, runInfo.startupStage)
+	if runnerErr != nil {
+		log.Error(runnerErr, "Could not coordinate Executable output deletion with its runner", "RunID", runInfo.RunID)
+		return false
+	}
+	outputCleanupRunner, supported := runner.(ExecutableOutputCleanupRunner)
+	if !supported {
+		return false
+	}
+
+	deleteErr := outputCleanupRunner.DeleteRunOutput(
+		context.WithoutCancel(ctx),
+		runInfo.RunID,
+		exe.Status.StdOutFile,
+		exe.Status.StdErrFile,
+	)
+	if deleteErr != nil {
+		log.Error(deleteErr, "Could not coordinate Executable output deletion with its runner", "RunID", runInfo.RunID)
+		return false
+	}
+	return true
 }
 
 func (r *ExecutableReconciler) releaseExecutableControllerResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {

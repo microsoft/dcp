@@ -7,6 +7,7 @@ package dcpproc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 
 	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/dcpproc/protocol"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -61,9 +63,12 @@ func RunProcessWatcher(
 	child process.ProcessHandle,
 	log logr.Logger,
 ) {
-	monitorPid := process.Uint32_ToPidT(uint32(os.Getpid()))
-	monitorIdentityTime := process.ProcessIdentityTime(monitorPid)
-	RunProcessWatcherForMonitor(pe, process.NewHandle(monitorPid, monitorIdentityTime), child, log)
+	monitor, monitorErr := process.This()
+	if monitorErr != nil {
+		log.Error(monitorErr, "Could not determine process monitor identity")
+		return
+	}
+	RunProcessWatcherForMonitor(pe, monitor, child, log)
 }
 
 func RunProcessWatcherForMonitor(
@@ -102,9 +107,12 @@ func RunContainerWatcher(
 	containerID string,
 	log logr.Logger,
 ) {
-	monitorPid := process.Uint32_ToPidT(uint32(os.Getpid()))
-	monitorIdentityTime := process.ProcessIdentityTime(monitorPid)
-	RunContainerWatcherForMonitor(pe, process.NewHandle(monitorPid, monitorIdentityTime), containerID, log)
+	monitor, monitorErr := process.This()
+	if monitorErr != nil {
+		log.Error(monitorErr, "Could not determine container monitor identity")
+		return
+	}
+	RunContainerWatcherForMonitor(pe, monitor, containerID, log)
 }
 
 func RunContainerWatcherForMonitor(
@@ -171,17 +179,44 @@ func StopProcessTree(
 	stopProcessTreeCmd.Env = os.Environ()    // Use DCP CLI environment
 	logger.WithSessionId(stopProcessTreeCmd) // Ensure the session ID is passed to the monitor command
 
-	exitCode, err := process.RunWithTimeout(ctx, pe, stopProcessTreeCmd)
-	if err != nil {
-		log.Error(err, "Failed to stop process tree", "ExitCode", exitCode)
-		return err
+	monitoredStopCtx, monitoredStopCancel := process.WithMonitoredProcessStopTimeout(ctx)
+	defer monitoredStopCancel()
+
+	exitCode, runErr := process.RunWithTimeout(monitoredStopCtx, pe, stopProcessTreeCmd)
+	if runErr != nil {
+		log.Error(runErr, "Failed to stop process tree", "ExitCode", exitCode)
+		return runErr
 	} else if exitCode != 0 {
-		err = fmt.Errorf("'dcp stop-process-tree --pid %d' command returned non-zero exit code: %d", root.Pid, exitCode)
-		log.Error(err, "Failed to stop process tree", "ExitCode", exitCode)
-		return err
+		stopErr := stopProcessTreeExitError(root, exitCode)
+		logStopProcessTreeFailure(log, stopErr, exitCode)
+		return stopErr
 	}
 
 	return nil
+}
+
+func logStopProcessTreeFailure(log logr.Logger, err error, exitCode int32) {
+	if process.IsProcessGoneErr(err) {
+		log.V(1).Info("Process tree already stopped", "Error", err, "ExitCode", exitCode)
+		return
+	}
+	log.Error(err, "Failed to stop process tree", "ExitCode", exitCode)
+}
+
+func stopProcessTreeExitError(root process.ProcessHandle, exitCode int32) error {
+	commandErr := fmt.Errorf(
+		"'dcp stop-process-tree --pid %d' command returned non-zero exit code: %d",
+		root.Pid,
+		exitCode,
+	)
+	switch exitCode {
+	case protocol.StopProcessTreeIncompleteExitCode:
+		return errors.Join(process.ErrIncompleteProcessTree, commandErr)
+	case protocol.StopProcessTreeProcessGoneExitCode:
+		return &process.ErrProcessNotFound{Pid: root.Pid, Inner: commandErr}
+	default:
+		return commandErr
+	}
 }
 
 func getMonitorCmdArgs(monitor process.ProcessHandle) []string {
@@ -221,7 +256,7 @@ func SimulateStopProcessTreeCommand(pe *internal_testutil.ProcessExecution) int3
 	if i < 0 {
 		return 1 // The command does not specify the PID to stop.
 	}
-	if len(pe.Cmd.Args) <= i+2 {
+	if len(pe.Cmd.Args) <= i+1 {
 		return 2 // The --pid flag should be followed by the PID of the process to stop.
 	}
 	pid, pidErr := process.StringToPidT(pe.Cmd.Args[i+1])
@@ -230,7 +265,10 @@ func SimulateStopProcessTreeCommand(pe *internal_testutil.ProcessExecution) int3
 	}
 	var startTime time.Time
 	i = slices.Index(pe.Cmd.Args, "--process-start-time")
-	if i >= 0 && len(pe.Cmd.Args) > i+1 {
+	if i >= 0 {
+		if len(pe.Cmd.Args) <= i+1 {
+			return 4 // The optional start time flag must have a value.
+		}
 		var startTimeErr error
 		startTime, startTimeErr = time.Parse(osutil.RFC3339MiliTimestampFormat, pe.Cmd.Args[i+1])
 		if startTimeErr != nil {
@@ -241,10 +279,27 @@ func SimulateStopProcessTreeCommand(pe *internal_testutil.ProcessExecution) int3
 	// We do not simulate stopping the whole process tree (or process parent-child relationships, for that matter).
 	// We can consider adding it if we have tests that require it (currently none).
 
-	stopErr := pe.Executor.StopProcess(process.NewHandle(pid, startTime))
-	if stopErr != nil {
-		return 5 // Failed to stop the process
+	handle := process.NewHandle(pid, startTime)
+	if startTime.IsZero() {
+		var handleErr error
+		handle, handleErr = pe.Executor.FindProcessHandle(pid)
+		if handleErr != nil {
+			return simulatedStopProcessTreeExitCode(handleErr)
+		}
 	}
+	stopErr := pe.Executor.StopProcess(context.Background(), handle)
+	return simulatedStopProcessTreeExitCode(stopErr)
+}
 
-	return 0 // Success
+func simulatedStopProcessTreeExitCode(stopErr error) int32 {
+	switch {
+	case stopErr == nil:
+		return 0
+	case errors.Is(stopErr, process.ErrIncompleteProcessTree):
+		return protocol.StopProcessTreeIncompleteExitCode
+	case process.IsProcessGoneErr(stopErr):
+		return protocol.StopProcessTreeProcessGoneExitCode
+	default:
+		return 5
+	}
 }

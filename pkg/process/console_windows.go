@@ -8,8 +8,11 @@
 package process
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"sync"
 
 	"github.com/go-logr/logr"
 	"golang.org/x/sys/windows"
@@ -22,15 +25,28 @@ var (
 	freeConsoleProc   = kernel32.NewProc("FreeConsole")
 )
 
-// StopViaConsole attaches to the target process's console, then stops the process tree.
-// If attachment succeeds, it sends CTRL_C_EVENT to the entire console group and protects
-// the caller from its own signal.
-// If the target has no console or has already exited, it falls back to a regular StopProcess call.
-func StopViaConsole(log logr.Logger, executor Executor, handle ProcessHandle, options ...ProcessStopOption) error {
-	attached, attachErr := attachToTargetProcessConsole(log, handle.Pid)
+// StopViaConsole attaches to the target process's classic console, then sends CTRL_C_EVENT
+// to every process attached to that console while protecting the helper from its own event.
+// A successful dispatch permits the shared 15-second graceful deadline. If attachment or
+// handler setup cannot confirm that CTRL_C_EVENT will be delivered, StopProcess uses the
+// six-second passive fallback before force-killing the identity-validated process tree.
+func StopViaConsole(ctx context.Context, log logr.Logger, executor Executor, handle ProcessHandle, options ...ProcessStopOption) error {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	proc, findErr := FindProcess(handle)
+	if findErr != nil {
+		return findErr
+	}
+	defer func() {
+		if releaseErr := proc.Release(); releaseErr != nil {
+			log.Error(releaseErr, "Could not release console target process", "PID", handle.Pid)
+		}
+	}()
+	attached, attachErr := attachToTargetProcessConsole(ctx, log, handle, proc)
 	if attachErr != nil {
 		// Error already logged in attachToTargetProcessConsole. Fall back to direct stop.
-		stopErr := executor.StopProcess(handle, options...)
+		stopErr := executor.StopProcess(ctx, handle, options...)
 		if stopErr != nil {
 			return errors.Join(attachErr, stopErr)
 		}
@@ -38,21 +54,37 @@ func StopViaConsole(log logr.Logger, executor Executor, handle ProcessHandle, op
 	}
 
 	if !attached {
-		return executor.StopProcess(handle, options...)
+		return executor.StopProcess(ctx, handle, options...)
 	}
-	defer restoreParentConsole(log)
+	restoreConsole := sync.OnceFunc(func() {
+		// Once the root has exited, DCP no longer needs the target console to deliver Ctrl+C.
+		// Detach before waiting on descendants because Windows keeps the console host alive
+		// while DCP remains attached, which would consume the full graceful-stop budget.
+		restoreParentConsole(log)
+	})
+	defer restoreConsole()
 
 	handlerErr := installIgnoreConsoleCtrlEventHandler()
 	if handlerErr != nil {
-		return fmt.Errorf("could not install console ctrl handler: %w", handlerErr)
+		// Sending CTRL_C_EVENT without the ignore handler could terminate this helper instead
+		// of completing cleanup. Detach and use the six-second passive StopProcess fallback.
+		restoreConsole()
+		stopErr := executor.StopProcess(ctx, handle, options...)
+		if stopErr != nil {
+			return errors.Join(
+				fmt.Errorf("could not install console ctrl handler: %w", handlerErr),
+				stopErr,
+			)
+		}
+		return nil
 	}
 	// No explicit removal: StopViaConsole detaches from the target console,
 	// which resets the process control-handler table.
 
-	consoleOptions := make([]ProcessStopOption, 0, len(options)+1)
+	consoleOptions := make([]ProcessStopOption, 0, len(options)+2)
 	consoleOptions = append(consoleOptions, options...)
-	consoleOptions = append(consoleOptions, stopConsoleGroup())
-	return executor.StopProcess(handle, consoleOptions...)
+	consoleOptions = append(consoleOptions, stopConsoleGroup(), afterRootExit(restoreConsole))
+	return executor.StopProcess(ctx, handle, consoleOptions...)
 }
 
 func stopConsoleGroup() ProcessStopOption {
@@ -61,12 +93,21 @@ func stopConsoleGroup() ProcessStopOption {
 	}
 }
 
+func afterRootExit(callback func()) ProcessStopOption {
+	return func(options *processStopOptions) {
+		options.afterRootExit = callback
+	}
+}
+
 // attachToTargetProcessConsole detaches from the current console and attaches to the console
 // of the target process. Returns true if attachment was successful, or false if the target
 // process has no console or has already exited.
 // Returns a non-nil error only on unexpected failures.
-func attachToTargetProcessConsole(log logr.Logger, targetPid Pid_t) (bool, error) {
-	targetOSPid, pidErr := PidT_ToUint32(targetPid)
+func attachToTargetProcessConsole(ctx context.Context, log logr.Logger, handle ProcessHandle, proc *os.Process) (bool, error) {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return false, contextErr
+	}
+	targetOSPid, pidErr := PidT_ToUint32(handle.Pid)
 	if pidErr != nil {
 		return false, pidErr
 	}
@@ -87,9 +128,18 @@ func attachToTargetProcessConsole(log logr.Logger, targetPid Pid_t) (bool, error
 		}
 	}()
 
-	retval, _, win32err = attachConsoleProc.Call(uintptr(targetOSPid))
-	if retval == 0 {
-		errno, isErrno := win32err.(windows.Errno)
+	attachErr := actOnProcess(ctx, handle, func() (ProcessHandle, error) {
+		info, infoErr := readProcessInfoFromProcess(proc, false)
+		return info.handle, infoErr
+	}, func() error {
+		attachResult, _, nativeErr := attachConsoleProc.Call(uintptr(targetOSPid))
+		if attachResult == 0 {
+			return nativeErr
+		}
+		return nil
+	})
+	if attachErr != nil {
+		errno, isErrno := attachErr.(windows.Errno)
 		switch {
 		case isErrno && errno == windows.ERROR_INVALID_HANDLE:
 			log.Info("The target process does not have a console. It will not be possible to stop it gracefully.")
@@ -98,8 +148,8 @@ func attachToTargetProcessConsole(log logr.Logger, targetPid Pid_t) (bool, error
 			log.Info("The target process exited before we could attach to its console")
 			return false, nil
 		default:
-			log.Error(win32err, "Could not attach to target process console")
-			return false, win32err
+			log.Error(attachErr, "Could not attach to target process console")
+			return false, attachErr
 		}
 	}
 

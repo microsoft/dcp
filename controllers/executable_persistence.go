@@ -97,7 +97,10 @@ func (r *ExecutableReconciler) releasePersistentExecutableResourceLease(
 }
 
 func (r *ExecutableReconciler) adoptPersistentExecutableRecord(ctx context.Context, exe *apiv1.Executable, runInfo *ExecutableRunInfo, record *statestore.PersistentProcessRecord, persistentRunner PersistentExecutableRunner, log logr.Logger) (bool, objectChange) {
-	displayStartTime := process.StartTimeForProcess(record.PID)
+	displayStartTime, displayErr := process.StartTimeForProcess(record.ProcessHandle())
+	if displayErr != nil {
+		log.Error(displayErr, "Could not read adopted process display start time", "PID", record.PID)
+	}
 
 	runID := RunID(record.RunID)
 	adoptionErr := persistentRunner.AdoptRun(ctx, exe, record, r, log)
