@@ -324,7 +324,11 @@ func (r *ContainerReconciler) handleDeletionRequest(ctx context.Context, contain
 
 	default:
 		log.V(1).Info("Container is being deleted (in initial or final state; releasing resources and deleting finalizer)...", "CurrentState", rcd.containerState)
-		r.cleanupContainerResources(ctx, container, rcd, log)
+		cleanupErr := r.cleanupContainerResources(ctx, container, rcd, log)
+		if cleanupErr != nil {
+			log.Error(cleanupErr, "Could not clean up Container resources")
+			return additionalReconciliationNeeded
+		}
 		change = deleteFinalizer(container, containerFinalizer, log)
 		r.runningContainers.DeleteByNamespacedName(container.NamespacedName())
 	}
@@ -1562,6 +1566,13 @@ func (r *ContainerReconciler) addContainerCreationLabels(container *apiv1.Contai
 		},
 	}...)
 
+	if r.config.WorkloadID != "" {
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+			Key:   WorkloadIDLabel,
+			Value: string(r.config.WorkloadID),
+		})
+	}
+
 	thisProcess, thisProcessErr := process.This()
 	if thisProcessErr != nil {
 		log.Error(thisProcessErr, "Could not get the current process information; container will not have creator process information")
@@ -1992,7 +2003,7 @@ func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd 
 
 }
 
-func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *apiv1.Container, rcd *runningContainerData, log logr.Logger) {
+func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *apiv1.Container, rcd *runningContainerData, log logr.Logger) error {
 	// This method is called only when we never attempted to start the container,
 	// or if the container has already finished starting/stopping and we know the outcome of either.
 
@@ -2001,25 +2012,29 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 
 	if !container.Spec.EffectiveMode().ShouldDeleteContainer() {
 		log.V(1).Info("Container is being deleted, leaving underlying resources")
-		return
+		return nil
 	}
 
 	if !rcd.hasValidContainerID() {
 		log.V(1).Info("Container resource was never created, nothing to remove...")
-		return
+		return nil
 	}
 
 	// We want to stop the container first to give it a chance to clean up
-	_ = r.removeExistingContainer(ctx, rcd.containerID, nil, log)
+	return r.removeExistingContainer(ctx, rcd.containerID, nil, log)
 }
 
 // Removes all resources associated with the Container object, both DCP-managed, as well as orchestrator-managed,
 // including the running container.
-func (r *ContainerReconciler) cleanupContainerResources(ctx context.Context, container *apiv1.Container, rcd *runningContainerData, log logr.Logger) {
+func (r *ContainerReconciler) cleanupContainerResources(ctx context.Context, container *apiv1.Container, rcd *runningContainerData, log logr.Logger) error {
 	r.cleanupDcpContainerResources(ctx, container, log)
 	r.removeContainerNetworkConnections(ctx, container, log)
-	r.deleteContainer(ctx, container, rcd, log)
+	deleteErr := r.deleteContainer(ctx, container, rcd, log)
+	if deleteErr != nil {
+		return deleteErr
+	}
 	logger.ReleaseResourceLog(container.GetResourceId())
+	return nil
 }
 
 // Removes any resources that DCP is managing for the running container.

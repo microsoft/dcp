@@ -404,6 +404,97 @@ func TestContainerValidateImageOnlyRequiredForCreationModes(t *testing.T) {
 	}
 }
 
+// Verifies that Container.Validate reports empty container and build label keys using the key field and message.
+func TestContainerValidateReportsRequiredLabelKeys(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		spec          ContainerSpec
+		expectedField string
+	}{
+		{
+			name: "container label key",
+			spec: ContainerSpec{
+				Image:  "test-image",
+				Labels: []ContainerLabel{{Value: "value"}},
+			},
+			expectedField: "spec.labels[0].key",
+		},
+		{
+			name: "build label key",
+			spec: ContainerSpec{
+				Build: &ContainerBuildContext{
+					Context: "test-context",
+					Labels:  []ContainerLabel{{Value: "value"}},
+				},
+			},
+			expectedField: "spec.build.labels[0].key",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			validationErrors := (&Container{Spec: testCase.spec}).Validate(nil)
+			require.Len(t, validationErrors, 1)
+			require.Equal(t, field.ErrorTypeRequired, validationErrors[0].Type)
+			require.Equal(t, testCase.expectedField, validationErrors[0].Field)
+			require.Equal(t, "key must be set to a non-empty value", validationErrors[0].Detail)
+		})
+	}
+}
+
+// Verifies that Container.Validate rejects commas in container and build label keys without rejecting comma-containing values.
+func TestContainerValidateRejectsCommaInLabelKeys(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		spec          ContainerSpec
+		expectedField string
+	}{
+		{
+			name: "container label key",
+			spec: ContainerSpec{
+				Image:  "test-image",
+				Labels: []ContainerLabel{{Key: "invalid,key", Value: "value"}},
+			},
+			expectedField: "spec.labels[0].key",
+		},
+		{
+			name: "build label key",
+			spec: ContainerSpec{
+				Build: &ContainerBuildContext{
+					Context: "test-context",
+					Labels:  []ContainerLabel{{Key: "invalid,key", Value: "value"}},
+				},
+			},
+			expectedField: "spec.build.labels[0].key",
+		},
+		{
+			name: "comma in label value",
+			spec: ContainerSpec{
+				Image:  "test-image",
+				Labels: []ContainerLabel{{Key: "valid-key", Value: "part-one,part-two"}},
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			validationErrors := (&Container{Spec: testCase.spec}).Validate(nil)
+			if testCase.expectedField == "" {
+				require.Empty(t, validationErrors)
+			} else {
+				require.ErrorContains(t, validationErrors.ToAggregate(), testCase.expectedField)
+			}
+		})
+	}
+}
+
 func TestImageLayerValidate(t *testing.T) {
 	t.Parallel()
 

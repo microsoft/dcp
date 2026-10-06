@@ -8,6 +8,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,7 +21,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
+	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/exerunners"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
@@ -34,7 +37,8 @@ import (
 
 const cleanupTestRuntimeName = "test"
 
-func TestCleanupVolumesFlagDefaultsToFalse(t *testing.T) {
+// Verifies that NewCleanupCommand registers the runtime flag and cleanupWorkloadOptionsFromCommand defaults volume cleanup off unless enabled.
+func TestCleanupCommandDefaultsVolumeFlagOffAndRegistersRuntimeFlag(t *testing.T) {
 	t.Parallel()
 
 	cleanupCommand := NewCleanupCommand(&logger.Logger{Logger: logr.Discard()})
@@ -47,6 +51,7 @@ func TestCleanupVolumesFlagDefaultsToFalse(t *testing.T) {
 	options, optionsErr = cleanupWorkloadOptionsFromCommand(cleanupCommand)
 	require.NoError(t, optionsErr)
 	require.True(t, options.Volumes)
+	require.NotNil(t, cleanupCommand.Flags().Lookup(container_flags.RuntimeFlagName))
 }
 
 func TestCleanupWorkloadResourcesNoRecordsDoesNotRequireContainerRuntime(t *testing.T) {
@@ -91,6 +96,162 @@ func TestCleanupRejectsTooLongWorkloadID(t *testing.T) {
 	require.ErrorContains(t, cleanupErr, "workload ID cannot be longer than")
 }
 
+// Verifies that remainingWorkloadContainerWorkItems removes workload containers across networks and excludes recorded and other-workload containers.
+func TestRemainingWorkloadContainerWorkItemsSelectsUnrecordedWorkloadContainers(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+
+	firstNetworkID, firstNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "app-network-1"})
+	require.NoError(t, firstNetworkErr)
+	secondNetworkID, secondNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "app-network-2"})
+	require.NoError(t, secondNetworkErr)
+	otherNetworkID, otherNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "other-network"})
+	require.NoError(t, otherNetworkErr)
+
+	createContainer := func(name string, workloadID string, networks ...string) string {
+		createNetworks := make([]containers.CreateContainerNetworkOptions, 0, len(networks))
+		for _, network := range networks {
+			createNetworks = append(createNetworks, containers.CreateContainerNetworkOptions{Name: network})
+		}
+		containerID, createErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+			Name:     name,
+			Image:    "test-image",
+			Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: workloadID}},
+			Networks: createNetworks,
+		})
+		require.NoError(t, createErr)
+		return containerID
+	}
+
+	sessionContainerID := createContainer("session", "workload-a", firstNetworkID, secondNetworkID)
+	persistentContainerID := createContainer("persistent", "workload-a", firstNetworkID)
+	differentWorkloadContainerID := createContainer("different-workload", "workload-b", firstNetworkID)
+	differentNetworkContainerID := createContainer("different-network", "workload-a", otherNetworkID)
+	unattachedContainerID := createContainer("unattached", "workload-a")
+	orchestrator.FailNextRemoveContainer("session", errors.New("transient removal failure"))
+
+	report := cleanupReport{WorkloadID: "workload-a"}
+	workItems := remainingWorkloadContainerWorkItems(
+		ctx,
+		"workload-a",
+		[]statestore.PersistentContainerRecord{{ContainerID: persistentContainerID, RuntimeName: cleanupTestRuntimeName}},
+		[]statestore.PersistentNetworkRecord{
+			{ResourceKey: "containernetworks/app-network-1", NetworkID: firstNetworkID, RuntimeName: cleanupTestRuntimeName},
+			{ResourceKey: "containernetworks/app-network-2", NetworkID: secondNetworkID, RuntimeName: cleanupTestRuntimeName},
+		},
+		nil,
+		nil,
+		func(runtimeName string) (containers.ContainerOrchestrator, error) {
+			require.Equal(t, cleanupTestRuntimeName, runtimeName)
+			return orchestrator, nil
+		},
+	)
+	require.Len(t, workItems, 3)
+	cleanupErr := runCleanupResourceGroups(&report, []cleanupResourceGroup{{
+		gvr:       cleanupResourceContainerGVR,
+		workItems: workItems,
+	}})
+
+	require.NoError(t, cleanupErr)
+	require.Equal(t, cleanupStoppedCounts{Containers: 3}, report.Stopped)
+	require.Empty(t, report.Failures)
+	require.GreaterOrEqual(t, orchestrator.RemoveContainerCallCount("session"), 2)
+	for _, removedContainerID := range []string{sessionContainerID, differentNetworkContainerID, unattachedContainerID} {
+		_, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{removedContainerID}})
+		require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+	}
+	for _, retainedContainerID := range []string{persistentContainerID, differentWorkloadContainerID} {
+		inspected, retainedInspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+			Containers: []string{retainedContainerID},
+		})
+		require.NoError(t, retainedInspectErr)
+		require.Len(t, inspected, 1)
+	}
+}
+
+// Verifies that remainingWorkloadContainerWorkItems reports a failed removal and permits another cleanup attempt.
+func TestRemainingWorkloadContainerWorkItemsReportsRemovalFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+
+	networkID, createNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: "app-network", Labels: map[string]string{controllers.WorkloadIDLabel: "workload-a"},
+	})
+	require.NoError(t, createNetworkErr)
+	const containerName = "remaining-container-removal-failure"
+	containerID, createErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:     containerName,
+		Image:    "test-image",
+		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
+		Labels: []containers.Label{
+			{Key: controllers.WorkloadIDLabel, Value: "workload-a"},
+		},
+	})
+	require.NoError(t, createErr)
+	orchestrator.FailNextRemoveContainer(containerName, resiliency.Permanent(errors.New("simulated removal failure")))
+
+	report := cleanupReport{WorkloadID: "workload-a"}
+	workItems := remainingWorkloadContainerWorkItems(
+		ctx,
+		"workload-a",
+		nil,
+		[]statestore.PersistentNetworkRecord{{
+			ResourceKey: "containernetworks/app-network",
+			NetworkID:   networkID,
+			RuntimeName: cleanupTestRuntimeName,
+		}},
+		nil,
+		nil,
+		func(string) (containers.ContainerOrchestrator, error) {
+			return orchestrator, nil
+		},
+	)
+	firstCleanupErr := runCleanupResourceGroups(&report, []cleanupResourceGroup{{
+		gvr:       cleanupResourceContainerGVR,
+		workItems: workItems,
+	}})
+
+	require.Error(t, firstCleanupErr)
+	require.Equal(t, cleanupStoppedCounts{}, report.Stopped)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "containers/"+containerName, report.Failures[0].ResourceKey)
+	require.Equal(t, containerID, report.Failures[0].ResourceID)
+	require.Contains(t, report.Failures[0].Error, "simulated removal failure")
+
+	retryReport := cleanupReport{WorkloadID: "workload-a"}
+	retryWorkItems := remainingWorkloadContainerWorkItems(
+		ctx,
+		"workload-a",
+		nil,
+		[]statestore.PersistentNetworkRecord{{
+			ResourceKey: "containernetworks/app-network",
+			NetworkID:   networkID,
+			RuntimeName: cleanupTestRuntimeName,
+		}},
+		nil,
+		nil,
+		func(string) (containers.ContainerOrchestrator, error) {
+			return orchestrator, nil
+		},
+	)
+	retryCleanupErr := runCleanupResourceGroups(&retryReport, []cleanupResourceGroup{{
+		gvr:       cleanupResourceContainerGVR,
+		workItems: retryWorkItems,
+	}})
+	require.NoError(t, retryCleanupErr)
+	require.Equal(t, cleanupStoppedCounts{Containers: 1}, retryReport.Stopped)
+	require.Empty(t, retryReport.Failures)
+}
+
+// Verifies that cleanupWorkloadResources removes recorded and unrecorded workload resources and detaches unrelated containers from removed networks.
 func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 	t.Parallel()
 
@@ -104,13 +265,29 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
 	require.NoError(t, orchestratorErr)
 
+	networkID, createNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: "app-network", Labels: map[string]string{controllers.WorkloadIDLabel: "workload-a"},
+	})
+	require.NoError(t, createNetworkErr)
 	containerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name:  "api",
 		Image: "test-image",
 	})
 	require.NoError(t, createContainerErr)
-	networkID, createNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "app-network"})
-	require.NoError(t, createNetworkErr)
+	remainingContainerID, createRemainingContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:     "remaining-session",
+		Image:    "test-image",
+		Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
+	})
+	require.NoError(t, createRemainingContainerErr)
+	otherWorkloadContainerID, createOtherWorkloadContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:     "other-workload",
+		Image:    "test-image",
+		Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-b"}},
+		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
+	})
+	require.NoError(t, createOtherWorkloadContainerErr)
 
 	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
 		ResourceKey:   "containers/api",
@@ -137,15 +314,25 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 			return orchestrator, nil
 		},
 		processExecutor,
-		cleanupWorkloadOptions{},
+		cleanupWorkloadOptions{discoverRuntime: func() (containers.ContainerOrchestrator, error) {
+			return orchestrator, nil
+		}},
 		logr.Discard(),
 	)
 
-	require.NoError(t, cleanupErr)
-	require.Equal(t, cleanupStoppedCounts{Containers: 1, Networks: 1}, report.Stopped)
+	require.NoError(t, cleanupErr, "cleanup report: %+v", report)
+	require.Equal(t, cleanupStoppedCounts{Containers: 2, Networks: 1}, report.Stopped)
 	require.Empty(t, report.Failures)
 	_, inspectContainerErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
 	require.ErrorIs(t, inspectContainerErr, containers.ErrNotFound)
+	_, inspectRemainingContainerErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{remainingContainerID}})
+	require.ErrorIs(t, inspectRemainingContainerErr, containers.ErrNotFound)
+	otherWorkloadContainers, inspectOtherWorkloadContainerErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{otherWorkloadContainerID},
+	})
+	require.NoError(t, inspectOtherWorkloadContainerErr)
+	require.Len(t, otherWorkloadContainers, 1)
+	require.NotContains(t, otherWorkloadContainers[0].Networks, "app-network")
 	_, inspectNetworkErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
 	require.ErrorIs(t, inspectNetworkErr, containers.ErrNotFound)
 
@@ -155,6 +342,538 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 	networkRecords, listNetworkErr := stateStore.ListPersistentNetworksByWorkloadID(ctx, "workload-a")
 	require.NoError(t, listNetworkErr)
 	require.Empty(t, networkRecords)
+}
+
+// Verifies that cleanupWorkloadResources finds a detached container on a subsequent run after removal fails and the network is cleaned up.
+func TestCleanupWorkloadResourcesRetriesDetachedContainerAfterRemovalFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+
+	const containerName = "remaining-session"
+	networkID, createNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "app-network"})
+	require.NoError(t, createNetworkErr)
+	containerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:     containerName,
+		Image:    "test-image",
+		Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
+	})
+	require.NoError(t, createContainerErr)
+	require.NoError(t, stateStore.UpsertPersistentNetwork(ctx, statestore.PersistentNetworkRecord{
+		ResourceKey: "containernetworks/app-network",
+		NetworkID:   networkID,
+		NetworkName: "app-network",
+		RuntimeName: cleanupTestRuntimeName,
+		WorkloadID:  "workload-a",
+	}))
+	orchestrator.FailNextRemoveContainer(containerName, resiliency.Permanent(errors.New("simulated removal failure")))
+
+	getOrchestrator := func(runtimeName string) (containers.ContainerOrchestrator, error) {
+		require.Equal(t, cleanupTestRuntimeName, runtimeName)
+		return orchestrator, nil
+	}
+	report, cleanupErr := cleanupWorkloadResources(
+		ctx,
+		"workload-a",
+		stateStore,
+		leaseOwner,
+		getOrchestrator,
+		processExecutor,
+		cleanupWorkloadOptions{},
+		logr.Discard(),
+	)
+
+	require.Error(t, cleanupErr)
+	require.Equal(t, cleanupStoppedCounts{}, report.Stopped)
+	require.Len(t, report.Failures, 2)
+	require.Equal(t, cleanupResourceName(cleanupResourceContainerGVR), report.Failures[0].Kind)
+	require.Equal(t, cleanupResourceName(cleanupResourceNetworkGVR), report.Failures[1].Kind)
+	inspectedContainer, inspectDetachedErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+	require.NoError(t, inspectDetachedErr)
+	require.NotContains(t, inspectedContainer[0].Networks, "app-network")
+	_, inspectNetworkErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
+	require.ErrorIs(t, inspectNetworkErr, containers.ErrNotFound)
+	networkRecords, listNetworkErr := stateStore.ListPersistentNetworksByWorkloadID(ctx, "workload-a")
+	require.NoError(t, listNetworkErr)
+	require.Len(t, networkRecords, 1)
+
+	retryReport, retryErr := cleanupWorkloadResources(
+		ctx,
+		"workload-a",
+		stateStore,
+		leaseOwner,
+		getOrchestrator,
+		processExecutor,
+		cleanupWorkloadOptions{},
+		logr.Discard(),
+	)
+	require.NoError(t, retryErr, "cleanup report: %+v", retryReport)
+	require.Equal(t, cleanupStoppedCounts{Containers: 1, Networks: 1}, retryReport.Stopped)
+	require.Empty(t, retryReport.Failures)
+	_, inspectContainerErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+	require.ErrorIs(t, inspectContainerErr, containers.ErrNotFound)
+}
+
+// Verifies that cleanupWorkloadResources scans runtimes from network records for remaining workload containers, including unattached ones.
+func TestCleanupWorkloadResourcesScansRecordedNetworkRuntimes(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+
+	firstOrchestrator, firstOrchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, firstOrchestratorErr)
+	secondOrchestrator, secondOrchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, secondOrchestratorErr)
+
+	type runtimeCase struct {
+		name         string
+		orchestrator *ctrlutil.TestContainerOrchestrator
+	}
+	runtimes := []runtimeCase{
+		{name: "runtime-a", orchestrator: firstOrchestrator},
+		{name: "runtime-b", orchestrator: secondOrchestrator},
+	}
+	containerIDs := make([]string, 0, len(runtimes))
+	networkIDs := make([]string, 0, len(runtimes))
+	for _, runtime := range runtimes {
+		networkName := runtime.name + "-network"
+		networkID, createNetworkErr := runtime.orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
+		require.NoError(t, createNetworkErr)
+		containerID, createContainerErr := runtime.orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+			Name:     runtime.name + "-container",
+			Image:    "test-image",
+			Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+			Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
+		})
+		require.NoError(t, createContainerErr)
+		require.NoError(t, stateStore.UpsertPersistentNetwork(ctx, statestore.PersistentNetworkRecord{
+			ResourceKey: "containernetworks/" + networkName,
+			NetworkID:   networkID,
+			NetworkName: networkName,
+			RuntimeName: runtime.name,
+			WorkloadID:  "workload-a",
+		}))
+		containerIDs = append(containerIDs, containerID)
+		networkIDs = append(networkIDs, networkID)
+	}
+	unattachedContainerID, createUnattachedErr := secondOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:   "unattached-on-recorded-runtime",
+		Image:  "test-image",
+		Labels: []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+	})
+	require.NoError(t, createUnattachedErr)
+
+	report, cleanupErr := cleanupWorkloadResources(
+		ctx,
+		"workload-a",
+		stateStore,
+		leaseOwner,
+		func(runtimeName string) (containers.ContainerOrchestrator, error) {
+			for _, runtime := range runtimes {
+				if runtimeName == runtime.name {
+					return runtime.orchestrator, nil
+				}
+			}
+			return nil, fmt.Errorf("unexpected runtime %q", runtimeName)
+		},
+		processExecutor,
+		cleanupWorkloadOptions{},
+		logr.Discard(),
+	)
+
+	require.NoError(t, cleanupErr)
+	require.Equal(t, cleanupStoppedCounts{Containers: 3, Networks: 2}, report.Stopped)
+	require.Empty(t, report.Failures)
+	for i, runtime := range runtimes {
+		_, inspectContainerErr := runtime.orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerIDs[i]}})
+		require.ErrorIs(t, inspectContainerErr, containers.ErrNotFound)
+		_, inspectNetworkErr := runtime.orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkIDs[i]}})
+		require.ErrorIs(t, inspectNetworkErr, containers.ErrNotFound)
+	}
+	_, inspectUnattachedErr := secondOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{unattachedContainerID}})
+	require.ErrorIs(t, inspectUnattachedErr, containers.ErrNotFound)
+}
+
+// Verifies that cleanupWorkloadResources discovers workload networks on the selected runtime while leaving other workloads and failed recorded containers intact.
+func TestCleanupWorkloadResourcesDiscoversUnrecordedNetworksOnSelectedRuntime(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+	selectedRuntime, selectedErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, selectedErr)
+	recordedRuntime, recordedErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, recordedErr)
+
+	networkID, createNetworkErr := selectedRuntime.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name:   "session-network",
+		Labels: map[string]string{controllers.WorkloadIDLabel: "workload-a"},
+	})
+	require.NoError(t, createNetworkErr)
+	otherNetworkID, createOtherNetworkErr := selectedRuntime.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name:   "other-network",
+		Labels: map[string]string{controllers.WorkloadIDLabel: "workload-b"},
+	})
+	require.NoError(t, createOtherNetworkErr)
+	recordedNetworkID, createRecordedNetworkErr := recordedRuntime.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "persistent-network"})
+	require.NoError(t, createRecordedNetworkErr)
+	require.NoError(t, stateStore.UpsertPersistentNetwork(ctx, statestore.PersistentNetworkRecord{
+		ResourceKey: "containernetworks/persistent-network",
+		NetworkID:   recordedNetworkID,
+		RuntimeName: "recorded-runtime",
+		WorkloadID:  "workload-a",
+	}))
+
+	createContainer := func(name, workload string) string {
+		containerID, createErr := selectedRuntime.CreateContainer(ctx, containers.CreateContainerOptions{
+			Name: name, Image: "test-image",
+			Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: workload}},
+			Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
+		})
+		require.NoError(t, createErr)
+		return containerID
+	}
+	sessionContainerID := createContainer("remaining-session", "workload-a")
+	recordedContainerID := createContainer("failed-persistent", "workload-a")
+	otherContainerID := createContainer("other-workload", "workload-b")
+	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
+		ResourceKey: "containers/failed-persistent",
+		ContainerID: recordedContainerID,
+		RuntimeName: cleanupTestRuntimeName,
+		WorkloadID:  "workload-a",
+	}))
+	selectedRuntime.FailNextRemoveContainer("failed-persistent", resiliency.Permanent(errors.New("record-backed removal failed")))
+
+	discoveryCalls := 0
+	report, cleanupErr := cleanupWorkloadResources(
+		ctx, "workload-a", stateStore, leaseOwner,
+		func(name string) (containers.ContainerOrchestrator, error) {
+			switch name {
+			case cleanupTestRuntimeName:
+				return selectedRuntime, nil
+			case "recorded-runtime":
+				return recordedRuntime, nil
+			default:
+				return nil, fmt.Errorf("unexpected runtime %q", name)
+			}
+		},
+		processExecutor,
+		cleanupWorkloadOptions{discoverRuntime: func() (containers.ContainerOrchestrator, error) {
+			discoveryCalls++
+			return selectedRuntime, nil
+		}},
+		logr.Discard(),
+	)
+
+	require.Error(t, cleanupErr)
+	require.Equal(t, 1, discoveryCalls)
+	require.Equal(t, cleanupStoppedCounts{Containers: 1, Networks: 1}, report.Stopped)
+	require.Len(t, report.Failures, 2)
+	require.Equal(t, "containers/failed-persistent", report.Failures[0].ResourceKey)
+	require.Equal(t, "containernetworks/session-network", report.Failures[1].ResourceKey)
+	require.Equal(t, 1, selectedRuntime.RemoveContainerCallCount("failed-persistent"))
+	for _, containerID := range []string{sessionContainerID, recordedContainerID} {
+		_, inspectErr := selectedRuntime.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+		if containerID == sessionContainerID {
+			require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+		} else {
+			require.NoError(t, inspectErr)
+		}
+	}
+	other, inspectOtherErr := selectedRuntime.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{otherContainerID}})
+	require.NoError(t, inspectOtherErr)
+	require.NotContains(t, other[0].Networks, "session-network")
+	for _, networkID := range []string{networkID, recordedNetworkID} {
+		orchestrator := selectedRuntime
+		if networkID == recordedNetworkID {
+			orchestrator = recordedRuntime
+		}
+		_, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
+		require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+	}
+	_, inspectOtherNetworkErr := selectedRuntime.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{otherNetworkID}})
+	require.NoError(t, inspectOtherNetworkErr)
+	remainingRecords, listErr := stateStore.ListPersistentContainersByWorkloadID(ctx, "workload-a")
+	require.NoError(t, listErr)
+	require.Len(t, remainingRecords, 1)
+	require.Equal(t, recordedContainerID, remainingRecords[0].ContainerID)
+}
+
+// Verifies that cleanupWorkloadResources removes an unrecorded workload network and container and detaches unrelated containers without persistence records.
+func TestCleanupWorkloadResourcesRemovesUnrecordedNetworkWithoutRecords(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	networkID, networkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: "session-network", Labels: map[string]string{controllers.WorkloadIDLabel: "workload-a"},
+	})
+	require.NoError(t, networkErr)
+	containerID, containerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name: "session-container", Image: "test-image",
+		Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
+	})
+	require.NoError(t, containerErr)
+	otherID, otherErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name: "unrelated", Image: "test-image",
+		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
+	})
+	require.NoError(t, otherErr)
+
+	report, cleanupErr := cleanupWorkloadResources(
+		ctx, "workload-a", stateStore, leaseOwner,
+		func(string) (containers.ContainerOrchestrator, error) {
+			require.Fail(t, "no persistent resource needs a runtime")
+			return nil, errors.New("unexpected runtime")
+		},
+		processExecutor,
+		cleanupWorkloadOptions{discoverRuntime: func() (containers.ContainerOrchestrator, error) {
+			return orchestrator, nil
+		}},
+		logr.Discard(),
+	)
+
+	require.NoError(t, cleanupErr)
+	require.Equal(t, cleanupStoppedCounts{Containers: 1, Networks: 1}, report.Stopped)
+	require.Empty(t, report.Failures)
+	_, inspectContainerErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+	require.ErrorIs(t, inspectContainerErr, containers.ErrNotFound)
+	unrelated, inspectOtherErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{otherID}})
+	require.NoError(t, inspectOtherErr)
+	require.NotContains(t, unrelated[0].Networks, "session-network")
+	_, inspectNetworkErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
+	require.ErrorIs(t, inspectNetworkErr, containers.ErrNotFound)
+}
+
+// Verifies that cleanupWorkloadResources removes an unattached workload container without requiring a workload network.
+func TestCleanupWorkloadResourcesRemovesUnrecordedContainerWithoutWorkloadNetworks(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+
+	containerID, createErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name: "unattached-container", Image: "test-image",
+		Labels: []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+	})
+	require.NoError(t, createErr)
+	otherID, createOtherErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name: "different-workload", Image: "test-image",
+		Labels: []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-b"}},
+	})
+	require.NoError(t, createOtherErr)
+
+	report, cleanupErr := cleanupWorkloadResources(
+		ctx, "workload-a", stateStore, leaseOwner,
+		func(string) (containers.ContainerOrchestrator, error) {
+			require.Fail(t, "no persistent resource needs a runtime")
+			return nil, errors.New("unexpected runtime")
+		},
+		processExecutor,
+		cleanupWorkloadOptions{discoverRuntime: func() (containers.ContainerOrchestrator, error) {
+			return orchestrator, nil
+		}},
+		logr.Discard(),
+	)
+
+	require.NoError(t, cleanupErr)
+	require.Equal(t, cleanupStoppedCounts{Containers: 1}, report.Stopped)
+	require.Empty(t, report.Failures)
+	_, inspectContainerErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+	require.ErrorIs(t, inspectContainerErr, containers.ErrNotFound)
+	_, inspectOtherErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{otherID}})
+	require.NoError(t, inspectOtherErr)
+}
+
+// Verifies that cleanupWorkloadResources can find a detached container on a subsequent run after container discovery fails.
+func TestCleanupWorkloadResourcesRecoversDetachedContainerAfterDiscoveryFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	wrappedOrchestrator := &failingWorkloadContainerScanOrchestrator{ContainerOrchestrator: orchestrator}
+
+	networkID, networkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: "session-network", Labels: map[string]string{controllers.WorkloadIDLabel: "workload-a"},
+	})
+	require.NoError(t, networkErr)
+	containerID, containerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name: "session-container", Image: "test-image",
+		Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
+	})
+	require.NoError(t, containerErr)
+
+	runCleanup := func() (cleanupReport, error) {
+		return cleanupWorkloadResources(
+			ctx, "workload-a", stateStore, leaseOwner,
+			func(string) (containers.ContainerOrchestrator, error) {
+				require.Fail(t, "no persistent resource needs a runtime")
+				return nil, errors.New("unexpected runtime")
+			},
+			processExecutor,
+			cleanupWorkloadOptions{discoverRuntime: func() (containers.ContainerOrchestrator, error) {
+				return wrappedOrchestrator, nil
+			}},
+			logr.Discard(),
+		)
+	}
+
+	firstReport, firstErr := runCleanup()
+	require.Error(t, firstErr)
+	require.Equal(t, cleanupStoppedCounts{}, firstReport.Stopped)
+	require.Len(t, firstReport.Failures, 2)
+	require.ErrorContains(t, errors.New(firstReport.Failures[0].Error), "simulated container scan failure")
+	inspectedContainer, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+	require.NoError(t, inspectErr)
+	require.NotContains(t, inspectedContainer[0].Networks, "session-network")
+	_, inspectNetworkErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
+	require.ErrorIs(t, inspectNetworkErr, containers.ErrNotFound)
+
+	retryReport, retryErr := runCleanup()
+	require.NoError(t, retryErr)
+	require.Equal(t, cleanupStoppedCounts{Containers: 1}, retryReport.Stopped)
+	require.Empty(t, retryReport.Failures)
+	_, inspectContainerErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+	require.ErrorIs(t, inspectContainerErr, containers.ErrNotFound)
+}
+
+// Verifies that cleanupWorkloadResources finds recorded and unrecorded resources using a comma-containing workload ID.
+func TestCleanupWorkloadResourcesFindsResourcesWithCommaInWorkloadID(t *testing.T) {
+	t.Parallel()
+
+	const workloadID = "workload-a,segment"
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+
+	networkIDs := make([]string, 0, 2)
+	containerIDs := make([]string, 0, 2)
+	for _, name := range []string{"recorded-network", "session-network"} {
+		networkID, networkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+			Name: name, Labels: map[string]string{controllers.WorkloadIDLabel: workloadID},
+		})
+		require.NoError(t, networkErr)
+		containerID, containerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+			Name:     name + "-container",
+			Image:    "test-image",
+			Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: workloadID}},
+			Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
+		})
+		require.NoError(t, containerErr)
+		networkIDs = append(networkIDs, networkID)
+		containerIDs = append(containerIDs, containerID)
+	}
+	require.NoError(t, stateStore.UpsertPersistentNetwork(ctx, statestore.PersistentNetworkRecord{
+		ResourceKey: "containernetworks/recorded-network",
+		NetworkID:   networkIDs[0],
+		NetworkName: "recorded-network",
+		RuntimeName: cleanupTestRuntimeName,
+		WorkloadID:  workloadID,
+	}))
+
+	report, cleanupErr := cleanupWorkloadResources(
+		ctx, workloadID, stateStore, leaseOwner,
+		func(string) (containers.ContainerOrchestrator, error) { return orchestrator, nil },
+		processExecutor,
+		cleanupWorkloadOptions{discoverRuntime: func() (containers.ContainerOrchestrator, error) {
+			return orchestrator, nil
+		}},
+		logr.Discard(),
+	)
+
+	require.NoError(t, cleanupErr, "cleanup report: %+v", report)
+	require.Equal(t, cleanupStoppedCounts{Containers: 2, Networks: 2}, report.Stopped)
+	require.Empty(t, report.Failures)
+	for _, containerID := range containerIDs {
+		_, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+		require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+	}
+	for _, networkID := range networkIDs {
+		_, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
+		require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+	}
+}
+
+// Verifies that cleanupWorkloadResources reports selected-runtime discovery errors as network cleanup failures.
+func TestCleanupWorkloadResourcesReportsNetworkDiscoveryFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+	discoveryErr := errors.New("runtime not running")
+
+	report, cleanupErr := cleanupWorkloadResources(
+		ctx, "workload-a", stateStore, leaseOwner,
+		func(string) (containers.ContainerOrchestrator, error) {
+			require.Fail(t, "no persistent resource needs a runtime")
+			return nil, errors.New("unexpected runtime")
+		},
+		processExecutor,
+		cleanupWorkloadOptions{discoverRuntime: func() (containers.ContainerOrchestrator, error) {
+			return nil, discoveryErr
+		}},
+		logr.Discard(),
+	)
+
+	require.ErrorIs(t, cleanupErr, discoveryErr)
+	require.Equal(t, cleanupStoppedCounts{}, report.Stopped)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, cleanupResourceName(cleanupResourceNetworkGVR), report.Failures[0].Kind)
+	require.ErrorContains(t, errors.New(report.Failures[0].Error), discoveryErr.Error())
 }
 
 func TestRemovePersistentNetworkRetriesTransientRemovalFailure(t *testing.T) {
@@ -178,6 +897,37 @@ func TestRemovePersistentNetworkRetriesTransientRemovalFailure(t *testing.T) {
 	require.Equal(t, 3, wrappedOrchestrator.removeCalls)
 	_, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
 	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+}
+
+// Verifies that removeContainerWithRetryTimeout cancels a blocked runtime removal when its timeout expires.
+func TestRemoveContainerWithRetryTimeoutCancelsBlockingRuntimeOperation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	wrappedOrchestrator := &blockingContainerRemovalOrchestrator{
+		ContainerOrchestrator: orchestrator,
+		removeStarted:         make(chan struct{}),
+	}
+	containerID, createErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:  "blocked-removal",
+		Image: "test-image",
+	})
+	require.NoError(t, createErr)
+
+	removeErr := removeContainerWithRetryTimeout(ctx, wrappedOrchestrator, containerID, 100*time.Millisecond)
+
+	require.ErrorIs(t, removeErr, context.DeadlineExceeded)
+	require.Eventually(t, func() bool {
+		select {
+		case <-wrappedOrchestrator.removeStarted:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestCleanupWorkloadResourcesOnlyRemovesVolumesWhenEnabled(t *testing.T) {
@@ -683,6 +1433,7 @@ func TestCleanupResourceGroupsUnblocksDependentsWhenOnlyTheirPrerequisitesFinish
 	require.Len(t, result.results, 3)
 }
 
+// Verifies that runCleanupResourceGroups reports completed work and resource failures even when dependency resolution fails.
 func TestRunCleanupResourceGroupsReportsCompletedWorkBeforeDependencyError(t *testing.T) {
 	t.Parallel()
 
@@ -729,7 +1480,7 @@ func TestRunCleanupResourceGroupsReportsCompletedWorkBeforeDependencyError(t *te
 
 	require.Error(t, cleanupErr)
 	require.ErrorContains(t, cleanupErr, "could not resolve cleanup resource dependencies")
-	require.ErrorContains(t, cleanupErr, "failed to clean up 1 persistent resource")
+	require.ErrorContains(t, cleanupErr, "failed to clean up 1 resource")
 	require.Equal(t, cleanupStoppedCounts{Containers: 1}, report.Stopped)
 	require.Len(t, report.Failures, 1)
 	require.Equal(t, cleanupResourceName(cleanupResourceExecutableGVR), report.Failures[0].Kind)
@@ -965,6 +1716,7 @@ func TestCleanupPersistentProcessRecordPreservesLogFiles(t *testing.T) {
 	require.FileExists(t, stderrPath)
 }
 
+// Verifies that cleanupWorkloadResources reports runtime failures while still removing executable records.
 func TestCleanupWorkloadResourcesRuntimeFailureDoesNotPreventExecutableCleanup(t *testing.T) {
 	t.Parallel()
 
@@ -1017,15 +1769,18 @@ func TestCleanupWorkloadResourcesRuntimeFailureDoesNotPreventExecutableCleanup(t
 	require.Error(t, cleanupErr)
 	require.Equal(t, 1, runtimeRequests)
 	require.Equal(t, cleanupStoppedCounts{Executables: 1}, report.Stopped)
-	require.Len(t, report.Failures, 2)
+	require.Len(t, report.Failures, 3)
 	require.Equal(t, cleanupResourceName(cleanupResourceContainerGVR), report.Failures[0].Kind)
 	require.Equal(t, "containers/api", report.Failures[0].ResourceKey)
 	require.Equal(t, "api-container", report.Failures[0].ResourceID)
 	require.ErrorContains(t, errors.New(report.Failures[0].Error), runtimeErr.Error())
-	require.Equal(t, cleanupResourceName(cleanupResourceNetworkGVR), report.Failures[1].Kind)
-	require.Equal(t, "containernetworks/api", report.Failures[1].ResourceKey)
-	require.Equal(t, "api-network", report.Failures[1].ResourceID)
+	require.Equal(t, cleanupResourceName(cleanupResourceContainerGVR), report.Failures[1].Kind)
+	require.Equal(t, "containers/"+cleanupTestRuntimeName, report.Failures[1].ResourceKey)
 	require.ErrorContains(t, errors.New(report.Failures[1].Error), runtimeErr.Error())
+	require.Equal(t, cleanupResourceName(cleanupResourceNetworkGVR), report.Failures[2].Kind)
+	require.Equal(t, "containernetworks/api", report.Failures[2].ResourceKey)
+	require.Equal(t, "api-network", report.Failures[2].ResourceID)
+	require.ErrorContains(t, errors.New(report.Failures[2].Error), runtimeErr.Error())
 	processRecords, listProcessErr := stateStore.ListPersistentProcessesByWorkloadID(ctx, "workload-a")
 	require.NoError(t, listProcessErr)
 	require.Empty(t, processRecords)
@@ -1361,6 +2116,21 @@ func (o *parallelCleanupContainerOrchestrator) RemoveContainers(ctx context.Cont
 	return o.ContainerOrchestrator.RemoveContainers(ctx, options)
 }
 
+type blockingContainerRemovalOrchestrator struct {
+	containers.ContainerOrchestrator
+
+	removeStarted chan struct{}
+	startOnce     sync.Once
+}
+
+func (o *blockingContainerRemovalOrchestrator) RemoveContainers(ctx context.Context, _ containers.RemoveContainersOptions) ([]string, error) {
+	o.startOnce.Do(func() {
+		close(o.removeStarted)
+	})
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 type orderedCleanupContainerOrchestrator struct {
 	containers.ContainerOrchestrator
 
@@ -1425,6 +2195,24 @@ type failingCleanupContainerOrchestrator struct {
 
 func (o *failingCleanupContainerOrchestrator) RemoveContainers(context.Context, containers.RemoveContainersOptions) ([]string, error) {
 	return nil, o.removeContainersErr
+}
+
+type failingWorkloadContainerScanOrchestrator struct {
+	containers.ContainerOrchestrator
+	failOnce sync.Once
+}
+
+func (o *failingWorkloadContainerScanOrchestrator) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
+	if len(options.Filters.LabelFilters) > 0 && len(options.Filters.NetworkFilters) == 0 {
+		var scanErr error
+		o.failOnce.Do(func() {
+			scanErr = errors.New("simulated container scan failure")
+		})
+		if scanErr != nil {
+			return nil, scanErr
+		}
+	}
+	return o.ContainerOrchestrator.ListContainers(ctx, options)
 }
 
 type transientNetworkRemovalOrchestrator struct {

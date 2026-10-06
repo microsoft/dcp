@@ -35,7 +35,7 @@ type EnvVar struct {
 // +k8s:openapi-gen=true
 // +kubebuilder:object:generate=true
 type Label struct {
-	// Key is the label key.
+	// Key is the label key and must not contain commas.
 	Key string `json:"key"`
 
 	// Value is the label value.
