@@ -202,12 +202,56 @@ func (e *OSExecutor) waitForTrackedProcessExitOrGone(
 	}
 }
 
+func (e *OSExecutor) stopProcessGroup(ctx context.Context, group *ProcessGroup, opts processStoppingOpts) (singleProcessStopResult, error) {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return singleProcessStopResult{}, contextErr
+	}
+	if identityErr := group.validateLeader(); identityErr != nil {
+		return singleProcessStopResult{}, identityErr
+	}
+	waitable := makeProcessWaitable(e.lifetimeCtx, group.leader, waitPollPolicy{
+		initialInterval: stopWaitPollInterval,
+		initialDuration: processStopTimeout,
+		steadyInterval:  defaultWaitPollInterval,
+	})
+	ws, shouldStopProcess := e.tryStartWaiting(group.leader, waitable, waitReasonStopping)
+	waitEndedCh := ws.waitEndedCh
+	if !shouldStopProcess && (opts&optIsResponsibleForStopping) == 0 {
+		select {
+		case <-ws.waitEndedCh:
+			// A completed wait for the leader does not mean its group has exited.
+		default:
+			return singleProcessStopResult{waitEndedCh: waitEndedCh}, group.wait(ctx, stopWaitPollInterval)
+		}
+	}
+	defer e.finishStopAttempt(ws)
+	if (opts & optWaitForStdio) == 0 {
+		waitEndedCh = makeClosedChan()
+	}
+
+	signal := syscall.SIGKILL
+	if (opts & optTrySignal) != 0 {
+		signal = syscall.SIGTERM
+	} else {
+		e.markForceKillUsed(ws)
+	}
+	result := singleProcessStopResult{waitEndedCh: waitEndedCh, forceKillUsed: signal == syscall.SIGKILL}
+	e.log.V(1).Info("Sending signal to process group", "PGID", group.leader.Pid, "Signal", signal.String())
+	if signalErr := group.signal(ctx, signal); signalErr != nil {
+		return result, signalErr
+	}
+	return result, group.wait(ctx, stopWaitPollInterval)
+}
+
 func (e *OSExecutor) completeDispose() {
 	// No additional cleanup needed for Unix-like systems.
 }
 
-func (e *OSExecutor) prepareProcessStart(_ *exec.Cmd, _ ProcessCreationFlag) {
-	// No additional preparation needed for Unix-like systems.
+func (e *OSExecutor) prepareProcessStart(cmd *exec.Cmd, _ ProcessCreationFlag) {
+	// Preserve explicit group/session setup, including the session required by a pseudo-terminal.
+	if cmd.SysProcAttr == nil || (!cmd.SysProcAttr.Setsid && !cmd.SysProcAttr.Setpgid) {
+		DecoupleFromParent(cmd)
+	}
 }
 
 func windowsConsoleAvailabilityForCmd(_ *exec.Cmd) WindowsConsoleAvailability {
