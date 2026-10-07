@@ -55,7 +55,7 @@ func (g *ProcessGroup) validateLeader() error {
 	}
 	leader, leaderErr := readProcessInfo(g.leader.Pid)
 	if leaderErr != nil {
-		if errors.Is(leaderErr, ErrorProcessNotFound) {
+		if IsProcessGoneErr(leaderErr) {
 			// A group can survive its original leader, but a reused leader PID must not be targeted.
 			return nil
 		}

@@ -160,7 +160,7 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			if !received {
 				return errors.New("child process monitoring ended without a result")
 			}
-			if childWaitErr != nil && !errors.Is(childWaitErr, context.Canceled) {
+			if childWaitErr != nil && cmd.Context().Err() == nil {
 				log.Error(childWaitErr, "Error waiting for child process cleanup target")
 				return childWaitErr
 			}

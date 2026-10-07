@@ -36,7 +36,7 @@ func TestStartProcessIsolatesUnixProcessGroup(t *testing.T) {
 		t.Run(fmt.Sprintf("new-session=%t", newSession), func(t *testing.T) {
 			t.Parallel()
 			testCtx, cancelTest := testutil.GetTestContext(t, 0)
-			defer cancelTest()
+			t.Cleanup(cancelTest)
 			executor := process.NewOSExecutor(log)
 			t.Cleanup(executor.Dispose)
 
@@ -73,7 +73,7 @@ func TestStartProcessIsolatesUnixProcessGroup(t *testing.T) {
 func TestStopProcessKillsLateGroupMember(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
-	defer cancelTest()
+	t.Cleanup(cancelTest)
 	executor := process.NewOSExecutor(log)
 	t.Cleanup(executor.Dispose)
 	handle, group, output, _ := startProcessGroupShell(t, testCtx, executor,
@@ -96,7 +96,7 @@ func TestStopProcessKillsLateGroupMember(t *testing.T) {
 func TestStopProcessKillsIgnoringGroupMemberAfterLeaderExit(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
-	defer cancelTest()
+	t.Cleanup(cancelTest)
 	executor := process.NewOSExecutor(log)
 	t.Cleanup(executor.Dispose)
 	handle, group, output, _ := startProcessGroupShell(t, testCtx, executor,
@@ -118,7 +118,7 @@ func TestStopProcessKillsIgnoringGroupMemberAfterLeaderExit(t *testing.T) {
 func TestStopProcessInSharedUnixGroupUsesTree(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
-	defer cancelTest()
+	t.Cleanup(cancelTest)
 	executor := process.NewOSExecutor(log)
 	t.Cleanup(executor.Dispose)
 	delayDir, delayDirErr := getDelayToolDir()
@@ -146,7 +146,7 @@ func TestStopProcessInSharedUnixGroupUsesTree(t *testing.T) {
 func TestStopProcessCleansDescendantsOutsideGroup(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
-	defer cancelTest()
+	t.Cleanup(cancelTest)
 	executor := process.NewOSExecutor(log)
 	t.Cleanup(executor.Dispose)
 	delayDir, delayDirErr := getDelayToolDir()
@@ -179,7 +179,7 @@ func TestStopProcessCleansDescendantsOutsideGroup(t *testing.T) {
 func TestStopRootOnlySkipsUnixGroupCleanup(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
-	defer cancelTest()
+	t.Cleanup(cancelTest)
 	executor := process.NewOSExecutor(log)
 	t.Cleanup(executor.Dispose)
 	handle, group, output, _ := startProcessGroupShell(t, testCtx, executor,
@@ -199,7 +199,7 @@ func TestStopRootOnlySkipsUnixGroupCleanup(t *testing.T) {
 func TestProcessGroupOutlivesLeader(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
-	defer cancelTest()
+	t.Cleanup(cancelTest)
 	executor := process.NewOSExecutor(log)
 	t.Cleanup(executor.Dispose)
 	handle, group, output, input := startProcessGroupShell(t, testCtx, executor,
@@ -225,7 +225,7 @@ func TestProcessGroupOutlivesLeader(t *testing.T) {
 func TestStopProcessGroupRespectsCallerCancellation(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
-	defer cancelTest()
+	t.Cleanup(cancelTest)
 	executor := process.NewOSExecutor(log)
 	t.Cleanup(executor.Dispose)
 	handle, group, output, _ := startProcessGroupShell(t, testCtx, executor,
@@ -257,8 +257,8 @@ func TestStopProcessGroupRespectsCallerCancellation(t *testing.T) {
 	require.NoError(t, executor.CheckProcessRunning(childHandle))
 	childProcess, childProcessErr := process.FindProcess(childHandle)
 	require.NoError(t, childProcessErr)
+	defer func() { require.NoError(t, childProcess.Release()) }()
 	require.NoError(t, childProcess.Kill())
-	require.NoError(t, childProcess.Release())
 	require.NoError(t, group.Wait(testCtx))
 }
 
@@ -266,7 +266,7 @@ func TestStopProcessGroupRespectsCallerCancellation(t *testing.T) {
 func TestProcessGroupValidatesIdentity(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
-	defer cancelTest()
+	t.Cleanup(cancelTest)
 	executor := process.NewOSExecutor(log)
 	t.Cleanup(executor.Dispose)
 	handle, group, output, _ := startProcessGroupShell(t, testCtx, executor, "echo ready; read command")

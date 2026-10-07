@@ -672,7 +672,7 @@ func (e *OSExecutor) stopProcessTreeInternal(
 
 	tree, treeErr := resolveProcessTree(graceCtx, handle)
 	if treeErr != nil && !errors.Is(treeErr, ErrIncompleteProcessTree) {
-		if options.group != nil && errors.Is(treeErr, ErrorProcessNotFound) {
+		if options.group != nil && IsProcessGoneErr(treeErr) && !errors.Is(treeErr, ErrProcessIdentityMismatch) {
 			// Captured group members remain addressable after the leader's ancestry is gone.
 			tree = []ProcessHandle{handle}
 			treeErr = nil

@@ -10,6 +10,7 @@ package dcpproc_test
 import (
 	"fmt"
 	"os/exec"
+	"syscall"
 	"testing"
 	"time"
 
@@ -21,15 +22,15 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that monitor-process survives group leader exit, cleans up on owner exit, and finishes when the group empties.
+// Verifies that monitor-process survives leader exit, cleans up on owner exit or interruption, and finishes when the group empties.
 func TestMonitorProcessTracksGroupAfterLeaderExit(t *testing.T) {
 	t.Parallel()
 
-	for _, ownerExits := range []bool{false, true} {
-		t.Run(fmt.Sprintf("owner-exits=%t", ownerExits), func(t *testing.T) {
+	for _, shutdown := range []string{"group-empty", "owner-exit", "monitor-interrupt"} {
+		t.Run(shutdown, func(t *testing.T) {
 			t.Parallel()
 			testCtx, cancelTest := testutil.GetTestContext(t, 0)
-			defer cancelTest()
+			t.Cleanup(cancelTest)
 			executor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
 			t.Cleanup(executor.Dispose)
 			delayDir, delayDirErr := int_testutil.GetTestToolDir("delay")
@@ -97,10 +98,13 @@ func TestMonitorProcessTracksGroupAfterLeaderExit(t *testing.T) {
 
 			require.NoError(t, executor.StopProcess(testCtx, childHandle, process.StopRootOnly()))
 			require.NoError(t, executor.CheckProcessRunning(member))
-			if ownerExits {
+			switch shutdown {
+			case "owner-exit":
 				require.NoError(t, executor.StopProcess(testCtx, ownerHandle))
-			} else {
+			case "group-empty":
 				require.NoError(t, executor.StopProcess(testCtx, member, process.StopRootOnly()))
+			case "monitor-interrupt":
+				require.NoError(t, monitorCmd.Process.Signal(syscall.SIGTERM))
 			}
 			select {
 			case <-testCtx.Done():
@@ -110,7 +114,7 @@ func TestMonitorProcessTracksGroupAfterLeaderExit(t *testing.T) {
 				require.NoError(t, monitorErr)
 			}
 			require.NoError(t, group.Wait(testCtx))
-			if !ownerExits {
+			if shutdown != "owner-exit" {
 				require.NoError(t, executor.CheckProcessRunning(ownerHandle))
 			}
 		})
