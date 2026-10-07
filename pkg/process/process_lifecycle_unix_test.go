@@ -624,6 +624,8 @@ func startProcessTreeForTestWithInput(
 		_ = pidReader.Close()
 	}()
 	rootCmd := exec.Command(os.Args[0], "-test.run=^TestUnixProcessLifecycleFixture$")
+	// Keep root-first tree tests independent of isolated-group signaling.
+	rootCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: syscall.Getpgrp()}
 	rootCmd.Env = append(os.Environ(), unixProcessLifecycleFixtureMode+"="+mode)
 	if rootInput != nil {
 		rootCmd.Env = append(rootCmd.Env, unixProcessLifecycleRootExitGate+"=1")
