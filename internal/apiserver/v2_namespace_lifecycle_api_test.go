@@ -15,11 +15,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	tiltresource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	clientgorest "k8s.io/client-go/rest"
 
+	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -95,6 +97,35 @@ func TestV2NamespaceLifecycleAPIDryRunOptions(t *testing.T) {
 	collectionErr := serverInfo.RestClient.Delete().AbsPath(namespacesPath).
 		SetHeader("Content-Type", "application/json").Body([]byte(`{}`)).Do(ctx).Error()
 	require.True(t, apierrors.IsMethodNotSupported(collectionErr), "%v", collectionErr)
+}
+
+// Verifies that the API server rejects collection deletion for every persistent DCP resource.
+func TestAPIDisablesCollectionDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
+	defer cancel()
+	serverInfo, startupErr := createApiServerForHttpHandlerTests(t.Name(), ctx)
+	require.NoError(t, startupErr)
+	defer serverInfo.Dispose()
+
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "collection-delete-disabled"}}
+	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
+
+	resources := make([]tiltresource.Object, 0, len(apiv1.PersistentTypes)+len(apiv2.PersistentTypes))
+	resources = append(resources, apiv1.PersistentTypes...)
+	resources = append(resources, apiv2.PersistentTypes...)
+	for _, resource := range resources {
+		gvr := resource.GetGroupVersionResource()
+		resourcePath := "/apis/" + gvr.GroupVersion().String()
+		if resource.NamespaceScoped() {
+			resourcePath += "/namespaces/" + namespace.Name
+		}
+		resourcePath += "/" + gvr.Resource
+
+		collectionErr := serverInfo.RestClient.Delete().AbsPath(resourcePath).
+			SetHeader("Content-Type", "application/json").Body([]byte(`{}`)).Do(ctx).Error()
+		require.True(t, apierrors.IsMethodNotSupported(collectionErr), "%s: %v", gvr, collectionErr)
+	}
 }
 
 func TestV2NamespaceLifecycleAPIStorageInterfaces(t *testing.T) {

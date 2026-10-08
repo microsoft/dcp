@@ -372,6 +372,9 @@ func addDcpHttpHandlers(
 ) error {
 	originalChainBuilder := config.GenericConfig.BuildHandlerChainFunc
 	namespaceLifecycleGate := newV2NamespaceLifecycleGate()
+	if storageErr := disableV1CollectionDeletion(config); storageErr != nil {
+		return storageErr
+	}
 	if storageErr := decorateV2NamespaceStorageProviders(config, namespaceLifecycleGate); storageErr != nil {
 		return storageErr
 	}
