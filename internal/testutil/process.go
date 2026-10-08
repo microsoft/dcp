@@ -31,7 +31,7 @@ func EnsureProcessTree(t *testing.T, rootP process.ProcessHandle, expectedSize i
 		100*time.Millisecond,
 		true, // Don't wait before polling for the first time
 		func(_ context.Context) (bool, error) {
-			processTree, err := process.GetProcessTree(rootP)
+			processTree, err := process.GetProcessTree(processesStartedCtx, rootP)
 			if err != nil {
 				return false, err
 			}

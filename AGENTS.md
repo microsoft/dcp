@@ -70,6 +70,9 @@ Place new code in the correct location according to the project's structure:
 - Run `make generate-grpc` after making changes to protobuf definitions (files with `.proto` extension).
 
 ## Test authoring
+- Integration tests must not use `fake.NewClientBuilder` or fake API clients. Use the standard integration test environment to exercise supported behavior through the real API server and running controllers.
+- Keep fault injection at the relevant executor, orchestrator, or API-operation boundary. Do not replace the API server with a fake store, bypass API validation, or build a separate manually driven reconciliation harness.
+- Use the shared `delay` tool for process lifecycle subprocesses. Do not re-execute the test binary with `-test.run` to implement subprocess fixtures.
 - Every test function should have a 1-3 sentence documentation comment describing its purpose. Use the following template for the test comments: "Verifies that [name of a type/method/function] does A, B, and C". The name of the test function should reflect its purpose too. Both the test function name, and the documentation comment, should be updated as necessary if the test function implementation is changed substantially.
 - Unless a tight, specific timeout is ESSENTIAL for testing a specific function, avoid using hard-coded timeouts (e.g. obtained via `time.After()`). Instead, use test context (created via `testutil.GetTestContext()`) and test context `Done()` channel for timeouts in tests.
 

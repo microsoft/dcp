@@ -8,6 +8,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strconv"
 	"sync"
@@ -154,6 +155,7 @@ type invalidIdentityCleanupFailureExecutor struct {
 	stopCalls          int
 	replacementExists  bool
 	replacementStopped bool
+	startErr           error
 }
 
 func (executor *invalidIdentityCleanupFailureExecutor) StartProcess(
@@ -166,6 +168,9 @@ func (executor *invalidIdentityCleanupFailureExecutor) StartProcess(
 	executor.lock.Lock()
 	defer executor.lock.Unlock()
 	executor.startCalls++
+	if executor.startErr != nil {
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, executor.startErr
+	}
 	return process.NewHandle(1234, time.Time{}), nil, nil
 }
 
@@ -174,6 +179,7 @@ func (executor *invalidIdentityCleanupFailureExecutor) FindProcessHandle(pid pro
 }
 
 func (executor *invalidIdentityCleanupFailureExecutor) StopProcess(
+	_ context.Context,
 	_ process.ProcessHandle,
 	_ ...process.ProcessStopOption,
 ) error {
@@ -238,7 +244,7 @@ func (executor *replaceableProcessExecutor) CheckProcessRunning(handle process.P
 	return nil
 }
 
-func (executor *replaceableProcessExecutor) StopProcess(handle process.ProcessHandle, _ ...process.ProcessStopOption) error {
+func (executor *replaceableProcessExecutor) StopProcess(_ context.Context, handle process.ProcessHandle, _ ...process.ProcessStopOption) error {
 	executor.lock.Lock()
 	defer executor.lock.Unlock()
 
@@ -357,7 +363,7 @@ func TestV2PhysicalProcessControllerReportsMissingExistingProcess(t *testing.T) 
 
 	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-missing")
 	handle := seedAdoptablePhysicalProcess(t, ctx, "v2-pproc-missing-command")
-	require.NoError(t, testProcessExecutor.StopProcess(handle), "could not retire the seeded process")
+	require.NoError(t, testProcessExecutor.StopProcess(ctx, handle), "could not retire the seeded process")
 
 	pid := int64(handle.Pid)
 	physicalProcess := &apiv2.PhysicalProcess{
@@ -617,6 +623,8 @@ func TestV2PhysicalProcessControllerStopsExistingProcessOnRequest(t *testing.T) 
 	}
 }
 
+// Verifies that deleting a PhysicalProcess stops its runtime process unless retention is requested,
+// including retention scoped to a monitor process.
 func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
@@ -666,6 +674,9 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 			}
 			pid, convertErr := process.Int64_ToPidT(*runningProcess.Status.PID)
 			require.NoError(t, convertErr)
+			runningExecution, runningExecutionFound := testProcessExecutor.FindByPid(pid)
+			require.True(t, runningExecutionFound)
+			require.True(t, runningExecution.Running())
 			monitorExecutions := testProcessExecutor.FindAll(
 				[]string{dcpPath, "monitor-process", "--child", strconv.FormatInt(int64(pid), 10)},
 				"",
@@ -1078,7 +1089,9 @@ func TestV2PhysicalProcessControllerStopsProcessWhenDeletedDuringLaunch(t *testi
 	require.True(t, executions[0].Finished())
 }
 
-func TestV2PhysicalProcessControllerCleansInvalidLaunchIdentityBeforeRetry(t *testing.T) {
+// Verifies that the V2 physical-process controller fails an invalid launch identity,
+// does not retry startup, and never targets the unidentified process by PID alone.
+func TestV2PhysicalProcessControllerRejectsInvalidLaunchIdentityWithoutRetry(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
@@ -1111,17 +1124,29 @@ func TestV2PhysicalProcessControllerCleansInvalidLaunchIdentityBeforeRetry(t *te
 		}
 		current := apiv2.PhysicalProcess{}
 		getErr := baseClient.Get(ctx, request.NamespacedName, &current)
-		return current.Status.Phase == apiv2.PhysicalProcessPhaseRunning, getErr
+		return current.Status.Phase == apiv2.PhysicalProcessPhaseFailed, getErr
 	})
 	require.NoError(t, waitErr)
 
 	executions := testProcessExecutor.FindAll([]string{physicalProcess.Spec.Process.ExecutablePath}, "", nil)
-	require.Len(t, executions, 2)
-	require.True(t, executions[0].Finished())
-	require.True(t, executions[1].Running())
+	require.Len(t, executions, 1)
+	require.True(t, executions[0].Running(), "an unidentified process must not be targeted by PID alone")
 }
 
 func TestV2PhysicalProcessControllerDoesNotRetryUnpinnedCleanup(t *testing.T) {
+	verifyUncertainPhysicalProcessStart(t, &invalidIdentityCleanupFailureExecutor{})
+}
+
+// Verifies that the V2 physical-process controller treats uncertain startup rollback as terminal,
+// avoids repeated starts or PID-only cleanup, and allows deletion without stopping a replacement process.
+func TestV2PhysicalProcessControllerDoesNotRetryUncertainRollback(t *testing.T) {
+	verifyUncertainPhysicalProcessStart(t, &invalidIdentityCleanupFailureExecutor{
+		startErr: fmt.Errorf("%w: simulated rollback failure", process.ErrProcessStartUncertain),
+	})
+}
+
+func verifyUncertainPhysicalProcessStart(t *testing.T, processExecutor *invalidIdentityCleanupFailureExecutor) {
+	t.Helper()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
@@ -1143,7 +1168,6 @@ func TestV2PhysicalProcessControllerDoesNotRetryUnpinnedCleanup(t *testing.T) {
 		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalProcess{}).
 		WithObjects(namespace, physicalProcess).
 		Build()
-	processExecutor := &invalidIdentityCleanupFailureExecutor{}
 	reconciler := controllers.NewPhysicalProcessReconciler(ctx, baseClient, baseClient, testutil.NewLogForTesting(t.Name()), processExecutor)
 	request := ctrl.Request{NamespacedName: physicalProcess.NamespacedName()}
 
@@ -1164,7 +1188,7 @@ func TestV2PhysicalProcessControllerDoesNotRetryUnpinnedCleanup(t *testing.T) {
 	}
 	startCalls, stopCalls, replacementStopped := processExecutor.calls()
 	require.Equal(t, 1, startCalls)
-	require.Equal(t, 1, stopCalls)
+	require.Zero(t, stopCalls)
 	require.False(t, replacementStopped)
 
 	current := apiv2.PhysicalProcess{}
@@ -1182,8 +1206,51 @@ func TestV2PhysicalProcessControllerDoesNotRetryUnpinnedCleanup(t *testing.T) {
 
 	startCalls, stopCalls, replacementStopped = processExecutor.calls()
 	require.Equal(t, 1, startCalls)
-	require.Equal(t, 1, stopCalls)
+	require.Zero(t, stopCalls)
 	require.False(t, replacementStopped)
+}
+
+// Verifies that PhysicalProcess retries an incomplete stop and preserves the cleanup warning
+// after the retry successfully stops the root.
+func TestV2PhysicalProcessControllerPreservesCleanupWarningAfterRetry(t *testing.T) {
+	t.Parallel()
+	dcppaths.EnableTestPathProbing()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-cleanup-retry")
+	physicalProcess := createRunningPhysicalProcess(t, ctx, namespace.Name, "cleanup-process", "v2-pproc-cleanup-retry-command")
+	pid, convertErr := process.Int64_ToPidT(*physicalProcess.Status.PID)
+	require.NoError(t, convertErr)
+	handle, handleErr := testProcessExecutor.FindProcessHandle(pid)
+	require.NoError(t, handleErr)
+	criteria := internal_testutil.ProcessSearchCriteria{Command: []string{physicalProcess.Spec.Process.ExecutablePath}}
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: criteria,
+		StopError: func(*internal_testutil.ProcessExecution) error {
+			return process.ErrIncompleteProcessTree
+		},
+	})
+	t.Cleanup(func() { testProcessExecutor.RemoveAutoExecution(criteria) })
+	require.NoError(t, retryOnConflict[apiv2.PhysicalProcess](ctx, physicalProcess.NamespacedName(), func(ctx context.Context, current *apiv2.PhysicalProcess) error {
+		current.Spec.Stop = true
+		return client.Update(ctx, current)
+	}))
+	failed := waitObjectAssumesState(t, ctx, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return condition != nil && condition.Reason == string(apiv2.PhysicalProcessReasonStopFailed), nil
+	})
+	require.Equal(t, apiv2.PhysicalProcessPhaseUnknown, failed.Status.Phase)
+	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
+
+	testProcessExecutor.RemoveAutoExecution(criteria)
+	completed := waitObjectAssumesState(t, ctx, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return condition != nil && condition.Reason == string(apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed), nil
+	})
+	require.Equal(t, apiv2.PhysicalProcessPhaseExited, completed.Status.Phase)
+	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(handle)))
+	require.NoError(t, client.Delete(ctx, completed))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, completed)
 }
 
 // seedAdoptablePhysicalProcess registers a process execution with the shared test process executor so
@@ -1193,7 +1260,7 @@ func seedAdoptablePhysicalProcess(t *testing.T, ctx context.Context, executableP
 	handle, _, startErr := testProcessExecutor.StartProcess(ctx, exec.Command(executablePath), nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startErr, "could not seed process execution")
 	t.Cleanup(func() {
-		_ = testProcessExecutor.StopProcess(handle)
+		_ = testProcessExecutor.StopProcess(context.WithoutCancel(ctx), handle)
 	})
 	return handle
 }

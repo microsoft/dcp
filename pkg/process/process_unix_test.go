@@ -9,11 +9,7 @@ package process_test
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"os"
 	"os/exec"
-	"syscall"
 	"testing"
 	"time"
 
@@ -21,46 +17,43 @@ import (
 	wait "k8s.io/apimachinery/pkg/util/wait"
 
 	int_testutil "github.com/microsoft/dcp/internal/testutil"
-	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 // Tests that processes that ignore SIGTERM can still be terminated.
 // Run on Unix-like systems only, because Windows does not have signals.
 func TestStopProcessIgnoreSigterm(t *testing.T) {
 	t.Parallel()
+	testCtx, testCancel := testutil.GetTestContext(t, 35*time.Second)
+	defer testCancel()
 
-	delayToolDir, err := getDelayToolDir()
-	require.NoError(t, err)
-
-	const delay = 20 * time.Second
-	cmd := exec.Command("./delay", fmt.Sprintf("--delay=%s", delay.String()), "--ignore-sigterm")
-	cmd.Dir = delayToolDir
-
-	err = cmd.Start()
-	require.NoError(t, err, "could not start the 'delay' test program")
+	delayPath, delayPathErr := int_testutil.GetTestToolPath("delay")
+	require.NoError(t, delayPathErr)
+	cmd := exec.Command(delayPath, "--delay=60s", "--ignore-sigterm")
+	startErr := cmd.Start()
+	require.NoError(t, startErr, "could not start delay")
 	defer func() {
+		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	}()
-
-	rootP := process.ProcessHandleFromCmd(cmd)
+	rootP, handleErr := process.ProcessHandleFromCmd(cmd)
+	require.NoError(t, handleErr)
 	require.False(t, rootP.IdentityTime.IsZero(), "process start time should not be zero")
 
-	// Only one process should be running, so the "tree" size is 1.
-	int_testutil.EnsureProcessTree(t, rootP, 1, 5*time.Second)
-
+	// Allow delay to install its signal handlers before requesting a stop.
+	time.Sleep(2 * time.Second)
 	executor := process.NewOSExecutor(log)
+	defer executor.Dispose()
 	start := time.Now()
-	err = executor.StopProcess(process.NewHandle(rootP.Pid, time.Time{}))
-	require.NoError(t, err)
+	stopErr := executor.StopProcess(testCtx, rootP)
+	require.NoError(t, stopErr)
 	elapsed := time.Since(start)
-	elapsedStr := osutil.FormatDuration(elapsed)
-	if elapsed > delay {
-		// It is expected that the process will not exit immediately, because it will ignore SIGTERM.
-		// It should not take more than `signalAndWaitTimeout` though.
-		t.Fatal("Process was not terminated timely, elapsed time was ", elapsedStr)
-	}
+	require.GreaterOrEqual(t, elapsed, 14*time.Second,
+		"delay must remain alive through the graceful SIGTERM phase")
+	require.Less(t, elapsed, 20*time.Second,
+		"force-kill confirmation must finish before the complete 21-second stop budget")
 	ensureAllStopped(t, []process.ProcessHandle{rootP}, 5*time.Second)
 }
 
@@ -82,19 +75,10 @@ func ensureAllStopped(t *testing.T, processes []process.ProcessHandle, timeout t
 }
 
 func isStopped(pp process.ProcessHandle) bool {
-	// On Unix-like systems FindProcess() always succeeds, so it is not a reliable way of checking
-	// if the process is still running.
-	osPid, err := process.PidT_ToInt(pp.Pid)
-	if err != nil {
-		panic(err)
-	}
-
-	proc, findProcessErr := os.FindProcess(osPid)
+	proc, findProcessErr := pp.OsProcess()
 	if findProcessErr != nil {
-		return true
+		return process.IsProcessGoneErr(findProcessErr)
 	}
-	// The SIGWINCH (window resize) is ignored by default, so it is a good one to use
-	// as a "Are you there?" query
-	signalSendErr := proc.Signal(syscall.SIGWINCH)
-	return errors.Is(signalSendErr, os.ErrProcessDone)
+	_ = proc.Release()
+	return false
 }

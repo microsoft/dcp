@@ -71,6 +71,10 @@ type processRunState struct {
 	stdOutFile *os.File
 	stdErrFile *os.File
 
+	outputCleanupLock   sync.Mutex
+	outputFilesClosed   bool
+	outputPathsToDelete []string
+
 	// For terminal-using processes, the process and its connection manager for handling terminal connections.
 	ptp     *termpty.PseudoTerminalProcess
 	connMgr *termpty.ConnManager
@@ -191,6 +195,14 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		cmd.Stderr = executableOutputWriter(exe, stdErrFile)
 		result.StdErrFile = stdErrFile.Name()
 	}
+	if !executableIsPersistent(exe) && (cmd.Stdout != nil || cmd.Stderr != nil) {
+		// Timestamped nonpersistent output is owned by the root process and receives a bounded
+		// post-exit drain. An escaped descendant can retain inherited stdout/stderr handles after
+		// the root exits, so waiting for normal pipe closure could block forever. WaitDelay bounds
+		// root completion at two seconds, after which os/exec closes the read side: descendant
+		// output after that cutoff may be truncated, and descendant writes may observe a broken pipe.
+		cmd.WaitDelay = defaultProcessCleanupTimeout
+	}
 
 	var processExitHandler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
 		ec := new(int32)
@@ -237,7 +249,10 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		runChangeHandler: runChangeHandler,
 	})
 
-	displayStartTime := process.StartTimeForProcess(handle.Pid)
+	displayStartTime, displayErr := handle.WallClockStartTime()
+	if displayErr != nil {
+		startLog.Error(displayErr, "Could not read process display start time", "PID", handle.Pid)
+	}
 	result.RunID = pidToRunID(handle.Pid)
 	pointers.SetValue(&result.Pid, int64(handle.Pid))
 	result.ExeState = apiv1.ExecutableStateRunning
@@ -317,9 +332,17 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	attachErr := connMgr.AttachProcess(ptp)
 	if attachErr != nil {
 		startLog.Error(attachErr, "Failed to attach the process to the terminal connection manager; stopping process")
-		// Best-effort: stop the just-started process and close its PTY before reporting failure.
-		if stopErr := ptp.Stop(); stopErr != nil {
+		startupErr := attachErr
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(processCtx)
+		defer cleanupCancel()
+		if stopErr := ptp.Stop(cleanupCtx); stopErr != nil {
 			startLog.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
+			if !process.IsProcessGoneErr(stopErr) {
+				startupErr = errors.Join(
+					startupErr,
+					fmt.Errorf("%w: could not confirm terminal process cleanup: %w", process.ErrProcessStartUncertain, stopErr),
+				)
+			}
 		}
 		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			startLog.Error(closeErr, "Failed to close PTY after terminal connection manager creation failure")
@@ -327,7 +350,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 		connMgr.Shutdown()
 		result.CompletionTimestamp = metav1.NowMicro()
 		result.ExeState = apiv1.ExecutableStateFailedToStart
-		result.StartupError = attachErr
+		result.StartupError = startupErr
 		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 		return result
 	}
@@ -348,7 +371,10 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	// resources, and notify the run-change handler.
 	go r.watchTerminalRunExit(processCtx, runID, ptp, runChangeHandler, startLog)
 
-	displayStartTime := process.StartTimeForProcess(handle.Pid)
+	displayStartTime, displayErr := handle.WallClockStartTime()
+	if displayErr != nil {
+		startLog.Error(displayErr, "Could not read terminal process display start time", "PID", handle.Pid)
+	}
 	result.RunID = runID
 	pointers.SetValue(&result.Pid, int64(handle.Pid))
 	result.ExeState = apiv1.ExecutableStateRunning
@@ -508,11 +534,16 @@ func (r *ProcessExecutableRunner) StopPersistentProcess(ctx context.Context, exe
 		return fmt.Errorf("cannot stop persistent process run %s without process identity time", runID)
 	}
 
-	return r.stopProcessRunState(ctx, runID, &processRunState{
+	runState := &processRunState{
 		handle:  record.ProcessHandle(),
 		cmdInfo: exe.Spec.ExecutablePath,
 		adopted: true,
-	}, log)
+	}
+	stopErr := r.stopProcessRun(ctx, runID, runState, log)
+	if stopErr != nil {
+		return stopErr
+	}
+	return r.completeStoppedRun(ctx, runID, runState, log)
 }
 
 func (r *ProcessExecutableRunner) watchAdoptedProcess(
@@ -531,6 +562,12 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 
 		case <-timer.C:
 			if findErr := r.pe.CheckProcessRunning(handle); findErr != nil {
+				if !process.IsProcessGoneErr(findErr) {
+					log.Error(findErr, "Could not check adopted process state", "RunID", runID, "PID", handle.Pid)
+					timer.Reset(2 * time.Second)
+					continue
+				}
+
 				runState, found := r.runningProcesses.Load(runID)
 				if !found {
 					return
@@ -547,6 +584,7 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 				if runState.runChangeHandler != nil {
 					runState.runChangeHandler.OnRunCompleted(runID, apiv1.UnknownExitCode, waitErr)
 				}
+				log.V(1).Info("Adopted process exited", "RunID", runID, "PID", runState.handle.Pid, "Error", findErr)
 				if waitErr != nil {
 					log.Error(waitErr, "Error watching adopted process", "RunID", runID, "PID", runState.handle.Pid)
 				}
@@ -562,58 +600,67 @@ func (r *ProcessExecutableRunner) CheckProcessRunning(handle process.ProcessHand
 }
 
 func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
-	runState, found := r.runningProcesses.LoadAndDelete(runID)
+	runState, found := r.runningProcesses.Load(runID)
 	if !found {
 		log.V(1).Info("Stop of a process run requested, but the run was already stopped", "RunID", runID)
 		return nil
 	}
 
-	return r.stopProcessRunState(ctx, runID, runState, log)
+	stopErr := r.stopProcessRun(ctx, runID, runState, log)
+	if stopErr != nil {
+		return stopErr
+	}
+	if !r.runningProcesses.CompareAndDelete(runID, runState) {
+		return nil
+	}
+	return r.completeStoppedRun(ctx, runID, runState, log)
 }
 
-func (r *ProcessExecutableRunner) stopProcessRunState(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
+func (r *ProcessExecutableRunner) stopProcessRun(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
+	stopLog := log.WithValues("RunID", runID, "Command", runState.cmdInfo)
+	stopLog.V(1).Info("Stopping run...")
+
+	var stopErr error
+	if r.shouldUseDcpProcStop(runState) {
+		// Regular Windows Executables are launched in a separate classic console, and adopted
+		// processes have no Windows-console availability state in this executor. Use dcpproc to
+		// isolate the process-global AttachConsole operation from this long-lived process; after
+		// the helper confirms CTRL_C_EVENT delivery, core stopping can use the 15-second graceful deadline.
+		// ConPTY-backed runs cannot receive classic-console control events and stay in-process so
+		// core stopping uses its six-second unconfirmed-delivery fallback. Keeping this choice here
+		// also avoids introducing a pkg/process -> dcpproc import cycle.
+		stopErr = dcpproc.StopProcessTree(ctx, r.pe, runState.handle, stopLog)
+	} else {
+		stopCtx, stopCtxCancel := process.WithStopTimeout(ctx)
+		defer stopCtxCancel()
+		stopErr = r.pe.StopProcess(stopCtx, runState.handle)
+	}
+	if process.IsProcessGoneErr(stopErr) {
+		return nil
+	}
+	if stopErr != nil {
+		stopLog.Error(stopErr, "Failed to stop run; keeping run state until the process exits")
+		return stopErr
+	}
+	return nil
+}
+
+func (r *ProcessExecutableRunner) shouldUseDcpProcStop(runState *processRunState) bool {
+	return osutil.IsWindows() && runState.ptp == nil && !r.disableConsoleStop
+}
+
+func (r *ProcessExecutableRunner) completeStoppedRun(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
 	if runState.cancelWatch != nil {
 		runState.cancelWatch()
 	}
 
-	stopLog := log.WithValues("RunID", runID, "Command", runState.cmdInfo)
-	stopLog.V(1).Info("Stopping run...")
-
-	// We want to make progress eventually, so we don't want to wait indefinitely for the process to stop.
-	const ProcessStopTimeout = 15 * time.Second
-
-	timer := time.NewTimer(ProcessStopTimeout)
-	defer timer.Stop()
-	errCh := make(chan error, 1)
-
-	go func() {
-		if osutil.IsWindows() && !r.disableConsoleStop {
-			// See StartRun() for why we need to use separate console for the app process on Windows.
-			// This means we cannot send Ctrl-C to that process directly and need to use dcpproc StopProcessTree facility instead.
-			stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
-			defer stopCtxCancel()
-			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runState.handle, stopLog)
-		} else {
-			errCh <- r.pe.StopProcess(runState.handle)
-		}
-	}()
-
-	var stopErr error = nil
-	select {
-	case stopErr = <-errCh:
-		// (no falltrough in Go)
-	case <-timer.C:
-		stopErr = fmt.Errorf("timed out waiting for process associated with run %s to stop", runID)
-	}
-
-	stopErr = errors.Join(stopErr, closeRunFiles(ctx, runState))
-
-	if stopErr != nil {
-		stopLog.Error(stopErr, "Failed to stop run")
+	cleanupErr := closeRunFiles(ctx, runState)
+	if cleanupErr != nil {
+		log.Error(cleanupErr, "Failed to clean up stopped run", "RunID", runID, "Command", runState.cmdInfo)
 	} else if runState.adopted && runState.runChangeHandler != nil {
 		runState.runChangeHandler.OnRunCompleted(runID, apiv1.UnknownExitCode, nil)
 	}
-	return stopErr
+	return cleanupErr
 }
 
 func (r *ProcessExecutableRunner) ReleaseRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
@@ -633,6 +680,42 @@ func (r *ProcessExecutableRunner) ReleaseRun(ctx context.Context, runID controll
 	return closeErr
 }
 
+func (r *ProcessExecutableRunner) DeleteRunOutput(
+	ctx context.Context,
+	runID controllers.RunID,
+	stdOutPath string,
+	stdErrPath string,
+) error {
+	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+		return nil
+	}
+
+	paths := compactOutputPaths(stdOutPath, stdErrPath)
+	if len(paths) == 0 {
+		return nil
+	}
+
+	runState, found := r.runningProcesses.Load(runID)
+	if !found {
+		return removeExecutableOutputPaths(ctx, paths)
+	}
+
+	var immediatePaths []string
+	runState.outputCleanupLock.Lock()
+	for _, path := range paths {
+		if runStateOwnsOutputPath(runState, path) && !runState.outputFilesClosed {
+			if !slices.Contains(runState.outputPathsToDelete, path) {
+				runState.outputPathsToDelete = append(runState.outputPathsToDelete, path)
+			}
+			continue
+		}
+		immediatePaths = append(immediatePaths, path)
+	}
+	runState.outputCleanupLock.Unlock()
+
+	return removeExecutableOutputPaths(ctx, immediatePaths)
+}
+
 // closeRunFiles closes files associated with a process run
 // (including the pseudo-terminal the process is using, if any).
 // The passed context is used to control the timeout of the cleanup operation.
@@ -645,6 +728,7 @@ func closeRunFiles(ctx context.Context, runState *processRunState) error {
 		defer ctxCancel()
 	}
 
+	runState.outputCleanupLock.Lock()
 	for _, file := range []*os.File{runState.stdOutFile, runState.stdErrFile} {
 		if file != nil {
 			fileErr := file.Close()
@@ -653,6 +737,10 @@ func closeRunFiles(ctx context.Context, runState *processRunState) error {
 			}
 		}
 	}
+	runState.outputFilesClosed = true
+	closeErr = errors.Join(closeErr, removeExecutableOutputPaths(ctx, runState.outputPathsToDelete))
+	runState.outputCleanupLock.Unlock()
+
 	if runState.ptp != nil && runState.ptp.PTY != nil {
 		ptyErr := runState.ptp.PTY.Close()
 		if ptyErr != nil && !errors.Is(ptyErr, os.ErrClosed) {
@@ -670,6 +758,36 @@ func closeRunFiles(ctx context.Context, runState *processRunState) error {
 	}
 
 	return closeErr
+}
+
+func compactOutputPaths(paths ...string) []string {
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path != "" && !slices.Contains(result, path) {
+			result = append(result, path)
+		}
+	}
+	return result
+}
+
+func runStateOwnsOutputPath(runState *processRunState, path string) bool {
+	return (runState.stdOutFile != nil && runState.stdOutFile.Name() == path) ||
+		(runState.stdErrFile != nil && runState.stdErrFile.Name() == path)
+}
+
+func removeExecutableOutputPaths(ctx context.Context, paths []string) error {
+	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+		return nil
+	}
+
+	var removeErr error
+	for _, path := range paths {
+		pathErr := logs.RemoveWithRetry(ctx, path)
+		if pathErr != nil {
+			removeErr = errors.Join(removeErr, fmt.Errorf("could not remove Executable output file %q: %w", path, pathErr))
+		}
+	}
+	return removeErr
 }
 
 func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, error) {
@@ -718,4 +836,5 @@ func pidToRunID(pid process.Pid_t) controllers.RunID {
 }
 
 var _ controllers.ExecutableRunner = (*ProcessExecutableRunner)(nil)
+var _ controllers.ExecutableOutputCleanupRunner = (*ProcessExecutableRunner)(nil)
 var _ controllers.PersistentExecutableRunner = (*ProcessExecutableRunner)(nil)

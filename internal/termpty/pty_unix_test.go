@@ -30,6 +30,8 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+const vEOFCharacter byte = 0x04
+
 // TestStartProcessWithTerminal_StdoutFromChild verifies that bytes written to
 // the child's stdout flow to the parent via the PTY master.
 func TestStartProcessWithTerminal_StdoutFromChild(t *testing.T) {
@@ -37,9 +39,12 @@ func TestStartProcessWithTerminal_StdoutFromChild(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
 
-	sp := startTermchildWithPTY(t, ctx, "--print", "hello-from-child")
+	// Darwin can discard unread PTY output on exit, so keep the slave alive until the read completes.
+	sp := startTermchildWithPTY(t, ctx, "--print", "hello-from-child", "--echo")
 
 	_ = requireReadUntil(t, ctx, sp, "hello-from-child")
+	_, eofErr := sp.PTY.Write([]byte{vEOFCharacter}) // send EOF to child
+	require.NoError(t, eofErr)
 
 	ei := awaitExit(t, ctx, sp.ExitHandler)
 	require.NoError(t, ei.Err)
@@ -53,9 +58,11 @@ func TestStartProcessWithTerminal_StderrFromChild(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
 
-	sp := startTermchildWithPTY(t, ctx, "--print-stderr", "boom-from-stderr")
+	sp := startTermchildWithPTY(t, ctx, "--print-stderr", "boom-from-stderr", "--echo")
 
 	_ = requireReadUntil(t, ctx, sp, "boom-from-stderr")
+	_, eofErr := sp.PTY.Write([]byte{vEOFCharacter}) // send EOF to child
+	require.NoError(t, eofErr)
 
 	ei := awaitExit(t, ctx, sp.ExitHandler)
 	require.NoError(t, ei.Err)
@@ -206,10 +213,12 @@ func TestStartProcessWithTerminal_NormalExitWithPTYStillOpen(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
 
-	sp := startTermchildWithPTY(t, ctx, "--print", "bye")
+	sp := startTermchildWithPTY(t, ctx, "--print", "bye", "--echo")
 
 	out, err := readUntil(ctx, sp.PTY, "bye")
 	require.NoError(t, err, "expected 'bye' before exit; got: %q", out)
+	_, eofErr := sp.PTY.Write([]byte{vEOFCharacter}) // send EOF to child
+	require.NoError(t, eofErr)
 
 	ei := awaitExit(t, ctx, sp.ExitHandler)
 	require.NoError(t, ei.Err)

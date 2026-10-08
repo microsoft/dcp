@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	stdmaps "maps"
@@ -500,7 +501,7 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 // platforms (notably ConPTY on Windows does not propagate the close as a
 // signal that docker attach observes). Stopping the process triggers its
 // ExitHandler, which in turn drives the ConnManager shutdown.
-func (rcd *runningContainerData) closeTerminalResources(pe process.Executor, log logr.Logger) {
+func (rcd *runningContainerData) closeTerminalResources(ctx context.Context, pe process.Executor, log logr.Logger) {
 	ptp := rcd.ptp
 	connMgr := rcd.connMgr
 	rcd.ptp = nil
@@ -532,9 +533,15 @@ func (rcd *runningContainerData) closeTerminalResources(pe process.Executor, log
 			}
 		}
 		if !alreadyExited {
-			var notFound *process.ErrProcessNotFound
-			if stopErr := pe.StopProcess(ptp.Handle); stopErr != nil && !errors.As(stopErr, &notFound) {
-				log.V(1).Info("Failed to stop container terminal attach process", "PID", ptp.Handle.Pid, "Error", stopErr.Error())
+			stopCtx, stopCancel := process.WithDetachedStopTimeout(ctx)
+			stopErr := pe.StopProcess(stopCtx, ptp.Handle)
+			stopCancel()
+			if stopErr != nil {
+				if process.IsProcessGoneErr(stopErr) {
+					log.V(1).Info("Container terminal attach process already exited", "PID", ptp.Handle.Pid, "Error", stopErr)
+				} else {
+					log.Error(stopErr, "Failed to stop container terminal attach process", "PID", ptp.Handle.Pid)
+				}
 			}
 		}
 	}

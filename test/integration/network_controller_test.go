@@ -9,11 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
+	"os/exec"
 	"testing"
 	"time"
 
-	ps "github.com/shirou/gopsutil/v4/process"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -22,11 +21,10 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
+	int_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/process"
-	"github.com/microsoft/dcp/pkg/randdata"
-	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -549,26 +547,25 @@ func ensureNetworkCreatedEx(t *testing.T, ctx context.Context, apiClient ctrl_cl
 }
 
 func nonExistentProcess(t *testing.T) process.ProcessHandle {
-	pps, ppsErr := ps.Processes()
-	require.NoError(t, ppsErr, "could not list processes")
-	pids := slices.Map[process.Pid_t](pps, func(pp *ps.Process) process.Pid_t {
-		return process.Uint32_ToPidT(uint32(pp.Pid))
-	})
-
-	for {
-		const PID_OFFSET = 1000
-		i, randErr := randdata.MakeRandomInt64(math.MaxUint32 - PID_OFFSET)
-		require.NoError(t, randErr)
-		i += PID_OFFSET
-
-		candidate, candidateErr := process.Int64_ToPidT(i)
-		require.NoError(t, candidateErr)
-
-		if !slices.Contains(pids, candidate) {
-			return process.ProcessHandle{
-				Pid:          candidate,
-				IdentityTime: time.Now().Add(-time.Minute),
-			}
+	t.Helper()
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	delayPath, pathErr := int_testutil.GetTestToolPath("delay")
+	require.NoError(t, pathErr)
+	cmd := exec.CommandContext(testCtx, delayPath, "--delay=3m")
+	require.NoError(t, cmd.Start())
+	reaped := false
+	defer func() {
+		if !reaped {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 		}
-	}
+	}()
+	handle, handleErr := process.ProcessHandleFromCmd(cmd)
+	require.NoError(t, handleErr)
+	require.NoError(t, cmd.Process.Kill())
+	waitErr := cmd.Wait()
+	reaped = true
+	require.True(t, waitErr == nil || process.IsEarlyProcessExitError(waitErr), "could not reap fixture process: %v", waitErr)
+	return handle
 }

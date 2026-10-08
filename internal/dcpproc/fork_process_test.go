@@ -86,7 +86,8 @@ func TestForkProcessExitsWhenMonitoredParentExits(t *testing.T) {
 		_ = parentCmd.Wait()
 	})
 
-	parentHandle := process.ProcessHandleFromCmd(parentCmd)
+	parentHandle, parentHandleErr := process.ProcessHandleFromCmd(parentCmd)
+	require.NoError(t, parentHandleErr)
 	require.False(t, parentHandle.IdentityTime.IsZero(), "parent process start time should not be zero")
 
 	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
@@ -106,14 +107,17 @@ func TestForkProcessExitsWhenMonitoredParentExits(t *testing.T) {
 	require.NoError(t, dcpProcCmd.Start(), "dcp fork-process should start without error")
 
 	stdoutText, readErr := bufio.NewReader(stdoutPipe).ReadString('\n')
-	require.NoError(t, readErr, "dcp fork-process should print a child PID; stderr: %s", stderr.String())
+	require.NoError(t, readErr, "dcp fork-process should print a child PID")
 	childPid := parseForkedPid(t, stdoutText)
-	childIdentityTime := process.ProcessIdentityTime(childPid)
-	require.False(t, childIdentityTime.IsZero(), "forked process %d should be running", childPid)
+	childHandle, childHandleErr := process.FindProcessHandle(childPid)
+	require.NoError(t, childHandleErr)
+	require.False(t, childHandle.IdentityTime.IsZero(), "forked process %d should be running", childPid)
 
 	cleanupExecutor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
 	t.Cleanup(func() {
-		_ = cleanupExecutor.StopProcess(process.NewHandle(childPid, childIdentityTime))
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(testCtx)
+		defer cleanupCancel()
+		_ = cleanupExecutor.StopProcess(cleanupCtx, childHandle)
 		cleanupExecutor.Dispose()
 	})
 
@@ -121,7 +125,7 @@ func TestForkProcessExitsWhenMonitoredParentExits(t *testing.T) {
 	_ = parentCmd.Wait()
 
 	require.NoError(t, dcpProcCmd.Wait(), "dcp fork-process should exit cleanly when the monitored parent exits; stderr: %s", stderr.String())
-	require.NoError(t, cleanupExecutor.CheckProcessRunning(process.NewHandle(childPid, childIdentityTime)), "fork-process should not stop the detached child")
+	require.NoError(t, cleanupExecutor.CheckProcessRunning(childHandle), "fork-process should not stop the detached child")
 }
 
 func startForkedDelay(t *testing.T, testCtx context.Context) process.ProcessHandle {
@@ -143,30 +147,35 @@ func startForkedDelay(t *testing.T, testCtx context.Context) process.ProcessHand
 	require.NoError(t, runErr, "dcp fork-process should exit cleanly; stderr: %s", stderr.String())
 
 	pid := parseForkedPid(t, stdout.String())
-	var identityTime time.Time
+	var handle process.ProcessHandle
 	cleanupExecutor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
 	t.Cleanup(func() {
-		_ = cleanupExecutor.StopProcess(process.NewHandle(pid, identityTime))
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(testCtx)
+		defer cleanupCancel()
+		_ = cleanupExecutor.StopProcess(cleanupCtx, handle)
 		cleanupExecutor.Dispose()
 	})
 
-	identityTime = process.ProcessIdentityTime(pid)
-	require.False(t, identityTime.IsZero(), "forked process %d should still be running", pid)
+	var handleErr error
+	handle, handleErr = process.FindProcessHandle(pid)
+	require.NoError(t, handleErr)
+	require.False(t, handle.IdentityTime.IsZero(), "forked process %d should still be running", pid)
 
-	return process.NewHandle(pid, identityTime)
+	return handle
 }
 
 func forkProcessArgsForCurrentProcess(t *testing.T, childArgs ...string) []string {
 	t.Helper()
 
 	currentPid := process.Pid_t(os.Getpid())
-	currentIdentityTime := process.ProcessIdentityTime(currentPid)
-	require.False(t, currentIdentityTime.IsZero(), "current process start time should not be zero")
+	currentHandle, handleErr := process.FindProcessHandle(currentPid)
+	require.NoError(t, handleErr)
+	require.False(t, currentHandle.IdentityTime.IsZero(), "current process start time should not be zero")
 
 	args := []string{
 		"fork-process",
 		"--monitor", fmt.Sprint(os.Getpid()),
-		"--monitor-identity-time", currentIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+		"--monitor-identity-time", currentHandle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		"--",
 	}
 	args = append(args, childArgs...)

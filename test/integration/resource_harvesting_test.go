@@ -8,6 +8,7 @@ package integration_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -20,6 +21,8 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+// Verifies that resource harvesting preserves live-creator resources and removes abandoned networks,
+// even when a stale network creator identity shares the PID of a live creator.
 func TestUnusedNetworkHarvesting(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -77,6 +80,28 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 
 	procThis, procThisErr := process.This()
 	require.NoError(t, procThisErr)
+
+	// Cache the live identity during container harvesting before inspecting the stale network identity.
+	liveCreatorContainerID, liveCreatorContainerErr := co.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name: prefix + "live-creator-container",
+			Labels: []containers.Label{
+				{Key: controllers.PersistentLabel, Value: "false"},
+				{Key: controllers.CreatorProcessIdLabel, Value: fmt.Sprintf("%d", procThis.Pid)},
+				{Key: controllers.CreatorProcessStartTimeLabel, Value: procThis.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)},
+			},
+		},
+	})
+	require.NoError(t, liveCreatorContainerErr)
+	_, staleCreatorNetworkErr := co.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: prefix + "stale-creator-with-reused-pid",
+		Labels: map[string]string{
+			controllers.PersistentLabel:              "false",
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procThis.Pid),
+			controllers.CreatorProcessStartTimeLabel: procThis.IdentityTime.Add(-time.Second).Format(osutil.RFC3339MiliTimestampFormat),
+		},
+	})
+	require.NoError(t, staleCreatorNetworkErr)
 
 	// Network that is used by existing process (should be preserved)
 	const netUsedByExistingProcess = prefix + "used-by-existing-process"
@@ -284,6 +309,13 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	harvester := controllers.NewResourceHarvester()
 	require.True(t, harvester.TryProtectNetwork(ctx, protectedPersistentNetwork), "could not protect network")
 	harvester.Harvest(ctx, co, log)
+
+	liveContainers, inspectLiveContainerErr := co.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{liveCreatorContainerID},
+	})
+	require.NoError(t, inspectLiveContainerErr)
+	require.Len(t, liveContainers, 1)
+	require.Equal(t, containers.ContainerStatusRunning, liveContainers[0].Status)
 
 	remaining, listNetworksErr := co.ListNetworks(ctx, containers.ListNetworksOptions{})
 	require.NoError(t, listNetworksErr, "could not list networks")

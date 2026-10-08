@@ -29,28 +29,30 @@ const (
 )
 
 type physicalProcessData struct {
-	resourceUID    types.UID
-	state          physicalProcessState
-	progress       physicalResourceProgress
-	handle         process.ProcessHandle
-	exitCode       *int32
-	finishedAt     time.Time
-	failureReason  apiv2.ConditionReason
-	failureMessage string
-	retryAfter     time.Time
+	resourceUID        types.UID
+	state              physicalProcessState
+	progress           physicalResourceProgress
+	handle             process.ProcessHandle
+	exitCode           *int32
+	finishedAt         time.Time
+	failureReason      apiv2.ConditionReason
+	failureMessage     string
+	cleanupUnconfirmed bool
+	retryAfter         time.Time
 }
 
 func (data *physicalProcessData) Clone() *physicalProcessData {
 	return &physicalProcessData{
-		resourceUID:    data.resourceUID,
-		state:          data.state,
-		progress:       data.progress,
-		handle:         data.handle,
-		exitCode:       cloneInt32Pointer(data.exitCode),
-		finishedAt:     data.finishedAt,
-		failureReason:  data.failureReason,
-		failureMessage: data.failureMessage,
-		retryAfter:     data.retryAfter,
+		resourceUID:        data.resourceUID,
+		state:              data.state,
+		progress:           data.progress,
+		handle:             data.handle,
+		exitCode:           cloneInt32Pointer(data.exitCode),
+		finishedAt:         data.finishedAt,
+		failureReason:      data.failureReason,
+		failureMessage:     data.failureMessage,
+		cleanupUnconfirmed: data.cleanupUnconfirmed,
+		retryAfter:         data.retryAfter,
 	}
 }
 
@@ -67,6 +69,7 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 		!data.finishedAt.Equal(other.finishedAt) ||
 		data.failureReason != other.failureReason ||
 		data.failureMessage != other.failureMessage ||
+		data.cleanupUnconfirmed != other.cleanupUnconfirmed ||
 		!data.retryAfter.Equal(other.retryAfter)
 	if updated {
 		*data = *other.Clone()
