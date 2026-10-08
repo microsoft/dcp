@@ -94,26 +94,36 @@ func runMain(log logr.Logger) error {
 		return fmt.Errorf("the %s flag requires %s", holdPipeFlag, childSpecFlag)
 	}
 
+	shutdownCh := make(chan os.Signal, 1)
+	ctx, shutdownCancelFn := context.WithCancel(context.Background())
+	defer shutdownCancelFn()
+	// Install signal handling before descendants can be observed and stopped.
+	signal.Notify(shutdownCh, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+	defer signal.Stop(shutdownCh)
+	go func(signalCtx context.Context) {
+		for {
+			select {
+			case <-signalCtx.Done():
+				return
+			case sig, received := <-shutdownCh:
+				if !received {
+					shutdownCancelFn()
+					return
+				}
+				log.Info("Received signal", "signal", sig)
+				if flags.ignoreSigTerm && (sig == syscall.SIGTERM || sig == os.Interrupt) {
+					continue
+				}
+				shutdownCancelFn()
+				return
+			}
+		}
+	}(ctx)
+
 	err := runChildrenAsNeeded()
 	if err != nil {
 		return err
 	}
-
-	shutdownCh := make(chan os.Signal, 1)
-	ctx, shutdownCancelFn := context.WithCancel(context.Background())
-	signal.Notify(shutdownCh, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
-	go func() {
-		for {
-			sig := <-shutdownCh
-			log.Info("Received signal", "signal", sig)
-			if flags.ignoreSigTerm && (sig == syscall.SIGTERM || sig == os.Interrupt) {
-				continue
-			} else {
-				break
-			}
-		}
-		shutdownCancelFn()
-	}()
 
 	if flags.delay != 0 {
 		var cancelFn context.CancelFunc

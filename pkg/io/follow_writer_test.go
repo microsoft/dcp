@@ -131,6 +131,7 @@ func TestFollowWriterDoesNotCloseSourceByDefault(t *testing.T) {
 	require.NoError(t, writer.Err())
 }
 
+// Verifies that FollowWriter suppresses a destination error after cancellation of the caller's context.
 func TestFollowWriterIgnoresWriteErrorAfterCancel(t *testing.T) {
 	t.Parallel()
 
