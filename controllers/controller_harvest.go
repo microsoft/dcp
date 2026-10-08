@@ -158,7 +158,7 @@ func (rh *resourceHarvester) harvestAbandonedContainers(
 			return ids
 		}
 
-		if rh.creatorStillRunning(c.Labels) {
+		if rh.creatorStillRunning(c.Labels, log) {
 			// The creator process is still running, so skip this container.
 			return ids
 		}
@@ -216,7 +216,7 @@ func (rh *resourceHarvester) harvestAbandonedNetworks(
 			return ids
 		}
 
-		if rh.creatorStillRunning(n.Labels) {
+		if rh.creatorStillRunning(n.Labels, log) {
 			return ids
 		}
 
@@ -312,7 +312,7 @@ func (rh *resourceHarvester) harvestAbandonedVolumes(
 	}
 
 	volumesToRemove := usvc_slices.Accumulate[[]string](inspectedVolumes, func(names []string, volume containers.InspectedVolume) []string {
-		if !nonPersistentWithCreator(volume.Labels) || rh.creatorStillRunning(volume.Labels) {
+		if !nonPersistentWithCreator(volume.Labels) || rh.creatorStillRunning(volume.Labels, log) {
 			return names
 		}
 		return append(names, volume.Name)
@@ -329,15 +329,18 @@ func (rh *resourceHarvester) harvestAbandonedVolumes(
 	return removeErr
 }
 
-func (rh *resourceHarvester) isRunningDCPProcess(pid process.Pid_t, startTime time.Time) bool {
+func (rh *resourceHarvester) isRunningDCPProcess(pid process.Pid_t, startTime time.Time, log logr.Logger) bool {
 	if running, exists := rh.processes[pid]; exists {
 		return running
 	}
 
 	// If the process is not in the cache, we need to check if it is running.
-	_, findErr := process.NewHandle(pid, startTime).OsProcess()
+	creatorProcess, findErr := process.NewHandle(pid, startTime).OsProcess()
 	if findErr != nil {
 		return false // Process not found, so it's not running.
+	}
+	if releaseErr := creatorProcess.Release(); releaseErr != nil {
+		log.Info("Could not release creator process reference", "PID", pid, "Error", releaseErr)
 	}
 
 	// We found the process, so cache it as running.
@@ -347,11 +350,11 @@ func (rh *resourceHarvester) isRunningDCPProcess(pid process.Pid_t, startTime ti
 
 // Returns true if the set of given labels belongs to an object (network or container) that was created
 // by a DCP process that is still running.
-func (rh *resourceHarvester) creatorStillRunning(labels map[string]string) bool {
+func (rh *resourceHarvester) creatorStillRunning(labels map[string]string, log logr.Logger) bool {
 	creatorPID, _ := process.StringToPidT(labels[CreatorProcessIdLabel])
 	creatorStartTime, _ := time.Parse(osutil.RFC3339MiliTimestampFormat, labels[CreatorProcessStartTimeLabel])
 
-	return rh.isRunningDCPProcess(creatorPID, creatorStartTime)
+	return rh.isRunningDCPProcess(creatorPID, creatorStartTime, log)
 }
 
 // Checks for the presence of the creator process ID and start time labels.

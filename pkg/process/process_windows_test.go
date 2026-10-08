@@ -9,7 +9,12 @@ package process_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -90,19 +95,49 @@ func TestForkFromParentBreaksAwayFromCurrentJob(t *testing.T) {
 	_, resumeErr := windows.ResumeThread(processInfo.Thread)
 	require.NoError(t, resumeErr)
 
-	var tree []process.ProcessHandle
-	treeErr := wait.PollUntilContextCancel(testCtx, 25*time.Millisecond, true, func(ctx context.Context) (bool, error) {
-		var snapshotErr error
-		tree, snapshotErr = process.GetProcessTree(ctx, root)
-		return len(tree) >= 2, snapshotErr
+	var childIdentity process.ProcessHandle
+	var childProcess *os.Process
+	childFoundErr := wait.PollUntilContextCancel(testCtx, 25*time.Millisecond, true, func(ctx context.Context) (bool, error) {
+		tree, snapshotErr := process.GetProcessTree(ctx, root)
+		if snapshotErr != nil {
+			return false, snapshotErr
+		}
+		for _, candidateIdentity := range tree[1:] {
+			candidateProcess, candidateErr := candidateIdentity.OsProcess()
+			if process.IsProcessGoneErr(candidateErr) {
+				continue
+			}
+			if candidateErr != nil {
+				return false, candidateErr
+			}
+			imagePath := make([]uint16, 32768)
+			imagePathLength := uint32(len(imagePath))
+			var imageErr error
+			handleErr := candidateProcess.WithHandle(func(nativeHandle uintptr) {
+				imageErr = windows.QueryFullProcessImageName(windows.Handle(nativeHandle), 0, &imagePath[0], &imagePathLength)
+			})
+			if inspectionErr := errors.Join(handleErr, imageErr); inspectionErr != nil {
+				return false, fmt.Errorf("inspect descendant %d: %w", candidateIdentity.Pid, errors.Join(inspectionErr, candidateProcess.Release()))
+			}
+			imageName := filepath.Base(windows.UTF16ToString(imagePath[:imagePathLength]))
+			if strings.EqualFold(imageName, filepath.Base(delayPath)) {
+				childIdentity = candidateIdentity
+				childProcess = candidateProcess
+				return true, nil
+			}
+			if releaseErr := candidateProcess.Release(); releaseErr != nil {
+				return false, releaseErr
+			}
+		}
+		return false, nil
 	})
-	require.NoError(t, treeErr)
-	child, childErr := tree[1].OsProcess()
-	require.NoError(t, childErr)
+	require.NoError(t, childFoundErr, "forked delay child did not appear in the process tree")
 	defer func() {
-		killErr := child.Kill()
-		require.True(t, killErr == nil || process.IsProcessGoneErr(killErr), "could not clean up delay child: %v", killErr)
-		require.NoError(t, child.Release())
+		if !isStopped(childIdentity) {
+			killErr := childProcess.Kill()
+			require.True(t, killErr == nil || process.IsProcessGoneErr(killErr), "could not clean up delay child: %v", killErr)
+		}
+		require.NoError(t, childProcess.Release())
 	}()
 
 	require.NoError(t, windows.CloseHandle(jobObject))
@@ -113,7 +148,7 @@ func TestForkFromParentBreaksAwayFromCurrentJob(t *testing.T) {
 	})
 	require.NoError(t, rootExitErr)
 	require.True(t, isStopped(root))
-	require.False(t, isStopped(tree[1]), "forked delay child must outlive termination of the parent's job")
+	require.False(t, isStopped(childIdentity), "forked delay child must outlive termination of the parent's job")
 }
 
 func ensureAllStopped(t *testing.T, processes []process.ProcessHandle, timeout time.Duration) {
