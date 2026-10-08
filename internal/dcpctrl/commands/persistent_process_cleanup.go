@@ -63,7 +63,7 @@ func cleanupInvalidPersistentExecutableRecords(
 
 	var cleanupErr error
 	for _, record := range records {
-		if _, findErr := process.FindProcess(record.ProcessHandle()); findErr == nil {
+		if _, findErr := record.ProcessHandle().OsProcess(); findErr == nil {
 			continue
 		}
 
@@ -95,7 +95,7 @@ func cleanupInvalidPersistentExecutableRecord(
 			return fmt.Errorf("could not reload persistent Executable process record '%s': %w", record.ResourceKey, getErr)
 		}
 
-		_, findErr := process.FindProcess(currentRecord.ProcessHandle())
+		_, findErr := currentRecord.ProcessHandle().OsProcess()
 		if findErr == nil {
 			log.V(1).Info("Persistent Executable process record became valid before cleanup, leaving it intact",
 				"ResourceKey", currentRecord.ResourceKey,

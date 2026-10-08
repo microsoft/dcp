@@ -8,10 +8,7 @@
 package process_test
 
 import (
-	"bytes"
 	"context"
-	"io"
-	"os"
 	"os/exec"
 	"syscall"
 	"testing"
@@ -23,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	int_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -34,36 +32,26 @@ const (
 
 	// https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess
 	STILL_ACTIVE = 259
-
-	forkFromParentHelperEnvVar = "DCP_TEST_FORK_FROM_PARENT_IN_BREAKAWAY_JOB"
 )
 
+// Verifies that delay's forked child breaks away from the parent's Windows job
+// and remains running after closing that job terminates the parent.
 func TestForkFromParentBreaksAwayFromCurrentJob(t *testing.T) {
-	if os.Getenv(forkFromParentHelperEnvVar) == "1" {
-		waitForJobAssignment := make([]byte, 1)
-		_, readErr := io.ReadFull(os.Stdin, waitForJobAssignment)
-		require.NoError(t, readErr)
-
-		childCmd := exec.Command("unused")
-		process.ForkFromParent(childCmd)
-
-		require.NotNil(t, childCmd.SysProcAttr)
-		require.NotZero(t, childCmd.SysProcAttr.CreationFlags&windows.CREATE_BREAKAWAY_FROM_JOB)
-		return
-	}
-
+	t.Parallel()
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
 	defer testCancel()
 
 	jobObject, jobCreationErr := windows.CreateJobObject(nil, nil)
 	require.NoError(t, jobCreationErr)
 	defer func() {
-		_ = windows.CloseHandle(jobObject)
+		if jobObject != windows.InvalidHandle {
+			require.NoError(t, windows.CloseHandle(jobObject))
+		}
 	}()
 
 	jobInformation := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
-			LimitFlags: windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+			LimitFlags: windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK | windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 		},
 	}
 	_, setJobInformationErr := windows.SetInformationJobObject(
@@ -74,47 +62,58 @@ func TestForkFromParentBreaksAwayFromCurrentJob(t *testing.T) {
 	)
 	require.NoError(t, setJobInformationErr)
 
-	var helperOutput bytes.Buffer
-	helperCmd := exec.CommandContext(testCtx, os.Args[0], "-test.run=^TestForkFromParentBreaksAwayFromCurrentJob$")
-	helperCmd.Env = append(os.Environ(), forkFromParentHelperEnvVar+"=1")
-	helperCmd.Stdout = &helperOutput
-	helperCmd.Stderr = &helperOutput
-
-	helperStdin, stdinPipeErr := helperCmd.StdinPipe()
-	require.NoError(t, stdinPipeErr)
+	delayPath, delayPathErr := int_testutil.GetTestToolPath("delay")
+	require.NoError(t, delayPathErr)
+	cmd := exec.Command(delayPath, "--delay=60s", "--child-spec=1", "--fork-children")
+	commandLine, commandLineErr := windows.UTF16PtrFromString(windows.ComposeCommandLine(cmd.Args))
+	require.NoError(t, commandLineErr)
+	startupInfo := windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfo{}))}
+	var processInfo windows.ProcessInformation
+	// Assign the job before delay can spawn a child.
+	createErr := windows.CreateProcess(nil, commandLine, nil, nil, false,
+		windows.CREATE_SUSPENDED|windows.CREATE_NO_WINDOW, nil, nil, &startupInfo, &processInfo)
+	require.NoError(t, createErr)
 	defer func() {
-		_ = helperStdin.Close()
-	}()
-
-	helperStartErr := helperCmd.Start()
-	require.NoError(t, helperStartErr)
-
-	helperExited := false
-	defer func() {
-		if !helperExited {
-			_ = helperCmd.Process.Kill()
-			_ = helperCmd.Wait()
+		exitResult, exitErr := windows.WaitForSingleObject(processInfo.Process, 0)
+		require.NoError(t, exitErr)
+		if exitResult == uint32(windows.WAIT_TIMEOUT) {
+			require.NoError(t, windows.TerminateProcess(processInfo.Process, 1))
 		}
+		require.NoError(t, windows.CloseHandle(processInfo.Thread))
+		require.NoError(t, windows.CloseHandle(processInfo.Process))
 	}()
 
-	helperProcessHandle, openProcessErr := windows.OpenProcess(windows.PROCESS_ALL_ACCESS, false, uint32(helperCmd.Process.Pid))
-	require.NoError(t, openProcessErr)
-	defer func() {
-		_ = windows.CloseHandle(helperProcessHandle)
-	}()
-
-	assignJobErr := windows.AssignProcessToJobObject(jobObject, helperProcessHandle)
+	assignJobErr := windows.AssignProcessToJobObject(jobObject, processInfo.Process)
 	require.NoError(t, assignJobErr)
+	root, rootErr := process.ProcessHandleFromNativeHandle(processInfo.Process)
+	require.NoError(t, rootErr)
+	_, resumeErr := windows.ResumeThread(processInfo.Thread)
+	require.NoError(t, resumeErr)
 
-	_, signalHelperErr := helperStdin.Write([]byte{1})
-	require.NoError(t, signalHelperErr)
+	var tree []process.ProcessHandle
+	treeErr := wait.PollUntilContextCancel(testCtx, 25*time.Millisecond, true, func(ctx context.Context) (bool, error) {
+		var snapshotErr error
+		tree, snapshotErr = process.GetProcessTree(ctx, root)
+		return len(tree) >= 2, snapshotErr
+	})
+	require.NoError(t, treeErr)
+	child, childErr := tree[1].OsProcess()
+	require.NoError(t, childErr)
+	defer func() {
+		killErr := child.Kill()
+		require.True(t, killErr == nil || process.IsProcessGoneErr(killErr), "could not clean up delay child: %v", killErr)
+		require.NoError(t, child.Release())
+	}()
 
-	closeStdinErr := helperStdin.Close()
-	require.NoError(t, closeStdinErr)
-
-	helperWaitErr := helperCmd.Wait()
-	helperExited = true
-	require.NoErrorf(t, helperWaitErr, "helper process failed:\n%s", helperOutput.String())
+	require.NoError(t, windows.CloseHandle(jobObject))
+	jobObject = windows.InvalidHandle
+	rootExitErr := wait.PollUntilContextCancel(testCtx, 25*time.Millisecond, true, func(context.Context) (bool, error) {
+		waitResult, waitErr := windows.WaitForSingleObject(processInfo.Process, 0)
+		return waitResult == windows.WAIT_OBJECT_0, waitErr
+	})
+	require.NoError(t, rootExitErr)
+	require.True(t, isStopped(root))
+	require.False(t, isStopped(tree[1]), "forked delay child must outlive termination of the parent's job")
 }
 
 func ensureAllStopped(t *testing.T, processes []process.ProcessHandle, timeout time.Duration) {

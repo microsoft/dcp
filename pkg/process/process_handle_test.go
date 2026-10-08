@@ -6,10 +6,12 @@
 package process
 
 import (
+	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProcessHandle_Comparable(t *testing.T) {
@@ -32,4 +34,37 @@ func TestProcessHandle_Comparable(t *testing.T) {
 	}
 	assert.Equal(t, "first", m[h2])
 	assert.Equal(t, "second", m[h3])
+}
+
+// Verifies that ResolveProcessHandle captures a missing identity but never replaces a supplied stale identity.
+func TestResolveProcessHandleCapturesOnlyMissingIdentity(t *testing.T) {
+	t.Parallel()
+
+	pid := Pid_t(os.Getpid())
+	currentHandle, currentErr := FindProcessHandle(pid)
+	require.NoError(t, currentErr)
+
+	capturedHandle, captureErr := ResolveProcessHandle(pid, time.Time{})
+	require.NoError(t, captureErr)
+	assert.Equal(t, currentHandle, capturedHandle)
+
+	staleIdentity := currentHandle.IdentityTime.Add(-time.Hour)
+	preservedHandle, preserveErr := ResolveProcessHandle(pid, staleIdentity)
+	require.NoError(t, preserveErr)
+	assert.Equal(t, NewHandle(pid, staleIdentity), preservedHandle)
+}
+
+// Verifies that ProcessHandle.WallClockStartTime rejects invalid PIDs and missing identities.
+func TestProcessHandleWallClockStartTimeRejectsInvalidHandle(t *testing.T) {
+	t.Parallel()
+
+	invalidPID := NewHandle(UnknownPID, time.Now())
+	invalidTime, invalidErr := invalidPID.WallClockStartTime()
+	assert.ErrorIs(t, invalidErr, ErrInvalidProcessHandle)
+	assert.True(t, invalidTime.IsZero())
+
+	missingIdentity := NewHandle(100, time.Time{})
+	missingTime, missingErr := missingIdentity.WallClockStartTime()
+	assert.ErrorIs(t, missingErr, ErrInvalidProcessHandle)
+	assert.True(t, missingTime.IsZero())
 }

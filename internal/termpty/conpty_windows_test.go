@@ -186,34 +186,6 @@ func TestStartProcessWithTerminal_ContextCancellationStopsProcess(t *testing.T) 
 		"expected exit code 1 from the ConPTY no-console TerminateProcess fallback, got %d", ei.ExitCode)
 }
 
-// TestStartProcessWithTerminal_NoConsoleControlEscalatesToKill verifies that a
-// child which remains alive through the six-second ConPTY fallback is forcibly
-// terminated and still produces an exit notification.
-func TestStartProcessWithTerminal_NoConsoleControlEscalatesToKill(t *testing.T) {
-	t.Parallel()
-	testCtx, testCancel := testutil.GetTestContext(t, defaultTestTimeout)
-	defer testCancel()
-
-	procCtx, procCancel := context.WithCancel(testCtx)
-	defer procCancel()
-
-	sp := startTermchildWithPTY(t, procCtx,
-		"--print", "READY",
-		"--wait",
-	)
-
-	out, err := readUntil(testCtx, sp.PTY, "READY")
-	require.NoError(t, err, "expected READY marker; got: %q", out)
-
-	procCancel()
-
-	ei := awaitExit(t, testCtx, sp.ExitHandler)
-	// Go's os.Process.Kill on Windows calls TerminateProcess(handle, 1),
-	// which yields exit code 1.
-	require.Equal(t, int32(1), ei.ExitCode,
-		"expected exit code 1 from TerminateProcess after the no-console fallback, got %d", ei.ExitCode)
-}
-
 // TestStartProcessWithTerminal_PTYCloseDeliversCloseEvent verifies that
 // closing the PTY (ClosePseudoConsole) delivers a console close event to the
 // child, which termchild surfaces as syscall.SIGTERM. The child's

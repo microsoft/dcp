@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	cmds "github.com/microsoft/dcp/internal/commands"
-	"github.com/microsoft/dcp/internal/dcpproc/protocol"
+	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/flags"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -55,7 +55,7 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 			"SkipDescendants", stopSkipDescendants,
 		)
 
-		handle, handleErr := cmds.ResolveProcessHandle(stopPid, stopProcessStartTime)
+		handle, handleErr := process.ResolveProcessHandle(stopPid, stopProcessStartTime)
 		if handleErr != nil {
 			logProcessStopFailure(log, handleErr, "Process to stop already exited", "Could not resolve the process to stop")
 			return stopProcessTreeCommandError(handleErr)
@@ -91,9 +91,9 @@ func logProcessStopFailure(log logr.Logger, err error, goneMessage string, failu
 func stopProcessTreeCommandError(err error) error {
 	switch {
 	case errors.Is(err, process.ErrIncompleteProcessTree):
-		return cmds.NewExitCodeError(err, protocol.StopProcessTreeIncompleteExitCode)
+		return cmds.NewExitCodeError(err, dcpproc.StopProcessTreeIncompleteExitCode)
 	case process.IsProcessGoneErr(err):
-		return cmds.NewSilentExitCodeError(err, protocol.StopProcessTreeProcessGoneExitCode)
+		return cmds.NewSilentExitCodeError(err, dcpproc.StopProcessTreeProcessGoneExitCode)
 	default:
 		return err
 	}

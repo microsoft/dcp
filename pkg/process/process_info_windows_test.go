@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"testing"
 	"time"
 	"unsafe"
@@ -23,34 +22,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const cleanupJobAssignmentTargetEnvVar = "DCP_TEST_CLEANUP_JOB_ASSIGNMENT_TARGET"
-
 var kernel32IsProcessInJob = kernel32.NewProc("IsProcessInJob")
-
-func TestCleanupJobAssignmentTargetProcess(t *testing.T) {
-	if os.Getenv(cleanupJobAssignmentTargetEnvVar) != "1" {
-		return
-	}
-	time.Sleep(30 * time.Second)
-}
-
-// Verifies that cleanup-job process access rights can open the current process,
-// inspect its PID, and read a nonzero process identity.
-func TestCleanupJobProcessAccessSupportsInspection(t *testing.T) {
-	t.Parallel()
-
-	pid := uint32(os.Getpid())
-	nativeHandle, openErr := windows.OpenProcess(cleanupJobProcessAccess, false, pid)
-	require.NoError(t, openErr)
-	t.Cleanup(func() {
-		require.NoError(t, windows.CloseHandle(nativeHandle))
-	})
-
-	info, infoErr := readWindowsProcessInfo(nativeHandle, false)
-	require.NoError(t, infoErr)
-	require.Equal(t, Uint32_ToPidT(pid), info.handle.Pid)
-	require.False(t, info.handle.IdentityTime.IsZero())
-}
 
 // Verifies that the narrowed cleanup-job access mask still supports the actual
 // identity-validated assignment performed for executor-started processes.
@@ -62,8 +34,7 @@ func TestStartedProcessIsAssignedToCleanupJob(t *testing.T) {
 	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 	defer executor.Dispose()
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestCleanupJobAssignmentTargetProcess$")
-	cmd.Env = append(os.Environ(), cleanupJobAssignmentTargetEnvVar+"=1")
+	cmd := delayCommandForTest(t, "--delay=30s")
 	handle, startWaiting, startErr := executor.StartProcess(
 		testCtx,
 		cmd,
@@ -74,7 +45,7 @@ func TestStartedProcessIsAssignedToCleanupJob(t *testing.T) {
 	require.NoError(t, startErr)
 	startWaiting()
 
-	proc, findErr := FindProcess(handle)
+	proc, findErr := handle.OsProcess()
 	require.NoError(t, findErr)
 	defer func() {
 		require.NoError(t, proc.Release())

@@ -249,7 +249,7 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		runChangeHandler: runChangeHandler,
 	})
 
-	displayStartTime, displayErr := process.StartTimeForProcess(handle)
+	displayStartTime, displayErr := handle.WallClockStartTime()
 	if displayErr != nil {
 		startLog.Error(displayErr, "Could not read process display start time", "PID", handle.Pid)
 	}
@@ -371,7 +371,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	// resources, and notify the run-change handler.
 	go r.watchTerminalRunExit(processCtx, runID, ptp, runChangeHandler, startLog)
 
-	displayStartTime, displayErr := process.StartTimeForProcess(handle)
+	displayStartTime, displayErr := handle.WallClockStartTime()
 	if displayErr != nil {
 		startLog.Error(displayErr, "Could not read terminal process display start time", "PID", handle.Pid)
 	}

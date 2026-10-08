@@ -39,6 +39,7 @@ type delayFlagData struct {
 	exitCode       int
 	childSpec      string
 	ignoreSigTerm  bool
+	holdPipe       bool
 	coupleChildren bool
 	forkChildren   bool
 }
@@ -52,6 +53,7 @@ const (
 	exitCodeFlag       = "exit-code"
 	childSpecFlag      = "child-spec"
 	ignoreSigtermFlag  = "ignore-sigterm"
+	holdPipeFlag       = "hold-pipe"
 	coupleChildrenFlag = "couple-children"
 	forkChildrenFlag   = "fork-children"
 )
@@ -74,6 +76,7 @@ You can also ask it to exit with a specific exit code.`,
 	cmd.Flags().IntVarP(&flags.exitCode, exitCodeFlag, "e", 0, "The exit code to return when the program exits. If omitted, the program will exit with code 0.")
 	cmd.Flags().StringVar(&flags.childSpec, childSpecFlag, "", "How many child, grandchild, etc. processes to run. For example, the value '2,1' will result in running 2 child processes, each of which will run 1 child on their own (two children, and two grandchildren total). The children will use the same values for delay and exit code as the parent process. The parent process will NOT pass any signals to the children, so if signals are used to stop the program, they have to be sent to each descendant separately.")
 	cmd.Flags().BoolVar(&flags.ignoreSigTerm, ignoreSigtermFlag, false, "If specified, the program will ignore SIGTERM signal. SIGINT will still work as an early exit request.")
+	cmd.Flags().BoolVar(&flags.holdPipe, holdPipeFlag, false, "If specified with --child-spec, children inherit stdout and stderr and keep those pipes open after the parent exits.")
 	cmd.Flags().BoolVar(&flags.coupleChildren, coupleChildrenFlag, false, "If specified, child processes stay in the parent's process group instead of being decoupled.")
 	cmd.Flags().BoolVar(&flags.forkChildren, forkChildrenFlag, false, "If specified, child processes are started in a separate process group; on Windows they are also started in a separate console.")
 
@@ -86,6 +89,9 @@ func runMain(log logr.Logger) error {
 	}
 	if flags.coupleChildren && flags.forkChildren {
 		return fmt.Errorf("the %s and %s flags cannot be used together", coupleChildrenFlag, forkChildrenFlag)
+	}
+	if flags.holdPipe && flags.childSpec == "" {
+		return fmt.Errorf("the %s flag requires %s", holdPipeFlag, childSpecFlag)
 	}
 
 	err := runChildrenAsNeeded()
@@ -171,9 +177,16 @@ func runChildrenAsNeeded() error {
 	if flags.forkChildren {
 		childExecArgs = append(childExecArgs, fmt.Sprintf("--%s", forkChildrenFlag))
 	}
+	if flags.holdPipe && len(descendantCounts) > 0 {
+		childExecArgs = append(childExecArgs, "--"+holdPipeFlag)
+	}
 
 	for i := uint64(0); i < childCount; i++ {
 		cmd := exec.Command(delayExec, childExecArgs...)
+		if flags.holdPipe {
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+		}
 
 		if flags.forkChildren {
 			process.ForkFromParent(cmd)

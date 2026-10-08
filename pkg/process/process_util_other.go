@@ -13,8 +13,8 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
-func processDisplayTime(info processInfo) (time.Time, error) {
-	return info.handle.IdentityTime, nil
+func processDisplayTime(handle ProcessHandle) (time.Time, error) {
+	return handle.IdentityTime, nil
 }
 
 func formatIdentityTime(identityTime time.Time) string {

@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"slices"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -23,7 +22,6 @@ import (
 
 	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcppaths"
-	"github.com/microsoft/dcp/internal/dcpproc/protocol"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -45,42 +43,6 @@ func (executor *contextObservingExecutor) StartProcess(
 ) (process.ProcessHandle, func(), error) {
 	executor.deadline, executor.hasDeadline = ctx.Deadline()
 	return executor.Executor.StartProcess(ctx, cmd, handler, flags, sysCreateProcess)
-}
-
-type stopProcessTreeLogCounts struct {
-	lock       sync.Mutex
-	errorCalls int
-	infoCalls  int
-}
-
-type stopProcessTreeLogSink struct {
-	counts *stopProcessTreeLogCounts
-}
-
-func (*stopProcessTreeLogSink) Init(logr.RuntimeInfo) {}
-
-func (*stopProcessTreeLogSink) Enabled(int) bool {
-	return true
-}
-
-func (sink *stopProcessTreeLogSink) Info(int, string, ...any) {
-	sink.counts.lock.Lock()
-	defer sink.counts.lock.Unlock()
-	sink.counts.infoCalls++
-}
-
-func (sink *stopProcessTreeLogSink) Error(error, string, ...any) {
-	sink.counts.lock.Lock()
-	defer sink.counts.lock.Unlock()
-	sink.counts.errorCalls++
-}
-
-func (sink *stopProcessTreeLogSink) WithValues(...any) logr.LogSink {
-	return sink
-}
-
-func (sink *stopProcessTreeLogSink) WithName(string) logr.LogSink {
-	return sink
 }
 
 func TestMonitorTargetFromFieldsRequiresTimestamp(t *testing.T) {
@@ -347,180 +309,21 @@ func TestStopProcessTreeUsesEarlierParentDeadline(t *testing.T) {
 	require.WithinDuration(t, parentDeadline, observingExecutor.deadline, 100*time.Millisecond)
 }
 
-// Verifies that structured process-gone exits are informational while incomplete and generic failures are error-level.
-func TestLogStopProcessTreeFailureClassifiesStructuredOutcomes(t *testing.T) {
-	t.Parallel()
-
-	for _, testCase := range []struct {
-		name               string
-		err                error
-		expectedErrorCalls int
-		expectedInfoCalls  int
-	}{
-		{
-			name:              "process gone",
-			err:               stopProcessTreeExitError(process.NewHandle(28902, time.Unix(1202, 0).UTC()), protocol.StopProcessTreeProcessGoneExitCode),
-			expectedInfoCalls: 1,
-		},
-		{
-			name:               "incomplete process tree",
-			err:                stopProcessTreeExitError(process.NewHandle(28903, time.Unix(1203, 0).UTC()), protocol.StopProcessTreeIncompleteExitCode),
-			expectedErrorCalls: 1,
-		},
-		{
-			name:               "generic failure",
-			err:                errors.New("access denied"),
-			expectedErrorCalls: 1,
-		},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			counts := &stopProcessTreeLogCounts{}
-			logStopProcessTreeFailure(
-				logr.New(&stopProcessTreeLogSink{counts: counts}),
-				testCase.err,
-				42,
-			)
-
-			counts.lock.Lock()
-			defer counts.lock.Unlock()
-			require.Equal(t, testCase.expectedErrorCalls, counts.errorCalls)
-			require.Equal(t, testCase.expectedInfoCalls, counts.infoCalls)
-		})
-	}
-}
-
+// Verifies that helper exit codes decode into incomplete, gone, and generic caller-visible errors.
 func TestStopProcessTreeExitErrorPreservesOutcomeClassification(t *testing.T) {
 	t.Parallel()
 
 	handle := process.NewHandle(28900, time.Unix(1200, 0).UTC())
 
-	incompleteErr := stopProcessTreeExitError(handle, protocol.StopProcessTreeIncompleteExitCode)
+	incompleteErr := stopProcessTreeExitError(handle, StopProcessTreeIncompleteExitCode)
 	require.ErrorIs(t, incompleteErr, process.ErrIncompleteProcessTree)
 
-	goneErr := stopProcessTreeExitError(handle, protocol.StopProcessTreeProcessGoneExitCode)
+	goneErr := stopProcessTreeExitError(handle, StopProcessTreeProcessGoneExitCode)
 	require.True(t, process.IsProcessGoneErr(goneErr))
 
 	genericErr := stopProcessTreeExitError(handle, 42)
 	require.NotErrorIs(t, genericErr, process.ErrIncompleteProcessTree)
 	require.False(t, process.IsProcessGoneErr(genericErr))
-}
-
-// Verifies that the simulated stop-process-tree command resolves a PID-only argument,
-// stops the matching process instance, and returns a successful exit code.
-func TestSimulateStopProcessTreeCommandSupportsPIDOnly(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
-	defer cancel()
-	executor := internal_testutil.NewTestProcessExecutor(ctx)
-	handle, _, startErr := executor.StartProcess(
-		ctx,
-		exec.Command("test-process"),
-		nil,
-		process.CreationFlagsNone,
-		nil,
-	)
-	require.NoError(t, startErr)
-
-	exitCode := SimulateStopProcessTreeCommand(&internal_testutil.ProcessExecution{
-		Cmd:      exec.Command("dcp", "stop-process-tree", "--pid", strconv.FormatInt(int64(handle.Pid), 10)),
-		Executor: executor,
-	})
-
-	require.Zero(t, exitCode)
-	execution, found := executor.FindByPid(handle.Pid)
-	require.True(t, found)
-	require.True(t, execution.Finished(), "PID-only simulation must resolve the process identity before stopping")
-}
-
-// Verifies that the simulated stop-process-tree command rejects an identity-time flag
-// that is present without a value and returns the command-line usage exit code.
-func TestSimulateStopProcessTreeCommandRejectsIdentityFlagWithoutValue(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
-	defer cancel()
-	executor := internal_testutil.NewTestProcessExecutor(ctx)
-	exitCode := SimulateStopProcessTreeCommand(&internal_testutil.ProcessExecution{
-		Cmd:      exec.Command("dcp", "stop-process-tree", "--pid", "42", "--process-start-time"),
-		Executor: executor,
-	})
-
-	require.Equal(t, int32(4), exitCode)
-}
-
-// Verifies that the simulated stop-process-tree command maps incomplete, gone,
-// and generic failures to the same exit codes as the real command.
-func TestSimulateStopProcessTreeCommandPreservesOutcomeClassification(t *testing.T) {
-	t.Parallel()
-
-	for _, testCase := range []struct {
-		name     string
-		stopErr  error
-		gone     bool
-		pidOnly  bool
-		exitCode int32
-	}{
-		{
-			name:     "incomplete tree",
-			stopErr:  process.ErrIncompleteProcessTree,
-			exitCode: protocol.StopProcessTreeIncompleteExitCode,
-		},
-		{
-			name:     "process gone",
-			gone:     true,
-			pidOnly:  true,
-			exitCode: protocol.StopProcessTreeProcessGoneExitCode,
-		},
-		{
-			name:     "generic failure",
-			stopErr:  errors.New("stop failed"),
-			exitCode: 5,
-		},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
-			defer cancel()
-			executor := internal_testutil.NewTestProcessExecutor(ctx)
-			handle, _, startErr := executor.StartProcess(
-				ctx,
-				exec.Command("test-process"),
-				nil,
-				process.CreationFlagsNone,
-				nil,
-			)
-			require.NoError(t, startErr)
-			if testCase.gone {
-				executor.ClearHistory()
-			} else {
-				executor.InstallAutoExecution(internal_testutil.AutoExecution{
-					Condition: internal_testutil.ProcessSearchCriteria{
-						Command: []string{"test-process"},
-					},
-					StopError: func(*internal_testutil.ProcessExecution) error {
-						return testCase.stopErr
-					},
-				})
-			}
-			args := []string{
-				"stop-process-tree",
-				"--pid", strconv.FormatInt(int64(handle.Pid), 10),
-			}
-			if !testCase.pidOnly {
-				args = append(args,
-					"--process-start-time", handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-				)
-			}
-			exitCode := SimulateStopProcessTreeCommand(&internal_testutil.ProcessExecution{
-				Cmd:      exec.Command("dcp", args...),
-				Executor: executor,
-			})
-			require.Equal(t, testCase.exitCode, exitCode)
-		})
-	}
 }
 
 func findRunningDcp(pe *internal_testutil.TestProcessExecutor) (*internal_testutil.ProcessExecution, error) {

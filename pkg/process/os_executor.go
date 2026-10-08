@@ -767,7 +767,7 @@ func (e *OSExecutor) stopProcessTreeInternal(
 		)
 	}
 	if len(childStoppingErrors) > 0 {
-		procTreeLog.V(1).Error(summarizeProcessErrors(childStoppingErrors), "Some child processes could not be stopped")
+		procTreeLog.V(1).Error(logger.SummarizeErrors(childStoppingErrors), "Some child processes could not be stopped")
 	} else if len(tree) > 0 {
 		procTreeLog.V(1).Info("All child processes have stopped")
 	}
@@ -804,7 +804,7 @@ func joinProcessTreeStopErrors(
 		rootStopErr,
 		rootWaitErr,
 		descendantCleanupErr,
-		summarizeProcessErrors(childStoppingErrors),
+		logger.SummarizeErrors(childStoppingErrors),
 	)
 }
 
@@ -890,7 +890,7 @@ func (e *OSExecutor) Dispose() {
 }
 
 func (e *OSExecutor) CheckProcessRunning(handle ProcessHandle) error {
-	proc, err := FindProcess(handle)
+	proc, err := handle.OsProcess()
 	if err != nil {
 		return err
 	}

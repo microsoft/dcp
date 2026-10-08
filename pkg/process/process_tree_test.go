@@ -240,7 +240,7 @@ func TestProcessAPIsRejectIncompleteIdentity(t *testing.T) {
 	executor := NewOSExecutor(logr.Discard())
 	defer executor.Dispose()
 	incomplete := NewHandle(Pid_t(os.Getpid()), time.Time{})
-	_, findErr := FindProcess(incomplete)
+	_, findErr := incomplete.OsProcess()
 	require.ErrorIs(t, findErr, ErrInvalidProcessHandle)
 	require.ErrorIs(t, executor.StopProcess(ctx, incomplete), ErrInvalidProcessHandle)
 	_, waitErr := FindWaitableProcess(incomplete)

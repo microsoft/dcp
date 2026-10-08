@@ -48,7 +48,7 @@ type WaitableProcess struct {
 }
 
 func FindWaitableProcess(handle ProcessHandle) (*WaitableProcess, error) {
-	foundProcess, err := FindProcess(handle)
+	foundProcess, err := handle.OsProcess()
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +99,7 @@ func (p *WaitableProcess) Wait(ctx context.Context) error {
 }
 
 func (p *WaitableProcess) Signal(signal syscall.Signal) error {
-	proc, findErr := FindProcess(p.handle)
+	proc, findErr := p.handle.OsProcess()
 	if findErr != nil {
 		return findErr
 	}
@@ -108,7 +108,7 @@ func (p *WaitableProcess) Signal(signal syscall.Signal) error {
 }
 
 func (p *WaitableProcess) Kill() error {
-	proc, findErr := FindProcess(p.handle)
+	proc, findErr := p.handle.OsProcess()
 	if findErr != nil {
 		return findErr
 	}
@@ -128,7 +128,7 @@ func waitForProcess(ctx context.Context, handle ProcessHandle, proc *os.Process,
 	if releaseErr != nil {
 		return releaseErr
 	}
-	_, initialPollErr := findProcessInfo(handle)
+	_, initialPollErr := handle.findProcessInfo()
 	if IsProcessGoneErr(initialPollErr) {
 		return nil
 	}
@@ -143,7 +143,7 @@ func waitForProcess(ctx context.Context, handle ProcessHandle, proc *os.Process,
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-timer.C:
-			_, pollErr := findProcessInfo(handle)
+			_, pollErr := handle.findProcessInfo()
 			if IsProcessGoneErr(pollErr) {
 				return nil
 			}

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/tklauser/go-sysconf"
 )
@@ -34,6 +35,25 @@ var processClockTicks = sync.OnceValues(func() (uint64, error) {
 		return 0, fmt.Errorf("invalid process clock frequency %d", ticks)
 	}
 	return uint64(ticks), nil
+})
+
+var processBootTime = sync.OnceValues(func() (time.Time, error) {
+	contents, readErr := readProcFile(filepath.Join(processProcRoot(), "stat"))
+	if readErr != nil {
+		return time.Time{}, fmt.Errorf("could not read boot time: %w", readErr)
+	}
+	for line := range bytes.Lines(contents) {
+		fields := bytes.Fields(line)
+		if len(fields) != 2 || string(fields[0]) != "btime" {
+			continue
+		}
+		bootSeconds, bootErr := strconv.ParseInt(string(fields[1]), 10, 64)
+		if bootErr != nil || bootSeconds < 0 {
+			return time.Time{}, fmt.Errorf("invalid boot time %q", fields[1])
+		}
+		return time.Unix(bootSeconds, 0).UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("boot time is missing from procfs stat")
 })
 
 // HOST_PROC must describe the caller's PID namespace; it does not change syscall PID interpretation.
@@ -142,7 +162,7 @@ func snapshotLinuxProcesses(ctx context.Context, root string, frequency uint64) 
 	var inspectionErrors []error
 	for _, entry := range entries {
 		if contextErr := ctx.Err(); contextErr != nil {
-			return processes, errors.Join(summarizeProcessErrors(inspectionErrors), contextErr)
+			return processes, errors.Join(logger.SummarizeErrors(inspectionErrors), contextErr)
 		}
 		if !entry.IsDir() {
 			continue
@@ -160,26 +180,15 @@ func snapshotLinuxProcesses(ctx context.Context, root string, frequency uint64) 
 		}
 		processes = append(processes, info)
 	}
-	return processes, summarizeProcessErrors(inspectionErrors)
+	return processes, logger.SummarizeErrors(inspectionErrors)
 }
 
-func processDisplayTime(info processInfo) (time.Time, error) {
-	contents, readErr := readProcFile(filepath.Join(processProcRoot(), "stat"))
-	if readErr != nil {
-		return time.Time{}, fmt.Errorf("could not read boot time: %w", readErr)
+func processDisplayTime(handle ProcessHandle) (time.Time, error) {
+	bootTime, bootErr := processBootTime()
+	if bootErr != nil {
+		return time.Time{}, bootErr
 	}
-	for line := range bytes.Lines(contents) {
-		fields := bytes.Fields(line)
-		if len(fields) != 2 || string(fields[0]) != "btime" {
-			continue
-		}
-		bootSeconds, bootErr := strconv.ParseInt(string(fields[1]), 10, 64)
-		if bootErr != nil || bootSeconds < 0 {
-			return time.Time{}, fmt.Errorf("invalid boot time %q", fields[1])
-		}
-		return time.Unix(bootSeconds, 0).UTC().Add(info.handle.IdentityTime.Sub(time.Time{})), nil
-	}
-	return time.Time{}, fmt.Errorf("boot time is missing from procfs stat")
+	return bootTime.Add(handle.IdentityTime.Sub(time.Time{})), nil
 }
 
 func readProcFile(name string) ([]byte, error) {

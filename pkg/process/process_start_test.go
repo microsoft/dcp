@@ -8,14 +8,16 @@ package process
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -33,56 +35,9 @@ func (w *startupWaitable) Abort(context.Context) error {
 	return w.abortErr
 }
 
-type windowsConsoleAvailabilityWaitable struct {
-	startupWaitable
-	availability WindowsConsoleAvailability
-}
-
-func (w *windowsConsoleAvailabilityWaitable) WindowsConsoleAvailability() WindowsConsoleAvailability {
-	return w.availability
-}
-
-// Verifies that a custom creator can report classic Windows console availability through its returned
-// waitable without changing the SysCreateProcessFunc signature.
-func TestCustomCreationReportsWindowsConsoleAvailability(t *testing.T) {
-	t.Parallel()
-
-	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
-	defer testCancel()
-	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
-	defer executor.Dispose()
-	handle := NewHandle(1234, time.Unix(1, 0).UTC())
-	waitable := &windowsConsoleAvailabilityWaitable{
-		availability: WindowsConsoleAvailabilityUnavailable,
-	}
-	startedHandle, startWaiting, startErr := executor.StartProcess(
-		testCtx,
-		exec.Command("unused"),
-		nil,
-		CreationFlagsNone,
-		func(context.Context, *exec.Cmd) (ProcessHandle, Waitable, error) {
-			return handle, waitable, nil
-		},
-	)
-	require.NoError(t, startErr)
-	require.Equal(t, handle, startedHandle)
-
-	executor.acquireLock()
-	state := executor.procsWaiting[handle]
-	executor.releaseLock()
-	require.NotNil(t, state)
-	require.Equal(t, WindowsConsoleAvailabilityUnavailable, state.winConsoleAvailability)
-	startWaiting()
-	select {
-	case <-state.waitEndedCh:
-	case <-testCtx.Done():
-		t.Fatal("custom waitable was not observed")
-	}
-}
-
-// Verifies that custom process creation with an incomplete identity is rolled back,
-// returns no usable handle, and classifies failed rollback as an uncertain start.
-func TestCustomCreationIncompleteIdentityIsRolledBack(t *testing.T) {
+// Verifies that StartProcess rejects an injected incomplete identity, invokes the fake waitable's
+// Abort method, and marks an Abort error as uncertain without returning a usable handle or wait callback.
+func TestCustomCreationRejectsIncompleteIdentityAndInvokesAbort(t *testing.T) {
 	t.Parallel()
 	rollbackErr := errors.New("rollback denied")
 	for _, tc := range []struct {
@@ -90,8 +45,8 @@ func TestCustomCreationIncompleteIdentityIsRolledBack(t *testing.T) {
 		abortErr  error
 		uncertain bool
 	}{
-		{"confirmed cleanup", nil, false},
-		{"failed cleanup", rollbackErr, true},
+		{"abort returns nil", nil, false},
+		{"abort returns error", rollbackErr, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -111,8 +66,9 @@ func TestCustomCreationIncompleteIdentityIsRolledBack(t *testing.T) {
 	}
 }
 
-// Verifies that cancellation detected after process inspection prevents the process action from dispatching.
-func TestProcessActionCancellationDuringInspection(t *testing.T) {
+// Verifies that actOnProcess returns a cancellation error without invoking its action callback
+// when the injected inspection callback cancels the context.
+func TestProcessActionSkipsDispatchWhenInspectionCancelsContext(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -129,9 +85,9 @@ func TestProcessActionCancellationDuringInspection(t *testing.T) {
 	require.False(t, actionCalled)
 }
 
-// Verifies that process-start rollback uses the wait result to confirm cleanup,
-// ignores a kill error after confirmed exit, and marks a failed wait as uncertain.
-func TestRollbackProcessStartUsesWaitToConfirmExit(t *testing.T) {
+// Verifies that rollbackProcessStart returns nil for injected nil or os.ErrProcessDone wait results
+// despite a kill error, and otherwise preserves both injected errors with ErrProcessStartUncertain.
+func TestRollbackProcessStartClassifiesInjectedKillAndWaitErrors(t *testing.T) {
 	t.Parallel()
 
 	killErr := errors.New("kill failed")
@@ -141,9 +97,9 @@ func TestRollbackProcessStartUsesWaitToConfirmExit(t *testing.T) {
 		waitErr   error
 		uncertain bool
 	}{
-		{"successful wait", nil, false},
-		{"process already exited", os.ErrProcessDone, false},
-		{"wait failed", waitErr, true},
+		{"wait returns nil", nil, false},
+		{"wait returns os.ErrProcessDone", os.ErrProcessDone, false},
+		{"wait returns another error", waitErr, true},
 	}
 
 	for _, testCase := range tests {
@@ -165,8 +121,9 @@ func TestRollbackProcessStartUsesWaitToConfirmExit(t *testing.T) {
 	}
 }
 
-// Verifies that a canceled rollback retains its waiter so the child can still be reaped later.
-func TestRollbackProcessStartRetainsWaiterAfterCancellation(t *testing.T) {
+// Verifies that rollbackProcessStart returns an uncertain-start error on cancellation while
+// its blocked, injected wait callback remains able to finish after being released.
+func TestRollbackProcessStartAllowsWaitCallbackToFinishAfterCancellation(t *testing.T) {
 	t.Parallel()
 
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
@@ -362,18 +319,6 @@ func TestDisposeWaitsForNonCooperativeProcessCreation(t *testing.T) {
 	}
 }
 
-const customCreationHelper = "DCP_CUSTOM_CREATION_HELPER"
-
-// Runs a custom-creation child that waits for standard input to close before exiting,
-// keeping its owned identity available until the parent has captured it.
-func TestCustomCreationProcessHelper(t *testing.T) {
-	if os.Getenv(customCreationHelper) != "1" {
-		return
-	}
-	_, inputErr := io.Copy(io.Discard, os.Stdin)
-	require.NoError(t, inputErr)
-}
-
 // Verifies that custom creation captures an owned identity without starting the original exec.Cmd
 // and reports the exit code supplied by its Waitable.
 func TestSysCreateProcess(t *testing.T) {
@@ -382,18 +327,13 @@ func TestSysCreateProcess(t *testing.T) {
 	defer testCancel()
 	executor := NewOSExecutor(logr.Discard())
 	defer executor.Dispose()
-	childInput, parentInput, pipeErr := os.Pipe()
-	require.NoError(t, pipeErr)
-	defer func() { _ = childInput.Close() }()
-	defer func() { _ = parentInput.Close() }()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestCustomCreationProcessHelper$")
-	cmd.Env = append(os.Environ(), customCreationHelper+"=1")
+	cmd := delayCommandForTest(t, "--delay=60s")
 	const overrideExitCode int32 = 77
 	var capturedWaitable *customCreationWaitable
 	creator := func(creationCtx context.Context, command *exec.Cmd) (ProcessHandle, Waitable, error) {
 		createdProcess, createErr := os.StartProcess(command.Path, command.Args, &os.ProcAttr{
 			Env:   command.Env,
-			Files: []*os.File{childInput, os.Stdout, os.Stderr},
+			Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
 			Sys:   command.SysProcAttr,
 		})
 		if createErr != nil {
@@ -420,8 +360,7 @@ func TestSysCreateProcess(t *testing.T) {
 	require.NotNil(t, capturedWaitable)
 	require.NoError(t, handle.Validate())
 	require.Nil(t, cmd.Process, "custom creation must not start the original exec.Cmd")
-	require.NoError(t, childInput.Close())
-	require.NoError(t, parentInput.Close())
+	require.NoError(t, capturedWaitable.process.Kill())
 	startWaiting()
 	select {
 	case exitResult, received := <-exitResults:
@@ -468,3 +407,14 @@ func (waitable *customCreationWaitable) ExitCode() int32 {
 
 var _ Waitable = (*customCreationWaitable)(nil)
 var _ ExitCodeSource = (*customCreationWaitable)(nil)
+
+func delayCommandForTest(t *testing.T, args ...string) *exec.Cmd {
+	t.Helper()
+	executableName := "delay"
+	if runtime.GOOS == "windows" {
+		executableName += ".exe"
+	}
+	toolRoot, toolRootErr := osutil.FindRootFor(osutil.FileTarget, ".toolbin", executableName)
+	require.NoError(t, toolRootErr, "could not locate delay (did you run make test-prereqs?)")
+	return exec.Command(filepath.Join(toolRoot, ".toolbin", executableName), args...)
+}

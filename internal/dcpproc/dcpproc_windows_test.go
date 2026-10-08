@@ -226,7 +226,7 @@ func tryGetProcessInfo(item process.ProcessHandle) (uint32, string, error) {
 		return 0, "", fmt.Errorf("could not convert PID %d to Windows PID: %w", item.Pid, pidErr)
 	}
 
-	foundProcess, findErr := process.FindProcess(item)
+	foundProcess, findErr := item.OsProcess()
 	if findErr != nil {
 		return 0, "", fmt.Errorf("could not inspect process PID %d: %w", osPid, findErr)
 	}

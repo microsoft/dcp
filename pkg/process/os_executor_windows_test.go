@@ -9,7 +9,6 @@ package process
 
 import (
 	"errors"
-	"os"
 	"os/exec"
 	"syscall"
 	"testing"
@@ -146,8 +145,7 @@ func TestStartAndForgetRetainsWindowsConsoleAvailability(t *testing.T) {
 	defer testCancel()
 	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 	defer executor.Dispose()
-	command := exec.Command(os.Args[0], "-test.run=^TestCleanupJobAssignmentTargetProcess$")
-	command.Env = append(os.Environ(), cleanupJobAssignmentTargetEnvVar+"=1")
+	command := delayCommandForTest(t, "--delay=30s")
 
 	handle, startErr := executor.StartAndForget(command, CreationFlagsNone)
 	require.NoError(t, startErr)
@@ -159,7 +157,7 @@ func TestStartAndForgetRetainsWindowsConsoleAvailability(t *testing.T) {
 	require.Equal(t, WindowsConsoleAvailabilityInherited, state.winConsoleAvailability)
 	require.True(t, state.waitStarted)
 
-	process, findErr := FindProcess(handle)
+	process, findErr := handle.OsProcess()
 	require.NoError(t, findErr)
 	require.NoError(t, process.Kill())
 	require.NoError(t, process.Release())
@@ -213,8 +211,7 @@ func TestEnsureKillOnDisposeFailsClosed(t *testing.T) {
 			defer executor.Dispose()
 			injectedErr := errors.New("injected cleanup ownership failure")
 			testCase.configure(executor, injectedErr)
-			command := exec.Command(os.Args[0], "-test.run=^TestCleanupJobAssignmentTargetProcess$")
-			command.Env = append(os.Environ(), cleanupJobAssignmentTargetEnvVar+"=1")
+			command := delayCommandForTest(t, "--delay=30s")
 
 			handle, startWaiting, startErr := executor.StartProcess(
 				testCtx,

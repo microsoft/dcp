@@ -335,7 +335,7 @@ func (rh *resourceHarvester) isRunningDCPProcess(pid process.Pid_t, startTime ti
 	}
 
 	// If the process is not in the cache, we need to check if it is running.
-	_, findErr := process.FindProcess(process.NewHandle(pid, startTime))
+	_, findErr := process.NewHandle(pid, startTime).OsProcess()
 	if findErr != nil {
 		return false // Process not found, so it's not running.
 	}

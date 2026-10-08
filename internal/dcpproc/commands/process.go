@@ -66,7 +66,7 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resourceId)
 		}
 
-		childHandle, childIdentityErr := cmds.ResolveProcessHandle(childPid, childProcessStartTime)
+		childHandle, childIdentityErr := process.ResolveProcessHandle(childPid, childProcessStartTime)
 		if childIdentityErr != nil {
 			if process.IsProcessGoneErr(childIdentityErr) {
 				log.Info(childProcessGoneLogMessage, "Error", childIdentityErr)

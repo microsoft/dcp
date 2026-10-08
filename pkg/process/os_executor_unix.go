@@ -51,7 +51,7 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 	// Console group signaling is Windows-specific; keep the shared option as an explicit no-op on Unix.
 	opts &^= optSignalConsoleGroup
 
-	proc, err := FindProcess(handle)
+	proc, err := handle.OsProcess()
 	if err != nil {
 		if !IsProcessGoneErr(err) {
 			return singleProcessStopResult{}, err

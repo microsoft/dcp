@@ -147,8 +147,8 @@ func TestRunWithTimeout(t *testing.T) {
 	}
 }
 
-// Tests that StartTimeForProcess returns a time that is roughly equivalent to the current time.
-func TestStartTimeForProcess(t *testing.T) {
+// Verifies that ProcessHandle.WallClockStartTime returns the wall-clock start time of a live process.
+func TestProcessHandleWallClockStartTime(t *testing.T) {
 	t.Parallel()
 
 	delayToolDir, err := getDelayToolDir()
@@ -174,7 +174,7 @@ func TestStartTimeForProcess(t *testing.T) {
 	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
 	handle, handleErr := process.FindProcessHandle(pid)
 	require.NoError(t, handleErr)
-	creationTime, creationErr := process.StartTimeForProcess(handle)
+	creationTime, creationErr := handle.WallClockStartTime()
 	require.NoError(t, creationErr)
 
 	require.False(t, creationTime.IsZero(), "process start time should not be zero")
@@ -186,9 +186,9 @@ func TestStartTimeForProcess(t *testing.T) {
 		creationTime, now)
 }
 
-// Verifies that StartTimeForProcess converts a captured identity to a nonzero display time
+// Verifies that ProcessHandle.WallClockStartTime converts a captured identity to a nonzero display time
 // even after the process has exited and been waited on.
-func TestStartTimeForExitedProcess(t *testing.T) {
+func TestProcessHandleWallClockStartTimeAfterExit(t *testing.T) {
 	t.Parallel()
 
 	delayToolDir, toolLaunchErr := getDelayToolDir()
@@ -204,7 +204,7 @@ func TestStartTimeForExitedProcess(t *testing.T) {
 	waitErr := cmd.Wait()
 	require.True(t, waitErr == nil || process.IsEarlyProcessExitError(waitErr))
 
-	creationTime, creationErr := process.StartTimeForProcess(handle)
+	creationTime, creationErr := handle.WallClockStartTime()
 	require.NoError(t, creationErr)
 	require.False(t, creationTime.IsZero())
 }
