@@ -23,9 +23,8 @@ import (
 )
 
 type resourceHarvester struct {
-	// This is a cache of DCP processes that are currently running.
-	// It is used to avoid querying the process multiple times.
-	processes map[process.Pid_t]bool
+	// Cache of running DCP process identities to avoid repeated lookups.
+	processes map[process.ProcessHandle]bool
 
 	// Map of protected networks that should not be harvested.
 	protectedNetworks map[string]bool
@@ -42,7 +41,7 @@ type resourceHarvester struct {
 
 func NewResourceHarvester() *resourceHarvester {
 	return &resourceHarvester{
-		processes:          make(map[process.Pid_t]bool),
+		processes:          make(map[process.ProcessHandle]bool),
 		protectedNetworks:  make(map[string]bool),
 		networkHarvestLock: concurrency.NewContextAwareLock(),
 		started:            atomic.Bool{},
@@ -330,12 +329,13 @@ func (rh *resourceHarvester) harvestAbandonedVolumes(
 }
 
 func (rh *resourceHarvester) isRunningDCPProcess(pid process.Pid_t, startTime time.Time, log logr.Logger) bool {
-	if running, exists := rh.processes[pid]; exists {
+	handle := process.NewHandle(pid, startTime)
+	if running, exists := rh.processes[handle]; exists {
 		return running
 	}
 
 	// If the process is not in the cache, we need to check if it is running.
-	creatorProcess, findErr := process.NewHandle(pid, startTime).OsProcess()
+	creatorProcess, findErr := handle.OsProcess()
 	if findErr != nil {
 		return false // Process not found, so it's not running.
 	}
@@ -344,7 +344,7 @@ func (rh *resourceHarvester) isRunningDCPProcess(pid process.Pid_t, startTime ti
 	}
 
 	// We found the process, so cache it as running.
-	rh.processes[pid] = true
+	rh.processes[handle] = true
 	return true
 }
 
