@@ -76,9 +76,10 @@ type volumeName string
 type volumeDataMap = ObjectStateMap[volumeName, containerVolumeData, *containerVolumeData, *apiv1.ContainerVolume]
 
 type VolumeReconcilerConfig struct {
-	StateStore         *statestore.Store
-	ResourceLeaseOwner process.ProcessHandle
-	WorkloadID         commonapi.WorkloadID
+	StateStore          *statestore.Store
+	ResourceLeaseOwner  process.ProcessHandle
+	WorkloadID          commonapi.WorkloadID
+	VolumeResetRecovery *ContainerVolumeResetRecovery
 }
 
 type VolumeReconciler struct {
@@ -104,6 +105,9 @@ func NewVolumeReconciler(
 		volumeData:     NewObjectStateMap[volumeName, containerVolumeData, *containerVolumeData, *apiv1.ContainerVolume](),
 		config:         config,
 	}
+	if config.VolumeResetRecovery != nil {
+		config.VolumeResetRecovery.notify = r.ScheduleReconciliation
+	}
 	return &r
 }
 
@@ -111,6 +115,7 @@ func (r *VolumeReconciler) SetupWithManager(mgr ctrl.Manager, name string) error
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.ContainerVolume{}).
+		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name). // zero value is OK and will result in a default provided by controller-runtime
 		Complete(r)
 }
@@ -160,6 +165,11 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 }
 
 func (r *VolumeReconciler) handleDeletionRequest(ctx context.Context, vol *apiv1.ContainerVolume, log logr.Logger) objectChange {
+	if r.config.VolumeResetRecovery != nil {
+		if recovery, found := r.config.VolumeResetRecovery.volumes.Load(vol.Spec.Name); found {
+			return r.deleteResetVolumeRecovery(ctx, vol, recovery, log)
+		}
+	}
 	_, volData := r.volumeData.BorrowByNamespacedName(vol.NamespacedName())
 	if volData == nil || volData.state != apiv1.ContainerVolumeStateReady || pointers.TrueValue(vol.Spec.Persistent) {
 		// No actual volume to delete, or it is persistent and needs to be preserved.
@@ -181,6 +191,16 @@ func (r *VolumeReconciler) handleDeletionRequest(ctx context.Context, vol *apiv1
 }
 
 func (r *VolumeReconciler) manageVolume(ctx context.Context, vol *apiv1.ContainerVolume, log logr.Logger) objectChange {
+	var recovery *containerVolumeRecovery
+	if r.config.VolumeResetRecovery != nil {
+		recovery, _ = r.config.VolumeResetRecovery.volumes.Load(vol.Spec.Name)
+		if recovery != nil {
+			if !recovery.lock.TryLock() {
+				return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
+			}
+			defer recovery.lock.Unlock()
+		}
+	}
 	targetState := vol.Status.State
 	_, volData := r.volumeData.BorrowByNamespacedName(vol.NamespacedName())
 	if volData != nil {
@@ -188,6 +208,9 @@ func (r *VolumeReconciler) manageVolume(ctx context.Context, vol *apiv1.Containe
 	}
 
 	runInitializer := func(ctx context.Context) objectChange {
+		if recovery != nil {
+			return r.recoverResetVolume(ctx, vol, recovery, log)
+		}
 		initializer := getStateInitializer(volumeStateInitializers, targetState, log)
 		return initializer(ctx, r, vol, targetState, volData, log)
 	}
@@ -225,7 +248,7 @@ func (r *VolumeReconciler) manageVolume(ctx context.Context, vol *apiv1.Containe
 		change = runInitializer(ctx)
 	}
 
-	if volData != nil {
+	if volData != nil && recovery == nil {
 		r.volumeData.Update(vol.NamespacedName(), volumeName(vol.Spec.Name), volData)
 	}
 
@@ -280,11 +303,12 @@ func handleNewContainerVolume(
 		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
 	}
 
-	createOptions := containers.CreateVolumeOptions{Name: vol.Spec.Name}
+	createOptions := containers.CreateVolumeOptions{
+		Name:   vol.Spec.Name,
+		Labels: map[string]string{uidLabel: string(vol.UID)},
+	}
 	if ownershipToken != "" {
-		createOptions.Labels = map[string]string{
-			containers.VolumeOwnershipTokenLabel: ownershipToken,
-		}
+		createOptions.Labels[containers.VolumeOwnershipTokenLabel] = ownershipToken
 	}
 	var createErr error
 	inspectedVolume, createErr = createVolume(ctx, r.orchestrator, createOptions)
