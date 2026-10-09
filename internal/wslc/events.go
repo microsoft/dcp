@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/pubsub"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/process"
@@ -48,11 +49,7 @@ func (wco *WslcCliOrchestrator) watchEvents(
 	subscriptions *pubsub.SubscriptionSet[containers.EventMessage],
 	source containers.EventSource,
 ) {
-	streamCtx, streamCancel := context.WithCancel(watcherCtx)
-	defer streamCancel()
-
-	reader, writer := usvc_io.NewBufferedPipeWithMaxSize(maxEventSize)
-	defer reader.Close()
+	reader, writer := usvc_io.NewBufferedPipe()
 	defer writer.Close()
 
 	// Replay the startup boundary so events emitted while the stream starts are not missed.
@@ -64,68 +61,63 @@ func (wco *WslcCliOrchestrator) watchEvents(
 		"--format", "json",
 	)
 	diagnostics := &eventDiagnostics{}
-	command.Stdout = usvc_io.NopWriteCloser(writer)
+	command.Stdout = writer
 	command.Stderr = diagnostics
-	exitHandler := process.NewConcurrentProcessExitHandler()
+
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, maxEventDiagnosticSize), maxEventSize)
+	eventLog := wco.log.WithValues("Source", source)
+	go func() {
+		for scanner.Scan() {
+			if watcherCtx.Err() != nil {
+				return
+			}
+			event, unmarshalErr := unmarshalWslcEvent(scanner.Bytes())
+			if unmarshalErr != nil {
+				eventLog.Error(unmarshalErr, "Could not parse WSLC event", "EventData", scanner.Text())
+				continue
+			}
+			if event.Source == source {
+				subscriptions.Notify(event)
+			}
+		}
+		if scanErr := scanner.Err(); scanErr != nil && watcherCtx.Err() == nil {
+			eventLog.Error(scanErr, "Could not read WSLC event stream")
+		}
+	}()
+
+	exitCh := make(chan process.ProcessExitInfo, 1)
+	exitHandler := process.NewChannelProcessExitHandler(exitCh)
 	wco.log.V(1).Info("Running WSLC command", "Command", command.String())
-	_, startWaitForExit, startErr := wco.executor.StartProcess(
-		streamCtx,
+	handle, startWaitForExit, startErr := wco.executor.StartProcess(
+		watcherCtx,
 		command,
 		exitHandler,
-		process.CreationFlagEnsureKillOnDispose,
+		process.CreationFlagsNone,
 		nil,
 	)
 	if startErr != nil {
 		wco.log.Error(startErr, "Could not start WSLC event stream", "Source", source)
 		return
 	}
+
+	dcpproc.RunProcessWatcher(wco.executor, handle, wco.log)
 	startWaitForExit()
 
-	streamDone := make(chan struct{})
-	go func() {
-		defer close(streamDone)
-		select {
-		case <-exitHandler.Exited():
-		case <-streamCtx.Done():
-		}
-		_ = writer.Close()
-	}()
-	defer func() {
-		streamCancel()
-		_ = reader.Close()
-		<-exitHandler.Exited()
-		<-streamDone
-	}()
-
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, maxEventDiagnosticSize), maxEventSize)
-	parserLog := wco.log.WithValues("Source", source)
-	for scanner.Scan() {
-		if streamCtx.Err() != nil {
+	select {
+	case exitInfo, open := <-exitCh:
+		if !open {
+			eventLog.Error(fmt.Errorf("process exit notification channel closed without a result"), "WSLC event stream stopped unexpectedly")
 			return
 		}
-		event, unmarshalErr := unmarshalWslcEvent(scanner.Bytes())
-		if unmarshalErr != nil {
-			parserLog.Error(unmarshalErr, "Could not parse WSLC event", "EventData", scanner.Text())
-			continue
+		if watcherCtx.Err() != nil {
+			return
 		}
-		if event.Source == source {
-			subscriptions.Notify(event)
-		}
+		streamErr := errors.Join(exitInfo.Err, fmt.Errorf("wslc event stream ended with exit code %d", exitInfo.ExitCode))
+		eventLog.Error(streamErr, "WSLC event stream stopped unexpectedly", "Stderr", diagnostics.String())
+	case <-watcherCtx.Done():
+		eventLog.V(1).Info("Stopping 'wslc events' command", "PID", handle.Pid)
 	}
-
-	if watcherCtx.Err() != nil {
-		return
-	}
-	if scanErr := scanner.Err(); scanErr != nil {
-		wco.log.Error(scanErr, "Could not read WSLC event stream", "Source", source)
-		return
-	}
-
-	<-exitHandler.Exited()
-	exitInfo := exitHandler.ExitInfo()
-	streamErr := errors.Join(exitInfo.Err, fmt.Errorf("wslc event stream ended with exit code %d", exitInfo.ExitCode))
-	wco.log.Error(streamErr, "WSLC event stream stopped unexpectedly", "Source", source, "Stderr", diagnostics.String())
 }
 
 type wslcEventActor struct {
@@ -143,6 +135,9 @@ func unmarshalWslcEvent(data []byte) (containers.EventMessage, error) {
 	var wslcEvent wslcEventMessage
 	if unmarshalErr := json.Unmarshal(data, &wslcEvent); unmarshalErr != nil {
 		return containers.EventMessage{}, unmarshalErr
+	}
+	if strings.HasPrefix(string(wslcEvent.Action), string(containers.EventActionHealthStatus)+":") {
+		wslcEvent.Action = containers.EventActionHealthStatus
 	}
 
 	return containers.EventMessage{
