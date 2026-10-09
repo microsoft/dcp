@@ -45,9 +45,9 @@ func TestApplyImageLayersFromDirectoryStagesRawAndSourceLayers(t *testing.T) {
 	sourcePath := filepath.Join(sourceDirectory, "source-layer.tar")
 	require.NoError(t, usvc_io.WriteFile(sourcePath, sourceLayer, osutil.PermissionOnlyOwnerReadWrite))
 
-	labels := []Label{
-		{Key: "first.label", Value: "first value"},
-		{Key: "second.label", Value: "second value"},
+	labels := map[string]string{
+		"first.label":  "first value",
+		"second.label": "second value",
 	}
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{

@@ -37,7 +37,6 @@ import (
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/pubsub"
 	"github.com/microsoft/dcp/internal/termpty"
-	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -1601,9 +1600,7 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 		digest:  toDigest(sha256.Sum256([]byte(guid))),
 		tags:    std_slices.Clone(options.Tags),
 		secrets: map[string]string{},
-		labels: maps.SliceToMap(options.Labels, func(label commonapi.Label) (string, string) {
-			return label.Key, label.Value
-		}),
+		labels:  std_maps.Clone(options.Labels),
 	}
 
 	for _, secret := range options.Secrets {
@@ -1999,8 +1996,8 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 		}
 	}
 
-	for _, label := range options.Labels {
-		container.Labels[label.Key] = label.Value
+	for key, value := range options.Labels {
+		container.Labels[key] = value
 	}
 
 	to.containers[id.ID] = &container

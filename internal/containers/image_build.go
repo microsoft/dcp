@@ -81,8 +81,8 @@ func BuildImageImpl(
 		args = append(args, "--target", options.Stage)
 	}
 
-	for _, label := range options.Labels {
-		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
 	}
 
 	if options.Platform != "" {

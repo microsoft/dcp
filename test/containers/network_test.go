@@ -136,7 +136,7 @@ func TestContainerCreationAcceptsNetworkIDs(t *testing.T) {
 			t.Run(operation, func(t *testing.T) {
 				containerName := containertest.UniqueName(t, "network-id-container")
 				require.NoError(t, tracker.TrackContainer(containerName))
-				options := longRunningContainerOptions(containerName, image, tracker.Labels())
+				options := longRunningContainerOptions(containerName, image, tracker.MapLabels())
 				for _, network := range networks {
 					options.Networks = append(options.Networks, containers.CreateContainerNetworkOptions{
 						Name: network.id, Aliases: []string{network.alias},

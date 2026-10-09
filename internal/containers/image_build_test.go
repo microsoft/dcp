@@ -39,7 +39,7 @@ func TestBuildImageImplBuildsCommand(t *testing.T) {
 					{Type: EnvSecret, ID: "default-env-secret", Value: "default-secret-value"},
 				},
 				Stage:    "final",
-				Labels:   []Label{{Key: "key", Value: "value"}},
+				Labels:   map[string]string{"key": "value"},
 				Platform: "linux/amd64",
 			},
 			TimeoutOption: TimeoutOption{Timeout: timeout},

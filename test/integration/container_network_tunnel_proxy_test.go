@@ -1746,7 +1746,7 @@ func testTunnelProxyWithRealOrchestrator(
 		ctx,
 		parrotContainerBinaryPath,
 		parrotImageName,
-		resourceTracker.Labels(),
+		resourceTracker.MapLabels(),
 		serverInfo.ContainerOrchestrator,
 	)
 	require.NoError(t, parrotImageErr, "Could not ensure parrot container image")
@@ -2107,7 +2107,7 @@ func ensureParrotContainerImage(
 	ctx context.Context,
 	parrotBinaryPath string,
 	imageName string,
-	labels []containers.Label,
+	labels map[string]string,
 	ior containers.ImageOrchestrator,
 ) (string, string, error) {
 	const parrotContainerPath = "/usr/local/bin/parrot"

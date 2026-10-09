@@ -84,7 +84,7 @@ func TestPhysicalContainerNetworkRemovesStoppedAttachmentsWithRealOrchestrator(t
 		containerID, createContainerErr := runtime.Orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 			Name: containerName, Image: imageID,
 			Entrypoint: probePath, Command: []string{"exit"},
-			Labels: tracker.Labels(), PullPolicy: containers.PullPolicyNever,
+			Labels: tracker.MapLabels(), PullPolicy: containers.PullPolicyNever,
 			Networks: []containers.CreateContainerNetworkOptions{{Name: networkName}},
 		})
 		require.NoError(t, createContainerErr)

@@ -90,16 +90,13 @@ func (wco *WslcCliOrchestrator) BuildImage(ctx context.Context, options containe
 	if options.Stage != "" {
 		args = append(args, "--target", options.Stage)
 	}
-	labelValues := maps.SliceToMap(options.Labels, func(label containers.Label) (string, string) {
-		return label.Key, label.Value
-	})
-	labelKeys := maps.Keys(labelValues)
+	labelKeys := maps.Keys(options.Labels)
 	sort.Strings(labelKeys)
 	for _, key := range labelKeys {
 		if key == "" {
 			return fmt.Errorf("image label key cannot be empty")
 		}
-		args = append(args, "--label", key+"="+labelValues[key])
+		args = append(args, "--label", key+"="+options.Labels[key])
 	}
 
 	args = append(args, "--progress", "plain", options.Context)

@@ -78,8 +78,8 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 	for _, envFile := range options.EnvFiles {
 		args = append(args, "--env-file", envFile)
 	}
-	for _, label := range options.Labels {
-		args = append(args, "--label", label.Key+"="+label.Value)
+	for key, value := range options.Labels {
+		args = append(args, "--label", key+"="+value)
 	}
 
 	if options.PullPolicy != "" {

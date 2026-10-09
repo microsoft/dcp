@@ -1303,11 +1303,7 @@ func physicalContainerNetworkCreationLabels(network *apiv2.PhysicalContainerNetw
 		network.UID,
 		log,
 	)
-	labels := make(map[string]string, len(creationLabels))
-	for _, label := range creationLabels {
-		labels[label.Key] = label.Value
-	}
-	return labels
+	return v2LabelsToMap(creationLabels)
 }
 
 func physicalContainerNetworkBelongsToResource(

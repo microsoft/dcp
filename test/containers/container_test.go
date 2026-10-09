@@ -39,7 +39,7 @@ func TestContainerLifecycleMethods(t *testing.T) {
 		containerID, createErr := runtime.Orchestrator.CreateContainer(ctx, longRunningContainerOptions(
 			containerName,
 			image,
-			tracker.Labels(),
+			tracker.MapLabels(),
 		))
 		require.NoError(t, createErr)
 		require.NotEmpty(t, containerID)
@@ -87,20 +87,17 @@ func TestContainerLifecycleMethods(t *testing.T) {
 	})
 }
 
-// Verifies on each healthy runtime that duplicate container label keys retain the last supplied value.
-func TestCreateContainerLabelsUseLastValue(t *testing.T) {
+// Verifies that each healthy runtime applies container label-map entries.
+func TestCreateContainerLabels(t *testing.T) {
 	t.Parallel()
 
 	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
 		tracker := containertest.NewResourceTracker(t, runtime)
-		containerName := containertest.UniqueName(t, "duplicate-container-label")
+		containerName := containertest.UniqueName(t, "container-label")
 		require.NoError(t, tracker.TrackContainer(containerName))
-		const labelKey = "com.microsoft.developer.dcp.duplicate-label-test"
-		options := longRunningContainerOptions(containerName, ensureTestImage(t, ctx, runtime), tracker.Labels())
-		options.Labels = append(options.Labels,
-			containers.Label{Key: labelKey, Value: "first"},
-			containers.Label{Key: labelKey, Value: "last"},
-		)
+		const labelKey = "com.microsoft.developer.dcp.label-test"
+		options := longRunningContainerOptions(containerName, ensureTestImage(t, ctx, runtime), tracker.MapLabels())
+		options.Labels[labelKey] = "label value"
 
 		containerID, createErr := runtime.Orchestrator.CreateContainer(ctx, options)
 		require.NoError(t, createErr)
@@ -109,7 +106,7 @@ func TestCreateContainerLabelsUseLastValue(t *testing.T) {
 		})
 		require.NoError(t, inspectErr)
 		require.Len(t, inspected, 1)
-		require.Equal(t, "last", inspected[0].Labels[labelKey])
+		require.Equal(t, "label value", inspected[0].Labels[labelKey])
 	})
 }
 
@@ -145,7 +142,7 @@ func TestStartContainersPreservesPartialResults(t *testing.T) {
 		}
 		for _, containerName := range containerNames {
 			require.NoError(t, tracker.TrackContainer(containerName))
-			_, createErr := runtime.Orchestrator.CreateContainer(ctx, longRunningContainerOptions(containerName, image, tracker.Labels()))
+			_, createErr := runtime.Orchestrator.CreateContainer(ctx, longRunningContainerOptions(containerName, image, tracker.MapLabels()))
 			require.NoError(t, createErr)
 		}
 		missingName := containertest.UniqueName(t, "missing-start")
@@ -202,7 +199,7 @@ func TestContainerHealthInspectionMethods(t *testing.T) {
 			CreateContainerOptions: containers.CreateContainerOptions{
 				Name: containerName, Image: "busybox:latest",
 				Command: []string{"sh", "-c", "trap 'exit 0' TERM; while :; do sleep 1; done"},
-				Labels:  tracker.Labels(), PullPolicy: containers.PullPolicyMissing,
+				Labels:  tracker.MapLabels(), PullPolicy: containers.PullPolicyMissing,
 				Healthcheck: containers.ContainerHealthcheck{
 					Command:  []string{"test", "-f", "/tmp/dcp-healthy"},
 					Interval: time.Second,
@@ -311,7 +308,7 @@ func TestAttachContainerMethod(t *testing.T) {
 			Name:           containerName,
 			Image:          ensureTestImage(t, ctx, runtime),
 			Command:        []string{"interactive"},
-			Labels:         tracker.Labels(),
+			Labels:         tracker.MapLabels(),
 			PullPolicy:     containers.PullPolicyNever,
 			AttachTerminal: true,
 		})
@@ -376,7 +373,7 @@ func TestWatchContainersMethod(t *testing.T) {
 		containerID, createErr := runtime.Orchestrator.CreateContainer(ctx, longRunningContainerOptions(
 			containerName,
 			ensureTestImage(t, ctx, runtime),
-			tracker.Labels(),
+			tracker.MapLabels(),
 		))
 		require.NoError(t, createErr)
 		_, startErr := runtime.Orchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -430,7 +427,7 @@ func TestWatchSpontaneousContainerExit(t *testing.T) {
 		containerID, runErr := runtime.Orchestrator.RunContainer(ctx, containers.RunContainerOptions{
 			CreateContainerOptions: containers.CreateContainerOptions{
 				Name: containerName, Image: ensureTestImage(t, ctx, runtime),
-				Command: []string{"wait", "1s"}, Labels: tracker.Labels(),
+				Command: []string{"wait", "1s"}, Labels: tracker.MapLabels(),
 				PullPolicy: containers.PullPolicyNever,
 			},
 		})
@@ -466,7 +463,7 @@ func warmContainerWatcher(
 				Name:       containerName,
 				Image:      ensureTestImage(t, ctx, runtime),
 				Command:    []string{"exit"},
-				Labels:     tracker.Labels(),
+				Labels:     tracker.MapLabels(),
 				PullPolicy: containers.PullPolicyNever,
 			},
 		})

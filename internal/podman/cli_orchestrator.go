@@ -496,8 +496,8 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		args = append(args, "--env-file", envFile)
 	}
 
-	for _, label := range options.Labels {
-		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
 	}
 
 	if options.RestartPolicy != "" && options.RestartPolicy != containers.RestartPolicyNone {

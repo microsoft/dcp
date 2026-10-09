@@ -38,7 +38,7 @@ func TestBuildInspectAndRemoveImageMethods(t *testing.T) {
 				Context:    contextDir,
 				Dockerfile: dockerfilePath,
 				Tags:       []string{image},
-				Labels:     tracker.Labels(),
+				Labels:     tracker.MapLabels(),
 			},
 		})
 		require.NoError(t, buildErr)
@@ -103,7 +103,7 @@ func TestBuildImageFromArchive(t *testing.T) {
 						ContextArchive: archive,
 						Dockerfile:     "nested/Containerfile",
 						Tags:           []string{image},
-						Labels:         tracker.Labels(),
+						Labels:         tracker.MapLabels(),
 					},
 				})
 				require.NoError(t, buildErr)
@@ -144,7 +144,7 @@ func TestApplyImageLayersMethod(t *testing.T) {
 				Digest:      marker,
 				RawContents: rawImageLayer(t, "dcp-layer-marker", marker),
 			}},
-			Labels: tracker.Labels(),
+			Labels: tracker.MapLabels(),
 			Tag:    image,
 		})
 		require.NoError(t, applyErr)

@@ -85,7 +85,7 @@ func TestBuildImageFromArchiveDirectoryPreservesBuildOptions(t *testing.T) {
 					Args:           []EnvVar{{Name: "ARG", Value: "value"}},
 					Secrets:        []ContainerBuildSecret{{ID: "secret", Type: EnvSecret, Value: "private-value"}},
 					Stage:          "final",
-					Labels:         []Label{{Key: "owner", Value: "test"}},
+					Labels:         map[string]string{"owner": "test"},
 				},
 				TimeoutOption: TimeoutOption{Timeout: time.Minute},
 			}
