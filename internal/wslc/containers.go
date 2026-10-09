@@ -17,6 +17,7 @@ import (
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/termpty"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -121,10 +122,16 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		}
 		args = append(args, "--env-file", envFile)
 	}
-	var labelArgsErr error
-	args, labelArgsErr = appendLabelArgs(args, options.Labels, "container")
-	if labelArgsErr != nil {
-		return nil, labelArgsErr
+	labelValues := maps.SliceToMap(options.Labels, func(label containers.Label) (string, string) {
+		return label.Key, label.Value
+	})
+	labelKeys := maps.Keys(labelValues)
+	sort.Strings(labelKeys)
+	for _, key := range labelKeys {
+		if key == "" {
+			return nil, fmt.Errorf("container label key cannot be empty")
+		}
+		args = append(args, "--label", key+"="+labelValues[key])
 	}
 
 	switch options.PullPolicy {
@@ -200,14 +207,14 @@ func (wco *WslcCliOrchestrator) CreateContainer(ctx context.Context, options con
 			runErr,
 			normalizeCliErrors(errBuf, containerNotFoundMatch, imageNotFoundMatch, allocationFailureMatch, alreadyExistsMatch),
 		)
-		containerID, idErr := parseSingleIdentifier(outBuf)
+		containerID, idErr := asId(outBuf)
 		if idErr == nil {
 			return containerID, operationErr
 		}
 		return "", operationErr
 	}
 
-	return parseSingleIdentifier(outBuf)
+	return asId(outBuf)
 }
 
 func (wco *WslcCliOrchestrator) RunContainer(ctx context.Context, options containers.RunContainerOptions) (string, error) {
@@ -247,14 +254,14 @@ func (wco *WslcCliOrchestrator) RunContainer(ctx context.Context, options contai
 			runErr,
 			normalizeCliErrors(errBuf, containerNotFoundMatch, imageNotFoundMatch, allocationFailureMatch, alreadyExistsMatch),
 		)
-		containerID, idErr := parseSingleIdentifier(outBuf)
+		containerID, idErr := asId(outBuf)
 		if idErr == nil {
 			return containerID, operationErr
 		}
 		return "", operationErr
 	}
 
-	return parseSingleIdentifier(outBuf)
+	return asId(outBuf)
 }
 
 func (wco *WslcCliOrchestrator) resolveCreateContainerNetworks(
@@ -327,7 +334,6 @@ func (wco *WslcCliOrchestrator) ListContainers(ctx context.Context, options cont
 
 	rawContainers, decodeErr := decodeJSONLines[wslcListedContainer](outBuf)
 	listedContainers := make([]containers.ListedContainer, 0, len(rawContainers))
-	labelInspectionIDs := make([]string, 0, len(rawContainers))
 	for _, rawContainer := range rawContainers {
 		if rawContainer.ID == "" {
 			decodeErr = errors.Join(
@@ -338,45 +344,21 @@ func (wco *WslcCliOrchestrator) ListContainers(ctx context.Context, options cont
 			continue
 		}
 
+		labels := make(map[string]string)
+		for _, label := range strings.Split(rawContainer.Labels, ",") {
+			key, value, _ := strings.Cut(label, "=")
+			labels[key] = value
+		}
+
 		containerName := strings.TrimPrefix(strings.TrimSpace(strings.Split(rawContainer.Names, ",")[0]), "/")
 		listedContainers = append(listedContainers, containers.ListedContainer{
 			Id:       rawContainer.ID,
 			Name:     containerName,
 			Image:    rawContainer.Image,
 			Status:   rawContainer.State,
+			Labels:   labels,
 			Networks: splitCommaSeparated(rawContainer.Networks),
 		})
-		labelInspectionIDs = append(labelInspectionIDs, rawContainer.ID)
-	}
-
-	if len(labelInspectionIDs) > 0 {
-		inspectedContainers, inspectErr := wco.inspectContainersRaw(ctx, labelInspectionIDs)
-		labelsByID := make(map[string]map[string]string, len(inspectedContainers))
-		for _, inspectedContainer := range inspectedContainers {
-			labelsByID[inspectedContainer.ID] = inspectedContainer.Config.Labels
-		}
-		survivingContainers := make([]containers.ListedContainer, 0, len(listedContainers))
-		for index := range listedContainers {
-			labels, found := labelsByID[listedContainers[index].Id]
-			if found {
-				listedContainers[index].Labels = labels
-				survivingContainers = append(survivingContainers, listedContainers[index])
-			}
-		}
-		inspectionResultErr := errors.Join(
-			inspectErr,
-			incompleteError("containers", len(inspectedContainers), len(labelInspectionIDs)),
-			incompleteError("listed containers", len(survivingContainers), len(listedContainers)),
-		)
-		if isBenignListInspectionRace(inspectionResultErr) {
-			listedContainers = survivingContainers
-		} else if inspectionResultErr != nil {
-			decodeErr = errors.Join(
-				decodeErr,
-				fmt.Errorf("resolving authoritative labels for listed WSLC containers: %w",
-					inspectionResultErr),
-			)
-		}
 	}
 
 	return listedContainers, decodeErr
@@ -589,14 +571,13 @@ func (wco *WslcCliOrchestrator) StartContainers(ctx context.Context, options con
 
 	return runSequentially(ctx, "containers", options.Containers, func(containerReference string) error {
 		cmd := makeWslcCommand("container", "start", containerReference)
-		_, errBuf, runErr := wco.runBufferedWslcCommandInternal(
+		_, errBuf, runErr := wco.runBufferedWslcCommand(
 			ctx,
 			"StartContainer",
 			cmd,
-			options.StdOutStream,
-			options.StdErrStream,
+			usvc_io.NopWriteCloser(options.StdOutStream),
+			usvc_io.NopWriteCloser(options.StdErrStream),
 			ordinaryCommandTimeout,
-			false,
 		)
 		if runErr != nil {
 			return errors.Join(runErr, normalizeCliErrors(errBuf, containerNotFoundMatch))
@@ -730,28 +711,29 @@ func (wco *WslcCliOrchestrator) ExecContainer(ctx context.Context, options conta
 	args = append(args, options.Args...)
 
 	cmd := makeWslcCommand(args...)
-	startedProcess, startErr := wco.startStreamingWslcCommand(
+	cmd.Stdout = usvc_io.NopWriteCloser(options.StdOutStream)
+	cmd.Stderr = usvc_io.NopWriteCloser(options.StdErrStream)
+	exitCodes := make(chan int32, 1)
+	exitHandler := process.ProcessExitHandlerFunc(func(_ process.Pid_t, exitCode int32, exitErr error) {
+		if exitErr != nil && !errors.Is(exitErr, context.Canceled) && !errors.Is(exitErr, context.DeadlineExceeded) {
+			wco.log.Error(exitErr, "WSLC container exec command failed", "Container", options.Container)
+		}
+		exitCodes <- exitCode
+		close(exitCodes)
+	})
+	wco.log.V(1).Info("Running WSLC command", "Command", cmd.String())
+	_, startWaitForExit, startErr := wco.executor.StartProcess(
 		ctx,
-		"ExecContainer",
 		cmd,
-		options.StdOutStream,
-		options.StdErrStream,
+		exitHandler,
+		process.CreationFlagEnsureKillOnDispose,
+		nil,
 	)
 	if startErr != nil {
+		close(exitCodes)
 		return nil, fmt.Errorf("starting WSLC container exec: %w", startErr)
 	}
-
-	exitCodes := make(chan int32, 1)
-	go func() {
-		defer close(exitCodes)
-
-		processResult := startedProcess.wait()
-		completionErr := processResult.err()
-		if hasNonCancellationError(completionErr) {
-			wco.log.Error(completionErr, "WSLC container exec command failed", "Container", options.Container)
-		}
-		exitCodes <- processResult.exitInfo.ExitCode
-	}()
+	startWaitForExit()
 
 	return exitCodes, nil
 }
@@ -768,8 +750,6 @@ func (wco *WslcCliOrchestrator) AttachContainer(
 	}
 
 	cmd := makeWslcCommand("container", "attach", options.Container)
-	// The terminal supplies its own isolated console.
-	cmd.SysProcAttr = nil
 	return termpty.StartProcessWithTerminal(ctx, wco.executor, &termpty.CommandSpec{
 		Cmd:           cmd,
 		CreationFlags: process.CreationFlagEnsureKillOnDispose,
@@ -833,19 +813,23 @@ func (wco *WslcCliOrchestrator) CaptureContainerLogs(
 	args := options.Apply([]string{"container", "logs"})
 	args = append(args, containerReference)
 	cmd := makeWslcCommand(args...)
-
-	exitHandler, startErr := wco.startStreamingWslcCommand(
+	cmd.Stdout = usvc_io.NopWriteCloser(stdout)
+	cmd.Stderr = usvc_io.NopWriteCloser(stderr)
+	exitHandler := process.NewConcurrentProcessExitHandler()
+	wco.log.V(1).Info("Running WSLC command", "Command", cmd.String())
+	_, startWaitForExit, startErr := wco.executor.StartProcess(
 		ctx,
-		"CaptureContainerLogs",
 		cmd,
-		stdout,
-		stderr,
+		exitHandler,
+		process.CreationFlagEnsureKillOnDispose,
+		nil,
 	)
 	if startErr != nil {
 		closeLogDestination(wco, containerReference, "stdout", stdout)
 		closeLogDestination(wco, containerReference, "stderr", stderr)
-		return startErr
+		return fmt.Errorf("starting WSLC container log capture: %w", startErr)
 	}
+	startWaitForExit()
 
 	go func() {
 		<-exitHandler.Exited()

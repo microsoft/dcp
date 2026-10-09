@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/pkg/maps"
 )
 
 func (wco *WslcCliOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
@@ -89,10 +90,16 @@ func (wco *WslcCliOrchestrator) BuildImage(ctx context.Context, options containe
 	if options.Stage != "" {
 		args = append(args, "--target", options.Stage)
 	}
-	var labelArgsErr error
-	args, labelArgsErr = appendLabelArgs(args, options.Labels, "image")
-	if labelArgsErr != nil {
-		return labelArgsErr
+	labelValues := maps.SliceToMap(options.Labels, func(label containers.Label) (string, string) {
+		return label.Key, label.Value
+	})
+	labelKeys := maps.Keys(labelValues)
+	sort.Strings(labelKeys)
+	for _, key := range labelKeys {
+		if key == "" {
+			return fmt.Errorf("image label key cannot be empty")
+		}
+		args = append(args, "--label", key+"="+labelValues[key])
 	}
 
 	args = append(args, "--progress", "plain", options.Context)
@@ -213,7 +220,7 @@ func (wco *WslcCliOrchestrator) PullImage(ctx context.Context, options container
 		return "", errors.Join(runErr, normalizeCliErrors(errBuf, imageNotFoundMatch))
 	}
 
-	if imageID, idErr := parseSingleIdentifier(outBuf); idErr == nil && isImageIdentifier(imageID) {
+	if imageID, idErr := asId(outBuf); idErr == nil && isImageIdentifier(imageID) {
 		return imageID, nil
 	}
 

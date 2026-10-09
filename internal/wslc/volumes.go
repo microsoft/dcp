@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/pkg/maps"
 )
 
 func (wco *WslcCliOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
@@ -21,10 +22,7 @@ func (wco *WslcCliOrchestrator) CreateVolume(ctx context.Context, options contai
 	}
 
 	args := []string{"volume", "create"}
-	labelKeys := make([]string, 0, len(options.Labels))
-	for key := range options.Labels {
-		labelKeys = append(labelKeys, key)
-	}
+	labelKeys := maps.Keys(options.Labels)
 	sort.Strings(labelKeys)
 	for _, key := range labelKeys {
 		if key == "" {
@@ -47,7 +45,7 @@ func (wco *WslcCliOrchestrator) CreateVolume(ctx context.Context, options contai
 		return errors.Join(runErr, normalizeCliErrors(errBuf, alreadyExistsMatch))
 	}
 
-	outputName, outputErr := parseSingleIdentifier(outBuf)
+	outputName, outputErr := asId(outBuf)
 	if outputErr != nil {
 		return outputErr
 	}

@@ -197,7 +197,7 @@ Automatic selection prefers healthy Docker, then healthy Podman, then healthy WS
 
 The network status probe may open or create the caller's default session and initialize or wake WSLC, including during automatic discovery and recurring status polling. DCP does not configure or terminate the session.
 
-Non-PTY WSLC commands use separate hidden Windows consoles so console-wide shutdown signals cannot interrupt unrelated commands. On cancellation, DCP uses its `stop-process-tree` helper to attach to that console, deliver the shutdown signal, and clean the verified process tree. Terminal attachment continues to use its existing ConPTY console.
+WSLC commands use the shared process executor, just like Docker and Podman. The executor owns process-group setup, cancellation, exit tracking, and cleanup; the adapter does not implement its own process lifecycle. Terminal attachment uses the existing ConPTY implementation.
 
 WSLC exposes `host.wslc.internal` as its default container-to-host address. `ContainerHost()` and the `hostName` field from `dcp info` return that value for WSLC; consumers must not substitute Docker- or Podman-specific host names.
 
@@ -215,7 +215,7 @@ WSLC exposes `host.wslc.internal` as its default container-to-host address. `Con
 | Forced disconnect | `network disconnect --force` is rejected. | Attempt ordinary disconnect and verify detachment, including stopped-container configuration. Report failure if the requested result cannot be verified; stale-endpoint force parity is not assumed. |
 | Raw capabilities | `--cap-add NET_RAW` is rejected. | Raw runtime arguments are not silently stripped. The tunnel test's optional ping/debug argument is omitted for WSLC, without removing its TCP assertions. |
 
-The adapter normalizes native CLI differences such as JSON-line listings versus array inspections, full network IDs versus name-only mutations, container port/mount layouts, structured labels, repeated typed label keys (last value wins), and single-container `start` commands. These are not reasons to disable the corresponding conformance cases.
+The adapter normalizes native CLI differences such as JSON-line listings versus array inspections, full network IDs versus name-only mutations, container port/mount layouts, repeated typed label keys (last value wins), and single-container `start` commands. These are not reasons to disable the corresponding conformance cases. Container and network listings parse the native comma-delimited label text directly, matching Docker; commas within label values remain ambiguous.
 
 Archive-backed WSLC builds support regular files and directories from a hash-verified source file or base64 raw contents. Unsafe paths, links, special files, and duplicate or case-colliding paths are rejected explicitly. The Dockerfile must be inside the archive. Staging uses ordinary Windows directory-context metadata, not the archive's Unix ownership or permission bits; use Dockerfile options such as `COPY --chmod` when executable permissions are required. Temporary-context removal is retried after success, failure, or cancellation. A persistent cleanup failure is joined to an existing operation error; after a successful build it is logged without hiding the usable image result. Caller-owned archives are not modified.
 

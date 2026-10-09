@@ -116,8 +116,8 @@ func TestContainerWatcherSubscriptionFailureCleansPartialState(t *testing.T) {
 			if networkSubscription != nil {
 				require.True(t, networkSubscription.Cancelled())
 			}
-			requireNetworkEventChannelClosed(t, lifetimeCtx, containerOutput)
-			requireNetworkEventChannelClosed(t, lifetimeCtx, networkOutput)
+			requireContainerWatcherEventChannelClosed(t, lifetimeCtx, containerOutput)
+			requireContainerWatcherEventChannelClosed(t, lifetimeCtx, networkOutput)
 			require.NoError(t, lifetimeCtx.Err())
 		})
 	}
@@ -183,7 +183,18 @@ func TestContainerWatcherRepeatedRegistrationPreservesSubscriptions(t *testing.T
 	require.Nil(t, watcher.networkEvtSub)
 	require.Nil(t, watcher.containerEvtCh)
 	require.Nil(t, watcher.networkEvtCh)
-	requireNetworkEventChannelClosed(t, lifetimeCtx, containerOutput)
-	requireNetworkEventChannelClosed(t, lifetimeCtx, networkOutput)
+	requireContainerWatcherEventChannelClosed(t, lifetimeCtx, containerOutput)
+	requireContainerWatcherEventChannelClosed(t, lifetimeCtx, networkOutput)
 	require.NoError(t, lifetimeCtx.Err())
+}
+
+func requireContainerWatcherEventChannelClosed(t *testing.T, ctx context.Context, output <-chan containers.EventMessage) {
+	t.Helper()
+	require.NotNil(t, output)
+	select {
+	case _, open := <-output:
+		require.False(t, open, "watcher event channel should close without controller shutdown")
+	case <-ctx.Done():
+		t.Fatalf("watcher event channel was not released: %v", ctx.Err())
+	}
 }

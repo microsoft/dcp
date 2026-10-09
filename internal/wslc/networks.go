@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/pkg/maps"
 )
 
 func (wco *WslcCliOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
@@ -24,10 +25,7 @@ func (wco *WslcCliOrchestrator) CreateNetwork(ctx context.Context, options conta
 	}
 
 	args := []string{"network", "create"}
-	labelKeys := make([]string, 0, len(options.Labels))
-	for key := range options.Labels {
-		labelKeys = append(labelKeys, key)
-	}
+	labelKeys := maps.Keys(options.Labels)
 	sort.Strings(labelKeys)
 	for _, key := range labelKeys {
 		if key == "" {
@@ -53,7 +51,7 @@ func (wco *WslcCliOrchestrator) CreateNetwork(ctx context.Context, options conta
 		)
 	}
 
-	outputName, outputErr := parseSingleIdentifier(outBuf)
+	outputName, outputErr := asId(outBuf)
 	if outputErr == nil && outputName != options.Name {
 		outputErr = fmt.Errorf("wslc network create returned name %q instead of %q", outputName, options.Name)
 	}
@@ -484,48 +482,25 @@ func (wco *WslcCliOrchestrator) ListNetworks(ctx context.Context, options contai
 	}
 
 	listedNetworks := make([]containers.ListedNetwork, 0, len(rawNetworks))
-	labelInspectionIDs := make([]string, 0, len(rawNetworks))
 	for _, rawNetwork := range rawNetworks {
+		labels := make(map[string]string)
+		for _, label := range strings.Split(rawNetwork.Labels, ",") {
+			if len(label) < 3 {
+				continue
+			}
+			keyValue := strings.SplitN(label, "=", 2)
+			if len(keyValue) == 2 && len(keyValue[0]) > 0 && len(keyValue[1]) > 0 {
+				labels[keyValue[0]] = keyValue[1]
+			}
+		}
 		listedNetworks = append(listedNetworks, containers.ListedNetwork{
 			Driver:   rawNetwork.Driver,
 			ID:       rawNetwork.ID,
 			IPv6:     bool(rawNetwork.IPv6),
 			Internal: bool(rawNetwork.Internal),
+			Labels:   labels,
 			Name:     rawNetwork.Name,
 		})
-		labelInspectionIDs = append(labelInspectionIDs, rawNetwork.ID)
-	}
-
-	if len(labelInspectionIDs) > 0 {
-		inspectedNetworks, inspectErr := wco.InspectNetworks(ctx, containers.InspectNetworksOptions{
-			Networks: labelInspectionIDs,
-		})
-		labelsByID := make(map[string]map[string]string, len(inspectedNetworks))
-		for _, inspectedNetwork := range inspectedNetworks {
-			labelsByID[inspectedNetwork.Id] = inspectedNetwork.Labels
-		}
-		survivingNetworks := make([]containers.ListedNetwork, 0, len(listedNetworks))
-		for index := range listedNetworks {
-			labels, found := labelsByID[listedNetworks[index].ID]
-			if found {
-				listedNetworks[index].Labels = labels
-				survivingNetworks = append(survivingNetworks, listedNetworks[index])
-			}
-		}
-		inspectionResultErr := errors.Join(
-			inspectErr,
-			incompleteError("networks", len(inspectedNetworks), len(labelInspectionIDs)),
-			incompleteError("listed networks", len(survivingNetworks), len(listedNetworks)),
-		)
-		if isBenignListInspectionRace(inspectionResultErr) {
-			listedNetworks = survivingNetworks
-		} else if inspectionResultErr != nil {
-			listErr = errors.Join(
-				listErr,
-				fmt.Errorf("resolving authoritative labels for listed WSLC networks: %w",
-					inspectionResultErr),
-			)
-		}
 	}
 
 	return listedNetworks, listErr

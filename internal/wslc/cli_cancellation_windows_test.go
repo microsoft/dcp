@@ -9,11 +9,7 @@ package wslc
 
 import (
 	"context"
-	"errors"
-	"os"
 	"os/exec"
-	"os/signal"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -21,61 +17,73 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/microsoft/dcp/internal/dcppaths"
-	usvc_io "github.com/microsoft/dcp/pkg/io"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-const wslcCancellationHelperMarker = "DCP_WSLC_CANCELLATION_HELPER_MARKER"
+type recordingProcessExecutor struct {
+	process.Executor
+	started chan process.ProcessHandle
+}
 
-// Verifies that the production dcpproc console-stop path cancels an isolated-console command without the generic six-second delay.
-func TestWslcCommandCancellationUsesDcpStopProcessTree(t *testing.T) {
-	if markerPath := os.Getenv(wslcCancellationHelperMarker); markerPath != "" {
-		require.NoError(t, usvc_io.WriteFile(markerPath, []byte("ready"), 0o600))
-		interrupts := make(chan os.Signal, 1)
-		signal.Notify(interrupts, os.Interrupt)
-		defer signal.Stop(interrupts)
-		select {
-		case <-interrupts:
-			return
-		case <-t.Context().Done():
-			t.Fatal(t.Context().Err())
-		}
+func (executor *recordingProcessExecutor) StartProcess(
+	ctx context.Context,
+	command *exec.Cmd,
+	handler process.ProcessExitHandler,
+	flags process.ProcessCreationFlag,
+	create process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	handle, startWaiting, startErr := executor.Executor.StartProcess(ctx, command, handler, flags, create)
+	if startErr == nil {
+		executor.started <- handle
 	}
+	return handle, startWaiting, startErr
+}
 
-	dcppaths.EnableTestPathProbing()
+// Verifies that buffered commands delegate cancellation to the shared executor, which gracefully stops and reaps a delay tree in the inherited console.
+func TestWslcCommandCancellationUsesExecutor(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
 	defer testCancel()
 	executor := process.NewOSExecutor(testr.New(t))
 	defer executor.Dispose()
-	orchestrator := NewWslcCliOrchestrator(testr.New(t), executor).(*WslcCliOrchestrator)
+	observedExecutor := &recordingProcessExecutor{
+		Executor: executor,
+		started:  make(chan process.ProcessHandle, 1),
+	}
+	orchestrator := NewWslcCliOrchestrator(testr.New(t), observedExecutor).(*WslcCliOrchestrator)
 
-	markerPath := filepath.Join(t.TempDir(), "ready")
-	command := exec.Command(os.Args[0], "-test.run=^TestWslcCommandCancellationUsesDcpStopProcessTree$")
-	command.Env = append(os.Environ(), wslcCancellationHelperMarker+"="+markerPath)
-	configureWslcCommand(command)
-
+	delayPath, delayPathErr := internal_testutil.GetTestToolPath("delay")
+	require.NoError(t, delayPathErr)
+	command := exec.Command(delayPath, "--delay=3m", "--child-spec=1", "--couple-children")
 	commandCtx, commandCancel := context.WithCancel(testCtx)
+	defer commandCancel()
 	result := make(chan error, 1)
+	commandDone := make(chan struct{})
 	go func() {
+		defer close(commandDone)
 		_, _, runErr := orchestrator.runBufferedWslcCommand(
-			commandCtx,
-			"CancellationTest",
-			command,
-			nil,
-			nil,
-			time.Minute,
+			commandCtx, "CancellationTest", command, nil, nil, time.Minute,
 		)
 		result <- runErr
 	}()
+	defer func() {
+		commandCancel()
+		<-commandDone
+	}()
+	var handle process.ProcessHandle
+	select {
+	case startedHandle, open := <-observedExecutor.started:
+		require.True(t, open, "process starts closed before the delay process was observed")
+		handle = startedHandle
+	case <-testCtx.Done():
+		t.Fatal(testCtx.Err())
+	}
 
-	readyErr := wait.PollUntilContextCancel(testCtx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
-		_, statErr := os.Stat(markerPath)
-		if errors.Is(statErr, os.ErrNotExist) {
-			return false, nil
-		}
-		return statErr == nil, statErr
+	// Delay installs its signal handler before spawning the child in the same process group.
+	readyErr := wait.PollUntilContextCancel(testCtx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+		tree, treeErr := process.GetProcessTree(pollCtx, handle)
+		return len(tree) >= 2, treeErr
 	})
 	require.NoError(t, readyErr)
 
@@ -88,4 +96,6 @@ func TestWslcCommandCancellationUsesDcpStopProcessTree(t *testing.T) {
 		t.Fatal(testCtx.Err())
 	}
 	require.Less(t, time.Since(startedAt), 5500*time.Millisecond)
+	require.NotNil(t, command.ProcessState)
+	require.Zero(t, command.ProcessState.ExitCode(), "delay should exit on the console interrupt, not be force-killed")
 }

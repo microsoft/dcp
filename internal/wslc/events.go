@@ -20,6 +20,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -75,11 +76,22 @@ func (wco *WslcCliOrchestrator) watchEvents(
 	since := time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano)
 	command := makeWslcCommand("events", "--filter", "type="+string(source), "--since", since)
 	diagnostics := &eventDiagnostics{}
-	exitHandler, startErr := wco.startStreamingWslcCommand(streamCtx, "WatchEvents", command, writer, diagnostics)
+	command.Stdout = usvc_io.NopWriteCloser(writer)
+	command.Stderr = diagnostics
+	exitHandler := process.NewConcurrentProcessExitHandler()
+	wco.log.V(1).Info("Running WSLC command", "Command", command.String())
+	_, startWaitForExit, startErr := wco.executor.StartProcess(
+		streamCtx,
+		command,
+		exitHandler,
+		process.CreationFlagEnsureKillOnDispose,
+		nil,
+	)
 	if startErr != nil {
 		wco.log.Error(startErr, "Could not start WSLC event stream", "Source", source)
 		return
 	}
+	startWaitForExit()
 
 	streamDone := make(chan struct{})
 	go func() {
