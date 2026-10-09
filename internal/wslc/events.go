@@ -8,30 +8,21 @@ package wslc
 import (
 	"bufio"
 	"context"
-	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
-
-	"github.com/go-logr/logr"
 
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/process"
-	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 const (
 	maxEventSize           = 2 * 1024 * 1024
 	maxEventDiagnosticSize = 4096
-)
-
-var (
-	wslcEventPattern  = regexp.MustCompile(`^(\S+) (container|network) ([a-z_]+(?:: [^\r\n]+?)?) ([0-9a-fA-F]{64})(?: \(([^\r\n]*)\))?$`)
-	errWslcEventPanic = errors.New("wslc event parser panicked")
 )
 
 func (wco *WslcCliOrchestrator) WatchContainers(
@@ -52,14 +43,6 @@ func (wco *WslcCliOrchestrator) WatchNetworks(
 	return wco.networkEvtWatcher.Subscribe(sink), nil
 }
 
-func (wco *WslcCliOrchestrator) doWatchContainers(ctx context.Context, subscriptions *pubsub.SubscriptionSet[containers.EventMessage]) {
-	wco.watchEvents(ctx, subscriptions, containers.EventSourceContainer)
-}
-
-func (wco *WslcCliOrchestrator) doWatchNetworks(ctx context.Context, subscriptions *pubsub.SubscriptionSet[containers.EventMessage]) {
-	wco.watchEvents(ctx, subscriptions, containers.EventSourceNetwork)
-}
-
 func (wco *WslcCliOrchestrator) watchEvents(
 	watcherCtx context.Context,
 	subscriptions *pubsub.SubscriptionSet[containers.EventMessage],
@@ -72,9 +55,14 @@ func (wco *WslcCliOrchestrator) watchEvents(
 	defer reader.Close()
 	defer writer.Close()
 
-	// Replay the startup boundary because WSLC timestamps have second-level precision.
+	// Replay the startup boundary so events emitted while the stream starts are not missed.
 	since := time.Now().Add(-time.Second).UTC().Format(time.RFC3339Nano)
-	command := makeWslcCommand("events", "--filter", "type="+string(source), "--since", since)
+	command := makeWslcCommand(
+		"events",
+		"--filter", "type="+string(source),
+		"--since", since,
+		"--format", "json",
+	)
 	diagnostics := &eventDiagnostics{}
 	command.Stdout = usvc_io.NopWriteCloser(writer)
 	command.Stderr = diagnostics
@@ -110,17 +98,15 @@ func (wco *WslcCliOrchestrator) watchEvents(
 	}()
 
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 4096), maxEventSize)
+	scanner.Buffer(make([]byte, maxEventDiagnosticSize), maxEventSize)
 	parserLog := wco.log.WithValues("Source", source)
 	for scanner.Scan() {
 		if streamCtx.Err() != nil {
 			return
 		}
-		event, parseErr := parseWslcEvent(scanner.Text(), parserLog)
-		if parseErr != nil {
-			if !errors.Is(parseErr, errWslcEventPanic) {
-				parserLog.Error(parseErr, "Could not parse WSLC event")
-			}
+		event, unmarshalErr := unmarshalWslcEvent(scanner.Bytes())
+		if unmarshalErr != nil {
+			parserLog.Error(unmarshalErr, "Could not parse WSLC event", "EventData", scanner.Text())
 			continue
 		}
 		if event.Source == source {
@@ -142,46 +128,29 @@ func (wco *WslcCliOrchestrator) watchEvents(
 	wco.log.Error(streamErr, "WSLC event stream stopped unexpectedly", "Source", source, "Stderr", diagnostics.String())
 }
 
-func parseWslcEvent(line string, log logr.Logger) (event containers.EventMessage, parseErr error) {
-	defer func() {
-		panicErr := resiliency.MakePanicError(recover(), log)
-		if panicErr != nil {
-			event = containers.EventMessage{}
-			parseErr = errors.Join(errWslcEventPanic, panicErr)
-		}
-	}()
+type wslcEventActor struct {
+	ID         string            `json:"ID,omitempty"`
+	Attributes map[string]string `json:"Attributes,omitempty"`
+}
 
-	if len(line) > maxEventSize {
-		return containers.EventMessage{}, fmt.Errorf("wslc event exceeds %d bytes", maxEventSize)
-	}
-	match := wslcEventPattern.FindStringSubmatch(strings.TrimSpace(line))
-	if len(match) != 6 {
-		return containers.EventMessage{}, fmt.Errorf("invalid WSLC event format or incomplete object ID")
-	}
-	if _, timestampErr := time.Parse(time.RFC3339Nano, match[1]); timestampErr != nil {
-		return containers.EventMessage{}, fmt.Errorf("parsing WSLC event timestamp: %w", timestampErr)
+type wslcEventMessage struct {
+	Source containers.EventSource `json:"Type"`
+	Action containers.EventAction `json:"Action"`
+	Actor  wslcEventActor         `json:"Actor,omitempty"`
+}
+
+func unmarshalWslcEvent(data []byte) (containers.EventMessage, error) {
+	var wslcEvent wslcEventMessage
+	if unmarshalErr := json.Unmarshal(data, &wslcEvent); unmarshalErr != nil {
+		return containers.EventMessage{}, unmarshalErr
 	}
 
-	action, _, _ := strings.Cut(match[3], ":")
-	event = containers.EventMessage{
-		Source: containers.EventSource(match[2]),
-		Action: containers.EventAction(action),
-		Actor:  containers.EventActor{ID: match[4]},
-	}
-	if event.Source == containers.EventSourceNetwork &&
-		(event.Action == containers.EventActionConnect || event.Action == containers.EventActionDisconnect) {
-		// Endpoint identity is the first native attribute; unescaped names must not supply it.
-		firstAttribute, _, _ := strings.Cut(match[5], ", ")
-		containerID, hasContainer := strings.CutPrefix(firstAttribute, "container=")
-		if !hasContainer || len(containerID) != 64 {
-			return containers.EventMessage{}, fmt.Errorf("WSLC network event is missing a complete container ID")
-		}
-		if _, decodeErr := hex.DecodeString(containerID); decodeErr != nil {
-			return containers.EventMessage{}, fmt.Errorf("decoding WSLC network event container ID: %w", decodeErr)
-		}
-		event.Attributes = map[string]string{"container": containerID}
-	}
-	return event, nil
+	return containers.EventMessage{
+		Source:     wslcEvent.Source,
+		Action:     wslcEvent.Action,
+		Actor:      containers.EventActor{ID: wslcEvent.Actor.ID},
+		Attributes: wslcEvent.Actor.Attributes,
+	}, nil
 }
 
 type eventDiagnostics struct {

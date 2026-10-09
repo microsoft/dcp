@@ -164,11 +164,11 @@ func convertInspectedNetwork(rawNetwork wslcInspectedNetwork) (containers.Inspec
 		Driver:     rawNetwork.Driver,
 		Labels:     rawNetwork.Labels,
 		Scope:      rawNetwork.Scope,
-		IPv6:       bool(rawNetwork.EnableIPv6) || bool(rawNetwork.IPv6),
-		Internal:   bool(rawNetwork.Internal),
-		Attachable: bool(rawNetwork.Attachable),
-		Ingress:    bool(rawNetwork.Ingress),
-		CreatedAt:  rawNetwork.Created.Time,
+		IPv6:       rawNetwork.EnableIPv6 || rawNetwork.IPv6,
+		Internal:   rawNetwork.Internal,
+		Attachable: rawNetwork.Attachable,
+		Ingress:    rawNetwork.Ingress,
+		CreatedAt:  rawNetwork.Created,
 	}
 	for _, config := range rawNetwork.IPAM.Config {
 		if config.Subnet != "" {
@@ -496,8 +496,8 @@ func (wco *WslcCliOrchestrator) ListNetworks(ctx context.Context, options contai
 		listedNetworks = append(listedNetworks, containers.ListedNetwork{
 			Driver:   rawNetwork.Driver,
 			ID:       rawNetwork.ID,
-			IPv6:     bool(rawNetwork.IPv6),
-			Internal: bool(rawNetwork.Internal),
+			IPv6:     rawNetwork.IPv6 == "true",
+			Internal: rawNetwork.Internal == "true",
 			Labels:   labels,
 			Name:     rawNetwork.Name,
 		})

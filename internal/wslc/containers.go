@@ -17,33 +17,15 @@ import (
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/termpty"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
-	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
 func applyCreateContainerOptions(args []string, options containers.CreateContainerOptions) ([]string, error) {
-	if options.Image == "" {
-		return nil, fmt.Errorf("must specify an image")
-	}
 	if options.RestartPolicy != "" && options.RestartPolicy != containers.RestartPolicyNone {
 		return nil, fmt.Errorf("wslc does not support restart policy %q", options.RestartPolicy)
 	}
-	if options.Healthcheck.Interval < 0 ||
-		options.Healthcheck.Timeout < 0 ||
-		options.Healthcheck.StartPeriod < 0 ||
-		options.Healthcheck.StartInterval < 0 ||
-		options.Healthcheck.Retries < 0 {
-		return nil, fmt.Errorf("health-check durations and retry count cannot be negative")
-	}
 	if options.Healthcheck.StartInterval > 0 {
 		return nil, fmt.Errorf("wslc does not support health-check start intervals")
-	}
-	if len(options.Healthcheck.Command) == 0 &&
-		(options.Healthcheck.Interval > 0 ||
-			options.Healthcheck.Timeout > 0 ||
-			options.Healthcheck.Retries > 0 ||
-			options.Healthcheck.StartPeriod > 0) {
-		return nil, fmt.Errorf("health-check options require a health-check command")
 	}
 
 	if options.Name != "" {
@@ -51,16 +33,10 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 	}
 
 	for _, network := range options.Networks {
-		if network.Name == "" {
-			return nil, fmt.Errorf("container network name cannot be empty")
-		}
 		networkValue := network.Name
 		if len(network.Aliases) > 0 {
 			networkValue = "name=" + network.Name
 			for _, alias := range network.Aliases {
-				if alias == "" {
-					return nil, fmt.Errorf("container network alias cannot be empty")
-				}
 				networkValue += ",alias=" + alias
 			}
 		}
@@ -68,13 +44,6 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 	}
 
 	for _, mount := range options.VolumeMounts {
-		if mount.Type != containers.BindMount && mount.Type != containers.NamedVolumeMount {
-			return nil, fmt.Errorf("unsupported container mount type %q", mount.Type)
-		}
-		if mount.Target == "" {
-			return nil, fmt.Errorf("container mount target cannot be empty")
-		}
-
 		mountValue := fmt.Sprintf("type=%s", mount.Type)
 		if mount.Source != "" {
 			mountValue += ",src=" + mount.Source
@@ -87,20 +56,13 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 	}
 
 	for _, port := range options.Ports {
-		if port.ContainerPort <= 0 {
-			return nil, fmt.Errorf("container port must be positive")
-		}
-		if port.HostPort < 0 {
-			return nil, fmt.Errorf("host port cannot be negative")
-		}
-
 		hostIP := port.HostIP
 		if hostIP == "" {
 			hostIP = networking.IPv4LocalhostDefaultAddress
 		}
 
 		hostPort := ""
-		if port.HostPort > 0 {
+		if port.HostPort != 0 {
 			hostPort = fmt.Sprintf("%d", port.HostPort)
 		}
 		portValue := fmt.Sprintf("%s:%s:%d", hostIP, hostPort, port.ContainerPort)
@@ -111,34 +73,15 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 	}
 
 	for _, envVar := range options.Env {
-		if envVar.Name == "" {
-			return nil, fmt.Errorf("container environment variable name cannot be empty")
-		}
 		args = append(args, "--env", envVar.Name+"="+envVar.Value)
 	}
 	for _, envFile := range options.EnvFiles {
-		if envFile == "" {
-			return nil, fmt.Errorf("container environment file path cannot be empty")
-		}
 		args = append(args, "--env-file", envFile)
 	}
-	labelValues := maps.SliceToMap(options.Labels, func(label containers.Label) (string, string) {
-		return label.Key, label.Value
-	})
-	labelKeys := maps.Keys(labelValues)
-	sort.Strings(labelKeys)
-	for _, key := range labelKeys {
-		if key == "" {
-			return nil, fmt.Errorf("container label key cannot be empty")
-		}
-		args = append(args, "--label", key+"="+labelValues[key])
+	for _, label := range options.Labels {
+		args = append(args, "--label", label.Key+"="+label.Value)
 	}
 
-	switch options.PullPolicy {
-	case "", containers.PullPolicyAlways, containers.PullPolicyMissing, containers.PullPolicyNever:
-	default:
-		return nil, fmt.Errorf("unsupported image pull policy %q", options.PullPolicy)
-	}
 	if options.PullPolicy != "" {
 		args = append(args, "--pull", string(options.PullPolicy))
 	}
@@ -495,9 +438,9 @@ func convertInspectedContainer(
 		Id:          containerID,
 		Name:        containerName,
 		Image:       rawContainer.Config.Image,
-		CreatedAt:   rawContainer.Created.Time,
-		StartedAt:   rawContainer.State.StartedAt.Time,
-		FinishedAt:  rawContainer.State.FinishedAt.Time,
+		CreatedAt:   rawContainer.Created,
+		StartedAt:   rawContainer.State.StartedAt,
+		FinishedAt:  rawContainer.State.FinishedAt,
 		Status:      status,
 		Error:       rawContainer.State.Error,
 		ExitCode:    rawContainer.State.ExitCode,

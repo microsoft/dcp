@@ -15,45 +15,6 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 )
 
-// Verifies that makeWslcCommand leaves platform process setup to the shared executor and preserves native command arguments.
-func TestMakeWslcCommandUsesExecutorLaunchPolicy(t *testing.T) {
-	t.Parallel()
-
-	command := makeWslcCommand("container", "list")
-	require.Nil(t, command.SysProcAttr)
-	require.Equal(t, command.Path, command.Args[0])
-	require.Equal(t, []string{"container", "list"}, command.Args[1:])
-}
-
-// Verifies that JSON-line decoding accepts empty listings and retains valid objects while reporting malformed lines.
-func TestDecodeJSONLinesAllowsEmptyListingsAndPreservesValidLines(t *testing.T) {
-	t.Parallel()
-
-	empty, emptyErr := decodeJSONLines[wslcListedVolume](bytes.NewBuffer(nil))
-	require.NoError(t, emptyErr)
-	require.Empty(t, empty)
-
-	decoded, decodeErr := decodeJSONLines[wslcListedVolume](bytes.NewBufferString(
-		"{\"Name\":\"first\"}\nnot-json\n{\"Name\":\"second\"}\n",
-	))
-	require.ErrorIs(t, decodeErr, containers.ErrUnmarshalling)
-	require.Equal(t, []wslcListedVolume{{Name: "first"}, {Name: "second"}}, decoded)
-}
-
-// Verifies that JSON-array decoding preserves valid image objects when another element has an invalid field type.
-func TestDecodeJSONArrayPreservesValidObjects(t *testing.T) {
-	t.Parallel()
-
-	decoded, decodeErr := decodeJSONArray[wslcInspectedImage](bytes.NewBufferString(
-		`[{"Id":"sha256:first"},{"Id":42},{"Id":"sha256:second"}]`,
-	))
-
-	require.ErrorIs(t, decodeErr, containers.ErrUnmarshalling)
-	require.Len(t, decoded, 2)
-	require.Equal(t, "sha256:first", decoded[0].ID)
-	require.Equal(t, "sha256:second", decoded[1].ID)
-}
-
 // Verifies that native missing-container, image, network, and volume diagnostics map to the shared not-found error.
 func TestNormalizeCliErrorsRecognizesWslcMissingObjects(t *testing.T) {
 	t.Parallel()
@@ -134,18 +95,4 @@ func TestAsIdRejectsEmptyAndAmbiguousOutput(t *testing.T) {
 
 	_, multipleErr := asId(bytes.NewBufferString("first\nsecond\n"))
 	require.Error(t, multipleErr)
-}
-
-// Verifies that WSLC network decoding accepts both string-encoded and ordinary JSON boolean values.
-func TestWslcBoolAcceptsStringsAndBooleans(t *testing.T) {
-	t.Parallel()
-
-	decoded, decodeErr := decodeJSONLines[wslcListedNetwork](bytes.NewBufferString(
-		"{\"ID\":\"one\",\"Name\":\"first\",\"IPv6\":\"true\",\"Internal\":false}\n",
-	))
-
-	require.NoError(t, decodeErr)
-	require.Len(t, decoded, 1)
-	require.True(t, bool(decoded[0].IPv6))
-	require.False(t, bool(decoded[0].Internal))
 }

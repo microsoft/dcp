@@ -66,50 +66,87 @@ func TestFindAvailableContainerRuntimeRecordsImplicitSelection(t *testing.T) {
 	require.Equal(t, flags.PodmanRuntime, flags.GetRuntimeFlagValue())
 }
 
-// Verifies that runtime selection favors healthy and installed candidates, then Docker, Podman, and WSLC independently of discovery order.
-func TestRuntimeSelectionPriorities(t *testing.T) {
+// Verifies that selectAvailableRuntime waits for higher-priority probes and selects the first healthy runtime in priority order.
+func TestSelectAvailableRuntimeUsesOrderedResults(t *testing.T) {
 	t.Parallel()
 
 	absent := containers.ContainerRuntimeStatus{}
 	stopped := containers.ContainerRuntimeStatus{Installed: true}
 	healthy := containers.ContainerRuntimeStatus{Installed: true, Running: true}
 
+	runtimeResult := func(name string, status containers.ContainerRuntimeStatus) *runtimeSupport {
+		return &runtimeSupport{
+			orchestrator: selectionTestOrchestrator{name: name},
+			status:       status,
+		}
+	}
+
 	for _, testCase := range []struct {
-		name   string
-		docker containers.ContainerRuntimeStatus
-		podman containers.ContainerRuntimeStatus
-		wslc   containers.ContainerRuntimeStatus
-		want   string
+		name        string
+		results     []*runtimeSupport
+		wantRuntime string
+		wantFinal   bool
 	}{
-		{name: "all healthy", docker: healthy, podman: healthy, wslc: healthy, want: "docker"},
-		{name: "podman and wslc", docker: absent, podman: healthy, wslc: healthy, want: "podman"},
-		{name: "wslc only", docker: absent, podman: absent, wslc: healthy, want: "wslc"},
-		{name: "wslc healthy others stopped", docker: stopped, podman: stopped, wslc: healthy, want: "wslc"},
-		{name: "podman healthy docker stopped", docker: stopped, podman: healthy, wslc: healthy, want: "podman"},
-		{name: "docker healthy wslc stopped", docker: healthy, podman: absent, wslc: stopped, want: "docker"},
-		{name: "all stopped", docker: stopped, podman: stopped, wslc: stopped, want: "docker"},
-		{name: "installed podman and wslc", docker: absent, podman: stopped, wslc: stopped, want: "podman"},
-		{name: "only wslc installed", docker: absent, podman: absent, wslc: stopped, want: "wslc"},
-		{name: "none installed", docker: absent, podman: absent, wslc: absent, want: "docker"},
+		{
+			name: "docker healthy",
+			results: []*runtimeSupport{
+				runtimeResult("docker", healthy),
+				nil,
+				nil,
+			},
+			wantRuntime: "docker",
+			wantFinal:   true,
+		},
+		{
+			name: "podman healthy after docker failure",
+			results: []*runtimeSupport{
+				runtimeResult("docker", absent),
+				runtimeResult("podman", healthy),
+				nil,
+			},
+			wantRuntime: "podman",
+			wantFinal:   true,
+		},
+		{
+			name: "podman pending before wslc success",
+			results: []*runtimeSupport{
+				runtimeResult("docker", absent),
+				nil,
+				runtimeResult("wslc", healthy),
+			},
+			wantFinal: false,
+		},
+		{
+			name: "wslc healthy after higher priority failures",
+			results: []*runtimeSupport{
+				runtimeResult("docker", absent),
+				runtimeResult("podman", stopped),
+				runtimeResult("wslc", healthy),
+			},
+			wantRuntime: "wslc",
+			wantFinal:   true,
+		},
+		{
+			name: "best fallback after every runtime fails",
+			results: []*runtimeSupport{
+				runtimeResult("docker", absent),
+				runtimeResult("podman", stopped),
+				runtimeResult("wslc", absent),
+			},
+			wantRuntime: "podman",
+			wantFinal:   true,
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			candidates := []*runtimeSupport{
-				{orchestrator: selectionTestOrchestrator{name: "docker"}, status: testCase.docker},
-				{orchestrator: selectionTestOrchestrator{name: "podman"}, status: testCase.podman},
-				{orchestrator: selectionTestOrchestrator{name: "wslc"}, status: testCase.wslc},
-			}
-			for _, order := range [][3]int{
-				{0, 1, 2}, {0, 2, 1}, {1, 0, 2},
-				{1, 2, 0}, {2, 0, 1}, {2, 1, 0},
-			} {
-				var selected *runtimeSupport
-				for _, index := range order {
-					selected = preferredRuntime(selected, candidates[index])
-				}
-				require.NotNil(t, selected)
-				require.Equal(t, testCase.want, selected.orchestrator.Name(), "discovery order: %v", order)
+			selectedRuntime, selectionFinal := selectAvailableRuntime(testCase.results)
+			require.Equal(t, testCase.wantFinal, selectionFinal)
+			if testCase.wantRuntime == "" {
+				require.Nil(t, selectedRuntime)
+			} else {
+				require.NotNil(t, selectedRuntime)
+				require.Equal(t, testCase.wantRuntime, selectedRuntime.orchestrator.Name())
 			}
 		})
 	}

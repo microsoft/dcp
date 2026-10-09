@@ -11,96 +11,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/microsoft/dcp/internal/containers"
 )
-
-type wslcBool bool
-
-func (value *wslcBool) UnmarshalJSON(data []byte) error {
-	var boolValue bool
-	if boolErr := json.Unmarshal(data, &boolValue); boolErr == nil {
-		*value = wslcBool(boolValue)
-		return nil
-	}
-
-	var stringValue string
-	if stringErr := json.Unmarshal(data, &stringValue); stringErr != nil {
-		return fmt.Errorf("expected a JSON boolean or boolean string: %w", stringErr)
-	}
-
-	parsedValue, parseErr := strconv.ParseBool(stringValue)
-	if parseErr != nil {
-		return fmt.Errorf("parsing boolean value %q: %w", stringValue, parseErr)
-	}
-	*value = wslcBool(parsedValue)
-	return nil
-}
-
-type wslcTime struct {
-	time.Time
-}
-
-func (value *wslcTime) UnmarshalJSON(data []byte) error {
-	if bytes.Equal(data, []byte("null")) {
-		value.Time = time.Time{}
-		return nil
-	}
-
-	var stringValue string
-	if unmarshalErr := json.Unmarshal(data, &stringValue); unmarshalErr != nil {
-		return unmarshalErr
-	}
-	if stringValue == "" {
-		value.Time = time.Time{}
-		return nil
-	}
-
-	layouts := []string{
-		time.RFC3339Nano,
-		time.RFC3339,
-		"2006-01-02 15:04:05.999999999 -0700 MST",
-		"2006-01-02 15:04:05 -0700 MST",
-	}
-	for _, layout := range layouts {
-		parsedTime, parseErr := time.Parse(layout, stringValue)
-		if parseErr == nil {
-			value.Time = parsedTime
-			return nil
-		}
-	}
-
-	return fmt.Errorf("unsupported time value %q", stringValue)
-}
-
-type wslcStringSlice []string
-
-func (value *wslcStringSlice) UnmarshalJSON(data []byte) error {
-	if bytes.Equal(data, []byte("null")) {
-		*value = nil
-		return nil
-	}
-
-	var values []string
-	if sliceErr := json.Unmarshal(data, &values); sliceErr == nil {
-		*value = values
-		return nil
-	}
-
-	var singleValue string
-	if stringErr := json.Unmarshal(data, &singleValue); stringErr != nil {
-		return fmt.Errorf("expected a JSON string or string array: %w", stringErr)
-	}
-	if singleValue == "" {
-		*value = nil
-	} else {
-		*value = []string{singleValue}
-	}
-	return nil
-}
 
 type wslcListedContainer struct {
 	ID       string                     `json:"ID"`
@@ -114,7 +29,7 @@ type wslcListedContainer struct {
 type wslcInspectedContainer struct {
 	ID              string                                   `json:"Id"`
 	Name            string                                   `json:"Name"`
-	Created         wslcTime                                 `json:"Created"`
+	Created         time.Time                                `json:"Created"`
 	Config          wslcInspectedContainerConfig             `json:"Config"`
 	State           wslcInspectedContainerState              `json:"State"`
 	Ports           containers.InspectedContainerPortMapping `json:"Ports"`
@@ -125,7 +40,7 @@ type wslcInspectedContainer struct {
 type wslcInspectedContainerConfig struct {
 	Image       string                                   `json:"Image"`
 	Cmd         []string                                 `json:"Cmd"`
-	Entrypoint  wslcStringSlice                          `json:"Entrypoint"`
+	Entrypoint  []string                                 `json:"Entrypoint"`
 	Env         []string                                 `json:"Env"`
 	Labels      map[string]string                        `json:"Labels"`
 	Healthcheck containers.InspectedContainerHealthcheck `json:"Healthcheck"`
@@ -134,8 +49,8 @@ type wslcInspectedContainerConfig struct {
 type wslcInspectedContainerState struct {
 	Status     containers.ContainerStatus           `json:"Status"`
 	Running    bool                                 `json:"Running"`
-	StartedAt  wslcTime                             `json:"StartedAt"`
-	FinishedAt wslcTime                             `json:"FinishedAt"`
+	StartedAt  time.Time                            `json:"StartedAt"`
+	FinishedAt time.Time                            `json:"FinishedAt"`
 	ExitCode   int32                                `json:"ExitCode"`
 	Error      string                               `json:"Error"`
 	Health     *containers.InspectedContainerHealth `json:"Health"`
@@ -174,8 +89,8 @@ type wslcInspectedImageConfig struct {
 type wslcListedNetwork struct {
 	Driver   string `json:"Driver"`
 	ID       string `json:"ID"`
-	IPv6     wslcBool
-	Internal wslcBool
+	IPv6     string `json:"IPv6"`
+	Internal string `json:"Internal"`
 	Labels   string `json:"Labels"`
 	Name     string `json:"Name"`
 }
@@ -183,14 +98,14 @@ type wslcListedNetwork struct {
 type wslcInspectedNetwork struct {
 	ID         string                                   `json:"Id"`
 	Name       string                                   `json:"Name"`
-	Created    wslcTime                                 `json:"Created"`
+	Created    time.Time                                `json:"Created"`
 	Scope      string                                   `json:"Scope"`
 	Driver     string                                   `json:"Driver"`
-	EnableIPv6 wslcBool                                 `json:"EnableIPv6"`
-	IPv6       wslcBool                                 `json:"IPv6"`
-	Internal   wslcBool                                 `json:"Internal"`
-	Attachable wslcBool                                 `json:"Attachable"`
-	Ingress    wslcBool                                 `json:"Ingress"`
+	EnableIPv6 bool                                     `json:"EnableIPv6"`
+	IPv6       bool                                     `json:"IPv6"`
+	Internal   bool                                     `json:"Internal"`
+	Attachable bool                                     `json:"Attachable"`
+	Ingress    bool                                     `json:"Ingress"`
 	IPAM       wslcInspectedNetworkIPAM                 `json:"IPAM"`
 	Labels     map[string]string                        `json:"Labels"`
 	Containers map[string]wslcInspectedNetworkContainer `json:"Containers"`
@@ -219,7 +134,7 @@ type wslcInspectedVolume struct {
 	Labels     map[string]string `json:"Labels"`
 	Mountpoint string            `json:"Mountpoint"`
 	Scope      string            `json:"Scope"`
-	CreatedAt  wslcTime          `json:"CreatedAt"`
+	CreatedAt  time.Time         `json:"CreatedAt"`
 }
 
 func decodeJSONLines[T any](buffer *bytes.Buffer) ([]T, error) {

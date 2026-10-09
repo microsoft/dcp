@@ -40,7 +40,7 @@ const (
 	defaultCreateTimeout     = 10 * time.Minute
 	defaultRunTimeout        = 10 * time.Minute
 	statusRefreshInterval    = 5 * time.Second
-	minimumWslcVersion       = "3.0.1.0"
+	minimumWslcVersion       = "3.0.2.0"
 	defaultWslcContainerHost = "host.wslc.internal"
 	unsupportedHostMessage   = "WSLC is only available on Windows hosts"
 )
@@ -136,8 +136,18 @@ func NewWslcCliOrchestrator(log logr.Logger, executor process.Executor) containe
 	if runtime.GOOS != "windows" {
 		orchestrator.cachedStatus = &containers.ContainerRuntimeStatus{Error: unsupportedHostMessage}
 	}
-	orchestrator.containerEvtWatcher = pubsub.NewSubscriptionSet(orchestrator.doWatchContainers, context.Background())
-	orchestrator.networkEvtWatcher = pubsub.NewSubscriptionSet(orchestrator.doWatchNetworks, context.Background())
+	orchestrator.containerEvtWatcher = pubsub.NewSubscriptionSet(
+		func(ctx context.Context, subscriptions *pubsub.SubscriptionSet[containers.EventMessage]) {
+			orchestrator.watchEvents(ctx, subscriptions, containers.EventSourceContainer)
+		},
+		context.Background(),
+	)
+	orchestrator.networkEvtWatcher = pubsub.NewSubscriptionSet(
+		func(ctx context.Context, subscriptions *pubsub.SubscriptionSet[containers.EventMessage]) {
+			orchestrator.watchEvents(ctx, subscriptions, containers.EventSourceNetwork)
+		},
+		context.Background(),
+	)
 	return orchestrator
 }
 

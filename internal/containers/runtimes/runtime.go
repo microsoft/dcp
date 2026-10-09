@@ -8,7 +8,6 @@ package runtimes
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -37,7 +36,7 @@ type runtimeSupport struct {
 }
 
 type runtimeProbeResult struct {
-	name    flags.RuntimeFlagValue
+	index   int
 	support *runtimeSupport
 }
 
@@ -47,39 +46,46 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 	var availableRuntime *runtimeSupport
 	if runtimeFlagValue == flags.UnknownRuntime {
 		// If the user didn't specify a runtime, pick a supported runtime and use it
-		runtimeNames := registeredRuntimeNames()
+		runtimeFactories := make([]ContainerOrchestratorFactory, 0, len(supportedRuntimes))
+		for _, runtimeName := range []flags.RuntimeFlagValue{
+			flags.DockerRuntime,
+			flags.PodmanRuntime,
+			flags.WslcRuntime,
+		} {
+			if runtimeFactory := supportedRuntimes[runtimeName]; runtimeFactory != nil {
+				runtimeFactories = append(runtimeFactories, runtimeFactory)
+			}
+		}
+
 		discoveryCtx, discoveryCancel := context.WithCancel(ctx)
 		defer discoveryCancel()
-		runtimesCh := make(chan runtimeProbeResult, len(runtimeNames))
-		pendingRuntimes := make(map[flags.RuntimeFlagValue]struct{}, len(runtimeNames))
+		runtimesCh := make(chan runtimeProbeResult, len(runtimeFactories))
+		runtimeResults := make([]*runtimeSupport, len(runtimeFactories))
 
-		for _, runtimeName := range runtimeNames {
-			runtimeFactory := supportedRuntimes[runtimeName]
-			pendingRuntimes[runtimeName] = struct{}{}
+		for index, runtimeFactory := range runtimeFactories {
 			// Check each supported runtime to see if it's installed and running
-			go func(name flags.RuntimeFlagValue, factory ContainerOrchestratorFactory) {
+			go func(resultIndex int, factory ContainerOrchestratorFactory) {
 				orchestrator := factory(log, executor)
 				status := orchestrator.CheckStatus(discoveryCtx, containers.IgnoreCachedRuntimeStatus)
 				runtimesCh <- runtimeProbeResult{
-					name:    name,
+					index:   resultIndex,
 					support: &runtimeSupport{orchestrator, status},
 				}
-			}(runtimeName, runtimeFactory)
+			}(index, runtimeFactory)
 		}
 
-		for len(pendingRuntimes) > 0 {
+		for range runtimeFactories {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case probeResult := <-runtimesCh:
-				delete(pendingRuntimes, probeResult.name)
 				if probeResult.support == nil {
-					return nil, fmt.Errorf("container runtime discovery returned an empty result for %q", probeResult.name)
+					return nil, fmt.Errorf("container runtime discovery returned an empty result")
 				}
-				availableRuntime = preferredRuntime(availableRuntime, probeResult.support)
-				if runtimeSelectionFinal(availableRuntime, pendingRuntimes) {
+				runtimeResults[probeResult.index] = probeResult.support
+				if selectedRuntime, selectionFinal := selectAvailableRuntime(runtimeResults); selectionFinal {
 					discoveryCancel()
-					return recordSelectedRuntime(log, availableRuntime)
+					return recordSelectedRuntime(log, selectedRuntime)
 				}
 			}
 		}
@@ -97,48 +103,22 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 	return recordSelectedRuntime(log, availableRuntime)
 }
 
-func registeredRuntimeNames() []flags.RuntimeFlagValue {
-	priorityOrder := []flags.RuntimeFlagValue{
-		flags.DockerRuntime,
-		flags.PodmanRuntime,
-		flags.WslcRuntime,
-	}
-	runtimeNames := make([]flags.RuntimeFlagValue, 0, len(supportedRuntimes))
-	registered := make(map[flags.RuntimeFlagValue]struct{}, len(priorityOrder))
-	for _, runtimeName := range priorityOrder {
-		if supportedRuntimes[runtimeName] != nil {
-			runtimeNames = append(runtimeNames, runtimeName)
-			registered[runtimeName] = struct{}{}
+func selectAvailableRuntime(runtimeResults []*runtimeSupport) (*runtimeSupport, bool) {
+	var fallbackRuntime *runtimeSupport
+	for _, runtimeResult := range runtimeResults {
+		if runtimeResult == nil {
+			return nil, false
+		}
+		if runtimeResult.status.IsHealthy() {
+			return runtimeResult, true
+		}
+		if fallbackRuntime == nil ||
+			(!fallbackRuntime.status.Installed && runtimeResult.status.Installed) ||
+			(!fallbackRuntime.status.Running && runtimeResult.status.Running) {
+			fallbackRuntime = runtimeResult
 		}
 	}
-	extraRuntimeNames := make([]flags.RuntimeFlagValue, 0, len(supportedRuntimes)-len(runtimeNames))
-	for runtimeName, runtimeFactory := range supportedRuntimes {
-		if runtimeFactory == nil {
-			continue
-		}
-		if _, found := registered[runtimeName]; !found {
-			extraRuntimeNames = append(extraRuntimeNames, runtimeName)
-		}
-	}
-	slices.Sort(extraRuntimeNames)
-	runtimeNames = append(runtimeNames, extraRuntimeNames...)
-	return runtimeNames
-}
-
-func runtimeSelectionFinal(
-	availableRuntime *runtimeSupport,
-	pendingRuntimes map[flags.RuntimeFlagValue]struct{},
-) bool {
-	if availableRuntime == nil || !availableRuntime.status.IsHealthy() {
-		return false
-	}
-	selectedPriority := runtimePriority(availableRuntime.orchestrator.Name())
-	for runtimeName := range pendingRuntimes {
-		if runtimePriority(string(runtimeName)) < selectedPriority {
-			return false
-		}
-	}
-	return true
+	return fallbackRuntime, true
 }
 
 func recordSelectedRuntime(log logr.Logger, availableRuntime *runtimeSupport) (containers.ContainerOrchestrator, error) {
@@ -150,36 +130,6 @@ func recordSelectedRuntime(log logr.Logger, availableRuntime *runtimeSupport) (c
 	log.V(1).Info("Runtime status", "Runtime", availableRuntime.orchestrator.Name(), "Status", availableRuntime.status)
 
 	return availableRuntime.orchestrator, nil
-}
-
-func preferredRuntime(current, candidate *runtimeSupport) *runtimeSupport {
-	switch {
-	case current == nil:
-		return candidate
-	case !current.status.Installed && candidate.status.Installed:
-		return candidate
-	case !current.status.Running && candidate.status.Running:
-		return candidate
-	case current.status.Installed == candidate.status.Installed &&
-		current.status.Running == candidate.status.Running &&
-		runtimePriority(candidate.orchestrator.Name()) < runtimePriority(current.orchestrator.Name()):
-		return candidate
-	default:
-		return current
-	}
-}
-
-func runtimePriority(runtimeName string) int {
-	switch flags.RuntimeFlagValue(runtimeName) {
-	case flags.DockerRuntime:
-		return 0
-	case flags.PodmanRuntime:
-		return 1
-	case flags.WslcRuntime:
-		return 2
-	default:
-		return 3
-	}
 }
 
 func FindContainerRuntime(ctx context.Context, runtimeName string, log logr.Logger, executor process.Executor) (containers.ContainerOrchestrator, error) {

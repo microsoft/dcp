@@ -94,7 +94,7 @@ func (wco *WslcCliOrchestrator) InspectVolumes(ctx context.Context, options cont
 			MountPoint: rawVolume.Mountpoint,
 			Scope:      rawVolume.Scope,
 			Labels:     rawVolume.Labels,
-			CreatedAt:  rawVolume.CreatedAt.Time,
+			CreatedAt:  rawVolume.CreatedAt,
 		})
 	}
 
