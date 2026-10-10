@@ -424,6 +424,7 @@ func TestV2NamespaceLifecycleStorageFailedFinalizingUpdateIsUncertain(t *testing
 	requireV2NamespaceGateState(t, fixture.gate, "test")
 }
 
+// Verifies that V2 namespace lifecycle storage rejects dry-run mutations without changing stored resources or gate state.
 func TestV2NamespaceLifecycleStorageRejectsDryRunWithoutMutations(t *testing.T) {
 	for _, resource := range []string{"namespaces", "children"} {
 		for _, operation := range []string{"create", "update", "apply", "delete", "deletecollection"} {
@@ -453,7 +454,7 @@ func TestV2NamespaceLifecycleStorageRejectsDryRunWithoutMutations(t *testing.T) 
 				case "deletecollection":
 					_, mutationErr = storage.DeleteCollection(fixture.ctx, nil, &metav1.DeleteOptions{DryRun: dryRun}, nil)
 				}
-				if resource == "namespaces" && operation == "deletecollection" {
+				if operation == "deletecollection" {
 					require.True(t, apierrors.IsMethodNotSupported(mutationErr))
 				} else {
 					require.True(t, apierrors.IsBadRequest(mutationErr), "%v", mutationErr)
@@ -468,7 +469,8 @@ func TestV2NamespaceLifecycleStorageRejectsDryRunWithoutMutations(t *testing.T) 
 	}
 }
 
-func TestV2NamespaceLifecycleStorageDeleteCollectionScope(t *testing.T) {
+// Verifies that V2 namespace lifecycle storage rejects collection deletion for namespaces and their child resources.
+func TestV2NamespaceLifecycleStorageRejectsDeleteCollection(t *testing.T) {
 	fixture := newV2NamespaceStorageFixture(t)
 	fixture.createNamespace(t)
 	_, createErr := fixture.children.Create(fixture.ctx, newV2LifecycleChild(), nil, nil)
@@ -476,9 +478,9 @@ func TestV2NamespaceLifecycleStorageDeleteCollectionScope(t *testing.T) {
 	_, namespaceErr := fixture.namespaces.DeleteCollection(fixture.ctx, nil, nil, nil)
 	require.True(t, apierrors.IsMethodNotSupported(namespaceErr))
 	_, childErr := fixture.children.DeleteCollection(fixture.ctx, nil, nil, nil)
-	require.NoError(t, childErr)
+	require.True(t, apierrors.IsMethodNotSupported(childErr))
 	_, getErr := fixture.children.Get(fixture.ctx, "child", nil)
-	require.True(t, apierrors.IsNotFound(getErr))
+	require.NoError(t, getErr)
 }
 
 func TestV2NamespaceLifecycleStorageProviderPreservesInterfacesAndScope(t *testing.T) {
