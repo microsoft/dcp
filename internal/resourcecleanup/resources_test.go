@@ -54,6 +54,14 @@ func TestNamespaceResourcesCleanPhysicalConnectionsBeforeContainers(t *testing.T
 	require.Contains(t, namespaceResourcesByGVR[physicalContainerVolumeGVR].CleanUpAfter, physicalContainerGVR)
 }
 
+// Verifies that reset operations are cancelled and cleaned up before their target Containers.
+func TestShutdownResourcesCleanVolumeResetsBeforeContainers(t *testing.T) {
+	resources := cleanupResourcesByGVR(ShutdownResources)
+	resetGVR := (&apiv1.ContainerVolumeReset{}).GetGroupVersionResource()
+	require.Contains(t, resources, resetGVR)
+	require.Contains(t, resources[(&apiv1.Container{}).GetGroupVersionResource()].CleanUpAfter, resetGVR)
+}
+
 func cleanupResourceGVRSet(resources []*CleanupResource) map[schema.GroupVersionResource]struct{} {
 	resourceGVRs := map[schema.GroupVersionResource]struct{}{}
 	for _, resource := range resources {

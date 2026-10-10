@@ -52,6 +52,7 @@ type TestEnvironmentInfo struct {
 type TestEnvironmentOptions struct {
 	WorkloadID                    commonapi.WorkloadID
 	DecorateContainerOrchestrator func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
+	VolumeResetClock              func() time.Time
 }
 
 func (tei *TestEnvironmentInfo) addAfterShutdown(callback func()) {
@@ -275,6 +276,7 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 
+	volumeGenerations := &controllers.ContainerVolumeGenerations{}
 	if inclCtrl&ContainerController != 0 {
 		containerR := controllers.NewContainerReconciler(
 			ctx,
@@ -290,10 +292,18 @@ func StartTestEnvironmentWithOptions(
 				ResourceLeaseOwner:              leaseOwner,
 				ProcessExecutor:                 pex,
 				WorkloadID:                      options.WorkloadID,
+				VolumeGenerations:               volumeGenerations,
 			},
 		)
 		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
+		}
+		resetR := controllers.NewContainerVolumeResetReconciler(
+			ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("ContainerVolumeResetReconciler"), containerR,
+			controllers.ContainerVolumeResetReconcilerConfig{Now: options.VolumeResetClock},
+		)
+		if err = resetR.SetupWithManager(mgr, instanceTag+"-ContainerVolumeResetReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize ContainerVolumeReset reconciler: %w", err)
 		}
 	}
 
@@ -387,6 +397,7 @@ func StartTestEnvironmentWithOptions(
 				StateStore:         stateStore,
 				ResourceLeaseOwner: leaseOwner,
 				WorkloadID:         options.WorkloadID,
+				VolumeGenerations:  volumeGenerations,
 			},
 		)
 		if err = volumeR.SetupWithManager(mgr, instanceTag+"-VolumeReconciler"); err != nil {

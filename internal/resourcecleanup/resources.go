@@ -23,6 +23,9 @@ type CleanupResource struct {
 // ShutdownResources are resource kinds that need to be automatically cleaned up at shutdown.
 var ShutdownResources = []*CleanupResource{
 	{
+		GVR: (&apiv1.ContainerVolumeReset{}).GetGroupVersionResource(),
+	},
+	{
 		GVR: (&apiv1.ContainerExec{}).GetGroupVersionResource(),
 	},
 	{
@@ -35,6 +38,7 @@ var ShutdownResources = []*CleanupResource{
 		GVR: (&apiv1.Container{}).GetGroupVersionResource(),
 		CleanUpAfter: []schema.GroupVersionResource{
 			(&apiv1.ContainerExec{}).GetGroupVersionResource(),
+			(&apiv1.ContainerVolumeReset{}).GetGroupVersionResource(),
 		},
 	},
 	{

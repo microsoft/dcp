@@ -41,6 +41,7 @@ var (
 		&ContainerNetwork{},
 		&ContainerNetworkConnection{},
 		&ContainerExec{},
+		&ContainerVolumeReset{},
 		&Service{},
 		&ContainerNetworkTunnelProxy{},
 	}
