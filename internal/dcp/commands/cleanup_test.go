@@ -326,6 +326,49 @@ func TestCleanupWorkloadResourcesPreservesReplacementVolume(t *testing.T) {
 	require.ErrorIs(t, getRecordErr, statestore.ErrPersistentVolumeNotFound)
 }
 
+// Verifies that explicit workload cleanup removes owned storage generations, including a
+// legacy original, while preserving another owner's generation with the same logical name.
+func TestCleanupPersistentVolumeGenerations(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	for _, entry := range []struct {
+		name       string
+		generation string
+		token      string
+	}{
+		{name: "data", token: "owned"},
+		{name: "data-dcp-1", generation: "1", token: "owned"},
+		{name: "data-dcp-2", generation: "2", token: "owned"},
+		{name: "data-dcp-3", generation: "3", token: "foreign"},
+	} {
+		labels := map[string]string{containers.VolumeOwnershipTokenLabel: entry.token}
+		if entry.generation != "" {
+			labels[containers.VolumeLogicalNameLabel] = "data"
+			labels[containers.VolumeGenerationLabel] = entry.generation
+		}
+		require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: entry.name, Labels: labels}))
+	}
+	record := statestore.PersistentVolumeRecord{ResourceKey: "containervolumes/data", VolumeName: "data-dcp-2",
+		RuntimeName: cleanupTestRuntimeName, WorkloadID: "workload-a", OwnershipToken: "owned"}
+	require.NoError(t, stateStore.UpsertPersistentVolume(ctx, record))
+	_, cleaned, cleanupErr := cleanupPersistentVolumeRecord(ctx, "workload-a", stateStore, leaseOwner,
+		func(string) (containers.ContainerOrchestrator, error) { return orchestrator, nil }, record, logr.Discard())
+	require.NoError(t, cleanupErr)
+	require.True(t, cleaned)
+	for _, name := range []string{"data", "data-dcp-1", "data-dcp-2"} {
+		_, inspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{name}})
+		require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+	}
+	_, foreignErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{"data-dcp-3"}})
+	require.NoError(t, foreignErr)
+}
+
 func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworksAndVolumes(t *testing.T) {
 	t.Parallel()
 

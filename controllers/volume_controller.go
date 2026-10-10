@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/go-logr/logr"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,18 +24,27 @@ import (
 	"github.com/microsoft/dcp/pkg/pointers"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/randdata"
+	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 // Data about ContainerVolume objects that we keep in memory
 // (a remedy for K8s client libraries caching).
 type containerVolumeData struct {
 	// The most recent state of the ContainerVolume object
-	state apiv1.ContainerVolumeState
+	state             apiv1.ContainerVolumeState
+	physicalName      string
+	generation        int64
+	labels            map[string]string
+	message           string
+	pendingGeneration int64
 }
 
 func (cvd *containerVolumeData) Clone() *containerVolumeData {
 	return &containerVolumeData{
-		state: cvd.state,
+		state:        cvd.state,
+		physicalName: cvd.physicalName, generation: cvd.generation,
+		labels: maps.Clone(cvd.labels), message: cvd.message,
+		pendingGeneration: cvd.pendingGeneration,
 	}
 }
 
@@ -46,6 +56,13 @@ func (cvd *containerVolumeData) UpdateFrom(other *containerVolumeData) bool {
 
 	if cvd.state != other.state {
 		cvd.state = other.state
+		updated = true
+	}
+	if cvd.physicalName != other.physicalName || cvd.generation != other.generation ||
+		!maps.Equal(cvd.labels, other.labels) || cvd.message != other.message || cvd.pendingGeneration != other.pendingGeneration {
+		cvd.physicalName, cvd.generation = other.physicalName, other.generation
+		cvd.labels, cvd.message = maps.Clone(other.labels), other.message
+		cvd.pendingGeneration = other.pendingGeneration
 		updated = true
 	}
 
@@ -76,17 +93,18 @@ type volumeName string
 type volumeDataMap = ObjectStateMap[volumeName, containerVolumeData, *containerVolumeData, *apiv1.ContainerVolume]
 
 type VolumeReconcilerConfig struct {
-	StateStore          *statestore.Store
-	ResourceLeaseOwner  process.ProcessHandle
-	WorkloadID          commonapi.WorkloadID
-	VolumeResetRecovery *ContainerVolumeResetRecovery
+	StateStore         *statestore.Store
+	ResourceLeaseOwner process.ProcessHandle
+	WorkloadID         commonapi.WorkloadID
+	VolumeGenerations  *ContainerVolumeGenerations
 }
 
 type VolumeReconciler struct {
 	*ReconcilerBase[apiv1.ContainerVolume, *apiv1.ContainerVolume]
-	orchestrator containers.VolumeOrchestrator
-	volumeData   *volumeDataMap
-	config       VolumeReconcilerConfig
+	orchestrator   containers.VolumeOrchestrator
+	volumeData     *volumeDataMap
+	config         VolumeReconcilerConfig
+	createdVolumes syncmap.Map[string, string]
 }
 
 func NewVolumeReconciler(
@@ -105,8 +123,8 @@ func NewVolumeReconciler(
 		volumeData:     NewObjectStateMap[volumeName, containerVolumeData, *containerVolumeData, *apiv1.ContainerVolume](),
 		config:         config,
 	}
-	if config.VolumeResetRecovery != nil {
-		config.VolumeResetRecovery.notify = r.ScheduleReconciliation
+	if config.VolumeGenerations != nil {
+		config.VolumeGenerations.controller = &r
 	}
 	return &r
 }
@@ -165,20 +183,18 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 }
 
 func (r *VolumeReconciler) handleDeletionRequest(ctx context.Context, vol *apiv1.ContainerVolume, log logr.Logger) objectChange {
-	if r.config.VolumeResetRecovery != nil {
-		if recovery, found := r.config.VolumeResetRecovery.volumes.Load(vol.Spec.Name); found {
-			return r.deleteResetVolumeRecovery(ctx, vol, recovery, log)
-		}
-	}
 	_, volData := r.volumeData.BorrowByNamespacedName(vol.NamespacedName())
-	if volData == nil || volData.state != apiv1.ContainerVolumeStateReady || pointers.TrueValue(vol.Spec.Persistent) {
+	if volData != nil {
+		r.retireVolumeGenerations(ctx, vol, volData, log)
+	}
+	if volData == nil || volData.physicalName == "" || pointers.TrueValue(vol.Spec.Persistent) {
 		// No actual volume to delete, or it is persistent and needs to be preserved.
 		// We can just silently continue with finalizer removal and deletion of the object.
 		r.volumeData.DeleteByNamespacedName(vol.NamespacedName())
 		return deleteFinalizer(vol, volumeFinalizer, log)
 	}
 
-	err := removeVolume(ctx, r.orchestrator, vol.Spec.Name)
+	err := removeVolume(ctx, r.orchestrator, volData.physicalName)
 	if err != nil && !errors.Is(err, containers.ErrNotFound) {
 		log.Error(err, "Could not remove a container volume")
 		return additionalReconciliationNeeded
@@ -191,16 +207,6 @@ func (r *VolumeReconciler) handleDeletionRequest(ctx context.Context, vol *apiv1
 }
 
 func (r *VolumeReconciler) manageVolume(ctx context.Context, vol *apiv1.ContainerVolume, log logr.Logger) objectChange {
-	var recovery *containerVolumeRecovery
-	if r.config.VolumeResetRecovery != nil {
-		recovery, _ = r.config.VolumeResetRecovery.volumes.Load(vol.Spec.Name)
-		if recovery != nil {
-			if !recovery.lock.TryLock() {
-				return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
-			}
-			defer recovery.lock.Unlock()
-		}
-	}
 	targetState := vol.Status.State
 	_, volData := r.volumeData.BorrowByNamespacedName(vol.NamespacedName())
 	if volData != nil {
@@ -208,8 +214,8 @@ func (r *VolumeReconciler) manageVolume(ctx context.Context, vol *apiv1.Containe
 	}
 
 	runInitializer := func(ctx context.Context) objectChange {
-		if recovery != nil {
-			return r.recoverResetVolume(ctx, vol, recovery, log)
+		if volData == nil || volData.generation < vol.Spec.Generation {
+			return handleNewContainerVolume(ctx, r, vol, apiv1.ContainerVolumeStatePending, volData, log)
 		}
 		initializer := getStateInitializer(volumeStateInitializers, targetState, log)
 		return initializer(ctx, r, vol, targetState, volData, log)
@@ -248,8 +254,14 @@ func (r *VolumeReconciler) manageVolume(ctx context.Context, vol *apiv1.Containe
 		change = runInitializer(ctx)
 	}
 
-	if volData != nil && recovery == nil {
+	if volData != nil {
 		r.volumeData.Update(vol.NamespacedName(), volumeName(vol.Spec.Name), volData)
+	}
+	_, latest := r.volumeData.BorrowByNamespacedName(vol.NamespacedName())
+	if latest != nil {
+		change |= setValue(&vol.Status.VolumeName, latest.physicalName)
+		change |= setValue(&vol.Status.Generation, latest.generation)
+		change |= setValue(&vol.Status.Message, latest.message)
 	}
 
 	return change
@@ -275,69 +287,16 @@ func handleNewContainerVolume(
 		}
 		r.volumeData.Store(vol.NamespacedName(), volumeName(vol.Spec.Name), volData)
 	}
+	volData.pendingGeneration = max(vol.Spec.Generation, volData.generation)
 
-	if volData.state == apiv1.ContainerVolumeStateReady {
-		// We have already created the volume. There is nothing to do, we are just seeing stale ContainerVolume object
-		return setContainerVolumeState(vol, apiv1.ContainerVolumeStateReady)
-	}
-
-	inspectedVolume, inspectErr := inspectContainerVolumeIfExists(ctx, r.orchestrator, vol.Spec.Name)
-	if inspectErr == nil {
-		if reconcileRecordErr := r.reconcileExistingPersistentVolumeRecord(ctx, vol, inspectedVolume); reconcileRecordErr != nil {
-			log.Error(reconcileRecordErr, "Could not reconcile existing ContainerVolume workload record", "ResourceKey", vol.GetLeaseKey())
-			return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
-		}
-		log.V(1).Info("Container volume already exists")
-		volData.state = apiv1.ContainerVolumeStateReady
+	if selectErr := r.selectVolumeGeneration(ctx, vol, volData); selectErr != nil {
+		log.Error(selectErr, "Could not select container volume generation")
+		volData.state, volData.message = apiv1.ContainerVolumeStatePending, selectErr.Error()
 		r.volumeData.Update(vol.NamespacedName(), volumeName(vol.Spec.Name), volData)
-		return setContainerVolumeState(vol, apiv1.ContainerVolumeStateReady)
-	} else if !errors.Is(inspectErr, containers.ErrNotFound) {
-		log.Error(inspectErr, "Could not determine whether container volume exists")
 		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
 	}
-
-	// Need to create the volume
-	ownershipToken, prepareRecordErr := r.preparePersistentVolumeRecord(ctx, vol)
-	if prepareRecordErr != nil {
-		log.Error(prepareRecordErr, "Could not persist pending ContainerVolume workload record", "ResourceKey", vol.GetLeaseKey())
-		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
-	}
-
-	createOptions := containers.CreateVolumeOptions{
-		Name:   vol.Spec.Name,
-		Labels: map[string]string{uidLabel: string(vol.UID)},
-	}
-	if ownershipToken != "" {
-		createOptions.Labels[containers.VolumeOwnershipTokenLabel] = ownershipToken
-	}
-	var createErr error
-	inspectedVolume, createErr = createVolume(ctx, r.orchestrator, createOptions)
-	if errors.Is(createErr, containers.ErrAlreadyExists) {
-		var postCreateInspectErr error
-		inspectedVolume, postCreateInspectErr = inspectContainerVolume(ctx, r.orchestrator, vol.Spec.Name)
-		if postCreateInspectErr == nil {
-			createErr = nil
-		} else {
-			createErr = errors.Join(createErr, postCreateInspectErr)
-		}
-	}
-	if createErr != nil {
-		log.Error(createErr, "Could not create a container volume")
-		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
-	}
-	if ownershipToken != "" && !persistentVolumeOwnershipMatches(inspectedVolume, ownershipToken) {
-		discardRecordErr := r.discardPendingPersistentVolumeRecord(ctx, vol, ownershipToken)
-		if discardRecordErr != nil {
-			log.Error(discardRecordErr, "Could not discard stale ContainerVolume workload record", "ResourceKey", vol.GetLeaseKey())
-			return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
-		}
-		log.V(1).Info("Container volume was created concurrently and will be adopted")
-	} else {
-		log.V(1).Info("Container volume created")
-	}
-
-	volData.state = apiv1.ContainerVolumeStateReady
 	r.volumeData.Update(vol.NamespacedName(), volumeName(vol.Spec.Name), volData)
+	r.retireVolumeGenerations(ctx, vol, volData, log)
 	return setContainerVolumeState(vol, apiv1.ContainerVolumeStateReady)
 }
 
@@ -401,28 +360,6 @@ func (r *VolumeReconciler) discardPendingPersistentVolumeRecord(
 	return nil
 }
 
-func (r *VolumeReconciler) reconcileExistingPersistentVolumeRecord(
-	ctx context.Context,
-	vol *apiv1.ContainerVolume,
-	inspectedVolume *containers.InspectedVolume,
-) error {
-	if r.config.WorkloadID == "" || !pointers.TrueValue(vol.Spec.Persistent) || r.config.StateStore == nil {
-		return nil
-	}
-
-	record, getRecordErr := r.config.StateStore.GetPersistentVolume(ctx, vol.GetLeaseKey())
-	if errors.Is(getRecordErr, statestore.ErrPersistentVolumeNotFound) {
-		return nil
-	}
-	if getRecordErr != nil {
-		return getRecordErr
-	}
-	if record.WorkloadID != r.config.WorkloadID || persistentVolumeOwnershipMatches(inspectedVolume, record.OwnershipToken) {
-		return nil
-	}
-	return r.config.StateStore.DeletePersistentVolume(ctx, record.ResourceKey)
-}
-
 func persistentVolumeOwnershipMatches(inspectedVolume *containers.InspectedVolume, ownershipToken string) bool {
 	if inspectedVolume == nil || ownershipToken == "" {
 		return false
@@ -438,7 +375,20 @@ func handleReadyContainerVolume(
 	volData *containerVolumeData,
 	log logr.Logger,
 ) objectChange {
-	// Just make sure the ContainerVolume.Status is updated.
+	selected, inspectErr := inspectContainerVolumeIfExists(ctx, r.orchestrator, volData.physicalName)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		return handleNewContainerVolume(ctx, r, vol, apiv1.ContainerVolumeStatePending, volData, log)
+	}
+	if inspectErr != nil || !maps.Equal(selected.Labels, volData.labels) {
+		selectionErr := inspectErr
+		if selectionErr == nil {
+			selectionErr = fmt.Errorf("selected volume ownership changed")
+		}
+		log.Error(selectionErr, "Could not verify selected container volume")
+		volData.state, volData.message = apiv1.ContainerVolumeStatePending, selectionErr.Error()
+		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
+	}
+	r.retireVolumeGenerations(ctx, vol, volData, log)
 	change := setContainerVolumeState(vol, apiv1.ContainerVolumeStateReady)
 	return change
 }

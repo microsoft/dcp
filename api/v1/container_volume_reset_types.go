@@ -21,7 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
-// ContainerVolumeResetSpec requests a single destructive reset of a Container's named volumes.
+// ContainerVolumeResetSpec requests fresh storage for a Container's owned named volumes.
 // +k8s:openapi-gen=true
 type ContainerVolumeResetSpec struct {
 	// Name of the Container API resource to reset.
@@ -38,17 +38,32 @@ type ContainerVolumeResetConsumer struct {
 	ContainerID   string `json:"containerId,omitempty"`
 }
 
-// ContainerVolumeResetStatus reports reset progress and any partial destructive outcome.
+// ContainerVolumeResetGeneration reports a requested selection, including partial progress after failure.
+// +k8s:openapi-gen=true
+type ContainerVolumeResetGeneration struct {
+	VolumeName          string `json:"volumeName"`
+	PreviousVolumeName  string `json:"previousVolumeName"`
+	RequestedGeneration int64  `json:"requestedGeneration"`
+	// Whether the generation update was acknowledged. A failed update can have an unknown outcome.
+	Requested          bool   `json:"requested"`
+	SelectedVolumeName string `json:"selectedVolumeName,omitempty"`
+	Message            string `json:"message,omitempty"`
+}
+
+// ContainerVolumeResetStatus reports storage selection progress, not application readiness or erasure.
 // +k8s:openapi-gen=true
 type ContainerVolumeResetStatus struct {
-	// Pending, Running, Succeeded, or Failed. Only Succeeded confirms all volumes were reset.
+	// Pending, Running, Succeeded, or Failed. Succeeded confirms fresh storage was selected for every volume.
 	State   string `json:"state"`
 	Message string `json:"message,omitempty"`
 	// Time the operation finished. Terminal results are retained for one hour after publication.
 	FinishTimestamp metav1.MicroTime `json:"finishTimestamp,omitempty"`
-	// Names of volumes successfully removed and recreated empty.
+	// Logical names of volumes whose fresh generations were selected.
 	// +listType=atomic
 	Volumes []string `json:"volumes,omitempty"`
+	// Per-volume progress at the time of observation; terminal failures are not updated by later repair.
+	// +listType=atomic
+	VolumeGenerations []ContainerVolumeResetGeneration `json:"volumeGenerations,omitempty"`
 	// Other consumers, including stopped runtime containers, found during preflight.
 	// +listType=atomic
 	Consumers []ContainerVolumeResetConsumer `json:"consumers,omitempty"`

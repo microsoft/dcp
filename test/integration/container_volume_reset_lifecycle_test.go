@@ -24,7 +24,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that Stop during a real-runtime reset preserves stopped intent and empties storage,
+// Verifies that Stop during a real-runtime reset preserves stopped intent and selects fresh storage,
 // while deletion during preflight preserves persistent data and protects a replacement API identity.
 func TestContainerVolumeResetRealRuntimeLifecycle(t *testing.T) {
 	testutil.SkipIfTrueContainerOrchestratorNotEnabled(t)
@@ -68,11 +68,7 @@ func TestContainerVolumeResetRealRuntimeLifecycle(t *testing.T) {
 						t.Error(containerCleanupErr)
 					}
 				}
-				_, volumeCleanupErr := server.ContainerOrchestrator.RemoveVolumes(context.Background(),
-					containers.RemoveVolumesOptions{Volumes: []string{resourceName}})
-				if volumeCleanupErr != nil && !errors.Is(volumeCleanupErr, containers.ErrNotFound) {
-					t.Error(volumeCleanupErr)
-				}
+				cleanupVolumeResetGenerations(t, server.ContainerOrchestrator, resourceName)
 			}()
 			persistent := scenario.persistent
 			volume := &apiv1.ContainerVolume{
@@ -152,10 +148,11 @@ func TestContainerVolumeResetRealRuntimeLifecycle(t *testing.T) {
 				_, removedErr := server.ContainerOrchestrator.InspectContainers(ctx,
 					containers.InspectContainersOptions{Containers: []string{originalRuntime.Id}})
 				require.ErrorIs(t, removedErr, containers.ErrNotFound)
+				selected := ensureVolumeCreated(t, ctx, server.Client, server.ContainerOrchestrator, volume)
 				probeID, probeCreateErr := server.ContainerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 					Name: resourceName + "-probe", Image: "busybox:latest", Command: []string{"sh", "-c", "sleep 600"},
 					VolumeMounts: []containers.CreateContainerVolumeMount{
-						{Type: containers.NamedVolumeMount, Source: resourceName, Target: "/data"},
+						{Type: containers.NamedVolumeMount, Source: selected.Name, Target: "/data"},
 					},
 				})
 				require.NoError(t, probeCreateErr)
@@ -165,7 +162,7 @@ func TestContainerVolumeResetRealRuntimeLifecycle(t *testing.T) {
 				runVolumeResetCommand(t, ctx, server.ContainerOrchestrator, probeID, "test -z \"$(ls -A /data)\"")
 			}
 			after := ensureVolumeCreated(t, ctx, server.Client, server.ContainerOrchestrator, volume)
-			require.Equal(t, before.Labels, after.Labels)
+			requireSameVolumeOwnership(t, before, after)
 			require.True(t, after.CreatedAt.After(before.CreatedAt))
 			require.NoError(t, server.Client.Delete(ctx, apiTarget))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, apiTarget)

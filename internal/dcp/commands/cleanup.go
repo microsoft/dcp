@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -680,6 +681,46 @@ func cleanupPersistentVolumeRecord(
 			return fmt.Errorf("could not resolve container runtime %q: %w", currentRecord.RuntimeName, resolveErr)
 		}
 
+		logicalName := strings.TrimPrefix(currentRecord.ResourceKey, "containervolumes/")
+		retired, listErr := orchestrator.ListVolumes(ctx, containers.ListVolumesOptions{
+			Filters: containers.ListVolumesFilters{LabelFilters: []containers.LabelFilter{
+				{Key: containers.VolumeLogicalNameLabel, Value: logicalName},
+				{Key: containers.VolumeOwnershipTokenLabel, Value: currentRecord.OwnershipToken},
+			}},
+		})
+		if listErr != nil {
+			return fmt.Errorf("list persistent volume generations: %w", listErr)
+		}
+		if logicalName != currentRecord.VolumeName {
+			retired = append(retired, containers.ListedVolume{Name: logicalName})
+		}
+		for _, candidate := range retired {
+			if candidate.Name == currentRecord.VolumeName {
+				continue
+			}
+			inspected, inspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{candidate.Name}})
+			if errors.Is(inspectErr, containers.ErrNotFound) {
+				continue
+			}
+			if inspectErr != nil {
+				return fmt.Errorf("inspect retired volume generation %q: %w", candidate.Name, inspectErr)
+			}
+			if len(inspected) != 1 {
+				return fmt.Errorf("expected one retired volume generation for %q", candidate.Name)
+			}
+			generation, generationErr := strconv.ParseInt(inspected[0].Labels[containers.VolumeGenerationLabel], 10, 64)
+			legacyOriginal := candidate.Name == logicalName && inspected[0].Labels[containers.VolumeGenerationLabel] == "" &&
+				inspected[0].Labels[containers.VolumeLogicalNameLabel] == ""
+			validName := generation == 0 && candidate.Name == logicalName ||
+				generation > 0 && candidate.Name == fmt.Sprintf("%s-dcp-%d", logicalName, generation)
+			if !legacyOriginal && (generationErr != nil || !validName || inspected[0].Labels[containers.VolumeLogicalNameLabel] != logicalName) {
+				continue
+			}
+			_, retireErr := removePersistentVolume(ctx, orchestrator, candidate.Name, currentRecord.OwnershipToken)
+			if retireErr != nil {
+				return fmt.Errorf("remove retired volume generation %q: %w", candidate.Name, retireErr)
+			}
+		}
 		removed, removeErr := removePersistentVolume(ctx, orchestrator, currentRecord.VolumeName, currentRecord.OwnershipToken)
 		if removeErr != nil {
 			return removeErr

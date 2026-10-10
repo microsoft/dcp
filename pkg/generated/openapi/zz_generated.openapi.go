@@ -53,6 +53,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1.ContainerVolumeList{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ContainerVolumeList(ref),
 		v1.ContainerVolumeReset{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v1_ContainerVolumeReset(ref),
 		v1.ContainerVolumeResetConsumer{}.OpenAPIModelName():           schema_microsoft_dcp_api_v1_ContainerVolumeResetConsumer(ref),
+		v1.ContainerVolumeResetGeneration{}.OpenAPIModelName():         schema_microsoft_dcp_api_v1_ContainerVolumeResetGeneration(ref),
 		v1.ContainerVolumeResetList{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_ContainerVolumeResetList(ref),
 		v1.ContainerVolumeResetSpec{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_ContainerVolumeResetSpec(ref),
 		v1.ContainerVolumeResetStatus{}.OpenAPIModelName():             schema_microsoft_dcp_api_v1_ContainerVolumeResetStatus(ref),
@@ -2274,6 +2275,61 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeResetConsumer(ref common.Referen
 	}
 }
 
+func schema_microsoft_dcp_api_v1_ContainerVolumeResetGeneration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerVolumeResetGeneration reports a requested selection, including partial progress after failure.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"volumeName": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"previousVolumeName": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"requestedGeneration": {
+						SchemaProps: spec.SchemaProps{
+							Default: 0,
+							Type:    []string{"integer"},
+							Format:  "int64",
+						},
+					},
+					"requested": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Whether the generation update was acknowledged. A failed update can have an unknown outcome.",
+							Default:     false,
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"selectedVolumeName": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+				},
+				Required: []string{"volumeName", "previousVolumeName", "requestedGeneration", "requested"},
+			},
+		},
+	}
+}
+
 func schema_microsoft_dcp_api_v1_ContainerVolumeResetList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -2326,7 +2382,7 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeResetSpec(ref common.ReferenceCa
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ContainerVolumeResetSpec requests a single destructive reset of a Container's named volumes.",
+				Description: "ContainerVolumeResetSpec requests fresh storage for a Container's owned named volumes.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"containerName": {
@@ -2356,12 +2412,12 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeResetStatus(ref common.Reference
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ContainerVolumeResetStatus reports reset progress and any partial destructive outcome.",
+				Description: "ContainerVolumeResetStatus reports storage selection progress, not application readiness or erasure.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"state": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Pending, Running, Succeeded, or Failed. Only Succeeded confirms all volumes were reset.",
+							Description: "Pending, Running, Succeeded, or Failed. Succeeded confirms fresh storage was selected for every volume.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -2386,13 +2442,31 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeResetStatus(ref common.Reference
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Names of volumes successfully removed and recreated empty.",
+							Description: "Logical names of volumes whose fresh generations were selected.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Type:   []string{"string"},
 										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"volumeGenerations": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Per-volume progress at the time of observation; terminal failures are not updated by later repair.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v1.ContainerVolumeResetGeneration{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -2428,7 +2502,7 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeResetStatus(ref common.Reference
 			},
 		},
 		Dependencies: []string{
-			v1.ContainerVolumeResetConsumer{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v1.ContainerVolumeResetConsumer{}.OpenAPIModelName(), v1.ContainerVolumeResetGeneration{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -2454,6 +2528,13 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeSpec(ref common.ReferenceCallbac
 							Format:      "",
 						},
 					},
+					"generation": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Requested storage generation. Increasing it selects fresh storage without immediately deleting older generations.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
 				},
 				Required: []string{"name"},
 			},
@@ -2471,6 +2552,27 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeStatus(ref common.ReferenceCallb
 					"state": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The current state of the ContainerVolume",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"volumeName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Physical Docker/Podman volume selected for new container mounts.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"generation": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Selected storage generation.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Diagnostic for an unsuccessful generation transition.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

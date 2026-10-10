@@ -10,7 +10,11 @@ import (
 	"time"
 )
 
-const VolumeOwnershipTokenLabel = "com.microsoft.developer.usvc-dev.volumeOwnershipToken"
+const (
+	VolumeOwnershipTokenLabel = "com.microsoft.developer.usvc-dev.volumeOwnershipToken"
+	VolumeLogicalNameLabel    = "com.microsoft.developer.usvc-dev.volumeName"
+	VolumeGenerationLabel     = "com.microsoft.developer.usvc-dev.volumeGeneration"
+)
 
 // CreateVolume command types
 

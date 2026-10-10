@@ -60,8 +60,8 @@ func submitVolumeReset(t *testing.T, ctx context.Context, apiClient ctrl_client.
 	})
 }
 
-// Verifies that Container volume reset removes session and persistent containers, recreates owned
-// volumes, preserves ownership, and resumes the same Container without repeating the operation.
+// Verifies that Container volume reset removes session and persistent containers, selects fresh
+// owned storage, and resumes the same Container without repeating the operation.
 func TestContainerVolumeResetOwnedVolumes(t *testing.T) {
 	for _, scenario := range []struct {
 		name       string
@@ -122,7 +122,7 @@ func TestContainerVolumeResetOwnedVolumes(t *testing.T) {
 			require.ErrorIs(t, removedInspectErr, containers.ErrNotFound)
 			after := ensureVolumeCreated(t, ctx, server.Client, server.ContainerOrchestrator, volume)
 			require.True(t, after.CreatedAt.After(before.CreatedAt), "physical volume must have been replaced")
-			require.Equal(t, before.Labels, after.Labels)
+			requireSameVolumeOwnership(t, before, after)
 			require.DirExists(t, container.Spec.VolumeMounts[1].Source, "bind-mounted host directories must be preserved")
 			if persistent {
 				record, recordErr := environment.StateStore.GetPersistentVolume(ctx, volume.GetLeaseKey())
@@ -231,8 +231,8 @@ func runVolumeResetCommand(t *testing.T, ctx context.Context, orchestrator conta
 	}
 }
 
-// Verifies that Container volume reset erases an actual runtime volume's marker data and that
-// a recreated container mounts the empty volume, for both session and persistent lifetimes.
+// Verifies that Container volume reset selects a fresh runtime volume without the old marker
+// and that the recreated target mounts it, for both session and persistent lifetimes.
 func TestContainerVolumeResetRealRuntime(t *testing.T) {
 	testutil.SkipIfTrueContainerOrchestratorNotEnabled(t)
 	dcppaths.EnableTestPathProbing()
@@ -285,11 +285,7 @@ func TestContainerVolumeResetRealRuntime(t *testing.T) {
 						t.Error(cleanupContainerErr)
 					}
 				}
-				_, cleanupVolumeErr := server.ContainerOrchestrator.RemoveVolumes(context.Background(),
-					containers.RemoveVolumesOptions{Volumes: []string{resourceName}})
-				if cleanupVolumeErr != nil && !errors.Is(cleanupVolumeErr, containers.ErrNotFound) {
-					t.Error(cleanupVolumeErr)
-				}
+				cleanupVolumeResetGenerations(t, server.ContainerOrchestrator, resourceName)
 			}()
 			volume := &apiv1.ContainerVolume{
 				ObjectMeta: metav1.ObjectMeta{Name: resourceName},
@@ -356,7 +352,7 @@ func TestContainerVolumeResetRealRuntime(t *testing.T) {
 			}
 			if scenario.recovery {
 				require.Equal(t, "Failed", reset.Status.State)
-				require.Contains(t, reset.Status.Message, "the original volume was removed")
+				require.Contains(t, reset.Status.Message, "old-generation cleanup is independent")
 				waitObjectAssumesStateEx(t, ctx, server.Client, ctrl_client.ObjectKeyFromObject(volume), func(updated *apiv1.ContainerVolume) (bool, error) {
 					return updated.Status.State == apiv1.ContainerVolumeStatePending, nil
 				})
@@ -378,7 +374,7 @@ func TestContainerVolumeResetRealRuntime(t *testing.T) {
 			runVolumeResetCommand(t, ctx, server.ContainerOrchestrator, recreatedRuntime.Id,
 				"test ! -e /data/marker && test -z \"$(ls -A /data)\"")
 			after := ensureVolumeCreated(t, ctx, server.Client, server.ContainerOrchestrator, volume)
-			require.Equal(t, before.Labels, after.Labels, "recovery must preserve verified ownership")
+			requireSameVolumeOwnership(t, before, after)
 			unchanged := &apiv1.ContainerVolumeReset{}
 			require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(reset), unchanged))
 			require.Equal(t, reset.Status, unchanged.Status)
@@ -493,7 +489,7 @@ func TestContainerVolumeResetOwnershipRefusal(t *testing.T) {
 	}
 }
 
-type volumeResetRemovalFailure struct {
+type volumeResetRuntimeFailure struct {
 	containers.ContainerOrchestrator
 	scenario string
 	creates  atomic.Int32
@@ -573,12 +569,13 @@ func TestContainerVolumeResetRecreationRecovery(t *testing.T) {
 			failed := submitVolumeReset(t, ctx, server.Client, target)
 			require.Equal(t, "Failed", failed.Status.State)
 			require.True(t, failed.Status.ContainerRemoved)
-			require.Contains(t, failed.Status.Message, "the original volume was removed")
+			require.Contains(t, failed.Status.Message, "old-generation cleanup is independent")
 			waitObjectAssumesStateEx(t, ctx, server.Client, ctrl_client.ObjectKeyFromObject(volume), func(updated *apiv1.ContainerVolume) (bool, error) {
 				return updated.Status.State == apiv1.ContainerVolumeStatePending, nil
 			})
-			_, missingErr := server.ContainerOrchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volume.Spec.Name}})
-			require.ErrorIs(t, missingErr, containers.ErrNotFound)
+			preserved, preservedErr := server.ContainerOrchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volume.Spec.Name}})
+			require.NoError(t, preservedErr)
+			require.Equal(t, before.CreatedAt, preserved[0].CreatedAt)
 			if persistent {
 				record, recordErr := environment.StateStore.GetPersistentVolume(ctx, volume.GetLeaseKey())
 				require.NoError(t, recordErr)
@@ -587,7 +584,7 @@ func TestContainerVolumeResetRecreationRecovery(t *testing.T) {
 			if !scenario.earlyResume {
 				fault.failCreates.Store(false)
 				repairedBeforeResume := ensureVolumeCreated(t, ctx, server.Client, server.ContainerOrchestrator, volume)
-				require.Equal(t, before.Labels, repairedBeforeResume.Labels)
+				requireSameVolumeOwnership(t, before, repairedBeforeResume)
 				stillFailed := &apiv1.ContainerVolumeReset{}
 				require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(failed), stillFailed))
 				require.Equal(t, failed.Status, stillFailed.Status, "repair must not change the terminal reset outcome")
@@ -614,7 +611,7 @@ func TestContainerVolumeResetRecreationRecovery(t *testing.T) {
 				fault.failCreates.Store(false)
 			}
 			repaired := ensureVolumeCreated(t, ctx, server.Client, server.ContainerOrchestrator, volume)
-			require.Equal(t, before.Labels, repaired.Labels)
+			requireSameVolumeOwnership(t, before, repaired)
 			running, _ := ensureContainerRunningEx(t, ctx, server.Client, server.ContainerOrchestrator, target)
 			require.Equal(t, target.UID, running.UID)
 			if !scenario.earlyResume {
@@ -695,31 +692,36 @@ func TestContainerVolumeResetPersistentRecoveryWithoutRegistry(t *testing.T) {
 	}
 }
 
-func (o *volumeResetRemovalFailure) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
-	if o.scenario == "remove" {
+func (o *volumeResetRuntimeFailure) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
+	if o.scenario == "remove" && len(options.Volumes) == 1 && options.Volumes[0] == "reset-volume" {
 		return nil, containers.ErrObjectInUse
 	}
 	return o.ContainerOrchestrator.RemoveVolumes(ctx, options)
 }
 
-func (o *volumeResetRemovalFailure) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
+func (o *volumeResetRuntimeFailure) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
 	if o.creates.Add(1) > 1 && o.scenario == "recreate" {
 		return containers.ErrAlreadyExists
 	}
 	return o.ContainerOrchestrator.CreateVolume(ctx, options)
 }
 
-func (o *volumeResetRemovalFailure) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
-	if o.scenario == "cancel-preflight" && options.All && len(options.Filters.LabelFilters) == 0 {
-		return nil, context.Canceled
+func (o *volumeResetRuntimeFailure) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
+	if options.All && len(options.Filters.LabelFilters) == 0 {
+		switch o.scenario {
+		case "cancel-preflight":
+			return nil, context.Canceled
+		case "list-preflight":
+			return nil, errors.New("runtime container enumeration failed")
+		}
 	}
 	return o.ContainerOrchestrator.ListContainers(ctx, options)
 }
 
-// Verifies that Container volume reset reports runtime removal, recreation, and cancelled-preflight
-// failures explicitly without reporting success, and exposes whether the target was removed.
+// Verifies that Container volume reset surfaces selection, enumeration, and cancellation failures,
+// reports partial progress, and treats deferred retirement independently of fresh selection.
 func TestContainerVolumeResetRuntimeFailure(t *testing.T) {
-	for _, scenario := range []string{"remove", "recreate", "cancel-preflight"} {
+	for _, scenario := range []string{"remove", "recreate", "cancel-preflight", "list-preflight"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -727,7 +729,7 @@ func TestContainerVolumeResetRuntimeFailure(t *testing.T) {
 			server, _, startErr := StartTestEnvironmentWithOptions(t, ctx, ContainerController|VolumeController,
 				"VolumeResetRuntimeFailure"+scenario, t.TempDir(), TestEnvironmentOptions{
 					DecorateContainerOrchestrator: func(orchestrator containers.ContainerOrchestrator, _ *statestore.Store) containers.ContainerOrchestrator {
-						return &volumeResetRemovalFailure{ContainerOrchestrator: orchestrator, scenario: scenario}
+						return &volumeResetRuntimeFailure{ContainerOrchestrator: orchestrator, scenario: scenario}
 					},
 				})
 			require.NoError(t, startErr)
@@ -738,27 +740,78 @@ func TestContainerVolumeResetRuntimeFailure(t *testing.T) {
 			}
 			require.NoError(t, server.Client.Create(ctx, volume))
 			before := ensureVolumeCreated(t, ctx, server.Client, server.ContainerOrchestrator, volume)
-			target, _ := createVolumeResetContainer(t, ctx, server, false,
+			target, originalRuntime := createVolumeResetContainer(t, ctx, server, false,
 				[]apiv1.VolumeMount{{Type: apiv1.NamedVolumeMount, Source: volume.Spec.Name, Target: "/data"}})
 			updated := submitVolumeReset(t, ctx, server.Client, target)
+			if scenario == "remove" {
+				require.Equal(t, "Succeeded", updated.Status.State, updated.Status.Message)
+				after := ensureVolumeCreated(t, ctx, server.Client, server.ContainerOrchestrator, volume)
+				require.NotEqual(t, before.Name, after.Name)
+				preserved, preservedErr := server.ContainerOrchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{before.Name}})
+				require.NoError(t, preservedErr)
+				require.Equal(t, before.CreatedAt, preserved[0].CreatedAt)
+				return
+			}
 			require.Equal(t, "Failed", updated.Status.State)
+			require.False(t, updated.Status.FinishTimestamp.IsZero())
 			require.Empty(t, updated.Status.Volumes)
-			if scenario == "cancel-preflight" {
+			if scenario == "cancel-preflight" || scenario == "list-preflight" {
 				require.False(t, updated.Status.ContainerRemoved)
-				require.Contains(t, updated.Status.Message, "context canceled")
-				_ = ensureContainerState(t, ctx, server.Client, target, apiv1.ContainerStateRunning)
+				require.Contains(t, updated.Status.Message, "list runtime volume consumers")
+				if scenario == "cancel-preflight" {
+					require.Contains(t, updated.Status.Message, "context canceled")
+				} else {
+					require.Contains(t, updated.Status.Message, "runtime container enumeration failed")
+				}
+				unchanged, currentRuntime := ensureContainerRunningEx(t, ctx, server.Client, server.ContainerOrchestrator, target)
+				require.Equal(t, target.UID, unchanged.UID)
+				require.Equal(t, originalRuntime.Id, currentRuntime.Id)
 			} else {
 				require.True(t, updated.Status.ContainerRemoved)
 			}
 			if scenario == "recreate" {
-				require.Contains(t, updated.Status.Message, "the original volume was removed")
+				require.Contains(t, updated.Status.Message, "old-generation cleanup is independent")
 				_, volumeInspectErr := server.ContainerOrchestrator.InspectVolumes(ctx,
 					containers.InspectVolumesOptions{Volumes: []string{volume.Spec.Name}})
-				require.ErrorIs(t, volumeInspectErr, containers.ErrNotFound)
+				require.NoError(t, volumeInspectErr)
 			} else {
 				after := ensureVolumeCreated(t, ctx, server.Client, server.ContainerOrchestrator, volume)
 				require.Equal(t, before.CreatedAt, after.CreatedAt)
 			}
 		})
+	}
+}
+
+// Verifies that selected generations retain the original volume's ownership identity.
+func requireSameVolumeOwnership(t *testing.T, before, after containers.InspectedVolume) {
+	t.Helper()
+	for key, value := range before.Labels {
+		if key == "com.microsoft.developer.usvc-dev.volumeGeneration" {
+			continue
+		}
+		require.Equal(t, value, after.Labels[key], "ownership label %s", key)
+	}
+}
+
+func cleanupVolumeResetGenerations(t *testing.T, orchestrator containers.VolumeOrchestrator, logicalName string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), defaultIntegrationTestTimeout)
+	defer cancel()
+	listed, listErr := orchestrator.ListVolumes(ctx, containers.ListVolumesOptions{
+		Filters: containers.ListVolumesFilters{LabelFilters: []containers.LabelFilter{{Key: containers.VolumeLogicalNameLabel, Value: logicalName}}},
+	})
+	if listErr != nil {
+		t.Error(listErr)
+		return
+	}
+	names := map[string]bool{logicalName: true}
+	for _, candidate := range listed {
+		names[candidate.Name] = true
+	}
+	for name := range names {
+		_, removeErr := orchestrator.RemoveVolumes(ctx, containers.RemoveVolumesOptions{Volumes: []string{name}})
+		if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
+			t.Error(removeErr)
+		}
 	}
 }

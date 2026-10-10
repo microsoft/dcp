@@ -27,18 +27,32 @@ The operation's metadata name and UID identify the attempt; watch or GET its sta
   "state": "Succeeded",
   "finishTimestamp": "2026-07-01T12:00:00.000000Z",
   "containerRemoved": true,
-  "volumes": ["my-data"]
+  "volumes": ["my-data"],
+  "volumeGenerations": [{
+    "volumeName": "my-data",
+    "previousVolumeName": "my-data",
+    "requestedGeneration": 1,
+    "requested": true,
+    "selectedVolumeName": "my-data-dcp-1"
+  }]
 }
 ```
 
 States are `Pending`, `Running`, `Succeeded`, and `Failed`. Only `Succeeded`
-confirms all selected named volumes were removed and recreated empty.
-`Failed` includes a message; `containerRemoved` and `volumes` report partial
-destructive progress. Terminal outcomes never change, even if storage is repaired
-later. This operation is not transactional and cannot restore removed data.
+confirms fresh storage was selected for every named volume. It does **not** confirm
+permanent deletion of old data, application resumption, or application readiness.
+`Failed` includes a message; `containerRemoved`, `volumes`, and `volumeGenerations`
+report partial progress. A selection entry reports the requested generation,
+whether its update was acknowledged, and an observed selected physical name.
+`requested=false` with an update error can mean an unknown submission outcome,
+not proof the update was rejected. An accepted
+request can finish independently after operation failure or cancellation.
+Terminal outcomes never change, even if storage is repaired later. Selection across
+multiple volumes is not transactional; do not interpret failure as no changes.
 
 The operation controller owns status and cancellation. The Container controller
-serializes runtime reset work with the target's ordinary lifecycle reconciliation.
+serializes target stop/removal with ordinary lifecycle reconciliation, then requests
+new generations. Only the Volume controller creates, selects, and retires storage.
 Another active operation for the same target is refused rather than queued for
 an implicit second reset.
 
@@ -66,11 +80,27 @@ instance's verified creation ID and original UID. Arbitrary adopted containers
 are not registered as owned. Without a workload record, that creation evidence
 is lost at shutdown and a later instance refuses reset.
 
-DCP holds persistent-resource leases, stops and removes the target physical
-container, and removes eligible volumes without force. Concurrent runtime
-consumers can cause failure but are never forcibly removed. Volume ownership
-labels and tokens are preserved on the fresh volume. The removed persistent
-container's old record is discarded.
+DCP holds the persistent target lease, stops and removes the target physical
+container, and increments each selected ContainerVolume's requested generation.
+Generation zero uses its original name; later physical names are
+`<logical-name>-dcp-<generation>`. The logical name and Container specification
+do not change. Ownership labels and tokens are preserved on fresh storage.
+The removed persistent container's old record is discarded.
+
+ContainerVolume `spec.generation` is nonnegative and cannot decrease.
+`status.volumeName` and `status.generation` expose the selected physical mapping;
+`status.message` reports selection errors. Container creation uses authoritative
+Volume-controller data, not status as an input. Persistent workload records retain
+the physical head so a later run cannot silently fall back to an older generation.
+
+The Volume controller retires older owned generations without force, at selection,
+subsequent reconciliation, and resource deletion. In-use generations are retained.
+Ordinary adoption of labeled storage does not authorize retirement: DCP requires
+current-instance creation evidence or a matching persistent workload head record.
+There is no erasure deadline and reset never waits for retirement. A runtime
+consumer created after preflight can retain the old data without invalidating fresh
+selection. DCP does not atomically serialize arbitrary external Docker/Podman clients.
+Other consumers discovered during preflight still cause refusal before target stop.
 
 After either terminal outcome, normal Container reconciliation resumes without
 changing or recreating its API resource. A running target is recreated
@@ -80,11 +110,11 @@ Existing Start/Stop intent is honored. A Container with `spec.stop=true` stays
 stopped; its ordinary start flow still requires API recreation because that
 existing field is immutable.
 
-If volume recreation fails after removal, the ContainerVolume controller retries
+If fresh generation creation fails after target removal, the ContainerVolume controller retries
 using the preflight-verified ownership labels and token. The volume reports
 `Pending` or `RuntimeUnhealthy` until verified ready, and Container startup waits
 instead of letting the runtime auto-create unlabeled storage. Recovered storage
-is empty, not a rollback. The original reset stays `Failed`.
+is fresh, not a rollback to the old generation. The original reset stays `Failed`.
 
 Retry by creating a new operation bound to the current Container UID after
 resolving the failure and, if needed, waiting for volume repair and normal startup.
@@ -102,12 +132,12 @@ without changing or repeating the original operation. After an ambiguous submiss
 GET the original name, verify its target name and UID, and watch the existing operation
 UID (also verify the original operation UID if already known). Never automatically
 resubmit after a missing result: deletion or expiry makes the outcome unknown. Creating
-the same name after deletion obtains a new UID and requests a new destructive reset.
+the same name after deletion obtains a new UID and requests another storage generation.
 There is no cross-instance deduplication guarantee.
 
 Deleting an active operation requests cancellation. Its finalizer waits for
-in-flight work to settle before deletion completes. Already removed data cannot
-be restored; pending volume repair remains owned by the Volume controller even
+in-flight work to settle before deletion completes. Target removal cannot be rolled
+back; pending generation selection remains owned by the Volume controller even
 after operation deletion. HTTP cancellation alone does not cancel an accepted
 operation. DCP shutdown cancels runtime work.
 

@@ -242,7 +242,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return err
 		}
 
-		volumeResetRecovery := &controllers.ContainerVolumeResetRecovery{}
+		volumeGenerations := &controllers.ContainerVolumeGenerations{}
 		containerCtrl := controllers.NewContainerReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
@@ -256,7 +256,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 				ResourceLeaseOwner:         leaseOwner,
 				ProcessExecutor:            processExecutor,
 				WorkloadID:                 workloadID,
-				VolumeResetRecovery:        volumeResetRecovery,
+				VolumeGenerations:          volumeGenerations,
 			},
 		)
 		if err = containerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
@@ -352,10 +352,10 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			log.WithName("VolumeReconciler"),
 			containerOrchestrator,
 			controllers.VolumeReconcilerConfig{
-				StateStore:          stateStore,
-				ResourceLeaseOwner:  leaseOwner,
-				WorkloadID:          workloadID,
-				VolumeResetRecovery: volumeResetRecovery,
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         workloadID,
+				VolumeGenerations:  volumeGenerations,
 			},
 		)
 		if err = volumeCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {

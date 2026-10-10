@@ -276,7 +276,7 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 
-	volumeResetRecovery := &controllers.ContainerVolumeResetRecovery{}
+	volumeGenerations := &controllers.ContainerVolumeGenerations{}
 	if inclCtrl&ContainerController != 0 {
 		containerR := controllers.NewContainerReconciler(
 			ctx,
@@ -292,7 +292,7 @@ func StartTestEnvironmentWithOptions(
 				ResourceLeaseOwner:              leaseOwner,
 				ProcessExecutor:                 pex,
 				WorkloadID:                      options.WorkloadID,
-				VolumeResetRecovery:             volumeResetRecovery,
+				VolumeGenerations:               volumeGenerations,
 			},
 		)
 		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {
@@ -394,10 +394,10 @@ func StartTestEnvironmentWithOptions(
 			log.WithName("VolumeReconciler"),
 			serverInfo.ContainerOrchestrator,
 			controllers.VolumeReconcilerConfig{
-				StateStore:          stateStore,
-				ResourceLeaseOwner:  leaseOwner,
-				WorkloadID:          options.WorkloadID,
-				VolumeResetRecovery: volumeResetRecovery,
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         options.WorkloadID,
+				VolumeGenerations:  volumeGenerations,
 			},
 		)
 		if err = volumeR.SetupWithManager(mgr, instanceTag+"-VolumeReconciler"); err != nil {

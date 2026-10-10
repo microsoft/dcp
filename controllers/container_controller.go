@@ -105,7 +105,7 @@ type ContainerReconcilerConfig struct {
 	ResourceLeaseOwner              process.ProcessHandle
 	ProcessExecutor                 process.Executor
 	WorkloadID                      commonapi.WorkloadID
-	VolumeResetRecovery             *ContainerVolumeResetRecovery
+	VolumeGenerations               *ContainerVolumeGenerations
 }
 
 type containerStateInitializerFunc = stateInitializerFunc[
@@ -375,7 +375,7 @@ func handleNewContainer(
 		return r.setContainerState(container, apiv1.ContainerStateRuntimeUnhealthy)
 	}
 
-	if recoveryErr := r.checkVolumeResetRecovery(ctx, &container.Spec); recoveryErr != nil {
+	if _, recoveryErr := r.resolveVolumeMounts(ctx, &container.Spec); recoveryErr != nil {
 		if !errors.Is(recoveryErr, errContainerVolumesRecovering) {
 			log.Error(recoveryErr, "Could not verify container volumes before startup")
 			return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
@@ -474,9 +474,29 @@ func handleNewContainer(
 					change |= statusChanged
 				}
 
+				resolvedMounts, resolveErr := r.resolveVolumeMounts(ctx, &container.Spec)
+				if resolveErr != nil {
+					log.Error(resolveErr, "Could not resolve selected volume generations")
+					return change | additionalReconciliationNeeded
+				}
+				generationChanged := false
+				for index, mount := range resolvedMounts {
+					if mount.Type != apiv1.NamedVolumeMount || mount.Source == container.Spec.VolumeMounts[index].Source {
+						continue
+					}
+					matches := slices.Any(inspected.Mounts, func(runtimeMount containers.VolumeMount) bool {
+						return runtimeMount.Type == containers.NamedVolumeMount && runtimeMount.Source == mount.Source && runtimeMount.Target == mount.Target
+					})
+					generationChanged = generationChanged || !matches
+				}
 				_, dcpManaged := inspected.Labels[dcpBuildLabel]
+				if generationChanged && !dcpManaged {
+					log.Error(fmt.Errorf("existing external container uses an obsolete volume generation"), "Could not adopt existing container")
+					_ = r.releasePersistentContainerResourceLease(ctx, container, log, false)
+					return change | r.setContainerState(container, apiv1.ContainerStateFailedToStart)
+				}
 				oldLifecycleKey, found := inspected.Labels[lifecycleKeyLabel]
-				if dcpManaged && ((found && oldLifecycleKey != lifecycleKey) || (!found && lifecycleKey != "")) {
+				if dcpManaged && (generationChanged || (found && oldLifecycleKey != lifecycleKey) || (!found && lifecycleKey != "")) {
 					// We need to recreate this DCP managed container because the lifecycle key has changed
 					if hasDefaultLifecycleKey {
 						mounts, ports, env, other := calculatePersistentContainerChanges(rcd, inspected)
@@ -1384,7 +1404,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 		placeholderContainerID := rcd.containerID
 
 		err := func() error {
-			if recoveryErr := r.checkVolumeResetRecovery(startupCtx, rcd.runSpec); recoveryErr != nil {
+			if _, recoveryErr := r.resolveVolumeMounts(startupCtx, rcd.runSpec); recoveryErr != nil {
 				log.Info("Waiting for container volume reset recovery", "Cause", recoveryErr.Error())
 				return recoveryErr
 			}
@@ -1433,6 +1453,11 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			// Use the effective image (original or derived) for container creation
 			runSpecForCreation := *rcd.runSpec
 			runSpecForCreation.Image = effectiveImage
+			resolvedMounts, resolveErr := r.resolveVolumeMounts(startupCtx, rcd.runSpec)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			runSpecForCreation.VolumeMounts = resolvedMounts
 			if effectiveImage != rcd.runSpec.Image {
 				// The derived image only exists locally; prevent docker create from
 				// attempting to pull it from a registry.

@@ -36,13 +36,14 @@ type ContainerVolumeResetReconcilerConfig struct {
 }
 
 type containerVolumeResetExecution struct {
-	lock        sync.Mutex
+	lock        *sync.Mutex
 	status      apiv1.ContainerVolumeResetStatus
 	ctx         context.Context
 	cancel      context.CancelFunc
 	executing   bool
 	targetUID   types.UID
 	retainUntil time.Time
+	targets     []containerVolumeResetTarget
 }
 
 // ContainerVolumeResetReconciler owns reset operation status and cancellation.
@@ -50,7 +51,7 @@ type containerVolumeResetExecution struct {
 type ContainerVolumeResetReconciler struct {
 	*ReconcilerBase[apiv1.ContainerVolumeReset, *apiv1.ContainerVolumeReset]
 	containers    *ContainerReconciler
-	admission     sync.Mutex
+	admission     *sync.Mutex
 	activeTargets map[types.UID]types.UID
 	executions    syncmap.Map[types.UID, *containerVolumeResetExecution]
 	now           func() time.Time
@@ -71,6 +72,7 @@ func NewContainerVolumeResetReconciler(
 	r := &ContainerVolumeResetReconciler{
 		ReconcilerBase: NewReconcilerBase[apiv1.ContainerVolumeReset](client, reader, log, lifetimeCtx),
 		containers:     containerController,
+		admission:      &sync.Mutex{},
 		activeTargets:  make(map[types.UID]types.UID),
 		now:            now,
 	}
@@ -124,6 +126,7 @@ func (r *ContainerVolumeResetReconciler) Reconcile(ctx context.Context, request 
 		r.admission.Lock()
 		operationCtx, cancel := context.WithCancel(r.LifetimeCtx)
 		candidate := &containerVolumeResetExecution{
+			lock:   &sync.Mutex{},
 			status: apiv1.ContainerVolumeResetStatus{State: "Pending"},
 			ctx:    operationCtx, cancel: cancel,
 			targetUID: reset.Spec.ContainerUID,
@@ -186,7 +189,9 @@ func (r *ContainerVolumeResetReconciler) Reconcile(ctx context.Context, request 
 		reset.Status = *status
 		change |= statusChanged
 	}
-	r.containers.ScheduleReconciliation(target)
+	if !terminal {
+		r.containers.ScheduleReconciliation(target)
+	}
 	if status.State == "Pending" || status.State == "Running" {
 		change |= additionalReconciliationNeeded
 	}

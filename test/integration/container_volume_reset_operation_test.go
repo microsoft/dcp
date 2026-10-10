@@ -98,10 +98,13 @@ func TestContainerVolumeResetOperationCancellation(t *testing.T) {
 			}
 			require.NoError(t, server.Client.Delete(ctx, reset))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, reset)
+			if phase == "recreation" {
+				gate.release <- struct{}{}
+			}
 			resumed, runtime := ensureContainerRunningEx(t, ctx, server.Client, server.ContainerOrchestrator, target)
 			require.Equal(t, target.UID, resumed.UID)
 			after := ensureVolumeCreated(t, ctx, server.Client, server.ContainerOrchestrator, volume)
-			require.Equal(t, before.Labels, after.Labels)
+			requireSameVolumeOwnership(t, before, after)
 			if phase == "preflight" {
 				require.Equal(t, originalRuntime.Id, runtime.Id)
 				require.Equal(t, before.CreatedAt, after.CreatedAt)

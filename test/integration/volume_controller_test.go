@@ -39,14 +39,18 @@ func ensureVolumeCreated(
 	vo containers.VolumeOrchestrator,
 	volume *apiv1.ContainerVolume,
 ) containers.InspectedVolume {
-	waitObjectAssumesStateEx(t, ctx, apiServerClient, ctrl_client.ObjectKeyFromObject(volume), func(updatedVol *apiv1.ContainerVolume) (bool, error) {
-		return updatedVol.Status.State == apiv1.ContainerVolumeStateReady, nil
+	selected := waitObjectAssumesStateEx(t, ctx, apiServerClient, ctrl_client.ObjectKeyFromObject(volume), func(updatedVol *apiv1.ContainerVolume) (bool, error) {
+		return updatedVol.Status.State == apiv1.ContainerVolumeStateReady && updatedVol.Status.Generation >= updatedVol.Spec.Generation, nil
 	})
+	physicalName := selected.Status.VolumeName
+	if physicalName == "" {
+		physicalName = volume.Spec.Name
+	}
 
 	var inspected []containers.InspectedVolume
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 		inspectedVolumes, err := vo.InspectVolumes(ctx, containers.InspectVolumesOptions{
-			Volumes: []string{volume.Spec.Name},
+			Volumes: []string{physicalName},
 		})
 		if err != nil {
 			if !errors.Is(err, containers.ErrNotFound) {
