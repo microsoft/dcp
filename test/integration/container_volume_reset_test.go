@@ -414,9 +414,9 @@ func TestContainerVolumeResetUnownedPersistentContainer(t *testing.T) {
 	mounts := []apiv1.VolumeMount{{Type: apiv1.NamedVolumeMount, Source: volume.Spec.Name, Target: "/data"}}
 	externalID, createExternalErr := server.ContainerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name: "reset-target", Image: "reset-image",
-		Labels: []containers.Label{
-			{Key: "com.microsoft.developer.usvc-dev.uid", Value: "earlier-api-uid"},
-			{Key: "com.microsoft.developer.usvc-dev.persistent", Value: "true"},
+		Labels: map[string]string{
+			"com.microsoft.developer.usvc-dev.uid":        "earlier-api-uid",
+			"com.microsoft.developer.usvc-dev.persistent": "true",
 		},
 		VolumeMounts: []containers.CreateContainerVolumeMount{
 			{Type: containers.NamedVolumeMount, Source: volume.Spec.Name, Target: "/data"},
