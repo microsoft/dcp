@@ -53,7 +53,7 @@ func TestPrepareClientProxyImageBuild(t *testing.T) {
 		require.NoError(t, os.Remove(secondPlan.BuildContextArchive.Source))
 	})
 
-	archiveReader, openErr := containers.OpenBuildContextArchive(plan.BuildContextArchive)
+	archiveReader, openErr := containers.OpenBuildContextArchive(t.Context(), plan.BuildContextArchive)
 	require.NoError(t, openErr)
 	defer archiveReader.Close()
 

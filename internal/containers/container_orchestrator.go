@@ -22,9 +22,6 @@ import (
 // EnvVar is a name/value environment variable pair.
 type EnvVar = commonapi.EnvVar
 
-// Label is a key/value label to apply to a container or image.
-type Label = commonapi.Label
-
 type ContainerStatus string
 
 // Reference: https://github.com/moby/moby/blob/master/api/swagger.yaml
@@ -375,8 +372,8 @@ type CreateContainerOptions struct {
 	// VolumeMounts describes volume and bind mounts for the container.
 	VolumeMounts []CreateContainerVolumeMount
 
-	// Labels contains labels to apply to the container.
-	Labels []Label
+	// Labels maps container label keys to their values.
+	Labels map[string]string
 
 	// RestartPolicy is the container runtime restart policy.
 	RestartPolicy ContainerRestartPolicy
@@ -602,8 +599,8 @@ type ApplyImageLayersOptions struct {
 	// The image layers to apply (tar files)
 	Layers []ImageLayer
 
-	// Labels to apply to the derived image
-	Labels []Label
+	// Labels maps derived-image label keys to their values.
+	Labels map[string]string
 
 	// Tag to apply to the derived image
 	Tag string
@@ -649,13 +646,10 @@ type RuntimeStatusChecker interface {
 
 // Represents portion of container orchestrator functionality that is related to container management
 type ContainerOrchestrator interface {
-	// Is this the default orchestrator?
-	IsDefault() bool
-
 	// Get the name of the runtime
 	Name() string
 
-	// Get the container machine host name for the runtime
+	// Get the default container-to-host address, or an empty string if the runtime does not provide one.
 	ContainerHost() string
 
 	// Start running background checks for the runtime status

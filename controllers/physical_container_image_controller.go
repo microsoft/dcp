@@ -1208,7 +1208,7 @@ func v2BuildContextToContainerBuildContext(build *apiv2.ContainerBuildContext) *
 			}
 		}),
 		Stage:    build.Stage,
-		Labels:   build.Labels,
+		Labels:   v2LabelsToMap(build.Labels),
 		Platform: build.Platform,
 	}
 }

@@ -85,10 +85,10 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	liveCreatorContainerID, liveCreatorContainerErr := co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
 			Name: prefix + "live-creator-container",
-			Labels: []containers.Label{
-				{Key: controllers.PersistentLabel, Value: "false"},
-				{Key: controllers.CreatorProcessIdLabel, Value: fmt.Sprintf("%d", procThis.Pid)},
-				{Key: controllers.CreatorProcessStartTimeLabel, Value: procThis.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)},
+			Labels: map[string]string{
+				controllers.PersistentLabel:              "false",
+				controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procThis.Pid),
+				controllers.CreatorProcessStartTimeLabel: procThis.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			},
 		},
 	})
@@ -162,19 +162,10 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: netWithMixedContainers},
 			},
-			Labels: []containers.Label{
-				{
-					Key:   controllers.PersistentLabel,
-					Value: "false",
-				},
-				{
-					Key:   controllers.CreatorProcessIdLabel,
-					Value: fmt.Sprintf("%d", procNonExistent.Pid),
-				},
-				{
-					Key:   controllers.CreatorProcessStartTimeLabel,
-					Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-				},
+			Labels: map[string]string{
+				controllers.PersistentLabel:              "false",
+				controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+				controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			},
 		},
 	})
@@ -206,19 +197,10 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: netWithAbandonedPersistentContainer},
 			},
-			Labels: []containers.Label{
-				{
-					Key:   controllers.PersistentLabel,
-					Value: "true",
-				},
-				{
-					Key:   controllers.CreatorProcessIdLabel,
-					Value: fmt.Sprintf("%d", procNonExistent.Pid),
-				},
-				{
-					Key:   controllers.CreatorProcessStartTimeLabel,
-					Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-				},
+			Labels: map[string]string{
+				controllers.PersistentLabel:              "true",
+				controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+				controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			},
 		},
 	})
@@ -241,19 +223,10 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: netWithDcpContainers},
 			},
-			Labels: []containers.Label{
-				{
-					Key:   controllers.PersistentLabel,
-					Value: "false",
-				},
-				{
-					Key:   controllers.CreatorProcessIdLabel,
-					Value: fmt.Sprintf("%d", procNonExistent.Pid),
-				},
-				{
-					Key:   controllers.CreatorProcessStartTimeLabel,
-					Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-				},
+			Labels: map[string]string{
+				controllers.PersistentLabel:              "false",
+				controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+				controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			},
 		},
 	})
@@ -264,19 +237,10 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: netWithDcpContainers},
 			},
-			Labels: []containers.Label{
-				{
-					Key:   controllers.PersistentLabel,
-					Value: "false",
-				},
-				{
-					Key:   controllers.CreatorProcessIdLabel,
-					Value: fmt.Sprintf("%d", procNonExistent.Pid),
-				},
-				{
-					Key:   controllers.CreatorProcessStartTimeLabel,
-					Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-				},
+			Labels: map[string]string{
+				controllers.PersistentLabel:              "false",
+				controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+				controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			},
 		},
 	})
@@ -391,10 +355,10 @@ func TestUnusedVolumeHarvesting(t *testing.T) {
 				Source: abandonedWithAbandonedContainer,
 				Target: "/data",
 			}},
-			Labels: []containers.Label{
-				{Key: controllers.PersistentLabel, Value: "false"},
-				{Key: controllers.CreatorProcessIdLabel, Value: fmt.Sprintf("%d", missingProcess.Pid)},
-				{Key: controllers.CreatorProcessStartTimeLabel, Value: missingProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)},
+			Labels: map[string]string{
+				controllers.PersistentLabel:              "false",
+				controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", missingProcess.Pid),
+				controllers.CreatorProcessStartTimeLabel: missingProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			},
 		},
 	})

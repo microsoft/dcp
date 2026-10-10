@@ -81,8 +81,8 @@ func BuildImageImpl(
 		args = append(args, "--target", options.Stage)
 	}
 
-	for _, label := range options.Labels {
-		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
 	}
 
 	if options.Platform != "" {
@@ -95,7 +95,7 @@ func BuildImageImpl(
 	var buildContextArchive io.ReadCloser
 	if options.ContextArchive != nil {
 		var archiveErr error
-		buildContextArchive, archiveErr = OpenBuildContextArchive(options.ContextArchive)
+		buildContextArchive, archiveErr = OpenBuildContextArchive(ctx, options.ContextArchive)
 		if archiveErr != nil {
 			return nil, archiveErr
 		}

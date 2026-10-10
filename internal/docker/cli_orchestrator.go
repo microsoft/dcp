@@ -135,10 +135,6 @@ func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) contai
 	return dco
 }
 
-func (*DockerCliOrchestrator) IsDefault() bool {
-	return true
-}
-
 func (*DockerCliOrchestrator) Name() string {
 	return "docker"
 }
@@ -610,8 +606,8 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		args = append(args, "--env-file", envFile)
 	}
 
-	for _, label := range options.Labels {
-		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
 	}
 
 	if options.RestartPolicy != "" && options.RestartPolicy != containers.RestartPolicyNone {
@@ -934,54 +930,13 @@ func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options conta
 
 	args = append(args, options.Container+":/")
 
-	tarWriter := usvc_io.NewTarWriter()
-
-	certificateHashes := []string{}
-	for _, item := range options.Entries {
-		switch item.Type {
-		case containers.FileSystemEntryTypeDir:
-			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, dco.log); addDirectoryErr != nil {
-				return addDirectoryErr
-			}
-		case containers.FileSystemEntryTypeSymlink:
-			if addSymlinkErr := containers.AddSymlinkToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, dco.log); addSymlinkErr != nil {
-				if item.ContinueOnError {
-					dco.log.Error(addSymlinkErr, "Failed to add symlink to tar archive, continuing", "SymLink", item)
-				} else {
-					return addSymlinkErr
-				}
-			}
-		case containers.FileSystemEntryTypeOpenSSL:
-			hash, addCertErr := containers.AddCertificateToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, certificateHashes, dco.log)
-			if addCertErr != nil {
-				if item.ContinueOnError {
-					dco.log.Error(addCertErr, "Failed to add a certificate to the tar file, but continueOnError is set", "Certificate", item)
-				} else {
-					return addCertErr
-				}
-			}
-
-			// Keep track of the certificate hashes we've added to this directory so that we can deal with the possibility of collisions
-			certificateHashes = append(certificateHashes, hash)
-		default:
-			if addFileErr := containers.AddFileToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, dco.log); addFileErr != nil {
-				if item.ContinueOnError {
-					dco.log.Error(addFileErr, "Failed to add a file to the tar file, but continueOnError is set", "File", item)
-				} else {
-					return addFileErr
-				}
-			}
-		}
+	buffer, archiveErr := containers.CreateFilesArchive(ctx, dco.log, options)
+	if archiveErr != nil {
+		return archiveErr
 	}
-
-	if tarWriter.Empty() {
+	if buffer == nil {
 		// Can happen if all ContinueOnError items fail
 		return nil
-	}
-
-	buffer, bufferErr := tarWriter.Buffer()
-	if bufferErr != nil {
-		return bufferErr
 	}
 
 	cmd := makeDockerCommand(args...)
