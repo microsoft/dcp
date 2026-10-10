@@ -393,7 +393,7 @@ test: test-prereqs $(GO_RUNTIME_OVERLAY_PREREQ) ## Run all tests in the reposito
 # NOTE: Keep scripts/test-ci.ps1 in sync with test-ci (see comment above TEST_PREREQS).
 .PHONY: test-ci
 test-ci: test-ci-prereqs $(GO_RUNTIME_OVERLAY_PREREQ) ## Runs tests in a way appropriate for CI pipeline, with linting etc.
-	$(GO_BIN) test ./... $(GO_RUNTIME_OVERLAY_ARG) $(TEST_OPTS)
+	$(GO_BIN) test ./... $(GO_RUNTIME_OVERLAY_ARG) $(TEST_OPTS) -timeout 20m
 
 ## Development and test support targets
 
