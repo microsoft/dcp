@@ -67,7 +67,7 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		}
 		portValue := fmt.Sprintf("%s:%s:%d", hostIP, hostPort, port.ContainerPort)
 		if port.Protocol != "" {
-			portValue += "/" + port.Protocol
+			portValue += "/" + strings.ToLower(port.Protocol)
 		}
 		args = append(args, "--publish", portValue)
 	}
