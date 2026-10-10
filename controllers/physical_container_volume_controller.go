@@ -976,11 +976,7 @@ func physicalContainerVolumeCreationLabels(volume *apiv2.PhysicalContainerVolume
 		volume.UID,
 		log,
 	)
-	labels := make(map[string]string, len(creationLabels))
-	for _, label := range creationLabels {
-		labels[label.Key] = label.Value
-	}
-	return labels
+	return v2LabelsToMap(creationLabels)
 }
 
 func physicalContainerVolumeBelongsToResource(

@@ -25,6 +25,12 @@ DCP's main executable (`dcp`) can run in one of several modes depending on how i
 - `dcp version` - displays version information about the DCP installation.
 - `dcp info` - displays information about the current DCP installation and identified container runtime.
 
+### Supported container runtimes
+
+DCP supports Docker, Podman, and WSLC (Windows only). The runtime's CLI must be available on `PATH`. WSLC requires both the client and session manager to be version **3.0.2.0 or newer**.
+
+Select a runtime explicitly with `--container-runtime docker`, `--container-runtime podman`, or `--container-runtime wslc`. When no runtime is specified, DCP prefers healthy Docker, then Podman, then WSLC.
+
 ### Environment variables affecting DCP behavior
 
 DCP has knowledge of a number of environment variables that can change its behavior; they are used mostly for testing.

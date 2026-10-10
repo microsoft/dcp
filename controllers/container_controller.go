@@ -957,7 +957,7 @@ func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.Creat
 		EnvFiles:       spec.EnvFiles,
 		Ports:          v1PortsToCreateContainerPorts(spec.Ports),
 		VolumeMounts:   v1VolumeMountsToCreateContainerVolumeMounts(spec.VolumeMounts),
-		Labels:         v1LabelsToContainerLabels(spec.Labels),
+		Labels:         v1LabelsToMap(spec.Labels),
 		RestartPolicy:  containers.ContainerRestartPolicy(spec.RestartPolicy),
 		PullPolicy:     containers.ImagePullPolicy(spec.PullPolicy),
 		RunArgs:        spec.RunArgs,
@@ -965,9 +965,9 @@ func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.Creat
 	}
 }
 
-func v1LabelsToContainerLabels(labels []apiv1.ContainerLabel) []containers.Label {
-	return slices.Map[containers.Label](labels, func(label apiv1.ContainerLabel) containers.Label {
-		return containers.Label{Key: label.Key, Value: label.Value}
+func v1LabelsToMap(labels []apiv1.ContainerLabel) map[string]string {
+	return maps.SliceToMap(labels, func(label apiv1.ContainerLabel) (string, string) {
+		return label.Key, label.Value
 	})
 }
 
@@ -1014,7 +1014,7 @@ func v1BuildContextToContainerBuildContext(build *apiv1.ContainerBuildContext) *
 			}
 		}),
 		Stage:    build.Stage,
-		Labels:   v1LabelsToContainerLabels(build.Labels),
+		Labels:   v1LabelsToMap(build.Labels),
 		Platform: build.Platform,
 	}
 }

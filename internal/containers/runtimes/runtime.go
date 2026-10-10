@@ -15,6 +15,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/docker"
 	"github.com/microsoft/dcp/internal/podman"
+	"github.com/microsoft/dcp/internal/wslc"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -25,6 +26,7 @@ var (
 	supportedRuntimes = map[flags.RuntimeFlagValue]ContainerOrchestratorFactory{
 		flags.DockerRuntime: docker.NewDockerCliOrchestrator,
 		flags.PodmanRuntime: podman.NewPodmanCliOrchestrator,
+		flags.WslcRuntime:   wslc.NewWslcCliOrchestrator,
 	}
 )
 
@@ -33,39 +35,58 @@ type runtimeSupport struct {
 	status       containers.ContainerRuntimeStatus
 }
 
+type runtimeProbeResult struct {
+	index   int
+	support *runtimeSupport
+}
+
 func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executor process.Executor) (containers.ContainerOrchestrator, error) {
 	runtimeFlagValue := flags.GetRuntimeFlagValue()
 
 	var availableRuntime *runtimeSupport
 	if runtimeFlagValue == flags.UnknownRuntime {
 		// If the user didn't specify a runtime, pick a supported runtime and use it
-		runtimesCh := make(chan *runtimeSupport, len(supportedRuntimes))
-
-		for _, runtimeFactory := range supportedRuntimes {
-			// Check each supported runtime to see if it's installed and running
-			go func(factory ContainerOrchestratorFactory) {
-				orchestrator := factory(log, executor)
-				status := orchestrator.CheckStatus(ctx, containers.IgnoreCachedRuntimeStatus)
-				runtimesCh <- &runtimeSupport{orchestrator, status}
-			}(runtimeFactory)
+		runtimeFactories := make([]ContainerOrchestratorFactory, 0, len(supportedRuntimes))
+		for _, runtimeName := range []flags.RuntimeFlagValue{
+			flags.DockerRuntime,
+			flags.PodmanRuntime,
+			flags.WslcRuntime,
+		} {
+			if runtimeFactory := supportedRuntimes[runtimeName]; runtimeFactory != nil {
+				runtimeFactories = append(runtimeFactories, runtimeFactory)
+			}
 		}
 
-		for i := 0; i < len(supportedRuntimes); i++ {
-			supportedRuntime := <-runtimesCh
+		discoveryCtx, discoveryCancel := context.WithCancel(ctx)
+		defer discoveryCancel()
+		runtimesCh := make(chan runtimeProbeResult, len(runtimeFactories))
+		runtimeResults := make([]*runtimeSupport, len(runtimeFactories))
 
-			switch {
-			case availableRuntime == nil:
-				// We haven't picked a runtime yet
-				availableRuntime = supportedRuntime
-			case !availableRuntime.status.Installed && supportedRuntime.status.Installed:
-				// Prefer a runtime that is installed over one that isn't
-				availableRuntime = supportedRuntime
-			case !availableRuntime.status.Running && supportedRuntime.status.Running:
-				// Prefer a runtime that is running over one that isn't
-				availableRuntime = supportedRuntime
-			case supportedRuntime.orchestrator.IsDefault() && supportedRuntime.status.Installed == availableRuntime.status.Installed && supportedRuntime.status.Running == availableRuntime.status.Running:
-				// Prefer the default runtime
-				availableRuntime = supportedRuntime
+		for index, runtimeFactory := range runtimeFactories {
+			// Check each supported runtime to see if it's installed and running
+			go func(resultIndex int, factory ContainerOrchestratorFactory) {
+				orchestrator := factory(log, executor)
+				status := orchestrator.CheckStatus(discoveryCtx, containers.IgnoreCachedRuntimeStatus)
+				runtimesCh <- runtimeProbeResult{
+					index:   resultIndex,
+					support: &runtimeSupport{orchestrator, status},
+				}
+			}(index, runtimeFactory)
+		}
+
+		for range runtimeFactories {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case probeResult := <-runtimesCh:
+				if probeResult.support == nil {
+					return nil, fmt.Errorf("container runtime discovery returned an empty result")
+				}
+				runtimeResults[probeResult.index] = probeResult.support
+				if selectedRuntime, selectionFinal := selectAvailableRuntime(runtimeResults); selectionFinal {
+					discoveryCancel()
+					return recordSelectedRuntime(log, selectedRuntime)
+				}
 			}
 		}
 	} else {
@@ -79,6 +100,28 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 		return nil, errNoRuntimeFound
 	}
 
+	return recordSelectedRuntime(log, availableRuntime)
+}
+
+func selectAvailableRuntime(runtimeResults []*runtimeSupport) (*runtimeSupport, bool) {
+	var fallbackRuntime *runtimeSupport
+	for _, runtimeResult := range runtimeResults {
+		if runtimeResult == nil {
+			return nil, false
+		}
+		if runtimeResult.status.IsHealthy() {
+			return runtimeResult, true
+		}
+		if fallbackRuntime == nil ||
+			(!fallbackRuntime.status.Installed && runtimeResult.status.Installed) ||
+			(!fallbackRuntime.status.Running && runtimeResult.status.Running) {
+			fallbackRuntime = runtimeResult
+		}
+	}
+	return fallbackRuntime, true
+}
+
+func recordSelectedRuntime(log logr.Logger, availableRuntime *runtimeSupport) (containers.ContainerOrchestrator, error) {
 	selectedRuntimeErr := flags.SetRuntimeFlagValue(flags.RuntimeFlagValue(availableRuntime.orchestrator.Name()))
 	if selectedRuntimeErr != nil {
 		return nil, fmt.Errorf("record selected container runtime: %w", selectedRuntimeErr)

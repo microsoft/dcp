@@ -85,6 +85,7 @@ func TestFailMatchingContainersMatchesBuiltImageTag(t *testing.T) {
 	require.ErrorContains(t, startErr, "expected startup failure")
 }
 
+// Verifies that InspectImages returns snapshots whose modification does not affect stored image data.
 func TestInspectImagesReturnsSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -101,7 +102,7 @@ func TestInspectImagesReturnsSnapshot(t *testing.T) {
 	buildErr := orchestrator.BuildImage(ctx, containers.BuildImageOptions{
 		ContainerBuildContext: &containers.ContainerBuildContext{
 			Tags:   []string{imageTag},
-			Labels: []containers.Label{{Key: "snapshot-label", Value: "original"}},
+			Labels: map[string]string{"snapshot-label": "original"},
 		},
 	})
 	require.NoError(t, buildErr)
