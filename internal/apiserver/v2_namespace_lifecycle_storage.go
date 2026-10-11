@@ -211,21 +211,12 @@ func (storage *v2NamespaceLifecycleStorage) Update(
 }
 
 func (storage *v2NamespaceLifecycleStorage) DeleteCollection(
-	ctx context.Context,
-	deleteValidation rest.ValidateObjectFunc,
-	options *metav1.DeleteOptions,
-	listOptions *metainternalversion.ListOptions,
+	context.Context,
+	rest.ValidateObjectFunc,
+	*metav1.DeleteOptions,
+	*metainternalversion.ListOptions,
 ) (runtime.Object, error) {
-	if storage.gvr.Resource == "namespaces" {
-		return nil, apierrors.NewMethodNotSupported(storage.gvr.GroupResource(), "deletecollection")
-	}
-	if options != nil && len(options.DryRun) != 0 {
-		return nil, unsupportedV2DryRun()
-	}
-	if contextErr := ctx.Err(); contextErr != nil {
-		return nil, contextErr
-	}
-	return storage.StandardStorage.DeleteCollection(ctx, deleteValidation, options, listOptions)
+	return nil, apierrors.NewMethodNotSupported(storage.gvr.GroupResource(), "deletecollection")
 }
 
 func (storage *v2NamespaceLifecycleStorage) beginChildCreate(ctx context.Context, apply bool) (func(), error) {
