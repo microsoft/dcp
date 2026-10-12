@@ -86,7 +86,17 @@ func TestV2NamespaceLifecycleStorageHoldsDeleteLeaseAfterHTTPTimeout(t *testing.
 	fixture.createNamespace(t)
 	namespaceWatch, watchErr := fixture.namespaces.Watch(fixture.ctx, nil)
 	require.NoError(t, watchErr)
-	stopWatch := sync.OnceFunc(func() { stopV2NamespaceWatcher(namespaceWatch) })
+	stopWatch := sync.OnceFunc(func() {
+		// Drain the deliberately unread watch so publication can release the lock Stop needs.
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			for range namespaceWatch.ResultChan() {
+			}
+		}()
+		namespaceWatch.Stop()
+		<-drained
+	})
 	defer stopWatch()
 	persisted := make(chan struct{})
 	fixture.fs.afterWrite = func(obj runtime.Object) {

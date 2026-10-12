@@ -67,10 +67,15 @@ func runV2NamespaceLifecycleWatcher(
 			continue
 		}
 
+		deletions := make(chan struct{}, 1)
+		watchErrors := make(chan struct{}, 1)
+		watchDone := make(chan struct{})
+		go readV2NamespaceWatchEvents(namespaceWatcher, deletions, watchErrors, watchDone, log)
+
 		closedStates := gate.closedNamespaceStates()
 		namespaceList, listErr := source.List(ctx, metav1.ListOptions{})
 		if listErr != nil {
-			stopV2NamespaceWatcher(namespaceWatcher)
+			stopV2NamespaceWatch(namespaceWatcher, watchDone)
 			if ctx.Err() != nil {
 				return
 			}
@@ -82,13 +87,12 @@ func runV2NamespaceLifecycleWatcher(
 
 		restartTimer := time.NewTimer(restartInterval)
 		restartDelay = time.Duration(0)
-		watcherClosed := false
 	watchLoop:
 		for {
 			select {
 			case <-ctx.Done():
 				restartTimer.Stop()
-				stopV2NamespaceWatcher(namespaceWatcher)
+				stopV2NamespaceWatch(namespaceWatcher, watchDone)
 				return
 			case <-restartTimer.C:
 				log.V(1).Info("Restarting V2 Namespace lifecycle watcher")
@@ -96,21 +100,14 @@ func runV2NamespaceLifecycleWatcher(
 			case <-gate.refreshRequested:
 				log.V(1).Info("Refreshing V2 Namespace lifecycle state")
 				break watchLoop
-			case event, open := <-namespaceWatcher.ResultChan():
-				if !open {
-					log.V(1).Info("V2 Namespace lifecycle watch stream closed")
-					restartDelay = retryInterval
-					watcherClosed = true
-					break watchLoop
-				}
-				if event.Type == watch.Error {
-					log.Info("V2 Namespace lifecycle watcher received an error event", "Object", event.Object)
-					restartDelay = retryInterval
-					break watchLoop
-				}
-				if event.Type != watch.Deleted {
-					continue
-				}
+			case <-watchDone:
+				log.V(1).Info("V2 Namespace lifecycle watch stream closed")
+				restartDelay = retryInterval
+				break watchLoop
+			case <-watchErrors:
+				restartDelay = retryInterval
+				break watchLoop
+			case <-deletions:
 				log.V(1).Info("Observed V2 Namespace storage deletion")
 				break watchLoop
 			}
@@ -121,10 +118,44 @@ func runV2NamespaceLifecycleWatcher(
 			default:
 			}
 		}
-		if !watcherClosed {
-			stopV2NamespaceWatcher(namespaceWatcher)
+		stopV2NamespaceWatch(namespaceWatcher, watchDone)
+	}
+}
+
+func readV2NamespaceWatchEvents(
+	namespaceWatcher watch.Interface,
+	deletions, watchErrors, watchDone chan<- struct{},
+	log logr.Logger,
+) {
+	defer close(watchDone)
+	for event := range namespaceWatcher.ResultChan() {
+		switch event.Type {
+		case watch.Deleted:
+			// Deletions only request a fresh snapshot, so one pending notification is enough.
+			select {
+			case deletions <- struct{}{}:
+			default:
+			}
+		case watch.Error:
+			log.Info("V2 Namespace lifecycle watcher received an error event", "Object", event.Object)
+			select {
+			case watchErrors <- struct{}{}:
+			default:
+			}
 		}
 	}
+}
+
+// stopV2NamespaceWatch stops a watch with an active reader and waits for that reader to exit.
+func stopV2NamespaceWatch(namespaceWatcher watch.Interface, watchDone <-chan struct{}) {
+	select {
+	case <-watchDone:
+		return
+	default:
+	}
+	// The reader keeps draining during Stop so publication can release the lock Stop needs.
+	namespaceWatcher.Stop()
+	<-watchDone
 }
 
 func v2NamespaceStates(namespaceList *unstructured.UnstructuredList) map[string]v2NamespaceStorageState {
@@ -140,7 +171,7 @@ func v2NamespaceStates(namespaceList *unstructured.UnstructuredList) map[string]
 
 func waitForV2NamespaceWatcherRestart(ctx context.Context, delay time.Duration) bool {
 	if delay == 0 {
-		return true
+		return ctx.Err() == nil
 	}
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
@@ -150,17 +181,5 @@ func waitForV2NamespaceWatcherRestart(ctx context.Context, delay time.Duration) 
 		return false
 	case <-timer.C:
 		return true
-	}
-}
-
-func stopV2NamespaceWatcher(namespaceWatcher watch.Interface) {
-	// Tilt broadcasts on an unbuffered channel while holding the WatchSet lock that Stop needs.
-	// Keep draining until Stop closes the channel so an in-progress broadcast cannot deadlock.
-	go drainV2NamespaceWatcher(namespaceWatcher.ResultChan())
-	namespaceWatcher.Stop()
-}
-
-func drainV2NamespaceWatcher(events <-chan watch.Event) {
-	for range events {
 	}
 }

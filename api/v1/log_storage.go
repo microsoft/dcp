@@ -181,6 +181,7 @@ func NewLogStorage(parentKindStorage registry_rest.StandardStorage, logStreamer 
 		resourceWatchers:            &syncmap.Map[types.UID, *syncmap.Map[*resourceWatcher, bool]]{},
 		mutex:                       &sync.Mutex{},
 		watcher:                     nil,
+		disposeCh:                   make(chan struct{}),
 	}, nil
 }
 
@@ -193,6 +194,13 @@ func (ls *LogStorage) watchResource(uid types.UID, log logr.Logger) (*resourceWa
 		return nil, fmt.Errorf("log storage has been disposed")
 	}
 
+	if ls.watcher == nil {
+		watchErr := ls.watchResourceEvents(log)
+		if watchErr != nil {
+			return nil, watchErr
+		}
+	}
+
 	resourceWatchers, _ := ls.resourceWatchers.LoadOrStoreNew(uid, func() *syncmap.Map[*resourceWatcher, bool] {
 		return &syncmap.Map[*resourceWatcher, bool]{}
 	})
@@ -201,16 +209,8 @@ func (ls *LogStorage) watchResource(uid types.UID, log logr.Logger) (*resourceWa
 	rw.OnStop(func() {
 		resourceWatchers.Delete(rw)
 	})
-
-	if ls.watcher == nil {
-		watchErr := ls.watchResourceEvents(log)
-		if watchErr != nil {
-			return nil, watchErr
-		}
-	} else {
-		if event, found := ls.mostRecentResourceEvents.Load(uid); found {
-			rw.Queue(event)
-		}
+	if event, found := ls.mostRecentResourceEvents.Load(uid); found {
+		rw.Queue(event)
 	}
 
 	_, _ = resourceWatchers.LoadOrStore(rw, true)
