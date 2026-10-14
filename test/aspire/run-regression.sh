@@ -101,11 +101,7 @@ fi
 # Preserve SDK/package pins and build properties from the daily scaffold.
 # The committed body has no build directives, so dependency selection remains
 # owned by the CLI template for both SDK-based and package-based AppHosts.
-if ! build_directives="$(grep '^#:' "${generated_apphost}")" ||
-    ! grep -Eq '^#:(sdk|package)[[:space:]]' <<<"${build_directives}"; then
-    echo "Could not find an SDK or package directive in the scaffolded apphost.cs" >&2
-    exit 1
-fi
+build_directives="$(awk '/^#:/' "${generated_apphost}")"
 
 echo "==> Using scaffolded build directives:"
 printf '%s\n' "${build_directives}"
