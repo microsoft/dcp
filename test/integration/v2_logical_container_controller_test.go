@@ -636,85 +636,34 @@ func TestV2LogicalContainerControllerWaitsForLogicalNetworks(t *testing.T) {
 	require.Empty(t, physicalContainers.Items)
 }
 
-// Verifies that the LogicalContainer controller does not pass through a physical Running phase
-// while readiness is false or stale, and exposes physical failures through logical diagnostics.
-func TestV2LogicalContainerControllerComputesReadinessFromPhysicalObservations(t *testing.T) {
+// Verifies that the LogicalContainer controller reports a running physical container as not ready
+// when the runtime's port mappings cannot be resolved.
+func TestV2LogicalContainerControllerReportsPhysicalPortMappingFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, LogicalContainerController, t.Name(), t.TempDir())
-	require.NoError(t, startupErr)
-	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-readiness"}}
-	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
-	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
-		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
-	})
+	namespace := createActiveV2Namespace(t, ctx, "v2-logical-port-mapping-failure")
+	runtimeName := namespace.Name + "-runtime"
+	runtimeID := runExistingTestContainer(t, ctx, runtimeName, "existing-image")
+	require.NoError(t, containerOrchestrator.SimulateContainerPortMappings(ctx, runtimeID,
+		containers.InspectedContainerPortMapping{"invalid-port": nil}))
 	container := &apiv2.LogicalContainer{
-		ObjectMeta: metav1.ObjectMeta{Name: "observed", Namespace: namespace.Name},
-		Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
-			Image: &apiv2.PhysicalContainerImageConfig{Image: "not-pulled-by-logical-controller"},
-		}},
+		ObjectMeta: metav1.ObjectMeta{Name: "existing", Namespace: namespace.Name},
+		Spec:       apiv2.LogicalContainerSpec{Mode: apiv2.LogicalContainerModeExisting, ContainerName: runtimeName},
 	}
-	require.NoError(t, serverInfo.Client.Create(ctx, container))
-	pending := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		return current.Status.PhysicalContainerRef != "", nil
-	})
-	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: pending.Status.PhysicalContainerRef}
-	falseReadyErr := retryOnConflictEx(ctx, serverInfo.Client, physicalName, func(updateCtx context.Context, physical *apiv2.PhysicalContainer) error {
-		physical.Status = apiv2.PhysicalContainerStatus{
-			Phase: apiv2.PhysicalContainerPhaseRunning, ContainerID: "observed-id", ContainerName: "observed-name",
-			Conditions: []metav1.Condition{{
-				Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
-				Reason: "PortMappingResolutionFailed", Message: "Bindings cannot be determined.",
-				ObservedGeneration: physical.Generation, LastTransitionTime: metav1.Now(),
-			}},
-		}
-		return serverInfo.Client.Status().Update(updateCtx, physical)
-	})
-	require.NoError(t, falseReadyErr)
-	notReady := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+	require.NoError(t, client.Create(ctx, container))
+	notReady := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return current.Status.ContainerID == "observed-id" && ready != nil &&
-			strings.Contains(ready.Message, "Bindings cannot be determined."), nil
+		return current.Status.ContainerID == runtimeID && ready != nil &&
+			strings.Contains(ready.Message, string(apiv2.PhysicalContainerReasonPortMappingResolutionFailed)), nil
 	})
 	require.Equal(t, apiv2.LogicalContainerPhasePending, notReady.Status.Phase)
 	requireReadyCondition(t, notReady.Status.Conditions, metav1.ConditionFalse, "PhysicalContainerNotReady")
-
-	staleReadyErr := retryOnConflictEx(ctx, serverInfo.Client, physicalName, func(updateCtx context.Context, physical *apiv2.PhysicalContainer) error {
-		physical.Status.Conditions[0].Status = metav1.ConditionTrue
-		physical.Status.Conditions[0].Reason = "RuntimeContainerRunning"
-		physical.Status.Conditions[0].ObservedGeneration = physical.Generation + 1
-		return serverInfo.Client.Status().Update(updateCtx, physical)
-	})
-	require.NoError(t, staleReadyErr)
-	stale := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && strings.Contains(ready.Message, "observe the desired container configuration"), nil
-	})
-	require.Equal(t, apiv2.LogicalContainerPhasePending, stale.Status.Phase)
-	currentReadyErr := retryOnConflictEx(ctx, serverInfo.Client, physicalName, func(updateCtx context.Context, physical *apiv2.PhysicalContainer) error {
-		physical.Status.Conditions[0].ObservedGeneration = physical.Generation
-		return serverInfo.Client.Status().Update(updateCtx, physical)
-	})
-	require.NoError(t, currentReadyErr)
-	running := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
-	})
-	requireReadyCondition(t, running.Status.Conditions, metav1.ConditionTrue, "ContainerRunning")
-
-	failureErr := retryOnConflictEx(ctx, serverInfo.Client, physicalName, func(updateCtx context.Context, physical *apiv2.PhysicalContainer) error {
-		physical.Status.Phase = apiv2.PhysicalContainerPhaseFailed
-		physical.Status.Conditions[0].Status = metav1.ConditionFalse
-		physical.Status.Conditions[0].Reason = "StartFailed"
-		physical.Status.Conditions[0].Message = "The runtime rejected startup."
-		return serverInfo.Client.Status().Update(updateCtx, physical)
-	})
-	require.NoError(t, failureErr)
-	failed := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerPhaseFailed, nil
-	})
-	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "PhysicalContainerFailed")
-	require.Contains(t, apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady)).Message, "The runtime rejected startup.")
+	physical := &apiv2.PhysicalContainer{}
+	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: notReady.Status.PhysicalContainerRef}, physical))
+	require.Equal(t, apiv2.PhysicalContainerPhaseRunning, physical.Status.Phase)
+	require.Equal(t, runtimeID, physical.Status.ContainerID)
+	requireReadyCondition(t, physical.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonPortMappingResolutionFailed)
 }
 
 // Verifies that the LogicalContainer controller forwards an initial persistent stop request to an

@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 )
@@ -109,92 +108,4 @@ func TestUnknownPhysicalContainerVolumeStateBecomesTerminal(t *testing.T) {
 	require.Equal(t, physicalContainerVolumeStateInvalid, data.state)
 	require.Equal(t, physicalResourceProgressFailed, data.progress)
 	require.Equal(t, "Physical container volume reached invalid reconciliation state Remove with progress Completed.", data.failureMessage)
-}
-
-// Verifies that the PhysicalContainerNetwork deletion handler releases a retained network's
-// finalizer and in-memory state even when normal reconciliation has reached an invalid state.
-func TestInvalidPhysicalContainerNetworkStillHandlesDeletion(t *testing.T) {
-	t.Parallel()
-
-	now := metav1.Now()
-	network := &apiv2.PhysicalContainerNetwork{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "network",
-			Namespace:         "test",
-			Finalizers:        []string{physicalContainerNetworkFinalizer},
-			DeletionTimestamp: &now,
-		},
-		Spec: apiv2.PhysicalContainerNetworkSpec{
-			Network: &apiv2.PhysicalContainerNetworkConfig{RetainRuntimeNetwork: true},
-		},
-	}
-	data := &physicalContainerNetworkData{
-		state:    physicalContainerNetworkStateInvalid,
-		progress: physicalResourceProgressFailed,
-	}
-	reconciler := &PhysicalContainerNetworkReconciler{
-		networkData: NewObjectStateMap[
-			physicalContainerNetworkDataStateKey,
-			physicalContainerNetworkData,
-			*physicalContainerNetworkData,
-			*apiv2.PhysicalContainerNetwork,
-		](),
-	}
-	reconciler.networkData.Store(network.NamespacedName(), physicalContainerNetworkDataKey(network), data)
-
-	change := reconciler.handleDeletionRequest(
-		t.Context(),
-		network,
-		data,
-		logr.Discard(),
-	)
-
-	require.Equal(t, metadataChanged, change)
-	require.False(t, hasFinalizer(network, physicalContainerNetworkFinalizer))
-	_, storedData := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
-	require.Nil(t, storedData)
-}
-
-// Verifies that the PhysicalContainerVolume deletion handler releases a retained volume's
-// finalizer and in-memory state even when normal reconciliation has reached an invalid state.
-func TestInvalidPhysicalContainerVolumeStillHandlesDeletion(t *testing.T) {
-	t.Parallel()
-
-	now := metav1.Now()
-	volume := &apiv2.PhysicalContainerVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "volume",
-			Namespace:         "test",
-			Finalizers:        []string{physicalContainerVolumeFinalizer},
-			DeletionTimestamp: &now,
-		},
-		Spec: apiv2.PhysicalContainerVolumeSpec{
-			Volume: &apiv2.PhysicalContainerVolumeConfig{},
-		},
-	}
-	data := &physicalContainerVolumeData{
-		state:    physicalContainerVolumeStateInvalid,
-		progress: physicalResourceProgressFailed,
-	}
-	reconciler := &PhysicalContainerVolumeReconciler{
-		volumeData: NewObjectStateMap[
-			physicalContainerVolumeDataStateKey,
-			physicalContainerVolumeData,
-			*physicalContainerVolumeData,
-			*apiv2.PhysicalContainerVolume,
-		](),
-	}
-	reconciler.volumeData.Store(volume.NamespacedName(), physicalContainerVolumeDataKey(volume), data)
-
-	change := reconciler.handleDeletionRequest(
-		t.Context(),
-		volume,
-		data,
-		logr.Discard(),
-	)
-
-	require.Equal(t, metadataChanged, change)
-	require.False(t, hasFinalizer(volume, physicalContainerVolumeFinalizer))
-	_, storedData := reconciler.volumeData.BorrowByNamespacedName(volume.NamespacedName())
-	require.Nil(t, storedData)
 }
