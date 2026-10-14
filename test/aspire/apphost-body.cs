@@ -2,9 +2,9 @@
 //
 // This file is the body of a file-based (single-file) Aspire AppHost that is
 // run against a locally built DCP binary to catch integration regressions before
-// a DCP build is inserted into Aspire. It intentionally does not contain a
-// "#:sdk" directive: run-regression.sh scaffolds a fresh AppHost with the
-// latest Aspire daily CLI, preserves the generated daily SDK directive, appends
+// a DCP build is inserted into Aspire. It intentionally has no build directives:
+// run-regression.sh scaffolds a fresh AppHost with the latest Aspire daily CLI,
+// preserves the generated SDK/package directives and build properties, appends
 // this body, and runs it.
 //
 // The scenario includes both session and persistent containers. Resource names,
