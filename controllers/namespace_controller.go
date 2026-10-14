@@ -47,6 +47,8 @@ type namespaceCleanupResult struct {
 }
 
 var namespaceCleanupResourceHandlers = map[schema.GroupVersionResource]namespaceCleanupResourceHandler{
+	(&apiv2.LogicalContainer{}).GetGroupVersionResource():                   (*NamespaceReconciler).cleanupLogicalContainers,
+	(&apiv2.LogicalContainerNetwork{}).GetGroupVersionResource():            (*NamespaceReconciler).cleanupLogicalContainerNetworks,
 	(&apiv2.PhysicalProcess{}).GetGroupVersionResource():                    (*NamespaceReconciler).cleanupPhysicalProcesses,
 	(&apiv2.PhysicalContainer{}).GetGroupVersionResource():                  (*NamespaceReconciler).cleanupPhysicalContainers,
 	(&apiv2.PhysicalContainerImage{}).GetGroupVersionResource():             (*NamespaceReconciler).cleanupPhysicalContainerImages,
@@ -319,6 +321,58 @@ func (r *NamespaceReconciler) cleanupNamespacedResources(
 	}
 
 	return handler(r, ctx, namespace, log)
+}
+
+func (r *NamespaceReconciler) cleanupLogicalContainers(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
+	logicalContainers := apiv2.LogicalContainerList{}
+	listErr := r.NoCacheClient.List(ctx, &logicalContainers, ctrl_client.InNamespace(namespace.Name))
+	if listErr != nil {
+		return 0, fmt.Errorf("failed to list LogicalContainers in namespace %q: %w", namespace.Name, listErr)
+	}
+
+	deleteErrors := slices.MapConcurrent[error](logicalContainers.Items, func(container apiv2.LogicalContainer) error {
+		if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
+			return nil
+		}
+
+		log.V(1).Info("Deleting LogicalContainer during namespace cleanup", "Namespace", namespace.Name, "Container", container.Name)
+		deleteContainerErr := r.Client.Delete(ctx, &container)
+		if deleteContainerErr != nil && !apierrors.IsNotFound(deleteContainerErr) {
+			return fmt.Errorf("failed to delete LogicalContainer %q in namespace %q: %w", container.Name, namespace.Name, deleteContainerErr)
+		}
+		return nil
+	}, namespaceCleanupMaxConcurrentDeletes)
+	deleteErr := errors.Join(deleteErrors...)
+	if deleteErr != nil {
+		return 0, deleteErr
+	}
+
+	return len(logicalContainers.Items), nil
+}
+
+func (r *NamespaceReconciler) cleanupLogicalContainerNetworks(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
+	networks := apiv2.LogicalContainerNetworkList{}
+	listErr := r.NoCacheClient.List(ctx, &networks, ctrl_client.InNamespace(namespace.Name))
+	if listErr != nil {
+		return 0, fmt.Errorf("failed to list LogicalContainerNetworks in namespace %q: %w", namespace.Name, listErr)
+	}
+
+	deleteErrors := slices.MapConcurrent[error](networks.Items, func(network apiv2.LogicalContainerNetwork) error {
+		if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
+			return nil
+		}
+		log.V(1).Info("Deleting LogicalContainerNetwork during namespace cleanup", "Namespace", namespace.Name, "LogicalContainerNetwork", network.Name)
+		deleteNetworkErr := r.Client.Delete(ctx, &network)
+		if deleteNetworkErr != nil && !apierrors.IsNotFound(deleteNetworkErr) {
+			return fmt.Errorf("failed to delete LogicalContainerNetwork %q in namespace %q: %w", network.Name, namespace.Name, deleteNetworkErr)
+		}
+		return nil
+	}, namespaceCleanupMaxConcurrentDeletes)
+	deleteErr := errors.Join(deleteErrors...)
+	if deleteErr != nil {
+		return 0, deleteErr
+	}
+	return len(networks.Items), nil
 }
 
 func (r *NamespaceReconciler) cleanupPhysicalContainers(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {

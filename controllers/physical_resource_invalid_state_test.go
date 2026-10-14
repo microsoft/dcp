@@ -40,12 +40,14 @@ func TestUnknownPhysicalContainerStateBecomesTerminal(t *testing.T) {
 	require.Empty(t, data.cleanupMessage)
 }
 
+// Verifies that the PhysicalContainerImage invalid-state handler records a terminal failure
+// for an unsupported reconciliation state/progress pair.
 func TestUnknownPhysicalContainerImageStateBecomesTerminal(t *testing.T) {
 	t.Parallel()
 
 	data := &physicalContainerImageData{
-		state:    physicalContainerImageStateDelete,
-		progress: physicalResourceProgressCompleted,
+		state:    physicalContainerImageStateBuild,
+		progress: physicalResourceProgressSkipped,
 	}
 
 	change := handleUnknownPhysicalContainerImageState(
@@ -60,7 +62,7 @@ func TestUnknownPhysicalContainerImageStateBecomesTerminal(t *testing.T) {
 	require.Equal(t, noChange, change)
 	require.Equal(t, physicalContainerImageStateInvalid, data.state)
 	require.Equal(t, physicalResourceProgressFailed, data.progress)
-	require.Equal(t, "PhysicalContainerImage reached invalid reconciliation state Delete with progress Completed.", data.failureMessage)
+	require.Equal(t, "PhysicalContainerImage reached invalid reconciliation state Build with progress Skipped.", data.failureMessage)
 }
 
 func TestUnknownPhysicalContainerNetworkStateBecomesTerminal(t *testing.T) {
@@ -109,6 +111,8 @@ func TestUnknownPhysicalContainerVolumeStateBecomesTerminal(t *testing.T) {
 	require.Equal(t, "Physical container volume reached invalid reconciliation state Remove with progress Completed.", data.failureMessage)
 }
 
+// Verifies that the PhysicalContainerNetwork deletion handler releases a retained network's
+// finalizer and in-memory state even when normal reconciliation has reached an invalid state.
 func TestInvalidPhysicalContainerNetworkStillHandlesDeletion(t *testing.T) {
 	t.Parallel()
 
@@ -138,11 +142,9 @@ func TestInvalidPhysicalContainerNetworkStillHandlesDeletion(t *testing.T) {
 	}
 	reconciler.networkData.Store(network.NamespacedName(), physicalContainerNetworkDataKey(network), data)
 
-	change := handlePhysicalContainerNetworkTerminal(
+	change := reconciler.handleDeletionRequest(
 		t.Context(),
-		reconciler,
 		network,
-		data.state,
 		data,
 		logr.Discard(),
 	)
@@ -153,6 +155,8 @@ func TestInvalidPhysicalContainerNetworkStillHandlesDeletion(t *testing.T) {
 	require.Nil(t, storedData)
 }
 
+// Verifies that the PhysicalContainerVolume deletion handler releases a retained volume's
+// finalizer and in-memory state even when normal reconciliation has reached an invalid state.
 func TestInvalidPhysicalContainerVolumeStillHandlesDeletion(t *testing.T) {
 	t.Parallel()
 
@@ -182,11 +186,9 @@ func TestInvalidPhysicalContainerVolumeStillHandlesDeletion(t *testing.T) {
 	}
 	reconciler.volumeData.Store(volume.NamespacedName(), physicalContainerVolumeDataKey(volume), data)
 
-	change := handlePhysicalContainerVolumeTerminal(
+	change := reconciler.handleDeletionRequest(
 		t.Context(),
-		reconciler,
 		volume,
-		data.state,
 		data,
 		logr.Discard(),
 	)

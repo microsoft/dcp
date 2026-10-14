@@ -19,6 +19,8 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+// Verifies that namespace cleanup runs independent resource kinds concurrently
+// while dependencies prevent subsequent cleanup batches from starting.
 func TestNamespaceCleanupProcessesReadyResourceKindsConcurrently(t *testing.T) {
 	const timeout = 10 * time.Second
 	ctx, cancel := testutil.GetTestContext(t, timeout)
@@ -37,6 +39,14 @@ func TestNamespaceCleanupProcessesReadyResourceKindsConcurrently(t *testing.T) {
 	connectionStarted := make(chan struct{})
 	processGVR := (&apiv2.PhysicalProcess{}).GetGroupVersionResource()
 	connectionGVR := (&apiv2.PhysicalContainerNetworkConnection{}).GetGroupVersionResource()
+	namespaceCleanupResourceHandlers[(&apiv2.LogicalContainer{}).GetGroupVersionResource()] = func(
+		_ *NamespaceReconciler,
+		_ context.Context,
+		_ *apiv2.Namespace,
+		_ logr.Logger,
+	) (int, error) {
+		return 0, nil
+	}
 	namespaceCleanupResourceHandlers[processGVR] = func(
 		_ *NamespaceReconciler,
 		ctx context.Context,

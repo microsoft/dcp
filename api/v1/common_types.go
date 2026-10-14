@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
@@ -39,6 +40,18 @@ func initializeLifecycleHashEncoder() {
 
 	_ = initEncoder.Encode(time.Time{})
 	_ = initEncoder.Encode(ExecutablePemCertificates{})
+
+	// Append new lifecycle-key types here; existing entries must not be reordered.
+	_ = initEncoder.Encode(apiv2.ContainerBuildContextArchive{})
+	_ = initEncoder.Encode(apiv2.ContainerBuildSecret{})
+	_ = initEncoder.Encode(apiv2.ContainerBuildContext{})
+	_ = initEncoder.Encode(apiv2.PhysicalContainerImageConfig{})
+	_ = initEncoder.Encode(apiv2.VolumeMount{})
+	_ = initEncoder.Encode(apiv2.ContainerPort{})
+	_ = initEncoder.Encode(apiv2.FileSystemEntry{})
+	_ = initEncoder.Encode(apiv2.CreateFileSystem{})
+	_ = initEncoder.Encode(apiv2.LogicalContainerNetworkConnectionConfig{})
+	_ = initEncoder.Encode(apiv2.LogicalContainerConfig{})
 }
 
 func init() {

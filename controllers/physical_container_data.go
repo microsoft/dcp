@@ -6,14 +6,12 @@
 package controllers
 
 import (
-	std_slices "slices"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
-	"github.com/microsoft/dcp/internal/containers"
 )
 
 type physicalContainerDataStateKey string
@@ -60,12 +58,6 @@ type physicalContainerData struct {
 	// Image name resolved from the referenced PhysicalContainerImage.
 	image string
 
-	// Runtime volume mounts resolved from the referenced PhysicalContainerVolumes.
-	volumeMounts []containers.CreateContainerVolumeMount
-
-	// Runtime networks resolved from the referenced PhysicalContainerNetworks.
-	networks []containers.CreateContainerNetworkOptions
-
 	// Diagnostic message from the current failed runtime operation.
 	failureMessage string
 
@@ -79,44 +71,6 @@ type physicalContainerData struct {
 	retryAfter time.Time
 }
 
-func clonePhysicalContainerNetworks(networks []containers.CreateContainerNetworkOptions) []containers.CreateContainerNetworkOptions {
-	if networks == nil {
-		return nil
-	}
-
-	clonedNetworks := make([]containers.CreateContainerNetworkOptions, len(networks))
-	for i := range networks {
-		clonedNetworks[i] = networks[i]
-		clonedNetworks[i].Aliases = append([]string{}, networks[i].Aliases...)
-	}
-	return clonedNetworks
-}
-
-func physicalContainerNetworksEqual(left, right []containers.CreateContainerNetworkOptions) bool {
-	if len(left) != len(right) {
-		return false
-	}
-
-	for i := range left {
-		if left[i].Name != right[i].Name || !stringSlicesEqual(left[i].Aliases, right[i].Aliases) {
-			return false
-		}
-	}
-	return true
-}
-
-func stringSlicesEqual(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func (data *physicalContainerData) Clone() *physicalContainerData {
 	return &physicalContainerData{
 		resourceUID:               data.resourceUID,
@@ -124,8 +78,6 @@ func (data *physicalContainerData) Clone() *physicalContainerData {
 		progress:                  data.progress,
 		containerID:               data.containerID,
 		image:                     data.image,
-		volumeMounts:              append([]containers.CreateContainerVolumeMount{}, data.volumeMounts...),
-		networks:                  clonePhysicalContainerNetworks(data.networks),
 		failureMessage:            data.failureMessage,
 		portMappingFailureMessage: data.portMappingFailureMessage,
 		cleanupMessage:            data.cleanupMessage,
@@ -155,14 +107,6 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 		data.image = other.image
 		updated = true
 	}
-	if !std_slices.Equal(data.volumeMounts, other.volumeMounts) {
-		data.volumeMounts = append([]containers.CreateContainerVolumeMount{}, other.volumeMounts...)
-		updated = true
-	}
-	if !physicalContainerNetworksEqual(data.networks, other.networks) {
-		data.networks = clonePhysicalContainerNetworks(other.networks)
-		updated = true
-	}
 	if data.failureMessage != other.failureMessage {
 		data.failureMessage = other.failureMessage
 		updated = true
@@ -184,7 +128,10 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 }
 
 func (data *physicalContainerData) operationInProgress() bool {
-	return data.progress == physicalContainerOperationInProgress
+	return (data.state == physicalContainerStateCreate ||
+		data.state == physicalContainerStateCopyFiles ||
+		data.state == physicalContainerStateStart) &&
+		data.progress == physicalContainerOperationInProgress
 }
 
 func (data *physicalContainerData) applyTo(
@@ -269,6 +216,9 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonImageLookupFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
+		{state: physicalContainerStateImage, progress: physicalResourceProgressFailed}: {
+			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonImageFailed,
+		},
 		{state: physicalContainerStateVolumes, progress: physicalResourceProgressNotFound}: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonVolumeNotFound,
 		},
@@ -296,6 +246,10 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 		{state: physicalContainerStateCreate, progress: physicalResourceProgressCompleted}: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonCreated,
 			message: "Physical container creation completed.",
+		},
+		{state: physicalContainerStateCreate, progress: physicalResourceProgressSkipped}: {
+			phase: apiv2.PhysicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonStopRequested,
+			message: "Runtime container was not created because stop was requested.",
 		},
 		{state: physicalContainerStateCreate, progress: physicalResourceProgressRetryPending}: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonCreateFailed,
@@ -381,6 +335,10 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 		{state: physicalContainerStateStop, progress: physicalResourceProgressRetryPending}: {
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerStopFailed,
 			requeue: true, requeueDelay: LongDelay,
+		},
+		{state: physicalContainerStateStop, progress: physicalResourceProgressCompleted}: {
+			phase: apiv2.PhysicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonStopRequested,
+			message: "Runtime container is already stopped or was never started.",
 		},
 		{state: physicalContainerStateRemove, progress: physicalResourceProgressRetryPending}: {
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerRemoveFailed,

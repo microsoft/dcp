@@ -25,7 +25,6 @@ const (
 	physicalContainerImageStatePull
 	physicalContainerImageStateBuild
 	physicalContainerImageStateRuntime
-	physicalContainerImageStateDelete
 	physicalContainerImageStateInvalid
 )
 
@@ -114,7 +113,8 @@ func (data *physicalContainerImageData) UpdateFrom(other *physicalContainerImage
 }
 
 func (data *physicalContainerImageData) operationInProgress() bool {
-	return data.progress == physicalResourceProgressInProgress
+	return (data.state == physicalContainerImageStatePull || data.state == physicalContainerImageStateBuild) &&
+		data.progress == physicalResourceProgressInProgress
 }
 
 func (data *physicalContainerImageData) applyTo(

@@ -43,6 +43,13 @@ type physicalContainerVolumeData struct {
 	resolveByName  bool
 }
 
+func (data *physicalContainerVolumeData) operationInProgress() bool {
+	return (data.state == physicalContainerVolumeStateCreate ||
+		data.state == physicalContainerVolumeStateReplace ||
+		data.state == physicalContainerVolumeStateRemove) &&
+		data.progress == physicalResourceProgressInProgress
+}
+
 func (data *physicalContainerVolumeData) Clone() *physicalContainerVolumeData {
 	return &physicalContainerVolumeData{
 		state:          data.state,

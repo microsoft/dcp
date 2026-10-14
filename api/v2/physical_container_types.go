@@ -8,7 +8,6 @@ package v2
 import (
 	"context"
 	"fmt"
-	"path"
 	"reflect"
 	"regexp"
 
@@ -44,7 +43,7 @@ const (
 	// PhysicalContainerPhasePaused indicates that the runtime container is paused.
 	PhysicalContainerPhasePaused PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhasePaused)
 
-	// PhysicalContainerPhaseExited indicates that the runtime container has exited.
+	// PhysicalContainerPhaseExited indicates that the container has exited or stop completed before startup.
 	PhysicalContainerPhaseExited PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseExited)
 
 	// PhysicalContainerPhaseUnknown indicates that the runtime container state is unavailable or indeterminate.
@@ -63,6 +62,9 @@ const (
 
 	// PhysicalContainerReasonImageLookupFailed indicates that the referenced PhysicalContainerImage could not be read.
 	PhysicalContainerReasonImageLookupFailed ConditionReason = "ImageLookupFailed"
+
+	// PhysicalContainerReasonImageFailed indicates that image acquisition failed terminally.
+	PhysicalContainerReasonImageFailed ConditionReason = "ImageFailed"
 
 	// PhysicalContainerReasonVolumeNotFound indicates that a referenced PhysicalContainerVolume does not exist.
 	PhysicalContainerReasonVolumeNotFound ConditionReason = "VolumeNotFound"
@@ -99,6 +101,9 @@ const (
 
 	// PhysicalContainerReasonStarted indicates that runtime container start completed.
 	PhysicalContainerReasonStarted ConditionReason = "Started"
+
+	// PhysicalContainerReasonStopRequested indicates that stop completed without creating or starting the container.
+	PhysicalContainerReasonStopRequested ConditionReason = "StopRequested"
 
 	// PhysicalContainerReasonCreateFailed indicates that runtime container creation failed.
 	PhysicalContainerReasonCreateFailed ConditionReason = "CreateFailed"
@@ -167,7 +172,8 @@ type PhysicalContainerSpec struct {
 	// Container describes a runtime container to create. Exactly one of containerID or container must be set.
 	Container *PhysicalContainerConfig `json:"container,omitempty"`
 
-	// Stop requests that the tracked runtime container be stopped.
+	// Stop requests that the tracked runtime container be stopped or prevents creation if it has not begun.
+	// Once true, it cannot be reset.
 	Stop bool `json:"stop,omitempty"`
 }
 
@@ -388,36 +394,12 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Required(containerPath.Child("containerName"), "containerName must be set when replaceExisting is true"))
 	}
 
-	networksPath := containerPath.Child("networks")
-	for i, network := range container.Networks {
-		errorList = append(errorList, validateSameNamespaceResourceReference(network.Name, pc.Namespace, networksPath.Index(i).Child("name"))...)
-	}
+	errorList = append(errorList, validateContainerNetworks(container.Networks, pc.Namespace, containerPath.Child("networks"))...)
 	errorList = append(errorList, ValidateVolumeMounts(container.VolumeMounts, pc.Namespace, containerPath.Child("volumeMounts"))...)
 	errorList = append(errorList, ValidateContainerPorts(container.Ports, containerPath.Child("ports"))...)
 	errorList = append(errorList, validateLabels(container.Labels, containerPath.Child("labels"))...)
 
-	createFilesPath := containerPath.Child("createFiles")
-	for i, createFile := range container.CreateFiles {
-		createFilePath := createFilesPath.Index(i)
-		if createFile.Destination != "" && !path.IsAbs(createFile.Destination) {
-			errorList = append(errorList, field.Invalid(createFilePath.Child("destination"), createFile.Destination, "destination must be absolute"))
-		}
-		if createFile.Umask != nil && !(*createFile.Umask).IsRegular() {
-			errorList = append(errorList, field.Invalid(createFilePath.Child("umask"), *createFile.Umask, "umask must not include type bits"))
-		}
-		if len(createFile.Entries) == 0 {
-			errorList = append(errorList, field.Required(createFilePath.Child("entries"), "at least one child entry must be specified"))
-		}
-		for j, item := range createFile.Entries {
-			errorList = append(errorList, item.Validate(createFilePath.Child("entries").Index(j))...)
-		}
-		if createFile.DefaultOwner < 0 {
-			errorList = append(errorList, field.Invalid(createFilePath.Child("defaultOwner"), createFile.DefaultOwner, "default owner must be a non-negative integer"))
-		}
-		if createFile.DefaultGroup < 0 {
-			errorList = append(errorList, field.Invalid(createFilePath.Child("defaultGroup"), createFile.DefaultGroup, "default group must be a non-negative integer"))
-		}
-	}
+	errorList = append(errorList, validateCreateFiles(container.CreateFiles, containerPath.Child("createFiles"))...)
 
 	return errorList
 }

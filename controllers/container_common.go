@@ -94,7 +94,7 @@ func inspectContainer(findContext context.Context, o containers.ContainerOrchest
 	})
 }
 
-func inspectContainerIfExists(findContext context.Context, o containers.ContainerOrchestrator, containerID string) (*containers.InspectedContainer, error) {
+func inspectContainerIfExists(findContext context.Context, o containers.InspectContainers, containerID string) (*containers.InspectedContainer, error) {
 	b := exponentialBackoff(containerInspectionTimeout)
 	return resiliency.RetryGet(findContext, b, func() (*containers.InspectedContainer, error) {
 		inspectedCtrs, err := o.InspectContainers(findContext, containers.InspectContainersOptions{Containers: []string{containerID}})
