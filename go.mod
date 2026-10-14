@@ -334,3 +334,7 @@ tool (
 )
 
 replace github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 => github.com/gorilla/websocket v1.5.3
+
+// Temporary bounded watch delivery fix from https://github.com/tilt-dev/tilt-apiserver/pull/117.
+// Remove this replacement when the fixes are available in the upstream dependency.
+replace github.com/tilt-dev/tilt-apiserver => github.com/danegsta/tilt-apiserver v0.0.0-20261012181939-aeebb1356a52

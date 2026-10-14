@@ -153,7 +153,7 @@ func stopV2NamespaceWatch(namespaceWatcher watch.Interface, watchDone <-chan str
 		return
 	default:
 	}
-	// The reader keeps draining during Stop so publication can release the lock Stop needs.
+	// Stop may return before the result channel closes; join its reader before restarting.
 	namespaceWatcher.Stop()
 	<-watchDone
 }
