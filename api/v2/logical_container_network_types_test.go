@@ -8,6 +8,8 @@ package v2
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -168,6 +170,39 @@ func TestLogicalContainerNetworkSpecGetLifecycleKey(t *testing.T) {
 	missing := LogicalContainerNetworkSpec{}
 	_, _, missingErr := missing.GetLifecycleKey()
 	require.Error(t, missingErr)
+}
+
+// Verifies that LogicalContainerNetworkSpec.GetLifecycleKey normalizes label ordering
+// without changing duplicate-label precedence or mutating the original configuration.
+func TestLogicalContainerNetworkSpecGetLifecycleKeyPreservesDuplicateLabels(t *testing.T) {
+	spec := LogicalContainerNetworkSpec{Network: &LogicalContainerNetworkConfig{
+		Labels: []commonapi.Label{{Key: "b", Value: "2"}, {Key: "a", Value: "1"}},
+	}}
+	// Small inputs can preserve equal-key order even with an unstable sort.
+	for labelIndex := range 32 {
+		spec.Network.Labels = append(spec.Network.Labels,
+			commonapi.Label{Key: "shared", Value: fmt.Sprintf("value-%d", labelIndex)},
+			commonapi.Label{Key: fmt.Sprintf("other-%02d", 31-labelIndex), Value: "other"},
+		)
+	}
+	original := spec.DeepCopy()
+	originalKey, _, originalErr := spec.GetLifecycleKey()
+	require.NoError(t, originalErr)
+	require.Equal(t, *original, spec)
+
+	ordered := spec.DeepCopy()
+	slices.SortStableFunc(ordered.Network.Labels, func(left, right commonapi.Label) int {
+		return strings.Compare(left.Key, right.Key)
+	})
+	orderedKey, _, orderedErr := ordered.GetLifecycleKey()
+	require.NoError(t, orderedErr)
+	require.Equal(t, originalKey, orderedKey)
+
+	lastLabel := len(ordered.Network.Labels) - 1
+	ordered.Network.Labels[lastLabel], ordered.Network.Labels[lastLabel-1] = ordered.Network.Labels[lastLabel-1], ordered.Network.Labels[lastLabel]
+	changedKey, _, changedErr := ordered.GetLifecycleKey()
+	require.NoError(t, changedErr)
+	require.NotEqual(t, originalKey, changedKey)
 }
 
 // Verifies that LogicalContainerNetwork.GetLeaseKey shares runtime-name lease identity with V1
