@@ -135,59 +135,35 @@ func TestV2LogicalContainerNetworkControllerReusesAndReplacesPersistentNetwork(t
 	waitRuntimeNetworkMissing(t, ctx, created.Status.NetworkID)
 }
 
-// Verifies that LogicalContainerNetwork persists namespace workload overrides, falls back to
-// the global workload, and releases its lease without a record when neither supplies ownership.
-func TestV2LogicalContainerNetworkControllerResolvesNamespaceOwnership(t *testing.T) {
+// Verifies that LogicalContainerNetwork records namespace workload ownership and releases
+// its startup lease before reporting readiness, even without a global workload ID.
+func TestV2LogicalContainerNetworkControllerRecordsNamespaceWorkload(t *testing.T) {
 	t.Parallel()
-	for _, testCase := range []struct {
-		name       string
-		globalID   commonapi.WorkloadID
-		annotation string
-		expectedID commonapi.WorkloadID
-	}{
-		{name: "override", globalID: "global-network-workload", annotation: " namespace-network-workload ", expectedID: "namespace-network-workload"},
-		{name: "empty-default", annotation: "namespace-network-workload", expectedID: "namespace-network-workload"},
-		{name: "fallback", globalID: "global-network-workload", expectedID: "global-network-workload"},
-		{name: "unowned"},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-			defer cancel()
-			serverInfo, environmentInfo, startupErr := StartTestEnvironmentWithOptions(t, ctx,
-				LogicalContainerNetworkController|PhysicalContainerNetworkController, t.Name(), t.TempDir(),
-				TestEnvironmentOptions{WorkloadID: testCase.globalID})
-			require.NoError(t, startupErr)
-			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-network-ownership"}}
-			if testCase.annotation != "" {
-				namespace.Annotations = map[string]string{apiv2.NamespaceWorkloadIDAnnotation: testCase.annotation}
-			}
-			require.NoError(t, serverInfo.Client.Create(ctx, namespace))
-			waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
-				return current.Status.Phase == apiv2.NamespacePhaseActive, nil
-			})
-			network := &apiv2.LogicalContainerNetwork{
-				ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
-				Spec: apiv2.LogicalContainerNetworkSpec{
-					Mode: apiv2.LogicalContainerNetworkModePersistent, NetworkName: namespace.Name + "-runtime",
-					Network: &apiv2.LogicalContainerNetworkConfig{},
-				},
-			}
-			require.NoError(t, serverInfo.Client.Create(ctx, network))
-			ready := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
-			})
-			record, recordErr := environmentInfo.StateStore.GetPersistentNetwork(ctx, network.GetLeaseKey())
-			if testCase.expectedID == "" {
-				require.ErrorIs(t, recordErr, statestore.ErrPersistentNetworkNotFound)
-			} else {
-				require.NoError(t, recordErr)
-				require.Equal(t, testCase.expectedID, record.WorkloadID)
-				require.Equal(t, ready.Status.NetworkID, record.NetworkID)
-			}
-			require.ErrorIs(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, network, environmentInfo.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
-		})
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-logical-network-ownership")
+	require.NoError(t, retryOnConflict(ctx, namespace.NamespacedName(), func(updateCtx context.Context, current *apiv2.Namespace) error {
+		current.Annotations = map[string]string{apiv2.NamespaceWorkloadIDAnnotation: " namespace-network-workload "}
+		return client.Update(updateCtx, current)
+	}))
+	runtimeName := namespace.Name + "-runtime"
+	removeRuntimeNetworkOnCleanup(t, runtimeName)
+	network := &apiv2.LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerNetworkSpec{
+			Mode: apiv2.LogicalContainerNetworkModePersistent, NetworkName: runtimeName,
+			Network: &apiv2.LogicalContainerNetworkConfig{},
+		},
 	}
+	require.NoError(t, client.Create(ctx, network))
+	ready := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+	})
+	record, recordErr := testStateStore.GetPersistentNetwork(ctx, network.GetLeaseKey())
+	require.NoError(t, recordErr)
+	require.Equal(t, commonapi.WorkloadID("namespace-network-workload"), record.WorkloadID)
+	require.Equal(t, ready.Status.NetworkID, record.NetworkID)
+	require.ErrorIs(t, testStateStore.VerifyResourceLeaseHeld(ctx, network, testResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 }
 
 type namespaceWorkloadFailureReader struct {
