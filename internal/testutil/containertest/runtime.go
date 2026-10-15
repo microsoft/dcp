@@ -26,11 +26,13 @@ const runtimeDetectionTimeout = 45 * time.Second
 var supportedRuntimeNames = []string{
 	string(container_flags.DockerRuntime),
 	string(container_flags.PodmanRuntime),
+	string(container_flags.WslcRuntime),
 }
 
 var runtimeTestSlots = map[string]chan struct{}{
 	string(container_flags.DockerRuntime): make(chan struct{}, 8),
 	string(container_flags.PodmanRuntime): make(chan struct{}, 4),
+	string(container_flags.WslcRuntime):   make(chan struct{}, 4),
 }
 
 type runtimeDetectionResult struct {
@@ -55,6 +57,7 @@ var (
 	runtimeRecovery  = map[string]*runtimeRecoveryState{
 		string(container_flags.DockerRuntime): {},
 		string(container_flags.PodmanRuntime): {},
+		string(container_flags.WslcRuntime):   {},
 	}
 )
 

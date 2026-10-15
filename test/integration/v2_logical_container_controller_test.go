@@ -332,9 +332,9 @@ func TestV2LogicalContainerControllerSelectsPersistentContainer(t *testing.T) {
 			namespace := createActiveV2Namespace(t, ctx, namespaceName)
 			image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "image", namespaceName+"-image")
 			runtimeName := namespaceName + "-runtime"
-			labels := []commonapi.Label{{Key: "com.microsoft.developer.usvc-dev.lifecycle-key", Value: testCase.key}}
+			labels := map[string]string{"com.microsoft.developer.usvc-dev.lifecycle-key": testCase.key}
 			if testCase.managed {
-				labels = append(labels, commonapi.Label{Key: "com.microsoft.developer.usvc-dev.build", Value: "test"})
+				labels["com.microsoft.developer.usvc-dev.build"] = "test"
 			}
 			existingID, runErr := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
 				CreateContainerOptions: containers.CreateContainerOptions{Name: runtimeName, Image: image.Status.ImageID, Labels: labels},
@@ -677,9 +677,9 @@ func TestV2LogicalContainerControllerStopsWithoutReplacingPersistentContainer(t 
 	runtimeID, runErr := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
 			Name: runtimeName, Image: "existing-image",
-			Labels: []commonapi.Label{
-				{Key: "com.microsoft.developer.usvc-dev.build", Value: "test"},
-				{Key: "com.microsoft.developer.usvc-dev.lifecycle-key", Value: "old-key"},
+			Labels: map[string]string{
+				"com.microsoft.developer.usvc-dev.build":         "test",
+				"com.microsoft.developer.usvc-dev.lifecycle-key": "old-key",
 			},
 		},
 	})
@@ -729,9 +729,9 @@ func TestV2LogicalContainerControllerStopsContainerFoundDuringLookup(t *testing.
 	runtimeID, runErr := serverInfo.ContainerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
 			Name: inspector.containerName, Image: "existing-image",
-			Labels: []commonapi.Label{
-				{Key: "com.microsoft.developer.usvc-dev.build", Value: "test"},
-				{Key: "com.microsoft.developer.usvc-dev.lifecycle-key", Value: "old-key"},
+			Labels: map[string]string{
+				"com.microsoft.developer.usvc-dev.build":         "test",
+				"com.microsoft.developer.usvc-dev.lifecycle-key": "old-key",
 			},
 		},
 	})

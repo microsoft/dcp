@@ -100,7 +100,6 @@ func (r *ContainerWatcher[T]) EnsureContainerWatchForResource(resourceID types.U
 
 	_, _ = r.watchingResources.LoadOrStore(resourceID, true)
 
-	var containerSub, networkSub *pubsub.Subscription[containers.EventMessage]
 	var containerSubErr, networkSubErr error
 
 	if r.ProcessContainerEvent != nil && r.containerEvtSub == nil {
@@ -111,7 +110,10 @@ func (r *ContainerWatcher[T]) EnsureContainerWatchForResource(resourceID types.U
 			containerEventChanBuffer,
 		)
 		r.containerEvtChCancel = containerEvtChCancel
-		containerSub, containerSubErr = r.orchestrator.WatchContainers(r.containerEvtCh.In)
+		r.containerEvtSub, containerSubErr = r.orchestrator.WatchContainers(r.containerEvtCh.In)
+		if containerSubErr == nil && r.containerEvtSub == nil {
+			containerSubErr = fmt.Errorf("container runtime returned no container event subscription")
+		}
 	}
 
 	if r.ProcessNetworkEvent != nil && r.networkEvtSub == nil {
@@ -122,7 +124,10 @@ func (r *ContainerWatcher[T]) EnsureContainerWatchForResource(resourceID types.U
 			containerEventChanBuffer,
 		)
 		r.networkEvtChCancel = networkEvtChCancel
-		networkSub, networkSubErr = r.orchestrator.WatchNetworks(r.networkEvtCh.In)
+		r.networkEvtSub, networkSubErr = r.orchestrator.WatchNetworks(r.networkEvtCh.In)
+		if networkSubErr == nil && r.networkEvtSub == nil {
+			networkSubErr = fmt.Errorf("container runtime returned no network event subscription")
+		}
 	}
 
 	if r.containerEvtWorkerStop == nil {
@@ -144,9 +149,6 @@ func (r *ContainerWatcher[T]) EnsureContainerWatchForResource(resourceID types.U
 		r.cancelContainerWatch()
 		return
 	}
-
-	r.containerEvtSub = containerSub
-	r.networkEvtSub = networkSub
 }
 
 func (r *ContainerWatcher[T]) ReleaseContainerWatchForResource(resourceID types.UID, log logr.Logger) {

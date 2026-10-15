@@ -323,9 +323,9 @@ func TestApplyImageLayersImpl_BuildCommandArgs(t *testing.T) {
 		options := ApplyImageLayersOptions{
 			BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
 			Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
-			Labels: []Label{
-				{Key: "test.label", Value: "value with spaces"},
-				{Key: "another.label", Value: "second-value"},
+			Labels: map[string]string{
+				"test.label":    "value with spaces",
+				"another.label": "second-value",
 			},
 			Tag: "myimage:dcp-abc",
 		}

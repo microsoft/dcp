@@ -25,6 +25,8 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 )
 
+var updateProcThreadAttributeProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("UpdateProcThreadAttribute")
+
 // windowsPTY is a PTY implementation for Windows OS that leverages the Windows Console API.
 // Read(), Write(), and Resize() are goroutine-safe.
 // The Close() method is also goroutine-safe, but invoking Close() while other methods are in progress
@@ -199,11 +201,7 @@ func createProcessWithConsole(
 	}
 	defer attributeList.Delete()
 
-	updateAttributeErr := attributeList.Update(
-		windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-		unsafe.Pointer(uintptr(hConsole)),
-		unsafe.Sizeof(hConsole),
-	)
+	updateAttributeErr := updatePseudoConsoleAttribute(attributeList, hConsole)
 	if updateAttributeErr != nil {
 		return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("could not update thread attribute list: %w", updateAttributeErr)
 	}
@@ -285,6 +283,25 @@ func createProcessWithConsole(
 	waitable := newWindowsProcessHandle(processInformation.Process, cmd, flags)
 
 	return handle, waitable, nil
+}
+
+func updatePseudoConsoleAttribute(attributeList *windows.ProcThreadAttributeListContainer, hConsole windows.Handle) error {
+	// PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE expects the HPCON value itself, not a
+	// pointer to a Go variable containing the handle.
+	result, _, callErr := updateProcThreadAttributeProc.Call(
+		uintptr(unsafe.Pointer(attributeList.List())),
+		0,
+		windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+		uintptr(hConsole),
+		unsafe.Sizeof(hConsole),
+		0,
+		0,
+	)
+	runtime.KeepAlive(attributeList)
+	if result == 0 {
+		return callErr
+	}
+	return nil
 }
 
 func closeHandles(handles ...windows.Handle) error {
