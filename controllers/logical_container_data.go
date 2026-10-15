@@ -46,11 +46,12 @@ type logicalContainerData struct {
 	lifecycleKey string
 	// Generated runtime name for a session container without spec.containerName.
 	generatedContainerName string
-	containerID            string
-	existingLifecycleKey   string
-	replaceExisting        bool
-	physicalContainerUID   types.UID
-	lease                  *statestore.ResourceLease
+	// Runtime identity selected for adoption or a stop request before physical handoff.
+	pendingContainerID   string
+	existingLifecycleKey string
+	replaceExisting      bool
+	physicalContainerUID types.UID
+	lease                *statestore.ResourceLease
 	// Lease settlement failures are independent of the original reconciliation failure.
 	leaseFailureMessage string
 }
@@ -75,19 +76,19 @@ func (data *logicalContainerData) UpdateFrom(other *logicalContainerData) bool {
 }
 
 func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (objectChange, AdditionalReconciliationDelay, bool) {
-	physicalContainerRef, imageRef := "", ""
+	physicalContainerRef := ""
 	if data.physicalContainerUID != "" {
 		physicalContainerRef = "logical-" + string(container.UID)
 	}
-	if container.Spec.Container != nil {
-		if container.Spec.Container.ImageRef != "" {
-			imageRef = commonapi.AsNamespacedName(container.Spec.Container.ImageRef, container.Namespace).Name
-		} else if physicalContainerRef != "" && data.containerID == "" {
-			imageRef = physicalContainerRef
-		}
-	}
 	change := setValue(&container.Status.PhysicalContainerRef, physicalContainerRef)
-	change |= setValue(&container.Status.ImageRef, imageRef)
+	// After handoff, inline image references come from the backing physical creation spec.
+	if container.Spec.Container == nil || container.Spec.Container.Image == nil || data.physicalContainerUID == "" {
+		imageRef := ""
+		if container.Spec.Container != nil && container.Spec.Container.ImageRef != "" {
+			imageRef = commonapi.AsNamespacedName(container.Spec.Container.ImageRef, container.Namespace).Name
+		}
+		change |= setValue(&container.Status.ImageRef, imageRef)
+	}
 	change |= setValue(&container.Status.LifecycleKey, data.lifecycleKey)
 	if data.physicalContainerUID == "" {
 		change |= applyLogicalContainerPhysicalDetails(container, &apiv2.PhysicalContainerStatus{})

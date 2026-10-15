@@ -311,6 +311,7 @@ func TestV2LogicalContainerControllerDelegatesSessionLifecycle(t *testing.T) {
 
 // Verifies that the LogicalContainer controller selects adoption or physical replacement according
 // to persistent lifecycle keys, runtime state, and DCP ownership without upgrading adopted monitors.
+// Inline image references are published only when the image is realized for creation.
 func TestV2LogicalContainerControllerSelectsPersistentContainer(t *testing.T) {
 	for _, testCase := range []struct {
 		name     string
@@ -350,7 +351,7 @@ func TestV2LogicalContainerControllerSelectsPersistentContainer(t *testing.T) {
 				Spec: apiv2.LogicalContainerSpec{
 					Mode: apiv2.LogicalContainerModePersistent, ContainerName: runtimeName, LifecycleKey: "desired",
 					MonitorPID: &monitorPID, MonitorTimestamp: metav1.NewMicroTime(testResourceLeaseOwner.IdentityTime),
-					Container: &apiv2.LogicalContainerConfig{ImageRef: image.Name},
+					Container: &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespaceName + "-image"}},
 				},
 			}
 			require.NoError(t, client.Create(ctx, container))
@@ -361,6 +362,8 @@ func TestV2LogicalContainerControllerSelectsPersistentContainer(t *testing.T) {
 			require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef}, physical))
 			if testCase.replaced {
 				require.NotEqual(t, existingID, running.Status.ContainerID)
+				require.NotEmpty(t, running.Status.ImageRef)
+				require.Equal(t, physical.Spec.Container.ImageRef, running.Status.ImageRef)
 				require.True(t, physical.Spec.Container.ReplaceExisting)
 				require.True(t, physical.Spec.Container.RetainRuntimeContainer)
 				require.Equal(t, container.Spec.MonitorPID, physical.Spec.Container.MonitorPID)
@@ -368,6 +371,7 @@ func TestV2LogicalContainerControllerSelectsPersistentContainer(t *testing.T) {
 				waitContainerMissing(t, ctx, existingID)
 			} else {
 				require.Equal(t, existingID, running.Status.ContainerID)
+				require.Empty(t, running.Status.ImageRef)
 				require.Equal(t, existingID, physical.Spec.ContainerID)
 				require.Nil(t, physical.Spec.Container)
 				require.Empty(t, physicalContainerMonitorProcesses(existingID))

@@ -363,11 +363,11 @@ func handleLogicalContainerPhysical(
 		return noChange
 	}
 	// Stop can change after lookup; preserve the found identity until physical realization begins.
-	if container.Spec.Stop && data.containerID != "" {
+	if container.Spec.Stop && data.pendingContainerID != "" {
 		data.lifecycleKey = data.existingLifecycleKey
 		data.replaceExisting = false
 	}
-	if data.containerID == "" && container.Spec.Stop {
+	if data.pendingContainerID == "" && container.Spec.Stop {
 		data.state, data.progress = logicalContainerStateRuntime, physicalResourceProgressExited
 		data.reason, data.message = "ContainerStopped", "Stop was requested before a runtime container was created."
 		if data.lease != nil {
@@ -387,7 +387,7 @@ func handleLogicalContainerPhysical(
 		}
 		return noChange
 	}
-	selectedContainerID := data.containerID
+	selectedContainerID := data.pendingContainerID
 	if data.replaceExisting {
 		selectedContainerID = ""
 	}
@@ -468,9 +468,8 @@ func handleLogicalContainerPhysical(
 		return noChange
 	}
 	data.physicalContainerUID = physicalContainer.UID
-	if selectedContainerID == "" {
-		data.containerID = ""
-	}
+	data.pendingContainerID = ""
+	data.generatedContainerName = ""
 	data.existingLifecycleKey = ""
 	data.replaceExisting = false
 	data.state, data.progress = logicalContainerStateRuntime, physicalResourceProgressNotReady
@@ -551,6 +550,13 @@ func handleLogicalContainerRuntime(
 		return noChange
 	}
 	change := applyLogicalContainerPhysicalDetails(container, &physicalContainer.Status)
+	if container.Spec.Container != nil && container.Spec.Container.Image != nil {
+		imageRef := ""
+		if physicalContainer.Spec.Container != nil {
+			imageRef = physicalContainer.Spec.Container.ImageRef
+		}
+		change |= setValue(&container.Status.ImageRef, imageRef)
+	}
 	if !physicalContainer.DeletionTimestamp.IsZero() {
 		data.progress, data.reason = physicalResourceProgressUnknown, "PhysicalContainerTerminating"
 		data.message = "The backing PhysicalContainer is being deleted."
@@ -872,7 +878,7 @@ func (r *LogicalContainerReconciler) lookupLogicalContainer(
 ) {
 	inspected, inspectErr := inspectContainerIfExists(ctx, r.containerInspector, container.Spec.ContainerName)
 	if errors.Is(inspectErr, containers.ErrNotFound) {
-		data.containerID = ""
+		data.pendingContainerID = ""
 		data.existingLifecycleKey = ""
 		data.replaceExisting = false
 		if container.Spec.EffectiveMode() == apiv2.LogicalContainerModeExisting && !container.Spec.Stop {
@@ -897,7 +903,7 @@ func (r *LogicalContainerReconciler) lookupLogicalContainer(
 
 	_, managed := inspected.Labels[dcpBuildLabel]
 	actualKey := inspected.Labels[lifecycleKeyLabel]
-	data.containerID, data.existingLifecycleKey = inspected.Id, actualKey
+	data.pendingContainerID, data.existingLifecycleKey = inspected.Id, actualKey
 	reusable := container.Spec.EffectiveMode() == apiv2.LogicalContainerModeExisting ||
 		container.Spec.Stop || !managed ||
 		(actualKey == data.lifecycleKey && inspected.Status == containers.ContainerStatusRunning)
