@@ -134,11 +134,11 @@ func (cs *LogicalContainerSpec) GetLifecycleKey() (string, bool, error) {
 			build.Tags = slices.Compact(build.Tags)
 			slices.Sort(build.BaseImages)
 			build.BaseImages = slices.Compact(build.BaseImages)
-			slices.SortFunc(build.Labels, func(left, right commonapi.Label) int { return strings.Compare(left.Key, right.Key) })
+			slices.SortStableFunc(build.Labels, func(left, right commonapi.Label) int { return strings.Compare(left.Key, right.Key) })
 		}
 	}
-	slices.SortFunc(desired.Env, func(left, right commonapi.EnvVar) int { return strings.Compare(left.Name, right.Name) })
-	slices.SortFunc(desired.Labels, func(left, right commonapi.Label) int { return strings.Compare(left.Key, right.Key) })
+	slices.SortStableFunc(desired.Env, func(left, right commonapi.EnvVar) int { return strings.Compare(left.Name, right.Name) })
+	slices.SortStableFunc(desired.Labels, func(left, right commonapi.Label) int { return strings.Compare(left.Key, right.Key) })
 	for i := range desired.VolumeMounts {
 		if desired.VolumeMounts[i].VolumeRef != "" {
 			desired.VolumeMounts[i].VolumeRef = commonapi.AsNamespacedName(desired.VolumeMounts[i].VolumeRef, "").Name

@@ -610,6 +610,38 @@ func TestV2LogicalContainerControllerRecordsPersistentWorkload(t *testing.T) {
 	require.ErrorIs(t, verifyErr, statestore.ErrResourceLeaseNotHeld)
 }
 
+// Verifies that the LogicalContainer controller records a namespace workload override even
+// without a global workload ID, and releases the startup lease before reporting readiness.
+func TestV2LogicalContainerControllerRecordsNamespaceWorkload(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-logical-namespace-workload")
+	require.NoError(t, retryOnConflict(ctx, namespace.NamespacedName(), func(updateCtx context.Context, current *apiv2.Namespace) error {
+		current.Annotations = map[string]string{apiv2.NamespaceWorkloadIDAnnotation: " namespace-container-workload "}
+		return client.Update(updateCtx, current)
+	}))
+	runtimeName := namespace.Name + "-runtime"
+	runtimeID := runExistingTestContainer(t, ctx, runtimeName, "workload-image")
+	container := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "persistent", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerSpec{
+			Mode: apiv2.LogicalContainerModePersistent, ContainerName: runtimeName,
+			LifecycleKey: "custom", Container: &apiv2.LogicalContainerConfig{ImageRef: "unused-image"},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	running := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+	})
+	require.Equal(t, runtimeID, running.Status.ContainerID)
+	record, recordErr := testStateStore.GetPersistentContainer(ctx, container.GetLeaseKey())
+	require.NoError(t, recordErr)
+	require.Equal(t, runtimeID, record.ContainerID)
+	require.Equal(t, commonapi.WorkloadID("namespace-container-workload"), record.WorkloadID)
+	waitResourceLeaseReleased(t, ctx, container)
+}
+
 // Verifies that the LogicalContainer controller does not silently omit logical network
 // attachments or create a runtime container before logical network realization is available.
 func TestV2LogicalContainerControllerWaitsForLogicalNetworks(t *testing.T) {

@@ -72,6 +72,64 @@ func TestLogicalContainerSpecGetLifecycleKey(t *testing.T) {
 	require.Equal(t, "user-key", explicitKey)
 }
 
+// Verifies that LogicalContainerSpec.GetLifecycleKey distinguishes different duplicate precedence
+// in environment variables, container labels, and build labels.
+func TestLogicalContainerSpecGetLifecycleKeyPreservesDuplicatePrecedence(t *testing.T) {
+	t.Parallel()
+	// Unstable key sorting normalized these orders identically despite opposite duplicate precedence.
+	firstOrder := []commonapi.Label{
+		{Key: "label00", Value: "unchanged"}, {Key: "label02", Value: "unchanged"},
+		{Key: "label13", Value: "unchanged"}, {Key: "label09", Value: "unchanged"},
+		{Key: "duplicate", Value: "second"}, {Key: "label03", Value: "unchanged"},
+		{Key: "label07", Value: "unchanged"}, {Key: "label06", Value: "unchanged"},
+		{Key: "label10", Value: "unchanged"}, {Key: "label04", Value: "unchanged"},
+		{Key: "label12", Value: "unchanged"}, {Key: "label11", Value: "unchanged"},
+		{Key: "duplicate", Value: "first"}, {Key: "label05", Value: "unchanged"},
+		{Key: "label08", Value: "unchanged"}, {Key: "label01", Value: "unchanged"},
+	}
+	secondOrder := []commonapi.Label{
+		{Key: "label09", Value: "unchanged"}, {Key: "duplicate", Value: "first"},
+		{Key: "label10", Value: "unchanged"}, {Key: "label05", Value: "unchanged"},
+		{Key: "label13", Value: "unchanged"}, {Key: "label07", Value: "unchanged"},
+		{Key: "label03", Value: "unchanged"}, {Key: "label01", Value: "unchanged"},
+		{Key: "label02", Value: "unchanged"}, {Key: "label06", Value: "unchanged"},
+		{Key: "label00", Value: "unchanged"}, {Key: "duplicate", Value: "second"},
+		{Key: "label11", Value: "unchanged"}, {Key: "label08", Value: "unchanged"},
+		{Key: "label04", Value: "unchanged"}, {Key: "label12", Value: "unchanged"},
+	}
+	original := &LogicalContainerSpec{Container: &LogicalContainerConfig{
+		Labels: firstOrder,
+		Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+			Context: "/source", Labels: firstOrder,
+		}},
+	}}
+	for _, label := range firstOrder {
+		original.Container.Env = append(original.Container.Env, commonapi.EnvVar{Name: label.Key, Value: label.Value})
+	}
+	key, _, keyErr := original.GetLifecycleKey()
+	require.NoError(t, keyErr)
+
+	changedEnv := original.DeepCopy()
+	for index, label := range secondOrder {
+		changedEnv.Container.Env[index] = commonapi.EnvVar{Name: label.Key, Value: label.Value}
+	}
+	envKey, _, envErr := changedEnv.GetLifecycleKey()
+	require.NoError(t, envErr)
+	require.NotEqual(t, key, envKey)
+
+	changedLabels := original.DeepCopy()
+	changedLabels.Container.Labels = secondOrder
+	labelKey, _, labelErr := changedLabels.GetLifecycleKey()
+	require.NoError(t, labelErr)
+	require.NotEqual(t, key, labelKey)
+
+	changedBuildLabels := original.DeepCopy()
+	changedBuildLabels.Container.Image.Build.Labels = secondOrder
+	buildLabelKey, _, buildLabelErr := changedBuildLabels.GetLifecycleKey()
+	require.NoError(t, buildLabelErr)
+	require.NotEqual(t, key, buildLabelKey)
+}
+
 // Verifies that LogicalContainerSpec.GetLifecycleKey uses the caller-supplied build digest,
 // not archive transport or bytes, and does not need Dockerfiles or file secrets to exist.
 func TestLogicalContainerSpecGetLifecycleKeyUsesSuppliedBuildDigest(t *testing.T) {

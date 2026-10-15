@@ -28,6 +28,7 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -664,10 +665,10 @@ func handleLogicalContainerRuntime(
 		data.progress == physicalResourceProgressFailed
 	if data.lease != nil && settled {
 		var record *statestore.PersistentContainerRecord
-		if data.progress != physicalResourceProgressFailed && physicalContainer.Status.ContainerID != "" && reconciler.config.WorkloadID != "" {
+		if data.progress != physicalResourceProgressFailed && physicalContainer.Status.ContainerID != "" {
 			record = &statestore.PersistentContainerRecord{
 				ResourceKey: container.GetLeaseKey(), ContainerID: physicalContainer.Status.ContainerID,
-				ContainerName: physicalContainer.Status.ContainerName, RuntimeName: reconciler.runtimeName, WorkloadID: reconciler.config.WorkloadID,
+				ContainerName: physicalContainer.Status.ContainerName, RuntimeName: reconciler.runtimeName,
 			}
 		}
 		return change | reconciler.scheduleLogicalContainerLeaseSettlement(container, data, record, log)
@@ -994,19 +995,29 @@ func (r *LogicalContainerReconciler) persistLogicalContainer(
 		return
 	}
 	if record != nil {
-		verifyErr := r.config.StateStore.VerifyResourceLeaseHeld(ctx, container, r.config.ResourceLeaseOwner)
-		if verifyErr != nil {
-			log.Error(verifyErr, "Failed to verify persistent logical container lease before recording ownership")
-			data.leaseFailureMessage = fmt.Sprintf("Failed to verify persistent container lease: %v", verifyErr)
+		workloadID, workloadErr := dcpclient.ResolveNamespaceWorkloadID(ctx, r.NoCacheClient, container.Namespace, r.config.WorkloadID)
+		if workloadErr != nil {
+			log.Error(workloadErr, "Failed to resolve persistent logical container workload ID")
+			data.leaseFailureMessage = fmt.Sprintf("Failed to resolve persistent container workload ID: %v", workloadErr)
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 			return
 		}
-		recordErr := r.config.StateStore.UpsertPersistentContainer(ctx, *record)
-		if recordErr != nil {
-			log.Error(recordErr, "Failed to record persistent logical container")
-			data.leaseFailureMessage = fmt.Sprintf("Failed to record persistent container: %v", recordErr)
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-			return
+		if workloadID != "" {
+			record.WorkloadID = workloadID
+			verifyErr := r.config.StateStore.VerifyResourceLeaseHeld(ctx, container, r.config.ResourceLeaseOwner)
+			if verifyErr != nil {
+				log.Error(verifyErr, "Failed to verify persistent logical container lease before recording ownership")
+				data.leaseFailureMessage = fmt.Sprintf("Failed to verify persistent container lease: %v", verifyErr)
+				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+				return
+			}
+			recordErr := r.config.StateStore.UpsertPersistentContainer(ctx, *record)
+			if recordErr != nil {
+				log.Error(recordErr, "Failed to record persistent logical container")
+				data.leaseFailureMessage = fmt.Sprintf("Failed to record persistent container: %v", recordErr)
+				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+				return
+			}
 		}
 	}
 	releaseErr := data.lease.Release(ctx)
