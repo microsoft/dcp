@@ -3,7 +3,7 @@
 # Runs the Aspire end-to-end regression test against a locally built DCP binary.
 #
 # It scaffolds a minimal AppHost with the installed (ideally latest daily) Aspire
-# CLI, keeps the scaffolded daily "#:sdk" directive, appends
+# CLI, keeps the scaffolded build directives, appends
 # test/aspire/apphost-body.cs, and runs it while pointing Aspire at the local DCP
 # build via DcpPublisher__CliPath. The test passes only if the Aspire CLI can
 # start the AppHost and every expected resource becomes healthy.
@@ -98,19 +98,15 @@ if [[ ! -f "${generated_apphost}" ]]; then
     exit 1
 fi
 
-# Preserve the daily SDK pin that the CLI scaffolded and append the committed
-# AppHost body. The committed body intentionally has no "#:sdk" directive so the
-# regression always runs against the latest daily Aspire AppHost SDK selected by
-# the CLI scaffold.
-sdk_line="$(grep -m1 '^#:sdk' "${generated_apphost}" || true)"
-if [[ -z "${sdk_line}" ]]; then
-    echo "Could not find a '#:sdk' directive in the scaffolded apphost.cs" >&2
-    exit 1
-fi
+# Preserve SDK/package pins and build properties from the daily scaffold.
+# The committed body has no build directives, so dependency selection remains
+# owned by the CLI template for both SDK-based and package-based AppHosts.
+build_directives="$(awk '/^#:/' "${generated_apphost}")"
 
-echo "==> Using scaffolded SDK pin: ${sdk_line}"
+echo "==> Using scaffolded build directives:"
+printf '%s\n' "${build_directives}"
 {
-    echo "${sdk_line}"
+    printf '%s\n' "${build_directives}"
     cat "${script_dir}/apphost-body.cs"
 } >"${generated_apphost}"
 

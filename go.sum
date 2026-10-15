@@ -562,8 +562,8 @@ github.com/tenntenn/text/transform v0.0.0-20200319021203-7eef512accb3 h1:f+jULpR
 github.com/tenntenn/text/transform v0.0.0-20200319021203-7eef512accb3/go.mod h1:ON8b8w4BN/kE1EOhwT0o+d62W65a6aPw1nouo9LMgyY=
 github.com/tetafro/godot v1.5.4 h1:u1ww+gqpRLiIA16yF2PV1CV1n/X3zhyezbNXC3E14Sg=
 github.com/tetafro/godot v1.5.4/go.mod h1:eOkMrVQurDui411nBY2FA05EYH01r14LuWY/NrVDVcU=
-github.com/tilt-dev/tilt-apiserver v0.19.1 h1:j6B/EpzgbJuMCLo/lvskPowHx5oFgQT7VXTyzTHe7zw=
-github.com/tilt-dev/tilt-apiserver v0.19.1/go.mod h1:w6vnH5H5npxMvy+iVj+DBqtiFV9TooSOZh/7shv4Njo=
+github.com/tilt-dev/tilt-apiserver v0.19.2-0.20261015010546-d35b179a41c0 h1:TbZ4AyEFOHsnC2tGyZqleU73J2N/7mggKYW8QUwLSQ8=
+github.com/tilt-dev/tilt-apiserver v0.19.2-0.20261015010546-d35b179a41c0/go.mod h1:w6vnH5H5npxMvy+iVj+DBqtiFV9TooSOZh/7shv4Njo=
 github.com/timakin/bodyclose v0.0.0-20241222091800-1db5c5ca4d67 h1:9LPGD+jzxMlnk5r6+hJnar67cgpDIz/iyD+rfl5r2Vk=
 github.com/timakin/bodyclose v0.0.0-20241222091800-1db5c5ca4d67/go.mod h1:mkjARE7Yr8qU23YcGMSALbIxTQ9r9QBVahQOBRfU460=
 github.com/timonwong/loggercheck v0.11.0 h1:jdaMpYBl+Uq9mWPXv1r8jc5fC3gyXx4/WGwTnnNKn4M=
