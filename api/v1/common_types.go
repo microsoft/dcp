@@ -52,6 +52,7 @@ func initializeLifecycleHashEncoder() {
 	_ = initEncoder.Encode(apiv2.CreateFileSystem{})
 	_ = initEncoder.Encode(apiv2.LogicalContainerNetworkConnectionConfig{})
 	_ = initEncoder.Encode(apiv2.LogicalContainerConfig{})
+	_ = initEncoder.Encode(apiv2.LogicalContainerNetworkConfig{})
 }
 
 func init() {

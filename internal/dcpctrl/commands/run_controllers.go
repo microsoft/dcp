@@ -277,6 +277,18 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return logicalContainerSetupErr
 		}
 
+		logicalNetworkCtrl := controllers.NewLogicalContainerNetworkReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalContainerNetworkReconciler"),
+			containerOrchestrator, harvester,
+			controllers.LogicalContainerNetworkReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: workloadID,
+			},
+		)
+		if logicalNetworkSetupErr := logicalNetworkCtrl.SetupWithManager(mgr, defaultControllerName); logicalNetworkSetupErr != nil {
+			log.Error(logicalNetworkSetupErr, "Unable to set up LogicalContainerNetwork controller")
+			return logicalNetworkSetupErr
+		}
+
 		physicalContainerImageCtrl := controllers.NewPhysicalContainerImageReconciler(
 			ctrlCtx,
 			mgr.GetClient(),

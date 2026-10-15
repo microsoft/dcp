@@ -115,6 +115,7 @@ func TestLogicalContainerNetworkValidateUpdate(t *testing.T) {
 		{"metadata", func(network *LogicalContainerNetwork) { network.Annotations = map[string]string{"key": "value"} }, true},
 		{"name", func(network *LogicalContainerNetwork) { network.Spec.NetworkName = "different" }, false},
 		{"mode", func(network *LogicalContainerNetwork) { network.Spec.Mode = LogicalContainerNetworkModeSession }, false},
+		{"lifecycle key", func(network *LogicalContainerNetwork) { network.Spec.LifecycleKey = "different" }, false},
 		{"config removed", func(network *LogicalContainerNetwork) { network.Spec.Network = nil }, false},
 		{"ipv6", func(network *LogicalContainerNetwork) { network.Spec.Network.IPv6 = true }, false},
 		{"labels", func(network *LogicalContainerNetwork) { network.Spec.Network.Labels[0].Value = "changed" }, false},
@@ -131,6 +132,54 @@ func TestLogicalContainerNetworkValidateUpdate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Verifies that LogicalContainerNetworkSpec.GetLifecycleKey honors explicit keys, normalizes
+// label ordering without mutating the spec, and includes IPv6 and label values in computed keys.
+func TestLogicalContainerNetworkSpecGetLifecycleKey(t *testing.T) {
+	spec := LogicalContainerNetworkSpec{Network: &LogicalContainerNetworkConfig{
+		Labels: []commonapi.Label{{Key: "second", Value: "2"}, {Key: "first", Value: "1"}},
+	}}
+	original := spec.DeepCopy()
+	firstKey, computed, keyErr := spec.GetLifecycleKey()
+	require.NoError(t, keyErr)
+	require.True(t, computed)
+	require.NotEmpty(t, firstKey)
+	require.Equal(t, *original, spec)
+	spec.Network.Labels[0], spec.Network.Labels[1] = spec.Network.Labels[1], spec.Network.Labels[0]
+	spec.NetworkName, spec.Mode = "another-runtime-name", LogicalContainerNetworkModePersistent
+	reorderedKey, _, reorderedErr := spec.GetLifecycleKey()
+	require.NoError(t, reorderedErr)
+	require.Equal(t, firstKey, reorderedKey)
+	spec.Network.IPv6 = true
+	ipv6Key, _, ipv6Err := spec.GetLifecycleKey()
+	require.NoError(t, ipv6Err)
+	require.NotEqual(t, firstKey, ipv6Key)
+	spec.Network.Labels[0].Value = "changed"
+	changedKey, _, changedErr := spec.GetLifecycleKey()
+	require.NoError(t, changedErr)
+	require.NotEqual(t, ipv6Key, changedKey)
+
+	explicit := LogicalContainerNetworkSpec{LifecycleKey: "caller-key"}
+	explicitKey, explicitComputed, explicitErr := explicit.GetLifecycleKey()
+	require.NoError(t, explicitErr)
+	require.False(t, explicitComputed)
+	require.Equal(t, "caller-key", explicitKey)
+	missing := LogicalContainerNetworkSpec{}
+	_, _, missingErr := missing.GetLifecycleKey()
+	require.Error(t, missingErr)
+}
+
+// Verifies that LogicalContainerNetwork.GetLeaseKey shares runtime-name lease identity with V1
+// networks, regardless of logical resource name or namespace.
+func TestLogicalContainerNetworkGetLeaseKey(t *testing.T) {
+	network := &LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "logical", Namespace: "namespace"},
+		Spec:       LogicalContainerNetworkSpec{NetworkName: "runtime"},
+	}
+	require.Equal(t, "containernetworks/runtime", network.GetLeaseKey())
+	network.Name, network.Namespace = "another", "other"
+	require.Equal(t, "containernetworks/runtime", network.GetLeaseKey())
 }
 
 // Verifies that LogicalContainerNetwork prohibits creation during shutdown but permits deletion and status updates.
