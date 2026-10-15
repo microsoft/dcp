@@ -311,8 +311,8 @@ func TestV2LogicalContainerNetworkControllerObservesExistingNetwork(t *testing.T
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(runtimeName))
 }
 
-// Verifies that LogicalContainer resolves logical networks only after runtime readiness,
-// forwards physical references and aliases, and uses the physical-owned membership machinery.
+// Verifies that LogicalContainer prepares its image while the logical network is pending,
+// then forwards the published physical reference and aliases for physical-owned membership.
 func TestV2LogicalContainerControllerRealizesNetworkAttachments(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -337,14 +337,23 @@ func TestV2LogicalContainerControllerRealizesNetworkAttachments(t *testing.T) {
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
-	waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+	pendingNetwork := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
 		return current.Status.PhysicalNetworkRef != "", nil
 	})
+	require.Equal(t, apiv2.LogicalContainerNetworkPhasePending, pendingNetwork.Status.Phase)
+	requireReadyCondition(t, pendingNetwork.Status.Conditions, metav1.ConditionFalse, "PhysicalNetworkNotReady")
 	pending := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return ready != nil && ready.Reason == "PhysicalResourcePreparationPending", nil
 	})
 	require.Empty(t, pending.Status.PhysicalContainerRef)
+	require.Zero(t, containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName))
+	image := waitPhysicalContainerImagePhase(t, ctx,
+		types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(container.UID)},
+		apiv2.PhysicalContainerImagePhaseReady)
+	require.True(t, metav1.IsControlledBy(image, container))
+	require.NotEmpty(t, image.Status.ImageID)
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(container.Spec.Container.Image.Image))
 	require.Zero(t, containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName))
 	unblockCreate()
 	running := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
@@ -353,8 +362,10 @@ func TestV2LogicalContainerControllerRealizesNetworkAttachments(t *testing.T) {
 	readyNetwork := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
 		return slices.Contains(current.Status.ContainerIDs, running.Status.ContainerID), nil
 	})
+	require.Equal(t, pendingNetwork.Status.PhysicalNetworkRef, readyNetwork.Status.PhysicalNetworkRef)
 	physical := &apiv2.PhysicalContainer{}
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef}, physical))
+	require.Equal(t, image.Name, physical.Spec.Container.ImageRef)
 	require.Equal(t, []apiv2.ContainerNetworkConnectionConfig{{NetworkRef: readyNetwork.Status.PhysicalNetworkRef, Aliases: []string{"app"}}}, physical.Spec.Container.Networks)
 	connections := &apiv2.PhysicalContainerNetworkConnectionList{}
 	require.NoError(t, client.List(ctx, connections, ctrl_client.InNamespace(namespace.Name)))

@@ -126,6 +126,7 @@ type LogicalContainerNetworkStatus struct {
 	Phase LogicalContainerNetworkPhase `json:"phase,omitempty"`
 
 	// PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>.
+	// Published after physical resource creation; logical consumers use this reference when the network is Ready.
 	// Cross-namespace references are not supported.
 	PhysicalNetworkRef string `json:"physicalNetworkRef,omitempty"`
 

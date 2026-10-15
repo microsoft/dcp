@@ -391,21 +391,6 @@ func handleLogicalContainerPhysical(
 	if data.replaceExisting {
 		selectedContainerID = ""
 	}
-	var physicalNetworks []apiv2.ContainerNetworkConnectionConfig
-	if selectedContainerID == "" {
-		networksReady, resolvedNetworks, networkMessage, resolveErr := reconciler.resolveLogicalContainerNetworks(ctx, container)
-		if resolveErr != nil {
-			log.Error(resolveErr, "Failed to resolve logical container networks")
-			data.progress = physicalResourceProgressRetryPending
-			data.message = resolveErr.Error()
-			return noChange
-		}
-		if !networksReady {
-			data.message = networkMessage
-			return noChange
-		}
-		physicalNetworks = resolvedNetworks
-	}
 	if data.lease != nil {
 		verifyErr := reconciler.config.StateStore.VerifyResourceLeaseHeld(ctx, container, reconciler.config.ResourceLeaseOwner)
 		if verifyErr != nil {
@@ -424,6 +409,17 @@ func handleLogicalContainerPhysical(
 			log.Error(imageErr, "Failed to prepare logical container image")
 			data.progress = physicalResourceProgressRetryPending
 			data.message = imageErr.Error()
+			return noChange
+		}
+		networksReady, physicalNetworks, networkMessage, resolveErr := reconciler.resolveLogicalContainerNetworks(ctx, container)
+		if resolveErr != nil {
+			log.Error(resolveErr, "Failed to resolve logical container networks")
+			data.progress = physicalResourceProgressRetryPending
+			data.message = resolveErr.Error()
+			return noChange
+		}
+		if !networksReady {
+			data.message = networkMessage
 			return noChange
 		}
 		desired := container.Spec.Container.DeepCopy()
@@ -514,22 +510,12 @@ func (r *LogicalContainerReconciler) resolveLogicalContainerNetworks(
 			}
 			return false, nil, message, nil
 		}
-		physical := &apiv2.PhysicalContainerNetwork{}
-		physicalName := types.NamespacedName{Namespace: network.Namespace, Name: "logical-" + string(network.UID)}
-		physicalErr := r.Get(ctx, physicalName, physical)
-		if apierrors.IsNotFound(physicalErr) {
-			return false, nil, fmt.Sprintf("Backing PhysicalContainerNetwork %q does not exist.", physicalName), nil
+		if network.Status.PhysicalNetworkRef == "" {
+			return false, nil, fmt.Sprintf("LogicalContainerNetwork %q has not published its backing physical network reference.", networkName), nil
 		}
-		if physicalErr != nil {
-			return false, nil, "", fmt.Errorf("get backing PhysicalContainerNetwork %q: %w", physicalName, physicalErr)
-		}
-		physicalReady := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
-		if !metav1.IsControlledBy(physical, network) || !physical.DeletionTimestamp.IsZero() ||
-			physical.Status.Phase != apiv2.PhysicalContainerNetworkPhaseReady || physical.Status.NetworkID == "" ||
-			physicalReady == nil || physicalReady.Status != metav1.ConditionTrue || physicalReady.ObservedGeneration != physical.Generation {
-			return false, nil, fmt.Sprintf("Backing PhysicalContainerNetwork %q is not ready or its owner changed.", physicalName), nil
-		}
-		resolved = append(resolved, apiv2.ContainerNetworkConnectionConfig{NetworkRef: physical.Name, Aliases: std_slices.Clone(requested.Aliases)})
+		resolved = append(resolved, apiv2.ContainerNetworkConnectionConfig{
+			NetworkRef: network.Status.PhysicalNetworkRef, Aliases: std_slices.Clone(requested.Aliases),
+		})
 	}
 	return true, resolved, "", nil
 }
