@@ -98,7 +98,7 @@ func (spec *LogicalContainerNetworkSpec) GetLifecycleKey() (string, bool, error)
 		return "", false, errors.New("network configuration is required to compute a lifecycle key")
 	}
 	desired := spec.Network.DeepCopy()
-	slices.SortFunc(desired.Labels, func(left, right commonapi.Label) int { return strings.Compare(left.Key, right.Key) })
+	slices.SortStableFunc(desired.Labels, func(left, right commonapi.Label) int { return strings.Compare(left.Key, right.Key) })
 	fnvHash := fnv.New128()
 	hashErr := gob.NewEncoder(fnvHash).Encode(desired)
 	return fmt.Sprintf("%x", fnvHash.Sum(nil)), true, hashErr

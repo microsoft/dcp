@@ -27,6 +27,7 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -372,10 +373,10 @@ func handleLogicalContainerNetworkRuntime(
 		data.message = fmt.Sprintf("PhysicalContainerNetwork reports %s: %s", ready.Reason, ready.Message)
 	}
 	if data.lease != nil && (data.progress == physicalResourceProgressCompleted || data.progress == physicalResourceProgressFailed) {
-		if physical.Status.NetworkID != "" && reconciler.config.WorkloadID != "" {
+		if physical.Status.NetworkID != "" {
 			data.persistenceRecord = &statestore.PersistentNetworkRecord{
 				ResourceKey: network.GetLeaseKey(), NetworkID: physical.Status.NetworkID, NetworkName: physical.Status.NetworkName,
-				RuntimeName: reconciler.runtimeName, WorkloadID: reconciler.config.WorkloadID,
+				RuntimeName: reconciler.runtimeName,
 			}
 		}
 		return change | reconciler.scheduleLogicalContainerNetworkLeaseSettlement(network, data, log)
@@ -661,7 +662,14 @@ func (r *LogicalContainerNetworkReconciler) persistLogicalContainerNetwork(
 	if data.lease == nil {
 		return
 	}
-	if !network.DeletionTimestamp.IsZero() && r.config.WorkloadID != "" {
+	workloadID, resolveErr := dcpclient.ResolveNamespaceWorkloadID(ctx, r.NoCacheClient, network.Namespace, r.config.WorkloadID)
+	if resolveErr != nil {
+		log.Error(resolveErr, "Failed to resolve persistent network workload ownership")
+		data.leaseFailureMessage = fmt.Sprintf("Failed to resolve persistent network workload ownership: %v", resolveErr)
+		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		return
+	}
+	if !network.DeletionTimestamp.IsZero() && workloadID != "" {
 		// Physical deletion has settled any in-flight retained creation, including during namespace cleanup.
 		inspected, inspectErr := inspectNetworkIfExists(ctx, r.networkInspector, network.Spec.NetworkName)
 		if inspectErr != nil && !errors.Is(inspectErr, containers.ErrNotFound) {
@@ -681,11 +689,11 @@ func (r *LogicalContainerNetworkReconciler) persistLogicalContainerNetwork(
 		if inspected != nil {
 			data.persistenceRecord = &statestore.PersistentNetworkRecord{
 				ResourceKey: network.GetLeaseKey(), NetworkID: inspected.Id, NetworkName: inspected.Name,
-				RuntimeName: r.runtimeName, WorkloadID: r.config.WorkloadID,
+				RuntimeName: r.runtimeName,
 			}
 		}
 	}
-	if data.persistenceRecord != nil {
+	if data.persistenceRecord != nil && workloadID != "" {
 		verifyErr := r.config.StateStore.VerifyResourceLeaseHeld(ctx, network, r.config.ResourceLeaseOwner)
 		if verifyErr != nil {
 			log.Error(verifyErr, "Failed to verify persistent network lease before recording ownership")
@@ -693,7 +701,9 @@ func (r *LogicalContainerNetworkReconciler) persistLogicalContainerNetwork(
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 			return
 		}
-		recordErr := r.config.StateStore.UpsertPersistentNetwork(ctx, *data.persistenceRecord)
+		record := *data.persistenceRecord
+		record.WorkloadID = workloadID
+		recordErr := r.config.StateStore.UpsertPersistentNetwork(ctx, record)
 		if recordErr != nil {
 			log.Error(recordErr, "Failed to record persistent logical network")
 			data.leaseFailureMessage = fmt.Sprintf("Failed to record persistent network: %v", recordErr)
