@@ -43,11 +43,12 @@ type logicalContainerNetworkData struct {
 	operation            *logicalContainerNetworkOperation
 	lifecycleKey         string
 	generatedNetworkName string
-	networkID            string
-	replaceExisting      bool
-	physicalNetworkUID   types.UID
-	lease                *statestore.ResourceLease
-	leaseFailureMessage  string
+	// Runtime identity selected for adoption, retained only until physical realization succeeds.
+	pendingNetworkID    string
+	replaceExisting     bool
+	physicalNetworkUID  types.UID
+	lease               *statestore.ResourceLease
+	leaseFailureMessage string
 	// Retain ownership across deletion while a persistence operation is settling.
 	persistenceRecord *statestore.PersistentNetworkRecord
 }

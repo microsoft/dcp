@@ -257,7 +257,7 @@ func handleLogicalContainerNetworkPhysical(
 			return noChange
 		}
 	}
-	selectedID := data.networkID
+	selectedID := data.pendingNetworkID
 	if data.replaceExisting {
 		selectedID = ""
 	}
@@ -310,6 +310,7 @@ func handleLogicalContainerNetworkPhysical(
 		return noChange
 	}
 	data.physicalNetworkUID = physical.UID
+	data.pendingNetworkID = ""
 	data.replaceExisting = false
 	data.state, data.progress = logicalContainerNetworkStateRuntime, physicalResourceProgressNotReady
 	return handleLogicalContainerNetworkRuntime(ctx, reconciler, network, data.state, data, log)
@@ -612,7 +613,7 @@ func (r *LogicalContainerNetworkReconciler) lookupLogicalContainerNetwork(
 	}
 	inspected, inspectErr := inspectNetworkIfExists(ctx, r.networkInspector, network.Spec.NetworkName)
 	if errors.Is(inspectErr, containers.ErrNotFound) {
-		data.networkID, data.replaceExisting = "", false
+		data.pendingNetworkID, data.replaceExisting = "", false
 		if network.Spec.EffectiveMode() == apiv2.LogicalContainerNetworkModeExisting {
 			data.progress = physicalResourceProgressNotFound
 			data.message = fmt.Sprintf("Runtime network %q was not found.", network.Spec.NetworkName)
@@ -633,11 +634,12 @@ func (r *LogicalContainerNetworkReconciler) lookupLogicalContainerNetwork(
 	}
 	_, managed := inspected.Labels[dcpBuildLabel]
 	actualKey := inspected.Labels[lifecycleKeyLabel]
-	data.networkID = inspected.Id
 	if network.Spec.EffectiveMode() == apiv2.LogicalContainerNetworkModeExisting || !managed || actualKey == data.lifecycleKey {
+		data.pendingNetworkID = inspected.Id
 		data.lifecycleKey, data.replaceExisting = actualKey, false
 		log.V(1).Info("Reusing existing runtime network", "NetworkID", GetShortId(inspected.Id))
 	} else {
+		data.pendingNetworkID = ""
 		data.replaceExisting = true
 		log.Info("Delegating persistent network replacement to physical controller", "NetworkID", GetShortId(inspected.Id))
 	}
