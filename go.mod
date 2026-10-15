@@ -17,7 +17,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
-	github.com/tilt-dev/tilt-apiserver v0.19.1
+	github.com/tilt-dev/tilt-apiserver v0.19.2-0.20261015010546-d35b179a41c0
 	github.com/tklauser/go-sysconf v0.4.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.46.0
@@ -334,7 +334,3 @@ tool (
 )
 
 replace github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 => github.com/gorilla/websocket v1.5.3
-
-// Temporary bounded watch delivery fix from https://github.com/tilt-dev/tilt-apiserver/pull/117.
-// Remove this replacement when the fixes are available in the upstream dependency.
-replace github.com/tilt-dev/tilt-apiserver => github.com/danegsta/tilt-apiserver v0.0.0-20261012181939-aeebb1356a52
