@@ -101,6 +101,31 @@ func (in LogicalContainerStatus) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalProcess) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalProcess"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalProcessConfig) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalProcessConfig"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalProcessList) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalProcessList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalProcessSpec) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalProcessSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalProcessStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalProcessStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in Namespace) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.Namespace"
 }

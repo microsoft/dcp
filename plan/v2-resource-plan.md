@@ -142,8 +142,16 @@ After the physical primitives are in place, add logical V2 resources that expres
    - Delegate concrete runtime work to V2 physical image, container, network, and volume resources.
 
 3. Add V2 logical process.
-   - Provide process behavior similar to V1 executable workflows, without IDE protocol functionality initially.
-   - Delegate concrete process launch/tracking to `PhysicalProcess`.
+   - `LogicalProcess` at `logicalprocesses` (short name `lproc`) owns process lifecycle policy; `PhysicalProcess` performs every launch, stop, and runtime observation. No IDE/debug protocol or log surface is added.
+   - Modes are `session` (default), `persistent`, and `existing`, without V1's `cleanup` mode or legacy persistence flag. Session and persistent modes require nested `process` configuration; existing mode requires an explicit PID and identity timestamp and forbids creation configuration.
+   - Creation configuration includes executable path, arguments, working directory, environment inheritance, and explicit environment. Persistent mode optionally scopes creation to a monitor PID and identity timestamp. The spec is immutable except for a one-way `stop` request.
+   - Lifecycle keys honor explicit values or hash declared process configuration and monitor identity with the shared ordered FNV/Gob convention. Default environment inheritance is normalized, environment variables are stably name-sorted to preserve duplicate precedence, and ambient environment values are not hashed.
+   - Persistent store and lease identity is the logical namespace/name, following the V1 name-based scheme without sharing cluster-scoped V1 records. Matching live records are adopted, stale records are removed, and changed keys delegate termination of the old identity to an owned physical PID reference before launching a replacement.
+   - Physical PID references accept an optional expected identity timestamp; existing logical references and stored process adoption always supply it. Physical resolution uses the shared process identity tolerance and reports a mismatched identity as missing without claiming or stopping the reused PID. PID-only physical callers retain their existing first-resolution behavior.
+   - Physical process launch errors are terminal, matching V1 executable launch and physical-container start behavior. Queueing failures before a launch attempt and observation/cleanup failures retain their separate retry handling.
+   - Lifecycle preparation, stored identity checks, and persistence use bounded asynchronous work and UID-/operation-scoped results. Logical readiness requires current-generation physical observation and successful ownership recording before startup lease release, including namespace workload overrides with an empty global default.
+   - A logical startup finalizer holds persistent physical backing through lease settlement. On deletion, physical finalization settles in-flight retained launch work and durably projects its identity before removing its own finalizer; logical persistence records that identity before removing the startup guard. Physical launch failure never blocks deletion indefinitely.
+   - Status exposes logical phase/readiness, published physical process reference, lifecycle key, PID/identity, exit code, and finish timestamp. Runtime details come only from valid owned physical backing; selected stored identities are cleared after handoff. Namespace cleanup removes logical processes before physical processes.
 
 4. Add V2 service.
    - Provide service behavior similar to V1 `Service`.

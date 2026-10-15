@@ -109,6 +109,10 @@ func (r *PhysicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	getSucceededCounter.Add(ctx, 1)
 
+	if !physicalProcess.DeletionTimestamp.IsZero() && !hasFinalizer(&physicalProcess, physicalProcessFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
 	r.processData.RunDeferredOps(req.NamespacedName, &physicalProcess)
 	stateKey, data := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
 	if data == nil {
@@ -411,6 +415,14 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		return noChange
 	}
+	if !physicalProcess.Spec.IdentityTimestamp.IsZero() &&
+		!osutil.Within(physicalProcess.Spec.IdentityTimestamp.Time, probedHandle.IdentityTime, process.ProcessIdentityTimeMaximumDifference) {
+		data.state, data.progress = physicalProcessStateRuntime, physicalResourceProgressMissing
+		data.finishedAt = time.Now()
+		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessMissing
+		data.failureMessage = "The process identity no longer matches the referenced PID."
+		return noChange
+	}
 	return r.claimPhysicalProcessTracking(physicalProcess, data, probedHandle)
 }
 
@@ -548,12 +560,11 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 	})
 	handle, startWaitForExit, startErr := r.processExecutor.StartProcess(processCtx, cmd, exitHandler, creationFlags, nil)
 	if startErr != nil {
-		data.progress = physicalResourceProgressRetryPending
+		data.progress = physicalResourceProgressFailed
 		data.failureMessage = fmt.Sprintf("Failed to launch physical process: %v", startErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Time{}
+		log.Error(startErr, "Failed to launch physical process")
 		if errors.Is(startErr, process.ErrProcessStartUncertain) {
-			data.progress = physicalResourceProgressFailed
-			data.retryAfter = time.Time{}
 			log.Error(startErr, "Process cleanup is unconfirmed; launch will not be retried")
 		}
 		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
@@ -854,6 +865,13 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(
 	if data == nil || data.handle.Pid <= 0 || retain ||
 		data.progress == physicalResourceProgressExited ||
 		data.progress == physicalResourceProgressMissing {
+		if data != nil && len(physicalProcess.Finalizers) > 1 {
+			// Other owners may need the settled identity before releasing their finalizer.
+			projectionChange, _, _ := data.applyTo(physicalProcess)
+			if projectionChange&statusChanged != 0 {
+				return projectionChange | additionalReconciliationNeeded, StandardDelay
+			}
+		}
 		r.processData.DeleteByNamespacedName(physicalProcess.NamespacedName())
 		return deleteFinalizer(physicalProcess, physicalProcessFinalizer, log), StandardDelay
 	}

@@ -289,6 +289,17 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return logicalNetworkSetupErr
 		}
 
+		logicalProcessCtrl := controllers.NewLogicalProcessReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalProcessReconciler"), processExecutor,
+			controllers.LogicalProcessReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: workloadID,
+			},
+		)
+		if logicalProcessSetupErr := logicalProcessCtrl.SetupWithManager(mgr, defaultControllerName); logicalProcessSetupErr != nil {
+			log.Error(logicalProcessSetupErr, "Unable to set up LogicalProcess controller")
+			return logicalProcessSetupErr
+		}
+
 		physicalContainerImageCtrl := controllers.NewPhysicalContainerImageReconciler(
 			ctrlCtx,
 			mgr.GetClient(),

@@ -47,6 +47,7 @@ type namespaceCleanupResult struct {
 }
 
 var namespaceCleanupResourceHandlers = map[schema.GroupVersionResource]namespaceCleanupResourceHandler{
+	(&apiv2.LogicalProcess{}).GetGroupVersionResource():                     (*NamespaceReconciler).cleanupLogicalProcesses,
 	(&apiv2.LogicalContainer{}).GetGroupVersionResource():                   (*NamespaceReconciler).cleanupLogicalContainers,
 	(&apiv2.LogicalContainerNetwork{}).GetGroupVersionResource():            (*NamespaceReconciler).cleanupLogicalContainerNetworks,
 	(&apiv2.PhysicalProcess{}).GetGroupVersionResource():                    (*NamespaceReconciler).cleanupPhysicalProcesses,
@@ -55,6 +56,29 @@ var namespaceCleanupResourceHandlers = map[schema.GroupVersionResource]namespace
 	(&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource():           (*NamespaceReconciler).cleanupPhysicalContainerNetworks,
 	(&apiv2.PhysicalContainerNetworkConnection{}).GetGroupVersionResource(): (*NamespaceReconciler).cleanupPhysicalContainerNetworkConnections,
 	(&apiv2.PhysicalContainerVolume{}).GetGroupVersionResource():            (*NamespaceReconciler).cleanupPhysicalContainerVolumes,
+}
+
+func (r *NamespaceReconciler) cleanupLogicalProcesses(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
+	processes := apiv2.LogicalProcessList{}
+	listErr := r.NoCacheClient.List(ctx, &processes, ctrl_client.InNamespace(namespace.Name))
+	if listErr != nil {
+		return 0, fmt.Errorf("failed to list LogicalProcesses in namespace %q: %w", namespace.Name, listErr)
+	}
+	deleteErrors := slices.MapConcurrent[error](processes.Items, func(resource apiv2.LogicalProcess) error {
+		if !resource.DeletionTimestamp.IsZero() {
+			return nil
+		}
+		log.V(1).Info("Deleting LogicalProcess during namespace cleanup", "Namespace", namespace.Name, "LogicalProcess", resource.Name)
+		deleteErr := r.Client.Delete(ctx, &resource)
+		if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+			return fmt.Errorf("failed to delete LogicalProcess %q in namespace %q: %w", resource.Name, namespace.Name, deleteErr)
+		}
+		return nil
+	}, namespaceCleanupMaxConcurrentDeletes)
+	if deleteErr := errors.Join(deleteErrors...); deleteErr != nil {
+		return 0, deleteErr
+	}
+	return len(processes.Items), nil
 }
 
 func (r *NamespaceReconciler) cleanupPhysicalProcesses(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {

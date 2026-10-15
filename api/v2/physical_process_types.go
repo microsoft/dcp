@@ -88,6 +88,11 @@ type PhysicalProcessSpec struct {
 	// The controller resolves the PID once and guards against PID reuse with an in-memory process identity.
 	PID *int64 `json:"pid,omitempty"`
 
+	// IdentityTimestamp optionally identifies the expected process in pid.
+	// When set, a reused PID is reported as missing rather than adopted or stopped.
+	// Forbidden when process is set.
+	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
+
 	// Process describes an operating system process to launch. Exactly one of pid or process must be set.
 	Process *PhysicalProcessConfig `json:"process,omitempty"`
 
@@ -242,6 +247,9 @@ func (pp *PhysicalProcess) Validate(ctx context.Context) field.ErrorList {
 
 	processConfig := pp.Spec.Process
 	processPath := specPath.Child("process")
+	if !pp.Spec.IdentityTimestamp.IsZero() {
+		errorList = append(errorList, field.Forbidden(specPath.Child("identityTimestamp"), "identityTimestamp requires pid"))
+	}
 	errorList = append(
 		errorList,
 		validateRetainedResourceMonitor(
