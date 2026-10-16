@@ -297,6 +297,11 @@ func (c *LogicalContainer) GetGroupVersionResource() schema.GroupVersionResource
 	return schema.GroupVersionResource{Group: GroupVersion.Group, Version: GroupVersion.Version, Resource: "logicalcontainers"}
 }
 
+// GetResourceId identifies the resource-specific system log stream.
+func (c *LogicalContainer) GetResourceId() string {
+	return fmt.Sprintf("logicalcontainer-%s", c.UID)
+}
+
 // GetLeaseKey identifies the runtime container shared by logical resources and V1 containers.
 func (c *LogicalContainer) GetLeaseKey() string {
 	return "containers/" + strings.TrimSpace(c.Spec.ContainerName)

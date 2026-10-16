@@ -32,6 +32,7 @@ import (
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -210,6 +211,7 @@ func (r *LogicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, getErr
 	}
 	getSucceededCounter.Add(ctx, 1)
+	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, container.GetResourceId())
 
 	stateKey, previousData := r.containerData.BorrowByNamespacedName(req.NamespacedName)
 	if previousData != nil && stateKey != container.UID {
@@ -249,6 +251,9 @@ func (r *LogicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			log.Error(fmt.Errorf("invalid logical container state %v with progress %v", data.state, data.progress),
 				"LogicalContainer reached invalid reconciliation state")
 		}
+	}
+	if !hasFinalizer(&container, logicalContainerFinalizer) {
+		defer logger.ReleaseResourceLog(container.GetResourceId())
 	}
 	return r.SaveChangesWithDelay(ctx, &container, patch, change, delay, nil, log)
 }
@@ -722,10 +727,12 @@ func (r *LogicalContainerReconciler) deleteLogicalContainerPhysicalResource(
 }
 
 func (r *LogicalContainerReconciler) discardLogicalContainerData(name types.NamespacedName, log logr.Logger) {
-	_, data := r.containerData.BorrowByNamespacedName(name)
+	resourceUID, data := r.containerData.BorrowByNamespacedName(name)
 	if data == nil {
 		return
 	}
+	discarded := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{UID: resourceUID}}
+	defer logger.ReleaseResourceLog(discarded.GetResourceId())
 	if data.operation != nil {
 		data.operation.cancel()
 	}

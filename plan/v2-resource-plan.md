@@ -158,6 +158,8 @@ After the physical primitives are in place, add logical V2 resources that expres
 
 V2 has no log surface. `AdditionalTypes` is empty and no V2 resource exposes a `log` subresource, so output from a V2 runtime container cannot be read through the V2 API. This is the largest user-visible gap in the current V2 foundation.
 
+Logical and physical container controllers capture resource-specific system diagnostics. Owned physical containers also forward diagnostics into their logical owner's stream using scoped nested resource sinks; each resource releases only its own writer. This prepares system output for streaming but does not yet expose a V2 `log` endpoint.
+
 The V1 mechanism, for reference:
 
 - Logs are a generic `log` subresource served at `/apis/{group}/{version}/{resource}/{name}/log`, backed per resource kind by the `apiv1.ResourceLogStreamers` registry keyed by `GroupVersionResource`.
