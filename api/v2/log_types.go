@@ -42,7 +42,7 @@ type ResourceWatcherEvent = logstream.ResourceWatcherEvent
 
 var ResourceLogStreamers = &syncmap.Map[schema.GroupVersionResource, ResourceLogStreamer]{}
 
-// ResourceLogOptions selects a container output or system stream and its formatting.
+// ResourceLogOptions selects a resource output or system stream and its formatting.
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Namespaced
 // +k8s:openapi-gen=true
@@ -81,7 +81,7 @@ func (list *ResourceLogOptionsList) DeepCopyObject() runtime.Object {
 }
 func (list *ResourceLogOptionsList) GetListMeta() *metav1.ListMeta { return &list.ListMeta }
 
-// ResourceLogResponse carries a raw text response for a container log subresource.
+// ResourceLogResponse carries a raw text response for a resource log subresource.
 // +kubebuilder:object:generate=false
 // +k8s:openapi-gen=true
 type ResourceLogResponse struct {
@@ -121,14 +121,8 @@ func (list *ResourceLogResponseList) DeepCopyObject() runtime.Object {
 }
 func (list *ResourceLogResponseList) GetListMeta() *metav1.ListMeta { return &list.ListMeta }
 
-// ContainerLogResource registers watch-driven container log storage.
-// +k8s:openapi-gen=false
-// +kubebuilder:object:generate=false
-type ContainerLogResource struct{}
-
-func (*ContainerLogResource) Name() string { return LogSubresourceName }
-func (*ContainerLogResource) GetStorageProvider(
-	obj resource.Object, _ string, parentProvider apiserver.StorageProvider,
+func newLogStorageProvider(
+	obj resource.Object, parentProvider apiserver.StorageProvider,
 ) apiserver.StorageProvider {
 	return func(scheme *runtime.Scheme, getter generic.RESTOptionsGetter) (rest.Storage, error) {
 		parent, parentErr := parentProvider(scheme, getter)
