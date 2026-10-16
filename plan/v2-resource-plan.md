@@ -61,6 +61,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 
 - Each API version owns its own resource shapes. `api/v1` and `api/v2` deliberately declare separate copies of container fragments such as `ContainerPort`, `VolumeMount`, `ContainerBuildContext`, and `FileSystemEntry`, so V2 can evolve them without perturbing V1.
 - V1 lifecycle keys are gob-encoded from V1 API types, so V1 shapes are effectively frozen. Changing a V1 type name, its exported field list, or its registration order in `initializeLifecycleHashEncoder` invalidates every existing lifecycle key and orphans running containers. `TestContainerSpecLifecycleKeyIsStable` in `api/v1/container_types_test.go` guards all three.
+- V2 lifecycle-hash types are appended after the existing V1 entries in the same `initializeLifecycleHashEncoder`; resource-local initializers must not introduce Gob types ahead of that ordered sequence.
 - `pkg/commonapi` holds only trivially simple types that are genuinely cross-cutting and are not expected to change, currently `EnvVar`, `Label`, and `PortProtocol`. V1 exposes some of these through type aliases, which preserve gob identity because an alias keeps the underlying type name and fields.
 - Container orchestrators (`internal/containers`, `internal/docker`, `internal/podman`) own neutral types in `internal/containers` and must not import `api/v1` or `api/v2`. Conversion from versioned API types to orchestrator types happens at the controller boundary.
 
@@ -76,12 +77,16 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 ## Current V2 foundation
 
 - `Namespace` defines the namespace boundary for V2 resources and provides namespace-scoped cleanup. Namespace deletion waits for admitted child storage creates to finish, even if their HTTP requests time out, and rejects new creates until cleanup completes. Namespace collection deletion is unsupported. Top-level V2 mutation dry-runs are rejected because the storage backend does not provide no-write dry-run semantics.
+- Namespace cleanup ordering and resource selection come solely from relational cleanup metadata. A shared executor resolves each GVR, lists it uncached within the namespace, and issues bounded concurrent deletes; it advances dependencies only after the resources actually disappear.
 - `PhysicalContainerImage` provides source image pull and build workflows. The first runtime image ID successfully inspected by the controller is pinned for the resource lifetime and remains the only identity used for later inspection and dependent containers. If that exact image becomes unavailable, the resource reports it unavailable while retaining the published identity and metadata; it never silently pulls or builds a replacement. Delete and recreate the resource to realize a different image.
 - `PhysicalContainer` creates or tracks one runtime container, reports runtime status and port mappings, and references same-namespace `PhysicalContainerImage`, `PhysicalContainerVolume`, and `PhysicalContainerNetwork` resources. Container creation waits for every referenced physical resource to become ready. Bind mounts continue to use direct host paths, while named volume mounts resolve the referenced volume's observed runtime ID.
+- The one-way container `stop` request completes terminally even when no runtime container was created or started. A stop before creation prevents creation without waiting for prerequisites; an in-flight creation is allowed to settle before stopping its resulting container. Physical containers report `Exited` with `StopRequested` when creation or start is skipped, preserving the raw runtime status when a container exists. Logical containers report `ContainerStopped` and release persistent startup leases.
+- A terminal image-acquisition failure terminates backing physical-container startup rather than leaving it Pending. Recreate the container resource to retry startup; making the image available later does not restart a failed container. Logical containers expose that failure and release persistent startup leases without recording nonexistent runtime containers.
 - `PhysicalContainerNetwork` creates or references one runtime container network and reports its observed identity, driver, and address allocations. Its spec contains exactly one of top-level `networkID` or nested `network` creation config. Networks referenced by runtime ID are always retained. Created networks are retained when `network.retainRuntimeNetwork` is true; otherwise deletion enumerates running and stopped attachments, forcibly disconnects each container without removing it, and then removes the network. Name collisions are terminal unless `network.replaceExisting` is true, in which case the controller safely removes the specifically resolved network before creating its replacement. Runtime adapters classify their own built-in, non-removable networks, and replacement rejects them before disconnecting any attachments.
 - `PhysicalContainerVolume` creates or references one runtime container volume and reports its observed identifier, driver, scope, mount point, and creation time. Its spec contains exactly one of top-level `volumeID` or nested `volume` creation config. Volumes referenced by runtime ID and newly created volumes are retained by default. Setting `volume.removeRuntimeVolumeOnDelete` opts a created volume into controller-managed deletion. Deletion retries non-forced removal until the runtime releases the volume. Removal deliberately does not use force because Podman force-removes attached containers. During namespace deletion, each removable volume retries removal for up to 30 seconds so an externally attached volume cannot block graceful namespace cleanup indefinitely. Name collisions are terminal unless `volume.replaceExisting` is true, in which case the controller safely removes the specifically resolved volume before creating its replacement. Caller-supplied `volume.labels` pass through to created volumes, with reserved persistence, creator-process, and internal resource UID labels set by the controller.
 - `PhysicalProcess` launches or references one operating system process and reports its PID, PID-reuse identity timestamp, exit code when available, and lifecycle phase. Its spec contains exactly one of top-level `pid` or nested `process` creation config. Existing processes referenced by PID are observed and always retained when the resource is deleted. Created processes are stopped on deletion and namespace deletion unless `process.retainRuntimeProcess` is true. Deletion never blocks on runtime state: a resource that never took ownership of a running process drops its finalizer without stopping anything. The mutable top-level `stop` request can terminate either mode. Creation supports executable path, arguments, working directory, and environment without importing logical executable or IDE policy.
 - The physical resources use the shared `Pending`, `Ready`, `Unknown`, and `Failed` phases, specific `Ready` condition reasons, separate in-memory operation progress, and queued work where side effects can block.
+- V2 `Reconcile` methods select deletion with a compound deletion-timestamp and in-memory operation guard before finalizer or normal state-machine handling. Deferred results are applied before that guard; normal handlers do not redispatch deletion. Cancellable image preparation and logical startup work are cancelled while their completion is awaited.
 - Created physical containers and processes launch best-effort monitor processes when they are configured to remove or stop their runtime object on Kubernetes resource deletion. Retained physical containers and processes can instead specify a monitor PID and identity timestamp; the retained runtime object is stopped, but not removed, when that process exits. Referenced runtime objects and retained resources without an explicit monitor do not launch cleanup monitors. Abandoned networks and volumes remain eligible for workload-scoped cleanup.
 
 ## Follow-up roadmap
@@ -92,12 +97,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
    - Keep tunnel-specific behavior in the V1 controller, including dcptun image handling, server proxy process management, TLS, tunnel gRPC calls, status, and endpoint projection.
    - Delegate common runtime container lifecycle to V2 physical resources instead of creating and managing the proxy container directly through the orchestrator.
 
-2. Migrate V1 container resource lifecycle to V2 physical resources.
-   - Keep V1-specific policy in the V1 controller, including lifecycle keys, persistent and existing container lookup, leases, compatibility status, and V1 API semantics.
-   - Delegate common image/container/network/volume runtime lifecycle to V2 physical resources.
-   - Avoid keeping repeated container creation, start, inspect, watch, stop, and remove logic in multiple V1 controllers.
-
-3. Add logical resource controllers.
+2. Add logical resource controllers.
    - Physical controllers preserve caller-supplied runtime labels and reserve the persistence, creator-process, and internal resource UID labels they need for harvesting and uncertain-create recovery.
    - Harvesting normally honors the controller-owned persistence label. Network harvesting is the exception: it intentionally ignores that label and removes orphaned networks after their creator exits so persistent networks cannot exhaust the runtime's finite default network allocations.
    - Build-created images receive persistent, creator-process, and internal UID labels through `build.labels`. Pulling resolves an expected named image and is not a runtime-object creation operation.
@@ -107,21 +107,48 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 
 After the physical primitives are in place, add logical V2 resources that express user-facing policy on top of physical resources.
 
-1. Add V2 logical container.
+1. Add V2 logical container network.
+   - Initial API types define a namespace-scoped `LogicalContainerNetwork` at `logicalcontainernetworks` (short name `lcn`); no logical network controller is implemented yet.
+   - Top-level `networkName` and `mode` express identity and lifecycle policy. Modes are `session` (default), `persistent`, and `existing`; omit the V1 `persistent` flag and `cleanup` mode.
+   - Nested `network` creation configuration contains IPv6 and labels, is required for session/persistent modes, and is forbidden for existing mode. Persistent and existing modes require a runtime name; session mode can generate one. The entire spec is immutable.
+   - Status exposes coarse phase, readiness conditions, `physicalNetworkRef`, observed runtime identity, driver, IPv6, subnets, gateways, attached container IDs, and creation time.
+   - The network lifecycle is independent of container lifetimes. Name lookup, persistent reuse, leases, workload persistence, and harvesting coordination remain logical-controller work, delegated runtime operations use `PhysicalContainerNetwork`.
+   - Implement the logical network controller before logical-container network realization; other logical-container flows can proceed independently.
+
+2. Add V2 logical container.
+   - API types define a namespace-scoped `LogicalContainer` at `logicalcontainers` (short name `lctr`). The controller uses V2 state-driven handlers and authoritative in-memory data for namespace readiness, lifecycle preparation, runtime lookup, physical realization, observation, persistence, and deletion.
+   - Watch owned physical containers/images, explicitly referenced physical images/volumes and logical networks, and namespace changes. Reference indexes come from spec, not projected status.
+   - Lifecycle preparation, name lookup/inspection, and persistent-store operations run asynchronously through the standard bounded work queue. Results return through UID- and operation-scoped deferred updates, and deletion cancels in-flight lookup/preparation work.
+   - `LogicalContainerSpec.GetLifecycleKey` follows the V1 explicit-key/computed-key contract and FNV/Gob hashing pattern. It hashes the declared configuration and user-supplied build digest without reading Dockerfiles, file secrets, or ambient environment values; archive transport and bytes do not substitute for a supplied digest. Stable sorting preserves duplicate environment and label precedence.
+   - Session mode creates owned physical resources. Persistent mode acquires the shared runtime-container startup lease, checks a supplied or calculated lifecycle key, reuses a suitable container, or delegates replacement through the physical creation template. Existing mode looks up by runtime name and creates only a physical ID reference, retrying when no runtime container exists unless stop was requested.
+   - Physical resources perform all container mutations. The logical controller forwards stop requests, deletes owned physical resources in dependency order, and records persistent workload ownership before releasing the startup lease. Monitors remain creation-only template settings; adoption does not register or upgrade a monitor.
+   - Persistent container ownership uses the namespace workload-ID annotation when present, otherwise the global workload ID. Namespace overrides work even without a global ID; lookup or recording failures remain visible and retain the startup lease for retry.
+   - Runtime details are projected from the backing physical container. Logical phase and Ready conditions are computed from logical startup/persistence progress and current-generation physical observations, rather than copying physical conditions.
+   - Keep only non-derivable lifecycle and operation data in memory. Reference names come from spec or resource UID, physical runtime details are projected directly, and lease settlement preserves the current reconciliation state and original diagnostics.
+   - Selected runtime IDs and generated session names are pending realization inputs, cleared after successful physical handoff. Inline image references are projected from the backing physical creation spec, not inferred from retained runtime IDs.
+   - Networked creation remains Pending with an explicit diagnostic until the logical network controller provides network realization. Reusing an existing container does not mutate its attachments.
+   - Top-level `containerName`, `mode`, and `lifecycleKey` express identity and lifecycle policy. Modes are `session` (default), `persistent`, and `existing`; the V1 `cleanup` mode is omitted.
+   - A nested `container` configuration is required for session and persistent modes and forbidden for existing mode. Persistent and existing modes require a runtime container name.
+   - The container configuration selects exactly one of an `imageRef` to a same-namespace `PhysicalContainerImage` or an `image` pull/build configuration.
+   - V2 network attachment configuration uses `networkRef`, consistent with `imageRef` and `volumeRef`, rather than V1's runtime network `name`.
+   - Logical-container attachments reference same-namespace `LogicalContainerNetwork` resources; physical-container attachments reference `PhysicalContainerNetwork`. Separate attachment types keep these reference targets explicit.
+   - Spec is immutable except for the one-way `stop` request. Persistent mode can specify a monitor PID and identity timestamp.
+   - Status exposes coarse phase, readiness conditions, physical container and image references, observed runtime identity, lifecycle key, timestamps, exit code, and port bindings.
+   - Logical V2 kinds use distinct names from V1 kinds, allowing standard API-server registration without introducing conversion or independent-version storage adapters.
    - Provide functionality similar to V1 `Container`.
    - Own policy for persistence, reuse, and higher-level container lifecycle behavior.
    - Delegate concrete runtime work to V2 physical image, container, network, and volume resources.
 
-2. Add V2 logical process.
+3. Add V2 logical process.
    - Provide process behavior similar to V1 executable workflows, without IDE protocol functionality initially.
    - Delegate concrete process launch/tracking to `PhysicalProcess`.
 
-3. Add V2 service.
+4. Add V2 service.
    - Provide service behavior similar to V1 `Service`.
    - Support multiple effective addresses instead of a single value.
    - Represent cases where binding to a logical address such as localhost results in more than one concrete address, such as `127.0.0.1` and `::1`.
 
-4. Add V2 project.
+5. Add V2 project.
    - Represent a debuggable application.
    - Include fields for source code location.
    - Include exactly one run configuration initially: executable or container.
@@ -130,36 +157,23 @@ After the physical primitives are in place, add logical V2 resources that expres
 
 ### Log streaming
 
-V2 has no log surface. `AdditionalTypes` is empty and no V2 resource exposes a `log` subresource, so output from a V2 runtime container cannot be read through the V2 API. This is the largest user-visible gap in the current V2 foundation.
+Logical and physical containers expose a namespaced `log` subresource at `/apis/{group}/v2/namespaces/{namespace}/{resource}/{name}/log`. Supported sources are `stdout` (the default), `stderr`, and `system`, with follow, timestamps, tail, limit, skip, and line-number options.
 
-The V1 mechanism, for reference:
+Logical and physical container controllers capture resource-specific system diagnostics. Owned physical containers also forward diagnostics into their logical owner's stream using scoped nested resource sinks; each resource releases only its own writer. Logical system streams read that single logical stream rather than querying or merging child logs, and can follow diagnostics before runtime creation and after startup failure or runtime exit.
 
-- Logs are a generic `log` subresource served at `/apis/{group}/{version}/{resource}/{name}/log`, backed per resource kind by the `apiv1.ResourceLogStreamers` registry keyed by `GroupVersionResource`.
-- `LogOptions` carries the query parameters. `LogStreamer` exists only because a Kubernetes storage object must be associated with a type.
-- Two streamer implementations back the registry: file-based (`stdiologs`, for `Executable` and `ContainerExec`) and runtime-based (`containerlogs`, for `Container`).
-- OpenAPI generation is suppressed for the subresource because the response is raw text rather than a structured object.
+The watch-driven storage and query-option implementation is shared in `internal/logstream`, with version-specific API registration and streamer contracts. V1 keeps its existing API names and startup sources. V2 uses distinct `ResourceLogOptions` and `ResourceLogResponse` kinds to avoid internal-kind collisions when both API versions are registered. Streaming preserves the namespace captured during the API GET handoff.
 
-Whether log streams belong to physical resources, logical resources, or both is an open question. The existing source model is the strongest available evidence:
+Each API version registers streamers by resource kind. The logical and physical V2 container kinds share a runtime capture backend keyed by the physical resource UID. Logical reconciliation projects that UID, runtime identity, and timestamps onto logical status, so its streamer uses only its watched logical snapshot and never queries a child resource or proxies a child's log endpoint. Availability follows observed runtime startup rather than logical readiness.
 
-- The orchestrator layer (`internal/containers`) defines exactly two sources, `stdout` and `stderr`, because those are what a container runtime produces.
-- The V1 API defines five, adding `startup_stdout`, `startup_stderr`, and `system`, which are DCP-level concepts with no runtime equivalent.
-- V1 pulls and builds images inside the `Container` resource, so that output surfaces as the `startup_*` sources. In V2 that work belongs to `PhysicalContainerImage`, which can own its own stream instead.
+Client sessions follow their own API resource's lifecycle. Closing one consumer does not stop another consumer of the same capture. Physical resource deletion ends all consumers of that source, including logical consumers; logical deletion ends its own sessions. Active resource watches remain subscribed during streaming so late lifecycle transitions are not missed. OpenAPI response schemas remain suppressed because the endpoints return raw text.
 
-That split suggests physical resources should expose only the streams their runtime object actually produces, while logical resources compose those streams and add DCP-level sources. Confirm the model before implementing it.
+Image pull/build output remains follow-up work. V2 rejects `startup_stdout` and `startup_stderr` rather than returning empty or indefinitely Pending streams for unsupported sources.
 
-This work is cross-cutting rather than sequenced after the logical layer. The ownership decision needs enough of the logical shape to be credible, but exposing physical container and image output does not need to wait for the full logical layer to land.
+### Deferred V1 integration
 
-1. Decide the ownership model for log streams.
-   - Determine whether physical resources, logical resources, or both expose a `log` subresource.
-   - Decide whether a logical resource aggregates streams from the physical resources it references, and how a caller selects between an aggregated view and a single underlying stream.
-   - Decide whether V2 `startup_*` output becomes a stream on the referenced `PhysicalContainerImage` rather than a source on the container.
-   - Decide whether V2 reuses the V1 source names or defines a source set per resource kind.
+This compatibility work is not a prerequisite for logical V2 resources or V2 log streaming.
 
-2. Decide where the shared log plumbing lives.
-   - `ResourceLogStreamer`, `ResourceLogStreamers`, and `LogOptions` live in `api/v1` but are version-neutral in shape. Decide whether to hoist them into `pkg/commonapi`, as was done for `ResourceCreationProhibited`, or to give V2 its own copies consistent with the type ownership rules above.
-   - Confirm the subresource plumbing works for namespace-scoped resources. Client-side path construction is already generic (`NamespaceIfScoped`), but every V1 resource that exposes logs today is cluster-scoped, and both `LogStreamer` and `LogOptions` return `false` from `NamespaceScoped`, so the server-side registration is unproven for namespaced kinds.
-
-3. Add log streaming to V2 resources once the model is settled.
-   - Expose runtime container output for `PhysicalContainer`.
-   - Expose pull and build output for `PhysicalContainerImage`.
-   - Terminate in-flight streams when the resource or its namespace is deleted, so streaming does not block namespace cleanup.
+1. Migrate V1 container resource lifecycle to V2 physical resources.
+   - Keep V1-specific policy in the V1 controller, including lifecycle keys, persistent and existing container lookup, leases, compatibility status, and V1 API semantics.
+   - Delegate common image/container/network/volume runtime lifecycle to V2 physical resources.
+   - Avoid keeping repeated container creation, start, inspect, watch, stop, and remove logic in multiple V1 controllers.

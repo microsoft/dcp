@@ -23,166 +23,179 @@ import (
 
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
-		v1.AmbientEnvironment{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_AmbientEnvironment(ref),
-		v1.Container{}.OpenAPIModelName():                              schema_microsoft_dcp_api_v1_Container(ref),
-		v1.ContainerBuildContext{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v1_ContainerBuildContext(ref),
-		v1.ContainerBuildSecret{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v1_ContainerBuildSecret(ref),
-		v1.ContainerExec{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v1_ContainerExec(ref),
-		v1.ContainerExecList{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_ContainerExecList(ref),
-		v1.ContainerExecSpec{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_ContainerExecSpec(ref),
-		v1.ContainerExecStatus{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ContainerExecStatus(ref),
-		v1.ContainerLabel{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v1_ContainerLabel(ref),
-		v1.ContainerList{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v1_ContainerList(ref),
-		v1.ContainerNetwork{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_ContainerNetwork(ref),
-		v1.ContainerNetworkConnection{}.OpenAPIModelName():             schema_microsoft_dcp_api_v1_ContainerNetworkConnection(ref),
-		v1.ContainerNetworkConnectionConfig{}.OpenAPIModelName():       schema_microsoft_dcp_api_v1_ContainerNetworkConnectionConfig(ref),
-		v1.ContainerNetworkConnectionList{}.OpenAPIModelName():         schema_microsoft_dcp_api_v1_ContainerNetworkConnectionList(ref),
-		v1.ContainerNetworkConnectionSpec{}.OpenAPIModelName():         schema_microsoft_dcp_api_v1_ContainerNetworkConnectionSpec(ref),
-		v1.ContainerNetworkList{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v1_ContainerNetworkList(ref),
-		v1.ContainerNetworkSpec{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v1_ContainerNetworkSpec(ref),
-		v1.ContainerNetworkStatus{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v1_ContainerNetworkStatus(ref),
-		v1.ContainerNetworkTunnelProxy{}.OpenAPIModelName():            schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxy(ref),
-		v1.ContainerNetworkTunnelProxyList{}.OpenAPIModelName():        schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyList(ref),
-		v1.ContainerNetworkTunnelProxySpec{}.OpenAPIModelName():        schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxySpec(ref),
-		v1.ContainerNetworkTunnelProxyStatus{}.OpenAPIModelName():      schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref),
-		v1.ContainerPemCertificates{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_ContainerPemCertificates(ref),
-		v1.ContainerPort{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v1_ContainerPort(ref),
-		v1.ContainerSpec{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v1_ContainerSpec(ref),
-		v1.ContainerStatus{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_ContainerStatus(ref),
-		v1.ContainerVolume{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_ContainerVolume(ref),
-		v1.ContainerVolumeList{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ContainerVolumeList(ref),
-		v1.ContainerVolumeSpec{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ContainerVolumeSpec(ref),
-		v1.ContainerVolumeStatus{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v1_ContainerVolumeStatus(ref),
-		v1.CreateFileSystem{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_CreateFileSystem(ref),
-		v1.Endpoint{}.OpenAPIModelName():                               schema_microsoft_dcp_api_v1_Endpoint(ref),
-		v1.EndpointList{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v1_EndpointList(ref),
-		v1.EndpointSpec{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v1_EndpointSpec(ref),
-		v1.EndpointStatus{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v1_EndpointStatus(ref),
-		v1.Executable{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v1_Executable(ref),
-		v1.ExecutableList{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v1_ExecutableList(ref),
-		v1.ExecutablePemCertificates{}.OpenAPIModelName():              schema_microsoft_dcp_api_v1_ExecutablePemCertificates(ref),
-		v1.ExecutableProbe{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_ExecutableProbe(ref),
-		v1.ExecutableReplicaSet{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v1_ExecutableReplicaSet(ref),
-		v1.ExecutableReplicaSetList{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_ExecutableReplicaSetList(ref),
-		v1.ExecutableReplicaSetSpec{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_ExecutableReplicaSetSpec(ref),
-		v1.ExecutableReplicaSetStatus{}.OpenAPIModelName():             schema_microsoft_dcp_api_v1_ExecutableReplicaSetStatus(ref),
-		v1.ExecutableSpec{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v1_ExecutableSpec(ref),
-		v1.ExecutableStatus{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_ExecutableStatus(ref),
-		v1.ExecutableTemplate{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_ExecutableTemplate(ref),
-		v1.FileSystemEntry{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_FileSystemEntry(ref),
-		v1.HealthProbe{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_HealthProbe(ref),
-		v1.HealthProbeResult{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_HealthProbeResult(ref),
-		v1.HealthProbeSchedule{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_HealthProbeSchedule(ref),
-		v1.HttpHeader{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v1_HttpHeader(ref),
-		v1.HttpProbe{}.OpenAPIModelName():                              schema_microsoft_dcp_api_v1_HttpProbe(ref),
-		v1.ImageLayer{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v1_ImageLayer(ref),
-		v1.LogOptions{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v1_LogOptions(ref),
-		v1.LogStreamer{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_LogStreamer(ref),
-		v1.PemCertificate{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v1_PemCertificate(ref),
-		v1.Service{}.OpenAPIModelName():                                schema_microsoft_dcp_api_v1_Service(ref),
-		v1.ServiceList{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_ServiceList(ref),
-		v1.ServiceSpec{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_ServiceSpec(ref),
-		v1.ServiceStatus{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v1_ServiceStatus(ref),
-		v1.TerminalSpec{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v1_TerminalSpec(ref),
-		v1.TunnelConfiguration{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_TunnelConfiguration(ref),
-		v1.TunnelStatus{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v1_TunnelStatus(ref),
-		v1.VolumeMount{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_VolumeMount(ref),
-		v2.ContainerBuildContext{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_ContainerBuildContext(ref),
-		v2.ContainerBuildContextArchive{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref),
-		v2.ContainerBuildSecret{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_ContainerBuildSecret(ref),
-		v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName():       schema_microsoft_dcp_api_v2_ContainerNetworkConnectionConfig(ref),
-		v2.ContainerPort{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v2_ContainerPort(ref),
-		v2.CreateFileSystem{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v2_CreateFileSystem(ref),
-		v2.FileSystemEntry{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v2_FileSystemEntry(ref),
-		v2.Namespace{}.OpenAPIModelName():                              schema_microsoft_dcp_api_v2_Namespace(ref),
-		v2.NamespaceList{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v2_NamespaceList(ref),
-		v2.NamespaceStatus{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v2_NamespaceStatus(ref),
-		v2.PhysicalContainer{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_PhysicalContainer(ref),
-		v2.PhysicalContainerConfig{}.OpenAPIModelName():                schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref),
-		v2.PhysicalContainerImage{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v2_PhysicalContainerImage(ref),
-		v2.PhysicalContainerImageConfig{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerImageConfig(ref),
-		v2.PhysicalContainerImageList{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalContainerImageList(ref),
-		v2.PhysicalContainerImageSpec{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalContainerImageSpec(ref),
-		v2.PhysicalContainerImageStatus{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerImageStatus(ref),
-		v2.PhysicalContainerList{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_PhysicalContainerList(ref),
-		v2.PhysicalContainerNetwork{}.OpenAPIModelName():               schema_microsoft_dcp_api_v2_PhysicalContainerNetwork(ref),
-		v2.PhysicalContainerNetworkConfig{}.OpenAPIModelName():         schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConfig(ref),
-		v2.PhysicalContainerNetworkConnection{}.OpenAPIModelName():     schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConnection(ref),
-		v2.PhysicalContainerNetworkConnectionList{}.OpenAPIModelName(): schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConnectionList(ref),
-		v2.PhysicalContainerNetworkConnectionSpec{}.OpenAPIModelName(): schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConnectionSpec(ref),
-		v2.PhysicalContainerNetworkList{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerNetworkList(ref),
-		v2.PhysicalContainerNetworkSpec{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerNetworkSpec(ref),
-		v2.PhysicalContainerNetworkStatus{}.OpenAPIModelName():         schema_microsoft_dcp_api_v2_PhysicalContainerNetworkStatus(ref),
-		v2.PhysicalContainerPortMapping{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerPortMapping(ref),
-		v2.PhysicalContainerSpec{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref),
-		v2.PhysicalContainerStatus{}.OpenAPIModelName():                schema_microsoft_dcp_api_v2_PhysicalContainerStatus(ref),
-		v2.PhysicalContainerVolume{}.OpenAPIModelName():                schema_microsoft_dcp_api_v2_PhysicalContainerVolume(ref),
-		v2.PhysicalContainerVolumeConfig{}.OpenAPIModelName():          schema_microsoft_dcp_api_v2_PhysicalContainerVolumeConfig(ref),
-		v2.PhysicalContainerVolumeList{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_PhysicalContainerVolumeList(ref),
-		v2.PhysicalContainerVolumeSpec{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_PhysicalContainerVolumeSpec(ref),
-		v2.PhysicalContainerVolumeStatus{}.OpenAPIModelName():          schema_microsoft_dcp_api_v2_PhysicalContainerVolumeStatus(ref),
-		v2.PhysicalProcess{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v2_PhysicalProcess(ref),
-		v2.PhysicalProcessConfig{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref),
-		v2.PhysicalProcessList{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_PhysicalProcessList(ref),
-		v2.PhysicalProcessSpec{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_PhysicalProcessSpec(ref),
-		v2.PhysicalProcessStatus{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref),
-		v2.VolumeMount{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v2_VolumeMount(ref),
-		commonapi.EnvVar{}.OpenAPIModelName():                          schema_microsoft_dcp_pkg_commonapi_EnvVar(ref),
-		commonapi.Label{}.OpenAPIModelName():                           schema_microsoft_dcp_pkg_commonapi_Label(ref),
-		metav1.APIGroup{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_APIGroup(ref),
-		metav1.APIGroupList{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_APIGroupList(ref),
-		metav1.APIResource{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_APIResource(ref),
-		metav1.APIResourceList{}.OpenAPIModelName():                    schema_pkg_apis_meta_v1_APIResourceList(ref),
-		metav1.APIVersions{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_APIVersions(ref),
-		metav1.ApplyOptions{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_ApplyOptions(ref),
-		metav1.Condition{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_Condition(ref),
-		metav1.CreateOptions{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_CreateOptions(ref),
-		metav1.DeleteOptions{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_DeleteOptions(ref),
-		metav1.Duration{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_Duration(ref),
-		metav1.FieldSelectorRequirement{}.OpenAPIModelName():           schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref),
-		metav1.FieldsV1{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_FieldsV1(ref),
-		metav1.GetOptions{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_GetOptions(ref),
-		metav1.GroupKind{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_GroupKind(ref),
-		metav1.GroupResource{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_GroupResource(ref),
-		metav1.GroupVersion{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_GroupVersion(ref),
-		metav1.GroupVersionForDiscovery{}.OpenAPIModelName():           schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
-		metav1.GroupVersionKind{}.OpenAPIModelName():                   schema_pkg_apis_meta_v1_GroupVersionKind(ref),
-		metav1.GroupVersionResource{}.OpenAPIModelName():               schema_pkg_apis_meta_v1_GroupVersionResource(ref),
-		metav1.InternalEvent{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_InternalEvent(ref),
-		metav1.LabelSelector{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_LabelSelector(ref),
-		metav1.LabelSelectorRequirement{}.OpenAPIModelName():           schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
-		metav1.List{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_List(ref),
-		metav1.ListMeta{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_ListMeta(ref),
-		metav1.ListOptions{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_ListOptions(ref),
-		metav1.ManagedFieldsEntry{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
-		metav1.MicroTime{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_MicroTime(ref),
-		metav1.ObjectMeta{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_ObjectMeta(ref),
-		metav1.OwnerReference{}.OpenAPIModelName():                     schema_pkg_apis_meta_v1_OwnerReference(ref),
-		metav1.PartialObjectMetadata{}.OpenAPIModelName():              schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
-		metav1.PartialObjectMetadataList{}.OpenAPIModelName():          schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
-		metav1.Patch{}.OpenAPIModelName():                              schema_pkg_apis_meta_v1_Patch(ref),
-		metav1.PatchOptions{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_PatchOptions(ref),
-		metav1.Preconditions{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_Preconditions(ref),
-		metav1.RootPaths{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_RootPaths(ref),
-		metav1.ServerAddressByClientCIDR{}.OpenAPIModelName():          schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
-		metav1.ShardInfo{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_ShardInfo(ref),
-		metav1.Status{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_Status(ref),
-		metav1.StatusCause{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_StatusCause(ref),
-		metav1.StatusDetails{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_StatusDetails(ref),
-		metav1.Table{}.OpenAPIModelName():                              schema_pkg_apis_meta_v1_Table(ref),
-		metav1.TableColumnDefinition{}.OpenAPIModelName():              schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
-		metav1.TableOptions{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_TableOptions(ref),
-		metav1.TableRow{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_TableRow(ref),
-		metav1.TableRowCondition{}.OpenAPIModelName():                  schema_pkg_apis_meta_v1_TableRowCondition(ref),
-		metav1.Time{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_Time(ref),
-		metav1.Timestamp{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_Timestamp(ref),
-		metav1.TypeMeta{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_TypeMeta(ref),
-		metav1.UpdateOptions{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_UpdateOptions(ref),
-		metav1.WatchEvent{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_WatchEvent(ref),
-		runtime.RawExtension{}.OpenAPIModelName():                      schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
-		runtime.TypeMeta{}.OpenAPIModelName():                          schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
-		runtime.Unknown{}.OpenAPIModelName():                           schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
-		version.Info{}.OpenAPIModelName():                              schema_k8sio_apimachinery_pkg_version_Info(ref),
+		v1.AmbientEnvironment{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_AmbientEnvironment(ref),
+		v1.Container{}.OpenAPIModelName():                               schema_microsoft_dcp_api_v1_Container(ref),
+		v1.ContainerBuildContext{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v1_ContainerBuildContext(ref),
+		v1.ContainerBuildSecret{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ContainerBuildSecret(ref),
+		v1.ContainerExec{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v1_ContainerExec(ref),
+		v1.ContainerExecList{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_ContainerExecList(ref),
+		v1.ContainerExecSpec{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_ContainerExecSpec(ref),
+		v1.ContainerExecStatus{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_ContainerExecStatus(ref),
+		v1.ContainerLabel{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v1_ContainerLabel(ref),
+		v1.ContainerList{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v1_ContainerList(ref),
+		v1.ContainerNetwork{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_ContainerNetwork(ref),
+		v1.ContainerNetworkConnection{}.OpenAPIModelName():              schema_microsoft_dcp_api_v1_ContainerNetworkConnection(ref),
+		v1.ContainerNetworkConnectionConfig{}.OpenAPIModelName():        schema_microsoft_dcp_api_v1_ContainerNetworkConnectionConfig(ref),
+		v1.ContainerNetworkConnectionList{}.OpenAPIModelName():          schema_microsoft_dcp_api_v1_ContainerNetworkConnectionList(ref),
+		v1.ContainerNetworkConnectionSpec{}.OpenAPIModelName():          schema_microsoft_dcp_api_v1_ContainerNetworkConnectionSpec(ref),
+		v1.ContainerNetworkList{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ContainerNetworkList(ref),
+		v1.ContainerNetworkSpec{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ContainerNetworkSpec(ref),
+		v1.ContainerNetworkStatus{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v1_ContainerNetworkStatus(ref),
+		v1.ContainerNetworkTunnelProxy{}.OpenAPIModelName():             schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxy(ref),
+		v1.ContainerNetworkTunnelProxyList{}.OpenAPIModelName():         schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyList(ref),
+		v1.ContainerNetworkTunnelProxySpec{}.OpenAPIModelName():         schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxySpec(ref),
+		v1.ContainerNetworkTunnelProxyStatus{}.OpenAPIModelName():       schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref),
+		v1.ContainerPemCertificates{}.OpenAPIModelName():                schema_microsoft_dcp_api_v1_ContainerPemCertificates(ref),
+		v1.ContainerPort{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v1_ContainerPort(ref),
+		v1.ContainerSpec{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v1_ContainerSpec(ref),
+		v1.ContainerStatus{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v1_ContainerStatus(ref),
+		v1.ContainerVolume{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v1_ContainerVolume(ref),
+		v1.ContainerVolumeList{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_ContainerVolumeList(ref),
+		v1.ContainerVolumeSpec{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_ContainerVolumeSpec(ref),
+		v1.ContainerVolumeStatus{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v1_ContainerVolumeStatus(ref),
+		v1.CreateFileSystem{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_CreateFileSystem(ref),
+		v1.Endpoint{}.OpenAPIModelName():                                schema_microsoft_dcp_api_v1_Endpoint(ref),
+		v1.EndpointList{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_EndpointList(ref),
+		v1.EndpointSpec{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_EndpointSpec(ref),
+		v1.EndpointStatus{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v1_EndpointStatus(ref),
+		v1.Executable{}.OpenAPIModelName():                              schema_microsoft_dcp_api_v1_Executable(ref),
+		v1.ExecutableList{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v1_ExecutableList(ref),
+		v1.ExecutablePemCertificates{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_ExecutablePemCertificates(ref),
+		v1.ExecutableProbe{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v1_ExecutableProbe(ref),
+		v1.ExecutableReplicaSet{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ExecutableReplicaSet(ref),
+		v1.ExecutableReplicaSetList{}.OpenAPIModelName():                schema_microsoft_dcp_api_v1_ExecutableReplicaSetList(ref),
+		v1.ExecutableReplicaSetSpec{}.OpenAPIModelName():                schema_microsoft_dcp_api_v1_ExecutableReplicaSetSpec(ref),
+		v1.ExecutableReplicaSetStatus{}.OpenAPIModelName():              schema_microsoft_dcp_api_v1_ExecutableReplicaSetStatus(ref),
+		v1.ExecutableSpec{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v1_ExecutableSpec(ref),
+		v1.ExecutableStatus{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_ExecutableStatus(ref),
+		v1.ExecutableTemplate{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_ExecutableTemplate(ref),
+		v1.FileSystemEntry{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v1_FileSystemEntry(ref),
+		v1.HealthProbe{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v1_HealthProbe(ref),
+		v1.HealthProbeResult{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_HealthProbeResult(ref),
+		v1.HealthProbeSchedule{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_HealthProbeSchedule(ref),
+		v1.HttpHeader{}.OpenAPIModelName():                              schema_microsoft_dcp_api_v1_HttpHeader(ref),
+		v1.HttpProbe{}.OpenAPIModelName():                               schema_microsoft_dcp_api_v1_HttpProbe(ref),
+		v1.ImageLayer{}.OpenAPIModelName():                              schema_microsoft_dcp_api_v1_ImageLayer(ref),
+		v1.LogOptions{}.OpenAPIModelName():                              schema_microsoft_dcp_api_v1_LogOptions(ref),
+		v1.LogStreamer{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v1_LogStreamer(ref),
+		v1.PemCertificate{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v1_PemCertificate(ref),
+		v1.Service{}.OpenAPIModelName():                                 schema_microsoft_dcp_api_v1_Service(ref),
+		v1.ServiceList{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v1_ServiceList(ref),
+		v1.ServiceSpec{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v1_ServiceSpec(ref),
+		v1.ServiceStatus{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v1_ServiceStatus(ref),
+		v1.TerminalSpec{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_TerminalSpec(ref),
+		v1.TunnelConfiguration{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_TunnelConfiguration(ref),
+		v1.TunnelStatus{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_TunnelStatus(ref),
+		v1.VolumeMount{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v1_VolumeMount(ref),
+		v2.ContainerBuildContext{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_ContainerBuildContext(ref),
+		v2.ContainerBuildContextArchive{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref),
+		v2.ContainerBuildSecret{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_ContainerBuildSecret(ref),
+		v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName():        schema_microsoft_dcp_api_v2_ContainerNetworkConnectionConfig(ref),
+		v2.ContainerPort{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v2_ContainerPort(ref),
+		v2.CreateFileSystem{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v2_CreateFileSystem(ref),
+		v2.FileSystemEntry{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v2_FileSystemEntry(ref),
+		v2.LogicalContainer{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v2_LogicalContainer(ref),
+		v2.LogicalContainerConfig{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_LogicalContainerConfig(ref),
+		v2.LogicalContainerList{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalContainerList(ref),
+		v2.LogicalContainerNetwork{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v2_LogicalContainerNetwork(ref),
+		v2.LogicalContainerNetworkConfig{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_LogicalContainerNetworkConfig(ref),
+		v2.LogicalContainerNetworkConnectionConfig{}.OpenAPIModelName(): schema_microsoft_dcp_api_v2_LogicalContainerNetworkConnectionConfig(ref),
+		v2.LogicalContainerNetworkList{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_LogicalContainerNetworkList(ref),
+		v2.LogicalContainerNetworkSpec{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_LogicalContainerNetworkSpec(ref),
+		v2.LogicalContainerNetworkStatus{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref),
+		v2.LogicalContainerSpec{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalContainerSpec(ref),
+		v2.LogicalContainerStatus{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref),
+		v2.Namespace{}.OpenAPIModelName():                               schema_microsoft_dcp_api_v2_Namespace(ref),
+		v2.NamespaceList{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v2_NamespaceList(ref),
+		v2.NamespaceStatus{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v2_NamespaceStatus(ref),
+		v2.PhysicalContainer{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v2_PhysicalContainer(ref),
+		v2.PhysicalContainerConfig{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref),
+		v2.PhysicalContainerImage{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_PhysicalContainerImage(ref),
+		v2.PhysicalContainerImageConfig{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_PhysicalContainerImageConfig(ref),
+		v2.PhysicalContainerImageList{}.OpenAPIModelName():              schema_microsoft_dcp_api_v2_PhysicalContainerImageList(ref),
+		v2.PhysicalContainerImageSpec{}.OpenAPIModelName():              schema_microsoft_dcp_api_v2_PhysicalContainerImageSpec(ref),
+		v2.PhysicalContainerImageStatus{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_PhysicalContainerImageStatus(ref),
+		v2.PhysicalContainerList{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_PhysicalContainerList(ref),
+		v2.PhysicalContainerNetwork{}.OpenAPIModelName():                schema_microsoft_dcp_api_v2_PhysicalContainerNetwork(ref),
+		v2.PhysicalContainerNetworkConfig{}.OpenAPIModelName():          schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConfig(ref),
+		v2.PhysicalContainerNetworkConnection{}.OpenAPIModelName():      schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConnection(ref),
+		v2.PhysicalContainerNetworkConnectionList{}.OpenAPIModelName():  schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConnectionList(ref),
+		v2.PhysicalContainerNetworkConnectionSpec{}.OpenAPIModelName():  schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConnectionSpec(ref),
+		v2.PhysicalContainerNetworkList{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_PhysicalContainerNetworkList(ref),
+		v2.PhysicalContainerNetworkSpec{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_PhysicalContainerNetworkSpec(ref),
+		v2.PhysicalContainerNetworkStatus{}.OpenAPIModelName():          schema_microsoft_dcp_api_v2_PhysicalContainerNetworkStatus(ref),
+		v2.PhysicalContainerPortMapping{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_PhysicalContainerPortMapping(ref),
+		v2.PhysicalContainerSpec{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref),
+		v2.PhysicalContainerStatus{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v2_PhysicalContainerStatus(ref),
+		v2.PhysicalContainerVolume{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v2_PhysicalContainerVolume(ref),
+		v2.PhysicalContainerVolumeConfig{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerVolumeConfig(ref),
+		v2.PhysicalContainerVolumeList{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalContainerVolumeList(ref),
+		v2.PhysicalContainerVolumeSpec{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalContainerVolumeSpec(ref),
+		v2.PhysicalContainerVolumeStatus{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerVolumeStatus(ref),
+		v2.PhysicalProcess{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v2_PhysicalProcess(ref),
+		v2.PhysicalProcessConfig{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref),
+		v2.PhysicalProcessList{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_PhysicalProcessList(ref),
+		v2.PhysicalProcessSpec{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_PhysicalProcessSpec(ref),
+		v2.PhysicalProcessStatus{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref),
+		v2.ResourceLogOptions{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_ResourceLogOptions(ref),
+		v2.ResourceLogResponse{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ResourceLogResponse(ref),
+		v2.VolumeMount{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v2_VolumeMount(ref),
+		commonapi.EnvVar{}.OpenAPIModelName():                           schema_microsoft_dcp_pkg_commonapi_EnvVar(ref),
+		commonapi.Label{}.OpenAPIModelName():                            schema_microsoft_dcp_pkg_commonapi_Label(ref),
+		metav1.APIGroup{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_APIGroup(ref),
+		metav1.APIGroupList{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_APIGroupList(ref),
+		metav1.APIResource{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_APIResource(ref),
+		metav1.APIResourceList{}.OpenAPIModelName():                     schema_pkg_apis_meta_v1_APIResourceList(ref),
+		metav1.APIVersions{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_APIVersions(ref),
+		metav1.ApplyOptions{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_ApplyOptions(ref),
+		metav1.Condition{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_Condition(ref),
+		metav1.CreateOptions{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_CreateOptions(ref),
+		metav1.DeleteOptions{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_DeleteOptions(ref),
+		metav1.Duration{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_Duration(ref),
+		metav1.FieldSelectorRequirement{}.OpenAPIModelName():            schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref),
+		metav1.FieldsV1{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_FieldsV1(ref),
+		metav1.GetOptions{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_GetOptions(ref),
+		metav1.GroupKind{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_GroupKind(ref),
+		metav1.GroupResource{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_GroupResource(ref),
+		metav1.GroupVersion{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_GroupVersion(ref),
+		metav1.GroupVersionForDiscovery{}.OpenAPIModelName():            schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
+		metav1.GroupVersionKind{}.OpenAPIModelName():                    schema_pkg_apis_meta_v1_GroupVersionKind(ref),
+		metav1.GroupVersionResource{}.OpenAPIModelName():                schema_pkg_apis_meta_v1_GroupVersionResource(ref),
+		metav1.InternalEvent{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_InternalEvent(ref),
+		metav1.LabelSelector{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_LabelSelector(ref),
+		metav1.LabelSelectorRequirement{}.OpenAPIModelName():            schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
+		metav1.List{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_List(ref),
+		metav1.ListMeta{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_ListMeta(ref),
+		metav1.ListOptions{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_ListOptions(ref),
+		metav1.ManagedFieldsEntry{}.OpenAPIModelName():                  schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
+		metav1.MicroTime{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_MicroTime(ref),
+		metav1.ObjectMeta{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_ObjectMeta(ref),
+		metav1.OwnerReference{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_OwnerReference(ref),
+		metav1.PartialObjectMetadata{}.OpenAPIModelName():               schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
+		metav1.PartialObjectMetadataList{}.OpenAPIModelName():           schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
+		metav1.Patch{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_Patch(ref),
+		metav1.PatchOptions{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_PatchOptions(ref),
+		metav1.Preconditions{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_Preconditions(ref),
+		metav1.RootPaths{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_RootPaths(ref),
+		metav1.ServerAddressByClientCIDR{}.OpenAPIModelName():           schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
+		metav1.ShardInfo{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_ShardInfo(ref),
+		metav1.Status{}.OpenAPIModelName():                              schema_pkg_apis_meta_v1_Status(ref),
+		metav1.StatusCause{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_StatusCause(ref),
+		metav1.StatusDetails{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_StatusDetails(ref),
+		metav1.Table{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_Table(ref),
+		metav1.TableColumnDefinition{}.OpenAPIModelName():               schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
+		metav1.TableOptions{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_TableOptions(ref),
+		metav1.TableRow{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_TableRow(ref),
+		metav1.TableRowCondition{}.OpenAPIModelName():                   schema_pkg_apis_meta_v1_TableRowCondition(ref),
+		metav1.Time{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_Time(ref),
+		metav1.Timestamp{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_Timestamp(ref),
+		metav1.TypeMeta{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_TypeMeta(ref),
+		metav1.UpdateOptions{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_UpdateOptions(ref),
+		metav1.WatchEvent{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_WatchEvent(ref),
+		runtime.RawExtension{}.OpenAPIModelName():                       schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
+		runtime.TypeMeta{}.OpenAPIModelName():                           schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
+		runtime.Unknown{}.OpenAPIModelName():                            schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
+		version.Info{}.OpenAPIModelName():                               schema_k8sio_apimachinery_pkg_version_Info(ref),
 	}
 }
 
@@ -3579,7 +3592,8 @@ func schema_microsoft_dcp_api_v1_LogOptions(ref common.ReferenceCallback) common
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
+				Description: "LogOptions selects a resource log stream and its output formatting.",
+				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
 						SchemaProps: spec.SchemaProps{
@@ -3603,7 +3617,7 @@ func schema_microsoft_dcp_api_v1_LogOptions(ref common.ReferenceCallback) common
 					},
 					"follow": {
 						SchemaProps: spec.SchemaProps{
-							Description: "If true, follow the logs for the Executable or Container.",
+							Description: "If true, follow the resource's logs.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -4164,7 +4178,7 @@ func schema_microsoft_dcp_api_v2_ContainerBuildContext(ref common.ReferenceCallb
 					},
 					"dockerfile": {
 						SchemaProps: spec.SchemaProps{
-							Description: "The path to a Dockerfile to use for the build.",
+							Description: "The path to a Dockerfile to use for the build, passed unchanged to the container runtime. Archive paths must be relative to the archive root. If omitted, the runtime uses its default.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -4370,9 +4384,9 @@ func schema_microsoft_dcp_api_v2_ContainerNetworkConnectionConfig(ref common.Ref
 				Description: "ContainerNetworkConnectionConfig describes a PhysicalContainerNetwork to attach to a container.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"name": {
+					"networkRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Name identifies a PhysicalContainerNetwork in the same namespace using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
+							Description: "NetworkRef identifies a PhysicalContainerNetwork in the same namespace using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -4398,7 +4412,7 @@ func schema_microsoft_dcp_api_v2_ContainerNetworkConnectionConfig(ref common.Ref
 						},
 					},
 				},
-				Required: []string{"name"},
+				Required: []string{"networkRef"},
 			},
 		},
 	}
@@ -4612,6 +4626,821 @@ func schema_microsoft_dcp_api_v2_FileSystemEntry(ref common.ReferenceCallback) c
 		},
 		Dependencies: []string{
 			v2.FileSystemEntry{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainer(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainer represents logical container lifecycle policy in a DCP V2 namespace.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.LogicalContainerSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.LogicalContainerStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalContainerSpec{}.OpenAPIModelName(), v2.LogicalContainerStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerConfig describes the desired configuration used to create a container.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"imageRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ImageRef identifies a PhysicalContainerImage using <name> or <namespace>/<name>. Cross-namespace references are not supported. Exactly one of imageRef or image must be set.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"image": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Image describes an image to pull or build for this container. Exactly one of imageRef or image must be set.",
+							Ref:         ref(v2.PhysicalContainerImageConfig{}.OpenAPIModelName()),
+						},
+					},
+					"entrypoint": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Entrypoint is the container runtime entrypoint to run.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"command": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Command contains arguments passed to the container entrypoint.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"env": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Env contains environment variables to set in the container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"ports": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Ports describes ports to expose from the container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.ContainerPort{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"volumeMounts": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "VolumeMounts describes volume and bind mounts for the container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.VolumeMount{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"networks": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Networks describes LogicalContainerNetworks to attach the container to. If omitted, the container runtime chooses the default network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalContainerNetworkConnectionConfig{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"createFiles": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "CreateFiles describes files and folders to copy into the container before it starts.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.CreateFileSystem{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"labels": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"key",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels contains labels to apply to a newly-created runtime container. DCP lifecycle and physical resource ownership labels are reserved and set by controllers.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.Label{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.ContainerPort{}.OpenAPIModelName(), v2.CreateFileSystem{}.OpenAPIModelName(), v2.LogicalContainerNetworkConnectionConfig{}.OpenAPIModelName(), v2.PhysicalContainerImageConfig{}.OpenAPIModelName(), v2.VolumeMount{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerList contains a list of LogicalContainer instances.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalContainer{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalContainer{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerNetwork(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerNetwork represents container network lifecycle policy independent of container lifetimes.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.LogicalContainerNetworkSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.LogicalContainerNetworkStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalContainerNetworkSpec{}.OpenAPIModelName(), v2.LogicalContainerNetworkStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerNetworkConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerNetworkConfig describes the desired configuration used to create a network.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"ipv6": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IPv6 enables IPv6 on a newly created runtime network.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"labels": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"key",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels contains labels to apply to a newly-created runtime network. DCP lifecycle and physical resource ownership labels are reserved and set by controllers.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.Label{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			commonapi.Label{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerNetworkConnectionConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerNetworkConnectionConfig describes a logical network attachment for a container.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"networkRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NetworkRef identifies a LogicalContainerNetwork using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"aliases": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Aliases contains network-scoped aliases for the container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"networkRef"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerNetworkList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerNetworkList contains a list of LogicalContainerNetwork instances.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalContainerNetwork{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalContainerNetwork{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerNetworkSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerNetworkSpec describes network lifecycle policy and desired configuration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"networkName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NetworkName is the runtime name to create or look up. Required for persistent and existing modes. If omitted in session mode, a runtime name is generated.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Mode controls creation, reuse, and retention. Defaults to session.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"network": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Network describes the desired network. Required for session and persistent modes, and forbidden for existing mode.",
+							Ref:         ref(v2.LogicalContainerNetworkConfig{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalContainerNetworkConfig{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerNetworkStatus describes the observed network and its physical backing resource.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase summarizes network availability.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"physicalNetworkRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"networkID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NetworkID is the observed runtime network ID.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"networkName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NetworkName is the observed runtime network name.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"driver": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Driver is the runtime network driver.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ipv6": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IPv6 reports whether IPv6 is enabled on the runtime network.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"subnets": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Subnets are the subnets allocated to the runtime network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"gateways": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Gateways are the gateways allocated to the runtime network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"containerIDs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerIDs are the runtime container IDs currently attached to the network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"createdAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CreatedAt is the runtime network creation timestamp.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe readiness and reconciliation progress.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerSpec describes logical container lifecycle policy and desired configuration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerName is the runtime name to create or look up. Required for persistent and existing modes. If omitted in session mode, a runtime name is generated.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Mode controls creation, reuse, and retention. Defaults to session.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lifecycleKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LifecycleKey identifies the desired configuration for persistent container reuse. If omitted, the controller calculates a key from the desired configuration.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"container": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Container describes the desired container. Required for session and persistent modes, and forbidden for existing mode.",
+							Ref:         ref(v2.LogicalContainerConfig{}.OpenAPIModelName()),
+						},
+					},
+					"monitorPID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MonitorPID optionally scopes a persistent container to another process lifetime. When set, monitorTimestamp must also be set. The container is stopped but not removed when that process exits.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"monitorTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MonitorTimestamp identifies the process in monitorPID and guards against PID reuse.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"stop": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Stop requests that the container be stopped. Once true, it cannot be reset.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalContainerConfig{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerStatus describes the observed logical container and its physical dependencies.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase summarizes the container lifecycle.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"physicalContainerRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PhysicalContainerRef identifies the backing PhysicalContainer using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"physicalContainerUID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PhysicalContainerUID identifies the backing resource's runtime log capture.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"imageRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ImageRef identifies the supplied or generated PhysicalContainerImage using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerID is the observed runtime container ID.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerName is the observed runtime container name.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"image": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Image is the resolved runtime image reference.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lifecycleKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LifecycleKey is the supplied or calculated key applied to the runtime container.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"createdAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CreatedAt is the runtime container creation timestamp.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"startedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StartedAt is the runtime container start timestamp.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"finishedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FinishedAt is the runtime container finish timestamp.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"exitCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExitCode is the runtime container exit code, when available.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"portMappings": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "PortMappings are the observed host bindings for runtime container ports.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.PhysicalContainerPortMapping{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe readiness and reconciliation progress.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -5817,7 +6646,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref common.ReferenceCallb
 					},
 					"stop": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Stop requests that the tracked runtime container be stopped.",
+							Description: "Stop requests that the tracked runtime container be stopped or prevents creation if it has not begun. Once true, it cannot be reset.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -6495,6 +7324,125 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref common.ReferenceCallb
 		},
 		Dependencies: []string{
 			metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ResourceLogOptions(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceLogOptions selects a resource output or system stream and its formatting.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"follow": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If true, follow the resource's logs.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The source of the logs to display. Note: the K8s API server does not support non-standard types in query parameters, so we can't use LogStreamSource here.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"timestamps": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If true, include timestamps (RFC3339) in the logs.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"limit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Limits the number of log lines to return. Cannot be used if Follow option is true.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"tail": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Limits the response to at most N existing, NEWEST log lines. If Follow is set, new log lines that appear after the log stream was created do not count against the limit, and will be streamed until the client closes the stream.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"skip": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Skips the first N log lines in the result set. Not compatible with Tail option.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"line_numbers": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If true, include line numbers in the logs.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ResourceLogResponse(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceLogResponse carries a raw text response for a resource log subresource.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 

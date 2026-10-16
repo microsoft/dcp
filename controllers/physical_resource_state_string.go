@@ -105,8 +105,6 @@ func (state physicalContainerImageState) String() string {
 		return "Build"
 	case physicalContainerImageStateRuntime:
 		return "Runtime"
-	case physicalContainerImageStateDelete:
-		return "Delete"
 	case physicalContainerImageStateInvalid:
 		return "Invalid"
 	default:

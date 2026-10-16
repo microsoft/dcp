@@ -236,8 +236,14 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 		return errorList
 	}
 
-	image := pci.Spec.Image
-	imagePath := specPath.Child("image")
+	errorList = append(errorList, pci.Spec.Image.Validate(specPath.Child("image"))...)
+	return errorList
+}
+
+// Validate checks the image source, build configuration, and acquisition policies.
+func (image *PhysicalContainerImageConfig) Validate(imagePath *field.Path) field.ErrorList {
+	errorList := field.ErrorList{}
+
 	if image.Image == "" && image.Build == nil {
 		errorList = append(errorList, field.Required(imagePath.Child("image"), "image or build must be set"))
 	}

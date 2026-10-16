@@ -107,7 +107,7 @@ func TestPhysicalContainerValidate(t *testing.T) {
 						{Type: NamedVolumeMount, VolumeRef: "test-namespace/test-volume", Target: "/cache"},
 					},
 					Networks: []ContainerNetworkConnectionConfig{
-						{Name: "test-namespace/test-network"},
+						{NetworkRef: "test-namespace/test-network"},
 					},
 				}},
 			},
@@ -449,7 +449,7 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{
 					ImageRef: "test-image",
 					Networks: []ContainerNetworkConnectionConfig{{
-						Name: "other-namespace/test-network",
+						NetworkRef: "other-namespace/test-network",
 					}},
 				}},
 			},

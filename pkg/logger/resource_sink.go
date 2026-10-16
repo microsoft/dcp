@@ -150,6 +150,63 @@ type resourceSink struct {
 	resourceLogFolderOverride string
 }
 
+// WithAdditionalResourceStream derives a logger that also writes to the given resource stream.
+// The primary resource binding and the original logger are unchanged.
+// An existing resource sink and a nonempty stream ID are required.
+func WithAdditionalResourceStream(log logr.Logger, resourceID string) (logr.Logger, error) {
+	if resourceID == "" {
+		return log, fmt.Errorf("additional resource stream ID must not be empty")
+	}
+	if hasResourceStream(log.GetSink(), resourceID) {
+		return log, nil
+	}
+	derivedSink, deriveErr := addResourceStream(log.GetSink(), resourceID)
+	if deriveErr != nil {
+		return log, deriveErr
+	}
+	return log.WithSink(derivedSink), nil
+}
+
+func addResourceStream(sink logr.LogSink, resourceID string) (logr.LogSink, error) {
+	switch current := sink.(type) {
+	case *resourceSink:
+		additional := newResourceSink(current.atomicLevel, current.innerSink, current.resourceLogFolderOverride)
+		additional.resourceId = resourceID
+		additional.resourceName = current.resourceName
+		additional.values = stdslices.Clone(current.values)
+		derived := *current
+		derived.innerSink = additional
+		return &derived, nil
+	case *filterSink:
+		inner, innerErr := addResourceStream(current.innerSink, resourceID)
+		if innerErr != nil {
+			return nil, innerErr
+		}
+		derived := *current
+		derived.innerSink = inner
+		return &derived, nil
+	default:
+		return nil, fmt.Errorf("logger does not contain a resource sink")
+	}
+}
+
+func hasResourceStream(sink logr.LogSink, resourceID string) bool {
+	for sink != nil {
+		switch current := sink.(type) {
+		case *resourceSink:
+			if current.resourceId == resourceID {
+				return true
+			}
+			sink = current.innerSink
+		case *filterSink:
+			sink = current.innerSink
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 func newResourceSink(atomicLevel zap.AtomicLevel, innerSink logr.LogSink, resourceLogFolderOverride string) *resourceSink {
 	sink := &resourceSink{
 		atomicLevel:               zap.NewAtomicLevel(),
@@ -192,14 +249,18 @@ func (s *resourceSink) Enabled(level int) bool {
 func (s *resourceSink) Error(err error, msg string, keysAndValues ...any) {
 	s.innerSink.Error(err, msg, keysAndValues...)
 
-	s.writeResourceError(s.resourceId, err, msg, keysAndValues...)
+	if !hasResourceStream(s.innerSink, s.resourceId) {
+		s.writeResourceError(s.resourceId, err, msg, keysAndValues...)
+	}
 }
 
 // Info implements logr.LogSink.
 func (s *resourceSink) Info(level int, msg string, keysAndValues ...any) {
 	s.innerSink.Info(level, msg, keysAndValues...)
 
-	s.writeResourceInfo(s.resourceId, level, msg, keysAndValues...)
+	if !hasResourceStream(s.innerSink, s.resourceId) {
+		s.writeResourceInfo(s.resourceId, level, msg, keysAndValues...)
+	}
 }
 
 // Init implements logr.LogSink.
@@ -209,12 +270,13 @@ func (s *resourceSink) Init(info logr.RuntimeInfo) {
 
 // WithName implements logr.LogSink.
 func (s *resourceSink) WithName(name string) logr.LogSink {
+	resourceName := name
 	if s.resourceName != "" {
-		name = s.resourceName + "." + name
+		resourceName = s.resourceName + "." + name
 	}
 
 	newSink := &resourceSink{
-		resourceName:              name,
+		resourceName:              resourceName,
 		resourceId:                s.resourceId,
 		values:                    s.values,
 		atomicLevel:               zap.NewAtomicLevel(),
@@ -255,7 +317,7 @@ func (s *resourceSink) writeResourceError(resourceId string, err error, msg stri
 	sink := s.getSink(resourceId)
 
 	if sink != nil {
-		sink.logger.WithValues(s.values...).GetSink().Error(err, msg, keysAndValues...)
+		sink.logger.WithName(s.resourceName).WithValues(s.values...).GetSink().Error(err, msg, keysAndValues...)
 	}
 }
 
@@ -263,7 +325,7 @@ func (s *resourceSink) writeResourceInfo(resourceId string, level int, msg strin
 	sink := s.getSink(resourceId)
 
 	if sink != nil {
-		sink.logger.WithValues(s.values...).GetSink().Info(level, msg, keysAndValues...)
+		sink.logger.WithName(s.resourceName).WithValues(s.values...).GetSink().Info(level, msg, keysAndValues...)
 	}
 }
 
@@ -333,7 +395,7 @@ func (s *resourceSink) newResourceFileSink(resourceId string) (*resourceFileSink
 
 	return &resourceFileSink{
 		file:   file,
-		logger: zapr.NewLogger(zapLogger).WithName(s.resourceName),
+		logger: zapr.NewLogger(zapLogger),
 		flush:  func() { _ = zapLogger.Sync() },
 	}, nil
 }
