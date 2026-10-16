@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -327,7 +328,20 @@ func (pc *PhysicalContainer) GetResourceId() string {
 }
 
 func (*PhysicalContainer) GenericSubResources() []apiserver_resource.GenericSubResource {
-	return []apiserver_resource.GenericSubResource{&ContainerLogResource{}}
+	return []apiserver_resource.GenericSubResource{&PhysicalContainerLogResource{}}
+}
+
+// PhysicalContainerLogResource registers the physical container log subresource.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type PhysicalContainerLogResource struct{}
+
+func (*PhysicalContainerLogResource) Name() string { return LogSubresourceName }
+
+func (*PhysicalContainerLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
 }
 
 func (pc *PhysicalContainer) GetObjectMeta() *metav1.ObjectMeta {
@@ -463,6 +477,8 @@ func init() {
 
 // Ensure types support interfaces expected by our API server.
 var _ apiserver_resource.Object = (*PhysicalContainer)(nil)
+var _ apiserver_resource.ObjectWithGenericSubResource = (*PhysicalContainer)(nil)
+var _ apiserver_resource.GenericSubResource = (*PhysicalContainerLogResource)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalContainer)(nil)
 var _ apiserver_resource.StatusSubResource = (*PhysicalContainerStatus)(nil)
 var _ apiserver_resource.ObjectList = (*PhysicalContainerList)(nil)

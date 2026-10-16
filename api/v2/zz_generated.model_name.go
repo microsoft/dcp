@@ -26,11 +26,6 @@ func (in ContainerBuildSecret) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
-func (in ContainerLogResource) OpenAPIModelName() string {
-	return "github.com/microsoft/dcp/api/v2.ContainerLogResource"
-}
-
-// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ContainerNetworkConnectionConfig) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.ContainerNetworkConnectionConfig"
 }
@@ -63,6 +58,11 @@ func (in LogicalContainerConfig) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in LogicalContainerList) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.LogicalContainerList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalContainerLogResource) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalContainerLogResource"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
@@ -158,6 +158,11 @@ func (in PhysicalContainerImageStatus) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in PhysicalContainerList) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.PhysicalContainerList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerLogResource) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerLogResource"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.

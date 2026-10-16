@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -306,7 +307,20 @@ func (c *LogicalContainer) GetResourceId() string {
 }
 
 func (*LogicalContainer) GenericSubResources() []apiserver_resource.GenericSubResource {
-	return []apiserver_resource.GenericSubResource{&ContainerLogResource{}}
+	return []apiserver_resource.GenericSubResource{&LogicalContainerLogResource{}}
+}
+
+// LogicalContainerLogResource registers the logical container log subresource.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type LogicalContainerLogResource struct{}
+
+func (*LogicalContainerLogResource) Name() string { return LogSubresourceName }
+
+func (*LogicalContainerLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
 }
 
 // GetLeaseKey identifies the runtime container shared by logical resources and V1 containers.
@@ -456,6 +470,8 @@ func init() {
 }
 
 var _ apiserver_resource.Object = (*LogicalContainer)(nil)
+var _ apiserver_resource.ObjectWithGenericSubResource = (*LogicalContainer)(nil)
+var _ apiserver_resource.GenericSubResource = (*LogicalContainerLogResource)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*LogicalContainer)(nil)
 var _ apiserver_resource.StatusSubResource = (*LogicalContainerStatus)(nil)
 var _ apiserver_resource.ObjectList = (*LogicalContainerList)(nil)

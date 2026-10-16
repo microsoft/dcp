@@ -7345,7 +7345,7 @@ func schema_microsoft_dcp_api_v2_ResourceLogOptions(ref common.ReferenceCallback
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ResourceLogOptions selects a container output or system stream and its formatting.",
+				Description: "ResourceLogOptions selects a resource output or system stream and its formatting.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -7429,7 +7429,7 @@ func schema_microsoft_dcp_api_v2_ResourceLogResponse(ref common.ReferenceCallbac
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ResourceLogResponse carries a raw text response for a container log subresource.",
+				Description: "ResourceLogResponse carries a raw text response for a resource log subresource.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
