@@ -137,6 +137,8 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.PhysicalProcessList{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_PhysicalProcessList(ref),
 		v2.PhysicalProcessSpec{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_PhysicalProcessSpec(ref),
 		v2.PhysicalProcessStatus{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref),
+		v2.ResourceLogOptions{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_ResourceLogOptions(ref),
+		v2.ResourceLogResponse{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ResourceLogResponse(ref),
 		v2.VolumeMount{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v2_VolumeMount(ref),
 		commonapi.EnvVar{}.OpenAPIModelName():                           schema_microsoft_dcp_pkg_commonapi_EnvVar(ref),
 		commonapi.Label{}.OpenAPIModelName():                            schema_microsoft_dcp_pkg_commonapi_Label(ref),
@@ -3590,7 +3592,8 @@ func schema_microsoft_dcp_api_v1_LogOptions(ref common.ReferenceCallback) common
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
+				Description: "LogOptions selects a resource log stream and its output formatting.",
+				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
 						SchemaProps: spec.SchemaProps{
@@ -3614,7 +3617,7 @@ func schema_microsoft_dcp_api_v1_LogOptions(ref common.ReferenceCallback) common
 					},
 					"follow": {
 						SchemaProps: spec.SchemaProps{
-							Description: "If true, follow the logs for the Executable or Container.",
+							Description: "If true, follow the resource's logs.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -5337,6 +5340,13 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 					"physicalContainerRef": {
 						SchemaProps: spec.SchemaProps{
 							Description: "PhysicalContainerRef identifies the backing PhysicalContainer using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"physicalContainerUID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PhysicalContainerUID identifies the backing resource's runtime log capture.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -7328,6 +7338,125 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref common.ReferenceCallb
 		},
 		Dependencies: []string{
 			metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ResourceLogOptions(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceLogOptions selects a container output or system stream and its formatting.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"follow": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If true, follow the resource's logs.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The source of the logs to display. Note: the K8s API server does not support non-standard types in query parameters, so we can't use LogStreamSource here.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"timestamps": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If true, include timestamps (RFC3339) in the logs.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"limit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Limits the number of log lines to return. Cannot be used if Follow option is true.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"tail": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Limits the response to at most N existing, NEWEST log lines. If Follow is set, new log lines that appear after the log stream was created do not count against the limit, and will be streamed until the client closes the stream.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"skip": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Skips the first N log lines in the result set. Not compatible with Tail option.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"line_numbers": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If true, include line numbers in the logs.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ResourceLogResponse(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ResourceLogResponse carries a raw text response for a container log subresource.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 

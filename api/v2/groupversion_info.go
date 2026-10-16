@@ -43,5 +43,8 @@ var (
 	}
 
 	// Types that must be recognizable by the API server, but are not persisted.
-	AdditionalTypes = []apiserver_resource.Object{}
+	AdditionalTypes = []apiserver_resource.Object{
+		&ResourceLogOptions{},
+		&ResourceLogResponse{},
+	}
 )

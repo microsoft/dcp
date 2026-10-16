@@ -6,20 +6,17 @@
 package integration_test
 
 import (
+	"bufio"
 	"context"
 	"errors"
-	"io"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -27,8 +24,6 @@ import (
 	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
-	usvc_io "github.com/microsoft/dcp/pkg/io"
-	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -315,14 +310,13 @@ func TestV2LogicalContainerControllerDelegatesSessionLifecycle(t *testing.T) {
 	waitContainerMissing(t, ctx, running.Status.ContainerID)
 }
 
-// Verifies that physical container operation failures are captured in both the physical system
-// stream and its logical owner's stream through the shared controller environment.
+// Verifies that a system stream opened while a logical container is Pending receives later
+// physical failures, which are also available from the physical resource's own log endpoint.
 func TestV2LogicalContainerControllerForwardsPhysicalSystemDiagnostics(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	namespace := createActiveV2Namespace(t, ctx, "v2-logical-system-diagnostics")
-	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "image", namespace.Name+"-image")
 	runtimeName := namespace.Name + "-runtime"
 	containerOrchestrator.FailNextCreateContainer(runtimeName,
 		errors.Join(containers.ErrCouldNotAllocate, errors.New("system-log-routing-test")))
@@ -330,45 +324,33 @@ func TestV2LogicalContainerControllerForwardsPhysicalSystemDiagnostics(t *testin
 		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
 		Spec: apiv2.LogicalContainerSpec{
 			ContainerName: runtimeName,
-			Container:     &apiv2.LogicalContainerConfig{ImageRef: image.Name},
+			Container:     &apiv2.LogicalContainerConfig{ImageRef: "image"},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
+	waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhasePending && current.Status.PhysicalContainerRef != "", nil
+	})
+	logicalStream, streamErr := openV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Source: "system", Follow: true})
+	require.NoError(t, streamErr)
+	defer func() { require.NoError(t, logicalStream.Close()) }()
+	createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "image", namespace.Name+"-image")
 	failed := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerPhaseFailed, nil
 	})
 	physical := &apiv2.PhysicalContainer{}
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: failed.Status.PhysicalContainerRef}, physical))
-	require.NoError(t, client.Delete(ctx, container))
-	ctrl_testutil.WaitObjectDeleted(t, ctx, client, container)
-	readLog := func(resourceID string) (string, error) {
-		logPath := filepath.Join(testResourceLogFolder, filepath.Base(logger.GetResourceLogPath(resourceID)))
-		file, openErr := usvc_io.OpenFileReadOnly(logPath)
-		if openErr != nil {
-			return "", openErr
-		}
-		contents, readErr := io.ReadAll(file)
-		closeErr := file.Close()
-		return string(contents), errors.Join(readErr, closeErr)
-	}
-	var logicalContents, physicalContents string
-	logsErr := wait.PollUntilContextCancel(ctx, 100*time.Millisecond, true, func(context.Context) (bool, error) {
-		logicalOutput, logicalErr := readLog(container.GetResourceId())
-		if logicalErr != nil {
-			return false, logicalErr
-		}
-		physicalOutput, physicalErr := readLog(physical.GetResourceId())
-		if physicalErr != nil {
-			return false, physicalErr
-		}
-		logicalContents, physicalContents = logicalOutput, physicalOutput
-		return strings.Contains(logicalContents, "system-log-routing-test") &&
-			strings.Contains(physicalContents, "system-log-routing-test"), nil
-	})
-	require.NoError(t, logsErr)
+	logicalContents, logicalErr := bufio.NewReader(logicalStream).ReadString('\n')
+	require.NoError(t, logicalErr)
+	physicalContents, physicalErr := readV2ContainerLog(ctx, physical, apiv2.ResourceLogOptions{Source: "system"})
+	require.NoError(t, physicalErr)
+	require.Contains(t, logicalContents, "system-log-routing-test")
+	require.Contains(t, physicalContents, "system-log-routing-test")
 	require.Contains(t, logicalContents, "PhysicalContainerReconciler")
 	require.Contains(t, physicalContents, "PhysicalContainerReconciler")
 	require.NotContains(t, physicalContents, "LogicalContainerReconciler")
+	require.NoError(t, client.Delete(ctx, container))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, container)
 }
 
 // Verifies that the LogicalContainer controller selects adoption or physical replacement according

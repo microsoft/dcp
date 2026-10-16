@@ -178,10 +178,12 @@ func TestLogicalContainerSpecLifecycleKeyIsStable(t *testing.T) {
 	require.Equal(t, "83b72ab2652222f0cb68cb82db460b7d", key, "V2 lifecycle-key encoding changed; existing persistent containers would be replaced")
 }
 
-// Verifies that V1 and V2 logical container networks can share standard API-server storage registration.
-func TestV1AndV2ContainerNetworkStorageRegistration(t *testing.T) {
+// Verifies that V1 and V2 persistent kinds and log subresource types can share standard API-server registration.
+func TestV1AndV2StorageRegistration(t *testing.T) {
 	storageTypes := append([]apiserver_resource.Object{}, PersistentTypes...)
+	storageTypes = append(storageTypes, AddtionalTypes...)
 	storageTypes = append(storageTypes, apiv2.PersistentTypes...)
+	storageTypes = append(storageTypes, apiv2.AdditionalTypes...)
 	require.NoError(t, apiserver_resource.AddToScheme(storageTypes...)(runtime.NewScheme()))
 }
 

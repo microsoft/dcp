@@ -326,6 +326,10 @@ func (pc *PhysicalContainer) GetResourceId() string {
 	return fmt.Sprintf("physicalcontainer-%s", pc.UID)
 }
 
+func (*PhysicalContainer) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&ContainerLogResource{}}
+}
+
 func (pc *PhysicalContainer) GetObjectMeta() *metav1.ObjectMeta {
 	return &pc.ObjectMeta
 }
