@@ -81,6 +81,7 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 		physicalContainerRef = "logical-" + string(container.UID)
 	}
 	change := setValue(&container.Status.PhysicalContainerRef, physicalContainerRef)
+	change |= setValue(&container.Status.PhysicalContainerUID, data.physicalContainerUID)
 	// After handoff, inline image references come from the backing physical creation spec.
 	if container.Spec.Container == nil || container.Spec.Container.Image == nil || data.physicalContainerUID == "" {
 		imageRef := ""

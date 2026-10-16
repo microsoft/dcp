@@ -60,7 +60,6 @@ var (
 	containerOrchestrator            *ctrl_testutil.TestContainerOrchestrator
 	testStateStore                   *statestore.Store
 	testResourceLeaseOwner           process.ProcessHandle
-	testResourceLogFolder            string
 )
 
 const pollImmediately = true // Don't wait before polling for the first time
@@ -133,7 +132,6 @@ func TestMain(m *testing.M) {
 	ideRunner = teInfo.TestIdeRunner
 	testStateStore = teInfo.StateStore
 	testResourceLeaseOwner = teInfo.ResourceLeaseOwner
-	testResourceLogFolder = teInfo.SessionFolder
 
 	networking.EnableStrictMruPortHandling(log)
 

@@ -237,6 +237,9 @@ type LogicalContainerStatus struct {
 	// Cross-namespace references are not supported.
 	PhysicalContainerRef string `json:"physicalContainerRef,omitempty"`
 
+	// PhysicalContainerUID identifies the backing resource's runtime log capture.
+	PhysicalContainerUID types.UID `json:"physicalContainerUID,omitempty"`
+
 	// ImageRef identifies the supplied or generated PhysicalContainerImage using <name> or <namespace>/<name>.
 	// Cross-namespace references are not supported.
 	ImageRef string `json:"imageRef,omitempty"`
@@ -300,6 +303,10 @@ func (c *LogicalContainer) GetGroupVersionResource() schema.GroupVersionResource
 // GetResourceId identifies the resource-specific system log stream.
 func (c *LogicalContainer) GetResourceId() string {
 	return fmt.Sprintf("logicalcontainer-%s", c.UID)
+}
+
+func (*LogicalContainer) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&ContainerLogResource{}}
 }
 
 // GetLeaseKey identifies the runtime container shared by logical resources and V1 containers.
