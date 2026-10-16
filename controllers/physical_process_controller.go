@@ -109,10 +109,6 @@ func (r *PhysicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	getSucceededCounter.Add(ctx, 1)
 
-	if !physicalProcess.DeletionTimestamp.IsZero() && !hasFinalizer(&physicalProcess, physicalProcessFinalizer) {
-		return ctrl.Result{}, nil
-	}
-
 	r.processData.RunDeferredOps(req.NamespacedName, &physicalProcess)
 	stateKey, data := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
 	if data == nil {
@@ -865,13 +861,6 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(
 	if data == nil || data.handle.Pid <= 0 || retain ||
 		data.progress == physicalResourceProgressExited ||
 		data.progress == physicalResourceProgressMissing {
-		if data != nil && len(physicalProcess.Finalizers) > 1 {
-			// Other owners may need the settled identity before releasing their finalizer.
-			projectionChange, _, _ := data.applyTo(physicalProcess)
-			if projectionChange&statusChanged != 0 {
-				return projectionChange | additionalReconciliationNeeded, StandardDelay
-			}
-		}
 		r.processData.DeleteByNamespacedName(physicalProcess.NamespacedName())
 		return deleteFinalizer(physicalProcess, physicalProcessFinalizer, log), StandardDelay
 	}

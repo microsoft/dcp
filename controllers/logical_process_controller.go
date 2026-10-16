@@ -33,10 +33,7 @@ import (
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
-var (
-	logicalProcessFinalizer        = fmt.Sprintf("%s/logicalprocess-reconciler", apiv2.GroupVersion.Group)
-	logicalProcessStartupFinalizer = fmt.Sprintf("%s/logicalprocess-startup", apiv2.GroupVersion.Group)
-)
+var logicalProcessFinalizer = fmt.Sprintf("%s/logicalprocess-reconciler", apiv2.GroupVersion.Group)
 
 type logicalProcessDataHandlerFunc = stateInitializerFunc[
 	apiv2.LogicalProcess, *apiv2.LogicalProcess,
@@ -263,9 +260,6 @@ func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
 		ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(resource.UID) + suffix, Namespace: resource.Namespace},
 		Spec:       spec,
 	}
-	if suffix == "" && resource.Spec.EffectiveMode() == apiv2.LogicalProcessModePersistent {
-		physical.Finalizers = []string{logicalProcessStartupFinalizer}
-	}
 	ownerErr := ctrl.SetControllerReference(resource, physical, r.Scheme())
 	if ownerErr != nil {
 		return nil, fmt.Errorf("could not set physical process owner: %w", ownerErr)
@@ -303,6 +297,23 @@ func logicalPhysicalProcessObserved(physical *apiv2.PhysicalProcess) bool {
 	return ready != nil && ready.ObservedGeneration == physical.Generation
 }
 
+func logicalPhysicalProcessStartupSettled(physical *apiv2.PhysicalProcess) bool {
+	if !physical.DeletionTimestamp.IsZero() || !logicalPhysicalProcessObserved(physical) {
+		return false
+	}
+	ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
+	switch physical.Status.Phase {
+	case apiv2.PhysicalProcessPhaseRunning:
+		return ready.Status == metav1.ConditionTrue
+	case apiv2.PhysicalProcessPhaseExited, apiv2.PhysicalProcessPhaseFailed:
+		return true
+	default:
+		// A terminating namespace cannot become active and allow a pending launch.
+		return physical.Status.Phase == apiv2.PhysicalProcessPhasePending &&
+			ready.Reason == string(apiv2.PhysicalResourceReasonNamespaceTerminating)
+	}
+}
+
 func handleLogicalProcessRuntime(
 	ctx context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
@@ -327,9 +338,6 @@ func handleLogicalProcessRuntime(
 	data.progress, data.reason, data.message = physicalResourceProgressNotReady, "", ""
 	if !physical.DeletionTimestamp.IsZero() {
 		data.progress, data.message = physicalResourceProgressUnknown, "The backing PhysicalProcess is being deleted."
-		if data.lease != nil {
-			return change | reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePersistence, reconciler.persistLogicalProcess, log)
-		}
 		return change
 	}
 	if !logicalPhysicalProcessObserved(physical) {
@@ -350,8 +358,7 @@ func handleLogicalProcessRuntime(
 	case apiv2.PhysicalProcessPhaseUnknown:
 		data.progress = physicalResourceProgressUnknown
 	}
-	if data.lease != nil && (data.progress == physicalResourceProgressRunning ||
-		data.progress == physicalResourceProgressExited || data.progress == physicalResourceProgressFailed) {
+	if data.lease != nil && logicalPhysicalProcessStartupSettled(physical) {
 		return change | reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePersistence, reconciler.persistLogicalProcess, log)
 	}
 	return change
@@ -404,32 +411,17 @@ func handleLogicalProcessPersistence(
 func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, log logr.Logger,
 ) objectChange {
-	if data.state == logicalProcessStatePersistence && data.lease != nil {
-		if time.Now().Before(data.retryAfter) {
-			return additionalReconciliationNeeded
+	if data.lease != nil {
+		if data.state == logicalProcessStatePersistence {
+			return handleLogicalProcessPersistence(ctx, r, resource, data.state, data, log)
+		}
+		if data.physicalUID != "" {
+			data.state = logicalProcessStateRuntime
+			return handleLogicalProcessRuntime(ctx, r, resource, data.state, data, log)
 		}
 		return r.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePersistence, r.persistLogicalProcess, log)
 	}
 	data.state, data.progress, data.reason, data.message = logicalProcessStateDelete, physicalResourceProgressNotReady, "", ""
-	if data.lease != nil {
-		physical, getErr := r.getLogicalPhysicalProcess(ctx, resource, data.physicalUID, "")
-		if getErr != nil && !apierrors.IsNotFound(getErr) {
-			log.Error(getErr, "Failed to get retained physical process before deletion")
-			data.progress, data.message = physicalResourceProgressRetryPending, getErr.Error()
-			return noChange
-		}
-		if getErr == nil && physical.DeletionTimestamp.IsZero() {
-			uid := physical.UID
-			deleteErr := r.Delete(ctx, physical, ctrl_client.Preconditions{UID: &uid})
-			if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-				log.Error(deleteErr, "Failed to retire retained physical process")
-				data.progress, data.message = physicalResourceProgressRetryPending, deleteErr.Error()
-				return noChange
-			}
-		}
-		// The startup finalizer keeps the settled identity available until ownership is recorded.
-		return r.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePersistence, r.persistLogicalProcess, log)
-	}
 	for _, backing := range []struct {
 		suffix string
 		uid    types.UID
@@ -573,12 +565,7 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 			return getErr
 		}
 		if getErr == nil {
-			deletionSettled := !physical.DeletionTimestamp.IsZero() && !hasFinalizer(physical, physicalProcessFinalizer)
-			if (!physical.DeletionTimestamp.IsZero() && !deletionSettled) ||
-				(!deletionSettled && (!logicalPhysicalProcessObserved(physical) ||
-					(physical.Status.Phase != apiv2.PhysicalProcessPhaseRunning &&
-						physical.Status.Phase != apiv2.PhysicalProcessPhaseExited &&
-						physical.Status.Phase != apiv2.PhysicalProcessPhaseFailed))) {
+			if !logicalPhysicalProcessStartupSettled(physical) {
 				return errors.New("waiting for retained physical process startup to settle")
 			}
 			if physical.Status.PID != nil && !physical.Status.IdentityTimestamp.IsZero() {
@@ -605,18 +592,10 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 				if storeErr != nil {
 					return storeErr
 				}
-			} else {
+			} else if physical.Spec.Process != nil {
 				deleteErr := r.config.StateStore.DeletePersistentProcess(ctx, resource.GetLeaseKey())
 				if deleteErr != nil {
 					return deleteErr
-				}
-			}
-			if hasFinalizer(physical, logicalProcessStartupFinalizer) {
-				patch := ctrl_client.MergeFromWithOptions(physical.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
-				_ = deleteFinalizer(physical, logicalProcessStartupFinalizer, log)
-				patchErr := r.Patch(ctx, physical, patch)
-				if patchErr != nil {
-					return patchErr
 				}
 			}
 		} else if data.replacementUID != "" {

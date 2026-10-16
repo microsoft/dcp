@@ -16,6 +16,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/statestore"
@@ -235,6 +236,14 @@ func TestV2LogicalProcessControllerSettlesOwnershipBeforeDeletion(t *testing.T) 
 	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		return !current.DeletionTimestamp.IsZero(), nil
 	})
+	failuresBeforeRetry := reader.failures.Load()
+	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return reader.failures.Load() > failuresBeforeRetry, nil
+	}))
+	physical := &apiv2.PhysicalProcess{}
+	require.NoError(t, serverInfo.Client.Get(ctx, types.NamespacedName{Namespace: namespaceName, Name: failed.Status.PhysicalProcessRef}, physical))
+	require.True(t, physical.DeletionTimestamp.IsZero(), "physical deletion must wait for ownership recording")
+	require.Len(t, physical.Finalizers, 1, "only the physical controller owns a finalizer on its backing resource")
 	reader.fail.Store(false)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, resource)
 	record, storedErr := environmentInfo.StateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
@@ -269,11 +278,11 @@ func TestV2LogicalProcessControllerNamespaceCleanup(t *testing.T) {
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(handles[apiv2.LogicalProcessModePersistent]))
 }
 
-// Verifies that LogicalProcess records the identity of an in-flight retained launch before
-// completing deletion of either the logical resource or its physical backing.
+// Verifies that LogicalProcess settles an in-flight retained launch and records its identity
+// before deleting physical backing during logical-resource or namespace deletion.
 func TestV2LogicalProcessControllerDeletesDuringRetainedLaunch(t *testing.T) {
 	t.Parallel()
-	for _, target := range []string{"logical", "physical"} {
+	for _, target := range []string{"logical", "namespace"} {
 		t.Run(target, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
@@ -310,19 +319,22 @@ func TestV2LogicalProcessControllerDeletesDuringRetainedLaunch(t *testing.T) {
 			if target == "logical" {
 				require.NoError(t, client.Delete(ctx, resource))
 			} else {
-				require.NoError(t, client.Delete(ctx, physical))
+				require.NoError(t, client.Delete(ctx, namespace))
 			}
-			waitObjectAssumesState(t, ctx, physical.NamespacedName(),
-				func(current *apiv2.PhysicalProcess) (bool, error) { return !current.DeletionTimestamp.IsZero(), nil })
+			waitObjectAssumesState(t, ctx, resource.NamespacedName(),
+				func(current *apiv2.LogicalProcess) (bool, error) { return !current.DeletionTimestamp.IsZero(), nil })
+			require.NoError(t, client.Get(ctx, physical.NamespacedName(), physical))
+			require.True(t, physical.DeletionTimestamp.IsZero(), "physical deletion must wait for startup settlement")
+			require.Len(t, physical.Finalizers, 1)
 			unblock()
 			ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
 			record, recordErr := testStateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
 			require.NoError(t, recordErr)
 			require.NoError(t, testProcessExecutor.CheckProcessRunning(record.ProcessHandle()))
-			if target == "physical" {
-				require.NoError(t, client.Delete(ctx, resource))
-			}
 			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+			if target == "namespace" {
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
+			}
 		})
 	}
 }
