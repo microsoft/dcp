@@ -5092,6 +5092,13 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkSpec(ref common.Referenc
 							Format:      "",
 						},
 					},
+					"lifecycleKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LifecycleKey identifies the desired configuration for persistent network reuse. If omitted, a key is calculated from the network configuration.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"network": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Network describes the desired network. Required for session and persistent modes, and forbidden for existing mode.",
@@ -5122,7 +5129,14 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref common.Refere
 					},
 					"physicalNetworkRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
+							Description: "PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>. Published after physical resource creation; logical consumers use this reference when the network is Ready. Cross-namespace references are not supported.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lifecycleKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LifecycleKey is the supplied, calculated, or adopted runtime lifecycle key.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

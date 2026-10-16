@@ -7,8 +7,13 @@ package v2
 
 import (
 	"context"
+	"encoding/gob"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"reflect"
+	"slices"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -66,6 +71,10 @@ type LogicalContainerNetworkSpec struct {
 	// +kubebuilder:default:=session
 	Mode LogicalContainerNetworkMode `json:"mode,omitempty"`
 
+	// LifecycleKey identifies the desired configuration for persistent network reuse.
+	// If omitted, a key is calculated from the network configuration.
+	LifecycleKey string `json:"lifecycleKey,omitempty"`
+
 	// Network describes the desired network. Required for session and persistent modes,
 	// and forbidden for existing mode.
 	Network *LogicalContainerNetworkConfig `json:"network,omitempty"`
@@ -77,6 +86,22 @@ func (spec LogicalContainerNetworkSpec) EffectiveMode() LogicalContainerNetworkM
 		return LogicalContainerNetworkModeSession
 	}
 	return spec.Mode
+}
+
+// GetLifecycleKey returns the explicit key or computes one from the desired network configuration.
+// The second result is true when the key is computed.
+func (spec *LogicalContainerNetworkSpec) GetLifecycleKey() (string, bool, error) {
+	if spec.LifecycleKey != "" {
+		return spec.LifecycleKey, false, nil
+	}
+	if spec.Network == nil {
+		return "", false, errors.New("network configuration is required to compute a lifecycle key")
+	}
+	desired := spec.Network.DeepCopy()
+	slices.SortStableFunc(desired.Labels, func(left, right commonapi.Label) int { return strings.Compare(left.Key, right.Key) })
+	fnvHash := fnv.New128()
+	hashErr := gob.NewEncoder(fnvHash).Encode(desired)
+	return fmt.Sprintf("%x", fnvHash.Sum(nil)), true, hashErr
 }
 
 // LogicalContainerNetworkConfig describes the desired configuration used to create a network.
@@ -101,8 +126,12 @@ type LogicalContainerNetworkStatus struct {
 	Phase LogicalContainerNetworkPhase `json:"phase,omitempty"`
 
 	// PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>.
+	// Published after physical resource creation; logical consumers use this reference when the network is Ready.
 	// Cross-namespace references are not supported.
 	PhysicalNetworkRef string `json:"physicalNetworkRef,omitempty"`
+
+	// LifecycleKey is the supplied, calculated, or adopted runtime lifecycle key.
+	LifecycleKey string `json:"lifecycleKey,omitempty"`
 
 	// NetworkID is the observed runtime network ID.
 	NetworkID string `json:"networkID,omitempty"`
@@ -157,6 +186,11 @@ type LogicalContainerNetwork struct {
 
 func (network *LogicalContainerNetwork) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: GroupVersion.Group, Version: GroupVersion.Version, Resource: "logicalcontainernetworks"}
+}
+
+// GetLeaseKey identifies the runtime network shared by logical resources and V1 networks.
+func (network *LogicalContainerNetwork) GetLeaseKey() string {
+	return "containernetworks/" + strings.TrimSpace(network.Spec.NetworkName)
 }
 
 func (network *LogicalContainerNetwork) GetObjectMeta() *metav1.ObjectMeta {

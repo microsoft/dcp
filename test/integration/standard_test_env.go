@@ -16,6 +16,7 @@ import (
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
@@ -52,6 +53,7 @@ type TestEnvironmentInfo struct {
 type TestEnvironmentOptions struct {
 	WorkloadID                    commonapi.WorkloadID
 	DecorateContainerOrchestrator func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
+	DecorateAPIReader             func(ctrl_client.Reader) ctrl_client.Reader
 }
 
 func (tei *TestEnvironmentInfo) addAfterShutdown(callback func()) {
@@ -252,11 +254,13 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 
-	if inclCtrl&NetworkController != 0 {
+	harvester := controllers.NewResourceHarvester()
+	if inclCtrl&(NetworkController|LogicalContainerNetworkController) != 0 {
 		// Run the harvester in a separate goroutine to ensure that it does not block controller startup
-		harvester := controllers.NewResourceHarvester()
 		go harvester.MockHarvest(ctx, 2*time.Second, log.WithName("ResourceCleanup"))
+	}
 
+	if inclCtrl&NetworkController != 0 {
 		networkR := controllers.NewNetworkReconcilerWithConfig(
 			ctx,
 			mgr.GetClient(),
@@ -297,11 +301,18 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 
+	logicalAPIReader := mgr.GetAPIReader()
+	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController) != 0 && options.DecorateAPIReader != nil {
+		logicalAPIReader = options.DecorateAPIReader(logicalAPIReader)
+		if logicalAPIReader == nil {
+			return nil, nil, fmt.Errorf("api reader decorator returned nil")
+		}
+	}
 	if inclCtrl&LogicalContainerController != 0 {
 		logicalContainerR := controllers.NewLogicalContainerReconciler(
 			ctx,
 			mgr.GetClient(),
-			mgr.GetAPIReader(),
+			logicalAPIReader,
 			log.WithName("LogicalContainerReconciler"),
 			serverInfo.ContainerOrchestrator,
 			controllers.LogicalContainerReconcilerConfig{
@@ -310,6 +321,19 @@ func StartTestEnvironmentWithOptions(
 		)
 		if logicalContainerSetupErr := logicalContainerR.SetupWithManager(mgr, instanceTag+"-LogicalContainerReconciler"); logicalContainerSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize LogicalContainer reconciler: %w", logicalContainerSetupErr)
+		}
+	}
+
+	if inclCtrl&LogicalContainerNetworkController != 0 {
+		logicalNetworkR := controllers.NewLogicalContainerNetworkReconciler(
+			ctx, mgr.GetClient(), logicalAPIReader, log.WithName("LogicalContainerNetworkReconciler"),
+			serverInfo.ContainerOrchestrator, harvester,
+			controllers.LogicalContainerNetworkReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: options.WorkloadID,
+			},
+		)
+		if logicalNetworkSetupErr := logicalNetworkR.SetupWithManager(mgr, instanceTag+"-LogicalContainerNetworkReconciler"); logicalNetworkSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalContainerNetwork reconciler: %w", logicalNetworkSetupErr)
 		}
 	}
 
