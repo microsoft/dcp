@@ -321,6 +321,11 @@ func (pc *PhysicalContainer) GetGroupVersionResource() schema.GroupVersionResour
 	}
 }
 
+// GetResourceId identifies the resource-specific system log stream.
+func (pc *PhysicalContainer) GetResourceId() string {
+	return fmt.Sprintf("physicalcontainer-%s", pc.UID)
+}
+
 func (pc *PhysicalContainer) GetObjectMeta() *metav1.ObjectMeta {
 	return &pc.ObjectMeta
 }

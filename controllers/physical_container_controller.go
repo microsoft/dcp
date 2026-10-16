@@ -33,6 +33,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -250,6 +251,11 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
 			log.V(1).Info("PhysicalContainer not found, nothing to do...")
+			_, missingData := r.containerData.BorrowByNamespacedName(req.NamespacedName)
+			if missingData != nil {
+				missing := &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{UID: missingData.resourceUID}}
+				defer logger.ReleaseResourceLog(missing.GetResourceId())
+			}
 			r.discardPhysicalContainerData(req.NamespacedName, "", nil, log)
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
@@ -260,6 +266,17 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, getErr
 	}
 	getSucceededCounter.Add(ctx, 1)
+	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, container.GetResourceId())
+	if owner := metav1.GetControllerOf(&container); owner != nil &&
+		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainer" && owner.UID != "" {
+		logicalOwner := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}
+		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, logicalOwner.GetResourceId())
+		if forwardErr != nil {
+			log.Error(forwardErr, "Failed to attach logical container system log stream")
+		} else {
+			log = forwardedLog
+		}
+	}
 
 	r.containerData.RunDeferredOps(req.NamespacedName, &container)
 	stateKey, data := r.containerData.BorrowByNamespacedName(container.NamespacedName())
@@ -296,6 +313,9 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
+	if !hasFinalizer(&container, physicalContainerFinalizer) {
+		defer logger.ReleaseResourceLog(container.GetResourceId())
+	}
 	return r.SaveChangesWithDelay(ctx, &container, patch, change, reconciliationDelay, nil, log)
 }
 
