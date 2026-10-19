@@ -27,6 +27,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -188,6 +189,11 @@ func (r *PhysicalContainerNetworkReconciler) Reconcile(ctx context.Context, req 
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
 			log.V(1).Info("PhysicalContainerNetwork not found, nothing to do...")
+			missingUID, missingData := r.networkData.BorrowByNamespacedName(req.NamespacedName)
+			if missingData != nil {
+				missing := &apiv2.PhysicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{UID: types.UID(missingUID)}}
+				defer logger.ReleaseResourceLog(missing.GetResourceId())
+			}
 			// The finalizer normally guarantees the deletion is observed, but drop any lingering
 			// state in case the object disappeared without it (for example a forced deletion).
 			r.networkData.DeleteByNamespacedName(req.NamespacedName)
@@ -200,6 +206,17 @@ func (r *PhysicalContainerNetworkReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, getErr
 	}
 	getSucceededCounter.Add(ctx, 1)
+	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, network.GetResourceId())
+	if owner := metav1.GetControllerOf(&network); owner != nil &&
+		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainerNetwork" && owner.UID != "" {
+		logicalOwner := &apiv2.LogicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}
+		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, logicalOwner.GetResourceId())
+		if forwardErr != nil {
+			log.Error(forwardErr, "Failed to attach logical network system log stream")
+		} else {
+			log = forwardedLog
+		}
+	}
 
 	r.networkData.RunDeferredOps(req.NamespacedName, &network)
 	stateKey, data := r.networkData.BorrowByNamespacedName(network.NamespacedName())
@@ -235,6 +252,9 @@ func (r *PhysicalContainerNetworkReconciler) Reconcile(ctx context.Context, req 
 		}
 	}
 
+	if !hasFinalizer(&network, physicalContainerNetworkFinalizer) {
+		defer logger.ReleaseResourceLog(network.GetResourceId())
+	}
 	return r.SaveChangesWithDelay(ctx, &network, patch, change, reconciliationDelay, nil, log)
 }
 

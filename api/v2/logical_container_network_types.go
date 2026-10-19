@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -188,6 +189,28 @@ func (network *LogicalContainerNetwork) GetGroupVersionResource() schema.GroupVe
 	return schema.GroupVersionResource{Group: GroupVersion.Group, Version: GroupVersion.Version, Resource: "logicalcontainernetworks"}
 }
 
+// GetResourceId identifies the network-specific system log stream.
+func (network *LogicalContainerNetwork) GetResourceId() string {
+	return fmt.Sprintf("logicalcontainernetwork-%s", network.UID)
+}
+
+func (*LogicalContainerNetwork) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&LogicalContainerNetworkLogResource{}}
+}
+
+// LogicalContainerNetworkLogResource registers system diagnostics for a logical network and its physical backing.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type LogicalContainerNetworkLogResource struct{}
+
+func (*LogicalContainerNetworkLogResource) Name() string { return LogSubresourceName }
+
+func (*LogicalContainerNetworkLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
+}
+
 // GetLeaseKey identifies the runtime network shared by logical resources and V1 networks.
 func (network *LogicalContainerNetwork) GetLeaseKey() string {
 	return "containernetworks/" + strings.TrimSpace(network.Spec.NetworkName)
@@ -301,6 +324,8 @@ func init() {
 
 var _ apiserver_resource.Object = (*LogicalContainerNetwork)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*LogicalContainerNetwork)(nil)
+var _ apiserver_resource.ObjectWithGenericSubResource = (*LogicalContainerNetwork)(nil)
+var _ apiserver_resource.GenericSubResource = (*LogicalContainerNetworkLogResource)(nil)
 var _ apiserver_resource.StatusSubResource = (*LogicalContainerNetworkStatus)(nil)
 var _ apiserver_resource.ObjectList = (*LogicalContainerNetworkList)(nil)
 var _ commonapi.ListWithObjectItems[LogicalContainerNetwork, *LogicalContainerNetwork] = (*LogicalContainerNetworkList)(nil)

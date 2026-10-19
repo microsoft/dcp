@@ -210,6 +210,12 @@ func TestV2LogicalContainerNetworkControllerRetriesNamespaceOwnershipFailure(t *
 	})
 	require.Equal(t, apiv2.LogicalContainerNetworkPhaseUnknown, failed.Status.Phase)
 	require.NotEmpty(t, failed.Status.NetworkID)
+	systemLogs, systemLogErr := serverInfo.RestClient.Get().
+		AbsPath("/apis", apiv2.GroupName, apiv2.GroupVersion.Version, "namespaces", namespace.Name, "logicalcontainernetworks", network.Name, apiv2.LogSubresourceName).
+		Param("source", "system").Do(ctx).Raw()
+	require.NoError(t, systemLogErr)
+	require.Contains(t, string(systemLogs), "namespace workload lookup unavailable")
+	require.Contains(t, string(systemLogs), "LogicalContainerNetworkReconciler")
 	require.NoError(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, network, environmentInfo.ResourceLeaseOwner))
 	_, missingRecordErr := environmentInfo.StateStore.GetPersistentNetwork(ctx, network.GetLeaseKey())
 	require.ErrorIs(t, missingRecordErr, statestore.ErrPersistentNetworkNotFound)

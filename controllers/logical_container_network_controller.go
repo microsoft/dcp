@@ -31,6 +31,7 @@ import (
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
@@ -114,6 +115,7 @@ func (r *LogicalContainerNetworkReconciler) Reconcile(ctx context.Context, req c
 		return ctrl.Result{}, getErr
 	}
 	getSucceededCounter.Add(ctx, 1)
+	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, network.GetResourceId())
 	stateKey, previousData := r.networkData.BorrowByNamespacedName(req.NamespacedName)
 	if previousData != nil && stateKey != network.UID {
 		r.discardLogicalContainerNetworkData(req.NamespacedName, log)
@@ -150,6 +152,9 @@ func (r *LogicalContainerNetworkReconciler) Reconcile(ctx context.Context, req c
 			log.Error(fmt.Errorf("invalid logical network state %v with progress %v", data.state, data.progress),
 				"LogicalContainerNetwork reached invalid reconciliation state")
 		}
+	}
+	if !hasFinalizer(&network, logicalContainerNetworkFinalizer) {
+		defer logger.ReleaseResourceLog(network.GetResourceId())
 	}
 	return r.SaveChangesWithDelay(ctx, &network, patch, change, delay, nil, log)
 }
@@ -465,10 +470,12 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 }
 
 func (r *LogicalContainerNetworkReconciler) discardLogicalContainerNetworkData(name types.NamespacedName, log logr.Logger) {
-	_, data := r.networkData.BorrowByNamespacedName(name)
+	resourceUID, data := r.networkData.BorrowByNamespacedName(name)
 	if data == nil {
 		return
 	}
+	discarded := &apiv2.LogicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{UID: resourceUID}}
+	defer logger.ReleaseResourceLog(discarded.GetResourceId())
 	if data.operation != nil {
 		data.operation.cancel()
 	}
