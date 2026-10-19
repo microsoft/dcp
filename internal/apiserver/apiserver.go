@@ -36,7 +36,7 @@ import (
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/logs/containerlogs"
 	"github.com/microsoft/dcp/internal/logs/stdiologs"
-	"github.com/microsoft/dcp/internal/logs/v2containerlogs"
+	"github.com/microsoft/dcp/internal/logs/v2resourcelogs"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/notifications"
 	"github.com/microsoft/dcp/internal/telemetry/startupspans"
@@ -342,10 +342,10 @@ func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error
 		(&apiv1.ContainerExec{}).GetGroupVersionResource(),
 		stdiologs.LogStreamer(),
 	)
-	v2ContainerStreamer := v2containerlogs.NewLogStreamer(log.WithName("v2-container-logstreamer"))
-	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainer{}).GetGroupVersionResource(), v2ContainerStreamer)
-	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainer{}).GetGroupVersionResource(), v2ContainerStreamer)
-	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerImage{}).GetGroupVersionResource(), v2ContainerStreamer)
+	v2ResourceStreamer := v2resourcelogs.NewLogStreamer(log.WithName("v2-resource-logstreamer"))
+	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainer{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainer{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerImage{}).GetGroupVersionResource(), v2ResourceStreamer)
 
 	return nil
 }

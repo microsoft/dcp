@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package v2containerlogs
+package v2resourcelogs
 
 import (
 	"bytes"
@@ -57,7 +57,7 @@ func TestContainerStreamersSharePhysicalCapture(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, contextdata.HostLifetimeContextKey, ctx)
 	source := &recordedLogSource{}
-	streamer := &containerLogStreamer{
+	streamer := &resourceLogStreamer{
 		sessions: make(map[types.UID]map[uint64]*logSession), source: source,
 		captures: logs.NewLogDescriptorSet(ctx, t.TempDir(), logr.Discard()), log: logr.Discard(),
 	}
@@ -120,7 +120,7 @@ func TestContainerLogsRemainAvailableAfterFailedStart(t *testing.T) {
 	defer cancel()
 	ctx = context.WithValue(ctx, contextdata.HostLifetimeContextKey, ctx)
 	source := &recordedLogSource{}
-	streamer := &containerLogStreamer{
+	streamer := &resourceLogStreamer{
 		sessions: make(map[types.UID]map[uint64]*logSession), source: source,
 		captures: logs.NewLogDescriptorSet(ctx, t.TempDir(), logr.Discard()), log: logr.Discard(),
 	}
@@ -148,7 +148,7 @@ func TestContainerLogDisposeUnblocksResponseWriter(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
 	ctx = context.WithValue(ctx, contextdata.HostLifetimeContextKey, ctx)
-	streamer := &containerLogStreamer{
+	streamer := &resourceLogStreamer{
 		sessions: make(map[types.UID]map[uint64]*logSession), source: &recordedLogSource{},
 		captures: logs.NewLogDescriptorSet(ctx, t.TempDir(), logr.Discard()), log: logr.Discard(),
 	}

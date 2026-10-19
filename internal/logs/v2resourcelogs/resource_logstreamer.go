@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package v2containerlogs
+package v2resourcelogs
 
 import (
 	"context"
@@ -37,7 +37,7 @@ import (
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
-type containerSnapshot struct {
+type resourceSnapshot struct {
 	ownerUID types.UID
 	systemID string
 	runtime  *apiv2.LogSource
@@ -55,7 +55,7 @@ type logSession struct {
 	destination io.Writer
 }
 
-type containerLogStreamer struct {
+type resourceLogStreamer struct {
 	lock        sync.Mutex
 	sessions    map[types.UID]map[uint64]*logSession
 	nextSession uint64
@@ -68,15 +68,15 @@ type containerLogStreamer struct {
 
 // NewLogStreamer creates shared capture with resource-scoped client sessions
 // for logical containers, physical containers, and physical images.
-func NewLogStreamer(log logr.Logger) *containerLogStreamer {
-	return &containerLogStreamer{
+func NewLogStreamer(log logr.Logger) *resourceLogStreamer {
+	return &resourceLogStreamer{
 		sessions: make(map[types.UID]map[uint64]*logSession),
 		log:      log,
 	}
 }
 
-func snapshot(obj resource.Object) (containerSnapshot, error) {
-	result := containerSnapshot{ownerUID: obj.GetObjectMeta().UID}
+func snapshot(obj resource.Object) (resourceSnapshot, error) {
+	result := resourceSnapshot{ownerUID: obj.GetObjectMeta().UID}
 	switch container := obj.(type) {
 	case *apiv2.PhysicalContainer:
 		result.runtime = container.GetLogSource()
@@ -95,12 +95,12 @@ func snapshot(obj resource.Object) (containerSnapshot, error) {
 		result.runtime = container.GetLogSource()
 		result.complete = result.runtime.Complete
 	default:
-		return containerSnapshot{}, fmt.Errorf("unsupported container log resource %T", obj)
+		return resourceSnapshot{}, fmt.Errorf("unsupported log resource %T", obj)
 	}
 	return result, nil
 }
 
-func (state containerSnapshot) logSource(source string) *apiv2.LogSource {
+func (state resourceSnapshot) logSource(source string) *apiv2.LogSource {
 	switch source {
 	case string(apiv2.LogStreamSourceStartupStdout), string(apiv2.LogStreamSourceStartupStderr):
 		return state.startup
@@ -109,7 +109,7 @@ func (state containerSnapshot) logSource(source string) *apiv2.LogSource {
 	}
 }
 
-func (streamer *containerLogStreamer) Preflight(obj resource.Object, opts *apiv2.ResourceLogOptions) error {
+func (streamer *resourceLogStreamer) Preflight(obj resource.Object, opts *apiv2.ResourceLogOptions) error {
 	if optionsErr := opts.Validate(); optionsErr != nil {
 		return apierrors.NewBadRequest(optionsErr.Error())
 	}
@@ -152,7 +152,7 @@ func (streamer *containerLogStreamer) Preflight(obj resource.Object, opts *apiv2
 	return nil
 }
 
-func (streamer *containerLogStreamer) StreamLogs(
+func (streamer *resourceLogStreamer) StreamLogs(
 	ctx context.Context, dest io.Writer, obj resource.Object, opts *apiv2.ResourceLogOptions, log logr.Logger,
 ) (logstream.ResourceStreamStatus, <-chan struct{}, error) {
 	if preflightErr := streamer.Preflight(obj, opts); preflightErr != nil {
@@ -183,7 +183,7 @@ func (streamer *containerLogStreamer) StreamLogs(
 	if streamer.disposed {
 		streamer.lock.Unlock()
 		cancelSession()
-		return logstream.ResourceStreamStatusDone, nil, fmt.Errorf("container log streamer has been disposed")
+		return logstream.ResourceStreamStatusDone, nil, fmt.Errorf("resource log streamer has been disposed")
 	}
 	streamer.nextSession++
 	sessionID := streamer.nextSession
@@ -214,7 +214,7 @@ func (streamer *containerLogStreamer) StreamLogs(
 		defer releaseCapture()
 		openErr := streamer.followFile(sessionCtx, path, dest, opts, session)
 		if openErr != nil && sessionCtx.Err() == nil {
-			log.Error(openErr, "Failed to stream container logs")
+			log.Error(openErr, "Failed to stream resource logs")
 			if pipe, ok := dest.(interface{ CloseWithError(error) error }); ok {
 				_ = pipe.CloseWithError(openErr)
 			}
@@ -223,7 +223,7 @@ func (streamer *containerLogStreamer) StreamLogs(
 	return logstream.ResourceStreamStatusStreaming, session.done, nil
 }
 
-func (streamer *containerLogStreamer) finishSession(uid types.UID, id uint64, session *logSession) {
+func (streamer *resourceLogStreamer) finishSession(uid types.UID, id uint64, session *logSession) {
 	session.cancel()
 	streamer.lock.Lock()
 	delete(streamer.sessions[uid], id)
@@ -234,7 +234,7 @@ func (streamer *containerLogStreamer) finishSession(uid types.UID, id uint64, se
 	close(session.done)
 }
 
-func (streamer *containerLogStreamer) runtimeLogPath(
+func (streamer *resourceLogStreamer) runtimeLogPath(
 	ctx context.Context, namespace string, capture apiv2.LogSource, opts *apiv2.ResourceLogOptions) (string, func(), error) {
 	streamer.captureLock.Lock()
 	defer streamer.captureLock.Unlock()
@@ -285,7 +285,7 @@ func (streamer *containerLogStreamer) runtimeLogPath(
 	return path, descriptor.LogConsumerStopped, nil
 }
 
-func (streamer *containerLogStreamer) followFile(
+func (streamer *resourceLogStreamer) followFile(
 	ctx context.Context, path string, dest io.Writer, opts *apiv2.ResourceLogOptions, session *logSession,
 ) error {
 	file, openErr := resiliency.RetryGet(ctx, backoff.NewConstantBackOff(200*time.Millisecond), func() (*os.File, error) {
@@ -324,7 +324,7 @@ func (streamer *containerLogStreamer) followFile(
 	return writer.Err()
 }
 
-func (streamer *containerLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcherEvent, _ logr.Logger) {
+func (streamer *resourceLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcherEvent, _ logr.Logger) {
 	switch evt.Type {
 	case watch.Added, watch.Modified, watch.Deleted:
 	default:
@@ -332,7 +332,7 @@ func (streamer *containerLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatche
 	}
 	state, snapshotErr := snapshot(evt.Object)
 	if snapshotErr != nil {
-		streamer.log.Error(snapshotErr, "Failed to process container log resource update")
+		streamer.log.Error(snapshotErr, "Failed to process log resource update")
 		return
 	}
 	_, physical := evt.Object.(*apiv2.PhysicalContainer)
@@ -380,7 +380,7 @@ func (streamer *containerLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatche
 	}
 }
 
-func (streamer *containerLogStreamer) Dispose() error {
+func (streamer *resourceLogStreamer) Dispose() error {
 	streamer.lock.Lock()
 	if streamer.disposed {
 		streamer.lock.Unlock()
