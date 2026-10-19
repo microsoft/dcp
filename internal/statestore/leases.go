@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -68,6 +69,13 @@ type LeasableResource interface {
 	GetLeaseKey() string
 }
 
+type ResourceLeaseOption uint
+
+const (
+	// ExclusiveResourceLease prevents reacquisition even by the same owner process.
+	ExclusiveResourceLease ResourceLeaseOption = iota + 1
+)
+
 func resourceLeaseKey(resource LeasableResource) (string, error) {
 	if resource == nil {
 		return "", fmt.Errorf("%w: resource cannot be nil", ErrInvalidArgument)
@@ -79,7 +87,12 @@ func resourceLeaseKey(resource LeasableResource) (string, error) {
 	return resourceKey, nil
 }
 
-func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessHandle, revalidationInterval time.Duration) (*ResourceLease, error) {
+func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessHandle, revalidationInterval time.Duration, options ...ResourceLeaseOption) (*ResourceLease, error) {
+	for _, option := range options {
+		if option != ExclusiveResourceLease {
+			return nil, fmt.Errorf("%w: unknown resource lease option %d", ErrInvalidArgument, option)
+		}
+	}
 	resourceKey, resourceKeyErr := resourceLeaseKey(resource)
 	if resourceKeyErr != nil {
 		return nil, resourceKeyErr
@@ -127,6 +140,10 @@ func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResou
 		}
 		sameOwner := existingLease.OwnerProcess.Pid == normalizedOwner.Pid &&
 			existingLease.OwnerProcess.IdentityTime.Equal(normalizedOwner.IdentityTime)
+		if sameOwner && slices.Contains(options, ExclusiveResourceLease) {
+			existingLease.store = s
+			return &ResourceLeaseHeldError{Lease: *existingLease}
+		}
 		if !sameOwner && now.Sub(existingLease.UpdatedAt) < revalidationInterval {
 			existingLease.store = s
 			return &ResourceLeaseHeldError{Lease: *existingLease}
@@ -262,6 +279,7 @@ func (s *Store) WithResourceLeaseRetry(
 	revalidationInterval time.Duration,
 	retryInterval time.Duration,
 	f func(context.Context, *ResourceLease) error,
+	options ...ResourceLeaseOption,
 ) error {
 	if f == nil {
 		return fmt.Errorf("%w: lease callback cannot be nil", ErrInvalidArgument)
@@ -271,7 +289,7 @@ func (s *Store) WithResourceLeaseRetry(
 	}
 
 	return resiliency.Retry(ctx, backoff.NewConstantBackOff(retryInterval), func() error {
-		lease, acquireErr := s.AcquireResourceLease(ctx, resource, ownerProcess, revalidationInterval)
+		lease, acquireErr := s.AcquireResourceLease(ctx, resource, ownerProcess, revalidationInterval, options...)
 		if acquireErr == nil {
 			callbackErr := withResourceLeaseCallback(ctx, lease, f)
 			if callbackErr != nil {
@@ -287,10 +305,11 @@ func (s *Store) WithResourceLeaseRetry(
 	})
 }
 
-func withResourceLeaseCallback(ctx context.Context, lease *ResourceLease, f func(context.Context, *ResourceLease) error) error {
-	callbackErr := f(ctx, lease)
-	releaseErr := lease.Release(context.Background())
-	return errors.Join(callbackErr, releaseErr)
+func withResourceLeaseCallback(ctx context.Context, lease *ResourceLease, f func(context.Context, *ResourceLease) error) (result error) {
+	defer func() {
+		result = errors.Join(result, lease.Release(context.Background()))
+	}()
+	return f(ctx, lease)
 }
 
 type inactiveResourceLeaseCandidate struct {

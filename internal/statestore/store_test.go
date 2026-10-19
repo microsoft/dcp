@@ -885,6 +885,37 @@ func TestResourceLeaseCoordinatesAcrossStoreHandles(t *testing.T) {
 	require.Equal(t, owner2, lease.OwnerProcess)
 }
 
+// Verifies that exclusive resource leases block same-process claims across store handles
+// and release their claim even when the operation callback panics.
+func TestExclusiveResourceLeaseBlocksSameProcessUntilRelease(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	path := filepath.Join(t.TempDir(), "state.sqlite3")
+	firstStore := openTestStore(t, ctx, path)
+	secondStore := openTestStore(t, ctx, path)
+	owner, ownerErr := testResourceLeaseOwner(t, 0)
+	require.NoError(t, ownerErr)
+	resource := testLeasableResource("image-pulls/example.test/image:latest")
+	first, firstErr := firstStore.AcquireResourceLease(ctx, resource, owner, time.Minute, ExclusiveResourceLease)
+	require.NoError(t, firstErr)
+	_, blockedErr := secondStore.AcquireResourceLease(ctx, resource, owner, time.Minute, ExclusiveResourceLease)
+	require.ErrorIs(t, blockedErr, ErrResourceLeaseHeld)
+	require.NoError(t, first.Release(ctx))
+	second, secondErr := secondStore.AcquireResourceLease(ctx, resource, owner, time.Minute, ExclusiveResourceLease)
+	require.NoError(t, secondErr)
+	require.NoError(t, second.Release(ctx))
+	_, invalidErr := firstStore.AcquireResourceLease(ctx, resource, owner, time.Minute, ResourceLeaseOption(99))
+	require.ErrorIs(t, invalidErr, ErrInvalidArgument)
+	require.Panics(t, func() {
+		_ = firstStore.WithResourceLeaseRetry(ctx, resource, owner, time.Minute, time.Millisecond,
+			func(context.Context, *ResourceLease) error { panic("pull operation failed") }, ExclusiveResourceLease)
+	})
+	afterPanic, afterPanicErr := secondStore.AcquireResourceLease(ctx, resource, owner, time.Minute, ExclusiveResourceLease)
+	require.NoError(t, afterPanicErr)
+	require.NoError(t, afterPanic.Release(ctx))
+}
+
 func TestResourceLeasePreservesOutOfUnixNanoRangeOwnerIdentityTime(t *testing.T) {
 	t.Parallel()
 

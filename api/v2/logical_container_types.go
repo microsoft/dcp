@@ -229,6 +229,12 @@ type LogicalContainerNetworkConnectionConfig struct {
 // LogicalContainerStatus describes the observed logical container and its physical dependencies.
 // +k8s:openapi-gen=true
 type LogicalContainerStatus struct {
+	// StartupLogs identifies output from the physical image dependency.
+	StartupLogs *LogSource `json:"startupLogs,omitempty"`
+
+	// RuntimeLogs identifies output from the backing physical container.
+	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
+
 	// Phase summarizes the container lifecycle.
 	// +kubebuilder:validation:Enum=Pending;Running;Paused;Exited;Unknown;Failed
 	// +optional
@@ -237,9 +243,6 @@ type LogicalContainerStatus struct {
 	// PhysicalContainerRef identifies the backing PhysicalContainer using <name> or <namespace>/<name>.
 	// Cross-namespace references are not supported.
 	PhysicalContainerRef string `json:"physicalContainerRef,omitempty"`
-
-	// PhysicalContainerUID identifies the backing resource's runtime log capture.
-	PhysicalContainerUID types.UID `json:"physicalContainerUID,omitempty"`
 
 	// ImageRef identifies the supplied or generated PhysicalContainerImage using <name> or <namespace>/<name>.
 	// Cross-namespace references are not supported.

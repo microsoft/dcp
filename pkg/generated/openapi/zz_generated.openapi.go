@@ -94,6 +94,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.ContainerPort{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v2_ContainerPort(ref),
 		v2.CreateFileSystem{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v2_CreateFileSystem(ref),
 		v2.FileSystemEntry{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v2_FileSystemEntry(ref),
+		v2.LogSource{}.OpenAPIModelName():                               schema_microsoft_dcp_api_v2_LogSource(ref),
 		v2.LogicalContainer{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v2_LogicalContainer(ref),
 		v2.LogicalContainerConfig{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_LogicalContainerConfig(ref),
 		v2.LogicalContainerList{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalContainerList(ref),
@@ -4629,6 +4630,71 @@ func schema_microsoft_dcp_api_v2_FileSystemEntry(ref common.ReferenceCallback) c
 	}
 }
 
+func schema_microsoft_dcp_api_v2_LogSource(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogSource identifies captured output and its availability without querying another resource.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the same-namespace source resource name.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"uid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "UID identifies the source resource's capture.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerID selects runtime capture instead of pre-captured files.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stdoutFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StdoutFile is the pre-captured standard-output path.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stderrFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StderrFile is the pre-captured standard-error path.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"available": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Available indicates that capture can be consumed.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"complete": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Complete indicates that no further output is expected.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name", "uid"},
+			},
+		},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_LogicalContainer(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -5316,6 +5382,18 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 				Description: "LogicalContainerStatus describes the observed logical container and its physical dependencies.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"startupLogs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StartupLogs identifies output from the physical image dependency.",
+							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
+						},
+					},
+					"runtimeLogs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RuntimeLogs identifies output from the backing physical container.",
+							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
+						},
+					},
 					"phase": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Phase summarizes the container lifecycle.",
@@ -5326,13 +5404,6 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 					"physicalContainerRef": {
 						SchemaProps: spec.SchemaProps{
 							Description: "PhysicalContainerRef identifies the backing PhysicalContainer using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"physicalContainerUID": {
-						SchemaProps: spec.SchemaProps{
-							Description: "PhysicalContainerUID identifies the backing resource's runtime log capture.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -5440,7 +5511,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 			},
 		},
 		Dependencies: []string{
-			v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.LogSource{}.OpenAPIModelName(), v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -5998,6 +6069,27 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerImageStatus(ref common.Referen
 				Description: "PhysicalContainerImageStatus describes the observed runtime image.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"stdoutFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StdoutFile is the captured pull/build standard-output path.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stderrFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StderrFile is the captured pull/build standard-error path.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"logsComplete": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LogsComplete indicates that no further pull or build output is expected.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"phase": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Phase summarizes whether the image is available.",

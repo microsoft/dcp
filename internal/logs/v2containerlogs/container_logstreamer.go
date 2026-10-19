@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +31,6 @@ import (
 	"github.com/microsoft/dcp/internal/contextdata"
 	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/logstream"
-	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/pointers"
@@ -38,19 +38,16 @@ import (
 )
 
 type containerSnapshot struct {
-	ownerUID    types.UID
-	captureUID  types.UID
-	captureName types.NamespacedName
-	containerID string
-	systemID    string
-	started     bool
-	terminal    bool
+	ownerUID types.UID
+	systemID string
+	runtime  *apiv2.LogSource
+	startup  *apiv2.LogSource
+	complete bool
 }
 
 type logSession struct {
 	source      string
-	containerID string
-	captureUID  types.UID
+	capture     apiv2.LogSource
 	cancel      context.CancelFunc
 	done        chan struct{}
 	writer      *usvc_io.FollowWriter
@@ -69,9 +66,9 @@ type containerLogStreamer struct {
 	log         logr.Logger
 }
 
-// NewLogStreamer creates shared physical capture with resource-scoped client sessions.
-// The same instance serves logical and physical container kinds.
-func NewLogStreamer(log logr.Logger) apiv2.ResourceLogStreamer {
+// NewLogStreamer creates shared capture with resource-scoped client sessions
+// for logical containers, physical containers, and physical images.
+func NewLogStreamer(log logr.Logger) *containerLogStreamer {
 	return &containerLogStreamer{
 		sessions: make(map[types.UID]map[uint64]*logSession),
 		log:      log,
@@ -82,20 +79,34 @@ func snapshot(obj resource.Object) (containerSnapshot, error) {
 	result := containerSnapshot{ownerUID: obj.GetObjectMeta().UID}
 	switch container := obj.(type) {
 	case *apiv2.PhysicalContainer:
-		result.captureUID, result.captureName = container.UID, container.NamespacedName()
-		result.containerID, result.systemID = container.Status.ContainerID, container.GetResourceId()
-		result.started = !container.Status.StartedAt.IsZero()
-		result.terminal = container.Status.Phase == apiv2.PhysicalContainerPhaseExited || container.Status.Phase == apiv2.PhysicalContainerPhaseFailed
+		result.runtime = container.GetLogSource()
+		result.systemID = container.GetResourceId()
+		result.complete = result.runtime.Complete
 	case *apiv2.LogicalContainer:
-		result.captureUID = container.Status.PhysicalContainerUID
-		result.captureName = commonapi.AsNamespacedName(container.Status.PhysicalContainerRef, container.Namespace)
-		result.containerID, result.systemID = container.Status.ContainerID, container.GetResourceId()
-		result.started = !container.Status.StartedAt.IsZero()
-		result.terminal = container.Status.Phase == apiv2.LogicalContainerPhaseExited || container.Status.Phase == apiv2.LogicalContainerPhaseFailed
+		result.runtime, result.startup = container.Status.RuntimeLogs, container.Status.StartupLogs
+		result.systemID = container.GetResourceId()
+		result.complete = container.Status.Phase == apiv2.LogicalContainerPhaseExited || container.Status.Phase == apiv2.LogicalContainerPhaseFailed
+		if result.startup == nil && (container.Spec.EffectiveMode() == apiv2.LogicalContainerModeExisting ||
+			!container.Status.StartedAt.IsZero() || result.complete) {
+			result.startup = &apiv2.LogSource{Complete: true}
+		}
+	case *apiv2.PhysicalContainerImage:
+		result.systemID = container.GetResourceId()
+		result.runtime = container.GetLogSource()
+		result.complete = result.runtime.Complete
 	default:
 		return containerSnapshot{}, fmt.Errorf("unsupported container log resource %T", obj)
 	}
 	return result, nil
+}
+
+func (state containerSnapshot) logSource(source string) *apiv2.LogSource {
+	switch source {
+	case string(apiv2.LogStreamSourceStartupStdout), string(apiv2.LogStreamSourceStartupStderr):
+		return state.startup
+	default:
+		return state.runtime
+	}
 }
 
 func (streamer *containerLogStreamer) Preflight(obj resource.Object, opts *apiv2.ResourceLogOptions) error {
@@ -106,16 +117,37 @@ func (streamer *containerLogStreamer) Preflight(obj resource.Object, opts *apiv2
 	if snapshotErr != nil {
 		return apierrors.NewInternalError(snapshotErr)
 	}
-	if opts.Source != string(apiv2.LogStreamSourceSystem) && state.captureUID != "" && state.containerID != "" {
-		name := state.captureName.Name
-		if len(validation.IsDNS1123Subdomain(string(state.captureUID))) != 0 ||
-			name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\:\x00") ||
-			state.captureName.Namespace != obj.GetObjectMeta().Namespace {
-			return apierrors.NewInternalError(fmt.Errorf("invalid observed physical log capture identity"))
+	startup := opts.Source == string(apiv2.LogStreamSourceStartupStdout) || opts.Source == string(apiv2.LogStreamSourceStartupStderr)
+	if _, physical := obj.(*apiv2.PhysicalContainer); physical && startup {
+		return apierrors.NewBadRequest("physical container log sources are stdout, stderr, and system")
+	}
+	if _, image := obj.(*apiv2.PhysicalContainerImage); image && startup {
+		return apierrors.NewBadRequest("image log sources are stdout, stderr, and system")
+	}
+	capture := state.logSource(opts.Source)
+	if opts.Source != string(apiv2.LogStreamSourceSystem) && capture != nil && capture.Available {
+		name := capture.Name
+		if len(validation.IsDNS1123Subdomain(string(capture.UID))) != 0 ||
+			name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\:\x00") {
+			return apierrors.NewInternalError(fmt.Errorf("invalid observed log capture identity"))
+		}
+		if capture.ContainerID == "" {
+			for _, output := range []struct {
+				path   string
+				source logstream.LogStreamSource
+			}{
+				{capture.StdoutFile, logstream.LogStreamSourceStartupStdout},
+				{capture.StderrFile, logstream.LogStreamSourceStartupStderr},
+			} {
+				expectedName, nameErr := logstream.StartupLogFileName(name, capture.UID, output.source)
+				if nameErr != nil || !filepath.IsAbs(output.path) || filepath.Base(output.path) != expectedName {
+					return apierrors.NewInternalError(fmt.Errorf("invalid observed log capture path"))
+				}
+			}
 		}
 	}
 	if !obj.GetObjectMeta().DeletionTimestamp.IsZero() && opts.Source != string(apiv2.LogStreamSourceSystem) {
-		return apierrors.NewBadRequest("container resource is being deleted")
+		return apierrors.NewBadRequest("log resource is being deleted")
 	}
 	return nil
 }
@@ -131,16 +163,21 @@ func (streamer *containerLogStreamer) StreamLogs(
 		return logstream.ResourceStreamStatusNotReady, nil, snapshotErr
 	}
 	system := opts.Source == string(apiv2.LogStreamSourceSystem)
-	if !system && (state.containerID == "" || (!state.started && !state.terminal) || state.captureUID == "") {
-		if state.terminal {
+	capture := state.logSource(opts.Source)
+	if !system && (capture == nil || !capture.Available) {
+		if state.complete || (capture != nil && capture.Complete) {
 			return logstream.ResourceStreamStatusDone, nil, nil
 		}
 		return logstream.ResourceStreamStatusNotReady, nil, nil
 	}
 	sessionCtx, cancelSession := context.WithCancel(ctx)
 	session := &logSession{
-		source: opts.Source, containerID: state.containerID, captureUID: state.captureUID, cancel: cancelSession,
-		done: make(chan struct{}), finishing: !opts.Follow || (!system && state.terminal), destination: dest,
+		source: opts.Source, cancel: cancelSession,
+		done: make(chan struct{}), finishing: !opts.Follow, destination: dest,
+	}
+	if !system {
+		session.capture = *capture
+		session.finishing = !opts.Follow || capture.Complete
 	}
 	streamer.lock.Lock()
 	if streamer.disposed {
@@ -159,12 +196,18 @@ func (streamer *containerLogStreamer) StreamLogs(
 	path := logger.GetResourceLogPath(state.systemID)
 	releaseCapture := func() {}
 	if !system {
-		capturePath, release, captureErr := streamer.runtimeLogPath(sessionCtx, state, opts)
-		if captureErr != nil {
-			streamer.finishSession(state.ownerUID, sessionID, session)
-			return logstream.ResourceStreamStatusDone, nil, captureErr
+		path = capture.StdoutFile
+		if opts.Source == string(apiv2.LogStreamSourceStderr) || opts.Source == string(apiv2.LogStreamSourceStartupStderr) {
+			path = capture.StderrFile
 		}
-		path, releaseCapture = capturePath, release
+		if capture.ContainerID != "" {
+			capturePath, release, captureErr := streamer.runtimeLogPath(sessionCtx, obj.GetObjectMeta().Namespace, *capture, opts)
+			if captureErr != nil {
+				streamer.finishSession(state.ownerUID, sessionID, session)
+				return logstream.ResourceStreamStatusDone, nil, captureErr
+			}
+			path, releaseCapture = capturePath, release
+		}
 	}
 	go func() {
 		defer streamer.finishSession(state.ownerUID, sessionID, session)
@@ -192,7 +235,7 @@ func (streamer *containerLogStreamer) finishSession(uid types.UID, id uint64, se
 }
 
 func (streamer *containerLogStreamer) runtimeLogPath(
-	ctx context.Context, state containerSnapshot, opts *apiv2.ResourceLogOptions) (string, func(), error) {
+	ctx context.Context, namespace string, capture apiv2.LogSource, opts *apiv2.ResourceLogOptions) (string, func(), error) {
 	streamer.captureLock.Lock()
 	defer streamer.captureLock.Unlock()
 	if contextErr := ctx.Err(); contextErr != nil {
@@ -215,7 +258,7 @@ func (streamer *containerLogStreamer) runtimeLogPath(
 	}
 	captureCtx, cancelCapture := context.WithCancel(hostCtx)
 	descriptor, stdout, stderr, created, acquireErr := streamer.captures.AcquireForResource(
-		captureCtx, cancelCapture, state.captureName, state.captureUID)
+		captureCtx, cancelCapture, types.NamespacedName{Namespace: namespace, Name: capture.Name}, capture.UID)
 	if acquireErr != nil {
 		cancelCapture()
 		return "", nil, acquireErr
@@ -223,7 +266,7 @@ func (streamer *containerLogStreamer) runtimeLogPath(
 	if !created {
 		cancelCapture()
 	} else {
-		captureErr := streamer.source.CaptureContainerLogs(descriptor.Context, state.containerID, stdout, stderr,
+		captureErr := streamer.source.CaptureContainerLogs(descriptor.Context, capture.ContainerID, stdout, stderr,
 			containers.StreamContainerLogsOptions{Follow: true, Timestamps: true})
 		if captureErr != nil {
 			stdoutErr, stderrErr := stdout.Close(), stderr.Close()
@@ -247,7 +290,10 @@ func (streamer *containerLogStreamer) followFile(
 ) error {
 	file, openErr := resiliency.RetryGet(ctx, backoff.NewConstantBackOff(200*time.Millisecond), func() (*os.File, error) {
 		opened, fileErr := usvc_io.OpenFileReadOnly(path)
-		if fileErr != nil && (!os.IsNotExist(fileErr) || !opts.Follow) {
+		streamer.lock.Lock()
+		finishing := session.finishing
+		streamer.lock.Unlock()
+		if fileErr != nil && (!os.IsNotExist(fileErr) || !opts.Follow || finishing) {
 			return nil, resiliency.Permanent(fileErr)
 		}
 		return opened, fileErr
@@ -279,30 +325,33 @@ func (streamer *containerLogStreamer) followFile(
 }
 
 func (streamer *containerLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcherEvent, _ logr.Logger) {
+	switch evt.Type {
+	case watch.Added, watch.Modified, watch.Deleted:
+	default:
+		return
+	}
 	state, snapshotErr := snapshot(evt.Object)
 	if snapshotErr != nil {
 		streamer.log.Error(snapshotErr, "Failed to process container log resource update")
 		return
 	}
 	_, physical := evt.Object.(*apiv2.PhysicalContainer)
+	_, image := evt.Object.(*apiv2.PhysicalContainerImage)
+	var streamsToStop []*usvc_io.FollowWriter
 	streamer.lock.Lock()
 	for ownerUID, sessions := range streamer.sessions {
 		for _, session := range sessions {
 			system := session.source == string(apiv2.LogStreamSourceSystem)
-			physicalSourceDeleted := physical && evt.Type == watch.Deleted && !system && session.captureUID == state.captureUID
-			if ownerUID != state.ownerUID && !physicalSourceDeleted {
+			sourceUpdated := !system && (physical || image) && session.capture.UID == state.ownerUID
+			if ownerUID != state.ownerUID && !sourceUpdated {
 				continue
 			}
-			if evt.Type != watch.Deleted && (system || (!state.terminal && state.containerID == session.containerID)) {
-				continue
+			capture := state.logSource(session.source)
+			if sourceUpdated {
+				capture = state.runtime
 			}
-			if evt.Type == watch.Deleted && !system {
-				session.finishing = true
-				if session.writer != nil {
-					session.writer.StopFollow()
-				} else {
-					session.cancel()
-				}
+			if evt.Type != watch.Deleted &&
+				(system || capture == nil || capture.UID != session.capture.UID || !capture.Complete) {
 				continue
 			}
 			if session.finishing {
@@ -310,18 +359,21 @@ func (streamer *containerLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatche
 			}
 			session.finishing = true
 			if session.writer != nil {
-				logs.DelayStopFollowing([]*usvc_io.FollowWriter{session.writer})
+				streamsToStop = append(streamsToStop, session.writer)
 			} else if evt.Type == watch.Deleted {
 				session.cancel()
 			}
 		}
 	}
 	streamer.lock.Unlock()
+	if len(streamsToStop) > 0 {
+		logs.DelayStopFollowing(streamsToStop)
+	}
 	if evt.Type == watch.Deleted {
 		if physical {
 			streamer.captureLock.Lock()
 			if streamer.captures != nil {
-				streamer.captures.ReleaseForResource(state.captureUID)
+				streamer.captures.ReleaseForResource(state.ownerUID)
 			}
 			streamer.captureLock.Unlock()
 		}

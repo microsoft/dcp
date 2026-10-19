@@ -46,6 +46,11 @@ func (in FileSystemEntry) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogSource) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogSource"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in LogicalContainer) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.LogicalContainer"
 }
@@ -143,6 +148,11 @@ func (in PhysicalContainerImageConfig) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in PhysicalContainerImageList) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.PhysicalContainerImageList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerImageLogResource) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerImageLogResource"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.

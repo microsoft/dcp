@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	generic "k8s.io/apiserver/pkg/registry/generic"
 	"k8s.io/apiserver/pkg/registry/rest"
 
@@ -29,10 +30,31 @@ const LogSubresourceName = "log"
 type LogStreamSource = logstream.LogStreamSource
 
 const (
-	LogStreamSourceStdout = logstream.LogStreamSourceStdout
-	LogStreamSourceStderr = logstream.LogStreamSourceStderr
-	LogStreamSourceSystem = logstream.LogStreamSourceSystem
+	LogStreamSourceStdout        = logstream.LogStreamSourceStdout
+	LogStreamSourceStderr        = logstream.LogStreamSourceStderr
+	LogStreamSourceSystem        = logstream.LogStreamSourceSystem
+	LogStreamSourceStartupStdout = logstream.LogStreamSourceStartupStdout
+	LogStreamSourceStartupStderr = logstream.LogStreamSourceStartupStderr
 )
+
+// LogSource identifies captured output and its availability without querying another resource.
+// +k8s:openapi-gen=true
+type LogSource struct {
+	// Name is the same-namespace source resource name.
+	Name string `json:"name"`
+	// UID identifies the source resource's capture.
+	UID types.UID `json:"uid"`
+	// ContainerID selects runtime capture instead of pre-captured files.
+	ContainerID string `json:"containerID,omitempty"`
+	// StdoutFile is the pre-captured standard-output path.
+	StdoutFile string `json:"stdoutFile,omitempty"`
+	// StderrFile is the pre-captured standard-error path.
+	StderrFile string `json:"stderrFile,omitempty"`
+	// Available indicates that capture can be consumed.
+	Available bool `json:"available,omitempty"`
+	// Complete indicates that no further output is expected.
+	Complete bool `json:"complete,omitempty"`
+}
 
 type ResourceLogStreamer = logstream.ResourceLogStreamer[*ResourceLogOptions]
 
@@ -60,10 +82,11 @@ func (opts *ResourceLogOptions) NewList() runtime.Object           { return &Res
 func (opts *ResourceLogOptions) String() string                    { return (*logstream.LogOptions)(opts).String() }
 func (opts *ResourceLogOptions) Validate() error {
 	switch opts.Source {
-	case "", string(LogStreamSourceStdout), string(LogStreamSourceStderr), string(LogStreamSourceSystem):
+	case "", string(LogStreamSourceStdout), string(LogStreamSourceStderr), string(LogStreamSourceSystem),
+		string(LogStreamSourceStartupStdout), string(LogStreamSourceStartupStderr):
 		return (*logstream.LogOptions)(opts).Validate()
 	default:
-		return fmt.Errorf("invalid log source %q; supported sources are stdout, stderr, and system", opts.Source)
+		return fmt.Errorf("invalid log source %q; supported sources are stdout, stderr, system, startup_stdout, and startup_stderr", opts.Source)
 	}
 }
 

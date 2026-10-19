@@ -81,7 +81,6 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 		physicalContainerRef = "logical-" + string(container.UID)
 	}
 	change := setValue(&container.Status.PhysicalContainerRef, physicalContainerRef)
-	change |= setValue(&container.Status.PhysicalContainerUID, data.physicalContainerUID)
 	// After handoff, inline image references come from the backing physical creation spec.
 	if container.Spec.Container == nil || container.Spec.Container.Image == nil || data.physicalContainerUID == "" {
 		imageRef := ""
@@ -93,6 +92,10 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 	change |= setValue(&container.Status.LifecycleKey, data.lifecycleKey)
 	if data.physicalContainerUID == "" {
 		change |= applyLogicalContainerPhysicalDetails(container, &apiv2.PhysicalContainerStatus{})
+		if container.Status.RuntimeLogs != nil {
+			container.Status.RuntimeLogs = nil
+			change |= statusChanged
+		}
 	}
 	state, progress, reason, message := data.state, data.progress, data.reason, data.message
 	if data.leaseFailureMessage != "" {

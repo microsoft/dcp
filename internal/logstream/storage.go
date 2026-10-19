@@ -527,22 +527,14 @@ func (ls *LogStorage[O]) resourceStreamerFactory(resourceName, namespace string,
 
 					// The resource was ready to stream
 					if resourceStreamStatus == ResourceStreamStatusStreaming {
+						watcher.Stop()
 						log.V(1).Info("Starting log streaming for resource")
-						for {
-							select {
-							case <-ctx.Done():
-								return
-							case <-ls.disposeCh:
-								return
-							case <-doneStreaming:
-								return
-							case update, updateOpen := <-watcher.ResultChan():
-								if !updateOpen {
-									return
-								}
-								ls.logStreamer.OnResourceUpdated(update, log)
-							}
+						select {
+						case <-ctx.Done():
+						case <-ls.disposeCh:
+						case <-doneStreaming:
 						}
+						return
 					}
 
 					if resourceStreamStatus == ResourceStreamStatusDone {

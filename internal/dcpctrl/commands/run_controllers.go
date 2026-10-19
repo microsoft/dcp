@@ -283,6 +283,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerImageReconciler"),
 			containerOrchestrator,
+			controllers.PhysicalContainerImageReconcilerConfig{StateStore: stateStore, ResourceLeaseOwner: leaseOwner},
 		)
 		if err = physicalContainerImageCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up PhysicalContainerImage controller")

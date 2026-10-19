@@ -341,7 +341,14 @@ func (s *resourceSink) getSink(resourceId string) *resourceFileSink {
 	}
 
 	resourceLoggerLock.Lock()
-	defer resourceLoggerLock.Unlock()
+	var sinkErr error
+	defer func() {
+		resourceLoggerLock.Unlock()
+		if sinkErr != nil {
+			// Reporting through a nested sink can reacquire resourceLoggerLock.
+			s.innerSink.Error(sinkErr, "Could not create resource log file", "ResourceID", resourceId)
+		}
+	}()
 
 	if resourceLoggerDisabled.Load() {
 		// Resource logging is disabled, nothing to do
@@ -349,7 +356,6 @@ func (s *resourceSink) getSink(resourceId string) *resourceFileSink {
 	}
 
 	sink, found := resourceSinks[resourceId]
-	var sinkErr error
 	if !found {
 		if failure, failed := resourceSinkFailures[resourceId]; failed && resourceSinkNow().Before(failure.retryAfter) {
 			return nil
@@ -365,7 +371,6 @@ func (s *resourceSink) getSink(resourceId string) *resourceFileSink {
 				folder:     absoluteResourceLogFolder(s.resourceLogFolderOverride),
 				retryAfter: resourceSinkNow().Add(resourceSinkRetryInterval),
 			}
-			s.innerSink.Error(sinkErr, "Could not create resource log file", "ResourceID", resourceId)
 		}
 	}
 
