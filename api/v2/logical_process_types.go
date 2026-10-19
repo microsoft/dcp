@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -133,6 +134,8 @@ func (spec *LogicalProcessSpec) GetLifecycleKey() (string, bool, error) {
 // LogicalProcessStatus describes the observed process and its physical backing resource.
 // +k8s:openapi-gen=true
 type LogicalProcessStatus struct {
+	// RuntimeLogs describes output from the immediate physical process backing.
+	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
 	// Phase summarizes process availability.
 	// +kubebuilder:validation:Enum=Pending;Running;Exited;Unknown;Failed
 	Phase LogicalProcessPhase `json:"phase,omitempty"`
@@ -172,6 +175,28 @@ type LogicalProcess struct {
 
 func (resource *LogicalProcess) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: GroupVersion.Group, Version: GroupVersion.Version, Resource: "logicalprocesses"}
+}
+
+// GetResourceId identifies the logical process system log stream.
+func (resource *LogicalProcess) GetResourceId() string {
+	return fmt.Sprintf("logicalprocess-%s", resource.UID)
+}
+
+func (*LogicalProcess) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&LogicalProcessLogResource{}}
+}
+
+// LogicalProcessLogResource registers logical process output and system log storage.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type LogicalProcessLogResource struct{}
+
+func (*LogicalProcessLogResource) Name() string { return LogSubresourceName }
+
+func (*LogicalProcessLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
 }
 
 // GetLeaseKey identifies the persistent process by its logical namespace and name.

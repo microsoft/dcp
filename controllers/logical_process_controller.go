@@ -28,6 +28,7 @@ import (
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -102,6 +103,7 @@ func (r *LogicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, getErr
 	}
 	getSucceededCounter.Add(ctx, 1)
+	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resource.GetResourceId())
 	stateKey, previous := r.processData.BorrowByNamespacedName(req.NamespacedName)
 	if previous != nil && stateKey != resource.UID {
 		r.discardLogicalProcessData(req.NamespacedName, log)
@@ -142,6 +144,9 @@ func (r *LogicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			log.Error(fmt.Errorf("invalid logical process state %v with progress %v", data.state, data.progress),
 				"LogicalProcess reached invalid reconciliation state")
 		}
+	}
+	if !hasFinalizer(&resource, logicalProcessFinalizer) {
+		defer logger.ReleaseResourceLog(resource.GetResourceId())
 	}
 	return r.SaveChangesWithDelay(ctx, &resource, patch, change, delay, nil, log)
 }
@@ -322,6 +327,10 @@ func handleLogicalProcessRuntime(
 	if getErr != nil {
 		log.Error(getErr, "Failed to get backing physical process")
 		data.progress, data.reason, data.message = physicalResourceProgressRetryPending, "", getErr.Error()
+		if apierrors.IsNotFound(getErr) && resource.Status.RuntimeLogs != nil {
+			resource.Status.RuntimeLogs = nil
+			return statusChanged
+		}
 		return noChange
 	}
 	if resource.Spec.Stop && !physical.Spec.Stop {
@@ -334,7 +343,7 @@ func handleLogicalProcessRuntime(
 			return noChange
 		}
 	}
-	change := applyLogicalProcessPhysicalDetails(resource, &physical.Status)
+	change := applyLogicalProcessPhysicalDetails(resource, physical)
 	data.progress, data.reason, data.message = physicalResourceProgressNotReady, "", ""
 	if !physical.DeletionTimestamp.IsZero() {
 		data.progress, data.message = physicalResourceProgressUnknown, "The backing PhysicalProcess is being deleted."
@@ -364,8 +373,14 @@ func handleLogicalProcessRuntime(
 	return change
 }
 
-func applyLogicalProcessPhysicalDetails(resource *apiv2.LogicalProcess, status *apiv2.PhysicalProcessStatus) objectChange {
+func applyLogicalProcessPhysicalDetails(resource *apiv2.LogicalProcess, physical *apiv2.PhysicalProcess) objectChange {
 	change := noChange
+	status := &physical.Status
+	source := physical.GetLogSource()
+	if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
+		resource.Status.RuntimeLogs = source
+		change |= statusChanged
+	}
 	if !reflect.DeepEqual(resource.Status.PID, status.PID) {
 		resource.Status.PID = status.DeepCopy().PID
 		change |= statusChanged
@@ -398,14 +413,25 @@ func handleLogicalProcessPersistence(
 	ctx context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
+	change := noChange
+	if data.physicalUID != "" {
+		physical, getErr := reconciler.getLogicalPhysicalProcess(ctx, resource, data.physicalUID, "")
+		if getErr == nil {
+			change = applyLogicalProcessPhysicalDetails(resource, physical)
+		} else if !apierrors.IsNotFound(getErr) {
+			log.Error(getErr, "Failed to project physical process during persistence settlement")
+			data.progress, data.message = physicalResourceProgressRetryPending, getErr.Error()
+			return noChange
+		}
+	}
 	if data.lease == nil {
 		data.state, data.progress = logicalProcessStateRuntime, physicalResourceProgressNotReady
-		return handleLogicalProcessRuntime(ctx, reconciler, resource, data.state, data, log)
+		return change | handleLogicalProcessRuntime(ctx, reconciler, resource, data.state, data, log)
 	}
 	if time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
+		return change | additionalReconciliationNeeded
 	}
-	return reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePersistence, reconciler.persistLogicalProcess, log)
+	return change | reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePersistence, reconciler.persistLogicalProcess, log)
 }
 
 func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
@@ -624,13 +650,15 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 }
 
 func (r *LogicalProcessReconciler) discardLogicalProcessData(name types.NamespacedName, log logr.Logger) {
-	_, data := r.processData.BorrowByNamespacedName(name)
+	uid, data := r.processData.BorrowByNamespacedName(name)
 	if data == nil {
 		return
 	}
 	if data.operation != nil {
 		data.operation.cancel()
 	}
+	missing := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{UID: uid}}
+	defer logger.ReleaseResourceLog(missing.GetResourceId())
 	r.processData.DeleteByNamespacedName(name)
 	if data.lease != nil {
 		enqueueErr := r.operationQueue.Enqueue(func(ctx context.Context) {

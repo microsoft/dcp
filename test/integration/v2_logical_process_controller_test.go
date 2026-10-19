@@ -227,7 +227,7 @@ func TestV2LogicalProcessControllerSettlesOwnershipBeforeDeletion(t *testing.T) 
 	require.NoError(t, serverInfo.Client.Create(ctx, resource))
 	failed := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == "PersistenceFailed", nil
+		return ready != nil && ready.Reason == "PersistenceFailed" && current.Status.PID != nil, nil
 	})
 	require.NoError(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, resource, environmentInfo.ResourceLeaseOwner))
 	_, recordErr := environmentInfo.StateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())

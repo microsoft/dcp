@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -39,6 +40,8 @@ type physicalProcessData struct {
 	failureMessage     string
 	cleanupUnconfirmed bool
 	retryAfter         time.Time
+	stdout             *logs.CaptureFile
+	stderr             *logs.CaptureFile
 }
 
 func (data *physicalProcessData) Clone() *physicalProcessData {
@@ -53,6 +56,8 @@ func (data *physicalProcessData) Clone() *physicalProcessData {
 		failureMessage:     data.failureMessage,
 		cleanupUnconfirmed: data.cleanupUnconfirmed,
 		retryAfter:         data.retryAfter,
+		stdout:             data.stdout,
+		stderr:             data.stderr,
 	}
 }
 
@@ -70,11 +75,20 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 		data.failureReason != other.failureReason ||
 		data.failureMessage != other.failureMessage ||
 		data.cleanupUnconfirmed != other.cleanupUnconfirmed ||
+		data.stdout != other.stdout || data.stderr != other.stderr ||
 		!data.retryAfter.Equal(other.retryAfter)
 	if updated {
 		*data = *other.Clone()
 	}
 	return updated
+}
+
+func (data *physicalProcessData) logsComplete() bool {
+	return data.progress == physicalResourceProgressFailed ||
+		data.progress == physicalResourceProgressSkipped ||
+		(data.state == physicalProcessStateRuntime &&
+			(data.progress == physicalResourceProgressExited || data.progress == physicalResourceProgressMissing ||
+				(data.progress == physicalResourceProgressRunning && data.stdout == nil)))
 }
 
 func (data *physicalProcessData) operationInProgress() bool {
@@ -86,6 +100,11 @@ func (data *physicalProcessData) applyTo(
 	physicalProcess *apiv2.PhysicalProcess,
 ) (objectChange, AdditionalReconciliationDelay, bool) {
 	change := noChange
+	if data.stdout != nil {
+		change |= setValue(&physicalProcess.Status.StdoutFile, data.stdout.Path)
+		change |= setValue(&physicalProcess.Status.StderrFile, data.stderr.Path)
+	}
+	change |= setValue(&physicalProcess.Status.LogsComplete, data.logsComplete())
 	if data.handle.Pid > 0 {
 		change |= setPhysicalProcessPID(&physicalProcess.Status.PID, int64(data.handle.Pid))
 		change |= setTimestamp(&physicalProcess.Status.IdentityTimestamp, metav1.NewMicroTime(data.handle.IdentityTime))

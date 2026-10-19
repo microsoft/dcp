@@ -131,6 +131,11 @@ func (in LogicalProcessList) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalProcessLogResource) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalProcessLogResource"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in LogicalProcessSpec) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.LogicalProcessSpec"
 }
@@ -303,6 +308,11 @@ func (in PhysicalProcessConfig) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in PhysicalProcessList) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.PhysicalProcessList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalProcessLogResource) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalProcessLogResource"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.

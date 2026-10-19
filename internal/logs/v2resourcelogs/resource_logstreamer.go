@@ -98,6 +98,15 @@ func snapshot(obj resource.Object) (resourceSnapshot, error) {
 		result.systemID = container.GetResourceId()
 	case *apiv2.LogicalContainerNetwork:
 		result.systemID = container.GetResourceId()
+	case *apiv2.PhysicalProcess:
+		result.systemID = container.GetResourceId()
+		result.runtime = container.GetLogSource()
+		result.complete = result.runtime.Complete
+	case *apiv2.LogicalProcess:
+		result.systemID = container.GetResourceId()
+		result.runtime = container.Status.RuntimeLogs
+		result.complete = container.Status.Phase == apiv2.LogicalProcessPhaseExited ||
+			container.Status.Phase == apiv2.LogicalProcessPhaseFailed
 	default:
 		return resourceSnapshot{}, fmt.Errorf("unsupported log resource %T", obj)
 	}
@@ -133,6 +142,12 @@ func (streamer *resourceLogStreamer) Preflight(obj resource.Object, opts *apiv2.
 	}
 	if _, image := obj.(*apiv2.PhysicalContainerImage); image && startup {
 		return apierrors.NewBadRequest("image log sources are stdout, stderr, and system")
+	}
+	switch obj.(type) {
+	case *apiv2.LogicalProcess, *apiv2.PhysicalProcess:
+		if startup {
+			return apierrors.NewBadRequest("process log sources are stdout, stderr, and system")
+		}
 	}
 	capture := state.logSource(opts.Source)
 	if opts.Source != string(apiv2.LogStreamSourceSystem) && capture != nil && capture.Available {
@@ -347,12 +362,13 @@ func (streamer *resourceLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcher
 	}
 	_, physical := evt.Object.(*apiv2.PhysicalContainer)
 	_, image := evt.Object.(*apiv2.PhysicalContainerImage)
+	_, process := evt.Object.(*apiv2.PhysicalProcess)
 	var streamsToStop []*usvc_io.FollowWriter
 	streamer.lock.Lock()
 	for ownerUID, sessions := range streamer.sessions {
 		for _, session := range sessions {
 			system := session.source == string(apiv2.LogStreamSourceSystem)
-			sourceUpdated := !system && (physical || image) && session.capture.UID == state.ownerUID
+			sourceUpdated := !system && (physical || image || process) && session.capture.UID == state.ownerUID
 			if ownerUID != state.ownerUID && !sourceUpdated {
 				continue
 			}

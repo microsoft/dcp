@@ -5782,6 +5782,12 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 				Description: "LogicalProcessStatus describes the observed process and its physical backing resource.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"runtimeLogs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RuntimeLogs describes output from the immediate physical process backing.",
+							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
+						},
+					},
 					"phase": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Phase summarizes process availability.",
@@ -5854,7 +5860,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 			},
 		},
 		Dependencies: []string{
-			metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.LogSource{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -7706,6 +7712,27 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref common.ReferenceCallb
 				Description: "PhysicalProcessStatus describes the observed operating system process.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"stdoutFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StdoutFile is the output capture for a process launched by this resource.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stderrFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StderrFile is the error capture for a process launched by this resource.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"logsComplete": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LogsComplete indicates that this resource will not publish more process output.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"phase": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Phase summarizes the operating system process lifecycle.",

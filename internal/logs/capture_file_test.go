@@ -6,8 +6,10 @@
 package logs
 
 import (
+	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,9 +22,12 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/logstream"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/randdata"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 // Verifies that CaptureFile preserves V1 filenames, numbering, timestamps, paragraph separation,
@@ -63,6 +68,55 @@ func TestCaptureFileFormattingAndLifecycle(t *testing.T) {
 	capture.CloseAndLog(CaptureFileDisposeOnClose, logr.Discard())
 	require.NoError(t, capture.Close(CaptureFileDisposeOnClose))
 	require.NoFileExists(t, capture.Path)
+}
+
+// Verifies that direct capture uses inherited file handles rather than DCP-owned pipes,
+// allowing retained process output after capture closure and DCP-side lifetime cancellation.
+func TestCaptureFileDirectProcessOutputSurvivesCaptureLifetime(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, time.Minute)
+	defer cancel()
+	uid, uidErr := randdata.MakeRandomString(8)
+	require.NoError(t, uidErr)
+	resource := &apiv1.Executable{ObjectMeta: metav1.ObjectMeta{Name: "direct", UID: types.UID(uid)}}
+	stdout, stdoutErr := NewCaptureFile(resource, logstream.LogStreamSourceStartupStdout, CaptureFileDirectOutput)
+	require.NoError(t, stdoutErr)
+	defer func() { require.NoError(t, stdout.Close(CaptureFileDisposeOnClose)) }()
+	stderr, stderrErr := NewCaptureFile(resource, logstream.LogStreamSourceStartupStderr, CaptureFileDirectOutput)
+	require.NoError(t, stderrErr)
+	defer func() { require.NoError(t, stderr.Close(CaptureFileDisposeOnClose)) }()
+	toolPath, toolErr := internal_testutil.GetTestToolPath("delay")
+	require.NoError(t, toolErr)
+	executor := process.NewOSExecutor(logr.Discard())
+	defer executor.Dispose()
+	command := exec.Command(toolPath, "-d", "1s")
+	command.Stdout, command.Stderr = stdout.DirectFile, stderr.DirectFile
+	lifetime, cancelLifetime := context.WithCancel(ctx)
+	defer cancelLifetime()
+	exited := make(chan struct{})
+	handle, startWait, startErr := executor.StartProcess(context.WithoutCancel(lifetime), command,
+		process.ProcessExitHandlerFunc(func(process.Pid_t, int32, error) { close(exited) }), process.CreationFlagsNone, nil)
+	require.NoError(t, startErr)
+	defer func() {
+		cleanupExecutor := process.NewOSExecutor(logr.Discard())
+		defer cleanupExecutor.Dispose()
+		stopErr := cleanupExecutor.StopProcess(context.WithoutCancel(ctx), handle)
+		require.True(t, stopErr == nil || process.IsProcessGoneErr(stopErr), "%v", stopErr)
+	}()
+	startWait()
+	require.NoError(t, stdout.Close(CaptureFileCloseDefault))
+	require.NoError(t, stderr.Close(CaptureFileCloseDefault))
+	cancelLifetime()
+	executor.Dispose()
+	require.NoError(t, executor.CheckProcessRunning(handle))
+	select {
+	case <-exited:
+	case <-ctx.Done():
+		t.Fatal("retained process did not complete")
+	}
+	output, readErr := os.ReadFile(stdout.Path)
+	require.NoError(t, readErr)
+	require.Contains(t, string(output), "Ran to completion")
 }
 
 // Verifies that CaptureFile uses the existing stderr filename, appends without truncation,
