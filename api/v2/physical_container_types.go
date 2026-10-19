@@ -327,6 +327,16 @@ func (pc *PhysicalContainer) GetResourceId() string {
 	return fmt.Sprintf("physicalcontainer-%s", pc.UID)
 }
 
+// GetLogSource describes the runtime capture selected by the observed container lifecycle.
+func (pc *PhysicalContainer) GetLogSource() *LogSource {
+	complete := pc.Status.Phase == PhysicalContainerPhaseExited || pc.Status.Phase == PhysicalContainerPhaseFailed
+	return &LogSource{
+		Name: pc.Name, UID: pc.UID, ContainerID: pc.Status.ContainerID,
+		Available: pc.Status.ContainerID != "" && (!pc.Status.StartedAt.IsZero() || complete),
+		Complete:  complete,
+	}
+}
+
 func (*PhysicalContainer) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{&PhysicalContainerLogResource{}}
 }

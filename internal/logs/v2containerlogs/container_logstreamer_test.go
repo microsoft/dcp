@@ -70,7 +70,7 @@ func TestContainerStreamersSharePhysicalCapture(t *testing.T) {
 	logical := &apiv2.LogicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "logical", Namespace: physical.Namespace, UID: "logical-uid"},
 		Status: apiv2.LogicalContainerStatus{
-			PhysicalContainerRef: physical.Name, PhysicalContainerUID: physical.UID,
+			PhysicalContainerRef: physical.Name, RuntimeLogs: physical.GetLogSource(),
 			ContainerID: physical.Status.ContainerID, StartedAt: started, Phase: apiv2.LogicalContainerPhasePending,
 		},
 	}
@@ -103,8 +103,9 @@ func TestContainerLogPreflightRejectsUnsafeCaptureIdentity(t *testing.T) {
 	logical := &apiv2.LogicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "logical", Namespace: "namespace", UID: "logical-uid"},
 		Status: apiv2.LogicalContainerStatus{
-			PhysicalContainerUID: "../outside", PhysicalContainerRef: "physical",
-			ContainerID: "runtime-id", StartedAt: metav1.NowMicro(),
+			RuntimeLogs:          &apiv2.LogSource{Name: "physical", UID: "../outside", ContainerID: "runtime-id", Available: true},
+			PhysicalContainerRef: "physical",
+			ContainerID:          "runtime-id", StartedAt: metav1.NowMicro(),
 		},
 	}
 

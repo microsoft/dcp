@@ -7,6 +7,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"testing"
 
@@ -49,7 +50,7 @@ func readV2ContainerLog[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]]
 }
 
 // Verifies that namespaced logical and physical log endpoints expose identical stdout and stderr,
-// share physical capture identity, and reject unsupported startup sources before streaming.
+// share physical capture identity, and reject invalid sources before streaming.
 func TestV2ContainerLogEndpointsShareRuntimeOutput(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -67,7 +68,7 @@ func TestV2ContainerLogEndpointsShareRuntimeOutput(t *testing.T) {
 	})
 	physical := &apiv2.PhysicalContainer{}
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef}, physical))
-	require.Equal(t, physical.UID, running.Status.PhysicalContainerUID)
+	require.Equal(t, physical.UID, running.Status.RuntimeLogs.UID)
 	require.NoError(t, containerOrchestrator.SimulateContainerLogging(running.Status.ContainerID, apiv1.LogStreamSourceStdout, []byte("stdout-one\nstdout-two\n")))
 	require.NoError(t, containerOrchestrator.SimulateContainerLogging(running.Status.ContainerID, apiv1.LogStreamSourceStderr, []byte("stderr-one\n")))
 	logicalOut, logicalOutErr := readV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Source: "stdout"})
@@ -87,11 +88,143 @@ func TestV2ContainerLogEndpointsShareRuntimeOutput(t *testing.T) {
 	require.NoError(t, tailErr)
 	require.Contains(t, tailOutput, "stdout-two")
 	require.NotContains(t, tailOutput, "stdout-one")
-	startupStream, startupErr := openV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Source: "startup_stdout"})
+	startupStream, startupErr := openV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Source: "invalid-source"})
 	if startupStream != nil {
 		require.NoError(t, startupStream.Close())
 	}
 	require.True(t, apierrors.IsBadRequest(startupErr), "%v", startupErr)
+}
+
+// Verifies that owned image pull output follows before container readiness, completes after acquisition,
+// and is identical through image and logical-container log endpoints.
+func TestV2ContainerStartupLogsExposeOwnedImagePull(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-image-startup-pull")
+	source := namespace.Name + "-source"
+	releasePull := containerOrchestrator.BlockPullImage(source)
+	defer releasePull()
+	container := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
+			Image: &apiv2.PhysicalContainerImageConfig{Image: source},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	waitPullImageCallCount(t, ctx, source, 1)
+	pending := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.StartupLogs != nil, nil
+	})
+	require.Equal(t, apiv2.LogicalContainerPhasePending, pending.Status.Phase)
+	follow, followErr := openV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Source: "startup_stdout", Follow: true})
+	require.NoError(t, followErr)
+	defer func() { require.NoError(t, follow.Close()) }()
+	expected := "Pulling image " + source + "\n"
+	firstLine := make([]byte, len(expected))
+	_, firstErr := io.ReadFull(follow, firstLine)
+	require.NoError(t, firstErr)
+	require.Equal(t, expected, string(firstLine))
+	releasePull()
+	remaining, remainingErr := io.ReadAll(follow)
+	require.NoError(t, remainingErr)
+	require.Empty(t, remaining)
+	running := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning && current.Status.StartupLogs.Complete, nil
+	})
+	image := &apiv2.PhysicalContainerImage{}
+	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.StartupLogs.Name}, image))
+	imageOut, imageOutErr := readV2ContainerLog(ctx, image, apiv2.ResourceLogOptions{})
+	require.NoError(t, imageOutErr)
+	require.Equal(t, expected, imageOut)
+	logicalOut, logicalOutErr := readV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Source: "startup_stdout"})
+	require.NoError(t, logicalOutErr)
+	require.Equal(t, imageOut, logicalOut)
+	logicalErrOut, logicalErr := readV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Source: "startup_stderr"})
+	require.NoError(t, logicalErr)
+	require.Equal(t, "Resolving image manifest\n", logicalErrOut)
+}
+
+// Verifies that owned physical image failures reach both image and logical system endpoints,
+// while image pull output remains readable after the logical container fails before runtime creation.
+func TestV2ImageSystemLogsFollowLogicalOwnership(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-image-system-owner")
+	source := namespace.Name + "-source"
+	containerOrchestrator.FailNextPullImage(source, errors.New("owned-image-system-log-test"))
+	noRetries := int32(0)
+	container := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
+			Image: &apiv2.PhysicalContainerImageConfig{Image: source, PullRetryLimit: &noRetries},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	failed := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseFailed && current.Status.StartupLogs != nil, nil
+	})
+	require.Empty(t, failed.Status.ContainerID)
+	image := &apiv2.PhysicalContainerImage{}
+	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: failed.Status.StartupLogs.Name}, image))
+	imageSystem, imageSystemErr := readV2ContainerLog(ctx, image, apiv2.ResourceLogOptions{Source: "system"})
+	require.NoError(t, imageSystemErr)
+	logicalSystem, logicalSystemErr := readV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Source: "system"})
+	require.NoError(t, logicalSystemErr)
+	require.Contains(t, imageSystem, "owned-image-system-log-test")
+	require.Contains(t, logicalSystem, "owned-image-system-log-test")
+	require.Contains(t, logicalSystem, "PhysicalContainerImageReconciler")
+	startup, startupErr := readV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Source: "startup_stdout", Follow: true})
+	require.NoError(t, startupErr)
+	require.Equal(t, "Pulling image "+source+"\n", startup)
+}
+
+// Verifies that multiple containers referencing an explicitly supplied image share its build output
+// without forwarding that image's system diagnostics into their logical system streams.
+func TestV2ContainerStartupLogsExposeReferencedImageBuild(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-image-startup-build")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared-image", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Image: namespace.Name + "-output",
+			Build: &apiv2.ContainerBuildContext{Context: t.TempDir(), Digest: "build-v1"},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	first := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "first", Namespace: namespace.Name},
+		Spec:       apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{ImageRef: image.Name}},
+	}
+	second := first.DeepCopy()
+	second.Name = "second"
+	require.NoError(t, client.Create(ctx, first))
+	require.NoError(t, client.Create(ctx, second))
+	waitObjectAssumesState(t, ctx, first.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+	})
+	waitObjectAssumesState(t, ctx, second.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+	})
+	imageOut, imageErr := readV2ContainerLog(ctx, image, apiv2.ResourceLogOptions{})
+	require.NoError(t, imageErr)
+	require.Equal(t, "Building image\n", imageOut)
+	firstOut, firstErr := readV2ContainerLog(ctx, first, apiv2.ResourceLogOptions{Source: "startup_stdout"})
+	require.NoError(t, firstErr)
+	secondOut, secondErr := readV2ContainerLog(ctx, second, apiv2.ResourceLogOptions{Source: "startup_stdout"})
+	require.NoError(t, secondErr)
+	require.Equal(t, imageOut, firstOut)
+	require.Equal(t, imageOut, secondOut)
+	buildErrOut, buildErr := readV2ContainerLog(ctx, first, apiv2.ResourceLogOptions{Source: "startup_stderr"})
+	require.NoError(t, buildErr)
+	require.Equal(t, "Preparing build context\n", buildErrOut)
+	firstSystem, firstSystemErr := readV2ContainerLog(ctx, first, apiv2.ResourceLogOptions{Source: "system"})
+	require.NoError(t, firstSystemErr)
+	require.NotContains(t, firstSystem, "Building PhysicalContainerImage")
 }
 
 // Verifies that closing a logical stdout consumer preserves the physical consumer,
@@ -113,6 +246,9 @@ func TestV2ContainerLogFollowersHaveIndependentLifetimes(t *testing.T) {
 	})
 	physical := &apiv2.PhysicalContainer{}
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef}, physical))
+	noStartup, noStartupErr := readV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Source: "startup_stdout", Follow: true})
+	require.NoError(t, noStartupErr)
+	require.Empty(t, noStartup)
 	require.NoError(t, containerOrchestrator.SimulateContainerLogging(runtimeID, apiv1.LogStreamSourceStdout, []byte("history\n")))
 	logicalFollow, logicalFollowErr := openV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Follow: true})
 	require.NoError(t, logicalFollowErr)

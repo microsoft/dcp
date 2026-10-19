@@ -109,6 +109,51 @@ func TestAdditionalResourceStreamHonorsFilter(t *testing.T) {
 	require.ErrorContains(t, unsupportedErr, "does not contain a resource sink")
 }
 
+// Verifies that nested resource sinks report file creation failures without deadlocking
+// and retain per-resource backoff while unrelated resource logging remains available.
+func TestAdditionalResourceStreamReportsFileCreationFailures(t *testing.T) {
+	t.Parallel()
+	invalidFolder := filepath.Join(t.TempDir(), "missing")
+	validFolder := t.TempDir()
+	primaryID, additionalID := t.Name()+"-primary", t.Name()+"-additional"
+	defer ReleaseResourceLog(primaryID)
+	defer ReleaseResourceLog(additionalID)
+	core, entries := observer.New(zap.DebugLevel)
+	root := zapr.NewLogger(zap.New(core))
+	sink := newResourceSink(zap.NewAtomicLevelAt(zap.DebugLevel), root.GetSink(), invalidFolder)
+	primary := logr.New(sink).WithValues(RESOURCE_LOG_STREAM_ID, primaryID)
+	derived, deriveErr := WithAdditionalResourceStream(primary, additionalID)
+	require.NoError(t, deriveErr)
+
+	derived.Error(fmt.Errorf("operation failed"), "original failure")
+	require.Equal(t, 1, entries.FilterMessage("original failure").Len())
+	failures := entries.FilterMessage("Could not create resource log file").All()
+	require.Len(t, failures, 2)
+	resourceIDs := []any{failures[0].ContextMap()["ResourceID"], failures[1].ContextMap()["ResourceID"]}
+	require.ElementsMatch(t, []any{primaryID, additionalID}, resourceIDs)
+	for _, failure := range failures {
+		require.Contains(t, failure.ContextMap()["error"], invalidFolder)
+	}
+
+	derived.Error(fmt.Errorf("operation failed again"), "subsequent failure")
+	require.Equal(t, 1, entries.FilterMessage("subsequent failure").Len())
+	require.Equal(t, 2, entries.FilterMessage("Could not create resource log file").Len())
+
+	ReleaseResourceLog(additionalID)
+	healthySink := newResourceSink(zap.NewAtomicLevelAt(zap.DebugLevel), root.GetSink(), validFolder)
+	healthy := logr.New(healthySink).WithValues(RESOURCE_LOG_STREAM_ID, additionalID)
+	healthy.Info("healthy resource output")
+	ReleaseResourceLog(primaryID)
+	derived.Error(fmt.Errorf("primary failed again"), "failure with cached healthy destination")
+	require.Equal(t, 3, entries.FilterMessage("Could not create resource log file").Len())
+	healthySink.Flush()
+	contents, readErr := os.ReadFile(makeResourceLogPath(additionalID, validFolder))
+	require.NoError(t, readErr)
+	require.Contains(t, string(contents), "healthy resource output")
+	require.Contains(t, string(contents), "failure with cached healthy destination")
+	require.Contains(t, string(contents), "Could not create resource log file")
+}
+
 func (*countingLogSink) Init(logr.RuntimeInfo) {}
 
 func (*countingLogSink) Enabled(int) bool {

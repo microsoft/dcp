@@ -345,6 +345,7 @@ func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error
 	v2ContainerStreamer := v2containerlogs.NewLogStreamer(log.WithName("v2-container-logstreamer"))
 	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainer{}).GetGroupVersionResource(), v2ContainerStreamer)
 	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainer{}).GetGroupVersionResource(), v2ContainerStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerImage{}).GetGroupVersionResource(), v2ContainerStreamer)
 
 	return nil
 }
