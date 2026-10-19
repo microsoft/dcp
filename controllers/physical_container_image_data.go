@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/logs"
 )
 
 type physicalContainerImageDataStateKey string
@@ -44,7 +45,9 @@ type physicalContainerImageData struct {
 	retryAfter      time.Time
 
 	// Cancels the queued pull or build operation. Set for as long as the operation may still be running.
-	operation *physicalContainerImageOperation
+	operation     *physicalContainerImageOperation
+	startupStdout *logs.CaptureFile
+	startupStderr *logs.CaptureFile
 }
 
 func (data *physicalContainerImageData) Clone() *physicalContainerImageData {
@@ -59,6 +62,8 @@ func (data *physicalContainerImageData) Clone() *physicalContainerImageData {
 		failureMessage:  data.failureMessage,
 		retryAfter:      data.retryAfter,
 		operation:       data.operation,
+		startupStdout:   data.startupStdout,
+		startupStderr:   data.startupStderr,
 	}
 }
 
@@ -68,6 +73,10 @@ func (data *physicalContainerImageData) UpdateFrom(other *physicalContainerImage
 	}
 
 	updated := false
+	if data.startupStdout != other.startupStdout || data.startupStderr != other.startupStderr {
+		data.startupStdout, data.startupStderr = other.startupStdout, other.startupStderr
+		updated = true
+	}
 	if data.state != other.state {
 		data.state = other.state
 		updated = true
@@ -117,10 +126,21 @@ func (data *physicalContainerImageData) operationInProgress() bool {
 		data.progress == physicalResourceProgressInProgress
 }
 
+func (data *physicalContainerImageData) logsComplete() bool {
+	return !data.operationInProgress() &&
+		(data.imageID != "" || data.progress == physicalResourceProgressFailed ||
+			(data.state == physicalContainerImageStateBuild && data.progress == physicalResourceProgressResultMissing))
+}
+
 func (data *physicalContainerImageData) applyTo(
 	image *apiv2.PhysicalContainerImage,
 ) (objectChange, AdditionalReconciliationDelay, bool) {
 	change := noChange
+	if data.startupStdout != nil {
+		change |= setValue(&image.Status.StdoutFile, data.startupStdout.Path)
+		change |= setValue(&image.Status.StderrFile, data.startupStderr.Path)
+	}
+	change |= setValue(&image.Status.LogsComplete, data.logsComplete())
 	if data.imageID != "" && data.imageIDVerified {
 		change |= setValue(&image.Status.ImageID, data.imageID)
 		change |= setValue(&image.Status.Digest, data.digest)

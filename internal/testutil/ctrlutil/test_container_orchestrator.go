@@ -1565,6 +1565,18 @@ func waitForBlockedOperation(ctx context.Context, block chan struct{}) error {
 }
 
 func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
+	if options.StdOutStream != nil {
+		defer func() { _ = options.StdOutStream.Close() }()
+		if _, writeErr := fmt.Fprintln(options.StdOutStream, "Building image"); writeErr != nil {
+			return writeErr
+		}
+	}
+	if options.StdErrStream != nil {
+		defer func() { _ = options.StdErrStream.Close() }()
+		if _, writeErr := fmt.Fprintln(options.StdErrStream, "Preparing build context"); writeErr != nil {
+			return writeErr
+		}
+	}
 	if err := to.recordBuildImageOperation(ctx, options.Tags); err != nil {
 		return err
 	}
@@ -1665,6 +1677,18 @@ func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, options 
 }
 
 func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options containers.PullImageOptions) (string, error) {
+	if options.StdOutStream != nil {
+		defer func() { _ = options.StdOutStream.Close() }()
+		if _, writeErr := fmt.Fprintln(options.StdOutStream, "Pulling image", options.Image); writeErr != nil {
+			return "", writeErr
+		}
+	}
+	if options.StdErrStream != nil {
+		defer func() { _ = options.StdErrStream.Close() }()
+		if _, writeErr := fmt.Fprintln(options.StdErrStream, "Resolving image manifest"); writeErr != nil {
+			return "", writeErr
+		}
+	}
 	if err := to.recordOperation(ctx, operationPullImage, options.Image); err != nil {
 		return "", err
 	}
@@ -1773,7 +1797,9 @@ func (to *TestContainerOrchestrator) HasImage(id string) bool {
 
 func (to *TestContainerOrchestrator) findImage(id string) (*testImage, bool) {
 	i := slices.IndexFunc(to.images, func(img *testImage) bool {
-		return img.id == id || slices.Contains(img.tags, id)
+		return img.id == id || slices.Any(img.tags, func(tag string) bool {
+			return containers.ImageReferenceWithDefaultTag(tag) == containers.ImageReferenceWithDefaultTag(id)
+		})
 	})
 	if i >= 0 {
 		return to.images[i], true

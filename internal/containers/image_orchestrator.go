@@ -9,7 +9,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
+
+// ImageReferenceWithDefaultTag makes an implicit latest tag explicit without resolving registry aliases.
+// The reference must be nonempty; tagged and digest-qualified references are preserved.
+func ImageReferenceWithDefaultTag(image string) string {
+	if strings.Contains(image, "@") || strings.LastIndex(image, ":") > strings.LastIndex(image, "/") {
+		return image
+	}
+	return image + ":latest"
+}
 
 // InspectImages command types
 
@@ -131,6 +141,7 @@ type PullImageOptions struct {
 	// Digest of the image to pull (optional)
 	Digest string `json:"Digest,omitempty"`
 
+	StreamCommandOptions
 	TimeoutOption
 }
 

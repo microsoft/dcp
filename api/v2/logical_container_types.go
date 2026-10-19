@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -228,6 +229,12 @@ type LogicalContainerNetworkConnectionConfig struct {
 // LogicalContainerStatus describes the observed logical container and its physical dependencies.
 // +k8s:openapi-gen=true
 type LogicalContainerStatus struct {
+	// StartupLogs identifies output from the physical image dependency.
+	StartupLogs *LogSource `json:"startupLogs,omitempty"`
+
+	// RuntimeLogs identifies output from the backing physical container.
+	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
+
 	// Phase summarizes the container lifecycle.
 	// +kubebuilder:validation:Enum=Pending;Running;Paused;Exited;Unknown;Failed
 	// +optional
@@ -295,6 +302,28 @@ type LogicalContainer struct {
 
 func (c *LogicalContainer) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: GroupVersion.Group, Version: GroupVersion.Version, Resource: "logicalcontainers"}
+}
+
+// GetResourceId identifies the resource-specific system log stream.
+func (c *LogicalContainer) GetResourceId() string {
+	return fmt.Sprintf("logicalcontainer-%s", c.UID)
+}
+
+func (*LogicalContainer) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&LogicalContainerLogResource{}}
+}
+
+// LogicalContainerLogResource registers the logical container log subresource.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type LogicalContainerLogResource struct{}
+
+func (*LogicalContainerLogResource) Name() string { return LogSubresourceName }
+
+func (*LogicalContainerLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
 }
 
 // GetLeaseKey identifies the runtime container shared by logical resources and V1 containers.
@@ -444,6 +473,8 @@ func init() {
 }
 
 var _ apiserver_resource.Object = (*LogicalContainer)(nil)
+var _ apiserver_resource.ObjectWithGenericSubResource = (*LogicalContainer)(nil)
+var _ apiserver_resource.GenericSubResource = (*LogicalContainerLogResource)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*LogicalContainer)(nil)
 var _ apiserver_resource.StatusSubResource = (*LogicalContainerStatus)(nil)
 var _ apiserver_resource.ObjectList = (*LogicalContainerList)(nil)

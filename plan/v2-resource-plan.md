@@ -77,6 +77,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 ## Current V2 foundation
 
 - `Namespace` defines the namespace boundary for V2 resources and provides namespace-scoped cleanup. Namespace deletion waits for admitted child storage creates to finish, even if their HTTP requests time out, and rejects new creates until cleanup completes. Namespace collection deletion is unsupported. Top-level V2 mutation dry-runs are rejected because the storage backend does not provide no-write dry-run semantics.
+- Namespace cleanup ordering and resource selection come solely from relational cleanup metadata. A shared executor resolves each GVR, lists it uncached within the namespace, and issues bounded concurrent deletes; it advances dependencies only after the resources actually disappear.
 - `PhysicalContainerImage` provides source image pull and build workflows. The first runtime image ID successfully inspected by the controller is pinned for the resource lifetime and remains the only identity used for later inspection and dependent containers. If that exact image becomes unavailable, the resource reports it unavailable while retaining the published identity and metadata; it never silently pulls or builds a replacement. Delete and recreate the resource to realize a different image.
 - `PhysicalContainer` creates or tracks one runtime container, reports runtime status and port mappings, and references same-namespace `PhysicalContainerImage`, `PhysicalContainerVolume`, and `PhysicalContainerNetwork` resources. Container creation waits for every referenced physical resource to become ready. Bind mounts continue to use direct host paths, while named volume mounts resolve the referenced volume's observed runtime ID.
 - The one-way container `stop` request completes terminally even when no runtime container was created or started. A stop before creation prevents creation without waiting for prerequisites; an in-flight creation is allowed to settle before stopping its resulting container. Physical containers report `Exited` with `StopRequested` when creation or start is skipped, preserving the raw runtime status when a container exists. Logical containers report `ContainerStopped` and release persistent startup leases.
@@ -167,39 +168,19 @@ After the physical primitives are in place, add logical V2 resources that expres
 
 ### Log streaming
 
-V2 has no log surface. `AdditionalTypes` is empty and no V2 resource exposes a `log` subresource, so output from a V2 runtime container cannot be read through the V2 API. This is the largest user-visible gap in the current V2 foundation.
+Logical and physical containers expose a namespaced `log` subresource at `/apis/{group}/v2/namespaces/{namespace}/{resource}/{name}/log`. Both support `stdout` (the default), `stderr`, and `system`, with follow, timestamps, tail, limit, skip, and line-number options. Logical containers additionally expose image acquisition as `startup_stdout` and `startup_stderr`. Physical images expose pull/build capture as `stdout`/`stderr`, plus their own `system` stream.
 
-The V1 mechanism, for reference:
+Logical containers, physical containers, and physical images capture resource-specific system diagnostics. Owned physical containers and images also forward diagnostics into their logical owner's stream using scoped nested resource sinks; each resource releases only its own writer. Referencing an independently owned image exposes its startup capture but does not forward its system diagnostics. Logical system streams read that single logical stream rather than querying or merging child logs, and can follow diagnostics before runtime creation and after startup failure or runtime exit.
 
-- Logs are a generic `log` subresource served at `/apis/{group}/{version}/{resource}/{name}/log`, backed per resource kind by the `apiv1.ResourceLogStreamers` registry keyed by `GroupVersionResource`.
-- `LogOptions` carries the query parameters. `LogStreamer` exists only because a Kubernetes storage object must be associated with a type.
-- Two streamer implementations back the registry: file-based (`stdiologs`, for `Executable` and `ContainerExec`) and runtime-based (`containerlogs`, for `Container`).
-- OpenAPI generation is suppressed for the subresource because the response is raw text rather than a structured object.
+The watch-driven storage and query-option implementation is shared in `internal/logstream`, with version-specific API registration and streamer contracts. V1 keeps its existing API names and startup sources. V2 uses distinct `ResourceLogOptions` and `ResourceLogResponse` kinds to avoid internal-kind collisions when both API versions are registered. Streaming preserves the namespace captured during the API GET handoff.
 
-Whether log streams belong to physical resources, logical resources, or both is an open question. The existing source model is the strongest available evidence:
+Each API version registers streamers by resource kind. Logical containers, physical containers, and physical images share one source/session implementation. A common `LogSource` descriptor carries resource identity, runtime capture ID or pre-captured file paths, availability, and completion. Logical status publishes both `runtimeLogs` and `startupLogs` with this contract; reconciliation projects them directly from the corresponding physical resource. The streamer uses only its watched snapshot and never queries a child resource or proxies a child's log endpoint. Runtime captures are shared by physical resource UID, and availability follows observed runtime startup rather than logical readiness.
 
-- The orchestrator layer (`internal/containers`) defines exactly two sources, `stdout` and `stderr`, because those are what a container runtime produces.
-- The V1 API defines five, adding `startup_stdout`, `startup_stderr`, and `system`, which are DCP-level concepts with no runtime equivalent.
-- V1 pulls and builds images inside the `Container` resource, so that output surfaces as the `startup_*` sources. In V2 that work belongs to `PhysicalContainerImage`, which can own its own stream instead.
+Client sessions follow their own API resource's lifecycle. Closing one consumer does not stop another consumer of the same capture. Physical resource deletion ends all consumers of that source, including logical consumers; logical deletion ends its own sessions. Storage preserves the V1 handoff: stop the request-specific watcher when streaming starts and use the existing kind-wide lifecycle callbacks thereafter. V2 callbacks finish sessions on source completion or deletion, not nonterminal snapshot differences, and use the existing final-drain behavior. OpenAPI response schemas remain suppressed because the endpoints return raw text.
 
-That split suggests physical resources should expose only the streams their runtime object actually produces, while logical resources compose those streams and add DCP-level sources. Confirm the model before implementing it.
+The physical image controller captures pull/build output using the shared `internal/logs.CaptureFile` utility also used for V1 container startup. Logical reconciliation observes its image dependency directly and projects the capture identity, file paths, and completion state, including before container runtime creation. Physical containers do not relay image logs. A single in-memory completion predicate closes capture writers and finishes follows after acquisition succeeds or fails terminally, independently of subsequent image-inspection retries; retryable missing pull results remain open. Adopted runtime containers and never-pulled images with no acquisition output finish without waiting for nonexistent captures. Referencing the same image shares its capture rather than copying its output.
 
-This work is cross-cutting rather than sequenced after the logical layer. The ownership decision needs enough of the logical shape to be credible, but exposing physical container and image output does not need to wait for the full logical layer to land.
-
-1. Decide the ownership model for log streams.
-   - Determine whether physical resources, logical resources, or both expose a `log` subresource.
-   - Decide whether a logical resource aggregates streams from the physical resources it references, and how a caller selects between an aggregated view and a single underlying stream.
-   - Decide whether V2 `startup_*` output becomes a stream on the referenced `PhysicalContainerImage` rather than a source on the container.
-   - Decide whether V2 reuses the V1 source names or defines a source set per resource kind.
-
-2. Decide where the shared log plumbing lives.
-   - `ResourceLogStreamer`, `ResourceLogStreamers`, and `LogOptions` live in `api/v1` but are version-neutral in shape. Decide whether to hoist them into `pkg/commonapi`, as was done for `ResourceCreationProhibited`, or to give V2 its own copies consistent with the type ownership rules above.
-   - Confirm the subresource plumbing works for namespace-scoped resources. Client-side path construction is already generic (`NamespaceIfScoped`), but every V1 resource that exposes logs today is cluster-scoped, and both `LogStreamer` and `LogOptions` return `false` from `NamespaceScoped`, so the server-side registration is unproven for namespaced kinds.
-
-3. Add log streaming to V2 resources once the model is settled.
-   - Expose runtime container output for `PhysicalContainer`.
-   - Expose pull and build output for `PhysicalContainerImage`.
-   - Terminate in-flight streams when the resource or its namespace is deleted, so streaming does not block namespace cleanup.
+V2 image acquisition serializes pulls of each image reference through an exclusive state-store lease, including competing resources in the same controller process. Lease keys make an implicit `latest` tag explicit without changing runtime command arguments or assuming registry resolution for short names. Policies are reevaluated after acquisition; `never` only inspects local state and bypasses the lease. Declared build-base pulls use the same path. Docker and Podman capture non-TTY pull output without quiet mode when output is requested; WSLC retains quiet pull formatting. All runtimes resolve pull results using structured image inspection, not progress-output parsing. Freshness policies and persisted pull-history metadata remain deferred.
 
 ### Deferred V1 integration
 

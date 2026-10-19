@@ -19,6 +19,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -467,7 +468,8 @@ func TestBuildImageUsesIIDFile(t *testing.T) {
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 
-func TestPullImage(t *testing.T) {
+// Verifies that PullImage captures human-readable output and resolves identity through inspection.
+func TestPullImageStreamsOutputAndInspectsIdentity(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
@@ -477,26 +479,39 @@ func TestPullImage(t *testing.T) {
 		require.NoError(t, executor.Close())
 	})
 	expectedCommand := []string{
-		"podman", "image", "pull", "--quiet", "example.test/test/image:latest",
+		"podman", "image", "pull", "example.test/test/image:latest",
 	}
 	executor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
 			Command: expectedCommand,
 		},
 		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
-			_, writeErr := execution.Cmd.Stdout.Write([]byte("sha256:image-id\n"))
+			_, writeErr := execution.Cmd.Stderr.Write([]byte("Copying blob layer\n"))
 			require.NoError(t, writeErr)
 			return 0
 		},
 	})
+	inspectCommand := []string{"podman", "image", "inspect", "--format", "json", "example.test/test/image:latest"}
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{Command: inspectCommand},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			_, writeErr := execution.Cmd.Stdout.Write([]byte("[{\"Id\":\"sha256:image-id\"}]\n"))
+			require.NoError(t, writeErr)
+			return 0
+		},
+	})
+	var output bytes.Buffer
 
 	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
 	imageID, pullErr := orchestrator.PullImage(ctx, containers.PullImageOptions{
-		Image: "example.test/test/image:latest",
+		Image:                "example.test/test/image:latest",
+		StreamCommandOptions: containers.StreamCommandOptions{StdErrStream: usvc_io.NopWriteCloser(&output)},
 	})
 
 	require.NoError(t, pullErr)
 	require.Equal(t, "sha256:image-id", imageID)
+	require.Equal(t, "Copying blob layer\n", output.String())
+	require.Len(t, executor.FindAll(inspectCommand, "", nil), 1)
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 
