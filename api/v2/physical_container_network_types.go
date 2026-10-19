@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -189,6 +190,28 @@ func (pn *PhysicalContainerNetwork) GetObjectMeta() *metav1.ObjectMeta {
 	return &pn.ObjectMeta
 }
 
+// GetResourceId identifies the network-specific system log stream.
+func (pn *PhysicalContainerNetwork) GetResourceId() string {
+	return fmt.Sprintf("physicalcontainernetwork-%s", pn.UID)
+}
+
+func (*PhysicalContainerNetwork) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&PhysicalContainerNetworkLogResource{}}
+}
+
+// PhysicalContainerNetworkLogResource registers system diagnostics for a physical network.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type PhysicalContainerNetworkLogResource struct{}
+
+func (*PhysicalContainerNetworkLogResource) Name() string { return LogSubresourceName }
+
+func (*PhysicalContainerNetworkLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
+}
+
 func (pn *PhysicalContainerNetwork) GetStatus() apiserver_resource.StatusSubResource {
 	return pn.Status
 }
@@ -300,6 +323,8 @@ func init() {
 // Ensure types support interfaces expected by our API server.
 var _ apiserver_resource.Object = (*PhysicalContainerNetwork)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalContainerNetwork)(nil)
+var _ apiserver_resource.ObjectWithGenericSubResource = (*PhysicalContainerNetwork)(nil)
+var _ apiserver_resource.GenericSubResource = (*PhysicalContainerNetworkLogResource)(nil)
 var _ apiserver_resource.StatusSubResource = (*PhysicalContainerNetworkStatus)(nil)
 var _ apiserver_resource.ObjectList = (*PhysicalContainerNetworkList)(nil)
 var _ commonapi.ListWithObjectItems[PhysicalContainerNetwork, *PhysicalContainerNetwork] = (*PhysicalContainerNetworkList)(nil)

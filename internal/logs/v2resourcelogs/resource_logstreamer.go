@@ -94,6 +94,10 @@ func snapshot(obj resource.Object) (resourceSnapshot, error) {
 		result.systemID = container.GetResourceId()
 		result.runtime = container.GetLogSource()
 		result.complete = result.runtime.Complete
+	case *apiv2.PhysicalContainerNetwork:
+		result.systemID = container.GetResourceId()
+	case *apiv2.LogicalContainerNetwork:
+		result.systemID = container.GetResourceId()
 	default:
 		return resourceSnapshot{}, fmt.Errorf("unsupported log resource %T", obj)
 	}
@@ -116,6 +120,12 @@ func (streamer *resourceLogStreamer) Preflight(obj resource.Object, opts *apiv2.
 	state, snapshotErr := snapshot(obj)
 	if snapshotErr != nil {
 		return apierrors.NewInternalError(snapshotErr)
+	}
+	switch obj.(type) {
+	case *apiv2.PhysicalContainerNetwork, *apiv2.LogicalContainerNetwork:
+		if opts.Source != string(apiv2.LogStreamSourceSystem) {
+			return apierrors.NewBadRequest("network log source must be system")
+		}
 	}
 	startup := opts.Source == string(apiv2.LogStreamSourceStartupStdout) || opts.Source == string(apiv2.LogStreamSourceStartupStderr)
 	if _, physical := obj.(*apiv2.PhysicalContainer); physical && startup {
