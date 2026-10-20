@@ -33,6 +33,8 @@ const (
 	LogicalContainerController
 	LogicalContainerNetworkController
 	LogicalProcessController
+	PhysicalContainerExecController
+	LogicalContainerExecController
 	NoControllers  IncludedController = 0
 	AllControllers IncludedController = ^NoControllers
 )

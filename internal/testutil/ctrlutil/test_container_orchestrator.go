@@ -82,6 +82,7 @@ const (
 	operationRemoveVolume
 	operationPostRemoveVolume
 	operationInspectVolume
+	operationExecContainer
 )
 
 type testContainerOperationKey struct {
@@ -102,6 +103,7 @@ type TestContainerOrchestrator struct {
 	containersToFail         map[string]containerExit
 	containersToHealthcheck  map[string]containers.ContainerHealthcheck
 	execs                    map[string]*containerExec
+	execExitCodes            map[string]int32
 	createFiles              map[string][]*containerCreateFile
 	operationCallCounts      map[testContainerOperationKey]int
 	operationBlocks          map[testContainerOperationKey]chan struct{}
@@ -138,10 +140,12 @@ type containerStartupLogs struct {
 }
 
 type containerExec struct {
-	stdout   io.WriteCloser
-	stderr   io.WriteCloser
-	exited   bool
-	exitChan chan int32
+	options          containers.ExecContainerOptions
+	stdout           io.WriteCloser
+	stderr           io.WriteCloser
+	exited           bool
+	exitChan         chan int32
+	stopCancellation func() bool
 }
 
 type containerCreateFile struct {
@@ -2206,6 +2210,9 @@ func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options c
 }
 
 func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
+	if operationErr := to.recordOperation(ctx, operationExecContainer, options.Command); operationErr != nil {
+		return nil, operationErr
+	}
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -2227,6 +2234,9 @@ func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options 
 	if foundContainer == nil {
 		return nil, containers.ErrNotFound
 	}
+	if foundContainer.Status != containers.ContainerStatusRunning {
+		return nil, fmt.Errorf("container is not running")
+	}
 
 	execKey := fmt.Sprintf("%s:%s", foundContainer.ID, options.Command)
 	if _, found := to.execs[execKey]; found {
@@ -2235,14 +2245,83 @@ func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options 
 
 	exitCodeChan := make(chan int32, 1)
 
-	to.execs[fmt.Sprintf("%s:%s", foundContainer.ID, options.Command)] = &containerExec{
+	execution := &containerExec{
+		options:  options,
 		stdout:   options.StdOutStream,
 		stderr:   options.StdErrStream,
 		exited:   false,
 		exitChan: exitCodeChan,
 	}
+	to.execs[execKey] = execution
+	execution.stopCancellation = context.AfterFunc(ctx, func() {
+		to.mutex.Lock()
+		defer to.mutex.Unlock()
+		if !execution.exited {
+			execution.finish(-1)
+		}
+	})
+	if exitCode, complete := to.execExitCodes[options.Command]; complete {
+		delete(to.execExitCodes, options.Command)
+		execution.finish(exitCode)
+	}
 
 	return exitCodeChan, nil
+}
+
+// GetContainerExecOptions returns a copy of the recorded invocation without its output writers.
+func (to *TestContainerOrchestrator) GetContainerExecOptions(containerID, command string) (containers.ExecContainerOptions, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+	execution, found := to.execs[containerID+":"+command]
+	if !found {
+		return containers.ExecContainerOptions{}, containers.ErrNotFound
+	}
+	options := execution.options
+	options.Args = append([]string(nil), options.Args...)
+	options.Env = append([]containers.EnvVar(nil), options.Env...)
+	options.EnvFiles = append([]string(nil), options.EnvFiles...)
+	options.StreamCommandOptions = containers.StreamCommandOptions{}
+	return options, nil
+}
+
+// CompleteNextExecContainer completes the next launch before returning its exit channel.
+func (to *TestContainerOrchestrator) CompleteNextExecContainer(command string, exitCode int32) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+	if to.execExitCodes == nil {
+		to.execExitCodes = make(map[string]int32)
+	}
+	to.execExitCodes[command] = exitCode
+}
+
+// BlockExecContainer blocks command launch until released or its context is cancelled.
+func (to *TestContainerOrchestrator) BlockExecContainer(command string) func() {
+	return to.blockOperation(operationExecContainer, command)
+}
+
+// FailNextExecContainer injects a launch failure for the command.
+func (to *TestContainerOrchestrator) FailNextExecContainer(command string, launchErr error) {
+	to.queueOperationError(operationExecContainer, command, launchErr)
+}
+
+// ExecContainerCallCount reports launch attempts for the command.
+func (to *TestContainerOrchestrator) ExecContainerCallCount(command string) int {
+	return to.operationCallCount(operationExecContainer, command)
+}
+
+func (execution *containerExec) finish(exitCode int32) {
+	if execution.stopCancellation != nil {
+		execution.stopCancellation()
+	}
+	if execution.stdout != nil {
+		_ = execution.stdout.Close()
+	}
+	if execution.stderr != nil {
+		_ = execution.stderr.Close()
+	}
+	execution.exited = true
+	execution.exitChan <- exitCode
+	close(execution.exitChan)
 }
 
 // SetContainerAttachHandler installs the handler invoked from AttachContainer.
@@ -2315,7 +2394,12 @@ func (to *TestContainerOrchestrator) AttachContainer(
 	return ptp, nil
 }
 
-func (to *TestContainerOrchestrator) fireAttachExitHandlers(container *testContainer, exitCode int32) {
+func (to *TestContainerOrchestrator) finishContainerExecutions(container *testContainer, execExitCode, attachExitCode int32) {
+	for key, execution := range to.execs {
+		if strings.HasPrefix(key, container.ID+":") && !execution.exited {
+			execution.finish(execExitCode)
+		}
+	}
 	if len(container.terminalProcesses) == 0 {
 		return
 	}
@@ -2327,7 +2411,7 @@ func (to *TestContainerOrchestrator) fireAttachExitHandlers(container *testConta
 			// Already fired by another path (e.g. TestProcessExecutor.StopProcess).
 			continue
 		default:
-			tproc.ExitHandler.OnProcessExited(tproc.Handle.Pid, exitCode, nil)
+			tproc.ExitHandler.OnProcessExited(tproc.Handle.Pid, attachExitCode, nil)
 		}
 	}
 }
@@ -2403,16 +2487,6 @@ func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, contai
 		return nil, nil
 	}
 
-	for key, exec := range to.execs {
-		if !exec.exited && strings.HasPrefix(key, fmt.Sprintf("%s:", container.ID)) {
-			// If the execution hasn't already been completed, signal that it should be stopped
-			exec.exitChan <- -1
-			_ = exec.stdout.Close()
-			_ = exec.stderr.Close()
-			close(exec.exitChan)
-		}
-	}
-
 	container.Status = containers.ContainerStatusExited
 	container.FinishedAt = time.Now().UTC()
 	container.stdoutLog.Close()
@@ -2420,7 +2494,7 @@ func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, contai
 
 	// Mirror production: container stopping causes any attach process to exit,
 	// which in turn drives the terminal bridge shutdown.
-	to.fireAttachExitHandlers(container, container.ExitCode)
+	to.finishContainerExecutions(container, -1, container.ExitCode)
 
 	stopEvent := containers.EventMessage{
 		Source: containers.EventSourceContainer,
@@ -2539,7 +2613,7 @@ func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, cont
 	// Best-effort: if a test removes a container without first stopping it (or
 	// while attach handlers are still recorded), still drive the bridge
 	// shutdown so the terminal teardown path runs.
-	to.fireAttachExitHandlers(container, -1)
+	to.finishContainerExecutions(container, -1, -1)
 
 	delete(to.containers, container.ID)
 
@@ -2895,7 +2969,7 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 
 			// Mirror production: simulating container exit also drives
 			// terminate of any attached terminal session.
-			to.fireAttachExitHandlers(container, exitCode)
+			to.finishContainerExecutions(container, exitCode, exitCode)
 
 			to.containers[container.ID] = container
 
@@ -3090,11 +3164,7 @@ func (to *TestContainerOrchestrator) SimulateContainerExecExit(ctx context.Conte
 		return fmt.Errorf("command is not running; only running commands can emit logs")
 	}
 
-	matchingCommand.exitChan <- exitCode
-	close(matchingCommand.exitChan)
-	_ = matchingCommand.stdout.Close()
-	_ = matchingCommand.stderr.Close()
-	matchingCommand.exited = true
+	matchingCommand.finish(exitCode)
 
 	return nil
 }
