@@ -535,8 +535,11 @@ func handleLogicalContainerRuntime(
 		data.progress, data.reason = physicalResourceProgressMissing, ""
 		data.message = "The backing PhysicalContainer no longer exists."
 		change := applyLogicalContainerPhysicalDetails(container, &apiv2.PhysicalContainerStatus{})
-		if container.Status.RuntimeLogs != nil {
-			container.Status.RuntimeLogs = nil
+		runtimeLogs := &apiv2.LogSource{
+			Name: physicalName.Name, UID: data.physicalContainerUID, Complete: true,
+		}
+		if !reflect.DeepEqual(container.Status.RuntimeLogs, runtimeLogs) {
+			container.Status.RuntimeLogs = runtimeLogs
 			change |= statusChanged
 		}
 		if data.lease != nil {
