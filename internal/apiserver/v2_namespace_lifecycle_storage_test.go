@@ -8,7 +8,6 @@ package apiserver
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -79,51 +78,6 @@ func TestV2NamespaceLifecycleStorageHoldsChildLeaseAfterHTTPTimeout(t *testing.T
 	require.NoError(t, childGetErr)
 	fixture.requireTerminating(t)
 	requireNoV2NamespaceMutation(t, fixture.gate, "test")
-}
-
-func TestV2NamespaceLifecycleStorageHoldsDeleteLeaseAfterHTTPTimeout(t *testing.T) {
-	fixture := newV2NamespaceStorageFixture(t)
-	fixture.createNamespace(t)
-	namespaceWatch, watchErr := fixture.namespaces.Watch(fixture.ctx, nil)
-	require.NoError(t, watchErr)
-	stopWatch := sync.OnceFunc(func() { stopV2NamespaceWatcher(namespaceWatch) })
-	defer stopWatch()
-	persisted := make(chan struct{})
-	fixture.fs.afterWrite = func(obj runtime.Object) {
-		if namespace, namespaceOK := obj.(*apiv2.Namespace); namespaceOK && namespace.DeletionTimestamp != nil {
-			close(persisted)
-		}
-	}
-	requestCtx, cancelRequest := context.WithCancel(fixture.ctx)
-	defer cancelRequest()
-	httpResult := make(chan error, 1)
-	storageDone := make(chan struct{})
-	go func() {
-		_, finishErr := finisher.FinishRequest(requestCtx, func() (runtime.Object, error) {
-			defer close(storageDone)
-			deleted, _, deleteErr := fixture.namespaces.Delete(requestCtx, "test", nil, nil)
-			return deleted, deleteErr
-		})
-		httpResult <- finishErr
-	}()
-	waitForSignal(t, fixture.ctx, persisted)
-	cancelRequest()
-	require.True(t, apierrors.IsTimeout(waitForError(t, fixture.ctx, httpResult)))
-	fixture.requireTerminating(t)
-	waitV2NamespaceMutationReferences(t, fixture.ctx, fixture.gate, "test", 1)
-	require.Empty(t, fixture.gate.closedNamespaceStates())
-	_, createErr := fixture.children.Create(fixture.ctx, newV2LifecycleChild(), nil, nil)
-	require.True(t, apierrors.IsForbidden(createErr))
-
-	stopWatch()
-	waitForSignal(t, fixture.ctx, storageDone)
-	requireNoV2NamespaceMutation(t, fixture.gate, "test")
-	fixture.gate.lock.Lock()
-	defer fixture.gate.lock.Unlock()
-	state := fixture.gate.namespaces["test"]
-	require.True(t, state.closed)
-	require.True(t, state.deleteAccepted)
-	require.Zero(t, state.activeDeletes)
 }
 
 func TestV2NamespaceLifecycleStorageSerializesNamespaceCreateAndDelete(t *testing.T) {

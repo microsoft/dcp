@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -225,6 +226,71 @@ func TestV2ContainerStartupLogsExposeReferencedImageBuild(t *testing.T) {
 	firstSystem, firstSystemErr := readV2ContainerLog(ctx, first, apiv2.ResourceLogOptions{Source: "system"})
 	require.NoError(t, firstSystemErr)
 	require.NotContains(t, firstSystem, "Building PhysicalContainerImage")
+}
+
+// Verifies that a logical-only stdout follower finishes when its physical backing disappears,
+// without a physical log request starting the physical-kind lifecycle watch.
+func TestV2LogicalContainerLogFollowerEndsWhenPhysicalBackingIsDeleted(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	server, _, startErr := StartTestEnvironment(t, ctx,
+		NamespaceController|LogicalContainerController|PhysicalContainerController,
+		t.Name(), t.TempDir())
+	require.NoError(t, startErr)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "logical-only-log-follow"}}
+	require.NoError(t, server.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, server.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+	orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	runtimeID, runErr := orchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{Name: "logical-only-runtime", Image: "existing-image"},
+	})
+	require.NoError(t, runErr)
+	container := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec:       apiv2.LogicalContainerSpec{Mode: apiv2.LogicalContainerModeExisting, ContainerName: "logical-only-runtime"},
+	}
+	require.NoError(t, server.Client.Create(ctx, container))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+	})
+	require.NoError(t, orchestrator.SimulateContainerLogging(runtimeID, apiv1.LogStreamSourceStdout, []byte("history\n")))
+	// EOF is the behavior under test; bound a regression independently of environment shutdown.
+	streamCtx, cancelStream := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelStream()
+	gvr := container.GetGroupVersionResource()
+	follower, followErr := server.RestClient.Get().
+		AbsPath("/apis", gvr.Group, gvr.Version, "namespaces", namespace.Name, gvr.Resource, container.Name, apiv2.LogSubresourceName).
+		SpecificallyVersionedParams(&apiv2.ResourceLogOptions{Follow: true},
+			runtime.NewParameterCodec(dcpclient.NewScheme()), apiv2.GroupVersion).Stream(streamCtx)
+	require.NoError(t, followErr)
+	defer func() { require.NoError(t, follower.Close()) }()
+	history := make([]byte, len("history\n"))
+	_, historyErr := io.ReadFull(follower, history)
+	require.NoError(t, historyErr)
+	require.Equal(t, "history\n", string(history))
+	physical := &apiv2.PhysicalContainer{}
+	require.NoError(t, server.Client.Get(ctx, types.NamespacedName{
+		Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef,
+	}, physical))
+	require.NoError(t, server.Client.Delete(ctx, physical))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+	waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.ContainerID == "" && current.Status.Phase == apiv2.LogicalContainerPhaseUnknown, nil
+	})
+	remaining, readErr := io.ReadAll(follower)
+	require.NoError(t, readErr)
+	require.Empty(t, remaining)
+	missing := &apiv2.LogicalContainer{}
+	require.NoError(t, server.Client.Get(ctx, container.NamespacedName(), missing))
+	require.NotNil(t, missing.Status.RuntimeLogs)
+	require.Equal(t, physical.UID, missing.Status.RuntimeLogs.UID)
+	require.True(t, missing.Status.RuntimeLogs.Complete)
+	require.False(t, missing.Status.RuntimeLogs.Available)
+	require.NoError(t, server.Client.Delete(ctx, container))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
 }
 
 // Verifies that closing a logical stdout consumer preserves the physical consumer,
