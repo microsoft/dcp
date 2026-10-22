@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -381,6 +383,67 @@ func TestUnmarshalInspectedNetworkReportsIPv6(t *testing.T) {
 
 	require.NoError(t, unmarshalErr)
 	require.True(t, network.IPv6)
+}
+
+type contextObservingExecutor struct {
+	process.Executor
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (executor *contextObservingExecutor) StartProcess(
+	ctx context.Context,
+	cmd *exec.Cmd,
+	handler process.ProcessExitHandler,
+	flags process.ProcessCreationFlag,
+	sysCreateProcess process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	executor.deadline, executor.hasDeadline = ctx.Deadline()
+	return executor.Executor.StartProcess(ctx, cmd, handler, flags, sysCreateProcess)
+}
+
+// Verifies that ensureSupportedDockerCliVersion uses the ordinary command timeout without extending an earlier caller deadline.
+func TestDockerVersionCheckDeadline(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name          string
+		parentTimeout time.Duration
+	}{
+		{name: "ordinary command timeout", parentTimeout: time.Minute},
+		{name: "earlier caller deadline", parentTimeout: 5 * time.Second},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			testCtx, testCancel := testutil.GetTestContext(t, 0)
+			defer testCancel()
+			executor := internal_testutil.NewTestProcessExecutor(testCtx)
+			t.Cleanup(func() {
+				require.NoError(t, executor.Close())
+			})
+			installDockerVersionAutoExecution(executor, "Docker version 25.0.0, build 1234567\n", 0)
+			observingExecutor := &contextObservingExecutor{Executor: executor}
+			orchestrator := NewDockerCliOrchestrator(testr.New(t), observingExecutor).(*DockerCliOrchestrator)
+			parentCtx, parentCancel := context.WithTimeout(testCtx, testCase.parentTimeout)
+			defer parentCancel()
+			parentDeadline, hasParentDeadline := parentCtx.Deadline()
+			require.True(t, hasParentDeadline)
+
+			before := time.Now()
+			versionErr := orchestrator.ensureSupportedDockerCliVersion(parentCtx)
+			after := time.Now()
+
+			require.NoError(t, versionErr)
+			require.True(t, observingExecutor.hasDeadline)
+			if parentDeadline.Before(before.Add(ordinaryDockerCommandTimeout)) {
+				require.Equal(t, parentDeadline, observingExecutor.deadline)
+			} else {
+				require.False(t, observingExecutor.deadline.Before(before.Add(ordinaryDockerCommandTimeout)))
+				require.False(t, observingExecutor.deadline.After(after.Add(ordinaryDockerCommandTimeout)))
+			}
+		})
+	}
 }
 
 func TestGetStatusChecksDockerVersionBeforeNetworks(t *testing.T) {
