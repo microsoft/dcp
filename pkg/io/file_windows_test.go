@@ -8,7 +8,6 @@
 package io
 
 import (
-	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -108,15 +107,15 @@ func TestRestrictedFileRejectsReparsePathBeforeTruncate(t *testing.T) {
 	require.Equal(t, "existing", string(contents))
 }
 
+// Verifies that openRestrictedFile rejects an ancestor junction before creating a file at its destination.
 func TestRestrictedFileRejectsAncestorReparsePoint(t *testing.T) {
 	principals := restrictedTestPrincipals(t)
 	tempDir := t.TempDir()
 	targetDir := filepath.Join(tempDir, "target")
 	require.NoError(t, os.Mkdir(targetDir, 0700))
 	linkDir := filepath.Join(tempDir, "link")
-	if symlinkErr := os.Symlink(targetDir, linkDir); symlinkErr != nil {
-		t.Skipf("symlink creation is unavailable: %v", symlinkErr)
-	}
+	output, junctionErr := exec.Command("cmd", "/c", "mklink", "/J", linkDir, targetDir).CombinedOutput()
+	require.NoError(t, junctionErr, "%s", output)
 
 	file, openErr := openRestrictedFile(
 		filepath.Join(linkDir, "created.txt"),
@@ -398,7 +397,7 @@ func TestRestrictedFileRejectsConfiguredMappedDrive(t *testing.T) {
 	if file != nil {
 		require.NoError(t, file.Close())
 	}
-	require.ErrorIs(t, openErr, ErrRestrictedFileNonFixedDrive)
+	require.ErrorIs(t, openErr, ErrRestrictedFileReparsePoint)
 }
 
 func TestRestrictedFileRejectsConfiguredACLlessStorage(t *testing.T) {
@@ -420,7 +419,8 @@ func TestRestrictedFileRejectsConfiguredACLlessStorage(t *testing.T) {
 	require.ErrorIs(t, openErr, ErrRestrictedFileNoPersistentACLs)
 }
 
-func TestRestrictedFileCharacterizesSubstDrive(t *testing.T) {
+// Verifies that openRestrictedFile rejects SUBST directory mappings instead of resolving them.
+func TestRestrictedFileRejectsSubstDrive(t *testing.T) {
 	if os.Getenv("DCP_TEST_ENABLE_SUBST") != "true" {
 		t.Skip("DCP_TEST_ENABLE_SUBST is not enabled")
 	}
@@ -440,20 +440,11 @@ func TestRestrictedFileCharacterizesSubstDrive(t *testing.T) {
 		osutil.PermissionOnlyOwnerReadWrite,
 		principals,
 	)
-	if openErr != nil {
-		require.ErrorIs(t, openErr, ErrRestrictedFilePolicy)
-		require.True(
-			t,
-			errors.Is(openErr, ErrRestrictedFileReparsePoint) ||
-				errors.Is(openErr, ErrRestrictedFileNonFixedDrive),
-			"unexpected SUBST rejection: %v",
-			openErr,
-		)
-		t.Logf("restricted-file policy rejected SUBST destination %s: %v", path, openErr)
-		return
+	if file != nil {
+		require.NoError(t, file.Close())
 	}
-	require.NoError(t, file.Close())
-	t.Logf("restricted-file policy accepted SUBST destination %s", path)
+	require.ErrorIs(t, openErr, ErrRestrictedFilePolicy)
+	require.ErrorIs(t, openErr, ErrRestrictedFileReparsePoint)
 }
 
 func restrictedTestPrincipals(t *testing.T) restrictedDirectoryPrincipals {
