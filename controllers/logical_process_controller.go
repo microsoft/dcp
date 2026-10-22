@@ -194,15 +194,6 @@ func handleLogicalProcessPhysical(
 		return noChange
 	}
 	data.progress, data.reason, data.message = physicalResourceProgressNotReady, "", ""
-	ready, reason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, resource.Namespace)
-	if !ready {
-		data.reason, data.message = reason, namespaceReadinessMessage(resource.Namespace, reason)
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get namespace before preparing physical process")
-			data.progress, data.message = physicalResourceProgressRetryPending, namespaceErr.Error()
-		}
-		return noChange
-	}
 	if data.lease != nil {
 		verifyErr := reconciler.config.StateStore.VerifyResourceLeaseHeld(ctx, resource, reconciler.config.ResourceLeaseOwner)
 		if verifyErr != nil {
@@ -265,31 +256,44 @@ func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
 		ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(resource.UID) + suffix, Namespace: resource.Namespace},
 		Spec:       spec,
 	}
-	ownerErr := ctrl.SetControllerReference(resource, physical, r.Scheme())
-	if ownerErr != nil {
-		return nil, fmt.Errorf("could not set physical process owner: %w", ownerErr)
+	getErr := r.NoCacheClient.Get(ctx, physical.NamespacedName(), physical)
+	if apierrors.IsNotFound(getErr) {
+		ready, reason, namespaceErr := checkNamespaceReady(ctx, r.Client, resource.Namespace)
+		if namespaceErr != nil {
+			return nil, fmt.Errorf("could not check namespace before creating physical process: %w", namespaceErr)
+		}
+		if !ready {
+			return nil, errors.New(namespaceReadinessMessage(resource.Namespace, reason))
+		}
+		ownerErr := ctrl.SetControllerReference(resource, physical, r.Scheme())
+		if ownerErr != nil {
+			return nil, fmt.Errorf("could not set physical process owner: %w", ownerErr)
+		}
+		createErr := r.Create(ctx, physical)
+		if apierrors.IsAlreadyExists(createErr) {
+			getErr = r.NoCacheClient.Get(ctx, physical.NamespacedName(), physical)
+			if getErr != nil {
+				return nil, getErr
+			}
+		} else if createErr != nil {
+			return nil, createErr
+		}
+	} else if getErr != nil {
+		return nil, getErr
 	}
-	createErr := r.Create(ctx, physical)
-	if apierrors.IsAlreadyExists(createErr) {
-		getErr := r.NoCacheClient.Get(ctx, physical.NamespacedName(), physical)
-		if getErr != nil {
-			return nil, getErr
-		}
-		actualSpec, expectedSpec := physical.Spec, spec
-		actualSpec.IdentityTimestamp, expectedSpec.IdentityTimestamp = metav1.MicroTime{}, metav1.MicroTime{}
-		actualSpec.Process, expectedSpec.Process = physical.Spec.Process.DeepCopy(), spec.Process.DeepCopy()
-		if actualSpec.Process != nil && expectedSpec.Process != nil {
-			actualSpec.Process.MonitorTimestamp, expectedSpec.Process.MonitorTimestamp = metav1.MicroTime{}, metav1.MicroTime{}
-		}
-		monitorMatches := physical.Spec.Process == nil || spec.Process == nil ||
-			osutil.MicroEqual(physical.Spec.Process.MonitorTimestamp, spec.Process.MonitorTimestamp)
-		if !metav1.IsControlledBy(physical, resource) || (expectedUID != "" && physical.UID != expectedUID) ||
-			!reflect.DeepEqual(actualSpec, expectedSpec) || !monitorMatches ||
-			!osutil.MicroEqual(physical.Spec.IdentityTimestamp, spec.IdentityTimestamp) {
-			return nil, fmt.Errorf("physical process %q has a different identity, owner, or spec", physical.NamespacedName())
-		}
-	} else if createErr != nil {
-		return nil, createErr
+	actualSpec, expectedSpec := physical.Spec, spec
+	actualSpec.Stop, expectedSpec.Stop = false, false
+	actualSpec.IdentityTimestamp, expectedSpec.IdentityTimestamp = metav1.MicroTime{}, metav1.MicroTime{}
+	actualSpec.Process, expectedSpec.Process = physical.Spec.Process.DeepCopy(), spec.Process.DeepCopy()
+	if actualSpec.Process != nil && expectedSpec.Process != nil {
+		actualSpec.Process.MonitorTimestamp, expectedSpec.Process.MonitorTimestamp = metav1.MicroTime{}, metav1.MicroTime{}
+	}
+	monitorMatches := physical.Spec.Process == nil || spec.Process == nil ||
+		osutil.MicroEqual(physical.Spec.Process.MonitorTimestamp, spec.Process.MonitorTimestamp)
+	if !metav1.IsControlledBy(physical, resource) || (expectedUID != "" && physical.UID != expectedUID) ||
+		!reflect.DeepEqual(actualSpec, expectedSpec) || !monitorMatches ||
+		!osutil.MicroEqual(physical.Spec.IdentityTimestamp, spec.IdentityTimestamp) {
+		return nil, fmt.Errorf("physical process %q has a different identity, owner, or spec", physical.NamespacedName())
 	}
 	if !physical.DeletionTimestamp.IsZero() {
 		return nil, fmt.Errorf("physical process %q is being deleted", physical.NamespacedName())
