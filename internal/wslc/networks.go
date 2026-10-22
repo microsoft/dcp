@@ -139,6 +139,15 @@ func (wco *WslcCliOrchestrator) inspectNetworksRaw(
 	)
 
 	rawNetworks, decodeErr := decodeJSONArray[wslcInspectedNetwork](outBuf)
+	for _, rawNetwork := range rawNetworks {
+		if strings.TrimSpace(rawNetwork.ID) == "" || strings.TrimSpace(rawNetwork.Name) == "" {
+			decodeErr = errors.Join(decodeErr, containers.ErrUnmarshalling,
+				fmt.Errorf("inspected WSLC network did not contain both an ID and name"))
+		}
+	}
+	if errors.Is(runErr, errCommandFailed) && decodeErr == nil && len(rawNetworks) < len(networkReferences) {
+		return rawNetworks, errors.Join(runErr, fmt.Errorf("%w: %s", containers.ErrNotFound, errBuf))
+	}
 	if runErr != nil {
 		runErr = errors.Join(
 			runErr,

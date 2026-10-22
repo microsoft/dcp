@@ -43,50 +43,45 @@ const (
 	minimumWslcVersion       = "3.0.2.0"
 	defaultWslcContainerHost = "host.wslc.internal"
 	unsupportedHostMessage   = "WSLC is only available on Windows hosts"
+	commandFailureExitCode   = 1
 )
 
 var (
 	nativeWslcVersionPattern    = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$`)
 	minimumSupportedWslcVersion = k8s_version.MustParseGeneric(minimumWslcVersion)
+	errCommandFailed            = errors.New("non-zero exit code 1")
 
 	containerNotFoundMatch = containers.NewCliErrorMatch(
-		regexp.MustCompile(`(?i)container\s+['"].+['"]\s+not found`),
+		regexp.MustCompile(`(?i)\b(WSLC_E_CONTAINER_NOT_FOUND|0x80040603)\b`),
 		errors.Join(containers.ErrNotFound, fmt.Errorf("container not found")),
 	)
 	imageNotFoundMatch = containers.NewCliErrorMatch(
-		regexp.MustCompile(`(?i)image\s+['"].+['"]\s+not found`),
+		regexp.MustCompile(`(?i)\b(WSLC_E_IMAGE_NOT_FOUND|0x80040601)\b`),
 		errors.Join(containers.ErrNotFound, fmt.Errorf("image not found")),
 	)
 	networkNotFoundMatch = containers.NewCliErrorMatch(
-		regexp.MustCompile(`(?i)network not found:\s*['"].+['"]`),
+		regexp.MustCompile(`(?i)\b(WSLC_E_NETWORK_NOT_FOUND|0x80040609)\b`),
 		errors.Join(containers.ErrNotFound, fmt.Errorf("network not found")),
 	)
 	volumeNotFoundMatch = containers.NewCliErrorMatch(
-		regexp.MustCompile(`(?i)volume not found:\s*['"].+['"]`),
+		regexp.MustCompile(`(?i)\b(WSLC_E_VOLUME_NOT_FOUND|0x80040604)\b`),
 		errors.Join(containers.ErrNotFound, fmt.Errorf("volume not found")),
 	)
 	alreadyExistsMatch = containers.NewCliErrorMatch(
-		regexp.MustCompile(`(?i)(already exists|already in use|already connected|already attached)`),
+		regexp.MustCompile(`(?i)\b(ERROR_ALREADY_EXISTS|0x800700b7)\b`),
 		containers.ErrAlreadyExists,
 	)
 	objectInUseMatch = containers.NewCliErrorMatch(
-		regexp.MustCompile(`(?i)(is in use|being used|active endpoints|is running|running container)`),
+		regexp.MustCompile(`(?i)\b(ERROR_SHARING_VIOLATION|WSLC_E_CONTAINER_IS_RUNNING|0x80070020|0x80040606)\b`),
 		containers.ErrObjectInUse,
 	)
 	allocationFailureMatch = containers.NewCliErrorMatch(
-		regexp.MustCompile(`(?i)(address pool|could not allocate|no available subnet|port is already allocated|address already in use|failed to bind)`),
+		// WSLC preserves English engine diagnostics but collapses subnet allocation failures to generic HRESULTs.
+		regexp.MustCompile(`(?i)(\b(WSAEADDRINUSE|0x80072740)\b|address pool|could not allocate|no available subnet)`),
 		containers.ErrCouldNotAllocate,
 	)
 	runtimeUnavailableMatch = containers.NewCliErrorMatch(
-		regexp.MustCompile(
-			`(?i)(`+
-				`no active (?:wslc )?(?:default )?session|`+
-				`(?:session manager|default session|wslc control endpoint|session control endpoint).*`+
-				`(?:not running|unavailable|not found|failed to connect|connection refused)|`+
-				`(?:failed to connect|connection refused).*`+
-				`(?:session manager|default session|wslc control endpoint|session control endpoint)`+
-				`)`,
-		),
+		regexp.MustCompile(`(?i)\b(WSLC_E_SESSION_NOT_FOUND|WSLC_E_VM_NOT_RUNNING|0x8004060f|0x80040610)\b`),
 		containers.ErrRuntimeNotHealthy,
 	)
 )
@@ -472,8 +467,11 @@ func (wco *WslcCliOrchestrator) runBufferedWslcCommand(
 	if runErr != nil {
 		commandErr = fmt.Errorf("running WSLC command %q: %w", commandName, runErr)
 	}
-	commandErr = errors.Join(effectiveCtx.Err(), commandErr)
-	if exitCode != 0 {
+	contextErr := effectiveCtx.Err()
+	commandErr = errors.Join(contextErr, commandErr)
+	if exitCode == commandFailureExitCode && runErr == nil && contextErr == nil {
+		commandErr = fmt.Errorf("wslc command %q returned %w", commandName, errCommandFailed)
+	} else if exitCode != 0 {
 		commandErr = errors.Join(
 			commandErr,
 			fmt.Errorf("wslc command %q returned non-zero exit code %d", commandName, exitCode),
