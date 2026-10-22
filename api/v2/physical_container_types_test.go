@@ -16,6 +16,33 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
+// Verifies that GetLogSource completes confirmed missing runtime output without enabling
+// capture for a container that never started or completing transient inspection failures.
+func TestPhysicalContainerLogSourceMissingRuntimeCompletion(t *testing.T) {
+	container := &PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", UID: "physical-uid", Generation: 1},
+		Status: PhysicalContainerStatus{
+			ContainerID: "runtime-id", Phase: PhysicalContainerPhaseUnknown,
+			Conditions: []metav1.Condition{{
+				Type: string(ConditionReady), Status: metav1.ConditionFalse, ObservedGeneration: 1,
+				Reason: string(PhysicalContainerReasonRuntimeContainerMissing),
+			}},
+		},
+	}
+	source := container.GetLogSource()
+	require.True(t, source.Complete)
+	require.False(t, source.Available)
+	container.Status.StartedAt = metav1.NowMicro()
+	startedSource := container.GetLogSource()
+	require.True(t, startedSource.Complete)
+	require.True(t, startedSource.Available)
+	container.Status.Conditions[0].Reason = string(PhysicalContainerReasonRuntimeContainerInspectFailed)
+	require.False(t, container.GetLogSource().Complete)
+	container.Status.Conditions[0].Reason = string(PhysicalContainerReasonRuntimeContainerMissing)
+	container.Generation++
+	require.False(t, container.GetLogSource().Complete)
+}
+
 func TestPhysicalContainerValidate(t *testing.T) {
 	monitorPID := int64(42)
 	invalidMonitorPID := int64(0)
