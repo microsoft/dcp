@@ -30,8 +30,8 @@ func TestImageStartupPreflightValidatesCapturePath(t *testing.T) {
 	container := &apiv2.LogicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: "namespace", UID: "container-uid"},
 		Status: apiv2.LogicalContainerStatus{StartupLogs: &apiv2.LogSource{
-			Name: "image", UID: "image-uid", StdoutFile: filepath.Join(t.TempDir(), "image_startout_image-uid"),
-			StderrFile: filepath.Join(t.TempDir(), "image_starterr_image-uid"), Available: true,
+			Name: "image", UID: "image-uid", StdoutFile: filepath.Join(t.TempDir(), "image_out_image-uid"),
+			StderrFile: filepath.Join(t.TempDir(), "image_err_image-uid"), Available: true,
 		}},
 	}
 	opts := &apiv2.ResourceLogOptions{Source: "startup_stdout"}
@@ -50,8 +50,8 @@ func TestLogSourcesShareSessionCompletion(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
 	folder := t.TempDir()
-	stdoutPath := filepath.Join(folder, "source_startout_source-uid")
-	stderrPath := filepath.Join(folder, "source_starterr_source-uid")
+	stdoutPath := filepath.Join(folder, "source_out_source-uid")
+	stderrPath := filepath.Join(folder, "source_err_source-uid")
 	stdout, stdoutErr := usvc_io.EnsureEmptyFile(stdoutPath, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, stdoutErr)
 	writer := usvc_io.NewTimestampWriter(stdout)

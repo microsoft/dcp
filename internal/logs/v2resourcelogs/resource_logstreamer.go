@@ -136,10 +136,10 @@ func (streamer *resourceLogStreamer) Preflight(obj resource.Object, opts *apiv2.
 				path   string
 				source logstream.LogStreamSource
 			}{
-				{capture.StdoutFile, logstream.LogStreamSourceStartupStdout},
-				{capture.StderrFile, logstream.LogStreamSourceStartupStderr},
+				{capture.StdoutFile, logstream.LogStreamSourceStdout},
+				{capture.StderrFile, logstream.LogStreamSourceStderr},
 			} {
-				expectedName, nameErr := logstream.StartupLogFileName(name, capture.UID, output.source)
+				expectedName, nameErr := logstream.LogFileName(name, capture.UID, output.source, "")
 				if nameErr != nil || !filepath.IsAbs(output.path) || filepath.Base(output.path) != expectedName {
 					return apierrors.NewInternalError(fmt.Errorf("invalid observed log capture path"))
 				}

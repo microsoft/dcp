@@ -32,7 +32,7 @@ type CaptureFile struct {
 // NewCaptureFile opens a resource's output capture while preserving existing file contents.
 func NewCaptureFile(resource apiserver_resource.Object, logSource logstream.LogStreamSource) (*CaptureFile, error) {
 	metadata := resource.GetObjectMeta()
-	fileName, nameErr := logstream.StartupLogFileName(metadata.Name, metadata.UID, logSource)
+	fileName, nameErr := logstream.LogFileName(metadata.Name, metadata.UID, logSource, "")
 	if nameErr != nil {
 		return nil, nameErr
 	}

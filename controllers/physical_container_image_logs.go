@@ -20,11 +20,11 @@ func (data *physicalContainerImageData) ensureStartupLogs(image *apiv2.PhysicalC
 	if data.startupStdout != nil {
 		return nil
 	}
-	stdout, stdoutErr := logs.NewCaptureFile(image, logstream.LogStreamSourceStartupStdout)
+	stdout, stdoutErr := logs.NewCaptureFile(image, logstream.LogStreamSourceStdout)
 	if stdoutErr != nil {
 		return fmt.Errorf("create image startup stdout: %w", stdoutErr)
 	}
-	stderr, stderrErr := logs.NewCaptureFile(image, logstream.LogStreamSourceStartupStderr)
+	stderr, stderrErr := logs.NewCaptureFile(image, logstream.LogStreamSourceStderr)
 	if stderrErr != nil {
 		return fmt.Errorf("create image startup stderr: %w", errors.Join(stderrErr, stdout.Close(logs.CaptureFileDisposeOnClose)))
 	}
