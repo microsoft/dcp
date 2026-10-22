@@ -79,10 +79,10 @@ func TestCaptureFileDirectProcessOutputSurvivesCaptureLifetime(t *testing.T) {
 	uid, uidErr := randdata.MakeRandomString(8)
 	require.NoError(t, uidErr)
 	resource := &apiv1.Executable{ObjectMeta: metav1.ObjectMeta{Name: "direct", UID: types.UID(uid)}}
-	stdout, stdoutErr := NewCaptureFile(resource, logstream.LogStreamSourceStartupStdout, CaptureFileDirectOutput)
+	stdout, stdoutErr := NewCaptureFile(resource, logstream.LogStreamSourceStdout, CaptureFileDirectOutput)
 	require.NoError(t, stdoutErr)
 	defer func() { require.NoError(t, stdout.Close(CaptureFileDisposeOnClose)) }()
-	stderr, stderrErr := NewCaptureFile(resource, logstream.LogStreamSourceStartupStderr, CaptureFileDirectOutput)
+	stderr, stderrErr := NewCaptureFile(resource, logstream.LogStreamSourceStderr, CaptureFileDirectOutput)
 	require.NoError(t, stderrErr)
 	defer func() { require.NoError(t, stderr.Close(CaptureFileDisposeOnClose)) }()
 	toolPath, toolErr := internal_testutil.GetTestToolPath("delay")
@@ -119,21 +119,21 @@ func TestCaptureFileDirectProcessOutputSurvivesCaptureLifetime(t *testing.T) {
 	require.Contains(t, string(output), "Ran to completion")
 }
 
-// Verifies that CaptureFile uses the existing stderr filename, appends without truncation,
+// Verifies that CaptureFile captures ordinary stderr, appends without truncation,
 // and rejects unsupported capture sources.
 func TestCaptureFileAppendAndSourceSelection(t *testing.T) {
 	t.Parallel()
 	uid, uidErr := randdata.MakeRandomString(8)
 	require.NoError(t, uidErr)
 	resource := &apiv1.Container{ObjectMeta: metav1.ObjectMeta{Name: "capture", UID: types.UID(uid)}}
-	capture, captureErr := NewCaptureFile(resource, logstream.LogStreamSourceStartupStderr)
+	capture, captureErr := NewCaptureFile(resource, logstream.LogStreamSourceStderr)
 	require.NoError(t, captureErr)
 	t.Cleanup(func() { require.NoError(t, capture.Close(CaptureFileDisposeOnClose)) })
-	require.Equal(t, "capture_starterr_"+string(uid), filepath.Base(capture.Path))
+	require.Equal(t, "capture_err_"+string(uid), filepath.Base(capture.Path))
 	_, firstWriteErr := capture.Writer.Write([]byte("first\n"))
 	require.NoError(t, firstWriteErr)
 	require.NoError(t, capture.Close(CaptureFileCloseDefault))
-	reopened, reopenErr := NewCaptureFile(resource, logstream.LogStreamSourceStartupStderr)
+	reopened, reopenErr := NewCaptureFile(resource, logstream.LogStreamSourceStderr)
 	require.NoError(t, reopenErr)
 	t.Cleanup(func() { require.NoError(t, reopened.Close(CaptureFileCloseDefault)) })
 	require.Equal(t, capture.Path, reopened.Path)
@@ -145,5 +145,5 @@ func TestCaptureFileAppendAndSourceSelection(t *testing.T) {
 	require.Contains(t, string(contents), "first\n")
 	require.Contains(t, string(contents), "second\n")
 	_, sourceErr := NewCaptureFile(resource, logstream.LogStreamSourceSystem)
-	require.ErrorContains(t, sourceErr, "unknown startup log source")
+	require.ErrorContains(t, sourceErr, "unknown capture log source")
 }
