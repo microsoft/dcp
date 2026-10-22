@@ -215,16 +215,16 @@ func (ls *LogStorage[O]) watchResource(uid types.UID, log logr.Logger) (*resourc
 		return nil, fmt.Errorf("log storage has been disposed")
 	}
 
-	resourceWatchers, _ := ls.resourceWatchers.LoadOrStoreNew(uid, func() *syncmap.Map[*resourceWatcher, bool] {
-		return &syncmap.Map[*resourceWatcher, bool]{}
-	})
-
 	if ls.watcher == nil {
 		watchErr := ls.watchResourceEvents(log)
 		if watchErr != nil {
 			return nil, watchErr
 		}
 	}
+
+	resourceWatchers, _ := ls.resourceWatchers.LoadOrStoreNew(uid, func() *syncmap.Map[*resourceWatcher, bool] {
+		return &syncmap.Map[*resourceWatcher, bool]{}
+	})
 
 	rw := newResourceWatcher()
 	rw.OnStop(func() {
@@ -286,11 +286,7 @@ func (ls *LogStorage[O]) watchResourceEvents(log logr.Logger) error {
 						return
 					}
 
-					// This has to be initiated before making a call to create a new watcher.
-					// If not, we can end up in a deadlock situation where the storage is trying to deliver
-					// a watch event (holding the watch set lock in shared mode) while at the same time
-					// we are making a call to create a new watcher (which tries to take the watch set lock
-					// in exclusive mode).
+					// Stop the old watcher before registering its replacement so generations do not overlap.
 					log.V(1).Info("Stopping old parent resource watcher...")
 					stopWatcher(ls.watcher)
 					log.V(1).Info("Old parent resource watcher stopped")
@@ -563,15 +559,7 @@ func (ls *LogStorage[O]) NewGetOptions() (runtime.Object, bool, string) {
 }
 
 func stopWatcher(w watch.Interface) {
-	// We need to drain the watcher result channel because it is an unbuffered channel
-	// that the Tilt API server storage layer synchronously writes to it as part of handling object changes.
-	// If we simply abandon the channel with some pending writes, the corresponding update will block forever.
-	// Even calling Stop() on the watcher will NOT help, because the Stop() method tries to take an exclusive lock
-	// on the "watch set" that the watcher belongs to before closing the watcher channel,
-	// and lock is held (in shared mode) by the goroutine that is writing to the channel
-	// to broadcast object update events.
-	// By calling drain() on a separate goroutine we ensure that the channel
-	// will continue to be drained until the call to Stop() succeeds.
+	// Keep draining until the result channel closes so pending deliveries are not abandoned during shutdown.
 	go drain(w.ResultChan())
 
 	w.Stop()
