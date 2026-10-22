@@ -293,6 +293,57 @@ func TestV2LogicalContainerLogFollowerEndsWhenPhysicalBackingIsDeleted(t *testin
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
 }
 
+// Verifies that physical and logical stdout followers finish after confirmed runtime removal,
+// even when their API resources remain present.
+func TestV2ContainerLogFollowersEndWhenRuntimeIsRemoved(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-runtime-log-removal")
+	runtimeName := namespace.Name + "-runtime"
+	runtimeID := runExistingTestContainer(t, ctx, runtimeName, "log-runtime-removal-image")
+	container := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec:       apiv2.LogicalContainerSpec{Mode: apiv2.LogicalContainerModeExisting, ContainerName: runtimeName},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	running := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+	})
+	physical := &apiv2.PhysicalContainer{}
+	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef}, physical))
+	require.NoError(t, containerOrchestrator.SimulateContainerLogging(runtimeID, apiv1.LogStreamSourceStdout, []byte("history\n")))
+	logicalFollow, logicalErr := openV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Follow: true})
+	require.NoError(t, logicalErr)
+	defer func() { require.NoError(t, logicalFollow.Close()) }()
+	physicalFollow, physicalErr := openV2ContainerLog(ctx, physical, apiv2.ResourceLogOptions{Follow: true})
+	require.NoError(t, physicalErr)
+	defer func() { require.NoError(t, physicalFollow.Close()) }()
+	for _, follower := range []io.ReadCloser{logicalFollow, physicalFollow} {
+		history := make([]byte, len("history\n"))
+		_, historyErr := io.ReadFull(follower, history)
+		require.NoError(t, historyErr)
+		require.Equal(t, "history\n", string(history))
+	}
+	_, removeErr := containerOrchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
+		Containers: []string{runtimeID}, Force: true,
+	})
+	require.NoError(t, removeErr)
+	missing := waitPhysicalContainerPhase(t, ctx, physical.NamespacedName(), apiv2.PhysicalContainerPhaseUnknown)
+	requireReadyCondition(t, missing.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing)
+	require.True(t, missing.GetLogSource().Complete)
+	waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete, nil
+	})
+	for _, follower := range []io.ReadCloser{logicalFollow, physicalFollow} {
+		remaining, readErr := io.ReadAll(follower)
+		require.NoError(t, readErr)
+		require.Empty(t, remaining)
+	}
+	require.NoError(t, client.Get(ctx, physical.NamespacedName(), physical))
+	require.NoError(t, client.Get(ctx, container.NamespacedName(), container))
+}
+
 // Verifies that closing a logical stdout consumer preserves the physical consumer,
 // while deleting their API resources ends following even when the runtime container is retained.
 func TestV2ContainerLogFollowersHaveIndependentLifetimes(t *testing.T) {

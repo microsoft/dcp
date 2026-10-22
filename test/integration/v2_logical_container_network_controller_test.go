@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -529,9 +528,9 @@ func TestV2LogicalContainerNetworkControllerSettlesPersistenceDuringDeletion(t *
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(runtimeName))
 }
 
-// Verifies that LogicalContainerNetwork uses the V1 runtime-name lease, reports contention,
-// and proceeds to persist workload ownership only after that startup lease becomes available.
-func TestV2LogicalContainerNetworkControllerWaitsForSharedLease(t *testing.T) {
+// Verifies that LogicalContainerNetwork serializes same-process startups sharing a runtime
+// name, retains the first startup's lease, and reuses its network after ownership settlement.
+func TestV2LogicalContainerNetworkControllerSerializesSameProcessStartups(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -542,31 +541,45 @@ func TestV2LogicalContainerNetworkControllerWaitsForSharedLease(t *testing.T) {
 	}))
 	runtimeName := namespace.Name + "-runtime"
 	removeRuntimeNetworkOnCleanup(t, runtimeName)
+	releaseCreate := containerOrchestrator.BlockCreateNetwork(runtimeName)
+	defer releaseCreate()
 	v1Network := &apiv1.ContainerNetwork{Spec: apiv1.ContainerNetworkSpec{NetworkName: runtimeName}}
-	competingOwner := testResourceLeaseOwner
-	competingOwner.IdentityTime = competingOwner.IdentityTime.Add(time.Second)
-	lease, leaseErr := testStateStore.AcquireResourceLease(ctx, v1Network, competingOwner, time.Minute)
-	require.NoError(t, leaseErr)
-	network := &apiv2.LogicalContainerNetwork{
-		ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+	first := &apiv2.LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "first", Namespace: namespace.Name},
 		Spec:       apiv2.LogicalContainerNetworkSpec{Mode: apiv2.LogicalContainerNetworkModePersistent, NetworkName: runtimeName, Network: &apiv2.LogicalContainerNetworkConfig{}},
 	}
-	require.NoError(t, client.Create(ctx, network))
-	pending := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+	require.NoError(t, client.Create(ctx, first))
+	waitCreateNetworkCallCount(t, ctx, runtimeName, 1)
+	require.NoError(t, testStateStore.VerifyResourceLeaseHeld(ctx, v1Network, testResourceLeaseOwner))
+	second := &apiv2.LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "second", Namespace: namespace.Name},
+		Spec:       *first.Spec.DeepCopy(),
+	}
+	require.NoError(t, client.Create(ctx, second))
+	pending := waitObjectAssumesState(t, ctx, second.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == "ResourceLeaseHeld", nil
+		return ready != nil && (ready.Reason == "ResourceLeaseHeld" || current.Status.PhysicalNetworkRef != ""), nil
 	})
+	requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, "ResourceLeaseHeld")
 	require.Empty(t, pending.Status.PhysicalNetworkRef)
-	require.Zero(t, containerOrchestrator.CreateNetworkCallCount(runtimeName))
-	require.NoError(t, lease.Release(ctx))
-	ready := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(runtimeName))
+	require.NoError(t, testStateStore.VerifyResourceLeaseHeld(ctx, first, testResourceLeaseOwner))
+	releaseCreate()
+	firstReady := waitObjectAssumesState(t, ctx, first.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
 	})
+	secondReady := waitObjectAssumesState(t, ctx, second.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+	})
+	require.NotEmpty(t, firstReady.Status.NetworkID)
+	require.Equal(t, firstReady.Status.NetworkID, secondReady.Status.NetworkID)
+	require.NotEqual(t, firstReady.Status.PhysicalNetworkRef, secondReady.Status.PhysicalNetworkRef)
+	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(runtimeName))
 	record, recordErr := testStateStore.GetPersistentNetwork(ctx, v1Network.GetLeaseKey())
 	require.NoError(t, recordErr)
-	require.Equal(t, ready.Status.NetworkID, record.NetworkID)
+	require.Equal(t, firstReady.Status.NetworkID, record.NetworkID)
 	require.Equal(t, commonapi.WorkloadID("shared-network-workload"), record.WorkloadID)
-	require.ErrorIs(t, testStateStore.VerifyResourceLeaseHeld(ctx, network, testResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+	require.ErrorIs(t, testStateStore.VerifyResourceLeaseHeld(ctx, second, testResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 }
 
 // Verifies that LogicalContainerNetwork exposes physical creation failure conditions

@@ -1801,9 +1801,7 @@ func (to *TestContainerOrchestrator) HasImage(id string) bool {
 
 func (to *TestContainerOrchestrator) findImage(id string) (*testImage, bool) {
 	i := slices.IndexFunc(to.images, func(img *testImage) bool {
-		return img.id == id || slices.Any(img.tags, func(tag string) bool {
-			return containers.ImageReferenceWithDefaultTag(tag) == containers.ImageReferenceWithDefaultTag(id)
-		})
+		return img.id == id || slices.Contains(img.tags, id)
 	})
 	if i >= 0 {
 		return to.images[i], true
