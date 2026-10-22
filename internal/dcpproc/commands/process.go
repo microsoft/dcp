@@ -36,7 +36,9 @@ func NewProcessCommand(log logr.Logger) (*cobra.Command, error) {
 This command is used to ensure that child processes are properly cleaned up when
 DCP terminates unexpectedly. On Unix, an isolated child process group remains
 monitored until it has no live members, even if its leader exits. Cleanup targets
-both the group and any descendants discoverable through the child process tree.`,
+both the group and any descendants discoverable through the child process tree.
+If child inspection fails, the owner remains monitored so cleanup is still attempted
+when the owner exits or monitoring is interrupted.`,
 		RunE:         monitorProcess(log),
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
@@ -161,10 +163,9 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 				return errors.New("child process monitoring ended without a result")
 			}
 			if childWaitErr != nil && cmd.Context().Err() == nil {
-				log.Error(childWaitErr, "Error waiting for child process cleanup target")
-				return childWaitErr
-			}
-			if cmd.Context().Err() == nil {
+				log.Error(childWaitErr, "Error waiting for child process cleanup target; continuing to monitor owner")
+				<-monitorCtx.Done()
+			} else if cmd.Context().Err() == nil {
 				log.V(1).Info("Child service process exited, DCPPROC is done")
 				return nil
 			}

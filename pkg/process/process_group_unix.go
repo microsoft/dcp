@@ -20,6 +20,10 @@ import (
 // FindProcessGroup captures the group led by handle after verifying its process identity.
 // It returns nil if the process is not a group leader. The caller's own group is never a valid target.
 func FindProcessGroup(handle ProcessHandle) (*ProcessGroup, error) {
+	pid, pidErr := PidT_ToInt(handle.Pid)
+	if pidErr != nil {
+		return nil, pidErr
+	}
 	if handle.Pid <= 1 || handle.Pid > math.MaxInt32 {
 		return nil, fmt.Errorf("invalid process group leader PID %d", handle.Pid)
 	}
@@ -27,14 +31,14 @@ func FindProcessGroup(handle ProcessHandle) (*ProcessGroup, error) {
 	if processErr != nil {
 		return nil, processErr
 	}
-	groupID, groupErr := unix.Getpgid(int(handle.Pid))
+	groupID, groupErr := unix.Getpgid(pid)
 	if groupErr != nil {
 		if errors.Is(groupErr, syscall.ESRCH) {
 			return nil, fmt.Errorf("process %d exited: %w", handle.Pid, ErrorProcessNotFound)
 		}
 		return nil, fmt.Errorf("could not get process group for process %d: %w", handle.Pid, groupErr)
 	}
-	if groupID != int(handle.Pid) {
+	if groupID != pid {
 		return nil, nil
 	}
 	if groupID == unix.Getpgrp() {
@@ -46,45 +50,53 @@ func FindProcessGroup(handle ProcessHandle) (*ProcessGroup, error) {
 	return &ProcessGroup{leader: handle, WaitPollInterval: defaultWaitPollInterval}, nil
 }
 
-func (g *ProcessGroup) validateLeader() error {
-	if g.leader.Pid <= 1 || g.leader.Pid > math.MaxInt32 || g.leader.IdentityTime.IsZero() {
-		return fmt.Errorf("invalid process group leader identity for PID %d", g.leader.Pid)
+func (g *ProcessGroup) hasLiveLeader() (bool, error) {
+	leaderPID, leaderPIDErr := PidT_ToInt(g.leader.Pid)
+	if leaderPIDErr != nil {
+		return false, leaderPIDErr
 	}
-	if int(g.leader.Pid) == unix.Getpgrp() {
-		return fmt.Errorf("cannot target the current process group %d", g.leader.Pid)
+	if g.leader.Pid <= 1 || g.leader.Pid > math.MaxInt32 || g.leader.IdentityTime.IsZero() {
+		return false, fmt.Errorf("invalid process group leader identity for PID %d", g.leader.Pid)
+	}
+	if leaderPID == unix.Getpgrp() {
+		return false, fmt.Errorf("cannot target the current process group %d", g.leader.Pid)
 	}
 	leader, leaderErr := readProcessInfo(g.leader.Pid)
 	if leaderErr != nil {
 		if IsProcessGoneErr(leaderErr) {
 			// A group can survive its original leader, but a reused leader PID must not be targeted.
-			return nil
+			return false, nil
 		}
-		return leaderErr
+		return false, leaderErr
 	}
 	if identityErr := validateIdentity(g.leader, leader.handle); identityErr != nil {
-		return identityErr
+		return false, identityErr
 	}
-	groupID, groupErr := unix.Getpgid(int(g.leader.Pid))
+	groupID, groupErr := unix.Getpgid(leaderPID)
 	if errors.Is(groupErr, syscall.ESRCH) {
-		return nil
+		return false, nil
 	}
 	if groupErr != nil {
-		return fmt.Errorf("could not verify process group %d: %w", g.leader.Pid, groupErr)
+		return false, fmt.Errorf("could not verify process group %d: %w", g.leader.Pid, groupErr)
 	}
-	if groupID != int(g.leader.Pid) {
-		return fmt.Errorf("process %d no longer identifies an isolated target group", g.leader.Pid)
+	if groupID != leaderPID {
+		return false, fmt.Errorf("process %d no longer identifies an isolated target group", g.leader.Pid)
 	}
-	return nil
+	return !leader.exited, nil
 }
 
 func (g *ProcessGroup) signal(ctx context.Context, signal syscall.Signal) error {
 	if contextErr := ctx.Err(); contextErr != nil {
 		return contextErr
 	}
-	if identityErr := g.validateLeader(); identityErr != nil {
+	if _, identityErr := g.hasLiveLeader(); identityErr != nil {
 		return identityErr
 	}
-	signalErr := unix.Kill(-int(g.leader.Pid), signal)
+	groupID, groupIDErr := PidT_ToInt(g.leader.Pid)
+	if groupIDErr != nil {
+		return groupIDErr
+	}
+	signalErr := unix.Kill(-groupID, signal)
 	if errors.Is(signalErr, syscall.ESRCH) {
 		return nil
 	}
@@ -105,8 +117,12 @@ func (g *ProcessGroup) signal(ctx context.Context, signal syscall.Signal) error 
 }
 
 func (g *ProcessGroup) isRunning(ctx context.Context) (bool, error) {
-	if identityErr := g.validateLeader(); identityErr != nil {
+	leaderRunning, identityErr := g.hasLiveLeader()
+	if identityErr != nil {
 		return false, identityErr
+	}
+	if leaderRunning {
+		return true, nil
 	}
 	members, membersErr := g.members(ctx)
 	if membersErr != nil {
@@ -134,6 +150,10 @@ func (g *ProcessGroup) isRunning(ctx context.Context) (bool, error) {
 }
 
 func (g *ProcessGroup) members(ctx context.Context) ([]processInfo, error) {
+	targetGroupID, targetGroupIDErr := PidT_ToInt(g.leader.Pid)
+	if targetGroupIDErr != nil {
+		return nil, targetGroupIDErr
+	}
 	processes, snapshotErr := snapshotProcesses(ctx)
 	if snapshotErr != nil {
 		return nil, fmt.Errorf("could not enumerate process group %d: %w", g.leader.Pid, snapshotErr)
@@ -143,14 +163,18 @@ func (g *ProcessGroup) members(ctx context.Context) ([]processInfo, error) {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return nil, contextErr
 		}
-		groupID, groupErr := unix.Getpgid(int(info.handle.Pid))
+		memberPID, memberPIDErr := PidT_ToInt(info.handle.Pid)
+		if memberPIDErr != nil {
+			return nil, fmt.Errorf("could not get process group for process %d: %w", info.handle.Pid, memberPIDErr)
+		}
+		groupID, groupErr := unix.Getpgid(memberPID)
 		if errors.Is(groupErr, syscall.ESRCH) {
 			continue
 		}
 		if groupErr != nil {
 			return nil, fmt.Errorf("could not get process group for process %d: %w", info.handle.Pid, groupErr)
 		}
-		if groupID == int(g.leader.Pid) {
+		if groupID == targetGroupID {
 			members = append(members, info)
 		}
 	}

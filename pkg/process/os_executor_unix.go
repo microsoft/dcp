@@ -206,7 +206,7 @@ func (e *OSExecutor) stopProcessGroup(ctx context.Context, group *ProcessGroup, 
 	if contextErr := ctx.Err(); contextErr != nil {
 		return singleProcessStopResult{}, contextErr
 	}
-	if identityErr := group.validateLeader(); identityErr != nil {
+	if _, identityErr := group.hasLiveLeader(); identityErr != nil {
 		return singleProcessStopResult{}, identityErr
 	}
 	waitable := makeProcessWaitable(e.lifetimeCtx, group.leader, waitPollPolicy{

@@ -9,7 +9,10 @@ package dcpproc_test
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -17,17 +20,31 @@ import (
 	"github.com/stretchr/testify/require"
 
 	int_testutil "github.com/microsoft/dcp/internal/testutil"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that monitor-process survives leader exit, cleans up on owner exit or interruption, and finishes when the group empties.
+// Verifies that monitor-process survives leader exit and inspection failures, cleans up on owner exit or interruption,
+// and finishes when the group empties.
 func TestMonitorProcessTracksGroupAfterLeaderExit(t *testing.T) {
 	t.Parallel()
 
-	for _, shutdown := range []string{"group-empty", "owner-exit", "monitor-interrupt"} {
-		t.Run(shutdown, func(t *testing.T) {
+	for _, testCase := range []struct {
+		shutdown        string
+		inspectionError bool
+	}{
+		{"group-empty", false},
+		{"owner-exit", false},
+		{"monitor-interrupt", false},
+		{"owner-exit", true},
+		{"monitor-interrupt", true},
+	} {
+		if testCase.inspectionError && runtime.GOOS != "linux" {
+			continue
+		}
+		t.Run(fmt.Sprintf("%s/inspection-error=%t", testCase.shutdown, testCase.inspectionError), func(t *testing.T) {
 			t.Parallel()
 			testCtx, cancelTest := testutil.GetTestContext(t, 0)
 			t.Cleanup(cancelTest)
@@ -83,6 +100,22 @@ func TestMonitorProcessTracksGroupAfterLeaderExit(t *testing.T) {
 			)
 			monitorCmd.Stdout = output.StdoutWriter()
 			monitorCmd.Stderr = output.StderrWriter()
+			var faultyStatPath string
+			if testCase.inspectionError {
+				procRoot := t.TempDir()
+				for _, mirroredHandle := range []process.ProcessHandle{ownerHandle, childHandle, member} {
+					mirroredPID := fmt.Sprint(mirroredHandle.Pid)
+					mirroredDirectory := filepath.Join(procRoot, mirroredPID)
+					require.NoError(t, os.Mkdir(mirroredDirectory, 0700))
+					sourceStat := filepath.Join(osutil.EnvVarStringWithDefault("HOST_PROC", "/proc"), mirroredPID, "stat")
+					require.NoError(t, os.Symlink(sourceStat, filepath.Join(mirroredDirectory, "stat")))
+				}
+				unrelatedDirectory := filepath.Join(procRoot, "1")
+				require.NoError(t, os.Mkdir(unrelatedDirectory, 0700))
+				faultyStatPath = filepath.Join(unrelatedDirectory, "stat")
+				require.NoError(t, usvc_io.WriteFile(faultyStatPath, []byte("malformed"), 0600))
+				monitorCmd.Env = append(os.Environ(), "HOST_PROC="+procRoot)
+			}
 			process.DecoupleFromParent(monitorCmd)
 			require.NoError(t, monitorCmd.Start())
 			monitorResult := make(chan error, 1)
@@ -98,7 +131,18 @@ func TestMonitorProcessTracksGroupAfterLeaderExit(t *testing.T) {
 
 			require.NoError(t, executor.StopProcess(testCtx, childHandle, process.StopRootOnly()))
 			require.NoError(t, executor.CheckProcessRunning(member))
-			switch shutdown {
+			if testCase.inspectionError {
+				require.NoError(t, output.WaitForStderrSubstring(testCtx, "continuing to monitor owner"))
+				select {
+				case monitorErr, received := <-monitorResult:
+					t.Fatalf("monitor exited after an inspection failure: received=%t, error=%v", received, monitorErr)
+				default:
+				}
+				require.NoError(t, executor.CheckProcessRunning(ownerHandle))
+				require.NoError(t, executor.CheckProcessRunning(member))
+				require.NoError(t, os.Remove(faultyStatPath))
+			}
+			switch testCase.shutdown {
 			case "owner-exit":
 				require.NoError(t, executor.StopProcess(testCtx, ownerHandle))
 			case "group-empty":
@@ -114,7 +158,7 @@ func TestMonitorProcessTracksGroupAfterLeaderExit(t *testing.T) {
 				require.NoError(t, monitorErr)
 			}
 			require.NoError(t, group.Wait(testCtx))
-			if shutdown != "owner-exit" {
+			if testCase.shutdown != "owner-exit" {
 				require.NoError(t, executor.CheckProcessRunning(ownerHandle))
 			}
 		})

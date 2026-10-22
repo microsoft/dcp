@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"strings"
@@ -52,14 +53,16 @@ func TestStartProcessIsolatesUnixProcessGroup(t *testing.T) {
 			startWait()
 			t.Cleanup(func() { stopGroupTestProcess(t, testCtx, executor, handle) })
 
-			groupID, groupErr := unix.Getpgid(int(handle.Pid))
+			pid, pidErr := process.PidT_ToInt(handle.Pid)
+			require.NoError(t, pidErr)
+			groupID, groupErr := unix.Getpgid(pid)
 			require.NoError(t, groupErr)
-			require.Equal(t, int(handle.Pid), groupID)
+			require.Equal(t, pid, groupID)
 			require.NotEqual(t, unix.Getpgrp(), groupID)
-			sessionID, sessionErr := unix.Getsid(int(handle.Pid))
+			sessionID, sessionErr := unix.Getsid(pid)
 			require.NoError(t, sessionErr)
 			if newSession {
-				require.Equal(t, int(handle.Pid), sessionID)
+				require.Equal(t, pid, sessionID)
 			} else {
 				parentSession, parentSessionErr := unix.Getsid(0)
 				require.NoError(t, parentSessionErr)
@@ -163,13 +166,17 @@ func TestStopProcessCleansDescendantsOutsideGroup(t *testing.T) {
 
 	tree, treeErr := process.GetProcessTree(testCtx, handle)
 	require.NoError(t, treeErr)
+	rootPID, rootPIDErr := process.PidT_ToInt(handle.Pid)
+	require.NoError(t, rootPIDErr)
 	for _, child := range tree[1:] {
-		childGroup, childGroupErr := unix.Getpgid(int(child.Pid))
+		childPID, childPIDErr := process.PidT_ToInt(child.Pid)
+		require.NoError(t, childPIDErr)
+		childGroup, childGroupErr := unix.Getpgid(childPID)
 		require.NoError(t, childGroupErr)
-		require.NotEqual(t, int(handle.Pid), childGroup)
-		childSession, childSessionErr := unix.Getsid(int(child.Pid))
+		require.NotEqual(t, rootPID, childGroup)
+		childSession, childSessionErr := unix.Getsid(childPID)
 		require.NoError(t, childSessionErr)
-		require.Equal(t, int(child.Pid), childSession)
+		require.Equal(t, childPID, childSession)
 	}
 	require.NoError(t, executor.StopProcess(testCtx, handle))
 	requireUnixProcessesExited(t, testCtx, tree)
@@ -278,7 +285,7 @@ func TestProcessGroupValidatesIdentity(t *testing.T) {
 	_, missingIdentityErr := process.FindProcessGroup(process.NewHandle(handle.Pid, time.Time{}))
 	require.ErrorIs(t, missingIdentityErr, process.ErrInvalidProcessHandle)
 	require.NoError(t, executor.CheckProcessRunning(handle))
-	for _, invalidPID := range []process.Pid_t{process.UnknownPID, 0, 1} {
+	for _, invalidPID := range []process.Pid_t{process.UnknownPID, 0, 1, math.MaxInt32 + 1, math.MaxUint32 + 1} {
 		_, invalidErr := process.FindProcessGroup(process.NewHandle(invalidPID, time.Time{}))
 		require.Error(t, invalidErr)
 	}
