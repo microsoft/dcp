@@ -221,7 +221,7 @@ generate-openapi-debug: ## Runs OpenAPI generator with additional options for de
 .PHONY: generate-goversioninfo
 generate-goversioninfo:
 ifeq ($(build_os),windows)
-	$(CLEAR_GOARGS) $(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/win_version_info.json ## Generates version information for Windows binaries
+	$(CLEAR_GOARGS) $(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -file-version "$(VERSION)" -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/win_version_info.json ## Generates version information for Windows binaries
 else
 	-$(rm_f) $(repo_dir)/cmd/dcp/resource.syso
 endif
