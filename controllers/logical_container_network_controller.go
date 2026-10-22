@@ -591,13 +591,15 @@ func (r *LogicalContainerNetworkReconciler) prepareLogicalContainerNetworkLifecy
 			data.progress, data.reason, data.message = physicalResourceProgressFailed, "StateStoreNotConfigured", storeErr.Error()
 			return
 		}
-		lease, leaseErr := r.config.StateStore.AcquireResourceLease(ctx, network, r.config.ResourceLeaseOwner, resourceLeaseRevalidationInterval)
+		lease, leaseErr := r.config.StateStore.AcquireResourceLease(
+			ctx, network, r.config.ResourceLeaseOwner, resourceLeaseRevalidationInterval, statestore.ExclusiveResourceLease,
+		)
 		if leaseErr != nil {
 			data.progress, data.reason = physicalResourceProgressRetryPending, "ResourceLeaseAcquisitionFailed"
 			data.message = fmt.Sprintf("Failed to acquire persistent network startup lease: %v", leaseErr)
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 			if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
-				logResourceLeaseHeld(log, leaseErr, network.GetLeaseKey(), "Persistent network is being updated by another DCP instance, retrying")
+				logResourceLeaseHeld(log, leaseErr, network.GetLeaseKey(), "Persistent network startup lease is held, retrying")
 				data.reason = "ResourceLeaseHeld"
 			} else {
 				log.Error(leaseErr, "Failed to acquire persistent logical network lease")
