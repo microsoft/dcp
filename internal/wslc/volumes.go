@@ -95,9 +95,8 @@ func (wco *WslcCliOrchestrator) InspectVolumes(ctx context.Context, options cont
 	}
 
 	if errors.Is(runErr, errCommandFailed) && decodeErr == nil && conversionErr == nil && len(inspectedVolumes) < len(options.Volumes) {
-		return inspectedVolumes, errors.Join(runErr, fmt.Errorf("%w: %s", containers.ErrNotFound, errBuf))
-	}
-	if runErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("%w: %s", containers.ErrNotFound, errBuf))
+	} else if runErr != nil {
 		runErr = errors.Join(runErr, normalizeCliErrors(errBuf, volumeNotFoundMatch.MaxObjects(len(options.Volumes))))
 	}
 	return inspectedVolumes, errors.Join(

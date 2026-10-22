@@ -233,6 +233,7 @@ func TestInspectMissingObjectsRequiresExitCodeAndValidResponse(t *testing.T) {
 						require.ErrorIs(t, inspectErr, response.wantErr)
 					}
 					if response.wantErr == containers.ErrNotFound {
+						require.ErrorIs(t, inspectErr, containers.ErrIncomplete)
 						require.NotErrorIs(t, inspectErr, containers.ErrUnmatched)
 						require.ErrorContains(t, inspectErr, "Objet introuvable")
 					} else {
