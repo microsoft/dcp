@@ -327,9 +327,8 @@ func handleLogicalProcessRuntime(
 	if getErr != nil {
 		log.Error(getErr, "Failed to get backing physical process")
 		data.progress, data.reason, data.message = physicalResourceProgressRetryPending, "", getErr.Error()
-		if apierrors.IsNotFound(getErr) && resource.Status.RuntimeLogs != nil {
-			resource.Status.RuntimeLogs = nil
-			return statusChanged
+		if apierrors.IsNotFound(getErr) {
+			return data.applyMissingLogSource(resource)
 		}
 		return noChange
 	}
@@ -418,7 +417,9 @@ func handleLogicalProcessPersistence(
 		physical, getErr := reconciler.getLogicalPhysicalProcess(ctx, resource, data.physicalUID, "")
 		if getErr == nil {
 			change = applyLogicalProcessPhysicalDetails(resource, physical)
-		} else if !apierrors.IsNotFound(getErr) {
+		} else if apierrors.IsNotFound(getErr) {
+			change = data.applyMissingLogSource(resource)
+		} else {
 			log.Error(getErr, "Failed to project physical process during persistence settlement")
 			data.progress, data.message = physicalResourceProgressRetryPending, getErr.Error()
 			return noChange

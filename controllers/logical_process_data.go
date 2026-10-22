@@ -85,6 +85,18 @@ func (data *logicalProcessData) applyTo(resource *apiv2.LogicalProcess) (objectC
 	return change | projectionChange, delay, valid
 }
 
+func (data *logicalProcessData) applyMissingLogSource(resource *apiv2.LogicalProcess) objectChange {
+	// Preserve the backing identity so logical-only followers can observe its completion.
+	source := &apiv2.LogSource{
+		Name: "logical-" + string(resource.UID), UID: data.physicalUID, Complete: true,
+	}
+	if reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
+		return noChange
+	}
+	resource.Status.RuntimeLogs = source
+	return statusChanged
+}
+
 var logicalProcessProjections = physicalResourceProjectionTable[logicalProcessState, apiv2.LogicalProcessPhase]{
 	invalidPhase: apiv2.LogicalProcessPhaseUnknown,
 	projections: map[physicalResourceProjectionKey[logicalProcessState]]physicalResourceProjection[apiv2.LogicalProcessPhase]{
