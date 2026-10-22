@@ -254,7 +254,7 @@ func EnsureV1PhysicalContainerNetworkReference(
 // Deletion paths bypass this check so cleanup can still finish.
 func checkNamespaceReady(
 	ctx context.Context,
-	client ctrl_client.Client,
+	client ctrl_client.Reader,
 	namespaceName string,
 ) (bool, apiv2.ConditionReason, error) {
 	namespace := apiv2.Namespace{}

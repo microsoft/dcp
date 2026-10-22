@@ -757,7 +757,7 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 	cmd.Stdout = options.StdOutStream
 	cmd.Stderr = options.StdErrStream
 
-	exitCh := make(chan int32)
+	exitCh := make(chan int32, 1)
 	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
 		// We only care about the exit code, not the error. The only scenario where we should get an error
 		// is if the context for an exec command is canceled during DCP shutdown, in which case that's expected.

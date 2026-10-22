@@ -1,6 +1,6 @@
 # V2 resource plan
 
-This document tracks the intended direction for DCP V2 resources. The current V2 work establishes the namespace model and the first physical container, image, network, volume, and process primitives; follow-up work should continue using the design guidelines below so future resources remain consistent.
+This document tracks the intended direction for DCP V2 resources. The current V2 work establishes the namespace model and the first physical container, image, network, volume, process, and container execution primitives; follow-up work should continue using the design guidelines below so future resources remain consistent.
 
 ## Design guidelines
 
@@ -155,12 +155,34 @@ After the physical primitives are in place, add logical V2 resources that expres
    - Physical handoff first inspects the stable child name and adopts a matching owned resource after an ambiguous create result. Namespace readiness is required only for a new creation; immutable configuration validation excludes `stop`, which is forwarded separately after handoff.
    - Status exposes logical phase/readiness, published physical process reference, lifecycle key, PID/identity, exit code, and finish timestamp. Runtime details come only from valid owned physical backing; selected stored identities are cleared after handoff. Namespace cleanup removes logical processes before physical processes.
 
-4. Add V2 service.
+4. Add V2 container execution.
+   - `LogicalContainerExec` at `logicalcontainerexecs` (short name `lce`) resolves a same-namespace `LogicalContainer` and delegates one attached command execution to an owned `PhysicalContainerExec` at `physicalcontainerexecs` (short name `pce`).
+   - The logical controller consumes current-generation logical container readiness and the published `physicalContainerRef`. The physical controller resolves that `PhysicalContainer`, waits for current-generation running readiness, pins the runtime container ID, and owns launch, completion observation, output capture, and cancellation. Neither execution controller starts, stops, removes, or recreates the target container.
+   - Both specifications contain an immutable `containerRef` and nested `execution` with command, arguments, working directory, explicit environment, and runtime-read host environment files. Arguments and environment are literal; V1 service-template expansion remains deferred.
+   - Execution is one-shot and independent of the container lifetime. Launch errors are terminal and nonzero runtime exit codes are reported as completed executions. There are no persistent or existing execution modes, PID adoption, automatic reruns, or lifecycle-key storage. PTY support is deferred to the follow-up below.
+   - Runtime adapters use the shared process executor for their attached CLI commands. Cancelling or deleting an execution ends that attached session; it does not guarantee termination of the process inside the container. Host CLI PIDs must not be presented as in-container process identities.
+   - The physical controller uses bounded launch work and UID-scoped deferred results, retains completion through status-write retries, and settles in-flight launch/cancellation before deletion. Logical deletion waits for its owned physical execution to disappear. Namespace cleanup removes execution resources before container resources, including before logical containers can delete their physical backing.
+   - Both kinds expose stdout, stderr, and system logs through the shared V2 streamer. Physical execution owns timestamped capture and diagnostics, forwards diagnostics into its logical owner's scoped sink, and publishes completion. Logical execution publishes only the immediate physical `runtimeLogs` snapshot; streaming does not query child resources.
+   - Loss of physical backing projects a completed, unavailable log source with the original physical UID. This terminal projection is repeated through status-write retries and finishes logical-only followers through their existing kind-wide callback, without requiring anyone to open the physical log endpoint.
+   - Both controllers use explicit state/progress handlers and pure status projection. Attached-session lifetime is separate from in-flight launch and cancellation work; deletion cancels and settles that work before releasing the physical finalizer. Temporary readiness loss before an execution attempt remains retryable, while changed identities and terminal target states fail the execution.
+   - The first selected physical container UID and runtime ID remain pinned across preflight retries. A same-name replacement cannot retarget an existing execution.
+   - Logical physical preparation retains its selected reference until handoff and resolves the stable owned execution name before reevaluating startup prerequisites after a creation error. A lost creation response must not hide an already-running or completed command when its target subsequently exits.
+   - Physical preparation follows the network/volume create-recovery pattern: inspect the stable identity, validate ownership and desired configuration, adopt an earlier successful create, and attempt creation only after confirming absence. Namespace, target selection, physical preparation, runtime observation, and deletion remain separate state handlers; recovery does not re-enter earlier handlers.
+
+5. Add terminal/PTY support in follow-up PRs.
+   - Keep this work separate from the initial V2 container, process, and container-execution lifecycle PRs. Cover processes, container primary processes, and container exec sessions; decide the exact PR split when implementation is scoped.
+   - Reuse V1 terminal API semantics and the existing `internal/termpty` PTY/ConPTY and HMP v1 connection machinery. Expose V2 terminal configuration and the resolved socket endpoint without introducing a new terminal protocol or transport.
+   - Physical controllers own terminal sessions and cleanup; logical controllers translate configuration and project the immediate physical endpoint using the established V2 state/progress and status-projection patterns.
+   - For processes, integrate the existing terminal process launcher. Use V1 session-only restrictions as the starting point; persistent, retained, and existing-process terminal support requires a separate lifecycle decision.
+   - For containers and container exec sessions, the container runtime allocates the in-container terminal. DCP requests interactive/TTY behavior through the runtime adapters and exposes input, output, resize, and completion through its terminal API contract. Primary-container attach and exec-session terminal support are distinct runtime paths; V1 currently exposes terminal configuration on Container, not ContainerExec.
+   - Define terminal-mode stdout/stderr log behavior consistently with V1 while preserving system diagnostics. Verify socket ownership, reconnect, resize, exit notification, partial-startup cleanup, deletion, and namespace cleanup through the real API/controller test environment, with runtime-specific behavior covered in CI.
+
+6. Add V2 service.
    - Provide service behavior similar to V1 `Service`.
    - Support multiple effective addresses instead of a single value.
    - Represent cases where binding to a logical address such as localhost results in more than one concrete address, such as `127.0.0.1` and `::1`.
 
-5. Add V2 project.
+7. Add V2 project.
    - Represent a debuggable application.
    - Include fields for source code location.
    - Include exactly one run configuration initially: executable or container.

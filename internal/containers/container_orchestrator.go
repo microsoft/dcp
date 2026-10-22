@@ -483,6 +483,9 @@ type ExecContainerOptions struct {
 
 type ExecContainers interface {
 	// Executes a command in a running container. Returns a channel that will emit the final exit code of running the command.
+	// Successful launch starts the attached runtime command, not necessarily the in-container process.
+	// Cancellation ends the attached session and does not guarantee in-container process termination.
+	// The completion channel emits once after output writers are no longer in use, then closes.
 	ExecContainer(ctx context.Context, options ExecContainerOptions) (<-chan int32, error)
 }
 
