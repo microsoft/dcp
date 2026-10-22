@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -330,9 +331,14 @@ func (pc *PhysicalContainer) GetResourceId() string {
 // GetLogSource describes the runtime capture selected by the observed container lifecycle.
 func (pc *PhysicalContainer) GetLogSource() *LogSource {
 	complete := pc.Status.Phase == PhysicalContainerPhaseExited || pc.Status.Phase == PhysicalContainerPhaseFailed
+	available := pc.Status.ContainerID != "" && (!pc.Status.StartedAt.IsZero() || complete)
+	if ready := apimeta.FindStatusCondition(pc.Status.Conditions, string(ConditionReady)); ready != nil &&
+		ready.ObservedGeneration == pc.Generation && ready.Reason == string(PhysicalContainerReasonRuntimeContainerMissing) {
+		complete = true
+	}
 	return &LogSource{
 		Name: pc.Name, UID: pc.UID, ContainerID: pc.Status.ContainerID,
-		Available: pc.Status.ContainerID != "" && (!pc.Status.StartedAt.IsZero() || complete),
+		Available: available,
 		Complete:  complete,
 	}
 }

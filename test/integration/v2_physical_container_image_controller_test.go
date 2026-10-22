@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,6 +29,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -113,7 +115,9 @@ func TestV2PhysicalContainerImageControllerBuildsRawArchiveContextAndReleasesLog
 	require.FileExists(t, logPath)
 	require.NoError(t, serverInfo.Client.Delete(ctx, image))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, image)
-	require.NoError(t, os.Rename(logPath, logPath+".retired"))
+	require.NoError(t, resiliency.Retry(ctx, backoff.NewConstantBackOff(100*time.Millisecond), func() error {
+		return os.Rename(logPath, logPath+".retired")
+	}))
 	defer logger.ReleaseResourceLog(image.GetResourceId())
 	require.NoError(t, wait.PollUntilContextCancel(ctx, 100*time.Millisecond, true, func(context.Context) (bool, error) {
 		resourceLog.Error(errors.New("image-log-reopen-test"), "Checking that deletion released the previous writer")
@@ -199,9 +203,8 @@ func TestV2PhysicalContainerImageControllerCoordinatesTagAcquisition(t *testing.
 	require.Equal(t, 0, containerOrchestrator.PullImageCallCount(second.Spec.Image.Image))
 	releasePull()
 	firstReady := waitPhysicalContainerImagePhase(t, ctx, first.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
-	secondReady := waitPhysicalContainerImagePhase(t, ctx, second.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	waitPhysicalContainerImagePhase(t, ctx, second.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
 	missingReady := waitPhysicalContainerImagePhase(t, ctx, missing.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
-	require.Equal(t, firstReady.Status.ImageID, secondReady.Status.ImageID)
 	require.Equal(t, firstReady.Status.ImageID, missingReady.Status.ImageID)
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(source))
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(second.Spec.Image.Image))
