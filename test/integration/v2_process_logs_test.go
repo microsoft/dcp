@@ -6,14 +6,17 @@
 package integration_test
 
 import (
+	"context"
 	"errors"
 	"io"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
@@ -21,6 +24,120 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+type processBackingDeletionConflictReader struct {
+	ctrl_client.Reader
+	client      ctrl_client.Client
+	logicalName types.NamespacedName
+	armed       atomic.Bool
+	injected    atomic.Bool
+}
+
+func (reader *processBackingDeletionConflictReader) Get(
+	ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption,
+) error {
+	getErr := reader.Reader.Get(ctx, key, obj, options...)
+	if _, physical := obj.(*apiv2.PhysicalProcess); !physical || !apierrors.IsNotFound(getErr) ||
+		key.Namespace != reader.logicalName.Namespace || !reader.armed.CompareAndSwap(true, false) {
+		return getErr
+	}
+	// Change the real API resource version after reconciliation has read it but before its status write.
+	updateErr := retryOnConflictEx(ctx, reader.client, reader.logicalName, func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
+		patch := ctrl_client.MergeFrom(current.DeepCopy())
+		if current.Annotations == nil {
+			current.Annotations = make(map[string]string)
+		}
+		current.Annotations["test.dcp.microsoft.com/backing-deletion-conflict"] = "injected"
+		return reader.client.Patch(updateCtx, current, patch)
+	})
+	if updateErr != nil {
+		return updateErr
+	}
+	reader.injected.Store(true)
+	return getErr
+}
+
+// Verifies that logical-only process log followers finish when physical backing disappears,
+// and completion remains projected when a real API resource-version conflict rejects the first status write.
+func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T) {
+	t.Parallel()
+	for _, withConflict := range []bool{false, true} {
+		name := "normal"
+		if withConflict {
+			name = "status-conflict"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			apiClient, logsClient, executor := client, restClient, testProcessExecutor
+			namespaceName := "v2-process-logical-only-" + name
+			var conflictReader *processBackingDeletionConflictReader
+			if withConflict {
+				serverInfo, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+					LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
+					TestEnvironmentOptions{DecorateAPIReader: func(reader ctrl_client.Reader) ctrl_client.Reader {
+						conflictReader = &processBackingDeletionConflictReader{Reader: reader,
+							logicalName: types.NamespacedName{Namespace: namespaceName, Name: "process"}}
+						return conflictReader
+					}})
+				require.NoError(t, startupErr)
+				apiClient, logsClient, executor = serverInfo.Client, serverInfo.RestClient, environment.TestProcessExecutor
+				conflictReader.client = apiClient
+			}
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceName}}
+			require.NoError(t, apiClient.Create(ctx, namespace))
+			waitObjectAssumesStateEx(t, ctx, apiClient, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+				return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+			})
+			resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespaceName},
+				Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-logical-only-follow-" + name}}}
+			require.NoError(t, apiClient.Create(ctx, resource))
+			running := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+				return current.Status.Phase == apiv2.LogicalProcessPhaseRunning &&
+					current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Available, nil
+			})
+			physical := &apiv2.PhysicalProcess{}
+			require.NoError(t, apiClient.Get(ctx, types.NamespacedName{Namespace: namespaceName, Name: running.Status.PhysicalProcessRef}, physical))
+			pid, pidErr := process.Int64_ToPidT(*running.Status.PID)
+			require.NoError(t, pidErr)
+			execution, found := executor.FindByPid(pid)
+			require.True(t, found)
+			_, writeErr := io.WriteString(execution.Cmd.Stdout, "logical-only-output\n")
+			require.NoError(t, writeErr)
+			// No physical log request is made: its lazily started log lifecycle watch must not be required.
+			stream, streamErr := logsClient.Get().
+				AbsPath("/apis", apiv2.GroupVersion.Group, apiv2.GroupVersion.Version, "namespaces",
+					namespaceName, "logicalprocesses", resource.Name, apiv2.LogSubresourceName).
+				Param("source", "stdout").Param("follow", "true").Stream(ctx)
+			require.NoError(t, streamErr)
+			defer func() { require.NoError(t, stream.Close()) }()
+			firstLine := make([]byte, len("logical-only-output\n"))
+			_, readErr := io.ReadFull(stream, firstLine)
+			require.NoError(t, readErr)
+			require.Equal(t, "logical-only-output\n", string(firstLine))
+			if conflictReader != nil {
+				conflictReader.armed.Store(true)
+			}
+			require.NoError(t, apiClient.Delete(ctx, physical))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, physical)
+			completed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+				return current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete &&
+					!current.Status.RuntimeLogs.Available, nil
+			})
+			require.Equal(t, physical.UID, completed.Status.RuntimeLogs.UID)
+			require.Equal(t, physical.Name, completed.Status.RuntimeLogs.Name)
+			if conflictReader != nil {
+				require.True(t, conflictReader.injected.Load())
+			}
+			remaining, remainingErr := io.ReadAll(stream)
+			require.NoError(t, remainingErr)
+			require.Empty(t, remaining)
+			require.NoError(t, apiClient.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, resource)
+		})
+	}
+}
 
 // Verifies that logical and physical process endpoints share immediate captured stdout/stderr,
 // support standard formatting and filtering, and finish followers when the process exits.
