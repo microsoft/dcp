@@ -34,7 +34,7 @@ func StopViaConsole(ctx context.Context, log logr.Logger, executor Executor, han
 	if contextErr := ctx.Err(); contextErr != nil {
 		return contextErr
 	}
-	proc, findErr := FindProcess(handle)
+	proc, findErr := handle.OsProcess()
 	if findErr != nil {
 		return findErr
 	}

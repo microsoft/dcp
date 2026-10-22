@@ -181,7 +181,7 @@ Not all tests are run by default. A small subset of tests aren't suitable for ru
 | --- | --------- |
 | `DCP_TEST_ENABLE_ADVANCED_NETWORKING` | Set to true to enable advanced networking tests such as those that require access to all network interfaces and try to open ports that are accessible to requests originating from outside of the machine, or tests that evaluate network performance against a baseline (these are unreliable on CI machines). |
 | `DCP_TEST_ENABLE_ADVANCED_CERTIFICATES`| Set to true to enable advanced certificate file tests such as those that require openssl installed to verify behavior. |
-| `DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR` | Set to true to enable tests that require real container orchestrator (Docker or Podman). |
+| `DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR` | Set to true to enable tests that require a real container orchestrator (Docker, Podman, or WSLC). |
 
 > You may need to install [Azure Artifacts Credentials Provider](https://github.com/microsoft/artifacts-credprovider#azure-artifacts-credential-provider) to be able to build some of the test artifacts for tests in this set.
 

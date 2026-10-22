@@ -143,6 +143,15 @@ func (r *TestProcessExecutableRunner) ReleaseRun(ctx context.Context, runID cont
 	return r.inner.ReleaseRun(ctx, runID, log)
 }
 
+func (r *TestProcessExecutableRunner) DeleteRunOutput(ctx context.Context, runID controllers.RunID, stdoutPath, stderrPath string) error {
+	outputRunner, ok := r.inner.(controllers.ExecutableOutputCleanupRunner)
+	if !ok {
+		return fmt.Errorf("inner test process runner does not support output cleanup")
+	}
+
+	return outputRunner.DeleteRunOutput(ctx, runID, stdoutPath, stderrPath)
+}
+
 func (r *TestProcessExecutableRunner) AdoptRun(
 	ctx context.Context,
 	exe *apiv1.Executable,
@@ -178,3 +187,4 @@ func (r *TestProcessExecutableRunner) CheckProcessRunning(handle process.Process
 
 var _ controllers.ExecutableRunner = (*TestProcessExecutableRunner)(nil)
 var _ controllers.PersistentExecutableRunner = (*TestProcessExecutableRunner)(nil)
+var _ controllers.ExecutableOutputCleanupRunner = (*TestProcessExecutableRunner)(nil)

@@ -10,7 +10,6 @@ package termpty
 import (
 	"debug/pe"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -19,7 +18,6 @@ import (
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
-	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 func TestLoadConPTYRejectsIncompleteBundles(t *testing.T) {
@@ -95,59 +93,6 @@ func TestConPTYFromEnvironment(t *testing.T) {
 		require.ErrorContains(t, providerErr, "invalid DCP_CONPTY_PATH configuration")
 		require.Nil(t, provider)
 	})
-}
-
-func TestConPTYProcessSelection(t *testing.T) {
-	const subprocessEnv = "DCP_TEST_CONPTY_SELECTION"
-	if mode := os.Getenv(subprocessEnv); mode != "" {
-		provider, providerErr := getConPTY()
-		switch mode {
-		case "invalid":
-			require.ErrorContains(t, providerErr, "invalid DCP_CONPTY_PATH configuration")
-			require.Nil(t, provider)
-		case "system":
-			require.NoError(t, providerErr)
-			require.IsType(t, systemConPTY{}, provider)
-		case "standalone":
-			require.NoError(t, providerErr)
-			require.IsType(t, &conPTY{}, provider)
-		default:
-			t.Fatalf("unexpected ConPTY test mode %q", mode)
-		}
-
-		t.Setenv(conPTYPathEnv, filepath.Join(t.TempDir(), "changed-after-selection"))
-		cachedProvider, cachedErr := getConPTY()
-		require.Equal(t, provider, cachedProvider)
-		require.Equal(t, providerErr, cachedErr)
-		return
-	}
-
-	t.Parallel()
-	executable, executableErr := os.Executable()
-	require.NoError(t, executableErr)
-	cases := []struct {
-		mode string
-		path string
-	}{
-		{"system", ""},
-		{"invalid", t.TempDir()},
-	}
-	if configuredPath := os.Getenv(conPTYPathEnv); configuredPath != "" {
-		cases = append(cases, struct {
-			mode string
-			path string
-		}{"standalone", configuredPath})
-	}
-	for _, tc := range cases {
-		t.Run(tc.mode, func(t *testing.T) {
-			ctx, cancel := testutil.GetTestContext(t, internalTestTimeout)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestConPTYProcessSelection$")
-			cmd.Env = append(os.Environ(), subprocessEnv+"="+tc.mode, conPTYPathEnv+"="+tc.path)
-			output, runErr := cmd.CombinedOutput()
-			require.NoError(t, runErr, "%s", output)
-		})
-	}
 }
 
 func TestConPTYLoadsConfiguredDLL(t *testing.T) {

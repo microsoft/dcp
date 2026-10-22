@@ -105,11 +105,11 @@ DCPTUN_CLIENT_BINARY ?= $(OUTPUT_BIN)/dcptun_c
 # Locations and definitions for tool binaries
 GO_BIN ?= go
 TOOL_BIN ?= $(repo_dir)/.toolbin
-GOLANGCI_LINT ?= $(GOTOOL_BIN) github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 GOTOOL_BIN ?= $(GO_BIN) tool
 CONTROLLER_GEN ?= $(GOTOOL_BIN) sigs.k8s.io/controller-tools/cmd/controller-gen
 OPENAPI_GEN ?= $(GOTOOL_BIN) k8s.io/kube-openapi/cmd/openapi-gen
 GOVERSIONINFO_GEN ?= $(GOTOOL_BIN) github.com/josephspurrier/goversioninfo/cmd/goversioninfo
+GOLANGCI_LINT_TOOL ?= $(GOTOOL_BIN) -n github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
 PARROT_TOOL ?= $(TOOL_BIN)/parrot$(exe_suffix)
@@ -221,7 +221,7 @@ generate-openapi-debug: ## Runs OpenAPI generator with additional options for de
 .PHONY: generate-goversioninfo
 generate-goversioninfo:
 ifeq ($(build_os),windows)
-	$(CLEAR_GOARGS) $(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/win_version_info.json ## Generates version information for Windows binaries
+	$(CLEAR_GOARGS) $(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -file-version "$(VERSION)" -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/win_version_info.json ## Generates version information for Windows binaries
 else
 	-$(rm_f) $(repo_dir)/cmd/dcp/resource.syso
 endif
@@ -325,8 +325,17 @@ clean: | ${OUTPUT_BIN} ${TOOL_BIN} ## Deletes build output (all binaries), and a
 	$(rm_rf) $(TOOL_BIN)/*
 
 .PHONY: lint
-lint: golangci-lint generate-grpc ## Runs the linter
-	$(CLEAR_GOARGS) $(GOLANGCI_LINT) run --timeout 10m
+lint: GOLANGCI_LINT := $(shell $(CLEAR_GOARGS) $(GOLANGCI_LINT_TOOL))
+lint: generate-grpc ## Runs the linter
+ifeq ($(detected_OS),windows)
+	$$env:GOOS="windows"; $(GOLANGCI_LINT) run --timeout 10m
+	$$env:GOOS="darwin"; $(GOLANGCI_LINT) run --timeout 10m
+	$$env:GOOS="linux"; $(GOLANGCI_LINT) run --timeout 10m
+else
+	GOOS="windows" $(GOLANGCI_LINT) run --timeout 10m
+	GOOS="darwin" $(GOLANGCI_LINT) run --timeout 10m
+	GOOS="linux" $(GOLANGCI_LINT) run --timeout 10m
+endif
 
 .PHONY: install
 install: compile | $(DCP_DIR) ## Installs all binaries to their destinations
@@ -409,10 +418,6 @@ endif
 
 $(DCP_DIR):
 	$(mkdir) $(DCP_DIR)
-
-.PHONY: golangci-lint
-golangci-lint:
-	@$(CLEAR_GOARGS) $(GOLANGCI_LINT) --version
 
 .PHONY: protoc
 protoc: $(PROTOC)

@@ -58,7 +58,7 @@ func TestVolumeMethods(t *testing.T) {
 				Name:       containerName,
 				Image:      ensureTestImage(t, ctx, runtime),
 				Command:    []string{"write-and-wait", "/data/value", "volume-content", "10m"},
-				Labels:     tracker.Labels(),
+				Labels:     tracker.MapLabels(),
 				PullPolicy: containers.PullPolicyNever,
 				VolumeMounts: []containers.CreateContainerVolumeMount{{
 					Type:   containers.NamedVolumeMount,

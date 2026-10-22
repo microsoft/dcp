@@ -29,15 +29,6 @@ func AddMonitorFlags(cmd *cobra.Command) {
 	cmd.Flags().Uint8VarP(&monitorInterval, "monitor-interval", "i", 0, "If present, specifies the time in seconds between checks for the monitor PID.")
 }
 
-// ResolveProcessHandle binds an optional command-line identity once, without replacing a supplied identity.
-func ResolveProcessHandle(pid process.Pid_t, identityTime time.Time) (process.ProcessHandle, error) {
-	if identityTime.IsZero() {
-		return process.FindProcessHandle(pid)
-	}
-	handle := process.NewHandle(pid, identityTime)
-	return handle, handle.Validate()
-}
-
 // Starts monitoring a process identified by the given handle.
 // Returns a context that will be cancelled when the monitored process exits, or if the returned cancellation function is called.
 // The returned context (and the cancellation function) is valid even if an error occurs (e.g. the process cannot be found),
@@ -49,7 +40,7 @@ func MonitorPid(
 	logger logr.Logger,
 ) (context.Context, context.CancelFunc, error) {
 	monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
-	resolved, resolveErr := ResolveProcessHandle(handle.Pid, handle.IdentityTime)
+	resolved, resolveErr := process.ResolveProcessHandle(handle.Pid, handle.IdentityTime)
 	if resolveErr != nil {
 		logger.Info("Could not resolve monitored process", "PID", handle.Pid, "Error", resolveErr)
 		monitorCtxCancel()

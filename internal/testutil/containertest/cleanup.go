@@ -394,7 +394,7 @@ func recoverStaleJournal(
 	}
 
 	processHandle := process.NewHandle(header.ProcessID, header.ProcessStartTime)
-	runningProcess, findErr := process.FindProcess(processHandle)
+	runningProcess, findErr := processHandle.OsProcess()
 	if findErr == nil {
 		_ = runningProcess.Release()
 		return nil

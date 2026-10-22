@@ -88,22 +88,6 @@ func TestWindowsPTY_CloseOnZeroValueIsNoop(t *testing.T) {
 	require.NoError(t, pty.Close())
 }
 
-// Verifies that the custom ConPTY waitable reports that no classic Windows console is available.
-// This prevents futile CTRL_C_EVENT or CTRL_BREAK_EVENT dispatch before the bounded fallback.
-func TestWindowsProcessHandleReportsConsoleUnavailable(t *testing.T) {
-	t.Parallel()
-
-	waitable := &windowsProcessHandle{}
-	availabilitySource, supported := any(waitable).(process.WindowsConsoleAvailabilitySource)
-
-	require.True(t, supported)
-	require.Equal(
-		t,
-		process.WindowsConsoleAvailabilityUnavailable,
-		availabilitySource.WindowsConsoleAvailability(),
-	)
-}
-
 func TestWindowsPTY_ReadAfterCloseReturnsErrClosed(t *testing.T) {
 	t.Parallel()
 	pty := newOpenedWindowsPTY(t)

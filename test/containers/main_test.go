@@ -116,10 +116,7 @@ func ensureTestImage(t *testing.T, ctx context.Context, runtime containertest.Ru
 				Context:    contextDirectory,
 				Dockerfile: dockerfilePath,
 				Tags:       []string{state.image},
-				Labels: []containers.Label{{
-					Key:   probeImageLabel,
-					Value: probeHashString,
-				}},
+				Labels:     map[string]string{probeImageLabel: probeHashString},
 			},
 		})
 		if buildErr != nil {

@@ -20,7 +20,6 @@ import (
 
 	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcppaths"
-	"github.com/microsoft/dcp/internal/dcpproc/protocol"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -29,6 +28,9 @@ import (
 
 const (
 	DCP_DISABLE_MONITOR_PROCESS = "DCP_DISABLE_MONITOR_PROCESS"
+
+	StopProcessTreeIncompleteExitCode  = 20
+	StopProcessTreeProcessGoneExitCode = 21
 )
 
 type ContainerWatcherOptions struct {
@@ -210,9 +212,9 @@ func stopProcessTreeExitError(root process.ProcessHandle, exitCode int32) error 
 		exitCode,
 	)
 	switch exitCode {
-	case protocol.StopProcessTreeIncompleteExitCode:
+	case StopProcessTreeIncompleteExitCode:
 		return errors.Join(process.ErrIncompleteProcessTree, commandErr)
-	case protocol.StopProcessTreeProcessGoneExitCode:
+	case StopProcessTreeProcessGoneExitCode:
 		return &process.ErrProcessNotFound{Pid: root.Pid, Inner: commandErr}
 	default:
 		return commandErr
@@ -296,9 +298,9 @@ func simulatedStopProcessTreeExitCode(stopErr error) int32 {
 	case stopErr == nil:
 		return 0
 	case errors.Is(stopErr, process.ErrIncompleteProcessTree):
-		return protocol.StopProcessTreeIncompleteExitCode
+		return StopProcessTreeIncompleteExitCode
 	case process.IsProcessGoneErr(stopErr):
-		return protocol.StopProcessTreeProcessGoneExitCode
+		return StopProcessTreeProcessGoneExitCode
 	default:
 		return 5
 	}

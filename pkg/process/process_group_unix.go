@@ -23,7 +23,7 @@ func FindProcessGroup(handle ProcessHandle) (*ProcessGroup, error) {
 	if handle.Pid <= 1 || handle.Pid > math.MaxInt32 {
 		return nil, fmt.Errorf("invalid process group leader PID %d", handle.Pid)
 	}
-	_, processErr := findProcessInfo(handle)
+	_, processErr := handle.findProcessInfo()
 	if processErr != nil {
 		return nil, processErr
 	}
@@ -40,7 +40,7 @@ func FindProcessGroup(handle ProcessHandle) (*ProcessGroup, error) {
 	if groupID == unix.Getpgrp() {
 		return nil, fmt.Errorf("cannot target the current process group %d", groupID)
 	}
-	if _, identityErr := findProcessInfo(handle); identityErr != nil {
+	if _, identityErr := handle.findProcessInfo(); identityErr != nil {
 		return nil, identityErr
 	}
 	return &ProcessGroup{leader: handle, WaitPollInterval: defaultWaitPollInterval}, nil

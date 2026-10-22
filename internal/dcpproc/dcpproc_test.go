@@ -26,7 +26,7 @@ import (
 
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcppaths"
-	"github.com/microsoft/dcp/internal/dcpproc/protocol"
+	"github.com/microsoft/dcp/internal/dcpproc"
 	int_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -922,7 +922,7 @@ func TestStopProcessTreeProcessGoneExitsWithoutErrorLog(t *testing.T) {
 
 	var exitErr *exec.ExitError
 	require.ErrorAs(t, stopErr, &exitErr)
-	require.Equal(t, protocol.StopProcessTreeProcessGoneExitCode, exitErr.ExitCode())
+	require.Equal(t, dcpproc.StopProcessTreeProcessGoneExitCode, exitErr.ExitCode())
 	require.NotContains(t, string(output), "\terror\t")
 	require.NotContains(t, string(output), "the program finished with an error")
 }

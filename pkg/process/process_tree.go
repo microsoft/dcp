@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/microsoft/dcp/pkg/logger"
 )
 
 // GetProcessTree returns the root and verified descendants in breadth-first order.
@@ -18,7 +20,7 @@ import (
 // If the root exits or its PID is reused after the snapshot, the result retains only the original
 // root identity and its verified descendants; callers must not substitute the replacement process.
 func GetProcessTree(ctx context.Context, root ProcessHandle) ([]ProcessHandle, error) {
-	return getProcessTree(ctx, root, findProcessInfo, snapshotProcesses)
+	return getProcessTree(ctx, root, ProcessHandle.findProcessInfo, snapshotProcesses)
 }
 
 func getProcessTree(
@@ -168,7 +170,7 @@ func buildProcessTree(ctx context.Context, root processInfo, snapshot []processI
 		}
 	}
 	if len(issues) != 0 {
-		return tree, fmt.Errorf("%w: %w", ErrIncompleteProcessTree, summarizeProcessErrors(issues))
+		return tree, fmt.Errorf("%w: %w", ErrIncompleteProcessTree, logger.SummarizeErrors(issues))
 	}
 	return tree, nil
 }

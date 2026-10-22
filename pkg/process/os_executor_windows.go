@@ -77,7 +77,7 @@ func (e *OSExecutor) stopSingleProcess(ctx context.Context, handle ProcessHandle
 	if contextErr := ctx.Err(); contextErr != nil {
 		return singleProcessStopResult{}, contextErr
 	}
-	proc, err := FindProcess(handle)
+	proc, err := handle.OsProcess()
 	if err != nil {
 		if !IsProcessGoneErr(err) {
 			return singleProcessStopResult{}, err
@@ -414,7 +414,7 @@ func (e *OSExecutor) createProcessCleanupJob() (windows.Handle, error) {
 }
 
 func resumeNewSuspendedProcess(handle ProcessHandle) error {
-	proc, findErr := FindProcess(handle)
+	proc, findErr := handle.OsProcess()
 	if findErr != nil {
 		return findErr
 	}

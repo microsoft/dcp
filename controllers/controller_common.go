@@ -31,6 +31,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	usvc_slices "github.com/microsoft/dcp/pkg/slices"
@@ -66,6 +67,12 @@ const (
 
 	numPostfixBytes = 6
 )
+
+func v2LabelsToMap(labels []commonapi.Label) map[string]string {
+	return maps.SliceToMap(labels, func(label commonapi.Label) (string, string) {
+		return label.Key, label.Value
+	})
+}
 
 func setRuntimeLabel(labels []commonapi.Label, key string, value string) []commonapi.Label {
 	for i := range labels {

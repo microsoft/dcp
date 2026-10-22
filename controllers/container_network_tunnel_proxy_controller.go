@@ -110,14 +110,6 @@ func (run *serverProxyRun) getExit() (serverProxyExit, bool) {
 	return run.exit.Get(), true
 }
 
-func (run *serverProxyRun) getExitType() (serverProxyExitType, bool) {
-	exit, exited := run.getExit()
-	if !exited {
-		return 0, false
-	}
-	return exit.exitType, true
-}
-
 func (run *serverProxyRun) requestOutputRemoval() {
 	run.removeOutputOnClose.Store(true)
 }

@@ -8,9 +8,8 @@ package concurrency_test
 import (
 	"context"
 	"runtime"
-	"sync"
-	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -18,37 +17,6 @@ import (
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
-
-// Verifies that every accepted registration contributes one completion that
-// must be reported before the latch can finish waiting.
-func TestCountdownLatchTracksAcceptedCompletions(t *testing.T) {
-	t.Parallel()
-
-	latch := concurrency.NewCountdownLatch()
-	const registrationCount = 64
-	completions := make([]func(), 0, registrationCount)
-	for range registrationCount {
-		complete, accepted := latch.Register()
-		require.True(t, accepted)
-		require.NotNil(t, complete)
-		completions = append(completions, complete)
-	}
-
-	latch.Close()
-	var completed atomic.Int32
-	var completionCalls sync.WaitGroup
-	completionCalls.Add(registrationCount)
-	for _, complete := range completions {
-		go func() {
-			defer completionCalls.Done()
-			complete()
-			completed.Add(1)
-		}()
-	}
-	latch.Wait()
-	completionCalls.Wait()
-	require.Equal(t, int32(registrationCount), completed.Load())
-}
 
 // Verifies that repeated Close calls are harmless and that the first call
 // rejects new registrations without losing previously accepted completions.
@@ -210,56 +178,82 @@ func TestCountdownLatchSupportsMultipleWaiters(t *testing.T) {
 }
 
 // Verifies that registrations racing with Close are either rejected or counted,
-// and that waiting after Close observes every accepted completion safely.
+// and that Wait remains blocked until every accepted completion is reported.
 func TestCountdownLatchRegistrationCloseRace(t *testing.T) {
 	t.Parallel()
 
-	testCtx, testCancel := testutil.GetTestContext(t, 10*time.Second)
-	defer testCancel()
-	const (
-		iterationCount = 100
-		registrarCount = 32
-	)
-	for range iterationCount {
-		latch := concurrency.NewCountdownLatch()
-		start := make(chan struct{})
-		var acceptedTasks atomic.Int32
-		var executedTasks atomic.Int32
-		var registrars sync.WaitGroup
-		registrars.Add(registrarCount)
-		for range registrarCount {
+	synctest.Test(t, func(test *testing.T) {
+		const (
+			iterationCount = 100
+			registrarCount = 32
+		)
+		type registrationResult struct {
+			complete func()
+			accepted bool
+		}
+		for range iterationCount {
+			latch := concurrency.NewCountdownLatch()
+			start := make(chan struct{})
+			firstRegistrationDone := make(chan struct{})
+			registrations := make(chan registrationResult, registrarCount)
+			for registrarIndex := range registrarCount {
+				go func() {
+					<-start
+					complete, accepted := latch.Register()
+					registrations <- registrationResult{complete: complete, accepted: accepted}
+					if registrarIndex == 0 {
+						close(firstRegistrationDone)
+					}
+				}()
+			}
+
+			closeDone := make(chan struct{})
 			go func() {
-				defer registrars.Done()
-				<-start
-				complete, accepted := latch.Register()
-				if !accepted {
-					return
-				}
-				acceptedTasks.Add(1)
-				complete()
-				executedTasks.Add(1)
+				// Ensure at least one accepted task while the other registrations race with Close.
+				<-firstRegistrationDone
+				latch.Close()
+				close(closeDone)
 			}()
-		}
+			close(start)
 
-		closeDone := make(chan struct{})
-		go func() {
-			<-start
-			latch.Close()
-			close(closeDone)
-		}()
-		close(start)
-		registrars.Wait()
-		select {
-		case <-closeDone:
-		case <-testCtx.Done():
-			t.Fatal("registration/close race did not finish")
-		}
+			var completions []func()
+			for range registrarCount {
+				result := <-registrations
+				if result.accepted {
+					require.NotNil(test, result.complete)
+					completions = append(completions, result.complete)
+				} else {
+					require.Nil(test, result.complete)
+				}
+			}
+			<-closeDone
+			require.NotEmpty(test, completions)
+			rejectedCompletion, acceptedAfterClose := latch.Register()
+			require.False(test, acceptedAfterClose)
+			require.Nil(test, rejectedCompletion)
 
-		latch.Wait()
-		require.Equal(t, acceptedTasks.Load(), executedTasks.Load())
-		_, acceptedAfterClose := latch.Register()
-		require.False(t, acceptedAfterClose)
-	}
+			waitDone := make(chan struct{})
+			go func() {
+				latch.Wait()
+				close(waitDone)
+			}()
+			for _, complete := range completions {
+				synctest.Wait()
+				select {
+				case <-waitDone:
+					test.Fatal("Wait returned before every accepted completion")
+				default:
+				}
+				complete()
+			}
+			synctest.Wait()
+			select {
+			case <-waitDone:
+			default:
+				test.Fatal("Wait did not return after every accepted completion")
+			}
+		}
+	})
 }
 
 // Verifies that Start converts context cancellation into closing and does not

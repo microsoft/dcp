@@ -255,7 +255,7 @@ func TestStopProcessGroupRespectsCallerCancellation(t *testing.T) {
 		require.ErrorIs(t, stopErr, context.Canceled)
 	}
 	require.NoError(t, executor.CheckProcessRunning(childHandle))
-	childProcess, childProcessErr := process.FindProcess(childHandle)
+	childProcess, childProcessErr := childHandle.OsProcess()
 	require.NoError(t, childProcessErr)
 	defer func() { require.NoError(t, childProcess.Release()) }()
 	require.NoError(t, childProcess.Kill())
@@ -345,7 +345,7 @@ func requireUnixProcessesExited(t *testing.T, ctx context.Context, handles []pro
 			if handle.IdentityTime.IsZero() {
 				_, inspectionErr = process.FindProcessHandle(handle.Pid)
 			} else {
-				proc, processErr := process.FindProcess(handle)
+				proc, processErr := handle.OsProcess()
 				inspectionErr = processErr
 				if proc != nil {
 					inspectionErr = errors.Join(inspectionErr, proc.Release())

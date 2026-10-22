@@ -131,7 +131,7 @@ func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResou
 			existingLease.store = s
 			return &ResourceLeaseHeldError{Lease: *existingLease}
 		}
-		if !sameOwner && resourceLeaseOwnerIsActive(existingLease.OwnerProcess) {
+		if !sameOwner && s.resourceLeaseOwnerIsActive(existingLease.OwnerProcess) {
 			updateErr := updateResourceLeaseTimestamp(ctx, conn, resourceKey, existingLease, now)
 			if updateErr != nil {
 				return updateErr
@@ -360,7 +360,7 @@ func (s *Store) inactiveResourceLeaseCandidates(ctx context.Context) ([]inactive
 			return nil, fmt.Errorf("could not read resource lease for cleanup: %w", scanErr)
 		}
 
-		if resourceLeaseIsInactive(candidate) {
+		if s.resourceLeaseIsInactive(candidate) {
 			candidates = append(candidates, candidate)
 		}
 	}
@@ -371,9 +371,9 @@ func (s *Store) inactiveResourceLeaseCandidates(ctx context.Context) ([]inactive
 	return candidates, nil
 }
 
-func resourceLeaseIsInactive(candidate inactiveResourceLeaseCandidate) bool {
+func (s *Store) resourceLeaseIsInactive(candidate inactiveResourceLeaseCandidate) bool {
 	ownerProcess, ownerErr := resourceLeaseOwnerFromDB(candidate.ownerPID, candidate.ownerIdentityTime)
-	return ownerErr != nil || !resourceLeaseOwnerIsActive(ownerProcess)
+	return ownerErr != nil || !s.resourceLeaseOwnerIsActive(ownerProcess)
 }
 
 func getResourceLease(ctx context.Context, conn *sql.Conn, resourceKey string) (*ResourceLease, error) {

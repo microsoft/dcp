@@ -74,6 +74,13 @@ func IsProcessGoneErr(err error) bool {
 		errors.Is(err, ErrProcessIdentityMismatch)
 }
 
+func processLookupError(pid Pid_t, lookupErr error) error {
+	if errors.Is(lookupErr, os.ErrNotExist) || nativeProcessNotFound(lookupErr) {
+		return &ErrProcessNotFound{Pid: pid, Inner: lookupErr}
+	}
+	return fmt.Errorf("could not inspect process %d: %w", pid, lookupErr)
+}
+
 func getIDs(items []ProcessHandle) []Pid_t {
 	return slices.Map[Pid_t](items, func(item ProcessHandle) Pid_t {
 		return item.Pid
@@ -148,6 +155,13 @@ func PidT_ToInt(val Pid_t) (int, error) {
 
 func PidT_ToUint32(val Pid_t) (uint32, error) {
 	return convertPid[Pid_t, uint32](val)
+}
+
+func validateProcessID(pid Pid_t) error {
+	if _, pidErr := PidT_ToUint32(pid); pidErr != nil || pid == 0 {
+		return fmt.Errorf("%w: invalid pid %d", ErrInvalidProcessHandle, pid)
+	}
+	return nil
 }
 
 func convertPid[From ~int64 | ~uint64 | ~uint32, To ~int64 | ~int | ~uint32](val From) (To, error) {
@@ -240,7 +254,7 @@ var _ WindowsConsoleAvailabilitySource = waitableCmd{}
 func makeProcessWaitable(ctx context.Context, handle ProcessHandle, pollPolicy waitPollPolicy) Waitable {
 	return &waitableLite{
 		wait: func() error {
-			proc, findErr := FindProcess(handle)
+			proc, findErr := handle.OsProcess()
 			if IsProcessGoneErr(findErr) {
 				return nil
 			}

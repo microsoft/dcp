@@ -623,6 +623,8 @@ func TestV2PhysicalProcessControllerStopsExistingProcessOnRequest(t *testing.T) 
 	}
 }
 
+// Verifies that deleting a PhysicalProcess stops its runtime process unless retention is requested,
+// including retention scoped to a monitor process.
 func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
@@ -672,6 +674,9 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 			}
 			pid, convertErr := process.Int64_ToPidT(*runningProcess.Status.PID)
 			require.NoError(t, convertErr)
+			runningExecution, runningExecutionFound := testProcessExecutor.FindByPid(pid)
+			require.True(t, runningExecutionFound)
+			require.True(t, runningExecution.Running())
 			monitorExecutions := testProcessExecutor.FindAll(
 				[]string{dcpPath, "monitor-process", "--child", strconv.FormatInt(int64(pid), 10)},
 				"",
@@ -1203,6 +1208,49 @@ func verifyUncertainPhysicalProcessStart(t *testing.T, processExecutor *invalidI
 	require.Equal(t, 1, startCalls)
 	require.Zero(t, stopCalls)
 	require.False(t, replacementStopped)
+}
+
+// Verifies that PhysicalProcess retries an incomplete stop and preserves the cleanup warning
+// after the retry successfully stops the root.
+func TestV2PhysicalProcessControllerPreservesCleanupWarningAfterRetry(t *testing.T) {
+	t.Parallel()
+	dcppaths.EnableTestPathProbing()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-cleanup-retry")
+	physicalProcess := createRunningPhysicalProcess(t, ctx, namespace.Name, "cleanup-process", "v2-pproc-cleanup-retry-command")
+	pid, convertErr := process.Int64_ToPidT(*physicalProcess.Status.PID)
+	require.NoError(t, convertErr)
+	handle, handleErr := testProcessExecutor.FindProcessHandle(pid)
+	require.NoError(t, handleErr)
+	criteria := internal_testutil.ProcessSearchCriteria{Command: []string{physicalProcess.Spec.Process.ExecutablePath}}
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: criteria,
+		StopError: func(*internal_testutil.ProcessExecution) error {
+			return process.ErrIncompleteProcessTree
+		},
+	})
+	t.Cleanup(func() { testProcessExecutor.RemoveAutoExecution(criteria) })
+	require.NoError(t, retryOnConflict[apiv2.PhysicalProcess](ctx, physicalProcess.NamespacedName(), func(ctx context.Context, current *apiv2.PhysicalProcess) error {
+		current.Spec.Stop = true
+		return client.Update(ctx, current)
+	}))
+	failed := waitObjectAssumesState(t, ctx, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return condition != nil && condition.Reason == string(apiv2.PhysicalProcessReasonStopFailed), nil
+	})
+	require.Equal(t, apiv2.PhysicalProcessPhaseUnknown, failed.Status.Phase)
+	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
+
+	testProcessExecutor.RemoveAutoExecution(criteria)
+	completed := waitObjectAssumesState(t, ctx, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return condition != nil && condition.Reason == string(apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed), nil
+	})
+	require.Equal(t, apiv2.PhysicalProcessPhaseExited, completed.Status.Phase)
+	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(handle)))
+	require.NoError(t, client.Delete(ctx, completed))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, completed)
 }
 
 // seedAdoptablePhysicalProcess registers a process execution with the shared test process executor so
