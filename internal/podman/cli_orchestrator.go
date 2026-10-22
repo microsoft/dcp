@@ -394,24 +394,34 @@ func (pco *PodmanCliOrchestrator) PullImage(ctx context.Context, options contain
 		return "", fmt.Errorf("must specify an image to pull")
 	}
 
-	args := []string{"image", "pull", "--quiet"}
-	if options.Digest != "" {
-		args = append(args, options.Image+"@"+options.Digest)
-	} else {
-		args = append(args, options.Image)
+	args := []string{"image", "pull"}
+	if options.StdOutStream == nil && options.StdErrStream == nil {
+		args = append(args, "--quiet")
 	}
+	imageReference := options.Image
+	if options.Digest != "" {
+		imageReference += "@" + options.Digest
+	}
+	args = append(args, imageReference)
 
 	cmd := makePodmanCommand(args...)
 	// Pulling large images can take a long time, especially if the image is not available locally and the network is slow.
 	if options.Timeout == 0 {
 		options.Timeout = defaultPullImageTimeout
 	}
-	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "PullImage", cmd, nil, nil, options.Timeout)
+	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "PullImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
 		return "", errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
 	}
 
-	return asId(outBuf)
+	images, inspectErr := pco.InspectImages(ctx, containers.InspectImagesOptions{Images: []string{imageReference}})
+	if inspectErr != nil {
+		return "", fmt.Errorf("inspect pulled image %q: %w", imageReference, inspectErr)
+	}
+	if len(images) != 1 || images[0].Id == "" {
+		return "", fmt.Errorf("pulled image %q inspection did not return exactly one non-empty image ID", imageReference)
+	}
+	return images[0].Id, nil
 }
 
 func (pco *PodmanCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {

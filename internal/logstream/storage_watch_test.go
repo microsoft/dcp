@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package v1
+package logstream
 
 import (
 	"context"
@@ -15,6 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	registry_rest "k8s.io/apiserver/pkg/registry/rest"
 
@@ -29,7 +32,12 @@ func TestLogStorageWatchSetupFailureCanBeRetried(t *testing.T) {
 	setupErr := errors.New("test watch setup failure")
 	parentWatcher := watch.NewRaceFreeFake()
 	parentStorage := &logStorageWatchSource{watcher: parentWatcher, watchErr: setupErr}
-	storage, storageErr := NewLogStorage(parentStorage, logStorageTestStreamer{})
+	storage, storageErr := NewLogStorage(parentStorage, logStorageTestStreamer{},
+		func() *storageOptions { return &storageOptions{} },
+		func(rest registry_rest.ResourceStreamer) runtime.Object {
+			return &streamingStorageResponse{ResourceStreamer: rest}
+		},
+		schema.GroupVersionKind{Group: "test", Version: "v1", Kind: "LogResponse"})
 	require.NoError(t, storageErr)
 	t.Cleanup(storage.Destroy)
 
@@ -57,7 +65,10 @@ func TestLogStorageWatchSetupFailureCanBeRetried(t *testing.T) {
 // Verifies that LogStorage.Destroy closes its disposal signal without a parent watcher,
 // remains idempotent, and rejects subsequent resource-watch requests.
 func TestLogStorageDestroyWithoutParentWatcher(t *testing.T) {
-	storage, storageErr := NewLogStorage(&logStorageWatchSource{}, logStorageTestStreamer{})
+	storage, storageErr := NewLogStorage(&logStorageWatchSource{}, logStorageTestStreamer{},
+		func() *storageOptions { return &storageOptions{} },
+		func(registry_rest.ResourceStreamer) runtime.Object { return &metav1.Status{} },
+		schema.GroupVersionKind{Group: "test", Version: "v1", Kind: "LogResponse"})
 	require.NoError(t, storageErr)
 	t.Cleanup(storage.Destroy)
 
@@ -89,11 +100,11 @@ func (source *logStorageWatchSource) Watch(context.Context, *metainternalversion
 
 type logStorageTestStreamer struct{}
 
-func (logStorageTestStreamer) Preflight(apiserver_resource.Object, *LogOptions) error {
+func (logStorageTestStreamer) Preflight(apiserver_resource.Object, *storageOptions) error {
 	return nil
 }
 
-func (logStorageTestStreamer) StreamLogs(context.Context, io.Writer, apiserver_resource.Object, *LogOptions, logr.Logger) (ResourceStreamStatus, <-chan struct{}, error) {
+func (logStorageTestStreamer) StreamLogs(context.Context, io.Writer, apiserver_resource.Object, *storageOptions, logr.Logger) (ResourceStreamStatus, <-chan struct{}, error) {
 	return ResourceStreamStatusDone, nil, nil
 }
 

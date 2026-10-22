@@ -232,6 +232,22 @@ func StartAdvancedTestEnvironmentWithOptions(
 		}
 	}
 
+	if inclCtrl&LogicalContainerController != 0 {
+		logicalContainerR := controllers.NewLogicalContainerReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("LogicalContainerReconciler"),
+			serverInfo.ContainerOrchestrator,
+			controllers.LogicalContainerReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner,
+			},
+		)
+		if logicalContainerSetupErr := logicalContainerR.SetupWithManager(mgr, instanceTag+"-LogicalContainerReconciler"); logicalContainerSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalContainer reconciler: %w", logicalContainerSetupErr)
+		}
+	}
+
 	if inclCtrl&PhysicalContainerImageController != 0 {
 		physicalContainerImageR := controllers.NewPhysicalContainerImageReconciler(
 			ctx,
@@ -239,6 +255,7 @@ func StartAdvancedTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerImageReconciler"),
 			serverInfo.ContainerOrchestrator,
+			controllers.PhysicalContainerImageReconcilerConfig{StateStore: stateStore, ResourceLeaseOwner: leaseOwner},
 		)
 		if err = physicalContainerImageR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerImageReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerImage reconciler: %w", err)

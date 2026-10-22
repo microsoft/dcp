@@ -47,6 +47,13 @@ type physicalContainerNetworkData struct {
 	connected      int
 }
 
+func (data *physicalContainerNetworkData) operationInProgress() bool {
+	return (data.state == physicalContainerNetworkStateCreate ||
+		data.state == physicalContainerNetworkStateReplace ||
+		data.state == physicalContainerNetworkStateRemove) &&
+		data.progress == physicalResourceProgressInProgress
+}
+
 func (data *physicalContainerNetworkData) Clone() *physicalContainerNetworkData {
 	return &physicalContainerNetworkData{
 		state:          data.state,

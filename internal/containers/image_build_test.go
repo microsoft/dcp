@@ -15,6 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Verifies that BuildImageImpl preserves explicit relative Dockerfile paths independently of
+// the build context and passes the declared build options to the runtime command.
 func TestBuildImageImplBuildsCommand(t *testing.T) {
 	result := &fakeBuildResult{}
 	runner := newFakeRunner(result, "", "", nil)
@@ -27,7 +29,7 @@ func TestBuildImageImplBuildsCommand(t *testing.T) {
 			Pull:    true,
 			ContainerBuildContext: &ContainerBuildContext{
 				Context:    "context-dir",
-				Dockerfile: "Containerfile",
+				Dockerfile: "docker/App.Dockerfile",
 				Tags:       []string{"example:first", "example:second"},
 				Args: []EnvVar{
 					{Name: "SET", Value: "value"},
@@ -55,7 +57,7 @@ func TestBuildImageImplBuildsCommand(t *testing.T) {
 	assert.Equal(t, []string{
 		"echo",
 		"build",
-		"-f", "Containerfile",
+		"-f", "docker/App.Dockerfile",
 		"--pull",
 		"--iidfile", "image-id",
 		"-t", "example:first",

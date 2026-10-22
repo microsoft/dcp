@@ -13,6 +13,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Verifies that ImageReferenceWithDefaultTag equates implicit latest tags while preserving
+// explicit tags, registry ports, digest references, and runtime-specific short-name resolution.
+func TestImageReferenceWithDefaultTag(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct{ reference, expected string }{
+		{"example.test/team/image", "example.test/team/image:latest"},
+		{"example.test/team/image:latest", "example.test/team/image:latest"},
+		{"example.test:5000/team/image", "example.test:5000/team/image:latest"},
+		{"example.test:5000/team/image:v2", "example.test:5000/team/image:v2"},
+		{"example.test/team/image@sha256:1234", "example.test/team/image@sha256:1234"},
+		{"image", "image:latest"},
+	} {
+		require.Equal(t, testCase.expected, ImageReferenceWithDefaultTag(testCase.reference))
+	}
+}
+
 func TestRemoveImagesSequentiallyReturnsRequestedIdentifiers(t *testing.T) {
 	t.Parallel()
 

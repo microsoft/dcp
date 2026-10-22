@@ -78,7 +78,8 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 }
 
 func (data *physicalProcessData) operationInProgress() bool {
-	return data.progress == physicalResourceProgressInProgress
+	return (data.state == physicalProcessStateLaunch || data.state == physicalProcessStateStop) &&
+		data.progress == physicalResourceProgressInProgress
 }
 
 func (data *physicalProcessData) applyTo(

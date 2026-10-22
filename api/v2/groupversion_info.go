@@ -32,6 +32,8 @@ var (
 	// Types that have data stored in the API server.
 	PersistentTypes = []apiserver_resource.Object{
 		&Namespace{},
+		&LogicalContainer{},
+		&LogicalContainerNetwork{},
 		&PhysicalContainerImage{},
 		&PhysicalContainer{},
 		&PhysicalContainerNetwork{},
@@ -41,5 +43,8 @@ var (
 	}
 
 	// Types that must be recognizable by the API server, but are not persisted.
-	AdditionalTypes = []apiserver_resource.Object{}
+	AdditionalTypes = []apiserver_resource.Object{
+		&ResourceLogOptions{},
+		&ResourceLogResponse{},
+	}
 )
