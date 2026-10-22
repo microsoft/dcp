@@ -396,10 +396,6 @@ func handleLogicalContainerPhysical(
 	if data.replaceExisting {
 		selectedContainerID = ""
 	}
-	if selectedContainerID == "" && len(container.Spec.Container.Networks) != 0 {
-		data.message = "Logical network realization requires the LogicalContainerNetwork controller."
-		return noChange
-	}
 	if data.lease != nil {
 		verifyErr := reconciler.config.StateStore.VerifyResourceLeaseHeld(ctx, container, reconciler.config.ResourceLeaseOwner)
 		if verifyErr != nil {
@@ -422,6 +418,17 @@ func handleLogicalContainerPhysical(
 			return noChange
 		}
 		change |= reconciler.projectLogicalContainerImageLogs(ctx, container, imageRef, log)
+		networksReady, physicalNetworks, networkMessage, resolveErr := reconciler.resolveLogicalContainerNetworks(ctx, container)
+		if resolveErr != nil {
+			log.Error(resolveErr, "Failed to resolve logical container networks")
+			data.progress = physicalResourceProgressRetryPending
+			data.message = resolveErr.Error()
+			return change
+		}
+		if !networksReady {
+			data.message = networkMessage
+			return change
+		}
 		desired := container.Spec.Container.DeepCopy()
 		labels := setRuntimeLabel(desired.Labels, dcpBuildLabel, version.ProductVersion)
 		labels = setRuntimeLabel(labels, groupVersionLabel, apiv2.GroupVersion.String())
@@ -437,6 +444,7 @@ func handleLogicalContainerPhysical(
 			ImageRef: imageRef, ContainerName: containerName, ReplaceExisting: data.replaceExisting,
 			Entrypoint: desired.Entrypoint, Command: desired.Command, Env: desired.Env,
 			Ports: desired.Ports, VolumeMounts: desired.VolumeMounts, CreateFiles: desired.CreateFiles, Labels: labels,
+			Networks: physicalNetworks,
 		}
 	}
 	physicalContainer := &apiv2.PhysicalContainer{
@@ -481,6 +489,42 @@ func handleLogicalContainerPhysical(
 	data.replaceExisting = false
 	data.state, data.progress = logicalContainerStateRuntime, physicalResourceProgressNotReady
 	return change | handleLogicalContainerRuntime(ctx, reconciler, container, data.state, data, log)
+}
+
+func (r *LogicalContainerReconciler) resolveLogicalContainerNetworks(
+	ctx context.Context, container *apiv2.LogicalContainer,
+) (bool, []apiv2.ContainerNetworkConnectionConfig, string, error) {
+	var resolved []apiv2.ContainerNetworkConnectionConfig
+	for _, requested := range container.Spec.Container.Networks {
+		network := &apiv2.LogicalContainerNetwork{}
+		networkName := commonapi.AsNamespacedName(requested.NetworkRef, container.Namespace)
+		getErr := r.Get(ctx, networkName, network)
+		if apierrors.IsNotFound(getErr) {
+			return false, nil, fmt.Sprintf("LogicalContainerNetwork %q does not exist.", networkName), nil
+		}
+		if getErr != nil {
+			return false, nil, "", fmt.Errorf("get LogicalContainerNetwork %q: %w", networkName, getErr)
+		}
+		if !network.DeletionTimestamp.IsZero() {
+			return false, nil, fmt.Sprintf("LogicalContainerNetwork %q is terminating.", networkName), nil
+		}
+		ready := apimeta.FindStatusCondition(network.Status.Conditions, string(apiv2.ConditionReady))
+		if network.Status.Phase != apiv2.LogicalContainerNetworkPhaseReady ||
+			ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != network.Generation {
+			message := fmt.Sprintf("LogicalContainerNetwork %q is not ready.", networkName)
+			if ready != nil {
+				message = fmt.Sprintf("LogicalContainerNetwork %q reports %s: %s", networkName, ready.Reason, ready.Message)
+			}
+			return false, nil, message, nil
+		}
+		if network.Status.PhysicalNetworkRef == "" {
+			return false, nil, fmt.Sprintf("LogicalContainerNetwork %q has not published its backing physical network reference.", networkName), nil
+		}
+		resolved = append(resolved, apiv2.ContainerNetworkConnectionConfig{
+			NetworkRef: network.Status.PhysicalNetworkRef, Aliases: std_slices.Clone(requested.Aliases),
+		})
+	}
+	return true, resolved, "", nil
 }
 
 func (r *LogicalContainerReconciler) ensureLogicalContainerImage(
