@@ -616,6 +616,49 @@ func TestPullImageStreamsOutputAndInspectsIdentity(t *testing.T) {
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 
+// Verifies that PullImage preserves failed-command diagnostics, closes both output streams,
+// and does not inspect or return an image identity after a failed pull.
+func TestPullImageFailurePreservesDiagnosticsAndClosesStreams(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() { require.NoError(t, executor.Close()) })
+	pullCommand := []string{"docker", "image", "pull", "example.test/image:latest"}
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{Command: pullCommand},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			_, stdoutErr := execution.Cmd.Stdout.Write([]byte("Pulling layers\n"))
+			require.NoError(t, stdoutErr)
+			_, stderrErr := execution.Cmd.Stderr.Write([]byte("registry connection failed\n"))
+			require.NoError(t, stderrErr)
+			return 1
+		},
+	})
+	stdout, stderr := testutil.NewBufferWriter(), testutil.NewBufferWriter()
+	orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
+	imageID, pullErr := orchestrator.PullImage(ctx, ct.PullImageOptions{
+		Image:                "example.test/image:latest",
+		StreamCommandOptions: ct.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
+	})
+	require.ErrorContains(t, pullErr, "non-zero exit code 1")
+	require.Empty(t, imageID)
+	require.Equal(t, "Pulling layers\n", string(stdout.Bytes()))
+	require.Equal(t, "registry connection failed\n", string(stderr.Bytes()))
+	select {
+	case <-stdout.Closed():
+	default:
+		require.FailNow(t, "pull did not close stdout")
+	}
+	select {
+	case <-stderr.Closed():
+	default:
+		require.FailNow(t, "pull did not close stderr")
+	}
+	require.Len(t, executor.FindAll(pullCommand, "", nil), 1)
+	require.Empty(t, executor.FindAll([]string{"docker", "image", "inspect", "--format", "{{json .}}", "example.test/image:latest"}, "", nil))
+}
+
 func TestListNetworksUsesFullIdentifiers(t *testing.T) {
 	t.Parallel()
 
