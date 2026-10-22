@@ -179,9 +179,8 @@ func (wco *WslcCliOrchestrator) InspectImages(ctx context.Context, options conta
 	}
 
 	if errors.Is(runErr, errCommandFailed) && decodeErr == nil && conversionErr == nil && len(inspectedImages) < len(options.Images) {
-		return inspectedImages, errors.Join(runErr, fmt.Errorf("%w: %s", containers.ErrNotFound, errBuf))
-	}
-	if runErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("%w: %s", containers.ErrNotFound, errBuf))
+	} else if runErr != nil {
 		runErr = errors.Join(runErr, normalizeCliErrors(errBuf, imageNotFoundMatch.MaxObjects(len(options.Images))))
 	}
 	return inspectedImages, errors.Join(
