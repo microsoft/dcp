@@ -51,6 +51,9 @@ type ContainerVolumeSpec struct {
 	// Volumes are persistent by default.
 	// +kubebuilder:default=true
 	Persistent *bool `json:"persistent,omitempty"`
+
+	// Requested storage generation. Increasing it selects fresh storage without immediately deleting older generations.
+	Generation int64 `json:"generation,omitempty"`
 }
 
 // ContainerVolumeStatus describes the status of a ContainerVolume
@@ -60,6 +63,12 @@ type ContainerVolumeStatus struct {
 	// +kubebuilder:default=Pending
 	// +kubebuilder:validation:Enum=Pending;RuntimeUnhealthy;Ready
 	State ContainerVolumeState `json:"state,omitempty"`
+	// Physical Docker/Podman volume selected for new container mounts.
+	VolumeName string `json:"volumeName,omitempty"`
+	// Selected storage generation.
+	Generation int64 `json:"generation,omitempty"`
+	// Diagnostic for an unsuccessful generation transition.
+	Message string `json:"message,omitempty"`
 }
 
 func (cvs ContainerVolumeStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
@@ -141,6 +150,9 @@ func (cv *ContainerVolume) Validate(ctx context.Context) field.ErrorList {
 	if strings.TrimSpace(cv.Spec.Name) == "" {
 		errorList = append(errorList, field.Required(field.NewPath("spec").Child("name"), "Name is required"))
 	}
+	if cv.Spec.Generation < 0 {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "generation"), cv.Spec.Generation, "generation must be nonnegative"))
+	}
 
 	return errorList
 }
@@ -156,6 +168,9 @@ func (cv *ContainerVolume) ValidateUpdate(ctx context.Context, old runtime.Objec
 
 	if !pointers.EqualValue(oldVolume.Spec.Persistent, cv.Spec.Persistent) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec").Child("persistent"), "volume persistence cannot be changed"))
+	}
+	if cv.Spec.Generation < oldVolume.Spec.Generation {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "generation"), "generation cannot decrease"))
 	}
 
 	return errorList

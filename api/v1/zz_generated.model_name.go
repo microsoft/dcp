@@ -161,6 +161,36 @@ func (in ContainerVolumeList) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerVolumeReset) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.ContainerVolumeReset"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerVolumeResetConsumer) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.ContainerVolumeResetConsumer"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerVolumeResetGeneration) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.ContainerVolumeResetGeneration"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerVolumeResetList) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.ContainerVolumeResetList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerVolumeResetSpec) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.ContainerVolumeResetSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerVolumeResetStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.ContainerVolumeResetStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ContainerVolumeSpec) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v1.ContainerVolumeSpec"
 }

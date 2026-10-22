@@ -20,6 +20,7 @@ import (
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -34,8 +35,10 @@ type AdvancedTestEnvironmentInfo struct {
 
 // AdvancedTestEnvironmentOptions customizes the API server and container orchestrator used by an advanced test environment.
 type AdvancedTestEnvironmentOptions struct {
-	ApiServerFlags        ctrl_testutil.ApiServerFlag
-	ContainerOrchestrator containers.ContainerOrchestrator
+	ApiServerFlags                ctrl_testutil.ApiServerFlag
+	ContainerOrchestrator         containers.ContainerOrchestrator
+	DecorateContainerOrchestrator func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
+	WorkloadID                    commonapi.WorkloadID
 }
 
 // Starts an test environment for advanced tests that use real process executor and true container orchestrator (Docker or Podman).
@@ -117,6 +120,15 @@ func StartAdvancedTestEnvironmentWithOptions(
 		serverInfo.Dispose()
 		stateStoreCleanup()
 		return nil, nil, fmt.Errorf("failed to initialize state store lease owner identity: %w", leaseOwnerErr)
+	}
+	if options.DecorateContainerOrchestrator != nil {
+		decorated := options.DecorateContainerOrchestrator(serverInfo.ContainerOrchestrator, stateStore)
+		if decorated == nil {
+			serverInfo.Dispose()
+			stateStoreCleanup()
+			return nil, nil, fmt.Errorf("container orchestrator decorator returned nil")
+		}
+		serverInfo.ContainerOrchestrator = decorated
 	}
 	pe := process.NewOSExecutor(log)
 	exeRunner := ctrl_testutil.NewTestProcessExecutableRunner(pe)
@@ -212,6 +224,7 @@ func StartAdvancedTestEnvironmentWithOptions(
 		}
 	}
 
+	volumeGenerations := &controllers.ContainerVolumeGenerations{}
 	if inclCtrl&ContainerController != 0 {
 		containerR := controllers.NewContainerReconciler(
 			ctx,
@@ -221,14 +234,23 @@ func StartAdvancedTestEnvironmentWithOptions(
 			serverInfo.ContainerOrchestrator,
 			hpSet,
 			controllers.ContainerReconcilerConfig{
+				VolumeGenerations:          volumeGenerations,
 				MaxParallelContainerStarts: math.MaxUint8,
 				StateStore:                 stateStore,
 				ResourceLeaseOwner:         leaseOwner,
 				ProcessExecutor:            pe,
+				WorkloadID:                 options.WorkloadID,
 			},
 		)
 		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
+		}
+		resetR := controllers.NewContainerVolumeResetReconciler(
+			ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("ContainerVolumeResetReconciler"), containerR,
+			controllers.ContainerVolumeResetReconcilerConfig{},
+		)
+		if err = resetR.SetupWithManager(mgr, instanceTag+"-ContainerVolumeResetReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize ContainerVolumeReset reconciler: %w", err)
 		}
 	}
 
@@ -319,6 +341,8 @@ func StartAdvancedTestEnvironmentWithOptions(
 			log.WithName("VolumeReconciler"),
 			serverInfo.ContainerOrchestrator,
 			controllers.VolumeReconcilerConfig{
+				VolumeGenerations:  volumeGenerations,
+				WorkloadID:         options.WorkloadID,
 				StateStore:         stateStore,
 				ResourceLeaseOwner: leaseOwner,
 			},

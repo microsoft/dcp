@@ -51,6 +51,12 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1.ContainerStatus{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_ContainerStatus(ref),
 		v1.ContainerVolume{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_ContainerVolume(ref),
 		v1.ContainerVolumeList{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ContainerVolumeList(ref),
+		v1.ContainerVolumeReset{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v1_ContainerVolumeReset(ref),
+		v1.ContainerVolumeResetConsumer{}.OpenAPIModelName():           schema_microsoft_dcp_api_v1_ContainerVolumeResetConsumer(ref),
+		v1.ContainerVolumeResetGeneration{}.OpenAPIModelName():         schema_microsoft_dcp_api_v1_ContainerVolumeResetGeneration(ref),
+		v1.ContainerVolumeResetList{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_ContainerVolumeResetList(ref),
+		v1.ContainerVolumeResetSpec{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_ContainerVolumeResetSpec(ref),
+		v1.ContainerVolumeResetStatus{}.OpenAPIModelName():             schema_microsoft_dcp_api_v1_ContainerVolumeResetStatus(ref),
 		v1.ContainerVolumeSpec{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ContainerVolumeSpec(ref),
 		v1.ContainerVolumeStatus{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v1_ContainerVolumeStatus(ref),
 		v1.CreateFileSystem{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_CreateFileSystem(ref),
@@ -2187,6 +2193,319 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeList(ref common.ReferenceCallbac
 	}
 }
 
+func schema_microsoft_dcp_api_v1_ContainerVolumeReset(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerVolumeReset resets a specific Container's owned named volumes once. Create a new operation to retry; completed operations do not suspend Container reconciliation.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1.ContainerVolumeResetSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1.ContainerVolumeResetStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"spec"},
+			},
+		},
+		Dependencies: []string{
+			v1.ContainerVolumeResetSpec{}.OpenAPIModelName(), v1.ContainerVolumeResetStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v1_ContainerVolumeResetConsumer(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerVolumeResetConsumer identifies another consumer that prevents a named-volume reset.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"volumeName": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"containerId": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+				},
+				Required: []string{"volumeName", "containerName"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v1_ContainerVolumeResetGeneration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerVolumeResetGeneration reports a requested selection, including partial progress after failure.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"volumeName": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"previousVolumeName": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"requestedGeneration": {
+						SchemaProps: spec.SchemaProps{
+							Default: 0,
+							Type:    []string{"integer"},
+							Format:  "int64",
+						},
+					},
+					"requested": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Whether the generation update was acknowledged. A failed update can have an unknown outcome.",
+							Default:     false,
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"selectedVolumeName": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+				},
+				Required: []string{"volumeName", "previousVolumeName", "requestedGeneration", "requested"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v1_ContainerVolumeResetList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerVolumeResetList contains ContainerVolumeReset operations.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v1.ContainerVolumeReset{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v1.ContainerVolumeReset{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v1_ContainerVolumeResetSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerVolumeResetSpec requests fresh storage for a Container's owned named volumes.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the Container API resource to reset.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerUid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "UID of the expected Container API resource, preventing reset of a replacement.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"containerName", "containerUid"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v1_ContainerVolumeResetStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerVolumeResetStatus reports storage selection progress, not application readiness or erasure.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"state": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Pending, Running, Succeeded, or Failed. Succeeded confirms fresh storage was selected for every volume.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"finishTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Time the operation finished. Terminal results are retained for one hour after publication.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"volumes": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Logical names of volumes whose fresh generations were selected.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"volumeGenerations": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Per-volume progress at the time of observation; terminal failures are not updated by later repair.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v1.ContainerVolumeResetGeneration{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"consumers": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Other consumers, including stopped runtime containers, found during preflight.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v1.ContainerVolumeResetConsumer{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"containerRemoved": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Whether the target physical container was removed, even when the operation failed.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"state"},
+			},
+		},
+		Dependencies: []string{
+			v1.ContainerVolumeResetConsumer{}.OpenAPIModelName(), v1.ContainerVolumeResetGeneration{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
 func schema_microsoft_dcp_api_v1_ContainerVolumeSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -2209,6 +2528,13 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeSpec(ref common.ReferenceCallbac
 							Format:      "",
 						},
 					},
+					"generation": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Requested storage generation. Increasing it selects fresh storage without immediately deleting older generations.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
 				},
 				Required: []string{"name"},
 			},
@@ -2226,6 +2552,27 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeStatus(ref common.ReferenceCallb
 					"state": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The current state of the ContainerVolume",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"volumeName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Physical Docker/Podman volume selected for new container mounts.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"generation": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Selected storage generation.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Diagnostic for an unsuccessful generation transition.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

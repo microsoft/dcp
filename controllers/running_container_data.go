@@ -66,6 +66,7 @@ type runningContainerData struct {
 
 	// Tracks whether startup has been attempted for the container
 	startupAttempted bool
+	buildAttempted   bool
 
 	// The time the start attempt finished (successfully or not).
 	startAttemptFinishedAt metav1.MicroTime
@@ -141,6 +142,7 @@ func (rcd *runningContainerData) Clone() *runningContainerData {
 		stopAttemptInitiated:   rcd.stopAttemptInitiated,
 		finishTimestamp:        rcd.finishTimestamp,
 		startupAttempted:       rcd.startupAttempted,
+		buildAttempted:         rcd.buildAttempted,
 		startAttemptFinishedAt: rcd.startAttemptFinishedAt,
 		startupStdoutLog:       rcd.startupStdoutLog,
 		startupStderrLog:       rcd.startupStderrLog,
@@ -206,6 +208,10 @@ func (rcd *runningContainerData) UpdateFrom(other *runningContainerData) bool {
 
 	if rcd.startupAttempted != other.startupAttempted {
 		rcd.startupAttempted = other.startupAttempted
+		updated = true
+	}
+	if rcd.buildAttempted != other.buildAttempted {
+		rcd.buildAttempted = other.buildAttempted
 		updated = true
 	}
 

@@ -47,6 +47,7 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
+	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 const (
@@ -104,6 +105,7 @@ type ContainerReconcilerConfig struct {
 	ResourceLeaseOwner              process.ProcessHandle
 	ProcessExecutor                 process.Executor
 	WorkloadID                      commonapi.WorkloadID
+	VolumeGenerations               *ContainerVolumeGenerations
 }
 
 type containerStateInitializerFunc = stateInitializerFunc[
@@ -141,6 +143,9 @@ type ContainerReconciler struct {
 
 	// Additional configuration for the reconciler
 	config ContainerReconcilerConfig
+
+	volumeResetController       *ContainerVolumeResetReconciler
+	createdPersistentContainers syncmap.Map[string, containerCreationIdentity]
 }
 
 func NewContainerReconciler(
@@ -262,7 +267,15 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	} else if change = ensureFinalizer(&container, containerFinalizer, log); change != noChange {
 		// If we need to put the finalizer on the Container object, we'll do any additional changes during next reconciliation.
 	} else {
-		change = r.manageContainer(ctx, &container, log)
+		resetChange, resetting, resetErr := r.reconcileContainerVolumeResets(ctx, &container, log)
+		if resetErr != nil {
+			log.Error(resetErr, "Could not reconcile container volume reset operations")
+			return ctrl.Result{}, resetErr
+		}
+		change = resetChange
+		if !resetting {
+			change |= r.manageContainer(ctx, &container, log)
+		}
 	}
 
 	additionalReconcileDelay := StandardDelay
@@ -339,16 +352,36 @@ func handleNewContainer(
 	r *ContainerReconciler,
 	container *apiv1.Container,
 	_ apiv1.ContainerState,
-	_ *runningContainerData,
+	priorData *runningContainerData,
 	log logr.Logger,
 ) objectChange {
 	change := noChange
+	if priorData != nil && priorData.containerState == apiv1.ContainerStateNotFound && !priorData.hasValidContainerID() {
+		previousStatus := container.Status
+		container.Status = apiv1.ContainerStatus{State: apiv1.ContainerStateNotFound, ContainerName: container.Spec.ContainerName}
+		priorData.applyTo(container, log)
+		if !reflect.DeepEqual(previousStatus, container.Status) {
+			change |= statusChanged
+		}
+		if container.Spec.Stop {
+			return change
+		}
+	}
 
 	status := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
 	if !status.IsHealthy() {
 		// If the runtime isn't healthy, we will attempt to start the container later (in case the runtime recovers).
 		log.V(1).Info("Container runtime is not healthy, retrying reconciliation later...")
 		return r.setContainerState(container, apiv1.ContainerStateRuntimeUnhealthy)
+	}
+
+	if _, recoveryErr := r.resolveVolumeMounts(ctx, &container.Spec); recoveryErr != nil {
+		if !errors.Is(recoveryErr, errContainerVolumesRecovering) {
+			log.Error(recoveryErr, "Could not verify container volumes before startup")
+			return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
+		}
+		log.Info("Waiting for container volume reset recovery", "Cause", recoveryErr.Error())
+		return additionalReconciliationNeeded
 	}
 
 	effectiveMode := container.Spec.EffectiveMode()
@@ -441,9 +474,29 @@ func handleNewContainer(
 					change |= statusChanged
 				}
 
+				resolvedMounts, resolveErr := r.resolveVolumeMounts(ctx, &container.Spec)
+				if resolveErr != nil {
+					log.Error(resolveErr, "Could not resolve selected volume generations")
+					return change | additionalReconciliationNeeded
+				}
+				generationChanged := false
+				for index, mount := range resolvedMounts {
+					if mount.Type != apiv1.NamedVolumeMount || mount.Source == container.Spec.VolumeMounts[index].Source {
+						continue
+					}
+					matches := slices.Any(inspected.Mounts, func(runtimeMount containers.VolumeMount) bool {
+						return runtimeMount.Type == containers.NamedVolumeMount && runtimeMount.Source == mount.Source && runtimeMount.Target == mount.Target
+					})
+					generationChanged = generationChanged || !matches
+				}
 				_, dcpManaged := inspected.Labels[dcpBuildLabel]
+				if generationChanged && !dcpManaged {
+					log.Error(fmt.Errorf("existing external container uses an obsolete volume generation"), "Could not adopt existing container")
+					_ = r.releasePersistentContainerResourceLease(ctx, container, log, false)
+					return change | r.setContainerState(container, apiv1.ContainerStateFailedToStart)
+				}
 				oldLifecycleKey, found := inspected.Labels[lifecycleKeyLabel]
-				if dcpManaged && ((found && oldLifecycleKey != lifecycleKey) || (!found && lifecycleKey != "")) {
+				if dcpManaged && (generationChanged || (found && oldLifecycleKey != lifecycleKey) || (!found && lifecycleKey != "")) {
 					// We need to recreate this DCP managed container because the lifecycle key has changed
 					if hasDefaultLifecycleKey {
 						mounts, ports, env, other := calculatePersistentContainerChanges(rcd, inspected)
@@ -489,9 +542,19 @@ func handleNewContainer(
 
 	if container.Spec.Build != nil {
 		// Container has a build context, so need to build it first.
+		if priorData != nil {
+			priorData.containerState = apiv1.ContainerStateBuilding
+			priorData.runSpec = container.Spec.DeepCopy()
+			priorData.runSpec.Image = container.SpecifiedImageNameOrDefault()
+		}
 		return change | r.setContainerState(container, apiv1.ContainerStateBuilding)
 	} else {
 		// Initiate startup sequence.
+		if priorData != nil {
+			priorData.containerState = apiv1.ContainerStateStarting
+			priorData.runSpec = container.Spec.DeepCopy()
+			priorData.runSpec.Image = container.SpecifiedImageNameOrDefault()
+		}
 		return change | r.setContainerState(container, apiv1.ContainerStateStarting)
 	}
 }
@@ -531,13 +594,15 @@ func ensureContainerBuildingState(
 ) objectChange {
 	change := r.setContainerState(container, apiv1.ContainerStateBuilding)
 
-	if rcd == nil {
-		// This is a brand new Container and we need to build it.
+	if rcd == nil || !rcd.buildAttempted {
 		if leaseErr := r.verifyPersistentContainerResourceLeaseHeld(ctx, container, log); leaseErr != nil {
 			return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
 		}
 
-		rcd = newRunningContainerData(container)
+		if rcd == nil {
+			rcd = newRunningContainerData(container)
+		}
+		rcd.buildAttempted = true
 		rcd.containerState = apiv1.ContainerStateBuilding
 		rcd.ensureStartupLogFiles(container, log)
 		r.EnsureContainerWatchForResource(container.UID, log)
@@ -1339,6 +1404,10 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 		placeholderContainerID := rcd.containerID
 
 		err := func() error {
+			if _, recoveryErr := r.resolveVolumeMounts(startupCtx, rcd.runSpec); recoveryErr != nil {
+				log.Info("Waiting for container volume reset recovery", "Cause", recoveryErr.Error())
+				return recoveryErr
+			}
 			if leaseErr := r.verifyPersistentContainerResourceLeaseHeld(startupCtx, container, log); leaseErr != nil {
 				return leaseErr
 			}
@@ -1384,6 +1453,11 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			// Use the effective image (original or derived) for container creation
 			runSpecForCreation := *rcd.runSpec
 			runSpecForCreation.Image = effectiveImage
+			resolvedMounts, resolveErr := r.resolveVolumeMounts(startupCtx, rcd.runSpec)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			runSpecForCreation.VolumeMounts = resolvedMounts
 			if effectiveImage != rcd.runSpec.Image {
 				// The derived image only exists locally; prevent docker create from
 				// attempting to pull it from a registry.
@@ -1412,6 +1486,12 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			if persistErr := r.upsertPersistentContainerRecord(startupCtx, container, rcd, log); persistErr != nil {
 				removeErr := r.removeExistingContainer(context.WithoutCancel(startupCtx), rcd.containerID, inspected, log)
 				return errors.Join(persistErr, removeErr)
+			}
+			if rcd.runSpec.EffectiveMode() == apiv1.ContainerModePersistent {
+				r.createdPersistentContainers.Store(container.GetLeaseKey(), containerCreationIdentity{
+					containerID: inspected.Id,
+					uid:         string(container.UID),
+				})
 			}
 			if rcd.runSpec.EffectiveMode() != apiv1.ContainerModePersistent {
 				r.runContainerLifecycleMonitor(rcd, log)
@@ -1442,7 +1522,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			return nil
 		}()
 
-		retryableErr := templating.IsTransientTemplateError(err) || errors.Is(err, statestore.ErrResourceLeaseHeld) || errors.Is(err, errInitialContainerNetworksNotReady)
+		retryableErr := templating.IsTransientTemplateError(err) || errors.Is(err, statestore.ErrResourceLeaseHeld) || errors.Is(err, errInitialContainerNetworksNotReady) || errors.Is(err, errContainerVolumesRecovering)
 		if !retryableErr && !errors.Is(err, statestore.ErrResourceLeaseNotHeld) {
 			releaseErr := r.releasePersistentContainerResourceLease(context.WithoutCancel(startupCtx), container, log, false)
 			err = errors.Join(err, releaseErr)

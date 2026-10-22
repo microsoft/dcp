@@ -242,6 +242,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return err
 		}
 
+		volumeGenerations := &controllers.ContainerVolumeGenerations{}
 		containerCtrl := controllers.NewContainerReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
@@ -255,10 +256,19 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 				ResourceLeaseOwner:         leaseOwner,
 				ProcessExecutor:            processExecutor,
 				WorkloadID:                 workloadID,
+				VolumeGenerations:          volumeGenerations,
 			},
 		)
 		if err = containerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up Container controller")
+			return err
+		}
+		volumeResetCtrl := controllers.NewContainerVolumeResetReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("ContainerVolumeResetReconciler"), containerCtrl,
+			controllers.ContainerVolumeResetReconcilerConfig{},
+		)
+		if err = volumeResetCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "Unable to set up ContainerVolumeReset controller")
 			return err
 		}
 
@@ -345,6 +355,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 				StateStore:         stateStore,
 				ResourceLeaseOwner: leaseOwner,
 				WorkloadID:         workloadID,
+				VolumeGenerations:  volumeGenerations,
 			},
 		)
 		if err = volumeCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
