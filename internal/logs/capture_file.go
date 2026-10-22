@@ -18,36 +18,67 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
-// CaptureFile owns timestamped, numbered command output and supports paragraph separation.
+// CaptureFile owns command output and supports timestamped paragraph formatting or direct process redirection.
 // Its writer is not safe for concurrent use.
 type CaptureFile struct {
 	// Path is the capture file's filesystem path.
 	Path string
+	// DirectFile bypasses formatting for processes whose output must outlive the capturing process.
+	// Set only when CaptureFileDirectOutput is requested. Do not also write through Writer.
+	DirectFile *os.File
 	// Writer formats captured output and separates successive operations.
 	Writer      usvc_io.ParagraphWriter
 	closeOnce   func() error
 	disposeOnce func() error
 }
 
+type CaptureFileOption uint
+
+const (
+	// CaptureFileDirectOutput creates a new raw file suitable for exec.Cmd stdout/stderr redirection.
+	CaptureFileDirectOutput CaptureFileOption = 1
+)
+
 // NewCaptureFile opens a resource's output capture while preserving existing file contents.
-func NewCaptureFile(resource apiserver_resource.Object, logSource logstream.LogStreamSource) (*CaptureFile, error) {
+// Direct output instead creates a new file and fails if it already exists.
+func NewCaptureFile(resource apiserver_resource.Object, logSource logstream.LogStreamSource, options ...CaptureFileOption) (*CaptureFile, error) {
 	metadata := resource.GetObjectMeta()
 	fileName, nameErr := logstream.LogFileName(metadata.Name, metadata.UID, logSource, "")
 	if nameErr != nil {
 		return nil, nameErr
 	}
 
-	file, err := usvc_io.OpenOrCreateTempFileForAppending(fileName, osutil.PermissionOnlyOwnerReadWrite)
+	direct := false
+	for _, option := range options {
+		direct = direct || option&CaptureFileDirectOutput != 0
+	}
+	var output usvc_io.WriteSyncerCloser
+	var path string
+	var directFile *os.File
+	var err error
+	if direct {
+		directFile, err = usvc_io.CreateNewTempFile(fileName, osutil.PermissionOnlyOwnerReadWrite)
+		if err == nil {
+			output, path = directFile, directFile.Name()
+		}
+	} else {
+		var file *usvc_io.AppendFile
+		file, err = usvc_io.OpenOrCreateTempFileForAppending(fileName, osutil.PermissionOnlyOwnerReadWrite)
+		if err == nil {
+			output, path = usvc_io.NewTimestampWriter(file), file.Name()
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
 
 	// Readers strip numbering and timestamps when the request does not ask for them.
-	writer := usvc_io.NewParagraphWriter(usvc_io.NewTimestampWriter(file), osutil.LineSep())
+	writer := usvc_io.NewParagraphWriter(output, osutil.LineSep())
 
 	result := &CaptureFile{
-		Path:   file.Name(),
-		Writer: writer,
+		Path:       path,
+		DirectFile: directFile,
+		Writer:     writer,
 		closeOnce: sync.OnceValue(func() error {
 			closeErr := writer.Close()
 			if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
@@ -56,7 +87,7 @@ func NewCaptureFile(resource apiserver_resource.Object, logSource logstream.LogS
 			return nil
 		}),
 		disposeOnce: sync.OnceValue(func() error {
-			return os.Remove(file.Name())
+			return os.Remove(path)
 		}),
 	}
 	return result, nil

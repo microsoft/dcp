@@ -23,6 +23,7 @@ func TestShutdownResourcesIncludeV1AndV2Namespace(t *testing.T) {
 	require.Contains(t, shutdownResourceGVRs, (&apiv2.Namespace{}).GetGroupVersionResource())
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.LogicalContainer{}).GetGroupVersionResource())
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.LogicalContainerNetwork{}).GetGroupVersionResource())
+	require.NotContains(t, shutdownResourceGVRs, (&apiv2.LogicalProcess{}).GetGroupVersionResource())
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.PhysicalContainer{}).GetGroupVersionResource())
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.PhysicalContainerImage{}).GetGroupVersionResource())
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource())
@@ -40,9 +41,9 @@ func TestNamespaceResourcesIncludeAllNamespacedV2Kinds(t *testing.T) {
 	}
 }
 
-// Verifies that NamespaceResources cleans containers and connections before logical networks,
-// and logical networks before their physical networks.
-func TestNamespaceResourcesCleanContainersBeforeNetworks(t *testing.T) {
+// Verifies that NamespaceResources cleans logical processes before physical processes,
+// containers before logical networks, and logical networks before physical networks.
+func TestNamespaceResourcesCleanLogicalResourcesBeforePhysicalDependencies(t *testing.T) {
 	namespaceResourcesByGVR := cleanupResourcesByGVR(NamespaceResources)
 	containerGVR := (&apiv2.LogicalContainer{}).GetGroupVersionResource()
 	logicalNetworkGVR := (&apiv2.LogicalContainerNetwork{}).GetGroupVersionResource()
@@ -52,8 +53,9 @@ func TestNamespaceResourcesCleanContainersBeforeNetworks(t *testing.T) {
 	physicalContainerNetworkConnectionGVR := (&apiv2.PhysicalContainerNetworkConnection{}).GetGroupVersionResource()
 	physicalContainerVolumeGVR := (&apiv2.PhysicalContainerVolume{}).GetGroupVersionResource()
 	physicalProcessGVR := (&apiv2.PhysicalProcess{}).GetGroupVersionResource()
+	logicalProcessGVR := (&apiv2.LogicalProcess{}).GetGroupVersionResource()
 
-	require.Len(t, namespaceResourcesByGVR, 8)
+	require.Len(t, namespaceResourcesByGVR, 9)
 	require.Contains(t, namespaceResourcesByGVR, containerGVR)
 	require.Contains(t, namespaceResourcesByGVR, logicalNetworkGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerGVR)
@@ -62,7 +64,8 @@ func TestNamespaceResourcesCleanContainersBeforeNetworks(t *testing.T) {
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerNetworkConnectionGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerVolumeGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalProcessGVR)
-	require.Empty(t, namespaceResourcesByGVR[physicalProcessGVR].CleanUpAfter)
+	require.Contains(t, namespaceResourcesByGVR[physicalProcessGVR].CleanUpAfter, logicalProcessGVR)
+	require.Empty(t, namespaceResourcesByGVR[logicalProcessGVR].CleanUpAfter)
 	require.Empty(t, namespaceResourcesByGVR[containerGVR].CleanUpAfter)
 	require.Empty(t, namespaceResourcesByGVR[physicalContainerNetworkConnectionGVR].CleanUpAfter)
 	require.Contains(t, namespaceResourcesByGVR[physicalContainerGVR].CleanUpAfter, physicalContainerNetworkConnectionGVR)
