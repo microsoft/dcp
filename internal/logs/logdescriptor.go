@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/microsoft/dcp/internal/logstream"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/randdata"
@@ -190,7 +191,14 @@ func (l *LogDescriptor) createLogFiles(logsFolder string) error {
 		return fmt.Errorf("could not generate random suffix for log file names for resource %s: %w", l.ResourceName.String(), randErr)
 	}
 
-	stdOutFileName := fmt.Sprintf("%s_out_%s_%s", l.ResourceName.Name, l.ResourceUID, string(suffix))
+	stdOutFileName, stdoutNameErr := logstream.LogFileName(l.ResourceName.Name, l.ResourceUID, logstream.LogStreamSourceStdout, string(suffix))
+	if stdoutNameErr != nil {
+		return stdoutNameErr
+	}
+	stdErrFileName, stderrNameErr := logstream.LogFileName(l.ResourceName.Name, l.ResourceUID, logstream.LogStreamSourceStderr, string(suffix))
+	if stderrNameErr != nil {
+		return stderrNameErr
+	}
 	stdOutPath := filepath.Join(logsFolder, stdOutFileName)
 	stdOut, stdOutErr := usvc_io.CreateNewFile(stdOutPath, osutil.PermissionOnlyOwnerReadWrite)
 	if stdOutErr != nil {
@@ -200,7 +208,6 @@ func (l *LogDescriptor) createLogFiles(logsFolder string) error {
 		return fmt.Errorf("could not create stdout log file for resource %s: %w", l.ResourceName.String(), stdOutErr)
 	}
 
-	stdErrFileName := fmt.Sprintf("%s_err_%s_%s", l.ResourceName.Name, l.ResourceUID, string(suffix))
 	stdErrPath := filepath.Join(logsFolder, stdErrFileName)
 	stdErr, stdErrErr := usvc_io.CreateNewFile(stdErrPath, osutil.PermissionOnlyOwnerReadWrite)
 	if stdErrErr != nil {

@@ -382,13 +382,13 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 		return
 	}
 	data.retryAfter = time.Time{}
-	stdout, stdoutErr := logs.NewCaptureFile(resource, logstream.LogStreamSourceStartupStdout)
+	stdout, stdoutErr := logs.NewCaptureFile(resource, logstream.LogStreamSourceStdout)
 	if stdoutErr != nil {
 		fail("CaptureFailed", stdoutErr)
 		return
 	}
 	data.stdout = stdout
-	stderr, stderrErr := logs.NewCaptureFile(resource, logstream.LogStreamSourceStartupStderr)
+	stderr, stderrErr := logs.NewCaptureFile(resource, logstream.LogStreamSourceStderr)
 	if stderrErr != nil {
 		fail("CaptureFailed", stderrErr)
 		return

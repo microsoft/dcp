@@ -24,11 +24,11 @@ func (data *physicalProcessData) ensureOutputLogs(resource *apiv2.PhysicalProces
 	if resource.Spec.Process.RetainRuntimeProcess {
 		options = append(options, logs.CaptureFileDirectOutput)
 	}
-	stdout, stdoutErr := logs.NewCaptureFile(resource, logstream.LogStreamSourceStartupStdout, options...)
+	stdout, stdoutErr := logs.NewCaptureFile(resource, logstream.LogStreamSourceStdout, options...)
 	if stdoutErr != nil {
 		return fmt.Errorf("create process stdout: %w", stdoutErr)
 	}
-	stderr, stderrErr := logs.NewCaptureFile(resource, logstream.LogStreamSourceStartupStderr, options...)
+	stderr, stderrErr := logs.NewCaptureFile(resource, logstream.LogStreamSourceStderr, options...)
 	if stderrErr != nil {
 		return fmt.Errorf("create process stderr: %w", errors.Join(stderrErr, stdout.Close(logs.CaptureFileDisposeOnClose)))
 	}

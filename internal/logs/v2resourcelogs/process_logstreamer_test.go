@@ -34,10 +34,10 @@ func TestLogicalProcessLogsUseProjectedSnapshot(t *testing.T) {
 	uid, uidErr := randdata.MakeRandomString(8)
 	require.NoError(t, uidErr)
 	physical := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "physical", UID: types.UID(uid)}}
-	stdout, stdoutErr := logs.NewCaptureFile(physical, logstream.LogStreamSourceStartupStdout)
+	stdout, stdoutErr := logs.NewCaptureFile(physical, logstream.LogStreamSourceStdout)
 	require.NoError(t, stdoutErr)
 	defer func() { require.NoError(t, stdout.Close(logs.CaptureFileDisposeOnClose)) }()
-	stderr, stderrErr := logs.NewCaptureFile(physical, logstream.LogStreamSourceStartupStderr)
+	stderr, stderrErr := logs.NewCaptureFile(physical, logstream.LogStreamSourceStderr)
 	require.NoError(t, stderrErr)
 	defer func() { require.NoError(t, stderr.Close(logs.CaptureFileDisposeOnClose)) }()
 	_, writeErr := stdout.Writer.Write([]byte("projected-process-output\n"))
