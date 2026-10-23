@@ -33,16 +33,17 @@ type logicalProcessOperation struct {
 }
 
 type logicalProcessData struct {
-	state          logicalProcessState
-	progress       physicalResourceProgress
-	reason         apiv2.ConditionReason
-	message        string
-	retryAfter     time.Time
-	operation      *logicalProcessOperation
-	lifecycleKey   string
-	physicalUID    types.UID
-	replacementUID types.UID
-	lease          *statestore.ResourceLease
+	state               logicalProcessState
+	progress            physicalResourceProgress
+	reason              apiv2.ConditionReason
+	message             string
+	retryAfter          time.Time
+	operation           *logicalProcessOperation
+	lifecycleKey        string
+	physicalUID         types.UID
+	replacementUID      types.UID
+	lease               *statestore.ResourceLease
+	leaseFailureMessage string
 	// Stored identity is a handoff input, cleared after physical realization.
 	pendingRecord   *statestore.PersistentProcessRecord
 	replaceExisting bool
@@ -78,8 +79,14 @@ func (data *logicalProcessData) applyTo(resource *apiv2.LogicalProcess) (objectC
 	}
 	change := setValue(&resource.Status.PhysicalProcessRef, physicalRef)
 	change |= setValue(&resource.Status.LifecycleKey, data.lifecycleKey)
+	state, progress, reason, message := data.state, data.progress, data.reason, data.message
+	if data.leaseFailureMessage != "" {
+		state, progress, reason, message = logicalProcessStatePersistence, physicalResourceProgressRetryPending, "", data.leaseFailureMessage
+	} else if data.lease != nil && data.operation != nil && data.progress != physicalResourceProgressInProgress {
+		state, progress, reason, message = logicalProcessStatePersistence, physicalResourceProgressInProgress, "", ""
+	}
 	projectionChange, delay, valid := logicalProcessProjections.applyWithReason(
-		data.state, data.progress, data.reason, data.message,
+		state, progress, reason, message,
 		&resource.Status.Phase, &resource.Status.Conditions, resource.Generation,
 	)
 	return change | projectionChange, delay, valid
@@ -163,10 +170,6 @@ var logicalProcessProjections = physicalResourceProjectionTable[logicalProcessSt
 		{state: logicalProcessStatePersistence, progress: physicalResourceProgressInProgress}: {
 			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "RecordingPersistence",
-		},
-		{state: logicalProcessStatePersistence, progress: physicalResourceProgressCompleted}: {
-			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PersistenceRecorded", requeue: true,
 		},
 		{state: logicalProcessStatePersistence, progress: physicalResourceProgressRetryPending}: {
 			phase: apiv2.LogicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,

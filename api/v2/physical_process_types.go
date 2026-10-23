@@ -213,6 +213,7 @@ func (pp *PhysicalProcess) GetLogSource() *LogSource {
 	return &LogSource{
 		Name: pp.Name, UID: pp.UID, StdoutFile: pp.Status.StdoutFile, StderrFile: pp.Status.StderrFile,
 		Available: pp.Status.StdoutFile != "" && pp.Status.StderrFile != "", Complete: pp.Status.LogsComplete,
+		Raw: pp.Spec.Process != nil && pp.Spec.Process.RetainRuntimeProcess,
 	}
 }
 

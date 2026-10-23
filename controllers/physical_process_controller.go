@@ -107,7 +107,7 @@ func (r *PhysicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				missing := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{UID: previous.resourceUID}}
 				defer logger.ReleaseResourceLog(missing.GetResourceId())
 				if !previous.operationInProgress() {
-					previous.closeOutputLogs(logs.CaptureFileDisposeOnClose, log)
+					_ = previous.closeOutputLogs(logs.CaptureFileDisposeOnClose, log)
 				}
 			}
 			r.processData.DeleteByNamespacedName(req.NamespacedName)
@@ -546,7 +546,7 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 ) {
 	processConfig := physicalProcess.Spec.Process
 	if operationErr := operationCtx.Err(); operationErr != nil {
-		data.closeOutputLogs(logs.CaptureFileCloseDefault, log)
+		_ = data.closeOutputLogs(logs.CaptureFileCloseDefault, log)
 		data.progress = physicalResourceProgressRetryPending
 		data.failureMessage = fmt.Sprintf("Physical process launch canceled before starting: %v", operationErr)
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
@@ -588,7 +588,7 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 	// belong to no tracked process and are dropped.
 	var launchedHandle atomic.Pointer[process.ProcessHandle]
 	exitHandler := process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, exitErr error) {
-		data.closeOutputLogs(logs.CaptureFileCloseDefault, log)
+		_ = data.closeOutputLogs(logs.CaptureFileCloseDefault, log)
 		expectedHandle := launchedHandle.Load()
 		if expectedHandle == nil {
 			return
@@ -598,7 +598,7 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 	handle, startWaitForExit, startErr := r.processExecutor.StartProcess(processCtx, cmd, exitHandler, creationFlags, nil)
 	if processConfig.RetainRuntimeProcess || startErr != nil {
 		// Retained children inherit their own file handles; no DCP pipe or open descriptor is needed.
-		data.closeOutputLogs(logs.CaptureFileCloseDefault, log)
+		_ = data.closeOutputLogs(logs.CaptureFileCloseDefault, log)
 	}
 	if startErr != nil {
 		data.progress = physicalResourceProgressFailed
@@ -612,7 +612,7 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 		return
 	}
 	if handleErr := handle.Validate(); handleErr != nil {
-		data.closeOutputLogs(logs.CaptureFileCloseDefault, log)
+		_ = data.closeOutputLogs(logs.CaptureFileCloseDefault, log)
 		data.progress = physicalResourceProgressFailed
 		data.handle = process.ProcessHandle{}
 		data.retryAfter = time.Time{}
@@ -685,9 +685,14 @@ func (r *PhysicalProcessReconciler) queuePhysicalProcessDataResult(
 			currentData.handle == result.handle &&
 			currentData.cleanupUnconfirmed &&
 			!result.cleanupUnconfirmed
-		if preserveExitCode || preserveFinishedAt || preserveObservedExit || preserveCleanupUnconfirmed {
+		preserveOutputCompletion := currentData != nil && currentData.handle == result.handle &&
+			currentData.outputComplete && !result.outputComplete
+		if preserveExitCode || preserveFinishedAt || preserveObservedExit || preserveCleanupUnconfirmed || preserveOutputCompletion {
 			// Root exit notifications can arrive while a tree stop is still producing its result.
 			resultToStore = result.Clone()
+			if preserveOutputCompletion {
+				resultToStore.outputComplete = true
+			}
 			if preserveExitCode {
 				resultToStore.exitCode = cloneInt32Pointer(currentData.exitCode)
 			}
@@ -758,6 +763,7 @@ func (r *PhysicalProcessReconciler) processExited(
 			}
 		}
 		currentData.finishedAt = time.Now()
+		currentData.outputComplete = true
 		if exitErr == nil && exitCode != process.UnknownExitCode {
 			currentData.exitCode = &exitCode
 		}
@@ -907,13 +913,21 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(
 	if data == nil || data.handle.Pid <= 0 || retain ||
 		data.progress == physicalResourceProgressExited ||
 		data.progress == physicalResourceProgressMissing {
+		if data != nil && data.handle.Pid > 0 && data.stdout != nil &&
+			data.stdout.DirectFile == nil && !data.outputComplete {
+			return additionalReconciliationNeeded, StandardDelay
+		}
 		option := logs.CaptureFileDisposeOnClose
 		if retain && data != nil && data.handle.Pid > 0 &&
 			data.progress != physicalResourceProgressExited && data.progress != physicalResourceProgressMissing {
 			option = logs.CaptureFileCloseDefault
 		}
 		if data != nil {
-			data.closeOutputLogs(option, log)
+			closeErr := data.closeOutputLogs(option, log)
+			if closeErr != nil {
+				data.failureMessage = fmt.Sprintf("Failed to release process output capture: %v", closeErr)
+				return additionalReconciliationNeeded, LongDelay
+			}
 		}
 		r.processData.DeleteByNamespacedName(physicalProcess.NamespacedName())
 		return deleteFinalizer(physicalProcess, physicalProcessFinalizer, log), StandardDelay

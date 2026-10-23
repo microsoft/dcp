@@ -43,11 +43,10 @@ type logicalProcessDataHandlerFunc = stateInitializerFunc[
 ]
 
 var logicalProcessDataHandlers = map[logicalProcessState]logicalProcessDataHandlerFunc{
-	logicalProcessStateNamespace:   handleLogicalProcessNamespace,
-	logicalProcessStatePrepare:     handleLogicalProcessPreparation,
-	logicalProcessStatePhysical:    handleLogicalProcessPhysical,
-	logicalProcessStateRuntime:     handleLogicalProcessRuntime,
-	logicalProcessStatePersistence: handleLogicalProcessPersistence,
+	logicalProcessStateNamespace: handleLogicalProcessNamespace,
+	logicalProcessStatePrepare:   handleLogicalProcessPreparation,
+	logicalProcessStatePhysical:  handleLogicalProcessPhysical,
+	logicalProcessStateRuntime:   handleLogicalProcessRuntime,
 }
 
 type LogicalProcessReconcilerConfig struct {
@@ -123,7 +122,7 @@ func (r *LogicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	} else if change = ensureFinalizer(&resource, logicalProcessFinalizer, log); change != noChange {
 		finalizerAdded = true
-	} else if data.operation == nil {
+	} else if data.operation == nil || data.state == logicalProcessStateRuntime {
 		stateHandler, known := logicalProcessDataHandlers[data.state]
 		if !known {
 			stateErr := fmt.Errorf("unknown logical process state %v", data.state)
@@ -412,40 +411,10 @@ func (r *LogicalProcessReconciler) getLogicalPhysicalProcess(
 	return physical, nil
 }
 
-func handleLogicalProcessPersistence(
-	ctx context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
-	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
-) objectChange {
-	change := noChange
-	if data.physicalUID != "" {
-		physical, getErr := reconciler.getLogicalPhysicalProcess(ctx, resource, data.physicalUID, "")
-		if getErr == nil {
-			change = applyLogicalProcessPhysicalDetails(resource, physical)
-		} else if apierrors.IsNotFound(getErr) {
-			change = data.applyMissingLogSource(resource)
-		} else {
-			log.Error(getErr, "Failed to project physical process during persistence settlement")
-			data.progress, data.message = physicalResourceProgressRetryPending, getErr.Error()
-			return noChange
-		}
-	}
-	if data.lease == nil {
-		data.state, data.progress = logicalProcessStateRuntime, physicalResourceProgressNotReady
-		return change | handleLogicalProcessRuntime(ctx, reconciler, resource, data.state, data, log)
-	}
-	if time.Now().Before(data.retryAfter) {
-		return change | additionalReconciliationNeeded
-	}
-	return change | reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePersistence, reconciler.persistLogicalProcess, log)
-}
-
 func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, log logr.Logger,
 ) objectChange {
 	if data.lease != nil {
-		if data.state == logicalProcessStatePersistence {
-			return handleLogicalProcessPersistence(ctx, r, resource, data.state, data, log)
-		}
 		if data.physicalUID != "" {
 			data.state = logicalProcessStateRuntime
 			return handleLogicalProcessRuntime(ctx, r, resource, data.state, data, log)
@@ -485,9 +454,19 @@ func (r *LogicalProcessReconciler) scheduleLogicalProcessOperation(
 	resource *apiv2.LogicalProcess, current *logicalProcessData, state logicalProcessState,
 	work func(context.Context, *apiv2.LogicalProcess, *logicalProcessData, logr.Logger), log logr.Logger,
 ) objectChange {
+	if current.operation != nil {
+		return noChange
+	}
+	if state == logicalProcessStatePersistence && current.leaseFailureMessage != "" && time.Now().Before(current.retryAfter) {
+		return additionalReconciliationNeeded
+	}
 	operationCtx, cancel := context.WithCancel(r.LifetimeCtx)
 	data := current.Clone()
-	data.state, data.progress, data.reason, data.message = state, physicalResourceProgressInProgress, "", ""
+	if state == logicalProcessStatePersistence {
+		data.leaseFailureMessage = ""
+	} else {
+		data.state, data.progress, data.reason, data.message = state, physicalResourceProgressInProgress, "", ""
+	}
 	data.retryAfter = time.Time{}
 	data.operation = &logicalProcessOperation{cancel: cancel}
 	if !r.processData.Update(resource.NamespacedName(), resource.UID, data) {
@@ -505,7 +484,13 @@ func (r *LogicalProcessReconciler) scheduleLogicalProcessOperation(
 			func(name types.NamespacedName, stateKey types.UID, activeResource *apiv2.LogicalProcess) {
 				_, active := r.processData.BorrowByNamespacedName(name)
 				if activeResource.UID == snapshot.UID && active != nil && active.operation == operation {
-					_ = r.processData.Update(name, stateKey, result)
+					if state == logicalProcessStatePersistence {
+						active.operation, active.lease = nil, result.lease
+						active.leaseFailureMessage, active.retryAfter = result.leaseFailureMessage, result.retryAfter
+						_ = r.processData.Update(name, stateKey, active)
+					} else {
+						_ = r.processData.Update(name, stateKey, result)
+					}
 				}
 			})
 		if queued {
@@ -521,7 +506,11 @@ func (r *LogicalProcessReconciler) scheduleLogicalProcessOperation(
 		cancel()
 		log.Error(enqueueErr, "Failed to queue logical process operation")
 		current.operation = nil
-		current.progress, current.message = physicalResourceProgressRetryPending, enqueueErr.Error()
+		if state == logicalProcessStatePersistence {
+			current.leaseFailureMessage = enqueueErr.Error()
+		} else {
+			current.progress, current.message = physicalResourceProgressRetryPending, enqueueErr.Error()
+		}
 		current.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 	}
 	return noChange
@@ -647,11 +636,10 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 	}()
 	if persistErr != nil {
 		log.Error(persistErr, "Failed to settle persistent logical process ownership")
-		data.progress, data.message = physicalResourceProgressRetryPending, persistErr.Error()
+		data.leaseFailureMessage = persistErr.Error()
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		return
 	}
-	data.progress = physicalResourceProgressCompleted
 }
 
 func (r *LogicalProcessReconciler) discardLogicalProcessData(name types.NamespacedName, log logr.Logger) {
