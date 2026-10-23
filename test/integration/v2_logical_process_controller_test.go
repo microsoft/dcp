@@ -29,6 +29,28 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// Verifies that persistent logical process leases do not share rows with containers or
+// networks even when their namespace and name would otherwise form the same resource key.
+func TestV2LogicalProcessLeaseKeysDoNotCollideWithRuntimeResources(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	for _, namespace := range []string{"containers", "containernetworks"} {
+		logical := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process-lease-cross-kind", Namespace: namespace}}
+		var other statestore.LeasableResource = &apiv2.LogicalContainer{Spec: apiv2.LogicalContainerSpec{ContainerName: logical.Name}}
+		if namespace == "containernetworks" {
+			other = &apiv2.LogicalContainerNetwork{Spec: apiv2.LogicalContainerNetworkSpec{NetworkName: logical.Name}}
+		}
+		processLease, processLeaseErr := testStateStore.AcquireResourceLease(ctx, logical, testResourceLeaseOwner, time.Second)
+		require.NoError(t, processLeaseErr)
+		defer func() { require.NoError(t, processLease.Release(context.WithoutCancel(ctx))) }()
+		otherLease, otherLeaseErr := testStateStore.AcquireResourceLease(ctx, other, testResourceLeaseOwner, time.Second)
+		require.NoError(t, otherLeaseErr)
+		require.NoError(t, otherLease.Release(ctx))
+		require.NoError(t, testStateStore.VerifyResourceLeaseHeld(ctx, logical, testResourceLeaseOwner))
+	}
+}
+
 type processCreateLostResponseClient struct {
 	ctrl_client.Client
 	created  chan *apiv2.PhysicalProcess
@@ -281,9 +303,9 @@ func waitLogicalProcessPhase(t *testing.T, ctx context.Context, name types.Names
 	})
 }
 
-// Verifies that LogicalProcess retains its startup lease and deletion finalizer through ownership
-// recording failures, then records the retained process before releasing the lease and deleting its backing.
-func TestV2LogicalProcessControllerSettlesOwnershipBeforeDeletion(t *testing.T) {
+// Verifies that LogicalProcess forwards stop while ownership recording fails, retains its startup
+// lease and deletion finalizer, then records ownership before releasing the lease and deleting its backing.
+func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndSettlesBeforeDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -315,6 +337,15 @@ func TestV2LogicalProcessControllerSettlesOwnershipBeforeDeletion(t *testing.T) 
 	require.NoError(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, resource, environmentInfo.ResourceLeaseOwner))
 	_, recordErr := environmentInfo.StateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
 	require.ErrorIs(t, recordErr, statestore.ErrPersistentProcessNotFound)
+	require.NoError(t, retryOnConflictEx(ctx, serverInfo.Client, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
+		current.Spec.Stop = true
+		return serverInfo.Client.Update(updateCtx, current)
+	}))
+	physicalName := types.NamespacedName{Namespace: namespaceName, Name: failed.Status.PhysicalProcessRef}
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
+		return current.Spec.Stop && current.Status.Phase == apiv2.PhysicalProcessPhaseExited, nil
+	})
+	require.NoError(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, resource, environmentInfo.ResourceLeaseOwner))
 	require.NoError(t, serverInfo.Client.Delete(ctx, resource))
 	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		return !current.DeletionTimestamp.IsZero(), nil
@@ -333,7 +364,7 @@ func TestV2LogicalProcessControllerSettlesOwnershipBeforeDeletion(t *testing.T) 
 	require.NoError(t, storedErr)
 	require.Equal(t, commonapi.WorkloadID("retained-process-workload"), record.WorkloadID)
 	require.Equal(t, *failed.Status.PID, int64(record.PID))
-	require.NoError(t, environmentInfo.TestProcessExecutor.CheckProcessRunning(record.ProcessHandle()))
+	require.True(t, process.IsProcessGoneErr(environmentInfo.TestProcessExecutor.CheckProcessRunning(record.ProcessHandle())))
 	require.ErrorIs(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, resource, environmentInfo.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 }
 

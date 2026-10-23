@@ -147,3 +147,32 @@ func TestCaptureFileAppendAndSourceSelection(t *testing.T) {
 	_, sourceErr := NewCaptureFile(resource, logstream.LogStreamSourceSystem)
 	require.ErrorContains(t, sourceErr, "unknown capture log source")
 }
+
+// Verifies that CaptureFile retries a transient removal failure instead of caching it after
+// the obstruction disappears, and treats repeated successful disposal as idempotent.
+func TestCaptureFileRetriesFailedDisposal(t *testing.T) {
+	t.Parallel()
+	uid, uidErr := randdata.MakeRandomString(8)
+	require.NoError(t, uidErr)
+	resource := &apiv1.Container{ObjectMeta: metav1.ObjectMeta{Name: "dispose-retry", UID: types.UID(uid)}}
+	capture, captureErr := NewCaptureFile(resource, logstream.LogStreamSourceStdout)
+	require.NoError(t, captureErr)
+	require.NoError(t, capture.Close(CaptureFileCloseDefault))
+	saved := capture.Path + ".saved"
+	obstruction := filepath.Join(capture.Path, "busy")
+	t.Cleanup(func() {
+		_ = os.Remove(obstruction)
+		_ = os.Remove(capture.Path)
+		_ = os.Remove(saved)
+	})
+	require.NoError(t, os.Rename(capture.Path, saved))
+	require.NoError(t, os.Mkdir(capture.Path, 0700))
+	require.NoError(t, usvc_io.WriteFile(obstruction, []byte("busy"), osutil.PermissionOnlyOwnerReadWrite))
+	require.Error(t, capture.Close(CaptureFileDisposeOnClose))
+	require.NoError(t, os.Remove(obstruction))
+	require.NoError(t, os.Remove(capture.Path))
+	require.NoError(t, os.Rename(saved, capture.Path))
+	require.NoError(t, capture.Close(CaptureFileDisposeOnClose))
+	require.NoError(t, capture.Close(CaptureFileDisposeOnClose))
+	require.NoFileExists(t, capture.Path)
+}

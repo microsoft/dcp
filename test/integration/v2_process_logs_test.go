@@ -9,21 +9,198 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that physical process cleanup retains its finalizer and capture ownership after
+// a removal failure, then normal reconciliation completes deletion when removal becomes possible.
+func TestV2ProcessCleanupRetriesOutputRemoval(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-process-output-cleanup")
+	logical := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+		Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-output-cleanup-command"}}}
+	require.NoError(t, client.Create(ctx, logical))
+	running := waitLogicalProcessPhase(t, ctx, logical.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+	require.NoError(t, retryOnConflict(ctx, logical.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
+		current.Spec.Stop = true
+		return client.Update(updateCtx, current)
+	}))
+	completed := waitObjectAssumesState(t, ctx, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete, nil
+	})
+	capturePath := completed.Status.RuntimeLogs.StdoutFile
+	savedPath := capturePath + ".saved"
+	obstruction := filepath.Join(capturePath, "busy")
+	t.Cleanup(func() {
+		_ = os.Remove(obstruction)
+		_ = os.Remove(capturePath)
+		_ = os.Remove(savedPath)
+	})
+	require.NoError(t, os.Rename(capturePath, savedPath))
+	require.NoError(t, os.Mkdir(capturePath, 0700))
+	require.NoError(t, usvc_io.WriteFile(obstruction, []byte("busy"), osutil.PermissionOnlyOwnerReadWrite))
+	require.NoError(t, client.Delete(ctx, logical))
+	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalProcessRef}
+	failed := waitObjectAssumesState(t, ctx, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return ready != nil && strings.Contains(ready.Message, "Failed to release process output capture"), nil
+	})
+	require.NotEmpty(t, failed.Finalizers)
+	require.False(t, failed.DeletionTimestamp.IsZero())
+	// Let the controller remove the emptied directory; never recreate the path after disposal can succeed.
+	require.NoError(t, os.Remove(obstruction))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, logical)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, failed)
+	require.NoFileExists(t, capturePath)
+	require.NoError(t, client.Delete(ctx, namespace))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
+}
+
+// Verifies that retained raw process capture preserves application numbers, timestamps, and
+// a final fragment through logical/physical endpoints while retaining line selection behavior.
+func TestV2ProcessRetainedLogsPreserveRawOutput(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-process-raw-output")
+	logical := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-raw-output-command"}}}
+	require.NoError(t, client.Create(ctx, logical))
+	defer func() {
+		require.NoError(t, retryOnConflict(ctx, logical.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
+			current.Spec.Stop = true
+			return client.Update(updateCtx, current)
+		}))
+		waitLogicalProcessPhase(t, ctx, logical.NamespacedName(), apiv2.LogicalProcessPhaseExited)
+		require.NoError(t, client.Delete(ctx, logical))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, client, logical)
+	}()
+	running := waitLogicalProcessPhase(t, ctx, logical.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+	require.True(t, running.Status.RuntimeLogs.Raw)
+	physical := &apiv2.PhysicalProcess{}
+	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalProcessRef}, physical))
+	require.True(t, physical.GetLogSource().Raw)
+	const payload = "123 items\n2026-10-22T12:00:00Z message\nhello"
+	for _, filePath := range []string{running.Status.RuntimeLogs.StdoutFile, running.Status.RuntimeLogs.StderrFile} {
+		output, openErr := usvc_io.OpenOrCreateFileForAppending(filePath, osutil.PermissionOnlyOwnerReadWrite)
+		require.NoError(t, openErr)
+		_, writeErr := io.WriteString(output, payload)
+		require.NoError(t, writeErr)
+		require.NoError(t, output.Close())
+	}
+	for _, source := range []string{"stdout", "stderr"} {
+		logicalOutput, logicalErr := readV2ContainerLog(ctx, logical, apiv2.ResourceLogOptions{Source: source})
+		require.NoError(t, logicalErr)
+		require.Equal(t, payload, logicalOutput)
+		physicalOutput, physicalErr := readV2ContainerLog(ctx, physical, apiv2.ResourceLogOptions{Source: source})
+		require.NoError(t, physicalErr)
+		require.Equal(t, payload, physicalOutput)
+	}
+	skip, limit := int64(1), int64(1)
+	selected, selectedErr := readV2ContainerLog(ctx, logical, apiv2.ResourceLogOptions{Skip: &skip, Limit: &limit})
+	require.NoError(t, selectedErr)
+	require.Equal(t, "2026-10-22T12:00:00Z message\n", selected)
+	preserved, preservedErr := readV2ContainerLog(ctx, logical, apiv2.ResourceLogOptions{Timestamps: true, LineNumbers: true})
+	require.NoError(t, preservedErr)
+	require.Equal(t, payload, preserved)
+}
+
+// Verifies that physical process output completes after descendant-held pipes drain,
+// rather than when the root process disappears, including for a newly opened follower.
+func TestV2PhysicalProcessLogsWaitForOutputDrain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix root-only termination to leave a descendant writing to the inherited pipe")
+	}
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	executor := process.NewOSExecutor(logr.Discard())
+	defer executor.Dispose()
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, PhysicalProcessController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecoratePhysicalProcessExecutor: func(process.Executor) process.Executor { return executor }})
+	require.NoError(t, startupErr)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-process-output-drain"}}
+	require.NoError(t, server.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, server.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+	tool, toolErr := internal_testutil.GetTestToolPath("delay")
+	require.NoError(t, toolErr)
+	physical := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalProcessSpec{Process: &apiv2.PhysicalProcessConfig{
+			ExecutablePath: tool, Args: []string{"--child-spec", "1", "--hold-pipe"},
+		}}}
+	require.NoError(t, server.Client.Create(ctx, physical))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalProcessPhaseRunning, nil
+	})
+	pid, pidErr := process.Int64_ToPidT(*running.Status.PID)
+	require.NoError(t, pidErr)
+	handle := process.NewHandle(pid, running.Status.IdentityTimestamp.Time)
+	var tree []process.ProcessHandle
+	require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, pollImmediately, func(treeCtx context.Context) (bool, error) {
+		var treeErr error
+		tree, treeErr = process.GetProcessTree(treeCtx, handle)
+		return len(tree) > 1, treeErr
+	}))
+	defer func() {
+		for _, child := range tree {
+			stopErr := executor.StopProcess(context.WithoutCancel(ctx), child)
+			require.True(t, stopErr == nil || process.IsProcessGoneErr(stopErr), "%v", stopErr)
+		}
+	}()
+	root, rootErr := handle.OsProcess()
+	require.NoError(t, rootErr)
+	require.NoError(t, root.Kill())
+	require.NoError(t, root.Release())
+	require.NoError(t, retryOnConflictEx(ctx, server.Client, physical.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalProcess) error {
+		current.Annotations = map[string]string{"test.dcp.microsoft.com/reconcile": "observe-root-exit"}
+		return server.Client.Update(updateCtx, current)
+	}))
+	exited := waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalProcessPhaseExited, nil
+	})
+	require.False(t, exited.Status.LogsComplete, "root disappearance must not finish the capture before pipe drain")
+	stream, streamErr := server.RestClient.Get().AbsPath("/apis", apiv2.GroupVersion.Group, apiv2.GroupVersion.Version,
+		"namespaces", namespace.Name, "physicalprocesses", physical.Name, apiv2.LogSubresourceName).Param("follow", "true").Stream(ctx)
+	require.NoError(t, streamErr)
+	defer func() { require.NoError(t, stream.Close()) }()
+	require.NoError(t, executor.StopProcess(ctx, tree[1], process.StopRootOnly()))
+	output, readErr := io.ReadAll(stream)
+	require.NoError(t, readErr)
+	require.Contains(t, string(output), "Received request to exit\n")
+	waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		return current.Status.LogsComplete, nil
+	})
+	require.NoError(t, server.Client.Delete(ctx, physical))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+}
 
 type processBackingDeletionConflictReader struct {
 	ctrl_client.Reader

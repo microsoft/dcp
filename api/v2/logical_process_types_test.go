@@ -109,7 +109,13 @@ func TestLogicalProcessUpdateAndLeaseKey(t *testing.T) {
 	resource := &LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test"},
 		Spec: LogicalProcessSpec{Process: &LogicalProcessConfig{ExecutablePath: "program"}}}
 	require.Equal(t, LogicalProcessModeSession, resource.Spec.EffectiveMode())
-	require.Equal(t, "test/process", resource.GetLeaseKey())
+	require.Equal(t, "processes/test/process", resource.GetLeaseKey())
+	resource.Namespace, resource.Name = "containers", "app"
+	container := &LogicalContainer{Spec: LogicalContainerSpec{ContainerName: "app"}}
+	require.NotEqual(t, resource.GetLeaseKey(), container.GetLeaseKey())
+	resource.Namespace = "containernetworks"
+	network := &LogicalContainerNetwork{Spec: LogicalContainerNetworkSpec{NetworkName: "app"}}
+	require.NotEqual(t, resource.GetLeaseKey(), network.GetLeaseKey())
 	stopped := resource.DeepCopy()
 	stopped.Spec.Stop = true
 	require.Empty(t, stopped.ValidateUpdate(context.Background(), resource))

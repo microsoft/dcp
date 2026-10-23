@@ -201,7 +201,7 @@ func (*LogicalProcessLogResource) GetStorageProvider(
 
 // GetLeaseKey identifies the persistent process by its logical namespace and name.
 func (resource *LogicalProcess) GetLeaseKey() string {
-	return resource.NamespacedName().String()
+	return "processes/" + resource.NamespacedName().String()
 }
 
 func (resource *LogicalProcess) GetObjectMeta() *metav1.ObjectMeta {

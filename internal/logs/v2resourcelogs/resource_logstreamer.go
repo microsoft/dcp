@@ -333,10 +333,14 @@ func (streamer *resourceLogStreamer) followFile(
 	if opts.Tail != nil {
 		source = usvc_io.NewTailReader(source, int(*opts.Tail))
 	}
-	source = usvc_io.NewTimestampAwareReader(source, usvc_io.TimestampAwareReaderOptions{
+	readerOptions := usvc_io.TimestampAwareReaderOptions{
 		Timestamps: opts.Timestamps, LineNumbers: opts.LineNumbers,
 		Limit: pointers.GetValueOrDefault(opts.Limit, 0), Skip: pointers.GetValueOrDefault(opts.Skip, 0),
-	})
+	}
+	if opts.Source != string(apiv2.LogStreamSourceSystem) && session.capture.Raw {
+		readerOptions.Timestamps, readerOptions.LineNumbers = true, true
+	}
+	source = usvc_io.NewTimestampAwareReader(source, readerOptions)
 	writer := usvc_io.NewFollowWriter(ctx, source, dest,
 		usvc_io.WithNoDataStopRetries(3), usvc_io.WithCloseSourceOnCancel())
 	streamer.lock.Lock()

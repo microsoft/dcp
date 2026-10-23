@@ -50,6 +50,8 @@ type LogSource struct {
 	StdoutFile string `json:"stdoutFile,omitempty"`
 	// StderrFile is the pre-captured standard-error path.
 	StderrFile string `json:"stderrFile,omitempty"`
+	// Raw indicates that captured bytes have no DCP-generated timestamp or line-number metadata.
+	Raw bool `json:"raw,omitempty"`
 	// Available indicates that capture can be consumed.
 	Available bool `json:"available,omitempty"`
 	// Complete indicates that no further output is expected.

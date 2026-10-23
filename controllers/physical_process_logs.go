@@ -36,9 +36,13 @@ func (data *physicalProcessData) ensureOutputLogs(resource *apiv2.PhysicalProces
 	return nil
 }
 
-func (data *physicalProcessData) closeOutputLogs(option logs.CaptureFileCloseOption, log logr.Logger) {
+func (data *physicalProcessData) closeOutputLogs(option logs.CaptureFileCloseOption, log logr.Logger) error {
 	if data.stdout != nil {
-		data.stdout.CloseAndLog(option, log)
-		data.stderr.CloseAndLog(option, log)
+		closeErr := errors.Join(data.stdout.Close(option), data.stderr.Close(option))
+		if closeErr != nil {
+			log.Error(closeErr, "Failed to close process output capture")
+		}
+		return closeErr
 	}
+	return nil
 }

@@ -4679,6 +4679,13 @@ func schema_microsoft_dcp_api_v2_LogSource(ref common.ReferenceCallback) common.
 							Format:      "",
 						},
 					},
+					"raw": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Raw indicates that captured bytes have no DCP-generated timestamp or line-number metadata.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"available": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Available indicates that capture can be consumed.",

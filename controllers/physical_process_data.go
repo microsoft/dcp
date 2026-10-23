@@ -42,6 +42,7 @@ type physicalProcessData struct {
 	retryAfter         time.Time
 	stdout             *logs.CaptureFile
 	stderr             *logs.CaptureFile
+	outputComplete     bool
 }
 
 func (data *physicalProcessData) Clone() *physicalProcessData {
@@ -58,6 +59,7 @@ func (data *physicalProcessData) Clone() *physicalProcessData {
 		retryAfter:         data.retryAfter,
 		stdout:             data.stdout,
 		stderr:             data.stderr,
+		outputComplete:     data.outputComplete,
 	}
 }
 
@@ -76,6 +78,7 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 		data.failureMessage != other.failureMessage ||
 		data.cleanupUnconfirmed != other.cleanupUnconfirmed ||
 		data.stdout != other.stdout || data.stderr != other.stderr ||
+		data.outputComplete != other.outputComplete ||
 		!data.retryAfter.Equal(other.retryAfter)
 	if updated {
 		*data = *other.Clone()
@@ -84,11 +87,9 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 }
 
 func (data *physicalProcessData) logsComplete() bool {
-	return data.progress == physicalResourceProgressFailed ||
+	return data.outputComplete || data.progress == physicalResourceProgressFailed ||
 		data.progress == physicalResourceProgressSkipped ||
-		(data.state == physicalProcessStateRuntime &&
-			(data.progress == physicalResourceProgressExited || data.progress == physicalResourceProgressMissing ||
-				(data.progress == physicalResourceProgressRunning && data.stdout == nil)))
+		(data.stdout == nil && data.state == physicalProcessStateRuntime)
 }
 
 func (data *physicalProcessData) operationInProgress() bool {

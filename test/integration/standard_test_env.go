@@ -52,10 +52,11 @@ type TestEnvironmentInfo struct {
 }
 
 type TestEnvironmentOptions struct {
-	DecorateClient                func(ctrl_client.Client) ctrl_client.Client
-	WorkloadID                    commonapi.WorkloadID
-	DecorateContainerOrchestrator func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
-	DecorateAPIReader             func(ctrl_client.Reader) ctrl_client.Reader
+	DecoratePhysicalProcessExecutor func(process.Executor) process.Executor
+	DecorateClient                  func(ctrl_client.Client) ctrl_client.Client
+	WorkloadID                      commonapi.WorkloadID
+	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
+	DecorateAPIReader               func(ctrl_client.Reader) ctrl_client.Reader
 }
 
 func (tei *TestEnvironmentInfo) addAfterShutdown(callback func()) {
@@ -415,12 +416,16 @@ func StartTestEnvironmentWithOptions(
 	}
 
 	if inclCtrl&PhysicalProcessController != 0 {
+		var physicalExecutor process.Executor = pex
+		if options.DecoratePhysicalProcessExecutor != nil {
+			physicalExecutor = options.DecoratePhysicalProcessExecutor(physicalExecutor)
+		}
 		physicalProcessR := controllers.NewPhysicalProcessReconciler(
 			ctx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalProcessReconciler"),
-			pex,
+			physicalExecutor,
 		)
 		if err = physicalProcessR.SetupWithManager(mgr, instanceTag+"-PhysicalProcessReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalProcess reconciler: %w", err)
