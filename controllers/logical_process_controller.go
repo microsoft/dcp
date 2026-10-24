@@ -47,6 +47,7 @@ var logicalProcessDataHandlers = map[logicalProcessState]logicalProcessDataHandl
 	logicalProcessStatePrepare:   handleLogicalProcessPreparation,
 	logicalProcessStatePhysical:  handleLogicalProcessPhysical,
 	logicalProcessStateRuntime:   handleLogicalProcessRuntime,
+	logicalProcessStateMissing:   handleLogicalProcessMissing,
 }
 
 type LogicalProcessReconcilerConfig struct {
@@ -331,7 +332,9 @@ func handleLogicalProcessRuntime(
 		log.Error(getErr, "Failed to get backing physical process")
 		data.progress, data.reason, data.message = physicalResourceProgressRetryPending, "", getErr.Error()
 		if apierrors.IsNotFound(getErr) {
-			return data.applyMissingLogSource(resource)
+			data.state, data.progress = logicalProcessStateMissing, physicalResourceProgressFailed
+			data.reason, data.message = "PhysicalProcessMissing", "The backing PhysicalProcess no longer exists; the logical process cannot recover."
+			return handleLogicalProcessMissing(ctx, reconciler, resource, data.state, data, log)
 		}
 		return noChange
 	}
@@ -370,6 +373,17 @@ func handleLogicalProcessRuntime(
 		data.progress = physicalResourceProgressUnknown
 	}
 	if data.lease != nil && logicalPhysicalProcessStartupSettled(physical) {
+		return change | reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePersistence, reconciler.persistLogicalProcess, log)
+	}
+	return change
+}
+
+func handleLogicalProcessMissing(
+	_ context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
+	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
+) objectChange {
+	change := data.applyMissingLogSource(resource)
+	if data.lease != nil {
 		return change | reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePersistence, reconciler.persistLogicalProcess, log)
 	}
 	return change
@@ -415,6 +429,9 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, log logr.Logger,
 ) objectChange {
 	if data.lease != nil {
+		if data.state == logicalProcessStateMissing {
+			return handleLogicalProcessMissing(ctx, r, resource, data.state, data, log)
+		}
 		if data.physicalUID != "" {
 			data.state = logicalProcessStateRuntime
 			return handleLogicalProcessRuntime(ctx, r, resource, data.state, data, log)
@@ -579,6 +596,15 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 		verifyErr := r.config.StateStore.VerifyResourceLeaseHeld(ctx, resource, r.config.ResourceLeaseOwner)
 		if verifyErr != nil {
 			return verifyErr
+		}
+		if data.state == logicalProcessStateMissing {
+			// The backing resource was lost; release startup coordination without reconstructing runtime ownership.
+			releaseErr := data.lease.Release(ctx)
+			if releaseErr != nil {
+				return releaseErr
+			}
+			data.lease = nil
+			return nil
 		}
 		physical, getErr := r.getLogicalPhysicalProcess(ctx, resource, data.physicalUID, "")
 		if getErr != nil && !apierrors.IsNotFound(getErr) {

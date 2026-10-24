@@ -26,6 +26,7 @@ const (
 	logicalProcessStateRuntime
 	logicalProcessStatePersistence
 	logicalProcessStateDelete
+	logicalProcessStateMissing
 )
 
 type logicalProcessOperation struct {
@@ -166,6 +167,10 @@ var logicalProcessProjections = physicalResourceProjectionTable[logicalProcessSt
 		{state: logicalProcessStateRuntime, progress: physicalResourceProgressRetryPending}: {
 			phase: apiv2.LogicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PhysicalProcessLookupFailed", requeue: true, requeueDelay: LongDelay,
+		},
+		{state: logicalProcessStateMissing, progress: physicalResourceProgressFailed}: {
+			phase: apiv2.LogicalProcessPhaseFailed, conditionStatus: metav1.ConditionFalse,
+			conditionReason: "PhysicalProcessMissing",
 		},
 		{state: logicalProcessStatePersistence, progress: physicalResourceProgressInProgress}: {
 			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
