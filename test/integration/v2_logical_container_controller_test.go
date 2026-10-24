@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -76,66 +77,108 @@ func TestV2LogicalContainerControllerWaitsForNamespace(t *testing.T) {
 }
 
 // Verifies that the LogicalContainer controller surfaces terminal image acquisition failures,
-// releases its startup lease, and does not resume physical creation when the image is later available.
+// releases its startup lease even behind a missing network, and does not resume failed startup.
 func TestV2LogicalContainerControllerFailsStartupWhenImageAcquisitionFails(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-	namespace := createActiveV2Namespace(t, ctx, "v2-logical-image-failure")
-	const sourceImage = "v2-logical-image-failure-source"
-	const runtimeName = "v2-logical-image-failure-runtime"
-	containerOrchestrator.FailNextPullImage(sourceImage, errors.New("image acquisition denied"))
-	noRetries := int32(0)
-	container := &apiv2.LogicalContainer{
-		ObjectMeta: metav1.ObjectMeta{Name: "persistent", Namespace: namespace.Name},
-		Spec: apiv2.LogicalContainerSpec{
-			Mode: apiv2.LogicalContainerModePersistent, ContainerName: runtimeName,
-			Container: &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{
-				Image: sourceImage, PullPolicy: apiv2.PullPolicyAlways, PullRetryLimit: &noRetries,
-			}},
-		},
-	}
-	require.NoError(t, client.Create(ctx, container))
-	failed := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerPhaseFailed, nil
-	})
-	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "PhysicalContainerFailed")
-	failureCondition := apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady))
-	require.Contains(t, failureCondition.Message, string(apiv2.PhysicalContainerImageReasonPullFailed))
-	require.Contains(t, failureCondition.Message, "image acquisition denied")
-	require.Empty(t, failed.Status.ContainerID)
-	require.Zero(t, containerOrchestrator.CreateContainerCallCount(runtimeName))
-	leaseErr := testStateStore.VerifyResourceLeaseHeld(ctx, container, testResourceLeaseOwner)
-	require.ErrorIs(t, leaseErr, statestore.ErrResourceLeaseNotHeld)
+	for _, testCase := range []struct {
+		name           string
+		missingNetwork bool
+	}{
+		{name: "without-network"},
+		{name: "missing-network", missingNetwork: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			namespace := createActiveV2Namespace(t, ctx, "v2-logical-image-failure-"+testCase.name)
+			sourceImage := namespace.Name + "-source"
+			runtimeName := namespace.Name + "-runtime"
+			containerOrchestrator.FailNextPullImage(sourceImage, errors.New("image acquisition denied"))
+			noRetries := int32(0)
+			container := &apiv2.LogicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "persistent", Namespace: namespace.Name},
+				Spec: apiv2.LogicalContainerSpec{
+					Mode: apiv2.LogicalContainerModePersistent, ContainerName: runtimeName,
+					Container: &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{
+						Image: sourceImage, PullPolicy: apiv2.PullPolicyAlways, PullRetryLimit: &noRetries,
+					}},
+				},
+			}
+			expectedReason := apiv2.ConditionReason("PhysicalContainerFailed")
+			if testCase.missingNetwork {
+				container.Spec.Container.Networks = []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "network"}}
+				expectedReason = apiv2.PhysicalContainerReasonImageFailed
+			}
+			require.NoError(t, client.Create(ctx, container))
+			failed := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+				return current.Status.Phase == apiv2.LogicalContainerPhaseFailed, nil
+			})
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, expectedReason)
+			failureCondition := apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady))
+			require.Contains(t, failureCondition.Message, string(apiv2.PhysicalContainerImageReasonPullFailed))
+			require.Contains(t, failureCondition.Message, "image acquisition denied")
+			require.Empty(t, failed.Status.ContainerID)
+			require.Zero(t, containerOrchestrator.CreateContainerCallCount(runtimeName))
+			require.ErrorIs(t, testStateStore.VerifyResourceLeaseHeld(ctx, container, testResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 
-	physical := &apiv2.PhysicalContainer{}
-	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: failed.Status.PhysicalContainerRef}, physical))
-	require.Equal(t, apiv2.PhysicalContainerPhaseFailed, physical.Status.Phase)
-	requireReadyCondition(t, physical.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonImageFailed)
-	image := &apiv2.PhysicalContainerImage{}
-	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: failed.Status.ImageRef}, image))
-	require.Equal(t, apiv2.PhysicalContainerImagePhaseFailed, image.Status.Phase)
-	require.NoError(t, client.Delete(ctx, image))
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
-	replacementImage := &apiv2.PhysicalContainerImage{
-		ObjectMeta: metav1.ObjectMeta{Name: image.Name, Namespace: namespace.Name, OwnerReferences: image.OwnerReferences},
-		Spec:       *image.Spec.DeepCopy(),
+			physical := &apiv2.PhysicalContainer{}
+			physicalName := types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(container.UID)}
+			getPhysicalErr := client.Get(ctx, physicalName, physical)
+			if testCase.missingNetwork {
+				require.True(t, apierrors.IsNotFound(getPhysicalErr), "%v", getPhysicalErr)
+				require.Empty(t, failed.Status.PhysicalContainerRef)
+			} else {
+				require.NoError(t, getPhysicalErr)
+				require.Equal(t, apiv2.PhysicalContainerPhaseFailed, physical.Status.Phase)
+				requireReadyCondition(t, physical.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonImageFailed)
+			}
+			image := &apiv2.PhysicalContainerImage{}
+			require.NoError(t, client.Get(ctx, physicalName, image))
+			require.Equal(t, apiv2.PhysicalContainerImagePhaseFailed, image.Status.Phase)
+			require.NoError(t, client.Delete(ctx, image))
+			ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
+			replacementImage := &apiv2.PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{Name: image.Name, Namespace: namespace.Name, OwnerReferences: image.OwnerReferences},
+				Spec:       *image.Spec.DeepCopy(),
+			}
+			require.NoError(t, client.Create(ctx, replacementImage))
+			waitPhysicalContainerImagePhase(t, ctx, replacementImage.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+			if testCase.missingNetwork {
+				network := &apiv2.LogicalContainerNetwork{
+					ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+					Spec:       apiv2.LogicalContainerNetworkSpec{Network: &apiv2.LogicalContainerNetworkConfig{}},
+				}
+				require.NoError(t, client.Create(ctx, network))
+				waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+					return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+				})
+			}
+			require.NoError(t, retryOnConflict(ctx, container.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
+				current.Spec.Stop = true
+				return client.Update(updateCtx, current)
+			}))
+			if testCase.missingNetwork {
+				waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+					ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+					return current.Status.Phase == apiv2.LogicalContainerPhaseFailed &&
+						ready != nil && ready.ObservedGeneration == current.Generation, nil
+				})
+				var physicals apiv2.PhysicalContainerList
+				require.NoError(t, client.List(ctx, &physicals, ctrl_client.InNamespace(namespace.Name)))
+				require.Empty(t, physicals.Items)
+			} else {
+				updatedPhysical := waitObjectAssumesState(t, ctx, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+					ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+					return current.Spec.Stop && ready != nil && ready.ObservedGeneration == current.Generation, nil
+				})
+				require.Equal(t, apiv2.PhysicalContainerPhaseFailed, updatedPhysical.Status.Phase)
+				requireReadyCondition(t, updatedPhysical.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonImageFailed)
+				require.Empty(t, updatedPhysical.Status.ContainerID)
+			}
+			require.Zero(t, containerOrchestrator.CreateContainerCallCount(runtimeName))
+		})
 	}
-	require.NoError(t, client.Create(ctx, replacementImage))
-	waitPhysicalContainerImagePhase(t, ctx, replacementImage.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
-
-	require.NoError(t, retryOnConflict(ctx, container.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
-		current.Spec.Stop = true
-		return client.Update(updateCtx, current)
-	}))
-	updatedPhysical := waitObjectAssumesState(t, ctx, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
-		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return current.Spec.Stop && ready != nil && ready.ObservedGeneration == current.Generation, nil
-	})
-	require.Equal(t, apiv2.PhysicalContainerPhaseFailed, updatedPhysical.Status.Phase)
-	requireReadyCondition(t, updatedPhysical.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonImageFailed)
-	require.Empty(t, updatedPhysical.Status.ContainerID)
-	require.Zero(t, containerOrchestrator.CreateContainerCallCount(runtimeName))
 }
 
 // Verifies that the LogicalContainer controller completes a persistent stop while image readiness

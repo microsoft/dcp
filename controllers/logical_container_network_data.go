@@ -49,16 +49,10 @@ type logicalContainerNetworkData struct {
 	physicalNetworkUID  types.UID
 	lease               *statestore.ResourceLease
 	leaseFailureMessage string
-	// Retain ownership across deletion while a persistence operation is settling.
-	persistenceRecord *statestore.PersistentNetworkRecord
 }
 
 func (data *logicalContainerNetworkData) Clone() *logicalContainerNetworkData {
 	cloned := *data
-	if data.persistenceRecord != nil {
-		record := *data.persistenceRecord
-		cloned.persistenceRecord = &record
-	}
 	return &cloned
 }
 
