@@ -310,6 +310,11 @@ func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T)
 			remaining, remainingErr := io.ReadAll(stream)
 			require.NoError(t, remainingErr)
 			require.Empty(t, remaining)
+			waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+				return current.Status.Phase == apiv2.LogicalProcessPhaseFailed &&
+					ready != nil && ready.Reason == "PhysicalProcessMissing", nil
+			})
 			require.NoError(t, apiClient.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, resource)
 		})

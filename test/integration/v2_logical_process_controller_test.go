@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -53,9 +54,106 @@ func TestV2LogicalProcessLeaseKeysDoNotCollideWithRuntimeResources(t *testing.T)
 
 type processCreateLostResponseClient struct {
 	ctrl_client.Client
-	created  chan *apiv2.PhysicalProcess
-	release  <-chan struct{}
-	injected atomic.Bool
+	created       chan *apiv2.PhysicalProcess
+	release       <-chan struct{}
+	responseError error
+	injected      atomic.Bool
+}
+
+// Verifies that losing retained physical backing before startup settlement terminally fails the
+// logical process, releases its lease, and permits namespace deletion without recreating or adopting a process.
+func TestV2LogicalProcessControllerFailsWhenPersistentBackingDisappears(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"before-observation", "during-recording"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			namespaceName := "v2-process-missing-" + stage
+			created, release := make(chan *apiv2.PhysicalProcess, 1), make(chan struct{})
+			unblock := sync.OnceFunc(func() { close(release) })
+			defer unblock()
+			var reader *namespaceWorkloadFailureReader
+			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+				LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{
+					DecorateClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+						return &processCreateLostResponseClient{Client: apiClient, created: created, release: release}
+					},
+					DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
+						reader = &namespaceWorkloadFailureReader{Reader: apiReader, namespaceName: namespaceName}
+						return reader
+					},
+				})
+			require.NoError(t, startupErr)
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceName,
+				Annotations: map[string]string{apiv2.NamespaceWorkloadIDAnnotation: "missing-process-workload"}}}
+			require.NoError(t, server.Client.Create(ctx, namespace))
+			waitObjectAssumesStateEx(t, ctx, server.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+				return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+			})
+			reader.fail.Store(stage == "during-recording")
+			defer reader.fail.Store(false)
+			command := "v2-process-missing-" + stage
+			logical := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespaceName},
+				Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+					Process: &apiv2.LogicalProcessConfig{ExecutablePath: command}}}
+			require.NoError(t, server.Client.Create(ctx, logical))
+			var physical *apiv2.PhysicalProcess
+			select {
+			case physical = <-created:
+			case <-ctx.Done():
+				t.Fatal("physical process was not created")
+			}
+			running := waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+				return current.Status.Phase == apiv2.PhysicalProcessPhaseRunning, nil
+			})
+			pid, pidErr := process.Int64_ToPidT(*running.Status.PID)
+			require.NoError(t, pidErr)
+			handle := process.NewHandle(pid, running.Status.IdentityTimestamp.Time)
+			defer func() {
+				require.NoError(t, environment.TestProcessExecutor.StopProcess(context.WithoutCancel(ctx), handle))
+			}()
+			if stage == "during-recording" {
+				unblock()
+				waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+					ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+					return ready != nil && ready.Reason == "PersistenceFailed", nil
+				})
+			}
+			require.NoError(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner))
+			require.NoError(t, server.Client.Delete(ctx, physical))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+			unblock()
+			failed := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+				return current.Status.Phase == apiv2.LogicalProcessPhaseFailed &&
+					ready != nil && ready.Reason == "PhysicalProcessMissing", nil
+			})
+			require.NotNil(t, failed.Status.RuntimeLogs)
+			require.Equal(t, physical.UID, failed.Status.RuntimeLogs.UID)
+			require.True(t, failed.Status.RuntimeLogs.Complete)
+			require.False(t, failed.Status.RuntimeLogs.Available)
+			require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+			_, recordErr := environment.StateStore.GetPersistentProcess(ctx, logical.GetLeaseKey())
+			require.ErrorIs(t, recordErr, statestore.ErrPersistentProcessNotFound)
+			require.NoError(t, environment.TestProcessExecutor.CheckProcessRunning(handle))
+			require.NoError(t, retryOnConflictEx(ctx, server.Client, logical.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
+				current.Spec.Stop = true
+				return server.Client.Update(updateCtx, current)
+			}))
+			waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+				return current.Spec.Stop && current.Status.Phase == apiv2.LogicalProcessPhaseFailed &&
+					ready != nil && ready.ObservedGeneration == current.Generation, nil
+			})
+			require.True(t, apierrors.IsNotFound(server.Client.Get(ctx, physical.NamespacedName(), &apiv2.PhysicalProcess{})))
+			require.Len(t, environment.TestProcessExecutor.FindAll([]string{command}, "", nil), 1)
+			require.NoError(t, server.Client.Delete(ctx, namespace))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, namespace)
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
+		})
+	}
 }
 
 func (boundary *processCreateLostResponseClient) Create(
@@ -69,7 +167,7 @@ func (boundary *processCreateLostResponseClient) Create(
 	boundary.created <- physical.DeepCopy()
 	select {
 	case <-boundary.release:
-		return errors.New("applied physical process create response lost")
+		return boundary.responseError
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -90,7 +188,8 @@ func TestV2LogicalProcessControllerRecoversCreatedChildBeforeForwardingStop(t *t
 			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 				LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
 				TestEnvironmentOptions{DecorateClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-					return &processCreateLostResponseClient{Client: apiClient, created: created, release: release}
+					return &processCreateLostResponseClient{Client: apiClient, created: created, release: release,
+						responseError: errors.New("applied physical process create response lost")}
 				}})
 			require.NoError(t, startupErr)
 			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-process-lost-create-" + string(mode)}}
