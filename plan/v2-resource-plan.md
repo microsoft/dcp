@@ -98,7 +98,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
    - Delegate common runtime container lifecycle to V2 physical resources instead of creating and managing the proxy container directly through the orchestrator.
 
 2. Add logical resource controllers.
-   - Physical controllers preserve caller-supplied runtime labels and reserve the persistence, creator-process, and internal resource UID labels they need for harvesting and uncertain-create recovery.
+   - Physical controllers preserve caller-supplied runtime labels and reserve the persistence, creator-process, and internal resource UID labels they need for harvesting and uncertain-create recovery. Controller-set labels override every caller-supplied occurrence of the same key, including logical lifecycle and image build-input labels; unrelated duplicate labels retain last-value-wins semantics.
    - Harvesting normally honors the controller-owned persistence label. Network harvesting is the exception: it intentionally ignores that label and removes orphaned networks after their creator exits so persistent networks cannot exhaust the runtime's finite default network allocations.
    - Build-created images receive persistent, creator-process, and internal UID labels through `build.labels`. Pulling resolves an expected named image and is not a runtime-object creation operation.
    - Logical controllers determine additional labels and physical retention intent when creating physical resources.

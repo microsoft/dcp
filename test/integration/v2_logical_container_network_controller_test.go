@@ -71,8 +71,8 @@ func TestV2LogicalContainerNetworkControllerDelegatesSessionLifecycle(t *testing
 	waitRuntimeNetworkMissing(t, ctx, ready.Status.NetworkID)
 }
 
-// Verifies that LogicalContainerNetwork retains a persistent network, reuses an equivalent
-// configuration, and delegates replacement when the desired network configuration changes.
+// Verifies that LogicalContainerNetwork overrides duplicate lifecycle labels, retains and reuses
+// an equivalent persistent network, and delegates replacement when its configuration changes.
 func TestV2LogicalContainerNetworkControllerReusesAndReplacesPersistentNetwork(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -82,7 +82,11 @@ func TestV2LogicalContainerNetworkControllerReusesAndReplacesPersistentNetwork(t
 	removeRuntimeNetworkOnCleanup(t, runtimeName)
 	spec := apiv2.LogicalContainerNetworkSpec{
 		Mode: apiv2.LogicalContainerNetworkModePersistent, NetworkName: runtimeName,
-		Network: &apiv2.LogicalContainerNetworkConfig{Labels: []commonapi.Label{{Key: "b", Value: "2"}, {Key: "a", Value: "1"}}},
+		Network: &apiv2.LogicalContainerNetworkConfig{Labels: []commonapi.Label{
+			{Key: "b", Value: "2"}, {Key: "a", Value: "1"},
+			{Key: "com.microsoft.developer.usvc-dev.lifecycle-key", Value: "caller-first"},
+			{Key: "com.microsoft.developer.usvc-dev.lifecycle-key", Value: "caller-last"},
+		}},
 	}
 	first := &apiv2.LogicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: "first", Namespace: namespace.Name}, Spec: *spec.DeepCopy()}
 	require.NoError(t, client.Create(ctx, first))
@@ -90,6 +94,8 @@ func TestV2LogicalContainerNetworkControllerReusesAndReplacesPersistentNetwork(t
 		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
 	})
 	waitResourceLeaseReleased(t, ctx, first)
+	labels := runtimeNetworkLabels(t, ctx, runtimeName)
+	require.Equal(t, created.Status.LifecycleKey, labels["com.microsoft.developer.usvc-dev.lifecycle-key"])
 	require.NoError(t, client.Delete(ctx, first))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, first)
 	retained, retainedErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{created.Status.NetworkID}})
