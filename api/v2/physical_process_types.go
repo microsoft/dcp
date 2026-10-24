@@ -7,6 +7,7 @@ package v2
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -88,6 +90,11 @@ type PhysicalProcessSpec struct {
 	// The controller resolves the PID once and guards against PID reuse with an in-memory process identity.
 	PID *int64 `json:"pid,omitempty"`
 
+	// IdentityTimestamp optionally identifies the expected process in pid.
+	// When set, a reused PID is reported as missing rather than adopted or stopped.
+	// Forbidden when process is set.
+	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
+
 	// Process describes an operating system process to launch. Exactly one of pid or process must be set.
 	Process *PhysicalProcessConfig `json:"process,omitempty"`
 
@@ -132,6 +139,15 @@ type PhysicalProcessConfig struct {
 // PhysicalProcessStatus describes the observed operating system process.
 // +k8s:openapi-gen=true
 type PhysicalProcessStatus struct {
+	// StdoutFile is the output capture for a process launched by this resource.
+	StdoutFile string `json:"stdoutFile,omitempty"`
+
+	// StderrFile is the error capture for a process launched by this resource.
+	StderrFile string `json:"stderrFile,omitempty"`
+
+	// LogsComplete indicates that this resource will not publish more process output.
+	LogsComplete bool `json:"logsComplete,omitempty"`
+
 	// Phase summarizes the operating system process lifecycle.
 	// +kubebuilder:validation:Enum=Pending;Running;Exited;Unknown;Failed
 	// +optional
@@ -185,6 +201,37 @@ func (pp *PhysicalProcess) GetGroupVersionResource() schema.GroupVersionResource
 
 func (pp *PhysicalProcess) GetObjectMeta() *metav1.ObjectMeta {
 	return &pp.ObjectMeta
+}
+
+// GetResourceId identifies the physical process system log stream.
+func (pp *PhysicalProcess) GetResourceId() string {
+	return fmt.Sprintf("physicalprocess-%s", pp.UID)
+}
+
+// GetLogSource describes output captured by this physical process.
+func (pp *PhysicalProcess) GetLogSource() *LogSource {
+	return &LogSource{
+		Name: pp.Name, UID: pp.UID, StdoutFile: pp.Status.StdoutFile, StderrFile: pp.Status.StderrFile,
+		Available: pp.Status.StdoutFile != "" && pp.Status.StderrFile != "", Complete: pp.Status.LogsComplete,
+		Raw: pp.Spec.Process != nil && pp.Spec.Process.RetainRuntimeProcess,
+	}
+}
+
+func (*PhysicalProcess) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&PhysicalProcessLogResource{}}
+}
+
+// PhysicalProcessLogResource registers process output and system log storage.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type PhysicalProcessLogResource struct{}
+
+func (*PhysicalProcessLogResource) Name() string { return LogSubresourceName }
+
+func (*PhysicalProcessLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
 }
 
 func (pp *PhysicalProcess) GetStatus() apiserver_resource.StatusSubResource {
@@ -242,6 +289,9 @@ func (pp *PhysicalProcess) Validate(ctx context.Context) field.ErrorList {
 
 	processConfig := pp.Spec.Process
 	processPath := specPath.Child("process")
+	if !pp.Spec.IdentityTimestamp.IsZero() {
+		errorList = append(errorList, field.Forbidden(specPath.Child("identityTimestamp"), "identityTimestamp requires pid"))
+	}
 	errorList = append(
 		errorList,
 		validateRetainedResourceMonitor(

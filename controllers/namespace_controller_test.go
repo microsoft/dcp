@@ -36,7 +36,7 @@ func (client *concurrentCleanupLists) RESTMapper() apimeta.RESTMapper { return c
 func (client *concurrentCleanupLists) List(ctx context.Context, list ctrl_client.ObjectList, _ ...ctrl_client.ListOption) error {
 	var waitFor <-chan struct{}
 	switch list.GetObjectKind().GroupVersionKind().Kind {
-	case "PhysicalProcessList":
+	case "LogicalProcessList":
 		close(client.processStarted)
 		waitFor = client.connectionStarted
 	case "PhysicalContainerNetworkConnectionList":
@@ -82,5 +82,5 @@ func TestNamespaceCleanupProcessesReadyResourceKindsConcurrently(t *testing.T) {
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
 	pending, cleanupErr := reconciler.cleanupNamespace(ctx, namespace, logr.Discard())
 	require.NoError(t, cleanupErr)
-	require.Equal(t, "1 physicalprocesses and 1 physicalcontainernetworkconnections", pending)
+	require.Equal(t, "1 logicalprocesses and 1 physicalcontainernetworkconnections", pending)
 }

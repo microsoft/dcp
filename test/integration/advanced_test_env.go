@@ -263,6 +263,18 @@ func StartAdvancedTestEnvironmentWithOptions(
 		}
 	}
 
+	if inclCtrl&LogicalProcessController != 0 {
+		logicalProcessR := controllers.NewLogicalProcessReconciler(
+			ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalProcessReconciler"), pe,
+			controllers.LogicalProcessReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner,
+			},
+		)
+		if logicalProcessSetupErr := logicalProcessR.SetupWithManager(mgr, instanceTag+"-LogicalProcessReconciler"); logicalProcessSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalProcess reconciler: %w", logicalProcessSetupErr)
+		}
+	}
+
 	if inclCtrl&PhysicalContainerImageController != 0 {
 		physicalContainerImageR := controllers.NewPhysicalContainerImageReconciler(
 			ctx,
