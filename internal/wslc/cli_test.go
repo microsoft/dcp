@@ -180,18 +180,18 @@ func TestInspectMissingObjectsRequiresExitCodeAndValidResponse(t *testing.T) {
 		wantErr    error
 	}{
 		{name: "found", stdout: `[{"Id":"id","Name":"present"},{"Id":"other-id","Name":"missing"}]`, wantCount: 2},
-		{name: "missing", stdout: "[]\r\n", exitCode: commandFailureExitCode, wantErr: containers.ErrNotFound},
-		{name: "partial", stdout: `[{"Id":"id","Name":"present"}]`, exitCode: commandFailureExitCode, wantCount: 1, wantErr: containers.ErrNotFound},
-		{name: "empty", exitCode: commandFailureExitCode, wantErr: containers.ErrUnmarshalling},
-		{name: "null", stdout: "null", exitCode: commandFailureExitCode, wantErr: containers.ErrUnmarshalling},
-		{name: "malformed", stdout: "[", exitCode: commandFailureExitCode, wantErr: containers.ErrUnmarshalling},
-		{name: "invalid object", stdout: "[{}]", exitCode: commandFailureExitCode, wantErr: containers.ErrUnmarshalling},
-		{name: "null object", stdout: "[null]", exitCode: commandFailureExitCode, wantErr: containers.ErrUnmarshalling},
-		{name: "invalid partial", stdout: `[{"Id":"id","Name":"present"},{}]`, exitCode: commandFailureExitCode, wantCount: 1, wantErr: containers.ErrUnmarshalling},
-		{name: "wrong exit code", stdout: "[]", exitCode: 2, wantErr: containers.ErrUnmatched},
-		{name: "failed with full response", stdout: `[{"Id":"id","Name":"present"},{"Id":"other-id","Name":"missing"}]`, exitCode: commandFailureExitCode, wantCount: 2, wantErr: containers.ErrUnmatched},
+		{name: "missing", stdout: "[]\r\n", exitCode: 1, wantErr: containers.ErrNotFound},
+		{name: "partial", stdout: `[{"Id":"id","Name":"present"}]`, exitCode: 1, wantCount: 1, wantErr: containers.ErrNotFound},
+		{name: "empty", exitCode: 1, wantErr: containers.ErrUnmarshalling},
+		{name: "null", stdout: "null", exitCode: 1, wantErr: containers.ErrUnmarshalling},
+		{name: "malformed", stdout: "[", exitCode: 1, wantErr: containers.ErrUnmarshalling},
+		{name: "invalid object", stdout: "[{}]", exitCode: 1, wantErr: containers.ErrUnmarshalling},
+		{name: "null object", stdout: "[null]", exitCode: 1, wantErr: containers.ErrUnmarshalling},
+		{name: "invalid partial", stdout: `[{"Id":"id","Name":"present"},{}]`, exitCode: 1, wantCount: 1, wantErr: containers.ErrUnmarshalling},
+		{name: "other non-zero exit code", stdout: "[]", exitCode: 2, wantErr: containers.ErrNotFound},
+		{name: "failed with full response", stdout: `[{"Id":"id","Name":"present"},{"Id":"other-id","Name":"missing"}]`, exitCode: 1, wantCount: 2, wantErr: containers.ErrUnmatched},
 		{name: "successful but short", stdout: "[]", wantErr: containers.ErrIncomplete},
-		{name: "canceled after output", stdout: "[]", exitCode: commandFailureExitCode, cancel: true, wantErr: context.Canceled},
+		{name: "canceled after output", stdout: "[]", exitCode: 1, cancel: true, wantErr: context.Canceled},
 		{name: "launch failed", startupErr: exec.ErrNotFound, wantErr: exec.ErrNotFound},
 	}
 	for _, operation := range operations {
@@ -238,6 +238,16 @@ func TestInspectMissingObjectsRequiresExitCodeAndValidResponse(t *testing.T) {
 						require.ErrorContains(t, inspectErr, "Objet introuvable")
 					} else {
 						require.NotErrorIs(t, inspectErr, containers.ErrNotFound)
+					}
+					if response.cancel {
+						require.ErrorContains(t, inspectErr, "context canceled\nwslc command \"Inspect")
+						require.ErrorContains(t, inspectErr, "returned non-zero exit code 1\n")
+						require.NotErrorIs(t, inspectErr, errCommandFailed)
+					}
+					if response.startupErr != nil {
+						require.ErrorContains(t, inspectErr, response.startupErr.Error()+"\nwslc command \"Inspect")
+						require.ErrorContains(t, inspectErr, "returned non-zero exit code")
+						require.NotErrorIs(t, inspectErr, errCommandFailed)
 					}
 					require.Len(t, executor.Executions, 1)
 				})

@@ -43,13 +43,12 @@ const (
 	minimumWslcVersion       = "3.0.2.0"
 	defaultWslcContainerHost = "host.wslc.internal"
 	unsupportedHostMessage   = "WSLC is only available on Windows hosts"
-	commandFailureExitCode   = 1
 )
 
 var (
 	nativeWslcVersionPattern    = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$`)
 	minimumSupportedWslcVersion = k8s_version.MustParseGeneric(minimumWslcVersion)
-	errCommandFailed            = errors.New("non-zero exit code 1")
+	errCommandFailed            = errors.New("command failed")
 
 	containerNotFoundMatch = containers.NewCliErrorMatch(
 		regexp.MustCompile(`(?i)\b(WSLC_E_CONTAINER_NOT_FOUND|0x80040603)\b`),
@@ -469,9 +468,11 @@ func (wco *WslcCliOrchestrator) runBufferedWslcCommand(
 	}
 	contextErr := effectiveCtx.Err()
 	commandErr = errors.Join(contextErr, commandErr)
-	if exitCode == commandFailureExitCode && runErr == nil && contextErr == nil {
-		commandErr = fmt.Errorf("wslc command %q returned %w", commandName, errCommandFailed)
-	} else if exitCode != 0 {
+	if exitCode != 0 {
+		if commandErr == nil {
+			commandErr = errCommandFailed
+		}
+
 		commandErr = errors.Join(
 			commandErr,
 			fmt.Errorf("wslc command %q returned non-zero exit code %d", commandName, exitCode),
