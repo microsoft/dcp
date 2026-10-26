@@ -475,23 +475,27 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 			if ready == nil || ready.ObservedGeneration != physical.Generation {
 				return additionalReconciliationNeeded
 			}
-			if physical.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed {
-				return r.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log)
+			runtimeMissing := physical.Status.Phase == apiv2.PhysicalContainerNetworkPhaseUnknown &&
+				ready.Status == metav1.ConditionFalse && ready.Reason == string(apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing)
+			if !runtimeMissing {
+				if physical.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed {
+					return r.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log)
+				}
+				if physical.Status.Phase == apiv2.PhysicalContainerNetworkPhasePending &&
+					ready.Reason == string(apiv2.PhysicalResourceReasonNamespaceTerminating) && physical.Status.NetworkID == "" {
+					// Namespace termination prevents the physical controller from starting runtime work.
+					return r.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log)
+				}
+				if physical.Status.Phase != apiv2.PhysicalContainerNetworkPhaseReady ||
+					ready.Status != metav1.ConditionTrue || physical.Status.NetworkID == "" {
+					return additionalReconciliationNeeded
+				}
+				record := &statestore.PersistentNetworkRecord{
+					ResourceKey: network.GetLeaseKey(), NetworkID: physical.Status.NetworkID, NetworkName: physical.Status.NetworkName,
+					RuntimeName: r.runtimeName,
+				}
+				return r.scheduleLogicalContainerNetworkLeaseSettlement(network, data, record, log)
 			}
-			if physical.Status.Phase == apiv2.PhysicalContainerNetworkPhasePending &&
-				ready.Reason == string(apiv2.PhysicalResourceReasonNamespaceTerminating) && physical.Status.NetworkID == "" {
-				// Namespace termination prevents the physical controller from starting runtime work.
-				return r.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log)
-			}
-			if physical.Status.Phase != apiv2.PhysicalContainerNetworkPhaseReady ||
-				ready.Status != metav1.ConditionTrue || physical.Status.NetworkID == "" {
-				return additionalReconciliationNeeded
-			}
-			record := &statestore.PersistentNetworkRecord{
-				ResourceKey: network.GetLeaseKey(), NetworkID: physical.Status.NetworkID, NetworkName: physical.Status.NetworkName,
-				RuntimeName: r.runtimeName,
-			}
-			return r.scheduleLogicalContainerNetworkLeaseSettlement(network, data, record, log)
 		}
 		if physical.DeletionTimestamp.IsZero() {
 			uid := physical.UID
