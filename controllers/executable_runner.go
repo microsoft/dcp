@@ -67,6 +67,18 @@ type PersistentExecutableRunner interface {
 	CheckProcessRunning(handle process.ProcessHandle) error
 }
 
+// ExecutableOutputCleanupRunner coordinates output deletion with runner-owned file handles.
+type ExecutableOutputCleanupRunner interface {
+	// DeleteRunOutput removes the supplied output files immediately when possible, or marks them
+	// for removal after the runner closes any handles it still owns. Repeated calls must be safe.
+	DeleteRunOutput(
+		ctx context.Context,
+		runID RunID,
+		stdOutPath string,
+		stdErrPath string,
+	) error
+}
+
 type RunMessageLevel string
 
 const (

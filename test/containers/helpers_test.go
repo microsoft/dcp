@@ -45,7 +45,7 @@ func forEachHealthyRuntime(
 func longRunningContainerOptions(
 	name string,
 	image string,
-	labels []containers.Label,
+	labels map[string]string,
 ) containers.CreateContainerOptions {
 	return containers.CreateContainerOptions{
 		Name:       name,
@@ -70,7 +70,7 @@ func runLongLivedContainer(
 	require.NoError(t, tracker.TrackContainer(name))
 
 	id, runErr := runtime.Orchestrator.RunContainer(ctx, containers.RunContainerOptions{
-		CreateContainerOptions: longRunningContainerOptions(name, image, tracker.Labels()),
+		CreateContainerOptions: longRunningContainerOptions(name, image, tracker.MapLabels()),
 	})
 	require.NoError(t, runErr)
 	require.NotEmpty(t, id)
@@ -268,7 +268,7 @@ func runImageAndCapture(
 			Name:       name,
 			Image:      image,
 			Command:    command,
-			Labels:     tracker.Labels(),
+			Labels:     tracker.MapLabels(),
 			PullPolicy: containers.PullPolicyNever,
 		},
 	})

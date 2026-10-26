@@ -120,7 +120,7 @@ func TestRemainingWorkloadContainerWorkItemsSelectsUnrecordedWorkloadContainers(
 		containerID, createErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 			Name:     name,
 			Image:    "test-image",
-			Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: workloadID}},
+			Labels:   map[string]string{controllers.WorkloadIDLabel: workloadID},
 			Networks: createNetworks,
 		})
 		require.NoError(t, createErr)
@@ -191,8 +191,8 @@ func TestRemainingWorkloadContainerWorkItemsReportsRemovalFailure(t *testing.T) 
 		Name:     containerName,
 		Image:    "test-image",
 		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
-		Labels: []containers.Label{
-			{Key: controllers.WorkloadIDLabel, Value: "workload-a"},
+		Labels: map[string]string{
+			controllers.WorkloadIDLabel: "workload-a",
 		},
 	})
 	require.NoError(t, createErr)
@@ -277,14 +277,14 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 	remainingContainerID, createRemainingContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name:     "remaining-session",
 		Image:    "test-image",
-		Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+		Labels:   map[string]string{controllers.WorkloadIDLabel: "workload-a"},
 		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
 	})
 	require.NoError(t, createRemainingContainerErr)
 	otherWorkloadContainerID, createOtherWorkloadContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name:     "other-workload",
 		Image:    "test-image",
-		Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-b"}},
+		Labels:   map[string]string{controllers.WorkloadIDLabel: "workload-b"},
 		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
 	})
 	require.NoError(t, createOtherWorkloadContainerErr)
@@ -364,7 +364,7 @@ func TestCleanupWorkloadResourcesRetriesDetachedContainerAfterRemovalFailure(t *
 	containerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name:     containerName,
 		Image:    "test-image",
-		Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+		Labels:   map[string]string{controllers.WorkloadIDLabel: "workload-a"},
 		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
 	})
 	require.NoError(t, createContainerErr)
@@ -457,7 +457,7 @@ func TestCleanupWorkloadResourcesScansRecordedNetworkRuntimes(t *testing.T) {
 		containerID, createContainerErr := runtime.orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 			Name:     runtime.name + "-container",
 			Image:    "test-image",
-			Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+			Labels:   map[string]string{controllers.WorkloadIDLabel: "workload-a"},
 			Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
 		})
 		require.NoError(t, createContainerErr)
@@ -474,7 +474,7 @@ func TestCleanupWorkloadResourcesScansRecordedNetworkRuntimes(t *testing.T) {
 	unattachedContainerID, createUnattachedErr := secondOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name:   "unattached-on-recorded-runtime",
 		Image:  "test-image",
-		Labels: []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+		Labels: map[string]string{controllers.WorkloadIDLabel: "workload-a"},
 	})
 	require.NoError(t, createUnattachedErr)
 
@@ -547,7 +547,7 @@ func TestCleanupWorkloadResourcesDiscoversUnrecordedNetworksOnSelectedRuntime(t 
 	createContainer := func(name, workload string) string {
 		containerID, createErr := selectedRuntime.CreateContainer(ctx, containers.CreateContainerOptions{
 			Name: name, Image: "test-image",
-			Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: workload}},
+			Labels:   map[string]string{controllers.WorkloadIDLabel: workload},
 			Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
 		})
 		require.NoError(t, createErr)
@@ -638,7 +638,7 @@ func TestCleanupWorkloadResourcesRemovesUnrecordedNetworkWithoutRecords(t *testi
 	require.NoError(t, networkErr)
 	containerID, containerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name: "session-container", Image: "test-image",
-		Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+		Labels:   map[string]string{controllers.WorkloadIDLabel: "workload-a"},
 		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
 	})
 	require.NoError(t, containerErr)
@@ -689,12 +689,12 @@ func TestCleanupWorkloadResourcesRemovesUnrecordedContainerWithoutWorkloadNetwor
 
 	containerID, createErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name: "unattached-container", Image: "test-image",
-		Labels: []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+		Labels: map[string]string{controllers.WorkloadIDLabel: "workload-a"},
 	})
 	require.NoError(t, createErr)
 	otherID, createOtherErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name: "different-workload", Image: "test-image",
-		Labels: []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-b"}},
+		Labels: map[string]string{controllers.WorkloadIDLabel: "workload-b"},
 	})
 	require.NoError(t, createOtherErr)
 
@@ -741,7 +741,7 @@ func TestCleanupWorkloadResourcesRecoversDetachedContainerAfterDiscoveryFailure(
 	require.NoError(t, networkErr)
 	containerID, containerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name: "session-container", Image: "test-image",
-		Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: "workload-a"}},
+		Labels:   map[string]string{controllers.WorkloadIDLabel: "workload-a"},
 		Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
 	})
 	require.NoError(t, containerErr)
@@ -805,7 +805,7 @@ func TestCleanupWorkloadResourcesFindsResourcesWithCommaInWorkloadID(t *testing.
 		containerID, containerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 			Name:     name + "-container",
 			Image:    "test-image",
-			Labels:   []containers.Label{{Key: controllers.WorkloadIDLabel, Value: workloadID}},
+			Labels:   map[string]string{controllers.WorkloadIDLabel: workloadID},
 			Networks: []containers.CreateContainerNetworkOptions{{Name: networkID}},
 		})
 		require.NoError(t, containerErr)

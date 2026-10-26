@@ -27,7 +27,7 @@ const (
 	// verify behavior.
 	DCP_TEST_ENABLE_ADVANCED_CERTIFICATES = "DCP_TEST_ENABLE_ADVANCED_CERTIFICATES"
 
-	// Set to true to enable tests that require real container orchestrator (Docker or Podman).
+	// Set to true to enable tests that require a real container orchestrator (Docker, Podman, or WSLC).
 	DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR = "DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR"
 
 	// Used by VS Code to disable skipping tests when they are run with the debugger.

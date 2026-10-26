@@ -747,7 +747,7 @@ func ensureContainerExitedState(ctx context.Context,
 	}
 
 	rcd.closeStartupLogFiles(log)
-	rcd.closeTerminalResources(r.config.ProcessExecutor, log)
+	rcd.closeTerminalResources(ctx, r.config.ProcessExecutor, log)
 	r.disableEndpointsAndHealthProbes(ctx, container, rcd, log)
 
 	log.V(1).Info("Inspecting container resource...")
@@ -800,7 +800,7 @@ func ensureContainerUnknownState(
 	if rcd != nil {
 		rcd.containerState = apiv1.ContainerStateUnknown
 		rcd.closeStartupLogFiles(log)
-		rcd.closeTerminalResources(r.config.ProcessExecutor, log)
+		rcd.closeTerminalResources(ctx, r.config.ProcessExecutor, log)
 	}
 
 	return change
@@ -896,7 +896,7 @@ func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.Creat
 		EnvFiles:       spec.EnvFiles,
 		Ports:          v1PortsToCreateContainerPorts(spec.Ports),
 		VolumeMounts:   v1VolumeMountsToCreateContainerVolumeMounts(spec.VolumeMounts),
-		Labels:         v1LabelsToContainerLabels(spec.Labels),
+		Labels:         v1LabelsToMap(spec.Labels),
 		RestartPolicy:  containers.ContainerRestartPolicy(spec.RestartPolicy),
 		PullPolicy:     containers.ImagePullPolicy(spec.PullPolicy),
 		RunArgs:        spec.RunArgs,
@@ -904,9 +904,9 @@ func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.Creat
 	}
 }
 
-func v1LabelsToContainerLabels(labels []apiv1.ContainerLabel) []containers.Label {
-	return slices.Map[containers.Label](labels, func(label apiv1.ContainerLabel) containers.Label {
-		return containers.Label{Key: label.Key, Value: label.Value}
+func v1LabelsToMap(labels []apiv1.ContainerLabel) map[string]string {
+	return maps.SliceToMap(labels, func(label apiv1.ContainerLabel) (string, string) {
+		return label.Key, label.Value
 	})
 }
 
@@ -953,7 +953,7 @@ func v1BuildContextToContainerBuildContext(build *apiv1.ContainerBuildContext) *
 			}
 		}),
 		Stage:    build.Stage,
-		Labels:   v1LabelsToContainerLabels(build.Labels),
+		Labels:   v1LabelsToMap(build.Labels),
 		Platform: build.Platform,
 	}
 }
@@ -2008,7 +2008,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	// or if the container has already finished starting/stopping and we know the outcome of either.
 
 	defer rcd.deleteStartupLogFiles(log)
-	defer rcd.closeTerminalResources(r.config.ProcessExecutor, log)
+	defer rcd.closeTerminalResources(ctx, r.config.ProcessExecutor, log)
 
 	if !container.Spec.EffectiveMode().ShouldDeleteContainer() {
 		log.V(1).Info("Container is being deleted, leaving underlying resources")
@@ -2130,7 +2130,9 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 	attachMgrErr := connMgr.AttachProcess(ptp)
 	if attachMgrErr != nil {
 		log.Error(attachMgrErr, "Failed to attach process to terminal connection manager")
-		if stopErr := ptp.Stop(); stopErr != nil {
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(r.LifetimeCtx)
+		defer cleanupCancel()
+		if stopErr := ptp.Stop(cleanupCtx); stopErr != nil {
 			log.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
 		}
 		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
@@ -2801,7 +2803,9 @@ func (r *ContainerReconciler) onShutdown() {
 
 	r.runningContainers.Range(func(containerName types.NamespacedName, id containerID, rcd *runningContainerData) bool {
 		rcd.deleteStartupLogFiles(r.Log)
-		rcd.closeTerminalResources(r.config.ProcessExecutor, r.Log)
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(r.LifetimeCtx)
+		rcd.closeTerminalResources(cleanupCtx, r.config.ProcessExecutor, r.Log)
+		cleanupCancel()
 		_ = r.runningContainers.Update(containerName, id, rcd)
 		return true
 	})

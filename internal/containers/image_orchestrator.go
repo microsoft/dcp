@@ -94,8 +94,8 @@ type ContainerBuildContext struct {
 	// Optional: the name of the build stage to use for the build.
 	Stage string `json:"stage,omitempty"`
 
-	// Labels to apply to the built image.
-	Labels []Label `json:"labels,omitempty"`
+	// Labels maps built-image label keys to their values.
+	Labels map[string]string `json:"labels,omitempty"`
 
 	// Optional target platform for the build (e.g. "linux/amd64").
 	Platform string `json:"platform,omitempty"`

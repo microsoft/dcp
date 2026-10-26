@@ -6,6 +6,7 @@
 package dcpproc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -25,6 +27,23 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+type contextObservingExecutor struct {
+	process.Executor
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (executor *contextObservingExecutor) StartProcess(
+	ctx context.Context,
+	cmd *exec.Cmd,
+	handler process.ProcessExitHandler,
+	flags process.ProcessCreationFlag,
+	sysCreateProcess process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	executor.deadline, executor.hasDeadline = ctx.Deadline()
+	return executor.Executor.StartProcess(ctx, cmd, handler, flags, sysCreateProcess)
+}
 
 func TestMonitorTargetFromFieldsRequiresTimestamp(t *testing.T) {
 	monitorPID := int64(12345)
@@ -196,9 +215,10 @@ func TestRunContainerWatcherPassesSelectedRuntime(t *testing.T) {
 
 func TestStopProcessTree(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
-	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	ctx, cancel := testutil.GetTestContext(t, 45*time.Second)
 	defer cancel()
 	pex := internal_testutil.NewTestProcessExecutor(ctx)
+	observingExecutor := &contextObservingExecutor{Executor: pex}
 	dcppaths.EnableTestPathProbing()
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
 	require.NoError(t, dcpPathErr, "Could not determine DCP executable path")
@@ -235,9 +255,12 @@ func TestStopProcessTree(t *testing.T) {
 		},
 	})
 
-	stopProcessTreeErr := StopProcessTree(ctx, pex, handle, log)
+	before := time.Now()
+	stopProcessTreeErr := StopProcessTree(ctx, observingExecutor, handle, log)
 	require.NoError(t, stopProcessTreeErr, "Could not stop the process tree")
 	require.True(t, testProc.Finished(), "The test processed should have been stopped")
+	require.True(t, observingExecutor.hasDeadline)
+	require.WithinDuration(t, before.Add(26*time.Second), observingExecutor.deadline, time.Second)
 
 	require.NotNil(t, dcpProc, "dcp stop-process-tree should have been invoked")
 	require.True(t, len(dcpProc.Cmd.Args) >= 5, "Command should have at least 5 arguments")
@@ -248,6 +271,59 @@ func TestStopProcessTree(t *testing.T) {
 	require.Equal(t, dcpProc.Cmd.Args[3], strconv.FormatInt(int64(handle.Pid), 10), "Should include test process ID")
 	require.Equal(t, dcpProc.Cmd.Args[4], "--process-start-time", "Should include --process-start-time flag")
 	require.Equal(t, dcpProc.Cmd.Args[5], handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat), "Should include formatted process start time")
+}
+
+// Verifies that dcpproc uses the caller's earlier deadline instead of extending it to the helper timeout.
+func TestStopProcessTreeUsesEarlierParentDeadline(t *testing.T) {
+	executorCtx, executorCancel := testutil.GetTestContext(t, 20*time.Second)
+	defer executorCancel()
+	processExecutor := internal_testutil.NewTestProcessExecutor(executorCtx)
+	observingExecutor := &contextObservingExecutor{Executor: processExecutor}
+	dcppaths.EnableTestPathProbing()
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+	require.NoError(t, dcpPathErr)
+
+	processExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{dcpPath},
+		},
+		RunCommand: func(*internal_testutil.ProcessExecution) int32 {
+			return 0
+		},
+	})
+
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer parentCancel()
+	parentDeadline, hasParentDeadline := parentCtx.Deadline()
+	require.True(t, hasParentDeadline)
+
+	stopErr := StopProcessTree(
+		parentCtx,
+		observingExecutor,
+		process.NewHandle(28901, time.Unix(1201, 0).UTC()),
+		logr.Discard(),
+	)
+
+	require.NoError(t, stopErr)
+	require.True(t, observingExecutor.hasDeadline)
+	require.WithinDuration(t, parentDeadline, observingExecutor.deadline, 100*time.Millisecond)
+}
+
+// Verifies that helper exit codes decode into incomplete, gone, and generic caller-visible errors.
+func TestStopProcessTreeExitErrorPreservesOutcomeClassification(t *testing.T) {
+	t.Parallel()
+
+	handle := process.NewHandle(28900, time.Unix(1200, 0).UTC())
+
+	incompleteErr := stopProcessTreeExitError(handle, StopProcessTreeIncompleteExitCode)
+	require.ErrorIs(t, incompleteErr, process.ErrIncompleteProcessTree)
+
+	goneErr := stopProcessTreeExitError(handle, StopProcessTreeProcessGoneExitCode)
+	require.True(t, process.IsProcessGoneErr(goneErr))
+
+	genericErr := stopProcessTreeExitError(handle, 42)
+	require.NotErrorIs(t, genericErr, process.ErrIncompleteProcessTree)
+	require.False(t, process.IsProcessGoneErr(genericErr))
 }
 
 func findRunningDcp(pe *internal_testutil.TestProcessExecutor) (*internal_testutil.ProcessExecution, error) {

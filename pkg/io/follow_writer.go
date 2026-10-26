@@ -105,7 +105,8 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer, opts
 
 				out, writeErr := dest.Write(buf[:read])
 				if writeErr != nil {
-					if followCtx.Err() != nil {
+					// Parent cancellation can be visible before it propagates to followCtx.
+					if ctx.Err() != nil || followCtx.Err() != nil {
 						return
 					}
 					fw.err.Store(writeErr)
@@ -113,13 +114,16 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer, opts
 				}
 
 				if out != read {
+					if ctx.Err() != nil || followCtx.Err() != nil {
+						return
+					}
 					fw.err.Store(io.ErrShortWrite)
 					return
 				}
 			}
 
 			if readErr != nil && readErr != io.EOF {
-				if followCtx.Err() != nil {
+				if ctx.Err() != nil || followCtx.Err() != nil {
 					return
 				}
 				fw.err.Store(readErr)

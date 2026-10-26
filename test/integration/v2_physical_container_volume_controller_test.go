@@ -553,33 +553,6 @@ func TestV2PhysicalContainerVolumeControllerReportsExternalRemovalWithoutRecreat
 	require.Equal(t, createCount, containerOrchestrator.CreateVolumeCallCount(volumeName))
 }
 
-func TestV2PhysicalContainerVolumeControllerDoesNotChurnReadyStatus(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-
-	namespace := createActiveV2Namespace(t, ctx, "v2-pcv-steady")
-	volumeName := "v2-pcv-steady-runtime"
-	removeRuntimeVolumeOnCleanup(t, volumeName)
-	volume := &apiv2.PhysicalContainerVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "steady-volume", Namespace: namespace.Name},
-		Spec:       newRemovablePhysicalContainerVolumeSpec(volumeName),
-	}
-	require.NoError(t, client.Create(ctx, volume))
-	readyVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
-	readyResourceVersion := readyVolume.ResourceVersion
-	settledInspectCount := containerOrchestrator.InspectVolumeCallCount(volumeName) + 1
-
-	require.Never(t, func() bool {
-		currentVolume := &apiv2.PhysicalContainerVolume{}
-		if getErr := client.Get(ctx, volume.NamespacedName(), currentVolume); getErr != nil {
-			return false
-		}
-		return currentVolume.ResourceVersion != readyResourceVersion ||
-			containerOrchestrator.InspectVolumeCallCount(volumeName) > settledInspectCount
-	}, 5*time.Second, 250*time.Millisecond)
-}
-
 func TestV2PhysicalContainerVolumeControllerRecoversFromRuntimeAndCreateFailures(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()

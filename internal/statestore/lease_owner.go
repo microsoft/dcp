@@ -51,12 +51,18 @@ func resourceLeaseOwnerFromDB(ownerPID int64, ownerIdentityTime string) (process
 	return normalizeResourceLeaseOwner(owner)
 }
 
-func resourceLeaseOwnerIsActive(owner process.ProcessHandle) bool {
+func (s *Store) resourceLeaseOwnerIsActive(owner process.ProcessHandle) bool {
 	normalizedOwner, normalizeErr := normalizeResourceLeaseOwner(owner)
 	if normalizeErr != nil {
 		return false
 	}
 
-	_, findErr := process.FindProcess(normalizedOwner)
-	return findErr == nil
+	ownerProcess, findErr := normalizedOwner.OsProcess()
+	if findErr != nil {
+		return false
+	}
+	if releaseErr := ownerProcess.Release(); releaseErr != nil {
+		s.log.Error(releaseErr, "Could not release resource lease owner process reference", "PID", normalizedOwner.Pid)
+	}
+	return true
 }

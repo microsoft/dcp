@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,21 +22,23 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/internal/termpty"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
+	usvc_random "github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-const (
-	defaultExerunnerTestTimeout = 20 * time.Second
-)
+const defaultExerunnerTestTimeout = 20 * time.Second
 
 func TestProcessExecutableRunnerStartsLifecycleMonitor(t *testing.T) {
 	monitorPID := int64(12345)
@@ -202,6 +205,11 @@ func TestProcessExecutableRunnerSkipsTimestampsForPersistentOutput(t *testing.T)
 
 			executions := processExecutor.FindAll([]string{"/test/app"}, "", nil)
 			require.Len(t, executions, 1)
+			if testCase.persistent {
+				require.Zero(t, executions[0].Cmd.WaitDelay)
+			} else {
+				require.Equal(t, defaultProcessCleanupTimeout, executions[0].Cmd.WaitDelay)
+			}
 			_, writeErr := executions[0].Cmd.Stdout.Write([]byte("hello\n"))
 			require.NoError(t, writeErr)
 			if syncer, ok := executions[0].Cmd.Stdout.(interface{ Sync() error }); ok {
@@ -218,6 +226,114 @@ func TestProcessExecutableRunnerSkipsTimestampsForPersistentOutput(t *testing.T)
 			}
 		})
 	}
+}
+
+// Verifies that an escaped descendant holding the root process's output pipes
+// cannot delay completion beyond the configured wait delay.
+func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultExerunnerTestTimeout)
+	defer cancel()
+	t.Setenv("DCP_DISABLE_MONITOR_PROCESS", "1")
+
+	delayPath, delayPathErr := internal_testutil.GetTestToolPath("delay")
+	require.NoError(t, delayPathErr)
+	effectiveEnv := make([]apiv1.EnvVar, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		name, value, found := strings.Cut(entry, "=")
+		if found {
+			effectiveEnv = append(effectiveEnv, apiv1.EnvVar{Name: name, Value: value})
+		}
+	}
+	executor := process.NewOSExecutor(logr.Discard())
+	t.Cleanup(executor.Dispose)
+	runner := NewProcessExecutableRunner(executor)
+	changeHandler := newRecordingRunChangeHandler()
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "wait-delay",
+			UID:  "wait-delay",
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: delayPath,
+		},
+		Status: apiv1.ExecutableStatus{
+			EffectiveArgs: []string{"--delay=60s", "--child-spec=1", "--hold-pipe"},
+			EffectiveEnv:  effectiveEnv,
+		},
+	}
+
+	result := runner.StartRun(ctx, exe, changeHandler, logr.Discard())
+	var tree []process.ProcessHandle
+	t.Cleanup(func() {
+		for _, handle := range tree {
+			proc, findErr := handle.OsProcess()
+			if process.IsProcessGoneErr(findErr) {
+				continue
+			}
+			require.NoError(t, findErr)
+			killErr := proc.Kill()
+			releaseErr := proc.Release()
+			require.True(t, killErr == nil || process.IsProcessGoneErr(killErr), "failed to stop delay: %v", killErr)
+			require.NoError(t, releaseErr)
+		}
+		require.NoError(t, runner.ReleaseRun(context.Background(), result.RunID, logr.Discard()))
+		removeFileIfExists(t, result.StdOutFile)
+		removeFileIfExists(t, result.StdErrFile)
+	})
+
+	require.Equal(t, apiv1.ExecutableStateRunning, result.ExeState)
+	require.NotNil(t, result.StartWaitForRunCompletion)
+	require.FileExists(t, result.StdOutFile)
+	require.FileExists(t, result.StdErrFile)
+	result.StartWaitForRunCompletion()
+
+	require.NotNil(t, result.Pid)
+	rootPID, rootPIDErr := process.Int64_ToPidT(*result.Pid)
+	require.NoError(t, rootPIDErr)
+	rootHandle := process.NewHandle(rootPID, result.ProcessIdentityTime)
+	expectedTreeSize := 2
+	expectedExitCode := int32(-1)
+	if osutil.IsWindows() {
+		expectedTreeSize++ // The isolated console also contains conhost.
+		expectedExitCode = 1
+	}
+	treeErr := wait.PollUntilContextCancel(ctx, 25*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+		var snapshotErr error
+		tree, snapshotErr = process.GetProcessTree(pollCtx, rootHandle)
+		return len(tree) >= expectedTreeSize, snapshotErr
+	})
+	require.NoError(t, treeErr)
+	rootProcess, rootProcessErr := rootHandle.OsProcess()
+	require.NoError(t, rootProcessErr)
+	startedAt := time.Now()
+	require.NoError(t, rootProcess.Kill())
+	require.NoError(t, rootProcess.Release())
+
+	select {
+	case completed := <-changeHandler.completedRuns:
+		require.Equal(t, result.RunID, completed.runID)
+		require.NotNil(t, completed.exitCode)
+		require.Equal(t, expectedExitCode, *completed.exitCode)
+		require.NoError(t, completed.err)
+		elapsed := time.Since(startedAt)
+		require.GreaterOrEqual(t, elapsed, defaultProcessCleanupTimeout)
+		require.Less(t, elapsed, defaultProcessCleanupTimeout+3*time.Second)
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for root process completion")
+	}
+
+	runningDescendants := 0
+	for _, handle := range tree {
+		if handle.Pid == rootPID {
+			continue
+		}
+		runningErr := executor.CheckProcessRunning(handle)
+		require.True(t, runningErr == nil || process.IsProcessGoneErr(runningErr), "failed to inspect delay descendant: %v", runningErr)
+		if runningErr == nil {
+			runningDescendants++
+		}
+	}
+	require.GreaterOrEqual(t, runningDescendants, expectedTreeSize-1, "descendants must remain alive while the runner closes the held pipes")
 }
 
 func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
@@ -249,6 +365,338 @@ func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
 	require.True(t, found)
 	require.True(t, execution.Finished())
 	require.Equal(t, int32(internal_testutil.KilledProcessExitCode), execution.ExitCode)
+}
+
+// Verifies that a concurrent completion removes the run, reports completion, and is not reinserted
+// when the stop operation also reports an incomplete process tree.
+func TestStopRunDoesNotReinsertCompletedRun(t *testing.T) {
+	t.Parallel()
+
+	stopExecutor := &stopRunTestExecutor{
+		handle:         process.NewHandle(4242, time.Unix(1000, 0).UTC()),
+		stopErr:        process.ErrIncompleteProcessTree,
+		exitDuringStop: true,
+	}
+	runner, result, changeHandler := startStopRunTest(t, stopExecutor)
+
+	stopErr := runner.StopRun(context.Background(), result.RunID, logr.Discard())
+	require.ErrorIs(t, stopErr, process.ErrIncompleteProcessTree)
+
+	_, found := runner.runningProcesses.Load(result.RunID)
+	require.False(t, found)
+	select {
+	case completed := <-changeHandler.completedRuns:
+		require.Equal(t, result.RunID, completed.runID)
+	default:
+		require.Fail(t, "expected process completion notification")
+	}
+}
+
+// Verifies that a concurrent successful completion wins cleanup without turning
+// the failed compare-and-delete into a synthetic stop error.
+func TestStopRunSucceedsWhenConcurrentCompletionWins(t *testing.T) {
+	t.Parallel()
+
+	stopExecutor := &stopRunTestExecutor{
+		handle:         process.NewHandle(4248, time.Unix(1006, 0).UTC()),
+		exitDuringStop: true,
+	}
+	runner, result, changeHandler := startStopRunTest(t, stopExecutor)
+
+	require.NoError(t, runner.StopRun(context.Background(), result.RunID, logr.Discard()))
+
+	_, found := runner.runningProcesses.Load(result.RunID)
+	require.False(t, found)
+	select {
+	case completed := <-changeHandler.completedRuns:
+		require.Equal(t, result.RunID, completed.runID)
+	default:
+		require.Fail(t, "expected process completion notification")
+	}
+}
+
+// Verifies that a genuine stop failure is returned and preserves the run identity until exit.
+func TestStopRunPreservesStateAfterStopFailure(t *testing.T) {
+	t.Parallel()
+
+	expectedErr := errors.New("stop failed")
+	stopExecutor := &stopRunTestExecutor{
+		handle:  process.NewHandle(4243, time.Unix(1001, 0).UTC()),
+		stopErr: expectedErr,
+	}
+	runner, result, _ := startStopRunTest(t, stopExecutor)
+
+	stopErr := runner.StopRun(context.Background(), result.RunID, logr.Discard())
+	require.ErrorIs(t, stopErr, expectedErr)
+
+	stored, found := runner.runningProcesses.Load(result.RunID)
+	require.True(t, found)
+	require.Equal(t, stopExecutor.handle, stored.handle)
+}
+
+// Verifies that an already-gone process is treated as a successful stop,
+// removes the run, and completes resource cleanup without returning the stale lookup error.
+func TestStopRunTreatsGoneProcessAsStopped(t *testing.T) {
+	t.Parallel()
+
+	stopExecutor := &stopRunTestExecutor{
+		handle:  process.NewHandle(4246, time.Unix(1004, 0).UTC()),
+		stopErr: &process.ErrProcessNotFound{Pid: 4246},
+	}
+	runner, result, _ := startStopRunTest(t, stopExecutor)
+
+	require.NoError(t, runner.StopRun(context.Background(), result.RunID, logr.Discard()))
+	_, found := runner.runningProcesses.Load(result.RunID)
+	require.False(t, found)
+}
+
+// Verifies that deletion requested while Windows output handles are still open is completed after process exit closes them.
+func TestDeleteRunOutputRemovesFilesAfterProcessExit(t *testing.T) {
+	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "")
+
+	stopExecutor := &stopRunTestExecutor{
+		handle: process.NewHandle(4251, time.Unix(1007, 0).UTC()),
+	}
+	runner, result, changeHandler := startStopRunTest(t, stopExecutor)
+
+	require.FileExists(t, result.StdOutFile)
+	require.FileExists(t, result.StdErrFile)
+	require.NoError(t, runner.DeleteRunOutput(
+		context.Background(),
+		result.RunID,
+		result.StdOutFile,
+		result.StdErrFile,
+	))
+
+	// The runner still owns open handles until exit, so Windows-safe deletion is deferred.
+	require.FileExists(t, result.StdOutFile)
+	require.FileExists(t, result.StdErrFile)
+
+	stopExecutor.handler.OnProcessExited(stopExecutor.handle.Pid, 0, nil)
+
+	require.NoFileExists(t, result.StdOutFile)
+	require.NoFileExists(t, result.StdErrFile)
+	select {
+	case completed := <-changeHandler.completedRuns:
+		require.Equal(t, result.RunID, completed.runID)
+		require.NoError(t, completed.err)
+	default:
+		require.Fail(t, "expected process completion notification")
+	}
+}
+
+// Verifies that deferred runner cleanup does not remove output when executable log preservation is enabled.
+func TestDeleteRunOutputHonorsLogPreservation(t *testing.T) {
+	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "1")
+
+	stopExecutor := &stopRunTestExecutor{
+		handle: process.NewHandle(4252, time.Unix(1008, 0).UTC()),
+	}
+	runner, result, changeHandler := startStopRunTest(t, stopExecutor)
+
+	require.NoError(t, runner.DeleteRunOutput(
+		context.Background(),
+		result.RunID,
+		result.StdOutFile,
+		result.StdErrFile,
+	))
+	stopExecutor.handler.OnProcessExited(stopExecutor.handle.Pid, 0, nil)
+
+	require.FileExists(t, result.StdOutFile)
+	require.FileExists(t, result.StdErrFile)
+	select {
+	case completed := <-changeHandler.completedRuns:
+		require.Equal(t, result.RunID, completed.runID)
+		require.NoError(t, completed.err)
+	default:
+		require.Fail(t, "expected process completion notification")
+	}
+}
+
+// Verifies that eventual cleanup tolerates Unix output files being unlinked while their handles remain open.
+// Repeated deletion requests and the later close path must both treat the missing files as success.
+func TestDeleteRunOutputIsIdempotentAfterUnixUnlink(t *testing.T) {
+	if osutil.IsWindows() {
+		t.Skip("Unix permits unlinking files while the runner still has them open")
+	}
+	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "")
+
+	stopExecutor := &stopRunTestExecutor{
+		handle: process.NewHandle(4253, time.Unix(1009, 0).UTC()),
+	}
+	runner, result, changeHandler := startStopRunTest(t, stopExecutor)
+
+	require.NoError(t, runner.DeleteRunOutput(
+		context.Background(),
+		result.RunID,
+		result.StdOutFile,
+		result.StdErrFile,
+	))
+	require.NoError(t, logs.RemoveWithRetry(context.Background(), result.StdOutFile))
+	require.NoError(t, logs.RemoveWithRetry(context.Background(), result.StdErrFile))
+	require.NoError(t, runner.DeleteRunOutput(
+		context.Background(),
+		result.RunID,
+		result.StdOutFile,
+		result.StdErrFile,
+	))
+
+	stopExecutor.handler.OnProcessExited(stopExecutor.handle.Pid, 0, nil)
+
+	require.NoFileExists(t, result.StdOutFile)
+	require.NoFileExists(t, result.StdErrFile)
+	select {
+	case completed := <-changeHandler.completedRuns:
+		require.Equal(t, result.RunID, completed.runID)
+		require.NoError(t, completed.err)
+	default:
+		require.Fail(t, "expected process completion notification")
+	}
+}
+
+// Verifies that stopping an already-gone persistent process succeeds,
+// uses the persisted process identity, and does not surface the stale lookup error.
+func TestStopPersistentProcessTreatsGoneProcessAsStopped(t *testing.T) {
+	t.Parallel()
+
+	handle := process.NewHandle(4247, time.Unix(1005, 0).UTC())
+	stopExecutor := &stopRunTestExecutor{
+		handle:  handle,
+		stopErr: &process.ErrProcessNotFound{Pid: handle.Pid},
+	}
+	runner := NewProcessExecutableRunner(stopExecutor)
+	runner.disableConsoleStop = true
+	record := &statestore.PersistentProcessRecord{
+		PID:          handle.Pid,
+		IdentityTime: handle.IdentityTime,
+		RunID:        "persistent-gone",
+	}
+
+	stopErr := runner.StopPersistentProcess(
+		context.Background(),
+		&apiv1.Executable{Spec: apiv1.ExecutableSpec{ExecutablePath: "persistent-gone"}},
+		record,
+		logr.Discard(),
+	)
+	require.NoError(t, stopErr)
+}
+
+// Verifies that StopRun propagates caller cancellation to the process executor,
+// returns the cancellation error, and preserves the run for retry.
+func TestStopRunHonorsCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	stopExecutor := &stopRunTestExecutor{
+		handle:         process.NewHandle(4245, time.Unix(1003, 0).UTC()),
+		respectContext: true,
+	}
+	runner, result, _ := startStopRunTest(t, stopExecutor)
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+	stopCancel()
+
+	stopErr := runner.StopRun(stopCtx, result.RunID, logr.Discard())
+
+	require.ErrorIs(t, stopErr, context.Canceled)
+	require.ErrorIs(t, stopExecutor.stopContextErr, context.Canceled)
+	stored, found := runner.runningProcesses.Load(result.RunID)
+	require.True(t, found)
+	require.Equal(t, stopExecutor.handle, stored.handle)
+}
+
+// Verifies that a cleanup error is returned after a confirmed stop while the stopped run remains removed.
+func TestStopRunRemovesStateDespiteCleanupError(t *testing.T) {
+	t.Parallel()
+
+	cleanupErr := errors.New("cleanup failed")
+	stopExecutor := &stopRunTestExecutor{
+		handle: process.NewHandle(4244, time.Unix(1002, 0).UTC()),
+	}
+	runner := NewProcessExecutableRunner(stopExecutor)
+	runner.disableConsoleStop = true
+	runID := pidToRunID(stopExecutor.handle.Pid)
+	runner.runningProcesses.Store(runID, &processRunState{
+		handle:  stopExecutor.handle,
+		cmdInfo: "cleanup-error",
+		ptp: &termpty.PseudoTerminalProcess{
+			PTY: &stopRunErrorPTY{closeErr: cleanupErr},
+		},
+	})
+
+	stopErr := runner.StopRun(context.Background(), runID, logr.Discard())
+	require.ErrorIs(t, stopErr, cleanupErr)
+	_, found := runner.runningProcesses.Load(runID)
+	require.False(t, found)
+}
+
+// Verifies that terminal attach failure distinguishes confirmed cleanup and already-gone processes
+// from cleanup failures whose startup outcome remains uncertain.
+func TestTerminalAttachFailureClassifiesUnconfirmedCleanup(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name              string
+		stopErr           error
+		expectedUncertain bool
+	}{
+		{name: "confirmed stop"},
+		{
+			name:              "process already gone",
+			stopErr:           &process.ErrProcessNotFound{Pid: 4250},
+			expectedUncertain: false,
+		},
+		{
+			name:              "unconfirmed stop",
+			stopErr:           errors.New("stop failed"),
+			expectedUncertain: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			executor := &stopRunTestExecutor{
+				handle:  process.NewHandle(4250, time.Unix(1000, 0).UTC()),
+				stopErr: testCase.stopErr,
+			}
+			runner := NewProcessExecutableRunner(executor)
+			testPty := internal_testutil.NewTestPty()
+			t.Cleanup(func() { _ = testPty.Close() })
+			runner.SetTerminalProcessFactory(func(
+				context.Context,
+				process.Executor,
+				*termpty.CommandSpec,
+			) (*termpty.PseudoTerminalProcess, error) {
+				return &termpty.PseudoTerminalProcess{
+					PTY:      testPty,
+					Handle:   executor.handle,
+					Executor: executor,
+				}, nil
+			})
+
+			socketSuffix, socketSuffixErr := usvc_random.MakeRandomString(12)
+			require.NoError(t, socketSuffixErr)
+			socketPath := filepath.Join(testutil.TestTempRoot(), fmt.Sprintf("dcp-exerunner-%s.sock", socketSuffix))
+			t.Cleanup(func() { _ = os.Remove(socketPath) })
+			result := runner.StartRun(
+				context.Background(),
+				&apiv1.Executable{
+					ObjectMeta: metav1.ObjectMeta{Name: "terminal-attach-failure"},
+					Spec: apiv1.ExecutableSpec{
+						ExecutablePath: "unused",
+						Terminal:       &apiv1.TerminalSpec{UDSPath: socketPath},
+					},
+				},
+				newRecordingRunChangeHandler(),
+				logr.Discard(),
+			)
+
+			require.Equal(t, apiv1.ExecutableStateFailedToStart, result.ExeState)
+			require.Error(t, result.StartupError)
+			require.Equal(t, testCase.expectedUncertain, errors.Is(result.StartupError, process.ErrProcessStartUncertain))
+			if testCase.expectedUncertain {
+				require.ErrorIs(t, result.StartupError, testCase.stopErr)
+			}
+		})
+	}
 }
 
 func TestAdoptedProcessStartsLifecycleMonitor(t *testing.T) {
@@ -305,7 +753,7 @@ func TestAdoptedProcessStartsLifecycleMonitor(t *testing.T) {
 			runID := pidToRunID(pid)
 			t.Cleanup(func() {
 				_ = runner.ReleaseRun(context.Background(), runID, logr.Discard())
-				_ = processExecutor.StopProcess(handle)
+				_ = processExecutor.StopProcess(context.Background(), handle)
 			})
 
 			exe := &apiv1.Executable{
@@ -463,6 +911,106 @@ func removeFileIfExists(t *testing.T, path string) {
 	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 		require.NoError(t, removeErr)
 	}
+}
+
+// stopRunTestExecutor synchronously reports process exit before returning a configured stop error.
+// TestProcessExecutor cannot model this ordering because its exit callbacks are asynchronous and StopError returns before exit.
+type stopRunTestExecutor struct {
+	handle         process.ProcessHandle
+	handler        process.ProcessExitHandler
+	stopErr        error
+	exitDuringStop bool
+	respectContext bool
+	stopContextErr error
+}
+
+func (executor *stopRunTestExecutor) StartProcess(
+	_ context.Context,
+	_ *exec.Cmd,
+	handler process.ProcessExitHandler,
+	_ process.ProcessCreationFlag,
+	_ process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	executor.handler = handler
+	return executor.handle, func() {}, nil
+}
+
+func (executor *stopRunTestExecutor) StopProcess(
+	ctx context.Context,
+	handle process.ProcessHandle,
+	_ ...process.ProcessStopOption,
+) error {
+	executor.stopContextErr = ctx.Err()
+	if executor.respectContext && executor.stopContextErr != nil {
+		return executor.stopContextErr
+	}
+	if executor.exitDuringStop && executor.handler != nil {
+		executor.handler.OnProcessExited(handle.Pid, 0, nil)
+	}
+	return executor.stopErr
+}
+
+func (*stopRunTestExecutor) CheckProcessRunning(process.ProcessHandle) error {
+	return nil
+}
+
+func (executor *stopRunTestExecutor) FindProcessHandle(process.Pid_t) (process.ProcessHandle, error) {
+	return executor.handle, nil
+}
+
+func (executor *stopRunTestExecutor) StartAndForget(*exec.Cmd, process.ProcessCreationFlag) (process.ProcessHandle, error) {
+	return executor.handle, nil
+}
+
+func (*stopRunTestExecutor) Dispose() {}
+
+type stopRunErrorPTY struct {
+	closeErr error
+}
+
+func (*stopRunErrorPTY) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (*stopRunErrorPTY) Write(data []byte) (int, error) {
+	return len(data), nil
+}
+
+func (pty *stopRunErrorPTY) Close() error {
+	return pty.closeErr
+}
+
+func (*stopRunErrorPTY) Resize(uint16, uint16) error {
+	return nil
+}
+
+func startStopRunTest(
+	t *testing.T,
+	executor *stopRunTestExecutor,
+) (*ProcessExecutableRunner, *controllers.ExecutableStartResult, *recordingRunChangeHandler) {
+	t.Helper()
+
+	runner := NewProcessExecutableRunner(executor)
+	runner.disableConsoleStop = true
+	changeHandler := newRecordingRunChangeHandler()
+	result := runner.StartRun(
+		context.Background(),
+		&apiv1.Executable{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "stop-run-test",
+				UID:  types.UID(fmt.Sprintf("stop-run-test-%d", time.Now().UnixNano())),
+			},
+			Spec: apiv1.ExecutableSpec{ExecutablePath: "unused"},
+		},
+		changeHandler,
+		logr.Discard(),
+	)
+	t.Cleanup(func() {
+		_ = runner.ReleaseRun(context.Background(), result.RunID, logr.Discard())
+		removeFileIfExists(t, result.StdOutFile)
+		removeFileIfExists(t, result.StdErrFile)
+	})
+	return runner, result, changeHandler
 }
 
 type completedRunNotification struct {

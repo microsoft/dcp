@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"sync/atomic"
@@ -28,10 +29,16 @@ type missingPhysicalProcessExecutor struct {
 	process.Executor
 }
 
+type failingPhysicalProcessInspectionExecutor struct {
+	process.Executor
+	err error
+}
+
 type recordingPhysicalProcessExecutor struct {
 	process.Executor
 	findProcessHandleCalls atomic.Int32
 	startProcessCalls      atomic.Int32
+	stopProcessCalls       atomic.Int32
 }
 
 func TestPhysicalProcessEnvironment(t *testing.T) {
@@ -78,6 +85,10 @@ func (*missingPhysicalProcessExecutor) CheckProcessRunning(process.ProcessHandle
 	return process.ErrorProcessNotFound
 }
 
+func (executor *failingPhysicalProcessInspectionExecutor) CheckProcessRunning(process.ProcessHandle) error {
+	return executor.err
+}
+
 func (e *recordingPhysicalProcessExecutor) FindProcessHandle(process.Pid_t) (process.ProcessHandle, error) {
 	e.findProcessHandleCalls.Add(1)
 	return process.ProcessHandle{}, process.ErrorProcessNotFound
@@ -91,7 +102,16 @@ func (e *recordingPhysicalProcessExecutor) StartProcess(
 	process.SysCreateProcessFunc,
 ) (process.ProcessHandle, func(), error) {
 	e.startProcessCalls.Add(1)
-	return process.ProcessHandle{}, nil, nil
+	return process.ProcessHandle{}, nil, errors.New("unexpected process start")
+}
+
+func (e *recordingPhysicalProcessExecutor) StopProcess(
+	context.Context,
+	process.ProcessHandle,
+	...process.ProcessStopOption,
+) error {
+	e.stopProcessCalls.Add(1)
+	return errors.New("unexpected process stop")
 }
 
 func TestPhysicalProcessLaunchCanceledBeforeStart(t *testing.T) {
@@ -367,6 +387,84 @@ func TestPhysicalProcessTerminalResultDoesNotRequireHandleOwnership(t *testing.T
 	require.Equal(t, finishedAt, launchedData.finishedAt)
 }
 
+// Verifies that cleanup uncertainty remains monotonic for the same process identity
+// but does not contaminate a replacement process that reuses the PID.
+func TestPhysicalProcessCleanupUncertaintyIsScopedToProcessIdentity(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name                      string
+		replacementIdentityOffset time.Duration
+		expectCleanupUnconfirmed  bool
+	}{
+		{
+			name:                     "same identity preserves uncertainty",
+			expectCleanupUnconfirmed: true,
+		},
+		{
+			name:                      "replacement identity clears uncertainty",
+			replacementIdentityOffset: time.Second,
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+			defer cancel()
+			physicalProcess := &apiv2.PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "identity-scope",
+					Namespace: "test",
+					UID:       types.UID("identity-scope-" + testCase.name),
+				},
+			}
+			originalHandle := process.NewHandle(44, time.Unix(1200, 0).UTC())
+			claimedHandle := process.NewHandle(
+				originalHandle.Pid,
+				originalHandle.IdentityTime.Add(testCase.replacementIdentityOffset),
+			)
+			data := &physicalProcessData{
+				resourceUID:        physicalProcess.UID,
+				state:              physicalProcessStateResolve,
+				progress:           physicalResourceProgressRetryPending,
+				handle:             originalHandle,
+				failureReason:      apiv2.PhysicalProcessReasonStopFailed,
+				failureMessage:     "cleanup was not confirmed",
+				cleanupUnconfirmed: true,
+			}
+			reconciler := NewPhysicalProcessReconciler(
+				ctx,
+				nil,
+				nil,
+				logr.Discard(),
+				&missingPhysicalProcessExecutor{},
+			)
+			reconciler.processData.Store(
+				physicalProcess.NamespacedName(),
+				physicalProcessDataKey(physicalProcess),
+				data.Clone(),
+			)
+
+			change := reconciler.claimPhysicalProcessTracking(physicalProcess, data, claimedHandle)
+
+			require.Equal(t, noChange, change)
+			currentStateKey, claimedData := reconciler.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
+			require.Equal(t, physicalProcessHandleDataKey(claimedHandle), currentStateKey)
+			require.NotNil(t, claimedData)
+			require.Equal(t, claimedHandle, claimedData.handle)
+			require.Equal(t, testCase.expectCleanupUnconfirmed, claimedData.cleanupUnconfirmed)
+			if testCase.expectCleanupUnconfirmed {
+				require.Equal(t, apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed, claimedData.failureReason)
+				require.Equal(t, data.failureMessage, claimedData.failureMessage)
+			} else {
+				require.Empty(t, claimedData.failureReason)
+				require.Empty(t, claimedData.failureMessage)
+			}
+		})
+	}
+}
+
 func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
@@ -385,6 +483,7 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 		state:          physicalProcessStateRuntime,
 		progress:       physicalResourceProgressRetryPending,
 		handle:         handle,
+		failureReason:  apiv2.PhysicalProcessReasonStopFailed,
 		failureMessage: "stale inspection failure",
 		retryAfter:     time.Now().Add(-time.Second),
 	}
@@ -412,5 +511,97 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 
 	require.Equal(t, noChange, change)
 	require.Equal(t, physicalResourceProgressMissing, data.progress)
+	require.Empty(t, data.failureReason)
+	require.Empty(t, data.failureMessage)
+}
+
+// Verifies that runtime inspection failures replace any stale condition reason
+// with RuntimeProcessInspectFailed.
+func TestHandlePhysicalProcessRuntimeSetsInspectionFailureReason(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+
+	inspectionErr := errors.New("inspection failed")
+	handle := process.NewHandle(42, time.Now())
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-process",
+			Namespace: "test",
+			UID:       types.UID("test-process"),
+		},
+	}
+	data := &physicalProcessData{
+		resourceUID:   physicalProcess.UID,
+		state:         physicalProcessStateRuntime,
+		progress:      physicalResourceProgressRetryPending,
+		handle:        handle,
+		failureReason: apiv2.PhysicalProcessReasonStopFailed,
+		retryAfter:    time.Now().Add(-time.Second),
+	}
+	reconciler := NewPhysicalProcessReconciler(
+		ctx,
+		nil,
+		nil,
+		logr.Discard(),
+		&failingPhysicalProcessInspectionExecutor{err: inspectionErr},
+	)
+
+	change := handlePhysicalProcessRuntime(
+		ctx,
+		reconciler,
+		physicalProcess,
+		physicalProcessStateRuntime,
+		data,
+		logr.Discard(),
+	)
+
+	require.Equal(t, noChange, change)
+	require.Equal(t, physicalResourceProgressRetryPending, data.progress)
+	require.Equal(t, apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed, data.failureReason)
+	require.Contains(t, data.failureMessage, inspectionErr.Error())
+}
+
+// Verifies that starting a new stop attempt clears stale failure diagnostics
+// so the in-progress projection reports the Stopping reason.
+func TestSchedulePhysicalProcessStopClearsStaleFailureReason(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+
+	handle := process.NewHandle(43, time.Now())
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-process",
+			Namespace: "test",
+			UID:       types.UID("test-process"),
+		},
+	}
+	data := &physicalProcessData{
+		resourceUID:    physicalProcess.UID,
+		state:          physicalProcessStateRuntime,
+		progress:       physicalResourceProgressRunning,
+		handle:         handle,
+		failureReason:  apiv2.PhysicalProcessReasonStopFailed,
+		failureMessage: "stale stop failure",
+	}
+	reconciler := NewPhysicalProcessReconciler(
+		ctx,
+		nil,
+		nil,
+		logr.Discard(),
+		&recordingPhysicalProcessExecutor{},
+	)
+	reconciler.processData.Store(
+		physicalProcess.NamespacedName(),
+		physicalProcessHandleDataKey(handle),
+		data.Clone(),
+	)
+
+	_, _ = reconciler.schedulePhysicalProcessStop(physicalProcess, data, logr.Discard())
+
+	require.Equal(t, physicalProcessStateStop, data.state)
+	require.Equal(t, physicalResourceProgressInProgress, data.progress)
+	require.Empty(t, data.failureReason)
 	require.Empty(t, data.failureMessage)
 }

@@ -42,6 +42,7 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -72,7 +73,7 @@ func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.Creat
 		EnvFiles:       spec.EnvFiles,
 		Ports:          v1PortsToCreateContainerPorts(spec.Ports),
 		VolumeMounts:   v1VolumeMountsToCreateContainerVolumeMounts(spec.VolumeMounts),
-		Labels:         v1LabelsToContainerLabels(spec.Labels),
+		Labels:         v1LabelsToMap(spec.Labels),
 		RestartPolicy:  containers.ContainerRestartPolicy(spec.RestartPolicy),
 		PullPolicy:     containers.ImagePullPolicy(spec.PullPolicy),
 		RunArgs:        spec.RunArgs,
@@ -80,9 +81,9 @@ func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.Creat
 	}
 }
 
-func v1LabelsToContainerLabels(labels []apiv1.ContainerLabel) []containers.Label {
-	return slices.Map[containers.Label](labels, func(label apiv1.ContainerLabel) containers.Label {
-		return containers.Label{Key: label.Key, Value: label.Value}
+func v1LabelsToMap(labels []apiv1.ContainerLabel) map[string]string {
+	return maps.SliceToMap(labels, func(label apiv1.ContainerLabel) (string, string) {
+		return label.Key, label.Value
 	})
 }
 

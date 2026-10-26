@@ -1477,13 +1477,14 @@ func physicalPortsToCreateContainerPorts(ports []apiv2.ContainerPort) []containe
 	return retval
 }
 
-func physicalContainerCreationLabels(container *apiv2.PhysicalContainer, log logr.Logger) []containers.Label {
-	return physicalResourceCreationLabels(
+func physicalContainerCreationLabels(container *apiv2.PhysicalContainer, log logr.Logger) map[string]string {
+	creationLabels := physicalResourceCreationLabels(
 		container.Spec.Container.Labels,
 		container.Spec.Container.RetainRuntimeContainer,
 		container.UID,
 		log,
 	)
+	return v2LabelsToMap(creationLabels)
 }
 
 func applyInspectedPhysicalContainerDetails(container *apiv2.PhysicalContainer, inspectedContainer *containers.InspectedContainer, _ logr.Logger) objectChange {

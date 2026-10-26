@@ -6,6 +6,7 @@
 package logger
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -52,6 +53,40 @@ func FriendlyErrorString(err error) string {
 		return "(none)"
 	}
 	return err.Error()
+}
+
+const maxErrorExamples = 5
+
+type errorSummary struct {
+	causes []error
+}
+
+func (summary *errorSummary) Error() string {
+	return fmt.Sprintf(
+		"%d errors occurred (showing first %d): %v",
+		len(summary.causes),
+		maxErrorExamples,
+		errors.Join(summary.causes[:maxErrorExamples]...),
+	)
+}
+
+func (summary *errorSummary) Unwrap() []error {
+	return summary.causes
+}
+
+// SummarizeErrors joins non-nil errors, rendering at most five examples for logging.
+// All causes remain available through errors.Is and errors.As.
+func SummarizeErrors(errs []error) error {
+	causes := make([]error, 0, len(errs))
+	for _, cause := range errs {
+		if cause != nil {
+			causes = append(causes, cause)
+		}
+	}
+	if len(causes) <= maxErrorExamples {
+		return errors.Join(causes...)
+	}
+	return &errorSummary{causes: causes}
 }
 
 func FriendlyStringMap(m map[string]string) string {

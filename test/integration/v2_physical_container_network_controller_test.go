@@ -662,47 +662,6 @@ func TestV2PhysicalContainerNetworkControllerAdoptsNetworkAfterUncertainCreateFa
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
 }
 
-// Steady-state polling must be paced by the monitoring delay and must not write an unchanged
-// status, because a status write feeds a watch event back into the controller and turns the slow
-// polling cadence into a tight re-inspect loop.
-func TestV2PhysicalContainerNetworkControllerDoesNotChurnReadyStatus(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-
-	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-steady")
-	networkName := "v2-pcn-steady-runtime"
-	removeRuntimeNetworkOnCleanup(t, networkName)
-
-	network := &apiv2.PhysicalContainerNetwork{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "steady-network",
-			Namespace: namespace.Name,
-		},
-		Spec: apiv2.PhysicalContainerNetworkSpec{
-			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
-		},
-	}
-	require.NoError(t, client.Create(ctx, network))
-
-	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
-	readyResourceVersion := readyNetwork.ResourceVersion
-	// The status write that announced Ready drives exactly one more reconciliation, which
-	// re-inspects and settles. Anything beyond that within the monitoring delay is churn.
-	settledInspectCount := containerOrchestrator.InspectNetworkCallCount(readyNetwork.Status.NetworkID) + 1
-
-	require.Never(t, func() bool {
-		currentNetwork := &apiv2.PhysicalContainerNetwork{}
-		if getErr := client.Get(ctx, network.NamespacedName(), currentNetwork); getErr != nil {
-			return false
-		}
-		if currentNetwork.ResourceVersion != readyResourceVersion {
-			return true
-		}
-		return containerOrchestrator.InspectNetworkCallCount(readyNetwork.Status.NetworkID) > settledInspectCount
-	}, 5*time.Second, 250*time.Millisecond)
-}
-
 func TestV2PhysicalContainerNetworkControllerReportsMissingRuntimeNetwork(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

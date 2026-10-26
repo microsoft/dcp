@@ -6,14 +6,89 @@
 package controllers
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that proxy data clones share startup ownership, only one owner can acquire it,
+// and an earlier owner's idempotent release cannot unlock a later owner.
+func TestStartupLeaseIsSharedAcrossProxyDataClones(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	data := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting, "test")
+	clone := data.Clone()
+
+	releaseFirst, firstAcquired := data.startup.TryAcquire(testCtx)
+	require.True(t, firstAcquired)
+	_, cloneAcquired := clone.startup.TryAcquire(testCtx)
+	require.False(t, cloneAcquired)
+
+	releaseFirst()
+	releaseSecond, secondAcquired := clone.startup.TryAcquire(testCtx)
+	require.True(t, secondAcquired)
+	releaseFirst()
+	_, thirdAcquired := data.startup.TryAcquire(testCtx)
+	require.False(t, thirdAcquired)
+	releaseSecond()
+}
+
+// Verifies that cancelling an owner's lifetime context releases the shared startup lease,
+// permits a new owner to acquire it, and makes the old owner's release harmless.
+func TestStartupLeaseReleasesWhenLifetimeEnds(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+	ownerCtx, ownerCancel := context.WithCancel(testCtx)
+	data := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting, "test")
+
+	releaseFirst, firstAcquired := data.startup.TryAcquire(ownerCtx)
+	require.True(t, firstAcquired)
+	ownerCancel()
+
+	var releaseSecond func()
+	acquireErr := wait.PollUntilContextCancel(testCtx, time.Millisecond, true, func(context.Context) (bool, error) {
+		var acquired bool
+		releaseSecond, acquired = data.startup.TryAcquire(testCtx)
+		return acquired, nil
+	})
+	require.NoError(t, acquireErr)
+
+	releaseFirst()
+	_, thirdAcquired := data.startup.TryAcquire(testCtx)
+	require.False(t, thirdAcquired)
+	releaseSecond()
+}
+
+// Verifies that in-memory proxy state cannot merge updates owned by a replacement
+// resource with the same namespaced name but a different UID.
+func TestContainerNetworkTunnelProxyDataRejectsDifferentResourceUID(t *testing.T) {
+	t.Parallel()
+
+	current := newContainerNetworkTunnelProxyData(
+		apiv1.ContainerNetworkTunnelProxyStateStarting,
+		"current",
+	)
+	replacement := newContainerNetworkTunnelProxyData(
+		apiv1.ContainerNetworkTunnelProxyStateRunning,
+		"replacement",
+	)
+
+	require.False(t, current.UpdateFrom(replacement))
+	require.Equal(t, types.UID("current"), current.resourceUID)
+	require.Equal(t, apiv1.ContainerNetworkTunnelProxyStateStarting, current.State)
+}
 
 func requireSortedByName(t *testing.T, statuses []apiv1.TunnelStatus) {
 	for i := 1; i < len(statuses); i++ {

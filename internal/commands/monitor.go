@@ -25,7 +25,7 @@ var (
 
 func AddMonitorFlags(cmd *cobra.Command) {
 	cmd.Flags().Int64VarP((*int64)(&monitorPid), "monitor", "m", int64(process.UnknownPID), "If present, tells DCP to monitor a given process ID (PID) and gracefully shutdown if the monitored process exits for any reason.")
-	cmd.Flags().Var(flags.NewTimeFlag(&monitorProcessStartTime, osutil.RFC3339MiliTimestampFormat), "monitor-identity-time", "If present, specifies the identity time of the process to monitor. This is used to ensure the correct process is being monitored. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
+	cmd.Flags().Var(flags.NewTimeFlag(&monitorProcessStartTime, osutil.RFC3339MiliTimestampFormat), "monitor-identity-time", "Specifies the identity time of the process to monitor. If omitted, identity is resolved once at command startup. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
 	cmd.Flags().Uint8VarP(&monitorInterval, "monitor-interval", "i", 0, "If present, specifies the time in seconds between checks for the monitor PID.")
 }
 
@@ -40,10 +40,17 @@ func MonitorPid(
 	logger logr.Logger,
 ) (context.Context, context.CancelFunc, error) {
 	monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
+	resolved, resolveErr := process.ResolveProcessHandle(handle.Pid, handle.IdentityTime)
+	if resolveErr != nil {
+		logger.Info("Could not resolve monitored process", "PID", handle.Pid, "Error", resolveErr)
+		monitorCtxCancel()
+		return monitorCtx, monitorCtxCancel, resolveErr
+	}
+	handle = resolved
 
 	monitorProc, monitorProcErr := process.FindWaitableProcess(handle)
 	if monitorProcErr != nil {
-		logger.Info("Error finding process", "PID", handle.Pid)
+		logger.Info("Error finding process", "PID", handle.Pid, "Error", monitorProcErr)
 		monitorCtxCancel()
 		return monitorCtx, monitorCtxCancel, monitorProcErr
 	}
