@@ -62,9 +62,6 @@ var (
 	// Telemetry shows there is a very long tail for Docker command completion times, so we use a conservative default.
 	ordinaryDockerCommandTimeout = 30 * time.Second
 
-	// Checking the Docker CLI version should never need to contact the Docker daemon.
-	dockerVersionCommandTimeout = 2 * time.Second
-
 	// We allow up to a minute for diagnostic commands to finish as we'd rather wait a bit longer than miss information.
 	diagnosticDockerCommandTimeout = 1 * time.Minute
 
@@ -306,7 +303,7 @@ func (dco *DockerCliOrchestrator) ensureSupportedDockerCliVersion(ctx context.Co
 	// Use the non-JSON `docker --version` output because `docker version --format` contacts the daemon
 	// and can hang when the engine is unresponsive.
 	cmd := makeDockerCommand("--version")
-	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "Version", cmd, nil, nil, dockerVersionCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "Version", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return errors.Join(err, normalizeCliErrors(errBuf))
 	}
