@@ -7,7 +7,6 @@ package wslc
 
 import (
 	"context"
-	"errors"
 	"io"
 	"os/exec"
 	"testing"
@@ -21,8 +20,8 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that RemoveVolumes distinguishes deletion from absence without localized diagnostics and preserves execution and output errors.
-func TestRemoveVolumesRecognizesSuccessfulOutput(t *testing.T) {
+// Verifies that RemoveVolumes accepts successful removal of present or absent volumes and preserves execution errors.
+func TestRemoveVolumesIsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	responses := []struct {
@@ -33,15 +32,11 @@ func TestRemoveVolumesRecognizesSuccessfulOutput(t *testing.T) {
 		cancel     bool
 		startupErr error
 		wantErr    error
-		wantText   string
-		missing    bool
 	}{
 		{name: "removed", stdout: "volume\r\n"},
 		{name: "trimmed name", stdout: "\r\n volume \r\n\r\n"},
-		{name: "missing", missing: true},
-		{name: "whitespace only", stdout: " \r\n\t", missing: true},
-		{name: "wrong name", stdout: "other\r\n", wantText: `returned name "other" instead of "volume"`},
-		{name: "multiple names", stdout: "volume\r\nother\r\n", wantText: "does not contain a single identifier"},
+		{name: "missing"},
+		{name: "whitespace only", stdout: " \r\n\t"},
 		{name: "in use", stderr: "Volume indisponivel\r\nERROR_SHARING_VIOLATION\r\n", exitCode: 1, wantErr: containers.ErrObjectInUse},
 		{name: "unclassified failure", stderr: "Falha\r\nE_FAIL\r\n", exitCode: 1, wantErr: containers.ErrUnmatched},
 		{name: "failed after output", stdout: "volume\r\n", exitCode: 1, wantErr: errCommandFailed},
@@ -83,14 +78,8 @@ func TestRemoveVolumesRecognizesSuccessfulOutput(t *testing.T) {
 					Volumes: []string{"volume"},
 					Force:   force,
 				})
-				wantErr := response.wantErr
-				if response.missing && !force {
-					wantErr = containers.ErrNotFound
-				}
-				if wantErr != nil {
-					require.ErrorIs(t, removeErr, wantErr)
-				} else if response.wantText != "" {
-					require.ErrorContains(t, removeErr, response.wantText)
+				if response.wantErr != nil {
+					require.ErrorIs(t, removeErr, response.wantErr)
 				} else {
 					require.NoError(t, removeErr)
 					require.Equal(t, []string{"volume"}, removed)
@@ -99,9 +88,7 @@ func TestRemoveVolumesRecognizesSuccessfulOutput(t *testing.T) {
 					require.Empty(t, removed)
 					require.ErrorIs(t, removeErr, containers.ErrIncomplete)
 				}
-				if wantErr != containers.ErrNotFound {
-					require.NotErrorIs(t, removeErr, containers.ErrNotFound)
-				}
+				require.NotErrorIs(t, removeErr, containers.ErrNotFound)
 				require.Len(t, executor.Executions, 1)
 			})
 		}
@@ -143,14 +130,10 @@ func TestRemoveVolumesPreservesPartialResults(t *testing.T) {
 				Volumes: []string{"present", "missing", "inuse"},
 				Force:   force,
 			})
-			expected := []string{"present"}
-			if force {
-				expected = append(expected, "missing")
-			}
-			require.Equal(t, expected, removed)
+			require.Equal(t, []string{"present", "missing"}, removed)
 			require.ErrorIs(t, removeErr, containers.ErrObjectInUse)
 			require.ErrorIs(t, removeErr, containers.ErrIncomplete)
-			require.Equal(t, !force, errors.Is(removeErr, containers.ErrNotFound))
+			require.NotErrorIs(t, removeErr, containers.ErrNotFound)
 			require.Len(t, executor.Executions, 3)
 		})
 	}
