@@ -656,6 +656,7 @@ func (wco *WslcCliOrchestrator) ExecContainer(ctx context.Context, options conta
 	cmd := makeWslcCommand(args...)
 	cmd.Stdout = usvc_io.NopWriteCloser(options.StdOutStream)
 	cmd.Stderr = usvc_io.NopWriteCloser(options.StdErrStream)
+	cmd.WaitDelay = 2 * time.Second
 	exitCodes := make(chan int32, 1)
 	exitHandler := process.ProcessExitHandlerFunc(func(_ process.Pid_t, exitCode int32, exitErr error) {
 		if exitErr != nil && !errors.Is(exitErr, context.Canceled) && !errors.Is(exitErr, context.DeadlineExceeded) {

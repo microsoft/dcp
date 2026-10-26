@@ -756,6 +756,7 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 
 	cmd.Stdout = options.StdOutStream
 	cmd.Stderr = options.StdErrStream
+	cmd.WaitDelay = 2 * time.Second
 
 	exitCh := make(chan int32, 1)
 	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
