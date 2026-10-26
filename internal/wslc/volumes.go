@@ -154,14 +154,12 @@ func (wco *WslcCliOrchestrator) RemoveVolumes(ctx context.Context, options conta
 	}
 
 	return runSequentially(ctx, "volumes", options.Volumes, func(volumeReference string) error {
-		args := []string{"volume", "remove"}
-		if options.Force {
-			args = append(args, "--force")
-		}
-		args = append(args, volumeReference)
+		// WSLC omits the error code for missing volumes; --force instead succeeds without printing a name.
+		// It does not bypass in-use errors, so stdout can distinguish absence from deletion regardless of locale.
+		args := []string{"volume", "remove", "--force", volumeReference}
 
 		cmd := makeWslcCommand(args...)
-		_, errBuf, runErr := wco.runBufferedWslcCommand(
+		outBuf, errBuf, runErr := wco.runBufferedWslcCommand(
 			ctx,
 			"RemoveVolume",
 			cmd,
@@ -171,6 +169,19 @@ func (wco *WslcCliOrchestrator) RemoveVolumes(ctx context.Context, options conta
 		)
 		if runErr != nil {
 			return errors.Join(runErr, normalizeCliErrors(errBuf, volumeNotFoundMatch, objectInUseMatch))
+		}
+		if strings.TrimSpace(outBuf.String()) == "" {
+			if options.Force {
+				return nil
+			}
+			return fmt.Errorf("%w: volume %q", containers.ErrNotFound, volumeReference)
+		}
+		outputName, outputErr := asId(outBuf)
+		if outputErr != nil {
+			return outputErr
+		}
+		if outputName != volumeReference {
+			return fmt.Errorf("wslc volume remove returned name %q instead of %q", outputName, volumeReference)
 		}
 		return nil
 	})
