@@ -417,15 +417,27 @@ func handleLogicalContainerPhysical(
 			data.message = imageErr.Error()
 			return noChange
 		}
-		change |= reconciler.projectLogicalContainerImageLogs(ctx, container, imageRef, log)
+		image, imageChange := reconciler.observeLogicalContainerImage(ctx, container, imageRef, log)
+		change |= imageChange
 		networksReady, physicalNetworks, networkMessage, resolveErr := reconciler.resolveLogicalContainerNetworks(ctx, container)
-		if resolveErr != nil {
-			log.Error(resolveErr, "Failed to resolve logical container networks")
-			data.progress = physicalResourceProgressRetryPending
-			data.message = resolveErr.Error()
-			return change
-		}
 		if !networksReady {
+			if image != nil && image.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed {
+				imageReady := apimeta.FindStatusCondition(image.Status.Conditions, string(apiv2.ConditionReady))
+				if imageReady != nil && imageReady.ObservedGeneration == image.Generation {
+					data.progress, data.reason = physicalResourceProgressFailed, apiv2.PhysicalContainerReasonImageFailed
+					data.message = fmt.Sprintf("PhysicalContainerImage %q failed: %s: %s", imageRef, imageReady.Reason, imageReady.Message)
+					if data.lease != nil {
+						return change | reconciler.scheduleLogicalContainerLeaseSettlement(container, data, nil, log)
+					}
+					return change
+				}
+			}
+			if resolveErr != nil {
+				log.Error(resolveErr, "Failed to resolve logical container networks")
+				data.progress = physicalResourceProgressRetryPending
+				data.message = resolveErr.Error()
+				return change
+			}
 			data.message = networkMessage
 			return change
 		}
@@ -617,7 +629,8 @@ func handleLogicalContainerRuntime(
 	if physicalContainer.Spec.Container != nil {
 		imageRefForLogs = physicalContainer.Spec.Container.ImageRef
 	}
-	change |= reconciler.projectLogicalContainerImageLogs(ctx, container, imageRefForLogs, log)
+	_, imageChange := reconciler.observeLogicalContainerImage(ctx, container, imageRefForLogs, log)
+	change |= imageChange
 	if container.Spec.Container != nil && container.Spec.Container.Image != nil {
 		imageRef := ""
 		if physicalContainer.Spec.Container != nil {
@@ -716,12 +729,13 @@ func applyLogicalContainerPhysicalDetails(
 	return change
 }
 
-func (r *LogicalContainerReconciler) projectLogicalContainerImageLogs(
+func (r *LogicalContainerReconciler) observeLogicalContainerImage(
 	ctx context.Context, container *apiv2.LogicalContainer, imageRef string, log logr.Logger,
-) objectChange {
+) (*apiv2.PhysicalContainerImage, objectChange) {
+	var image *apiv2.PhysicalContainerImage
 	var imageLogs *apiv2.LogSource
 	if imageRef != "" {
-		image := &apiv2.PhysicalContainerImage{}
+		image = &apiv2.PhysicalContainerImage{}
 		imageName := commonapi.AsNamespacedName(imageRef, container.Namespace)
 		getErr := r.Get(ctx, imageName, image)
 		if apierrors.IsNotFound(getErr) {
@@ -729,17 +743,19 @@ func (r *LogicalContainerReconciler) projectLogicalContainerImageLogs(
 		}
 		if getErr != nil && !apierrors.IsNotFound(getErr) {
 			log.Error(getErr, "Failed to observe image startup logs", "Image", imageName)
-			return additionalReconciliationNeeded
+			return nil, additionalReconciliationNeeded
 		}
 		if getErr == nil {
 			imageLogs = image.GetLogSource()
+		} else {
+			image = nil
 		}
 	}
 	if !reflect.DeepEqual(container.Status.StartupLogs, imageLogs) {
 		container.Status.StartupLogs = imageLogs
-		return statusChanged
+		return image, statusChanged
 	}
-	return noChange
+	return image, noChange
 }
 
 func handleUnknownLogicalContainerState(

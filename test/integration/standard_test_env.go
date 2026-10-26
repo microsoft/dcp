@@ -53,7 +53,7 @@ type TestEnvironmentInfo struct {
 
 type TestEnvironmentOptions struct {
 	DecoratePhysicalProcessExecutor func(process.Executor) process.Executor
-	DecorateClient                  func(ctrl_client.Client) ctrl_client.Client
+	DecorateAPIClient               func(ctrl_client.Client) ctrl_client.Client
 	WorkloadID                      commonapi.WorkloadID
 	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
 	DecorateAPIReader               func(ctrl_client.Reader) ctrl_client.Reader
@@ -198,13 +198,17 @@ func StartTestEnvironmentWithOptions(
 	})
 
 	opts := controllers.NewControllerManagerOptions(ctx, serverInfo.Client.Scheme(), log)
-	if options.DecorateClient != nil {
+	if options.DecorateAPIClient != nil {
 		opts.NewClient = func(config *rest.Config, clientOptions ctrl_client.Options) (ctrl_client.Client, error) {
 			apiClient, clientErr := ctrl_client.New(config, clientOptions)
 			if clientErr != nil {
 				return nil, clientErr
 			}
-			return options.DecorateClient(apiClient), nil
+			decoratedClient := options.DecorateAPIClient(apiClient)
+			if decoratedClient == nil {
+				return nil, fmt.Errorf("API client decorator returned nil")
+			}
+			return decoratedClient, nil
 		}
 	}
 	mgr, err := ctrl.NewManager(serverInfo.ClientConfig, opts)
