@@ -191,7 +191,6 @@ var physicalContainerNetworkProjections = physicalResourceProjectionTable[physic
 			phase: apiv2.PhysicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing,
 			message:         "Runtime network was not found.",
-			requeue:         true, requeueDelay: MonitoringDelay,
 		},
 		{state: physicalContainerNetworkStateRuntime, progress: physicalResourceProgressRetryPending}: {
 			phase: apiv2.PhysicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
