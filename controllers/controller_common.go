@@ -75,13 +75,17 @@ func v2LabelsToMap(labels []commonapi.Label) map[string]string {
 }
 
 func setRuntimeLabel(labels []commonapi.Label, key string, value string) []commonapi.Label {
+	found := false
 	for i := range labels {
 		if labels[i].Key == key {
 			labels[i].Value = value
-			return labels
+			found = true
 		}
 	}
-	return append(labels, commonapi.Label{Key: key, Value: value})
+	if !found {
+		labels = append(labels, commonapi.Label{Key: key, Value: value})
+	}
+	return labels
 }
 
 func physicalResourceCreationLabels(

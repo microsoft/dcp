@@ -121,7 +121,7 @@ func TestV2ContainerExecMissingBackingProjectionSurvivesStatusConflict(t *testin
 	t.Cleanup(cancel)
 	var conflictClient *containerExecStatusConflictClient
 	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, containerExecTestControllers, t.Name(), t.TempDir(),
-		TestEnvironmentOptions{DecorateClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
 			conflictClient = &containerExecStatusConflictClient{Client: apiClient}
 			return conflictClient
 		}})

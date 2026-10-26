@@ -177,7 +177,7 @@ func TestV2ContainerExecLaunchFailureIsTerminal(t *testing.T) {
 	t.Cleanup(cancel)
 	var observer *containerExecReconcileObserver
 	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, containerExecTestControllers, t.Name(), t.TempDir(),
-		TestEnvironmentOptions{DecorateClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
 			observer = &containerExecReconcileObserver{Client: apiClient, first: make(chan struct{}), second: make(chan struct{})}
 			return observer
 		}})

@@ -80,7 +80,7 @@ func TestV2PhysicalContainerExecRejectsReplacementAfterPreflightRetry(t *testing
 				launchReader = &containerExecLaunchReader{Reader: reader, entered: make(chan struct{}), release: make(chan struct{})}
 				return launchReader
 			},
-			DecorateClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
 				retryReader = &containerExecRetryReader{Client: apiClient, entered: make(chan struct{}), release: make(chan struct{})}
 				return retryReader
 			},
@@ -154,7 +154,7 @@ func TestV2LogicalContainerExecRecoversLostPhysicalCreateResponse(t *testing.T) 
 	t.Cleanup(cancel)
 	var lostCreate *containerExecLostCreateClient
 	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, containerExecTestControllers, t.Name(), t.TempDir(),
-		TestEnvironmentOptions{DecorateClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
 			lostCreate = &containerExecLostCreateClient{Client: apiClient, created: make(chan *apiv2.PhysicalContainerExec, 1), release: make(chan struct{})}
 			return lostCreate
 		}})

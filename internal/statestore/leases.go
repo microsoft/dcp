@@ -258,12 +258,12 @@ func (s *Store) VerifyResourceLeaseHeld(ctx context.Context, resource LeasableRe
 	return nil
 }
 
-func (s *Store) WithResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessHandle, revalidationInterval time.Duration, f func(context.Context, *ResourceLease) error) error {
+func (s *Store) WithResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessHandle, revalidationInterval time.Duration, f func(context.Context, *ResourceLease) error, options ...ResourceLeaseOption) error {
 	if f == nil {
 		return fmt.Errorf("%w: lease callback cannot be nil", ErrInvalidArgument)
 	}
 
-	lease, acquireErr := s.AcquireResourceLease(ctx, resource, ownerProcess, revalidationInterval)
+	lease, acquireErr := s.AcquireResourceLease(ctx, resource, ownerProcess, revalidationInterval, options...)
 	if acquireErr != nil {
 		return acquireErr
 	}

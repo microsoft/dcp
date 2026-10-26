@@ -77,7 +77,7 @@ func TestV2LogicalProcessControllerFailsWhenPersistentBackingDisappears(t *testi
 			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 				LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
 				TestEnvironmentOptions{
-					DecorateClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+					DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
 						return &processCreateLostResponseClient{Client: apiClient, created: created, release: release}
 					},
 					DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
@@ -187,7 +187,7 @@ func TestV2LogicalProcessControllerRecoversCreatedChildBeforeForwardingStop(t *t
 			defer unblock()
 			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 				LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
-				TestEnvironmentOptions{DecorateClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
 					return &processCreateLostResponseClient{Client: apiClient, created: created, release: release,
 						responseError: errors.New("applied physical process create response lost")}
 				}})
