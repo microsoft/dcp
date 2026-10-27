@@ -115,10 +115,6 @@ func (r *LogicalContainerNetworkReconciler) Reconcile(ctx context.Context, req c
 	}
 	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, network.GetResourceId())
-	stateKey, previousData := r.networkData.BorrowByNamespacedName(req.NamespacedName)
-	if previousData != nil && stateKey != network.UID {
-		r.discardLogicalContainerNetworkData(req.NamespacedName, log)
-	}
 	r.networkData.RunDeferredOps(req.NamespacedName, &network)
 	_, data := r.networkData.BorrowByNamespacedName(req.NamespacedName)
 	if !network.DeletionTimestamp.IsZero() && data.operationInProgress() && data.state != logicalContainerNetworkStateDelete {
@@ -271,6 +267,7 @@ func handleLogicalContainerNetworkPhysical(
 	}
 	data.physicalNetworkUID = physical.UID
 	data.pendingNetworkID = ""
+	data.generatedNetworkName = ""
 	data.replaceExisting = false
 	data.state, data.progress = logicalContainerNetworkStateRuntime, physicalResourceProgressNotReady
 	return handleLogicalContainerNetworkRuntime(ctx, reconciler, network, data.state, data, log)
