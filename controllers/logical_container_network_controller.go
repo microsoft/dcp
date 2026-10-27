@@ -125,9 +125,11 @@ func (r *LogicalContainerNetworkReconciler) Reconcile(ctx context.Context, req c
 	delay := StandardDelay
 	if !network.DeletionTimestamp.IsZero() && !data.operationInProgress() {
 		change, delay = r.handleDeletionRequest(ctx, &network, data, log)
-	} else if change = ensureFinalizer(&network, logicalContainerNetworkFinalizer, log); change != noChange {
 	} else {
-		change, delay = r.manageLogicalContainerNetwork(ctx, &network, data, log)
+		change = ensureFinalizer(&network, logicalContainerNetworkFinalizer, log)
+		if change == noChange {
+			change, delay = r.manageLogicalContainerNetwork(ctx, &network, data, log)
+		}
 	}
 	return r.SaveChangesWithDelay(ctx, &network, patch, change, delay, nil, log)
 }
