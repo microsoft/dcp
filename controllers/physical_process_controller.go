@@ -116,9 +116,11 @@ func (r *PhysicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	reconciliationDelay := StandardDelay
 	if !physicalProcess.DeletionTimestamp.IsZero() && !data.operationInProgress() {
 		change, reconciliationDelay = r.handleDeletionRequest(&physicalProcess, data, log)
-	} else if change = ensureFinalizer(&physicalProcess, physicalProcessFinalizer, log); change != noChange {
 	} else {
-		change, reconciliationDelay = r.managePhysicalProcess(ctx, &physicalProcess, data, log)
+		change = ensureFinalizer(&physicalProcess, physicalProcessFinalizer, log)
+		if change == noChange {
+			change, reconciliationDelay = r.managePhysicalProcess(ctx, &physicalProcess, data, log)
+		}
 	}
 
 	return r.SaveChangesWithDelay(

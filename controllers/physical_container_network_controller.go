@@ -209,9 +209,11 @@ func (r *PhysicalContainerNetworkReconciler) Reconcile(ctx context.Context, req 
 
 	if !network.DeletionTimestamp.IsZero() && !data.operationInProgress() {
 		change, reconciliationDelay = r.handleDeletionRequest(ctx, &network, data, log)
-	} else if change = ensureFinalizer(&network, physicalContainerNetworkFinalizer, log); change != noChange {
 	} else {
-		change, reconciliationDelay = r.managePhysicalContainerNetwork(ctx, &network, data, log)
+		change = ensureFinalizer(&network, physicalContainerNetworkFinalizer, log)
+		if change == noChange {
+			change, reconciliationDelay = r.managePhysicalContainerNetwork(ctx, &network, data, log)
+		}
 	}
 
 	return r.SaveChangesWithDelay(ctx, &network, patch, change, reconciliationDelay, nil, log)

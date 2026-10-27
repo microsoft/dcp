@@ -287,9 +287,11 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if !container.DeletionTimestamp.IsZero() &&
 		!hasFinalizer(&container, LogicalBackingFinalizer) && !data.operationInProgress() {
 		change, reconciliationDelay = r.handleDeletionRequest(ctx, &container, data, log)
-	} else if change = ensureFinalizer(&container, physicalContainerFinalizer, log); change != noChange {
 	} else {
-		change, reconciliationDelay = r.managePhysicalContainer(ctx, &container, data, log)
+		change = ensureFinalizer(&container, physicalContainerFinalizer, log)
+		if change == noChange {
+			change, reconciliationDelay = r.managePhysicalContainer(ctx, &container, data, log)
+		}
 	}
 	return r.SaveChangesWithDelay(ctx, &container, patch, change, reconciliationDelay, nil, log)
 }

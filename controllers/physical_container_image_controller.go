@@ -228,9 +228,11 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 		r.discardPhysicalContainerImageData(image.NamespacedName(), data, log)
 		defer logger.ReleaseResourceLog(image.GetResourceId())
 		change = deleteFinalizer(&image, physicalContainerImageFinalizer, log)
-	} else if change = ensureFinalizer(&image, physicalContainerImageFinalizer, log); change != noChange {
 	} else {
-		change, reconciliationDelay = r.managePhysicalContainerImage(ctx, &image, data, log)
+		change = ensureFinalizer(&image, physicalContainerImageFinalizer, log)
+		if change == noChange {
+			change, reconciliationDelay = r.managePhysicalContainerImage(ctx, &image, data, log)
+		}
 	}
 
 	return r.SaveChangesWithDelay(ctx, &image, patch, change, reconciliationDelay, nil, log)
