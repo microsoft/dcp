@@ -116,9 +116,11 @@ func (r *PhysicalContainerVolumeReconciler) Reconcile(ctx context.Context, req c
 
 	if !volume.DeletionTimestamp.IsZero() && !data.operationInProgress() {
 		change, reconciliationDelay = r.handleDeletionRequest(ctx, &volume, data, log)
-	} else if change = ensureFinalizer(&volume, physicalContainerVolumeFinalizer, log); change != noChange {
 	} else {
-		change, reconciliationDelay = r.managePhysicalContainerVolume(ctx, &volume, data, log)
+		change = ensureFinalizer(&volume, physicalContainerVolumeFinalizer, log)
+		if change == noChange {
+			change, reconciliationDelay = r.managePhysicalContainerVolume(ctx, &volume, data, log)
+		}
 	}
 
 	return r.SaveChangesWithDelay(ctx, &volume, patch, change, reconciliationDelay, nil, log)

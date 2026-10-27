@@ -224,9 +224,11 @@ func (r *LogicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	delay := StandardDelay
 	if !container.DeletionTimestamp.IsZero() && !data.operationInProgress() {
 		change, delay = r.handleDeletionRequest(ctx, &container, data, log)
-	} else if change = ensureFinalizer(&container, logicalContainerFinalizer, log); change != noChange {
 	} else {
-		change, delay = r.manageLogicalContainer(ctx, &container, data, log)
+		change = ensureFinalizer(&container, logicalContainerFinalizer, log)
+		if change == noChange {
+			change, delay = r.manageLogicalContainer(ctx, &container, data, log)
+		}
 	}
 	return r.SaveChangesWithDelay(ctx, &container, patch, change, delay, nil, log)
 }
