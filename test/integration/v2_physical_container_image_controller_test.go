@@ -303,7 +303,9 @@ func TestV2PhysicalContainerImageControllerRepairsStatusFromAuthoritativeData(t 
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
 }
 
-func TestV2PhysicalContainerImageControllerRetriesMissingPullResultWithoutRepulling(t *testing.T) {
+// Verifies that an initially missing pull result exhausts inspection retries without repulling
+// and remains terminal after inspection becomes available again.
+func TestV2PhysicalContainerImageControllerFailsMissingPullResultWithoutRepulling(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -326,17 +328,21 @@ func TestV2PhysicalContainerImageControllerRetriesMissingPullResultWithoutRepull
 	}
 	require.NoError(t, client.Create(ctx, image))
 
-	unknownImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
-	require.Empty(t, unknownImage.Status.ImageID)
-	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound)
+	failedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
+	require.Empty(t, failedImage.Status.ImageID)
+	requireReadyCondition(t, failedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound)
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
 	require.Never(t, func() bool {
 		return containerOrchestrator.PullImageCallCount(sourceImage) > 1
 	}, 2*time.Second, 250*time.Millisecond)
 
 	restoreInspection()
-	readyImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
-	require.NotEmpty(t, readyImage.Status.ImageID)
+	require.NoError(t, retryOnConflict(ctx, image.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainerImage) error {
+		current.Annotations = map[string]string{"test.dcp.microsoft.com/reconcile": "after-exhaustion"}
+		return client.Update(updateCtx, current)
+	}))
+	stillFailed := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
+	require.Empty(t, stillFailed.Status.ImageID)
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
 }
 
@@ -423,7 +429,9 @@ func TestV2PhysicalContainerImageControllerReportsMissingExistingImage(t *testin
 	requireReadyCondition(t, updatedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound)
 }
 
-func TestV2PhysicalContainerImageControllerReportsUnknownWhenInspectionFails(t *testing.T) {
+// Verifies that repeated runtime inspection failures become terminal after the bounded retry
+// budget is exhausted, retaining the previously verified image identity.
+func TestV2PhysicalContainerImageControllerFailsWhenInspectionRetriesExhausted(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -442,10 +450,15 @@ func TestV2PhysicalContainerImageControllerReportsUnknownWhenInspectionFails(t *
 		return client.Update(ctx, currentImage)
 	}))
 
-	unknownImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
-	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed)
+	failedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
+	requireReadyCondition(t, failedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed)
+	require.Equal(t, image.Status.ImageID, failedImage.Status.ImageID)
 	restoreInspection()
-	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.NoError(t, retryOnConflict(ctx, image.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainerImage) error {
+		current.Annotations = map[string]string{"test.dcp.microsoft.com/reconcile": "after-exhaustion"}
+		return client.Update(updateCtx, current)
+	}))
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
 }
 
 func TestV2PhysicalContainerImageControllerBlocksWithoutNamespace(t *testing.T) {
@@ -1336,8 +1349,9 @@ func TestV2PhysicalContainerImageControllerReportsMissingBuildImageID(t *testing
 	require.Equal(t, "Building image\n", output)
 }
 
-// Verifies that completed build output finishes independently of inspection retries without rebuilding the image.
-func TestV2PhysicalContainerImageControllerRetriesCompletedBuildInspectionWithoutRebuilding(t *testing.T) {
+// Verifies that completed build output remains available after bounded inspection retries fail
+// without rebuilding the image or reopening its completed capture.
+func TestV2PhysicalContainerImageControllerFailsCompletedBuildInspectionWithoutRebuilding(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -1360,15 +1374,19 @@ func TestV2PhysicalContainerImageControllerRetriesCompletedBuildInspectionWithou
 	require.NoError(t, client.Create(ctx, image))
 	waitBuildImageCallCount(t, ctx, targetImage, 1)
 
-	unknownImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
-	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed)
-	require.True(t, unknownImage.Status.LogsComplete)
+	failedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
+	requireReadyCondition(t, failedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed)
+	require.True(t, failedImage.Status.LogsComplete)
 	output, outputErr := readV2ContainerLog(ctx, image, apiv2.ResourceLogOptions{Follow: true})
 	require.NoError(t, outputErr)
 	require.Equal(t, "Building image\n", output)
 	restoreInspection()
 
-	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.NoError(t, retryOnConflict(ctx, image.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainerImage) error {
+		current.Annotations = map[string]string{"test.dcp.microsoft.com/reconcile": "after-exhaustion"}
+		return client.Update(updateCtx, current)
+	}))
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
 	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
 }
 
