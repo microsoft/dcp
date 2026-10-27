@@ -39,7 +39,6 @@ import (
 var (
 	logicalContainerNetworkFinalizer    = fmt.Sprintf("%s/logicalcontainernetwork-reconciler", apiv2.GroupVersion.Group)
 	logicalContainerNetworkDataHandlers = map[logicalContainerNetworkState]logicalContainerNetworkDataHandlerFunc{
-		logicalContainerNetworkStateNamespace: handleLogicalContainerNetworkNamespace,
 		logicalContainerNetworkStateLifecycle: handleLogicalContainerNetworkLifecycle,
 		logicalContainerNetworkStateLookup:    handleLogicalContainerNetworkLookup,
 		logicalContainerNetworkStatePhysical:  handleLogicalContainerNetworkPhysical,
@@ -140,12 +139,21 @@ func (r *LogicalContainerNetworkReconciler) Reconcile(ctx context.Context, req c
 func (r *LogicalContainerNetworkReconciler) manageLogicalContainerNetwork(
 	ctx context.Context, network *apiv2.LogicalContainerNetwork, data *logicalContainerNetworkData, log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
+	namespaceReady, change := guardResourceNamespace(ctx, r.Client, network,
+		&network.Status.Phase, &network.Status.Conditions,
+		apiv2.LogicalContainerNetworkPhasePending, apiv2.LogicalContainerNetworkPhaseUnknown, log)
+	if !namespaceReady {
+		return change, StandardDelay
+	}
 	if data == nil {
-		data = &logicalContainerNetworkData{state: logicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotReady}
+		data = &logicalContainerNetworkData{state: logicalContainerNetworkStateLifecycle, progress: physicalResourceProgressNotReady}
+		if network.Spec.EffectiveMode() == apiv2.LogicalContainerNetworkModeExisting {
+			data.state = logicalContainerNetworkStateLookup
+		}
 		r.networkData.Store(network.NamespacedName(), network.UID, data.Clone())
 	}
 	handler := getStateInitializer(logicalContainerNetworkDataHandlers, data.state, log)
-	change := handler(ctx, r, network, data.state, data, log)
+	change |= handler(ctx, r, network, data.state, data, log)
 	_ = r.networkData.Update(network.NamespacedName(), network.UID, data)
 	dataChange, delay, valid := data.applyTo(network)
 	if !valid {
@@ -153,30 +161,6 @@ func (r *LogicalContainerNetworkReconciler) manageLogicalContainerNetwork(
 			"LogicalContainerNetwork reached invalid reconciliation state")
 	}
 	return change | dataChange, delay
-}
-
-func handleLogicalContainerNetworkNamespace(
-	ctx context.Context, reconciler *LogicalContainerNetworkReconciler, network *apiv2.LogicalContainerNetwork,
-	_ logicalContainerNetworkState, data *logicalContainerNetworkData, log logr.Logger,
-) objectChange {
-	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, network.Namespace)
-	if !namespaceReady {
-		data.progress, data.reason = physicalResourceProgressNotReady, namespaceReason
-		data.message = namespaceReadinessMessage(network.Namespace, namespaceReason)
-		if namespaceReason == apiv2.PhysicalResourceReasonNamespaceNotFound {
-			data.progress = physicalResourceProgressNotFound
-		}
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get namespace", "Namespace", network.Namespace)
-			data.progress = physicalResourceProgressRetryPending
-			data.message = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
-		}
-		return noChange
-	}
-	if network.Spec.EffectiveMode() == apiv2.LogicalContainerNetworkModeExisting {
-		return reconciler.scheduleLogicalContainerNetworkOperation(network, data, logicalContainerNetworkStateLookup, reconciler.lookupLogicalContainerNetwork, log)
-	}
-	return reconciler.scheduleLogicalContainerNetworkOperation(network, data, logicalContainerNetworkStateLifecycle, reconciler.prepareLogicalContainerNetworkLifecycle, log)
 }
 
 func handleLogicalContainerNetworkLifecycle(
@@ -239,16 +223,6 @@ func handleLogicalContainerNetworkPhysical(
 		return noChange
 	}
 	data.progress, data.reason, data.message = physicalResourceProgressNotReady, "", ""
-	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, network.Namespace)
-	if !namespaceReady {
-		data.reason, data.message = namespaceReason, namespaceReadinessMessage(network.Namespace, namespaceReason)
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get namespace before preparing physical network")
-			data.progress = physicalResourceProgressRetryPending
-			data.message = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
-		}
-		return noChange
-	}
 	if data.lease != nil {
 		verifyErr := reconciler.config.StateStore.VerifyResourceLeaseHeld(ctx, network, reconciler.config.ResourceLeaseOwner)
 		if verifyErr != nil {

@@ -19,8 +19,7 @@ type physicalContainerNetworkDataStateKey string
 type physicalContainerNetworkState int
 
 const (
-	physicalContainerNetworkStateNamespace physicalContainerNetworkState = iota + 1
-	physicalContainerNetworkStateResolve
+	physicalContainerNetworkStateResolve physicalContainerNetworkState = iota + 1
 	physicalContainerNetworkStateCreate
 	physicalContainerNetworkStateReplace
 	physicalContainerNetworkStateRuntime
@@ -48,7 +47,7 @@ type physicalContainerNetworkData struct {
 }
 
 func (data *physicalContainerNetworkData) operationInProgress() bool {
-	return (data.state == physicalContainerNetworkStateCreate ||
+	return data != nil && (data.state == physicalContainerNetworkStateCreate ||
 		data.state == physicalContainerNetworkStateReplace ||
 		data.state == physicalContainerNetworkStateRemove) &&
 		data.progress == physicalResourceProgressInProgress
@@ -136,27 +135,6 @@ func (data *physicalContainerNetworkData) applyTo(
 var physicalContainerNetworkProjections = physicalResourceProjectionTable[physicalContainerNetworkState, apiv2.PhysicalContainerNetworkPhase]{
 	invalidPhase: apiv2.PhysicalContainerNetworkPhaseUnknown,
 	projections: map[physicalResourceProjectionKey[physicalContainerNetworkState]]physicalResourceProjection[apiv2.PhysicalContainerNetworkPhase]{
-		{state: physicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotFound,
-		},
-		{state: physicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotReady}: {
-			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
-		},
-		{state: physicalContainerNetworkStateNamespace, progress: physicalResourceProgressTerminating}: {
-			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceTerminating,
-		},
-		{state: physicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotActive}: {
-			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotActive,
-		},
-		{state: physicalContainerNetworkStateNamespace, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.PhysicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed,
-			requeue:         true, requeueDelay: LongDelay,
-		},
 		{state: physicalContainerNetworkStateCreate, progress: physicalResourceProgressInProgress}: {
 			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerNetworkReasonCreating,

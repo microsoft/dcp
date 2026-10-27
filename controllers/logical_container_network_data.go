@@ -20,8 +20,7 @@ import (
 type logicalContainerNetworkState int
 
 const (
-	logicalContainerNetworkStateNamespace logicalContainerNetworkState = iota + 1
-	logicalContainerNetworkStateLifecycle
+	logicalContainerNetworkStateLifecycle logicalContainerNetworkState = iota + 1
 	logicalContainerNetworkStateLookup
 	logicalContainerNetworkStatePhysical
 	logicalContainerNetworkStateRuntime
@@ -103,18 +102,6 @@ func (data *logicalContainerNetworkData) applyTo(network *apiv2.LogicalContainer
 var logicalContainerNetworkProjections = physicalResourceProjectionTable[logicalContainerNetworkState, apiv2.LogicalContainerNetworkPhase]{
 	invalidPhase: apiv2.LogicalContainerNetworkPhaseUnknown,
 	projections: map[physicalResourceProjectionKey[logicalContainerNetworkState]]physicalResourceProjection[apiv2.LogicalContainerNetworkPhase]{
-		{state: logicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.LogicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotFound,
-		},
-		{state: logicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotReady}: {
-			phase: apiv2.LogicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
-		},
-		{state: logicalContainerNetworkStateNamespace, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.LogicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed, requeue: true, requeueDelay: LongDelay,
-		},
 		{state: logicalContainerNetworkStateLifecycle, progress: physicalResourceProgressInProgress}: {
 			phase: apiv2.LogicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PreparingLifecycle", message: "Logical network lifecycle preparation is in progress.",
