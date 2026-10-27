@@ -60,8 +60,6 @@ func (state physicalContainerState) String() string {
 	switch state {
 	case 0:
 		return "Unset"
-	case physicalContainerStateNamespace:
-		return "Namespace"
 	case physicalContainerStateResolve:
 		return "Resolve"
 	case physicalContainerStateImage:
@@ -95,8 +93,6 @@ func (state physicalContainerImageState) String() string {
 	switch state {
 	case 0:
 		return "Unset"
-	case physicalContainerImageStateNamespace:
-		return "Namespace"
 	case physicalContainerImageStateResolve:
 		return "Resolve"
 	case physicalContainerImageStatePull:
@@ -116,8 +112,6 @@ func (state physicalContainerNetworkState) String() string {
 	switch state {
 	case 0:
 		return "Unset"
-	case physicalContainerNetworkStateNamespace:
-		return "Namespace"
 	case physicalContainerNetworkStateResolve:
 		return "Resolve"
 	case physicalContainerNetworkStateCreate:
@@ -139,8 +133,6 @@ func (state physicalContainerVolumeState) String() string {
 	switch state {
 	case 0:
 		return "Unset"
-	case physicalContainerVolumeStateNamespace:
-		return "Namespace"
 	case physicalContainerVolumeStateResolve:
 		return "Resolve"
 	case physicalContainerVolumeStateCreate:
@@ -162,8 +154,6 @@ func (state physicalProcessState) String() string {
 	switch state {
 	case 0:
 		return "Unset"
-	case physicalProcessStateNamespace:
-		return "Namespace"
 	case physicalProcessStateResolve:
 		return "Resolve"
 	case physicalProcessStateLaunch:

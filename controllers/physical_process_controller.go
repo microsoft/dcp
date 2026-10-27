@@ -37,13 +37,12 @@ var (
 	physicalProcessFinalizer = fmt.Sprintf("%s/physicalprocess-reconciler", apiv2.GroupVersion.Group)
 
 	physicalProcessDataHandlers = map[physicalProcessState]physicalProcessDataHandlerFunc{
-		physicalProcessStateNamespace: handlePhysicalProcessNamespace,
-		physicalProcessStateResolve:   handlePhysicalProcessResolve,
-		physicalProcessStateLaunch:    handlePhysicalProcessLaunchState,
-		physicalProcessStateRuntime:   handlePhysicalProcessRuntime,
-		physicalProcessStateStop:      handlePhysicalProcessStopState,
-		physicalProcessStateInvalid:   handlePhysicalProcessTerminal,
-		0:                             handleUnknownPhysicalProcessState,
+		physicalProcessStateResolve: handlePhysicalProcessResolve,
+		physicalProcessStateLaunch:  handlePhysicalProcessLaunchState,
+		physicalProcessStateRuntime: handlePhysicalProcessRuntime,
+		physicalProcessStateStop:    handlePhysicalProcessStopState,
+		physicalProcessStateInvalid: handlePhysicalProcessTerminal,
+		0:                           handleUnknownPhysicalProcessState,
 	}
 )
 
@@ -110,32 +109,16 @@ func (r *PhysicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	getSucceededCounter.Add(ctx, 1)
 
 	r.processData.RunDeferredOps(req.NamespacedName, &physicalProcess)
-	stateKey, data := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
-	if data == nil {
-		stateKey, data = initialPhysicalProcessData(&physicalProcess)
-		r.processData.Store(physicalProcess.NamespacedName(), stateKey, data.Clone())
-	}
+	_, data := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
 	patch := ctrl_client.MergeFromWithOptions(physicalProcess.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	var change objectChange
 	reconciliationDelay := StandardDelay
-	finalizerAdded := false
-	if physicalProcess.DeletionTimestamp != nil && !physicalProcess.DeletionTimestamp.IsZero() && !data.operationInProgress() {
+	if !physicalProcess.DeletionTimestamp.IsZero() && !data.operationInProgress() {
 		change, reconciliationDelay = r.handleDeletionRequest(&physicalProcess, data, log)
 	} else if change = ensureFinalizer(&physicalProcess, physicalProcessFinalizer, log); change != noChange {
-		finalizerAdded = true
 	} else {
-		change = r.managePhysicalProcess(ctx, &physicalProcess, data, log)
-	}
-	if !finalizerAdded && hasFinalizer(&physicalProcess, physicalProcessFinalizer) {
-		_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
-		dataChange, delay, valid := data.applyTo(&physicalProcess)
-		change |= dataChange
-		reconciliationDelay = delay
-		if !valid {
-			log.Error(fmt.Errorf("invalid physical process state %v with progress %v", data.state, data.progress),
-				"Physical process reached invalid reconciliation state")
-		}
+		change, reconciliationDelay = r.managePhysicalProcess(ctx, &physicalProcess, data, log)
 	}
 
 	return r.SaveChangesWithDelay(
@@ -154,54 +137,29 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(
 	physicalProcess *apiv2.PhysicalProcess,
 	data *physicalProcessData,
 	log logr.Logger,
-) objectChange {
+) (objectChange, AdditionalReconciliationDelay) {
+	if data == nil {
+		ready, change := guardResourceNamespace(ctx, r.Client, physicalProcess,
+			&physicalProcess.Status.Phase, &physicalProcess.Status.Conditions,
+			apiv2.PhysicalProcessPhasePending, apiv2.PhysicalProcessPhaseUnknown, log)
+		if !ready {
+			return change, StandardDelay
+		}
+		data = &physicalProcessData{
+			resourceUID: physicalProcess.UID, state: physicalProcessStateResolve, progress: physicalResourceProgressInProgress,
+		}
+		r.processData.Store(physicalProcess.NamespacedName(), physicalProcessDataKey(physicalProcess), data.Clone())
+	}
 	handler := getStateInitializer(physicalProcessDataHandlers, data.state, log)
-	return handler(ctx, r, physicalProcess, data.state, data, log)
-}
-
-func initialPhysicalProcessData(physicalProcess *apiv2.PhysicalProcess) (physicalProcessDataStateKey, *physicalProcessData) {
-	return physicalProcessDataKey(physicalProcess), &physicalProcessData{
-		resourceUID: physicalProcess.UID,
-		state:       physicalProcessStateNamespace,
-		progress:    physicalResourceProgressNotReady,
+	change := handler(ctx, r, physicalProcess, data.state, data, log)
+	stateKey, _ := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
+	_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
+	dataChange, delay, valid := data.applyTo(physicalProcess)
+	if !valid {
+		log.Error(fmt.Errorf("invalid physical process state %v with progress %v", data.state, data.progress),
+			"Physical process reached invalid reconciliation state")
 	}
-}
-
-func handlePhysicalProcessNamespace(
-	ctx context.Context,
-	reconciler *PhysicalProcessReconciler,
-	physicalProcess *apiv2.PhysicalProcess,
-	_ physicalProcessState,
-	data *physicalProcessData,
-	log logr.Logger,
-) objectChange {
-	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, physicalProcess.Namespace)
-	if !namespaceReady {
-		data.state = physicalProcessStateNamespace
-		data.failureMessage = namespaceReadinessMessage(physicalProcess.Namespace, namespaceReason)
-		switch namespaceReason {
-		case apiv2.PhysicalResourceReasonNamespaceNotFound:
-			data.progress = physicalResourceProgressNotFound
-		case apiv2.PhysicalResourceReasonNamespaceTerminating:
-			data.progress = physicalResourceProgressTerminating
-		case apiv2.PhysicalResourceReasonNamespaceNotActive:
-			data.progress = physicalResourceProgressNotActive
-		default:
-			data.progress = physicalResourceProgressNotReady
-		}
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get namespace", "Namespace", physicalProcess.Namespace)
-			data.progress = physicalResourceProgressRetryPending
-			data.failureMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
-		}
-		return noChange
-	}
-
-	data.state = physicalProcessStateResolve
-	data.progress = physicalResourceProgressInProgress
-	data.failureReason = ""
-	data.failureMessage = ""
-	return handlePhysicalProcessResolve(ctx, reconciler, physicalProcess, data.state, data, log)
+	return change | dataChange, delay
 }
 
 func handlePhysicalProcessResolve(
@@ -830,7 +788,20 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(
 	physicalProcess *apiv2.PhysicalProcess,
 	data *physicalProcessData,
 	log logr.Logger,
-) (objectChange, AdditionalReconciliationDelay) {
+) (change objectChange, delay AdditionalReconciliationDelay) {
+	defer func() {
+		if data != nil {
+			stateKey, _ := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
+			_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
+			dataChange, projectionDelay, valid := data.applyTo(physicalProcess)
+			change |= dataChange
+			delay = projectionDelay
+			if !valid {
+				log.Error(fmt.Errorf("invalid physical process state %v with progress %v", data.state, data.progress),
+					"Physical process reached invalid reconciliation state")
+			}
+		}
+	}()
 	retain := physicalProcess.Spec.Process == nil || physicalProcess.Spec.Process.RetainRuntimeProcess
 	if data != nil && data.cleanupUnconfirmed {
 		cleanupFinished := data.progress == physicalResourceProgressExited ||
@@ -855,6 +826,7 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(
 		data.progress == physicalResourceProgressExited ||
 		data.progress == physicalResourceProgressMissing {
 		r.processData.DeleteByNamespacedName(physicalProcess.NamespacedName())
+		data = nil
 		return deleteFinalizer(physicalProcess, physicalProcessFinalizer, log), StandardDelay
 	}
 
