@@ -121,42 +121,38 @@ func (r *LogicalContainerNetworkReconciler) Reconcile(ctx context.Context, req c
 		r.discardLogicalContainerNetworkData(req.NamespacedName, log)
 	}
 	r.networkData.RunDeferredOps(req.NamespacedName, &network)
-	stateKey, data := r.networkData.BorrowByNamespacedName(req.NamespacedName)
-	if data == nil {
-		stateKey = network.UID
-		data = &logicalContainerNetworkData{state: logicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotReady}
-		r.networkData.Store(req.NamespacedName, stateKey, data.Clone())
-	}
-	deleting := !network.DeletionTimestamp.IsZero()
-	if deleting && data.operation != nil && data.state != logicalContainerNetworkStateDelete {
+	_, data := r.networkData.BorrowByNamespacedName(req.NamespacedName)
+	if !network.DeletionTimestamp.IsZero() && data.operationInProgress() && data.state != logicalContainerNetworkStateDelete {
 		data.operation.cancel()
 	}
 	patch := ctrl_client.MergeFromWithOptions(network.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 	var change objectChange
 	delay := StandardDelay
-	finalizerAdded := false
-	if deleting && data.operation == nil {
-		change = r.handleDeletionRequest(ctx, &network, data, log)
+	if !network.DeletionTimestamp.IsZero() && !data.operationInProgress() {
+		change, delay = r.handleDeletionRequest(ctx, &network, data, log)
 	} else if change = ensureFinalizer(&network, logicalContainerNetworkFinalizer, log); change != noChange {
-		finalizerAdded = true
 	} else {
-		stateHandler := getStateInitializer(logicalContainerNetworkDataHandlers, data.state, log)
-		change = stateHandler(ctx, r, &network, data.state, data, log)
-	}
-	if !finalizerAdded && hasFinalizer(&network, logicalContainerNetworkFinalizer) {
-		_ = r.networkData.Update(req.NamespacedName, stateKey, data)
-		dataChange, projectionDelay, valid := data.applyTo(&network)
-		change |= dataChange
-		delay = projectionDelay
-		if !valid {
-			log.Error(fmt.Errorf("invalid logical network state %v with progress %v", data.state, data.progress),
-				"LogicalContainerNetwork reached invalid reconciliation state")
-		}
-	}
-	if !hasFinalizer(&network, logicalContainerNetworkFinalizer) {
-		defer logger.ReleaseResourceLog(network.GetResourceId())
+		change, delay = r.manageLogicalContainerNetwork(ctx, &network, data, log)
 	}
 	return r.SaveChangesWithDelay(ctx, &network, patch, change, delay, nil, log)
+}
+
+func (r *LogicalContainerNetworkReconciler) manageLogicalContainerNetwork(
+	ctx context.Context, network *apiv2.LogicalContainerNetwork, data *logicalContainerNetworkData, log logr.Logger,
+) (objectChange, AdditionalReconciliationDelay) {
+	if data == nil {
+		data = &logicalContainerNetworkData{state: logicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotReady}
+		r.networkData.Store(network.NamespacedName(), network.UID, data.Clone())
+	}
+	handler := getStateInitializer(logicalContainerNetworkDataHandlers, data.state, log)
+	change := handler(ctx, r, network, data.state, data, log)
+	_ = r.networkData.Update(network.NamespacedName(), network.UID, data)
+	dataChange, delay, valid := data.applyTo(network)
+	if !valid {
+		log.Error(fmt.Errorf("invalid logical network state %v with progress %v", data.state, data.progress),
+			"LogicalContainerNetwork reached invalid reconciliation state")
+	}
+	return change | dataChange, delay
 }
 
 func handleLogicalContainerNetworkNamespace(
@@ -267,6 +263,7 @@ func handleLogicalContainerNetworkPhysical(
 		ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(network.UID), Namespace: network.Namespace},
 		Spec:       physicalSpec,
 	}
+	InitializeLogicalBackingFinalizers(physical, physicalContainerNetworkFinalizer)
 	ownerErr := ctrl.SetControllerReference(network, physical, reconciler.Scheme())
 	if ownerErr != nil {
 		log.Error(ownerErr, "Failed to set physical network owner")
@@ -275,13 +272,14 @@ func handleLogicalContainerNetworkPhysical(
 		return noChange
 	}
 	createErr := reconciler.Create(ctx, physical)
-	if apierrors.IsAlreadyExists(createErr) {
+	if createErr != nil {
 		getErr := reconciler.NoCacheClient.Get(ctx, physical.NamespacedName(), physical)
 		if getErr != nil {
-			createErr = getErr
-		} else if !metav1.IsControlledBy(physical, network) || !reflect.DeepEqual(physical.Spec, physicalSpec) {
-			createErr = fmt.Errorf("physical network %q has a different owner or spec", physical.NamespacedName())
-			data.progress = physicalResourceProgressFailed
+			createErr = fmt.Errorf("create physical network and verify whether it exists: %w", errors.Join(createErr, getErr))
+		} else if !metav1.IsControlledBy(physical, network) || !reflect.DeepEqual(physical.Spec, physicalSpec) ||
+			!hasFinalizer(physical, LogicalBackingFinalizer) {
+			createErr = fmt.Errorf("physical network %q has a different owner, spec, or backing finalizer", physical.NamespacedName())
+			data.state, data.progress, data.reason = logicalContainerNetworkStateInvalid, physicalResourceProgressFailed, "PhysicalNetworkChanged"
 		} else {
 			createErr = nil
 		}
@@ -292,6 +290,9 @@ func handleLogicalContainerNetworkPhysical(
 			data.progress = physicalResourceProgressRetryPending
 		}
 		data.message = fmt.Sprintf("Failed to prepare backing physical network: %v", createErr)
+		if data.state == logicalContainerNetworkStateInvalid && data.lease != nil {
+			return reconciler.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log)
+		}
 		return noChange
 	}
 	data.physicalNetworkUID = physical.UID
@@ -339,7 +340,9 @@ func handleLogicalContainerNetworkRuntime(
 		getErr = reconciler.NoCacheClient.Get(ctx, physicalName, physical)
 	}
 	if apierrors.IsNotFound(getErr) {
-		data.progress, data.reason, data.message = physicalResourceProgressMissing, "", "The backing PhysicalContainerNetwork no longer exists."
+		data.state, data.progress, data.reason = logicalContainerNetworkStateInvalid, physicalResourceProgressFailed, "PhysicalNetworkMissing"
+		data.message = "The backing PhysicalContainerNetwork disappeared before logical release."
+		log.Error(getErr, "PhysicalContainerNetwork disappeared before logical release")
 		change := applyLogicalContainerNetworkPhysicalDetails(network, &apiv2.PhysicalContainerNetworkStatus{})
 		if data.lease != nil {
 			return change | reconciler.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log)
@@ -354,18 +357,25 @@ func handleLogicalContainerNetworkRuntime(
 	}
 	if physical.UID != data.physicalNetworkUID || !metav1.IsControlledBy(physical, network) {
 		log.Error(fmt.Errorf("physical network %q identity or owner changed", physicalName), "LogicalContainerNetwork backing resource changed")
-		data.progress, data.reason, data.message = physicalResourceProgressFailed, "PhysicalNetworkChanged", "The backing PhysicalContainerNetwork identity or owner changed."
+		data.state, data.progress, data.reason = logicalContainerNetworkStateInvalid, physicalResourceProgressFailed, "PhysicalNetworkChanged"
+		data.message = "The backing PhysicalContainerNetwork identity or owner changed."
+		if data.lease != nil {
+			return reconciler.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log)
+		}
+		return noChange
+	}
+	data.reason, data.message = "", ""
+	if !hasFinalizer(physical, LogicalBackingFinalizer) {
+		finalizerErr := fmt.Errorf("backing physical network %q lost the logical backing finalizer", physicalName)
+		log.Error(finalizerErr, "LogicalContainerNetwork backing deletion protocol was violated")
+		data.state, data.progress, data.reason = logicalContainerNetworkStateInvalid, physicalResourceProgressFailed, "PhysicalNetworkFinalizerLost"
+		data.message = finalizerErr.Error()
 		if data.lease != nil {
 			return reconciler.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log)
 		}
 		return noChange
 	}
 	change := applyLogicalContainerNetworkPhysicalDetails(network, &physical.Status)
-	data.reason, data.message = "", ""
-	if !physical.DeletionTimestamp.IsZero() {
-		data.progress, data.reason, data.message = physicalResourceProgressUnknown, "PhysicalNetworkTerminating", "The backing PhysicalContainerNetwork is being deleted."
-		return change
-	}
 	ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
 	if ready == nil || ready.ObservedGeneration != physical.Generation {
 		data.progress, data.message = physicalResourceProgressNotReady, "Waiting for the physical controller to observe the desired network configuration."
@@ -420,9 +430,15 @@ func applyLogicalContainerNetworkPhysicalDetails(network *apiv2.LogicalContainer
 }
 
 func handleUnknownLogicalContainerNetworkState(
-	_ context.Context, _ *LogicalContainerNetworkReconciler, _ *apiv2.LogicalContainerNetwork,
+	_ context.Context, reconciler *LogicalContainerNetworkReconciler, network *apiv2.LogicalContainerNetwork,
 	state logicalContainerNetworkState, data *logicalContainerNetworkData, log logr.Logger,
 ) objectChange {
+	if state == logicalContainerNetworkStateInvalid {
+		if data.lease != nil {
+			return reconciler.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log)
+		}
+		return noChange
+	}
 	log.Error(fmt.Errorf("unknown logical network state %v with progress %v", state, data.progress), "LogicalContainerNetwork has an invalid reconciliation state")
 	data.state, data.progress = logicalContainerNetworkStateInvalid, physicalResourceProgressFailed
 	data.reason, data.message = apiv2.PhysicalResourceReasonOperationStateInvalid, "Logical network reached an invalid reconciliation state."
@@ -441,7 +457,23 @@ func handleLogicalContainerNetworkDeleting(
 
 func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 	ctx context.Context, network *apiv2.LogicalContainerNetwork, data *logicalContainerNetworkData, log logr.Logger,
-) objectChange {
+) (change objectChange, delay AdditionalReconciliationDelay) {
+	delay = StandardDelay
+	if data == nil {
+		return deleteFinalizer(network, logicalContainerNetworkFinalizer, log), delay
+	}
+	defer func() {
+		if data != nil {
+			_ = r.networkData.Update(network.NamespacedName(), network.UID, data)
+			dataChange, projectionDelay, valid := data.applyTo(network)
+			change |= dataChange
+			delay = projectionDelay
+			if !valid {
+				log.Error(fmt.Errorf("invalid logical network state %v with progress %v", data.state, data.progress),
+					"LogicalContainerNetwork reached invalid reconciliation state")
+			}
+		}
+	}()
 	data.state, data.progress = logicalContainerNetworkStateDelete, physicalResourceProgressNotReady
 	data.reason, data.message = "", ""
 	physical := &apiv2.PhysicalContainerNetwork{}
@@ -450,22 +482,25 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 	if getErr != nil && !apierrors.IsNotFound(getErr) {
 		log.Error(getErr, "Failed to get physical network for deletion")
 		data.progress, data.message = physicalResourceProgressRetryPending, getErr.Error()
-		return noChange
+		return noChange, delay
 	}
 	if getErr == nil {
-		if !metav1.IsControlledBy(physical, network) || (data.physicalNetworkUID != "" && data.physicalNetworkUID != physical.UID) {
+		if !metav1.IsControlledBy(physical, network) || (data.physicalNetworkUID != "" && data.physicalNetworkUID != physical.UID) ||
+			(!hasFinalizer(physical, LogicalBackingFinalizer) && !data.physicalNetworkReleased) {
 			ownershipErr := fmt.Errorf("backing physical network %q has a different owner or identity", physicalName)
 			log.Error(ownershipErr, "Failed to delete backing physical network")
-			data.progress, data.message = physicalResourceProgressRetryPending, ownershipErr.Error()
-			return noChange
+			data.state, data.progress, data.reason = logicalContainerNetworkStateInvalid, physicalResourceProgressFailed, "PhysicalNetworkChanged"
+			data.message = ownershipErr.Error()
+			return noChange, delay
 		}
-		if data.lease != nil {
+		if !data.physicalNetworkReleased {
 			if data.physicalNetworkUID == "" {
 				if !reflect.DeepEqual(physical.Spec, logicalContainerNetworkPhysicalSpec(network, data)) {
 					specErr := fmt.Errorf("backing physical network %q has a different spec", physicalName)
 					log.Error(specErr, "Failed to settle backing physical network ownership")
-					data.progress, data.message = physicalResourceProgressRetryPending, specErr.Error()
-					return noChange
+					data.state, data.progress, data.reason = logicalContainerNetworkStateInvalid, physicalResourceProgressFailed, "PhysicalNetworkChanged"
+					data.message = specErr.Error()
+					return noChange, delay
 				}
 				data.physicalNetworkUID = physical.UID
 				data.pendingNetworkID = ""
@@ -473,29 +508,36 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 			}
 			ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
 			if ready == nil || ready.ObservedGeneration != physical.Generation {
-				return additionalReconciliationNeeded
+				return additionalReconciliationNeeded, delay
 			}
 			runtimeMissing := physical.Status.Phase == apiv2.PhysicalContainerNetworkPhaseUnknown &&
 				ready.Status == metav1.ConditionFalse && ready.Reason == string(apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing)
-			if !runtimeMissing {
-				if physical.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed {
-					return r.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log)
-				}
-				if physical.Status.Phase == apiv2.PhysicalContainerNetworkPhasePending &&
-					ready.Reason == string(apiv2.PhysicalResourceReasonNamespaceTerminating) && physical.Status.NetworkID == "" {
-					// Namespace termination prevents the physical controller from starting runtime work.
-					return r.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log)
-				}
-				if physical.Status.Phase != apiv2.PhysicalContainerNetworkPhaseReady ||
-					ready.Status != metav1.ConditionTrue || physical.Status.NetworkID == "" {
-					return additionalReconciliationNeeded
-				}
-				record := &statestore.PersistentNetworkRecord{
-					ResourceKey: network.GetLeaseKey(), NetworkID: physical.Status.NetworkID, NetworkName: physical.Status.NetworkName,
-					RuntimeName: r.runtimeName,
-				}
-				return r.scheduleLogicalContainerNetworkLeaseSettlement(network, data, record, log)
+			runtimeReady := physical.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady &&
+				ready.Status == metav1.ConditionTrue && physical.Status.NetworkID != ""
+			runtimeFailed := physical.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed
+			startupPrevented := physical.Status.Phase == apiv2.PhysicalContainerNetworkPhasePending &&
+				ready.Reason == string(apiv2.PhysicalResourceReasonNamespaceTerminating) && physical.Status.NetworkID == ""
+			if !runtimeReady && !runtimeFailed && !runtimeMissing && !startupPrevented {
+				return additionalReconciliationNeeded, delay
 			}
+			if data.lease != nil {
+				var record *statestore.PersistentNetworkRecord
+				if runtimeReady {
+					record = &statestore.PersistentNetworkRecord{
+						ResourceKey: network.GetLeaseKey(), NetworkID: physical.Status.NetworkID, NetworkName: physical.Status.NetworkName,
+						RuntimeName: r.runtimeName,
+					}
+				}
+				return r.scheduleLogicalContainerNetworkLeaseSettlement(network, data, record, log), delay
+			}
+			data.physicalNetworkReleased = true
+			_ = r.networkData.Update(network.NamespacedName(), network.UID, data)
+		}
+		releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, physical)
+		if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
+			log.Error(releaseErr, "Failed to release physical network backing finalizer")
+			data.progress, data.message = physicalResourceProgressRetryPending, releaseErr.Error()
+			return noChange, delay
 		}
 		if physical.DeletionTimestamp.IsZero() {
 			uid := physical.UID
@@ -503,16 +545,24 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 			if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
 				log.Error(deleteErr, "Failed to delete backing physical network")
 				data.progress, data.message = physicalResourceProgressRetryPending, deleteErr.Error()
-				return noChange
+				return noChange, delay
 			}
 		}
-		return additionalReconciliationNeeded
+		return additionalReconciliationNeeded, delay
+	}
+	if data.physicalNetworkUID != "" && !data.physicalNetworkReleased {
+		data.state, data.progress, data.reason = logicalContainerNetworkStateInvalid, physicalResourceProgressFailed, "PhysicalNetworkMissing"
+		data.message = "The backing PhysicalContainerNetwork disappeared before logical release."
+		log.Error(getErr, "PhysicalContainerNetwork disappeared before logical release")
+		return noChange, delay
 	}
 	if data.lease != nil {
-		return r.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log)
+		return r.scheduleLogicalContainerNetworkLeaseSettlement(network, data, nil, log), delay
 	}
-	r.networkData.DeleteByNamespacedName(network.NamespacedName())
-	return deleteFinalizer(network, logicalContainerNetworkFinalizer, log)
+	change = deleteFinalizer(network, logicalContainerNetworkFinalizer, log)
+	r.discardLogicalContainerNetworkData(network.NamespacedName(), log)
+	data = nil
+	return change, delay
 }
 
 func (r *LogicalContainerNetworkReconciler) discardLogicalContainerNetworkData(name types.NamespacedName, log logr.Logger) {

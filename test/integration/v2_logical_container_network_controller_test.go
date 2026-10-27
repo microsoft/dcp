@@ -22,6 +22,7 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
@@ -165,6 +166,226 @@ type namespaceWorkloadFailureReader struct {
 	namespaceName string
 	fail          atomic.Bool
 	failures      atomic.Uint32
+}
+
+type failingNetworkReadyStatusClient struct {
+	ctrl_client.Client
+	namespaceName            string
+	fail                     atomic.Bool
+	failures                 atomic.Uint32
+	releaseResponseLost      atomic.Bool
+	logicalFinalizerConflict atomic.Bool
+}
+
+func (apiClient *failingNetworkReadyStatusClient) Patch(
+	ctx context.Context, object ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.PatchOption,
+) error {
+	if logical, isLogical := object.(*apiv2.LogicalContainerNetwork); isLogical &&
+		!slices.Contains(logical.Finalizers, apiv2.GroupName+"/logicalcontainernetwork-reconciler") &&
+		apiClient.logicalFinalizerConflict.CompareAndSwap(false, true) {
+		concurrent := &apiv2.LogicalContainerNetwork{}
+		getErr := apiClient.Client.Get(ctx, logical.NamespacedName(), concurrent)
+		if getErr != nil {
+			return getErr
+		}
+		concurrent.Annotations = map[string]string{"test-probe": "finalizer-conflict"}
+		updateErr := apiClient.Client.Update(ctx, concurrent)
+		if updateErr != nil {
+			return updateErr
+		}
+	}
+	patchErr := apiClient.Client.Patch(ctx, object, patch, options...)
+	if patchErr != nil {
+		return patchErr
+	}
+	if _, isNetwork := object.(*apiv2.PhysicalContainerNetwork); isNetwork &&
+		!slices.Contains(object.GetFinalizers(), controllers.LogicalBackingFinalizer) &&
+		apiClient.releaseResponseLost.CompareAndSwap(false, true) {
+		return errors.New("logical network backing release response lost")
+	}
+	return nil
+}
+
+func (apiClient *failingNetworkReadyStatusClient) Status() ctrl_client.SubResourceWriter {
+	return &networkReadyStatusWriter{SubResourceWriter: apiClient.Client.Status(), apiClient: apiClient}
+}
+
+type networkReadyStatusWriter struct {
+	ctrl_client.SubResourceWriter
+	apiClient *failingNetworkReadyStatusClient
+}
+
+func (writer *networkReadyStatusWriter) Patch(
+	ctx context.Context, object ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption,
+) error {
+	network, isPhysicalNetwork := object.(*apiv2.PhysicalContainerNetwork)
+	if isPhysicalNetwork && network.Namespace == writer.apiClient.namespaceName &&
+		network.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady && writer.apiClient.fail.Load() {
+		writer.apiClient.failures.Add(1)
+		return errors.New("physical network ready status unavailable")
+	}
+	return writer.SubResourceWriter.Patch(ctx, object, patch, options...)
+}
+
+// Verifies that LogicalContainerNetwork holds its backing across failed status publication,
+// permits dependent startup, and authorizes physical deletion only when the logical owner deletes.
+func TestV2LogicalContainerNetworkControllerHoldsBackingUntilAuthorizedDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	const namespaceName = "v2-logical-network-backing-hold"
+	var statusClient *failingNetworkReadyStatusClient
+	serverInfo, environmentInfo, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		LogicalContainerNetworkController|PhysicalContainerNetworkController|LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController,
+		t.Name(), t.TempDir(),
+		TestEnvironmentOptions{
+			WorkloadID: "held-network-workload",
+			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+				statusClient = &failingNetworkReadyStatusClient{Client: apiClient, namespaceName: namespaceName}
+				statusClient.fail.Store(true)
+				return statusClient
+			},
+		})
+	require.NoError(t, startupErr)
+	defer statusClient.fail.Store(false)
+	orchestrator, isTestOrchestrator := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTestOrchestrator)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceName}}
+	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+	network := &apiv2.LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerNetworkSpec{
+			Mode: apiv2.LogicalContainerNetworkModePersistent, NetworkName: namespaceName + "-runtime",
+			Network: &apiv2.LogicalContainerNetworkConfig{},
+		},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, network))
+	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return statusClient.failures.Load() > 0, nil
+	}))
+	physical := &apiv2.PhysicalContainerNetwork{}
+	require.NoError(t, serverInfo.Client.Get(ctx, types.NamespacedName{
+		Namespace: namespace.Name, Name: "logical-" + string(network.UID),
+	}, physical))
+	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, apiv2.GroupName+"/physicalcontainernetwork-reconciler")
+	const independentFinalizer = "test.dcp.microsoft.com/independent-owner"
+	require.NoError(t, retryOnConflictEx(ctx, serverInfo.Client, physical.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainerNetwork) error {
+		current.Finalizers = append(current.Finalizers, independentFinalizer)
+		return serverInfo.Client.Update(updateCtx, current)
+	}))
+	require.NoError(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, network, environmentInfo.ResourceLeaseOwner))
+	firstFailures := statusClient.failures.Load()
+	require.NoError(t, serverInfo.Client.Delete(ctx, physical))
+	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return statusClient.failures.Load() > firstFailures, nil
+	}))
+	require.NoError(t, serverInfo.Client.Get(ctx, physical.NamespacedName(), physical))
+	require.False(t, physical.DeletionTimestamp.IsZero())
+	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, apiv2.GroupName+"/physicalcontainernetwork-reconciler")
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+	statusClient.fail.Store(false)
+	ready := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+	})
+	require.NoError(t, serverInfo.Client.Get(ctx, physical.NamespacedName(), physical))
+	require.False(t, physical.DeletionTimestamp.IsZero())
+	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Equal(t, physical.Status.NetworkID, ready.Status.NetworkID)
+	record, recordErr := environmentInfo.StateStore.GetPersistentNetwork(ctx, network.GetLeaseKey())
+	require.NoError(t, recordErr)
+	require.Equal(t, ready.Status.NetworkID, record.NetworkID)
+	require.Equal(t, commonapi.WorkloadID("held-network-workload"), record.WorkloadID)
+	container := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
+			Image:    &apiv2.PhysicalContainerImageConfig{Image: "held-network-container-image"},
+			Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: network.Name}},
+		}},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, container))
+	running := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+	})
+	require.NotEmpty(t, running.Status.ContainerID)
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
+		return slices.Contains(current.Status.ContainerIDs, running.Status.ContainerID), nil
+	})
+	require.NoError(t, serverInfo.Client.Delete(ctx, container))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, container)
+	require.NoError(t, serverInfo.Client.Delete(ctx, network))
+	remaining := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == independentFinalizer, nil
+	})
+	require.ErrorIs(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, network, environmentInfo.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+	remaining.Finalizers = nil
+	require.NoError(t, serverInfo.Client.Update(ctx, remaining))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, network)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, physical)
+	retained, inspectErr := serverInfo.ContainerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{record.NetworkID}})
+	require.NoError(t, inspectErr)
+	require.Len(t, retained, 1)
+	require.Equal(t, record.NetworkID, retained[0].Id)
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+	require.True(t, statusClient.releaseResponseLost.Load())
+	require.True(t, statusClient.logicalFinalizerConflict.Load())
+}
+
+// Verifies that LogicalContainerNetwork treats forced removal of its backing finalizer as
+// a terminal protocol failure and never recreates the missing physical or runtime network.
+func TestV2LogicalContainerNetworkControllerFailsWhenBackingHoldIsRemoved(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		LogicalContainerNetworkController|PhysicalContainerNetworkController, t.Name(), t.TempDir(), TestEnvironmentOptions{})
+	require.NoError(t, startupErr)
+	orchestrator, isTestOrchestrator := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTestOrchestrator)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-network-backing-violation"}}
+	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+	network := &apiv2.LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerNetworkSpec{NetworkName: namespace.Name + "-runtime",
+			Network: &apiv2.LogicalContainerNetworkConfig{}},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, network))
+	ready := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+	})
+	physical := &apiv2.PhysicalContainerNetwork{}
+	require.NoError(t, serverInfo.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: ready.Status.PhysicalNetworkRef}, physical))
+	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.NoError(t, serverInfo.Client.Delete(ctx, physical))
+	require.NoError(t, retryOnConflictEx(ctx, serverInfo.Client, physical.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainerNetwork) error {
+		current.Finalizers = slices.DeleteFunc(current.Finalizers, func(finalizer string) bool {
+			return finalizer == controllers.LogicalBackingFinalizer
+		})
+		return serverInfo.Client.Update(updateCtx, current)
+	}))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, physical)
+	failed := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed, nil
+	})
+	failure := apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady))
+	require.NotNil(t, failure)
+	require.Contains(t, []string{"PhysicalNetworkMissing", "PhysicalNetworkFinalizerLost"}, failure.Reason)
+	require.NoError(t, retryOnConflictEx(ctx, serverInfo.Client, network.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainerNetwork) error {
+		current.Annotations = map[string]string{"test-probe": "after-violation"}
+		return serverInfo.Client.Update(updateCtx, current)
+	}))
+	require.NoError(t, serverInfo.Client.Get(ctx, network.NamespacedName(), failed))
+	require.Equal(t, apiv2.LogicalContainerNetworkPhaseFailed, failed.Status.Phase)
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+	_, inspectErr := serverInfo.ContainerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{ready.Status.NetworkID}})
+	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
 }
 
 func (reader *namespaceWorkloadFailureReader) Get(
@@ -743,6 +964,9 @@ func TestV2LogicalContainerNetworkControllerDeletesUnstartedPhysicalDuringNamesp
 		Namespace: namespace.Name, Name: "logical-" + string(network.UID),
 	}, physical))
 	require.True(t, metav1.IsControlledBy(physical, network))
+	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, apiv2.GroupName+"/physicalcontainernetwork-reconciler")
+	require.NoError(t, serverInfo.Client.Delete(ctx, physical))
 	require.NoError(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, network, environmentInfo.ResourceLeaseOwner))
 	require.NoError(t, serverInfo.Client.Delete(ctx, namespace))
 	waitObjectAssumesStateEx(t, ctx, creator.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {

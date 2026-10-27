@@ -44,11 +44,16 @@ type logicalContainerNetworkData struct {
 	lifecycleKey         string
 	generatedNetworkName string
 	// Runtime identity selected for adoption, retained only until physical realization succeeds.
-	pendingNetworkID    string
-	replaceExisting     bool
-	physicalNetworkUID  types.UID
-	lease               *statestore.ResourceLease
-	leaseFailureMessage string
+	pendingNetworkID        string
+	replaceExisting         bool
+	physicalNetworkUID      types.UID
+	physicalNetworkReleased bool
+	lease                   *statestore.ResourceLease
+	leaseFailureMessage     string
+}
+
+func (data *logicalContainerNetworkData) operationInProgress() bool {
+	return data != nil && data.operation != nil
 }
 
 func (data *logicalContainerNetworkData) Clone() *logicalContainerNetworkData {
@@ -187,7 +192,7 @@ var logicalContainerNetworkProjections = physicalResourceProjectionTable[logical
 			conditionReason: "PhysicalNetworkDeletionFailed", requeue: true, requeueDelay: LongDelay,
 		},
 		{state: logicalContainerNetworkStateInvalid, progress: physicalResourceProgressFailed}: {
-			phase: apiv2.LogicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			phase: apiv2.LogicalContainerNetworkPhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},
 	},

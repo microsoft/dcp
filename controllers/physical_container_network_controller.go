@@ -234,7 +234,8 @@ func (r *PhysicalContainerNetworkReconciler) Reconcile(ctx context.Context, req 
 	finalizerAdded := false
 	patch := ctrl_client.MergeFromWithOptions(network.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
-	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() && !data.operationInProgress() {
+	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() &&
+		!hasFinalizer(&network, LogicalBackingFinalizer) && !data.operationInProgress() {
 		change = r.handleDeletionRequest(ctx, &network, data, log)
 	} else if change = ensureFinalizer(&network, physicalContainerNetworkFinalizer, log); change != noChange {
 		finalizerAdded = true
@@ -776,12 +777,10 @@ func (r *PhysicalContainerNetworkReconciler) handleDeletionRequest(
 	}
 	networkConfig := network.Spec.Network
 	if networkConfig == nil || networkConfig.RetainRuntimeNetwork {
-		r.networkData.DeleteByNamespacedName(network.NamespacedName())
 		return deleteFinalizer(network, physicalContainerNetworkFinalizer, log)
 	}
 	if (data.state == physicalContainerNetworkStateCreate || data.state == physicalContainerNetworkStateReplace) &&
 		data.progress == physicalContainerNetworkOperationFailed {
-		r.networkData.DeleteByNamespacedName(network.NamespacedName())
 		return deleteFinalizer(network, physicalContainerNetworkFinalizer, log)
 	}
 
@@ -856,7 +855,6 @@ func handlePhysicalContainerNetworkRemovalCompleted(
 		return handleUnknownPhysicalContainerNetworkDataReason(ctx, reconciler, network, state, data, log)
 	}
 
-	reconciler.networkData.DeleteByNamespacedName(network.NamespacedName())
 	return deleteFinalizer(network, physicalContainerNetworkFinalizer, log)
 }
 

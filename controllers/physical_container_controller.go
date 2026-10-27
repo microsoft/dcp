@@ -894,7 +894,7 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerNetworks(
 			log.Error(getErr, "Failed to get PhysicalContainerNetwork", "NetworkRef", networkConfig.NetworkRef)
 			return false, nil, physicalResourceProgressRetryPending, fmt.Sprintf("Failed to get PhysicalContainerNetwork %q: %v", networkConfig.NetworkRef, getErr)
 		}
-		if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
+		if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() && !hasFinalizer(&network, LogicalBackingFinalizer) {
 			return false, nil, physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerNetwork %q is terminating.", networkConfig.NetworkRef)
 		}
 		if network.Status.Phase != apiv2.PhysicalContainerNetworkPhaseReady || network.Status.NetworkID == "" {
