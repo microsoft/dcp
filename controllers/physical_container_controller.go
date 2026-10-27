@@ -295,7 +295,8 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	finalizerAdded := false
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() && !data.operationInProgress() {
+	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() &&
+		!hasFinalizer(&container, LogicalBackingFinalizer) && !data.operationInProgress() {
 		change = r.handleDeletionRequest(ctx, &container, data, log)
 	} else if change = ensureFinalizer(&container, physicalContainerFinalizer, log); change != noChange {
 		finalizerAdded = true
@@ -815,7 +816,8 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(
 		log.Error(getErr, "Failed to get PhysicalContainerImage", "ImageRef", imageRef)
 		return false, "", physicalResourceProgressRetryPending, fmt.Sprintf("Failed to get PhysicalContainerImage: %v", getErr), additionalReconciliationNeeded
 	}
-	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
+	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() &&
+		!hasFinalizer(&image, LogicalBackingFinalizer) {
 		return false, "", physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerImage %q is terminating.", imageRef), noChange
 	}
 	if image.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed {
@@ -1421,7 +1423,6 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(
 		}
 	}
 
-	r.discardPhysicalContainerData(container.NamespacedName(), container.UID, data, log)
 	return connectionChange | deleteFinalizer(container, physicalContainerFinalizer, log)
 }
 

@@ -34,15 +34,17 @@ type physicalContainerImageOperation struct {
 }
 
 type physicalContainerImageData struct {
-	state           physicalContainerImageState
-	progress        physicalResourceProgress
-	image           string
-	imageID         string
-	imageIDVerified bool
-	digest          string
-	tags            []string
-	failureMessage  string
-	retryAfter      time.Time
+	state                   physicalContainerImageState
+	progress                physicalResourceProgress
+	image                   string
+	imageID                 string
+	imageIDVerified         bool
+	digest                  string
+	tags                    []string
+	failureMessage          string
+	retryAfter              time.Time
+	inspectionFailures      int
+	inspectionFailureReason apiv2.ConditionReason
 
 	// Cancels the queued pull or build operation. Set for as long as the operation may still be running.
 	operation     *physicalContainerImageOperation
@@ -52,18 +54,20 @@ type physicalContainerImageData struct {
 
 func (data *physicalContainerImageData) Clone() *physicalContainerImageData {
 	return &physicalContainerImageData{
-		state:           data.state,
-		progress:        data.progress,
-		image:           data.image,
-		imageID:         data.imageID,
-		imageIDVerified: data.imageIDVerified,
-		digest:          data.digest,
-		tags:            slices.Clone(data.tags),
-		failureMessage:  data.failureMessage,
-		retryAfter:      data.retryAfter,
-		operation:       data.operation,
-		startupStdout:   data.startupStdout,
-		startupStderr:   data.startupStderr,
+		state:                   data.state,
+		progress:                data.progress,
+		image:                   data.image,
+		imageID:                 data.imageID,
+		imageIDVerified:         data.imageIDVerified,
+		digest:                  data.digest,
+		tags:                    slices.Clone(data.tags),
+		failureMessage:          data.failureMessage,
+		retryAfter:              data.retryAfter,
+		inspectionFailures:      data.inspectionFailures,
+		inspectionFailureReason: data.inspectionFailureReason,
+		operation:               data.operation,
+		startupStdout:           data.startupStdout,
+		startupStderr:           data.startupStderr,
 	}
 }
 
@@ -73,6 +77,10 @@ func (data *physicalContainerImageData) UpdateFrom(other *physicalContainerImage
 	}
 
 	updated := false
+	if data.inspectionFailures != other.inspectionFailures || data.inspectionFailureReason != other.inspectionFailureReason {
+		data.inspectionFailures, data.inspectionFailureReason = other.inspectionFailures, other.inspectionFailureReason
+		updated = true
+	}
 	if data.startupStdout != other.startupStdout || data.startupStderr != other.startupStderr {
 		data.startupStdout, data.startupStderr = other.startupStdout, other.startupStderr
 		updated = true
@@ -154,9 +162,14 @@ func (data *physicalContainerImageData) applyTo(
 		change |= setValue(&image.Status.Image, data.image)
 	}
 
-	stateChange, delay, valid := physicalContainerImageProjections.apply(
+	reason := apiv2.ConditionReason("")
+	if data.progress == physicalResourceProgressFailed {
+		reason = data.inspectionFailureReason
+	}
+	stateChange, delay, valid := physicalContainerImageProjections.applyWithReason(
 		data.state,
 		data.progress,
+		reason,
 		data.failureMessage,
 		&image.Status.Phase,
 		&image.Status.Conditions,

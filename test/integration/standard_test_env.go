@@ -15,7 +15,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
@@ -52,6 +54,7 @@ type TestEnvironmentInfo struct {
 type TestEnvironmentOptions struct {
 	WorkloadID                    commonapi.WorkloadID
 	DecorateContainerOrchestrator func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
+	DecorateAPIClient             func(ctrl_client.Client) ctrl_client.Client
 }
 
 func (tei *TestEnvironmentInfo) addAfterShutdown(callback func()) {
@@ -193,6 +196,19 @@ func StartTestEnvironmentWithOptions(
 	})
 
 	opts := controllers.NewControllerManagerOptions(ctx, serverInfo.Client.Scheme(), log)
+	if options.DecorateAPIClient != nil {
+		opts.NewClient = func(config *rest.Config, clientOptions ctrl_client.Options) (ctrl_client.Client, error) {
+			apiClient, clientErr := ctrl_client.New(config, clientOptions)
+			if clientErr != nil {
+				return nil, clientErr
+			}
+			decoratedClient := options.DecorateAPIClient(apiClient)
+			if decoratedClient == nil {
+				return nil, fmt.Errorf("API client decorator returned nil")
+			}
+			return decoratedClient, nil
+		}
+	}
 	mgr, err := ctrl.NewManager(serverInfo.ClientConfig, opts)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize controller manager: %w", err)
