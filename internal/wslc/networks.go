@@ -77,11 +77,9 @@ func (wco *WslcCliOrchestrator) RemoveNetworks(ctx context.Context, options cont
 			return resolveErr
 		}
 
-		args := []string{"network", "remove"}
-		if options.Force {
-			args = append(args, "--force")
-		}
-		args = append(args, network.Name)
+		// WSLC omits the error code if the network disappears after resolution; --force makes
+		// deletion idempotent without parsing localized diagnostics and does not bypass active-endpoint errors.
+		args := []string{"network", "remove", "--force", network.Name}
 
 		cmd := makeWslcCommand(args...)
 		_, errBuf, runErr := wco.runBufferedWslcCommand(
