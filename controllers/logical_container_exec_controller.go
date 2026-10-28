@@ -153,13 +153,16 @@ func handleLogicalContainerExecNamespace(
 	if time.Now().Before(data.retryAfter) {
 		return additionalReconciliationNeeded
 	}
-	ready, reason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, resource.Namespace)
+	var namespaceStatus apiv2.ContainerExecStatus
+	ready, namespaceChange := guardResourceNamespace(ctx, reconciler.Client, resource,
+		&namespaceStatus.Phase, &namespaceStatus.Conditions,
+		apiv2.ContainerExecPhasePending, apiv2.ContainerExecPhasePending, log)
 	if !ready {
-		data.progress, data.reason = physicalResourceProgressNotReady, reason
-		data.message = namespaceReadinessMessage(resource.Namespace, reason)
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get logical execution namespace")
-			data.progress, data.message = physicalResourceProgressRetryPending, namespaceErr.Error()
+		condition := namespaceStatus.Conditions[0]
+		data.progress, data.reason = physicalResourceProgressNotReady, apiv2.ConditionReason(condition.Reason)
+		data.message = condition.Message
+		if namespaceChange&additionalReconciliationNeeded != 0 {
+			data.progress = physicalResourceProgressRetryPending
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		}
 		return noChange
@@ -191,12 +194,15 @@ func (r *LogicalContainerExecReconciler) resolveExecutionTarget(
 	ctx context.Context, resource *apiv2.LogicalContainerExec, data *logicalContainerExecData, log logr.Logger,
 ) *apiv2.LogicalContainer {
 	data.progress, data.reason, data.message = physicalResourceProgressNotReady, "", ""
-	ready, reason, namespaceErr := checkNamespaceReady(ctx, r.Client, resource.Namespace)
+	var namespaceStatus apiv2.ContainerExecStatus
+	ready, namespaceChange := guardResourceNamespace(ctx, r.Client, resource,
+		&namespaceStatus.Phase, &namespaceStatus.Conditions,
+		apiv2.ContainerExecPhasePending, apiv2.ContainerExecPhasePending, log)
 	if !ready {
-		data.reason, data.message = reason, namespaceReadinessMessage(resource.Namespace, reason)
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get logical execution namespace")
-			data.progress, data.message = physicalResourceProgressRetryPending, namespaceErr.Error()
+		condition := namespaceStatus.Conditions[0]
+		data.reason, data.message = apiv2.ConditionReason(condition.Reason), condition.Message
+		if namespaceChange&additionalReconciliationNeeded != 0 {
+			data.progress = physicalResourceProgressRetryPending
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		}
 		return nil

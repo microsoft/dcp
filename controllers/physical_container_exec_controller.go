@@ -178,14 +178,16 @@ func handlePhysicalContainerExecNamespace(
 	if time.Now().Before(data.retryAfter) {
 		return additionalReconciliationNeeded
 	}
-	ready, reason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, resource.Namespace)
+	var namespaceStatus apiv2.ContainerExecStatus
+	ready, namespaceChange := guardResourceNamespace(ctx, reconciler.Client, resource,
+		&namespaceStatus.Phase, &namespaceStatus.Conditions,
+		apiv2.ContainerExecPhasePending, apiv2.ContainerExecPhasePending, log)
 	if !ready {
 		data.state, data.progress = physicalContainerExecStateNamespace, physicalResourceProgressNotReady
-		data.reason, data.message = reason, namespaceReadinessMessage(resource.Namespace, reason)
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get execution namespace")
+		condition := namespaceStatus.Conditions[0]
+		data.reason, data.message = apiv2.ConditionReason(condition.Reason), condition.Message
+		if namespaceChange&additionalReconciliationNeeded != 0 {
 			data.progress = physicalResourceProgressRetryPending
-			data.message = namespaceErr.Error()
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		}
 		return noChange
@@ -355,13 +357,14 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 		data.fail(reason, failure.Error())
 		r.finishExecution(resource, data, log)
 	}
-	ready, namespaceReason, namespaceErr := checkNamespaceReady(ctx, r.NoCacheClient, resource.Namespace)
-	if namespaceErr != nil {
-		r.retryExecution(resource, data, physicalContainerExecStateNamespace, namespaceReason, namespaceErr, log)
-		return
-	}
+	var namespaceStatus apiv2.ContainerExecStatus
+	ready, _ := guardResourceNamespace(ctx, r.NoCacheClient, resource,
+		&namespaceStatus.Phase, &namespaceStatus.Conditions,
+		apiv2.ContainerExecPhasePending, apiv2.ContainerExecPhasePending, log)
 	if !ready {
-		r.retryExecution(resource, data, physicalContainerExecStateNamespace, namespaceReason, fmt.Errorf("%s", namespaceReadinessMessage(resource.Namespace, namespaceReason)), log)
+		condition := namespaceStatus.Conditions[0]
+		r.retryExecution(resource, data, physicalContainerExecStateNamespace,
+			apiv2.ConditionReason(condition.Reason), fmt.Errorf("%s", condition.Message), log)
 		return
 	}
 	var current apiv2.PhysicalContainer

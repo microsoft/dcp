@@ -21,8 +21,7 @@ type physicalProcessDataStateKey string
 type physicalProcessState int
 
 const (
-	physicalProcessStateNamespace physicalProcessState = iota + 1
-	physicalProcessStateResolve
+	physicalProcessStateResolve physicalProcessState = iota + 1
 	physicalProcessStateLaunch
 	physicalProcessStateRuntime
 	physicalProcessStateStop
@@ -93,7 +92,7 @@ func (data *physicalProcessData) logsComplete() bool {
 }
 
 func (data *physicalProcessData) operationInProgress() bool {
-	return (data.state == physicalProcessStateLaunch || data.state == physicalProcessStateStop) &&
+	return data != nil && (data.state == physicalProcessStateLaunch || data.state == physicalProcessStateStop) &&
 		data.progress == physicalResourceProgressInProgress
 }
 
@@ -130,27 +129,6 @@ func (data *physicalProcessData) applyTo(
 var physicalProcessProjections = physicalResourceProjectionTable[physicalProcessState, apiv2.PhysicalProcessPhase]{
 	invalidPhase: apiv2.PhysicalProcessPhaseUnknown,
 	projections: map[physicalResourceProjectionKey[physicalProcessState]]physicalResourceProjection[apiv2.PhysicalProcessPhase]{
-		{state: physicalProcessStateNamespace, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotFound,
-		},
-		{state: physicalProcessStateNamespace, progress: physicalResourceProgressNotReady}: {
-			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
-		},
-		{state: physicalProcessStateNamespace, progress: physicalResourceProgressTerminating}: {
-			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceTerminating,
-		},
-		{state: physicalProcessStateNamespace, progress: physicalResourceProgressNotActive}: {
-			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotActive,
-		},
-		{state: physicalProcessStateNamespace, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.PhysicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed,
-			requeue:         true, requeueDelay: LongDelay,
-		},
 		{state: physicalProcessStateLaunch, progress: physicalResourceProgressInProgress}: {
 			phase: apiv2.PhysicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalProcessReasonLaunching,

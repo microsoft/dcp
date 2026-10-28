@@ -181,9 +181,9 @@ func TestV2ImageSystemLogsFollowLogicalOwnership(t *testing.T) {
 	require.Equal(t, "Pulling image "+source+"\n", startup)
 }
 
-// Verifies that multiple containers referencing an explicitly supplied image share its build output
-// without forwarding that image's system diagnostics into their logical system streams.
-func TestV2ContainerStartupLogsExposeReferencedImageBuild(t *testing.T) {
+// Verifies that containers referencing an independently created image expose neither its build
+// output as logical startup logs nor its system diagnostics, while the image retains its own output.
+func TestV2ContainerStartupLogsExcludeReferencedImageBuild(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -205,12 +205,6 @@ func TestV2ContainerStartupLogsExposeReferencedImageBuild(t *testing.T) {
 	second.Name = "second"
 	require.NoError(t, client.Create(ctx, first))
 	require.NoError(t, client.Create(ctx, second))
-	waitObjectAssumesState(t, ctx, first.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
-	})
-	waitObjectAssumesState(t, ctx, second.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
-	})
 	imageOut, imageErr := readV2ContainerLog(ctx, image, apiv2.ResourceLogOptions{})
 	require.NoError(t, imageErr)
 	require.Equal(t, "Building image\n", imageOut)
@@ -218,19 +212,25 @@ func TestV2ContainerStartupLogsExposeReferencedImageBuild(t *testing.T) {
 	require.NoError(t, firstErr)
 	secondOut, secondErr := readV2ContainerLog(ctx, second, apiv2.ResourceLogOptions{Source: "startup_stdout"})
 	require.NoError(t, secondErr)
-	require.Equal(t, imageOut, firstOut)
-	require.Equal(t, imageOut, secondOut)
+	require.Empty(t, firstOut)
+	require.Empty(t, secondOut)
 	buildErrOut, buildErr := readV2ContainerLog(ctx, first, apiv2.ResourceLogOptions{Source: "startup_stderr"})
 	require.NoError(t, buildErr)
-	require.Equal(t, "Preparing build context\n", buildErrOut)
+	require.Empty(t, buildErrOut)
+	for _, container := range []*apiv2.LogicalContainer{first, second} {
+		running := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+			return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+		})
+		require.Nil(t, running.Status.StartupLogs)
+	}
 	firstSystem, firstSystemErr := readV2ContainerLog(ctx, first, apiv2.ResourceLogOptions{Source: "system"})
 	require.NoError(t, firstSystemErr)
 	require.NotContains(t, firstSystem, "Building PhysicalContainerImage")
 }
 
-// Verifies that a logical-only stdout follower finishes when its physical backing disappears,
-// without a physical log request starting the physical-kind lifecycle watch.
-func TestV2LogicalContainerLogFollowerEndsWhenPhysicalBackingIsDeleted(t *testing.T) {
+// Verifies that physical deletion stays held while a logical-only follower remains active,
+// and logical deletion releases the backing and finishes the follower.
+func TestV2LogicalContainerLogFollowerKeepsBackingUntilLogicalDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -276,21 +276,20 @@ func TestV2LogicalContainerLogFollowerEndsWhenPhysicalBackingIsDeleted(t *testin
 		Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef,
 	}, physical))
 	require.NoError(t, server.Client.Delete(ctx, physical))
-	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
-	waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		return current.Status.ContainerID == "" && current.Status.Phase == apiv2.LogicalContainerPhaseUnknown, nil
+	waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		return !current.DeletionTimestamp.IsZero(), nil
 	})
+	require.NoError(t, orchestrator.SimulateContainerLogging(runtimeID, apiv1.LogStreamSourceStdout, []byte("held\n")))
+	held := make([]byte, len("held\n"))
+	_, heldErr := io.ReadFull(follower, held)
+	require.NoError(t, heldErr)
+	require.Equal(t, "held\n", string(held))
+	require.NoError(t, server.Client.Delete(ctx, container))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
 	remaining, readErr := io.ReadAll(follower)
 	require.NoError(t, readErr)
 	require.Empty(t, remaining)
-	missing := &apiv2.LogicalContainer{}
-	require.NoError(t, server.Client.Get(ctx, container.NamespacedName(), missing))
-	require.NotNil(t, missing.Status.RuntimeLogs)
-	require.Equal(t, physical.UID, missing.Status.RuntimeLogs.UID)
-	require.True(t, missing.Status.RuntimeLogs.Complete)
-	require.False(t, missing.Status.RuntimeLogs.Available)
-	require.NoError(t, server.Client.Delete(ctx, container))
-	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
 }
 
 // Verifies that physical and logical stdout followers finish after confirmed runtime removal,

@@ -137,12 +137,14 @@ func (r *LogicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	delay := StandardDelay
 	if !finalizerAdded && hasFinalizer(&resource, logicalProcessFinalizer) {
 		_ = r.processData.Update(req.NamespacedName, resource.UID, data)
-		projectionChange, projectionDelay, valid := data.applyTo(&resource)
-		change |= projectionChange
-		delay = projectionDelay
-		if !valid {
-			log.Error(fmt.Errorf("invalid logical process state %v with progress %v", data.state, data.progress),
-				"LogicalProcess reached invalid reconciliation state")
+		if data.state != logicalProcessStateNamespace {
+			projectionChange, projectionDelay, valid := data.applyTo(&resource)
+			change |= projectionChange
+			delay = projectionDelay
+			if !valid {
+				log.Error(fmt.Errorf("invalid logical process state %v with progress %v", data.state, data.progress),
+					"LogicalProcess reached invalid reconciliation state")
+			}
 		}
 	}
 	if !hasFinalizer(&resource, logicalProcessFinalizer) {
@@ -155,15 +157,11 @@ func handleLogicalProcessNamespace(
 	ctx context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
-	ready, reason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, resource.Namespace)
+	ready, change := guardResourceNamespace(ctx, reconciler.Client, resource,
+		&resource.Status.Phase, &resource.Status.Conditions,
+		apiv2.LogicalProcessPhasePending, apiv2.LogicalProcessPhaseUnknown, log)
 	if !ready {
-		data.progress, data.reason = physicalResourceProgressNotReady, reason
-		data.message = namespaceReadinessMessage(resource.Namespace, reason)
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get namespace")
-			data.progress, data.message = physicalResourceProgressRetryPending, namespaceErr.Error()
-		}
-		return noChange
+		return change
 	}
 	return reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePrepare, reconciler.prepareLogicalProcess, log)
 }
@@ -258,12 +256,12 @@ func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
 	}
 	getErr := r.NoCacheClient.Get(ctx, physical.NamespacedName(), physical)
 	if apierrors.IsNotFound(getErr) {
-		ready, reason, namespaceErr := checkNamespaceReady(ctx, r.Client, resource.Namespace)
-		if namespaceErr != nil {
-			return nil, fmt.Errorf("could not check namespace before creating physical process: %w", namespaceErr)
-		}
+		var phase apiv2.LogicalProcessPhase
+		var conditions []metav1.Condition
+		ready, _ := guardResourceNamespace(ctx, r.Client, resource, &phase, &conditions,
+			apiv2.LogicalProcessPhasePending, apiv2.LogicalProcessPhaseUnknown, r.Log)
 		if !ready {
-			return nil, errors.New(namespaceReadinessMessage(resource.Namespace, reason))
+			return nil, errors.New(conditions[0].Message)
 		}
 		ownerErr := ctrl.SetControllerReference(resource, physical, r.Scheme())
 		if ownerErr != nil {

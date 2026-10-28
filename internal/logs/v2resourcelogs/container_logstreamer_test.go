@@ -31,6 +31,35 @@ import (
 
 type recordedLogSource struct{ captures int }
 
+// Verifies that Pending logical containers with external image references finish startup requests
+// empty, while inline image startup requests remain pending until their owned capture is available.
+func TestLogicalStartupLogsRequireOwnedImage(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	streamer := NewLogStreamer(logr.Discard())
+	defer func() { require.NoError(t, streamer.Dispose()) }()
+	logical := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "logical", Namespace: "namespace", UID: "logical-uid"},
+		Spec:       apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{ImageRef: "external"}},
+		Status:     apiv2.LogicalContainerStatus{Phase: apiv2.LogicalContainerPhasePending},
+	}
+	for _, source := range []string{"startup_stdout", "startup_stderr"} {
+		var output bytes.Buffer
+		status, done, streamErr := streamer.StreamLogs(ctx, &output, logical,
+			&apiv2.ResourceLogOptions{Source: source, Follow: true}, logr.Discard())
+		require.NoError(t, streamErr)
+		require.Equal(t, logstream.ResourceStreamStatusDone, status)
+		require.Nil(t, done)
+		require.Empty(t, output.String())
+	}
+	logical.Spec.Container = &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "owned"}}
+	status, _, streamErr := streamer.StreamLogs(ctx, io.Discard, logical,
+		&apiv2.ResourceLogOptions{Source: "startup_stdout", Follow: true}, logr.Discard())
+	require.NoError(t, streamErr)
+	require.Equal(t, logstream.ResourceStreamStatusNotReady, status)
+}
+
 type observedPipeWriter struct {
 	*io.PipeWriter
 	entered chan struct{}

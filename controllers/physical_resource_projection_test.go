@@ -15,6 +15,8 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 )
 
+// Verifies that physical resource projections preserve phase, conditions, and retry policy,
+// including no scheduled retry for confirmed missing containers and networks.
 func TestPhysicalResourceProjections(t *testing.T) {
 	t.Parallel()
 
@@ -23,6 +25,13 @@ func TestPhysicalResourceProjections(t *testing.T) {
 	assertPhysicalResourceProjections(t, physicalContainerNetworkProjections)
 	assertPhysicalResourceProjections(t, physicalContainerVolumeProjections)
 	assertPhysicalResourceProjections(t, physicalProcessProjections)
+
+	containerMissing, containerMissingFound := physicalContainerProjections.project(physicalContainerStateRuntime, physicalResourceProgressMissing)
+	require.True(t, containerMissingFound)
+	require.False(t, containerMissing.requeue)
+	networkMissing, networkMissingFound := physicalContainerNetworkProjections.project(physicalContainerNetworkStateRuntime, physicalResourceProgressMissing)
+	require.True(t, networkMissingFound)
+	require.False(t, networkMissing.requeue)
 }
 
 func TestPhysicalResourceStateStringsDistinguishUnsetAndInvalidValues(t *testing.T) {

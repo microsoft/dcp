@@ -96,10 +96,11 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	if namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero() {
 		change = r.handleDeletionRequest(ctx, &namespace, log)
-	} else if change = ensureFinalizer(&namespace, namespaceFinalizer, log); change != noChange {
-		// Make additional changes during the next reconciliation.
 	} else {
-		change = r.manageNamespace(&namespace)
+		change = ensureFinalizer(&namespace, namespaceFinalizer, log)
+		if change == noChange {
+			change = r.manageNamespace(&namespace)
+		}
 	}
 
 	return r.SaveChanges(ctx, &namespace, patch, change, nil, log)

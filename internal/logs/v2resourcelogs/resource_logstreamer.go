@@ -86,7 +86,7 @@ func snapshot(obj resource.Object) (resourceSnapshot, error) {
 		result.runtime, result.startup = container.Status.RuntimeLogs, container.Status.StartupLogs
 		result.systemID = container.GetResourceId()
 		result.complete = container.Status.Phase == apiv2.LogicalContainerPhaseExited || container.Status.Phase == apiv2.LogicalContainerPhaseFailed
-		if result.startup == nil && (container.Spec.EffectiveMode() == apiv2.LogicalContainerModeExisting ||
+		if result.startup == nil && (container.Spec.Container == nil || container.Spec.Container.Image == nil ||
 			!container.Status.StartedAt.IsZero() || result.complete) {
 			result.startup = &apiv2.LogSource{Complete: true}
 		}
