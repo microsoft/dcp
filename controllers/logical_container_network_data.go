@@ -20,8 +20,7 @@ import (
 type logicalContainerNetworkState int
 
 const (
-	logicalContainerNetworkStateNamespace logicalContainerNetworkState = iota + 1
-	logicalContainerNetworkStateLifecycle
+	logicalContainerNetworkStateLifecycle logicalContainerNetworkState = iota + 1
 	logicalContainerNetworkStateLookup
 	logicalContainerNetworkStatePhysical
 	logicalContainerNetworkStateRuntime
@@ -44,11 +43,16 @@ type logicalContainerNetworkData struct {
 	lifecycleKey         string
 	generatedNetworkName string
 	// Runtime identity selected for adoption, retained only until physical realization succeeds.
-	pendingNetworkID    string
-	replaceExisting     bool
-	physicalNetworkUID  types.UID
-	lease               *statestore.ResourceLease
-	leaseFailureMessage string
+	pendingNetworkID        string
+	replaceExisting         bool
+	physicalNetworkUID      types.UID
+	physicalNetworkReleased bool
+	lease                   *statestore.ResourceLease
+	leaseFailureMessage     string
+}
+
+func (data *logicalContainerNetworkData) operationInProgress() bool {
+	return data != nil && data.operation != nil
 }
 
 func (data *logicalContainerNetworkData) Clone() *logicalContainerNetworkData {
@@ -98,18 +102,6 @@ func (data *logicalContainerNetworkData) applyTo(network *apiv2.LogicalContainer
 var logicalContainerNetworkProjections = physicalResourceProjectionTable[logicalContainerNetworkState, apiv2.LogicalContainerNetworkPhase]{
 	invalidPhase: apiv2.LogicalContainerNetworkPhaseUnknown,
 	projections: map[physicalResourceProjectionKey[logicalContainerNetworkState]]physicalResourceProjection[apiv2.LogicalContainerNetworkPhase]{
-		{state: logicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.LogicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotFound,
-		},
-		{state: logicalContainerNetworkStateNamespace, progress: physicalResourceProgressNotReady}: {
-			phase: apiv2.LogicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
-		},
-		{state: logicalContainerNetworkStateNamespace, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.LogicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed, requeue: true, requeueDelay: LongDelay,
-		},
 		{state: logicalContainerNetworkStateLifecycle, progress: physicalResourceProgressInProgress}: {
 			phase: apiv2.LogicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PreparingLifecycle", message: "Logical network lifecycle preparation is in progress.",
@@ -187,7 +179,7 @@ var logicalContainerNetworkProjections = physicalResourceProjectionTable[logical
 			conditionReason: "PhysicalNetworkDeletionFailed", requeue: true, requeueDelay: LongDelay,
 		},
 		{state: logicalContainerNetworkStateInvalid, progress: physicalResourceProgressFailed}: {
-			phase: apiv2.LogicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			phase: apiv2.LogicalContainerNetworkPhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},
 	},

@@ -18,8 +18,7 @@ type physicalContainerVolumeDataStateKey string
 type physicalContainerVolumeState int
 
 const (
-	physicalContainerVolumeStateNamespace physicalContainerVolumeState = iota + 1
-	physicalContainerVolumeStateResolve
+	physicalContainerVolumeStateResolve physicalContainerVolumeState = iota + 1
 	physicalContainerVolumeStateCreate
 	physicalContainerVolumeStateReplace
 	physicalContainerVolumeStateRuntime
@@ -44,7 +43,7 @@ type physicalContainerVolumeData struct {
 }
 
 func (data *physicalContainerVolumeData) operationInProgress() bool {
-	return (data.state == physicalContainerVolumeStateCreate ||
+	return data != nil && (data.state == physicalContainerVolumeStateCreate ||
 		data.state == physicalContainerVolumeStateReplace ||
 		data.state == physicalContainerVolumeStateRemove) &&
 		data.progress == physicalResourceProgressInProgress
@@ -117,27 +116,6 @@ func (data *physicalContainerVolumeData) applyTo(
 var physicalContainerVolumeProjections = physicalResourceProjectionTable[physicalContainerVolumeState, apiv2.PhysicalContainerVolumePhase]{
 	invalidPhase: apiv2.PhysicalContainerVolumePhaseUnknown,
 	projections: map[physicalResourceProjectionKey[physicalContainerVolumeState]]physicalResourceProjection[apiv2.PhysicalContainerVolumePhase]{
-		{state: physicalContainerVolumeStateNamespace, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotFound,
-		},
-		{state: physicalContainerVolumeStateNamespace, progress: physicalResourceProgressNotReady}: {
-			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
-		},
-		{state: physicalContainerVolumeStateNamespace, progress: physicalResourceProgressTerminating}: {
-			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceTerminating,
-		},
-		{state: physicalContainerVolumeStateNamespace, progress: physicalResourceProgressNotActive}: {
-			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotActive,
-		},
-		{state: physicalContainerVolumeStateNamespace, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.PhysicalContainerVolumePhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed,
-			requeue:         true, requeueDelay: LongDelay,
-		},
 		{state: physicalContainerVolumeStateCreate, progress: physicalResourceProgressInProgress}: {
 			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonCreating,

@@ -49,7 +49,6 @@ const (
 var (
 	logicalContainerFinalizer    = fmt.Sprintf("%s/logicalcontainer-reconciler", apiv2.GroupVersion.Group)
 	logicalContainerDataHandlers = map[logicalContainerState]logicalContainerDataHandlerFunc{
-		logicalContainerStateNamespace: handleLogicalContainerNamespace,
 		logicalContainerStateLifecycle: handleLogicalContainerLifecycle,
 		logicalContainerStateLookup:    handleLogicalContainerLookup,
 		logicalContainerStatePhysical:  handleLogicalContainerPhysical,
@@ -213,47 +212,23 @@ func (r *LogicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, container.GetResourceId())
 
-	stateKey, previousData := r.containerData.BorrowByNamespacedName(req.NamespacedName)
-	if previousData != nil && stateKey != container.UID {
-		r.discardLogicalContainerData(req.NamespacedName, log)
-	}
 	r.containerData.RunDeferredOps(req.NamespacedName, &container)
-	stateKey, data := r.containerData.BorrowByNamespacedName(container.NamespacedName())
-	if data == nil {
-		stateKey = container.UID
-		data = &logicalContainerData{
-			state: logicalContainerStateNamespace, progress: physicalResourceProgressNotReady,
-		}
-		r.containerData.Store(container.NamespacedName(), stateKey, data.Clone())
-	}
-	deleting := container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero()
-	if deleting && data.operation != nil && data.state != logicalContainerStateDelete {
+	_, data := r.containerData.BorrowByNamespacedName(container.NamespacedName())
+	if !container.DeletionTimestamp.IsZero() &&
+		data.operationInProgress() && data.state != logicalContainerStateDelete {
 		data.operation.cancel()
 	}
 
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 	var change objectChange
 	delay := StandardDelay
-	finalizerAdded := false
-	if deleting && data.operation == nil {
-		change = r.handleDeletionRequest(ctx, &container, data, log)
-	} else if change = ensureFinalizer(&container, logicalContainerFinalizer, log); change != noChange {
-		finalizerAdded = true
+	if !container.DeletionTimestamp.IsZero() && !data.operationInProgress() {
+		change, delay = r.handleDeletionRequest(ctx, &container, data, log)
 	} else {
-		change = r.manageLogicalContainer(ctx, &container, data, log)
-	}
-	if !finalizerAdded && hasFinalizer(&container, logicalContainerFinalizer) {
-		_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
-		dataChange, projectionDelay, valid := data.applyTo(&container)
-		change |= dataChange
-		delay = projectionDelay
-		if !valid {
-			log.Error(fmt.Errorf("invalid logical container state %v with progress %v", data.state, data.progress),
-				"LogicalContainer reached invalid reconciliation state")
+		change = ensureFinalizer(&container, logicalContainerFinalizer, log)
+		if change == noChange {
+			change, delay = r.manageLogicalContainer(ctx, &container, data, log)
 		}
-	}
-	if !hasFinalizer(&container, logicalContainerFinalizer) {
-		defer logger.ReleaseResourceLog(container.GetResourceId())
 	}
 	return r.SaveChangesWithDelay(ctx, &container, patch, change, delay, nil, log)
 }
@@ -263,49 +238,34 @@ func (r *LogicalContainerReconciler) manageLogicalContainer(
 	container *apiv2.LogicalContainer,
 	data *logicalContainerData,
 	log logr.Logger,
-) objectChange {
-	handler := getStateInitializer(logicalContainerDataHandlers, data.state, log)
-	return handler(ctx, r, container, data.state, data, log)
-}
-
-func handleLogicalContainerNamespace(
-	ctx context.Context, reconciler *LogicalContainerReconciler, container *apiv2.LogicalContainer,
-	_ logicalContainerState, data *logicalContainerData, log logr.Logger,
-) objectChange {
-	if container.Spec.EffectiveMode() == apiv2.LogicalContainerModeSession && container.Spec.Stop {
-		data.state = logicalContainerStateRuntime
-		data.progress = physicalResourceProgressExited
-		data.reason, data.message = "ContainerStopped", "Stop was requested before a runtime container was created."
-		return noChange
-	}
-	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, container.Namespace)
+) (objectChange, AdditionalReconciliationDelay) {
+	namespaceReady, change := guardResourceNamespace(ctx, r.Client, container,
+		&container.Status.Phase, &container.Status.Conditions,
+		apiv2.LogicalContainerPhasePending, apiv2.LogicalContainerPhaseUnknown, log)
 	if !namespaceReady {
-		data.reason = namespaceReason
-		data.message = namespaceReadinessMessage(container.Namespace, namespaceReason)
-		switch namespaceReason {
-		case apiv2.PhysicalResourceReasonNamespaceNotFound:
-			data.progress = physicalResourceProgressNotFound
-		case apiv2.PhysicalResourceReasonNamespaceTerminating:
-			data.progress = physicalResourceProgressTerminating
-		case apiv2.PhysicalResourceReasonNamespaceNotActive:
-			data.progress = physicalResourceProgressNotActive
-		default:
-			data.progress = physicalResourceProgressNotReady
-		}
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get namespace", "Namespace", container.Namespace)
-			data.progress = physicalResourceProgressRetryPending
-			data.reason = apiv2.PhysicalResourceReasonNamespaceLookupFailed
-			data.message = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
-		}
-		return noChange
+		return change, StandardDelay
 	}
-
-	data.reason, data.message = "", ""
-	if container.Spec.EffectiveMode() == apiv2.LogicalContainerModeExisting {
-		return reconciler.scheduleLogicalContainerOperation(container, data, logicalContainerStateLookup, reconciler.lookupLogicalContainer, log)
+	if data == nil {
+		data = &logicalContainerData{
+			state: logicalContainerStateLifecycle, progress: physicalResourceProgressNotReady,
+		}
+		if container.Spec.EffectiveMode() == apiv2.LogicalContainerModeExisting {
+			data.state = logicalContainerStateLookup
+		} else if container.Spec.EffectiveMode() == apiv2.LogicalContainerModeSession && container.Spec.Stop {
+			data.state, data.progress = logicalContainerStateRuntime, physicalResourceProgressExited
+			data.reason, data.message = "ContainerStopped", "Stop was requested before a runtime container was created."
+		}
+		r.containerData.Store(container.NamespacedName(), container.UID, data.Clone())
 	}
-	return reconciler.scheduleLogicalContainerOperation(container, data, logicalContainerStateLifecycle, reconciler.prepareLogicalContainerLifecycle, log)
+	handler := getStateInitializer(logicalContainerDataHandlers, data.state, log)
+	change |= handler(ctx, r, container, data.state, data, log)
+	_ = r.containerData.Update(container.NamespacedName(), container.UID, data)
+	dataChange, delay, valid := data.applyTo(container)
+	if !valid {
+		log.Error(fmt.Errorf("invalid logical container state %v with progress %v", data.state, data.progress),
+			"LogicalContainer reached invalid reconciliation state")
+	}
+	return change | dataChange, delay
 }
 
 func handleLogicalContainerLifecycle(
@@ -381,17 +341,6 @@ func handleLogicalContainerPhysical(
 		return noChange
 	}
 	data.progress, data.reason, data.message = physicalResourceProgressNotReady, "", ""
-	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, container.Namespace)
-	if !namespaceReady {
-		data.reason = namespaceReason
-		data.message = namespaceReadinessMessage(container.Namespace, namespaceReason)
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get namespace before preparing physical resources")
-			data.progress = physicalResourceProgressRetryPending
-			data.message = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
-		}
-		return noChange
-	}
 	selectedContainerID := data.pendingContainerID
 	if data.replaceExisting {
 		selectedContainerID = ""
@@ -410,15 +359,27 @@ func handleLogicalContainerPhysical(
 	change := noChange
 	physicalSpec := apiv2.PhysicalContainerSpec{ContainerID: selectedContainerID, Stop: container.Spec.Stop}
 	if selectedContainerID == "" {
-		imageRef, imageErr := reconciler.ensureLogicalContainerImage(ctx, container, physicalName)
+		imageRef, imageErr := reconciler.ensureLogicalContainerImage(ctx, container, data, physicalName)
 		if imageErr != nil {
 			log.Error(imageErr, "Failed to prepare logical container image")
+			if data.state == logicalContainerStateInvalid {
+				if data.lease != nil {
+					return reconciler.scheduleLogicalContainerLeaseSettlement(container, data, nil, log)
+				}
+				return noChange
+			}
 			data.progress = physicalResourceProgressRetryPending
 			data.message = imageErr.Error()
 			return noChange
 		}
-		image, imageChange := reconciler.observeLogicalContainerImage(ctx, container, imageRef, log)
+		image, imageChange := reconciler.observeLogicalContainerImage(ctx, container, data, imageRef, log)
 		change |= imageChange
+		if data.state == logicalContainerStateInvalid {
+			if data.lease != nil {
+				return change | reconciler.scheduleLogicalContainerLeaseSettlement(container, data, nil, log)
+			}
+			return change
+		}
 		networksReady, physicalNetworks, networkMessage, resolveErr := reconciler.resolveLogicalContainerNetworks(ctx, container)
 		if !networksReady {
 			if image != nil && image.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed {
@@ -463,6 +424,7 @@ func handleLogicalContainerPhysical(
 		ObjectMeta: metav1.ObjectMeta{Name: physicalName, Namespace: container.Namespace},
 		Spec:       physicalSpec,
 	}
+	InitializeLogicalBackingFinalizers(physicalContainer, physicalContainerFinalizer)
 	ownerErr := ctrl.SetControllerReference(container, physicalContainer, reconciler.Scheme())
 	if ownerErr != nil {
 		log.Error(ownerErr, "Failed to set physical container owner")
@@ -471,16 +433,17 @@ func handleLogicalContainerPhysical(
 		return change
 	}
 	createErr := reconciler.Create(ctx, physicalContainer)
-	if apierrors.IsAlreadyExists(createErr) {
+	if createErr != nil {
 		getErr := reconciler.NoCacheClient.Get(ctx, physicalContainer.NamespacedName(), physicalContainer)
 		if getErr != nil {
-			createErr = getErr
+			createErr = fmt.Errorf("create physical container and verify whether it exists: %w", errors.Join(createErr, getErr))
 		} else {
 			actualSpec := physicalContainer.Spec
 			actualSpec.Stop, physicalSpec.Stop = false, false
-			if !metav1.IsControlledBy(physicalContainer, container) || !reflect.DeepEqual(actualSpec, physicalSpec) {
-				createErr = fmt.Errorf("physical container %q has a different owner or spec", physicalContainer.NamespacedName())
-				data.progress = physicalResourceProgressFailed
+			if !metav1.IsControlledBy(physicalContainer, container) || !reflect.DeepEqual(actualSpec, physicalSpec) ||
+				!hasFinalizer(physicalContainer, LogicalBackingFinalizer) {
+				createErr = fmt.Errorf("physical container %q has a different owner, spec, or logical hold", physicalContainer.NamespacedName())
+				data.state, data.progress, data.reason = logicalContainerStateInvalid, physicalResourceProgressFailed, "PhysicalContainerChanged"
 			} else {
 				createErr = nil
 			}
@@ -492,6 +455,9 @@ func handleLogicalContainerPhysical(
 			data.progress = physicalResourceProgressRetryPending
 		}
 		data.message = fmt.Sprintf("Failed to prepare backing physical container: %v", createErr)
+		if data.state == logicalContainerStateInvalid && data.lease != nil {
+			return change | reconciler.scheduleLogicalContainerLeaseSettlement(container, data, nil, log)
+		}
 		return change
 	}
 	data.physicalContainerUID = physicalContainer.UID
@@ -540,7 +506,7 @@ func (r *LogicalContainerReconciler) resolveLogicalContainerNetworks(
 }
 
 func (r *LogicalContainerReconciler) ensureLogicalContainerImage(
-	ctx context.Context, container *apiv2.LogicalContainer, physicalName string,
+	ctx context.Context, container *apiv2.LogicalContainer, data *logicalContainerData, physicalName string,
 ) (string, error) {
 	if container.Spec.Container.ImageRef != "" {
 		return commonapi.AsNamespacedName(container.Spec.Container.ImageRef, container.Namespace).Name, nil
@@ -549,23 +515,34 @@ func (r *LogicalContainerReconciler) ensureLogicalContainerImage(
 		ObjectMeta: metav1.ObjectMeta{Name: physicalName, Namespace: container.Namespace},
 		Spec:       apiv2.PhysicalContainerImageSpec{Image: container.Spec.Container.Image.DeepCopy()},
 	}
+	InitializeLogicalBackingFinalizers(image, physicalContainerImageFinalizer)
 	ownerErr := ctrl.SetControllerReference(container, image, r.Scheme())
 	if ownerErr != nil {
 		return "", fmt.Errorf("set physical image owner: %w", ownerErr)
 	}
 	expectedSpec := image.Spec.DeepCopy()
-	createErr := r.Create(ctx, image)
-	if apierrors.IsAlreadyExists(createErr) {
+	var createErr error
+	if data.physicalImageUID == "" {
+		createErr = r.Create(ctx, image)
+	}
+	if data.physicalImageUID != "" || createErr != nil {
 		getErr := r.NoCacheClient.Get(ctx, image.NamespacedName(), image)
 		if getErr != nil {
-			return "", fmt.Errorf("get backing physical image: %w", getErr)
+			if apierrors.IsNotFound(getErr) && data.physicalImageUID != "" {
+				data.state, data.progress, data.reason = logicalContainerStateInvalid, physicalResourceProgressFailed, "PhysicalImageChanged"
+				data.message = "The backing PhysicalContainerImage disappeared before logical release."
+			}
+			return "", fmt.Errorf("get backing physical image: %w", errors.Join(createErr, getErr))
 		}
-		if !metav1.IsControlledBy(image, container) || !reflect.DeepEqual(image.Spec, *expectedSpec) {
-			return "", fmt.Errorf("physical image %q has a different owner or spec", image.NamespacedName())
+		if !metav1.IsControlledBy(image, container) || !reflect.DeepEqual(image.Spec, *expectedSpec) ||
+			(data.physicalImageUID != "" && data.physicalImageUID != image.UID) ||
+			!hasFinalizer(image, LogicalBackingFinalizer) {
+			data.state, data.progress, data.reason = logicalContainerStateInvalid, physicalResourceProgressFailed, "PhysicalImageChanged"
+			data.message = "The backing PhysicalContainerImage identity, owner, spec, or logical hold changed."
+			return "", fmt.Errorf("physical image %q has a different identity, owner, spec, or logical hold", image.NamespacedName())
 		}
-	} else if createErr != nil {
-		return "", fmt.Errorf("create backing physical image: %w", createErr)
 	}
+	data.physicalImageUID = image.UID
 	return image.Name, nil
 }
 
@@ -588,7 +565,7 @@ func handleLogicalContainerRuntime(
 		getErr = reconciler.NoCacheClient.Get(ctx, physicalName, physicalContainer)
 	}
 	if apierrors.IsNotFound(getErr) {
-		data.progress, data.reason = physicalResourceProgressMissing, ""
+		data.state, data.progress, data.reason = logicalContainerStateInvalid, physicalResourceProgressFailed, "PhysicalContainerMissing"
 		data.message = "The backing PhysicalContainer no longer exists."
 		change := applyLogicalContainerPhysicalDetails(container, &apiv2.PhysicalContainerStatus{})
 		runtimeLogs := &apiv2.LogSource{
@@ -609,10 +586,11 @@ func handleLogicalContainerRuntime(
 		data.message = fmt.Sprintf("Failed to get backing PhysicalContainer: %v", getErr)
 		return noChange
 	}
-	if physicalContainer.UID != data.physicalContainerUID || !metav1.IsControlledBy(physicalContainer, container) {
+	if physicalContainer.UID != data.physicalContainerUID || !metav1.IsControlledBy(physicalContainer, container) ||
+		!hasFinalizer(physicalContainer, LogicalBackingFinalizer) {
 		log.Error(fmt.Errorf("physical container %q identity or owner changed", physicalContainer.NamespacedName()),
 			"LogicalContainer backing physical resource changed")
-		data.progress, data.reason = physicalResourceProgressFailed, "PhysicalContainerChanged"
+		data.state, data.progress, data.reason = logicalContainerStateInvalid, physicalResourceProgressFailed, "PhysicalContainerChanged"
 		data.message = "The backing PhysicalContainer identity or owner changed."
 		if data.lease != nil {
 			return reconciler.scheduleLogicalContainerLeaseSettlement(container, data, nil, log)
@@ -629,19 +607,20 @@ func handleLogicalContainerRuntime(
 	if physicalContainer.Spec.Container != nil {
 		imageRefForLogs = physicalContainer.Spec.Container.ImageRef
 	}
-	_, imageChange := reconciler.observeLogicalContainerImage(ctx, container, imageRefForLogs, log)
+	_, imageChange := reconciler.observeLogicalContainerImage(ctx, container, data, imageRefForLogs, log)
 	change |= imageChange
+	if data.state == logicalContainerStateInvalid {
+		if data.lease != nil {
+			return change | reconciler.scheduleLogicalContainerLeaseSettlement(container, data, nil, log)
+		}
+		return change
+	}
 	if container.Spec.Container != nil && container.Spec.Container.Image != nil {
 		imageRef := ""
 		if physicalContainer.Spec.Container != nil {
 			imageRef = physicalContainer.Spec.Container.ImageRef
 		}
 		change |= setValue(&container.Status.ImageRef, imageRef)
-	}
-	if !physicalContainer.DeletionTimestamp.IsZero() {
-		data.progress, data.reason = physicalResourceProgressUnknown, "PhysicalContainerTerminating"
-		data.message = "The backing PhysicalContainer is being deleted."
-		return change
 	}
 	if container.Spec.Stop && !physicalContainer.Spec.Stop {
 		physicalPatch := ctrl_client.MergeFromWithOptions(physicalContainer.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
@@ -730,10 +709,11 @@ func applyLogicalContainerPhysicalDetails(
 }
 
 func (r *LogicalContainerReconciler) observeLogicalContainerImage(
-	ctx context.Context, container *apiv2.LogicalContainer, imageRef string, log logr.Logger,
+	ctx context.Context, container *apiv2.LogicalContainer, data *logicalContainerData, imageRef string, log logr.Logger,
 ) (*apiv2.PhysicalContainerImage, objectChange) {
 	var image *apiv2.PhysicalContainerImage
 	var imageLogs *apiv2.LogSource
+	owned := container.Spec.Container != nil && container.Spec.Container.Image != nil
 	if imageRef != "" {
 		image = &apiv2.PhysicalContainerImage{}
 		imageName := commonapi.AsNamespacedName(imageRef, container.Namespace)
@@ -745,8 +725,18 @@ func (r *LogicalContainerReconciler) observeLogicalContainerImage(
 			log.Error(getErr, "Failed to observe image startup logs", "Image", imageName)
 			return nil, additionalReconciliationNeeded
 		}
+		if owned && ((getErr == nil && (image.UID != data.physicalImageUID ||
+			!metav1.IsControlledBy(image, container) || !hasFinalizer(image, LogicalBackingFinalizer))) ||
+			(apierrors.IsNotFound(getErr) && data.physicalImageUID != "")) {
+			log.Error(fmt.Errorf("owned image %q identity, owner, or hold changed", imageName), "Logical image backing changed")
+			data.state, data.progress, data.reason = logicalContainerStateInvalid, physicalResourceProgressFailed, "PhysicalImageChanged"
+			data.message = "The backing PhysicalContainerImage identity, owner, or logical hold changed."
+			return nil, noChange
+		}
 		if getErr == nil {
-			imageLogs = image.GetLogSource()
+			if owned {
+				imageLogs = image.GetLogSource()
+			}
 		} else {
 			image = nil
 		}
@@ -759,9 +749,15 @@ func (r *LogicalContainerReconciler) observeLogicalContainerImage(
 }
 
 func handleUnknownLogicalContainerState(
-	_ context.Context, _ *LogicalContainerReconciler, _ *apiv2.LogicalContainer,
+	_ context.Context, reconciler *LogicalContainerReconciler, container *apiv2.LogicalContainer,
 	state logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
+	if state == logicalContainerStateInvalid {
+		if data.lease != nil {
+			return reconciler.scheduleLogicalContainerLeaseSettlement(container, data, nil, log)
+		}
+		return noChange
+	}
 	log.Error(fmt.Errorf("unknown logical container state %v with progress %v", state, data.progress),
 		"LogicalContainer has an invalid reconciliation state")
 	data.state, data.progress = logicalContainerStateInvalid, physicalResourceProgressFailed
@@ -782,53 +778,163 @@ func handleLogicalContainerDeleting(
 
 func (r *LogicalContainerReconciler) handleDeletionRequest(
 	ctx context.Context, container *apiv2.LogicalContainer, data *logicalContainerData, log logr.Logger,
-) objectChange {
+) (change objectChange, delay AdditionalReconciliationDelay) {
+	delay = StandardDelay
+	if data == nil {
+		return deleteFinalizer(container, logicalContainerFinalizer, log), delay
+	}
+	defer func() {
+		if data != nil {
+			_ = r.containerData.Update(container.NamespacedName(), container.UID, data)
+			dataChange, projectionDelay, valid := data.applyTo(container)
+			change |= dataChange
+			delay = projectionDelay
+			if !valid {
+				log.Error(fmt.Errorf("invalid logical container state %v with progress %v", data.state, data.progress),
+					"LogicalContainer reached invalid reconciliation state")
+			}
+		}
+	}()
 	data.state, data.progress = logicalContainerStateDelete, physicalResourceProgressNotReady
 	data.reason, data.message = "", ""
 	physicalName := "logical-" + string(container.UID)
 	physicalContainer := &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{Name: physicalName, Namespace: container.Namespace}}
-	deleted, deleteErr := r.deleteLogicalContainerPhysicalResource(ctx, container, physicalContainer)
-	if deleteErr == nil && deleted && container.Spec.Container != nil && container.Spec.Container.Image != nil {
-		image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: physicalName, Namespace: container.Namespace}}
-		deleted, deleteErr = r.deleteLogicalContainerPhysicalResource(ctx, container, image)
-	}
-	if deleteErr != nil {
-		log.Error(deleteErr, "Failed to delete logical container physical resources")
+	getErr := r.NoCacheClient.Get(ctx, physicalContainer.NamespacedName(), physicalContainer)
+	if getErr == nil {
+		if !metav1.IsControlledBy(physicalContainer, container) ||
+			(data.physicalContainerUID != "" && data.physicalContainerUID != physicalContainer.UID) ||
+			(!hasFinalizer(physicalContainer, LogicalBackingFinalizer) && !data.physicalContainerReleased) {
+			data.state, data.progress, data.reason = logicalContainerStateInvalid, physicalResourceProgressFailed, "PhysicalContainerChanged"
+			data.message = "The backing PhysicalContainer identity, owner, or logical hold changed."
+			log.Error(fmt.Errorf("physical backing %q identity, owner, or hold changed", physicalContainer.NamespacedName()), "Cannot release logical backing")
+			return noChange, delay
+		}
+		data.physicalContainerUID = physicalContainer.UID
+		if hasFinalizer(physicalContainer, LogicalBackingFinalizer) {
+			ready := apimeta.FindStatusCondition(physicalContainer.Status.Conditions, string(apiv2.ConditionReady))
+			if ready == nil || ready.ObservedGeneration != physicalContainer.Generation {
+				return additionalReconciliationNeeded, delay
+			}
+			stable := physicalContainer.Status.Phase == apiv2.PhysicalContainerPhaseRunning ||
+				physicalContainer.Status.Phase == apiv2.PhysicalContainerPhasePaused ||
+				physicalContainer.Status.Phase == apiv2.PhysicalContainerPhaseExited ||
+				physicalContainer.Status.Phase == apiv2.PhysicalContainerPhaseFailed ||
+				ready.Reason == string(apiv2.PhysicalContainerReasonRuntimeContainerMissing) ||
+				(physicalContainer.Status.ContainerID == "" && ready.Reason == string(apiv2.PhysicalResourceReasonNamespaceTerminating))
+			if !stable {
+				switch apiv2.ConditionReason(ready.Reason) {
+				case apiv2.PhysicalContainerReasonImageNotFound, apiv2.PhysicalContainerReasonImageNotReady,
+					apiv2.PhysicalContainerReasonImageLookupFailed,
+					apiv2.PhysicalContainerReasonVolumeNotFound, apiv2.PhysicalContainerReasonVolumeNotReady,
+					apiv2.PhysicalContainerReasonVolumeLookupFailed,
+					apiv2.PhysicalContainerReasonNetworkNotFound, apiv2.PhysicalContainerReasonNetworkNotReady,
+					apiv2.PhysicalContainerReasonNetworkLookupFailed,
+					apiv2.PhysicalResourceReasonNamespaceNotFound, apiv2.PhysicalResourceReasonNamespaceNotReady,
+					apiv2.PhysicalResourceReasonNamespaceNotActive, apiv2.PhysicalResourceReasonNamespaceLookupFailed:
+					if !physicalContainer.Spec.Stop {
+						stopPatch := ctrl_client.MergeFromWithOptions(physicalContainer.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
+						physicalContainer.Spec.Stop = true
+						stopErr := r.Patch(ctx, physicalContainer, stopPatch)
+						if stopErr != nil {
+							log.Error(stopErr, "Failed to stop dependency-pending physical backing before deletion")
+							data.progress = physicalResourceProgressRetryPending
+							data.message = stopErr.Error()
+						}
+					}
+				}
+				return additionalReconciliationNeeded, delay
+			}
+			if data.lease != nil {
+				var record *statestore.PersistentContainerRecord
+				if physicalContainer.Status.ContainerID != "" &&
+					physicalContainer.Status.Phase != apiv2.PhysicalContainerPhaseFailed &&
+					ready.Reason != string(apiv2.PhysicalContainerReasonRuntimeContainerMissing) {
+					record = &statestore.PersistentContainerRecord{
+						ResourceKey: container.GetLeaseKey(), ContainerID: physicalContainer.Status.ContainerID,
+						ContainerName: physicalContainer.Status.ContainerName, RuntimeName: r.runtimeName,
+					}
+				}
+				return r.scheduleLogicalContainerLeaseSettlement(container, data, record, log), delay
+			}
+		}
+		// Keep authorization across a committed release whose response or following delete is lost.
+		data.physicalContainerReleased = true
+		_ = r.containerData.Update(container.NamespacedName(), container.UID, data)
+		deleteErr := r.deleteLogicalContainerPhysicalResource(ctx, physicalContainer)
+		if deleteErr != nil {
+			log.Error(deleteErr, "Failed to delete logical container physical backing")
+			data.progress = physicalResourceProgressRetryPending
+			data.message = deleteErr.Error()
+		}
+		return additionalReconciliationNeeded, delay
+	} else if !apierrors.IsNotFound(getErr) {
+		log.Error(getErr, "Failed to read logical physical backing before deletion")
 		data.progress = physicalResourceProgressRetryPending
-		data.message = deleteErr.Error()
-		return noChange
+		data.message = getErr.Error()
+		return additionalReconciliationNeeded, delay
+	} else if data.physicalContainerUID != "" && !data.physicalContainerReleased {
+		data.state, data.progress, data.reason = logicalContainerStateInvalid, physicalResourceProgressFailed, "PhysicalContainerMissing"
+		data.message = "The backing PhysicalContainer disappeared before logical release."
+		log.Error(getErr, "PhysicalContainer disappeared before logical release")
+		return noChange, delay
 	}
-	if !deleted {
-		return additionalReconciliationNeeded
+	if container.Spec.Container != nil && container.Spec.Container.Image != nil {
+		image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: physicalName, Namespace: container.Namespace}}
+		imageErr := r.NoCacheClient.Get(ctx, image.NamespacedName(), image)
+		if apierrors.IsNotFound(imageErr) && data.physicalImageUID != "" && !data.physicalImageReleased {
+			data.state, data.progress, data.reason = logicalContainerStateInvalid, physicalResourceProgressFailed, "PhysicalImageChanged"
+			data.message = "The backing PhysicalContainerImage disappeared before logical release."
+			log.Error(imageErr, "PhysicalContainerImage disappeared before logical release")
+			return noChange, delay
+		}
+		if imageErr == nil {
+			if !metav1.IsControlledBy(image, container) ||
+				(data.physicalImageUID != "" && image.UID != data.physicalImageUID) ||
+				(!hasFinalizer(image, LogicalBackingFinalizer) && !data.physicalImageReleased) {
+				data.state, data.progress, data.reason = logicalContainerStateInvalid, physicalResourceProgressFailed, "PhysicalImageChanged"
+				data.message = "The backing PhysicalContainerImage identity, owner, or logical hold changed."
+				log.Error(fmt.Errorf("physical image %q identity, owner, or hold changed", image.NamespacedName()), "Cannot release logical image backing")
+				return noChange, delay
+			}
+			data.physicalImageUID = image.UID
+			data.physicalImageReleased = true
+			_ = r.containerData.Update(container.NamespacedName(), container.UID, data)
+			deleteErr := r.deleteLogicalContainerPhysicalResource(ctx, image)
+			if deleteErr != nil {
+				log.Error(deleteErr, "Failed to delete logical container image backing")
+				data.progress = physicalResourceProgressRetryPending
+				data.message = deleteErr.Error()
+			}
+			return additionalReconciliationNeeded, delay
+		} else if !apierrors.IsNotFound(imageErr) {
+			log.Error(imageErr, "Failed to read logical image backing before deletion")
+			return additionalReconciliationNeeded, delay
+		}
 	}
 	if data.lease != nil {
-		return r.scheduleLogicalContainerLeaseSettlement(container, data, nil, log)
+		return r.scheduleLogicalContainerLeaseSettlement(container, data, nil, log), delay
 	}
-	r.containerData.DeleteByNamespacedName(container.NamespacedName())
-	return deleteFinalizer(container, logicalContainerFinalizer, log)
+	change = deleteFinalizer(container, logicalContainerFinalizer, log)
+	r.discardLogicalContainerData(container.NamespacedName(), log)
+	data = nil
+	return change, delay
 }
 
 func (r *LogicalContainerReconciler) deleteLogicalContainerPhysicalResource(
-	ctx context.Context, container *apiv2.LogicalContainer, resource ctrl_client.Object,
-) (bool, error) {
-	getErr := r.NoCacheClient.Get(ctx, ctrl_client.ObjectKeyFromObject(resource), resource)
-	if apierrors.IsNotFound(getErr) {
-		return true, nil
-	}
-	if getErr != nil {
-		return false, fmt.Errorf("get backing physical resource: %w", getErr)
-	}
-	if !metav1.IsControlledBy(resource, container) {
-		return false, fmt.Errorf("backing physical resource %q has a different owner", ctrl_client.ObjectKeyFromObject(resource))
+	ctx context.Context, resource ctrl_client.Object,
+) error {
+	releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, resource)
+	if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
+		return fmt.Errorf("release logical backing finalizer: %w", releaseErr)
 	}
 	if resource.GetDeletionTimestamp().IsZero() {
 		uid := resource.GetUID()
 		deleteErr := r.Delete(ctx, resource, ctrl_client.Preconditions{UID: &uid})
 		if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-			return false, fmt.Errorf("delete backing physical resource: %w", deleteErr)
+			return fmt.Errorf("delete backing physical resource: %w", deleteErr)
 		}
 	}
-	return false, nil
+	return nil
 }
 
 func (r *LogicalContainerReconciler) discardLogicalContainerData(name types.NamespacedName, log logr.Logger) {

@@ -50,7 +50,6 @@ var (
 	physicalContainerFinalizer string = fmt.Sprintf("%s/physicalcontainer-reconciler", apiv2.GroupVersion.Group)
 
 	physicalContainerDataInitializers = map[physicalContainerState]physicalContainerDataInitializerFunc{
-		physicalContainerStateNamespace: handlePhysicalContainerNamespace,
 		physicalContainerStateResolve:   handlePhysicalContainerResolve,
 		physicalContainerStateImage:     handlePhysicalContainerPrepare,
 		physicalContainerStateVolumes:   handlePhysicalContainerPrepare,
@@ -279,42 +278,20 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	r.containerData.RunDeferredOps(req.NamespacedName, &container)
-	stateKey, data := r.containerData.BorrowByNamespacedName(container.NamespacedName())
-	if data == nil {
-		data = &physicalContainerData{
-			resourceUID: container.UID,
-			state:       physicalContainerStateNamespace,
-			progress:    physicalResourceProgressNotReady,
-		}
-		stateKey = physicalContainerDataKey(&container)
-		r.containerData.Store(container.NamespacedName(), stateKey, data.Clone())
-	}
+	_, data := r.containerData.BorrowByNamespacedName(container.NamespacedName())
 
 	var change objectChange
 	reconciliationDelay := StandardDelay
-	finalizerAdded := false
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() && !data.operationInProgress() {
-		change = r.handleDeletionRequest(ctx, &container, data, log)
-	} else if change = ensureFinalizer(&container, physicalContainerFinalizer, log); change != noChange {
-		finalizerAdded = true
+	if !container.DeletionTimestamp.IsZero() &&
+		!hasFinalizer(&container, LogicalBackingFinalizer) && !data.operationInProgress() {
+		change, reconciliationDelay = r.handleDeletionRequest(ctx, &container, data, log)
 	} else {
-		change = r.managePhysicalContainer(ctx, &container, data, log)
-	}
-	if !finalizerAdded && hasFinalizer(&container, physicalContainerFinalizer) {
-		_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
-		dataChange, delay, valid := data.applyTo(&container)
-		change |= dataChange
-		reconciliationDelay = delay
-		if !valid {
-			log.Error(fmt.Errorf("invalid physical container state %v with progress %v", data.state, data.progress),
-				"PhysicalContainer reached invalid reconciliation state")
+		change = ensureFinalizer(&container, physicalContainerFinalizer, log)
+		if change == noChange {
+			change, reconciliationDelay = r.managePhysicalContainer(ctx, &container, data, log)
 		}
-	}
-
-	if !hasFinalizer(&container, physicalContainerFinalizer) {
-		defer logger.ReleaseResourceLog(container.GetResourceId())
 	}
 	return r.SaveChangesWithDelay(ctx, &container, patch, change, reconciliationDelay, nil, log)
 }
@@ -324,48 +301,31 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 	container *apiv2.PhysicalContainer,
 	data *physicalContainerData,
 	log logr.Logger,
-) objectChange {
+) (objectChange, AdditionalReconciliationDelay) {
+	if data == nil {
+		if !container.Spec.Stop || container.Spec.ContainerID != "" {
+			ready, change := guardResourceNamespace(ctx, r.Client, container,
+				&container.Status.Phase, &container.Status.Conditions,
+				apiv2.PhysicalContainerPhasePending, apiv2.PhysicalContainerPhaseUnknown, log)
+			if !ready {
+				return change, StandardDelay
+			}
+		}
+		data = &physicalContainerData{
+			resourceUID: container.UID, state: physicalContainerStateResolve, progress: physicalResourceProgressInProgress,
+		}
+		r.containerData.Store(container.NamespacedName(), physicalContainerDataKey(container), data.Clone())
+	}
 	initializer := getStateInitializer(physicalContainerDataInitializers, data.state, log)
-	return initializer(ctx, r, container, data.state, data, log)
-}
-
-func handlePhysicalContainerNamespace(
-	ctx context.Context,
-	reconciler *PhysicalContainerReconciler,
-	container *apiv2.PhysicalContainer,
-	_ physicalContainerState,
-	data *physicalContainerData,
-	log logr.Logger,
-) objectChange {
-	if container.Spec.Stop && container.Spec.ContainerID == "" {
-		return handlePhysicalContainerPrepare(ctx, reconciler, container, data.state, data, log)
+	change := initializer(ctx, r, container, data.state, data, log)
+	stateKey, _ := r.containerData.BorrowByNamespacedName(container.NamespacedName())
+	_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
+	dataChange, delay, valid := data.applyTo(container)
+	if !valid {
+		log.Error(fmt.Errorf("invalid physical container state %v with progress %v", data.state, data.progress),
+			"PhysicalContainer reached invalid reconciliation state")
 	}
-	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, container.Namespace)
-	if !namespaceReady {
-		data.state = physicalContainerStateNamespace
-		data.failureMessage = namespaceReadinessMessage(container.Namespace, namespaceReason)
-		switch namespaceReason {
-		case apiv2.PhysicalResourceReasonNamespaceNotFound:
-			data.progress = physicalResourceProgressNotFound
-		case apiv2.PhysicalResourceReasonNamespaceTerminating:
-			data.progress = physicalResourceProgressTerminating
-		case apiv2.PhysicalResourceReasonNamespaceNotActive:
-			data.progress = physicalResourceProgressNotActive
-		default:
-			data.progress = physicalResourceProgressNotReady
-		}
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get namespace", "Namespace", container.Namespace)
-			data.progress = physicalResourceProgressRetryPending
-			data.failureMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
-		}
-		return noChange
-	}
-
-	data.state = physicalContainerStateResolve
-	data.progress = physicalResourceProgressInProgress
-	data.failureMessage = ""
-	return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
+	return change | dataChange, delay
 }
 
 func handlePhysicalContainerResolve(
@@ -815,7 +775,8 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(
 		log.Error(getErr, "Failed to get PhysicalContainerImage", "ImageRef", imageRef)
 		return false, "", physicalResourceProgressRetryPending, fmt.Sprintf("Failed to get PhysicalContainerImage: %v", getErr), additionalReconciliationNeeded
 	}
-	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
+	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() &&
+		!hasFinalizer(&image, LogicalBackingFinalizer) {
 		return false, "", physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerImage %q is terminating.", imageRef), noChange
 	}
 	if image.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed {
@@ -892,7 +853,7 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerNetworks(
 			log.Error(getErr, "Failed to get PhysicalContainerNetwork", "NetworkRef", networkConfig.NetworkRef)
 			return false, nil, physicalResourceProgressRetryPending, fmt.Sprintf("Failed to get PhysicalContainerNetwork %q: %v", networkConfig.NetworkRef, getErr)
 		}
-		if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
+		if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() && !hasFinalizer(&network, LogicalBackingFinalizer) {
 			return false, nil, physicalResourceProgressNotReady, fmt.Sprintf("PhysicalContainerNetwork %q is terminating.", networkConfig.NetworkRef)
 		}
 		if network.Status.Phase != apiv2.PhysicalContainerNetworkPhaseReady || network.Status.NetworkID == "" {
@@ -1394,11 +1355,29 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(
 	container *apiv2.PhysicalContainer,
 	data *physicalContainerData,
 	log logr.Logger,
-) objectChange {
+) (change objectChange, delay AdditionalReconciliationDelay) {
+	delay = StandardDelay
+	if data == nil {
+		defer logger.ReleaseResourceLog(container.GetResourceId())
+		return deleteFinalizer(container, physicalContainerFinalizer, log), delay
+	}
+	defer func() {
+		if data != nil {
+			stateKey, _ := r.containerData.BorrowByNamespacedName(container.NamespacedName())
+			_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
+			dataChange, projectionDelay, valid := data.applyTo(container)
+			change |= dataChange
+			delay = projectionDelay
+			if !valid {
+				log.Error(fmt.Errorf("invalid physical container state %v with progress %v", data.state, data.progress),
+					"PhysicalContainer reached invalid reconciliation state")
+			}
+		}
+	}()
 	connectionChange, connectionErr := r.ensurePhysicalContainerNetworkConnections(ctx, container, true, log)
 	if connectionErr != nil {
 		log.Error(connectionErr, "Failed to remove PhysicalContainerNetworkConnections")
-		return connectionChange | additionalReconciliationNeeded
+		return connectionChange | additionalReconciliationNeeded, delay
 	}
 
 	containerID := data.containerID
@@ -1417,12 +1396,14 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(
 			data.progress = physicalResourceProgressRetryPending
 			data.containerID = containerID
 			data.failureMessage = fmt.Sprintf("Failed to remove runtime container: %v", removeErr)
-			return connectionChange | setValue(&container.Status.ContainerID, containerID) | additionalReconciliationNeeded
+			return connectionChange | setValue(&container.Status.ContainerID, containerID) | additionalReconciliationNeeded, delay
 		}
 	}
 
 	r.discardPhysicalContainerData(container.NamespacedName(), container.UID, data, log)
-	return connectionChange | deleteFinalizer(container, physicalContainerFinalizer, log)
+	data = nil
+	defer logger.ReleaseResourceLog(container.GetResourceId())
+	return connectionChange | deleteFinalizer(container, physicalContainerFinalizer, log), delay
 }
 
 func (r *PhysicalContainerReconciler) processContainerEvent(em containers.EventMessage) {

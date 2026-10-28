@@ -21,8 +21,7 @@ import (
 type logicalContainerState int
 
 const (
-	logicalContainerStateNamespace logicalContainerState = iota + 1
-	logicalContainerStateLifecycle
+	logicalContainerStateLifecycle logicalContainerState = iota + 1
 	logicalContainerStateLookup
 	logicalContainerStatePhysical
 	logicalContainerStateRuntime
@@ -47,13 +46,20 @@ type logicalContainerData struct {
 	// Generated runtime name for a session container without spec.containerName.
 	generatedContainerName string
 	// Runtime identity selected for adoption or a stop request before physical handoff.
-	pendingContainerID   string
-	existingLifecycleKey string
-	replaceExisting      bool
-	physicalContainerUID types.UID
-	lease                *statestore.ResourceLease
+	pendingContainerID        string
+	existingLifecycleKey      string
+	replaceExisting           bool
+	physicalContainerUID      types.UID
+	physicalImageUID          types.UID
+	physicalContainerReleased bool
+	physicalImageReleased     bool
+	lease                     *statestore.ResourceLease
 	// Lease settlement failures are independent of the original reconciliation failure.
 	leaseFailureMessage string
+}
+
+func (data *logicalContainerData) operationInProgress() bool {
+	return data != nil && data.operation != nil
 }
 
 func (data *logicalContainerData) Clone() *logicalContainerData {
@@ -97,6 +103,13 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 			change |= statusChanged
 		}
 	}
+	if data.state == logicalContainerStateInvalid {
+		for _, source := range []*apiv2.LogSource{container.Status.RuntimeLogs, container.Status.StartupLogs} {
+			if source != nil {
+				change |= setValue(&source.Complete, true)
+			}
+		}
+	}
 	state, progress, reason, message := data.state, data.progress, data.reason, data.message
 	if data.leaseFailureMessage != "" {
 		state, progress = logicalContainerStatePersistence, physicalResourceProgressRetryPending
@@ -116,27 +129,6 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 var logicalContainerProjections = physicalResourceProjectionTable[logicalContainerState, apiv2.LogicalContainerPhase]{
 	invalidPhase: apiv2.LogicalContainerPhaseUnknown,
 	projections: map[physicalResourceProjectionKey[logicalContainerState]]physicalResourceProjection[apiv2.LogicalContainerPhase]{
-		{state: logicalContainerStateNamespace, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotFound,
-		},
-		{state: logicalContainerStateNamespace, progress: physicalResourceProgressNotReady}: {
-			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
-		},
-		{state: logicalContainerStateNamespace, progress: physicalResourceProgressTerminating}: {
-			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceTerminating,
-		},
-		{state: logicalContainerStateNamespace, progress: physicalResourceProgressNotActive}: {
-			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotActive,
-		},
-		{state: logicalContainerStateNamespace, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.LogicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed,
-			requeue:         true, requeueDelay: LongDelay,
-		},
 		{state: logicalContainerStateLifecycle, progress: physicalResourceProgressInProgress}: {
 			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PreparingLifecycle", message: "Logical container lifecycle preparation is in progress.",
@@ -222,7 +214,7 @@ var logicalContainerProjections = physicalResourceProjectionTable[logicalContain
 			conditionReason: "PhysicalResourceDeletionFailed", requeue: true, requeueDelay: LongDelay,
 		},
 		{state: logicalContainerStateInvalid, progress: physicalResourceProgressFailed}: {
-			phase: apiv2.LogicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse,
+			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},
 	},

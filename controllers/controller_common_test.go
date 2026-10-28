@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -64,6 +65,75 @@ func TestSetRuntimeLabelOverridesCallerValues(t *testing.T) {
 			actual := setRuntimeLabel(testCase.labels, lifecycleKeyLabel, "computed")
 			require.Equal(t, testCase.expected, actual)
 			require.Equal(t, "computed", v2LabelsToMap(actual)[lifecycleKeyLabel])
+		})
+	}
+}
+
+type namespaceReadFailureClient struct {
+	ctrl_client.Client
+}
+
+func (client *namespaceReadFailureClient) Get(context.Context, ctrl_client.ObjectKey, ctrl_client.Object, ...ctrl_client.GetOption) error {
+	return errors.New("namespace read failed")
+}
+
+// Verifies that guardResourceNamespace projects missing, inactive, terminating, and
+// failed namespace observations without changing runtime identity, and leaves active resources untouched.
+func TestGuardResourceNamespace(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	for _, testCase := range []struct {
+		name        string
+		namespace   *apiv2.Namespace
+		reason      apiv2.ConditionReason
+		readFailure bool
+	}{
+		{name: "missing", reason: apiv2.PhysicalResourceReasonNamespaceNotFound},
+		{name: "uninitialized", namespace: &apiv2.Namespace{}, reason: apiv2.PhysicalResourceReasonNamespaceNotReady},
+		{name: "inactive", namespace: &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Finalizers: []string{namespaceFinalizer}}}, reason: apiv2.PhysicalResourceReasonNamespaceNotActive},
+		{name: "terminating", namespace: &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Finalizers: []string{namespaceFinalizer}, DeletionTimestamp: &metav1.Time{Time: time.Now()}}}, reason: apiv2.PhysicalResourceReasonNamespaceTerminating},
+		{name: "read failure", readFailure: true, reason: apiv2.PhysicalResourceReasonNamespaceLookupFailed},
+		{name: "active", namespace: &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Finalizers: []string{namespaceFinalizer}}, Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive}}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			require.NoError(t, apiv2.AddToScheme(scheme))
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if testCase.namespace != nil {
+				testCase.namespace.Name = "namespace"
+				builder = builder.WithObjects(testCase.namespace)
+			}
+			var client ctrl_client.Client = builder.Build()
+			if testCase.readFailure {
+				client = &namespaceReadFailureClient{Client: client}
+			}
+			image := &apiv2.PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{Name: "image", Namespace: "namespace", Generation: 7},
+				Status:     apiv2.PhysicalContainerImageStatus{ImageID: "retained-runtime-id"},
+			}
+			ready, change := guardResourceNamespace(ctx, client, image,
+				&image.Status.Phase, &image.Status.Conditions,
+				apiv2.PhysicalContainerImagePhasePending, apiv2.PhysicalContainerImagePhaseUnknown, logr.Discard())
+			require.Equal(t, "retained-runtime-id", image.Status.ImageID)
+			if testCase.reason == "" {
+				require.True(t, ready)
+				require.Equal(t, noChange, change)
+				require.Empty(t, image.Status.Conditions)
+				return
+			}
+			require.False(t, ready)
+			require.NotZero(t, change&statusChanged)
+			condition := apimeta.FindStatusCondition(image.Status.Conditions, string(apiv2.ConditionReady))
+			require.NotNil(t, condition)
+			require.Equal(t, string(testCase.reason), condition.Reason)
+			require.Equal(t, int64(7), condition.ObservedGeneration)
+			if testCase.readFailure {
+				require.Equal(t, apiv2.PhysicalContainerImagePhaseUnknown, image.Status.Phase)
+				require.NotZero(t, change&additionalReconciliationNeeded)
+			} else {
+				require.Equal(t, apiv2.PhysicalContainerImagePhasePending, image.Status.Phase)
+			}
 		})
 	}
 }

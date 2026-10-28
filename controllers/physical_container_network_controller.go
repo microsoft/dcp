@@ -40,14 +40,13 @@ var (
 	physicalContainerNetworkFinalizer string = fmt.Sprintf("%s/physicalcontainernetwork-reconciler", apiv2.GroupVersion.Group)
 
 	physicalContainerNetworkDataInitializers = map[physicalContainerNetworkState]physicalContainerNetworkDataInitializerFunc{
-		physicalContainerNetworkStateNamespace: handlePhysicalContainerNetworkNamespace,
-		physicalContainerNetworkStateResolve:   handlePhysicalContainerNetworkResolve,
-		physicalContainerNetworkStateCreate:    handlePhysicalContainerNetworkCreateState,
-		physicalContainerNetworkStateReplace:   handlePhysicalContainerNetworkCreateState,
-		physicalContainerNetworkStateRuntime:   handlePhysicalContainerNetworkRuntime,
-		physicalContainerNetworkStateRemove:    handlePhysicalContainerNetworkRemovalState,
-		physicalContainerNetworkStateInvalid:   handlePhysicalContainerNetworkTerminal,
-		0:                                      handleUnknownPhysicalContainerNetworkDataReason,
+		physicalContainerNetworkStateResolve: handlePhysicalContainerNetworkResolve,
+		physicalContainerNetworkStateCreate:  handlePhysicalContainerNetworkCreateState,
+		physicalContainerNetworkStateReplace: handlePhysicalContainerNetworkCreateState,
+		physicalContainerNetworkStateRuntime: handlePhysicalContainerNetworkRuntime,
+		physicalContainerNetworkStateRemove:  handlePhysicalContainerNetworkRemovalState,
+		physicalContainerNetworkStateInvalid: handlePhysicalContainerNetworkTerminal,
+		0:                                    handleUnknownPhysicalContainerNetworkDataReason,
 	}
 )
 
@@ -219,42 +218,22 @@ func (r *PhysicalContainerNetworkReconciler) Reconcile(ctx context.Context, req 
 	}
 
 	r.networkData.RunDeferredOps(req.NamespacedName, &network)
-	stateKey, data := r.networkData.BorrowByNamespacedName(network.NamespacedName())
-	if data == nil {
-		data = &physicalContainerNetworkData{
-			state:    physicalContainerNetworkStateNamespace,
-			progress: physicalResourceProgressNotReady,
-		}
-		stateKey = physicalContainerNetworkDataKey(&network)
-		r.networkData.Store(network.NamespacedName(), stateKey, data.Clone())
-	}
+	_, data := r.networkData.BorrowByNamespacedName(network.NamespacedName())
 
 	var change objectChange
 	reconciliationDelay := StandardDelay
-	finalizerAdded := false
 	patch := ctrl_client.MergeFromWithOptions(network.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
-	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() && !data.operationInProgress() {
-		change = r.handleDeletionRequest(ctx, &network, data, log)
-	} else if change = ensureFinalizer(&network, physicalContainerNetworkFinalizer, log); change != noChange {
-		finalizerAdded = true
+	if !network.DeletionTimestamp.IsZero() &&
+		!hasFinalizer(&network, LogicalBackingFinalizer) && !data.operationInProgress() {
+		change, reconciliationDelay = r.handleDeletionRequest(ctx, &network, data, log)
 	} else {
-		change = r.managePhysicalContainerNetwork(ctx, &network, data, log)
-	}
-	if !finalizerAdded && hasFinalizer(&network, physicalContainerNetworkFinalizer) {
-		_ = r.networkData.Update(network.NamespacedName(), stateKey, data)
-		dataChange, delay, valid := data.applyTo(&network)
-		change |= dataChange
-		reconciliationDelay = delay
-		if !valid {
-			log.Error(fmt.Errorf("invalid physical container network state %v with progress %v", data.state, data.progress),
-				"PhysicalContainerNetwork reached invalid reconciliation state")
+		change = ensureFinalizer(&network, physicalContainerNetworkFinalizer, log)
+		if change == noChange {
+			change, reconciliationDelay = r.managePhysicalContainerNetwork(ctx, &network, data, log)
 		}
 	}
 
-	if !hasFinalizer(&network, physicalContainerNetworkFinalizer) {
-		defer logger.ReleaseResourceLog(network.GetResourceId())
-	}
 	return r.SaveChangesWithDelay(ctx, &network, patch, change, reconciliationDelay, nil, log)
 }
 
@@ -263,45 +242,26 @@ func (r *PhysicalContainerNetworkReconciler) managePhysicalContainerNetwork(
 	network *apiv2.PhysicalContainerNetwork,
 	data *physicalContainerNetworkData,
 	log logr.Logger,
-) objectChange {
-	handler := getStateInitializer(physicalContainerNetworkDataInitializers, data.state, log)
-	return handler(ctx, r, network, data.state, data, log)
-}
-
-func handlePhysicalContainerNetworkNamespace(
-	ctx context.Context,
-	reconciler *PhysicalContainerNetworkReconciler,
-	network *apiv2.PhysicalContainerNetwork,
-	_ physicalContainerNetworkState,
-	data *physicalContainerNetworkData,
-	log logr.Logger,
-) objectChange {
-	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, reconciler.Client, network.Namespace)
-	if !namespaceReady {
-		data.state = physicalContainerNetworkStateNamespace
-		data.failureMessage = namespaceReadinessMessage(network.Namespace, namespaceReason)
-		switch namespaceReason {
-		case apiv2.PhysicalResourceReasonNamespaceNotFound:
-			data.progress = physicalResourceProgressNotFound
-		case apiv2.PhysicalResourceReasonNamespaceTerminating:
-			data.progress = physicalResourceProgressTerminating
-		case apiv2.PhysicalResourceReasonNamespaceNotActive:
-			data.progress = physicalResourceProgressNotActive
-		default:
-			data.progress = physicalResourceProgressNotReady
+) (objectChange, AdditionalReconciliationDelay) {
+	if data == nil {
+		ready, change := guardResourceNamespace(ctx, r.Client, network,
+			&network.Status.Phase, &network.Status.Conditions,
+			apiv2.PhysicalContainerNetworkPhasePending, apiv2.PhysicalContainerNetworkPhaseUnknown, log)
+		if !ready {
+			return change, StandardDelay
 		}
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get namespace", "Namespace", network.Namespace)
-			data.progress = physicalResourceProgressRetryPending
-			data.failureMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
-		}
-		return noChange
+		data = &physicalContainerNetworkData{state: physicalContainerNetworkStateResolve, progress: physicalResourceProgressInProgress}
+		r.networkData.Store(network.NamespacedName(), physicalContainerNetworkDataKey(network), data.Clone())
 	}
-
-	data.state = physicalContainerNetworkStateResolve
-	data.progress = physicalResourceProgressInProgress
-	data.failureMessage = ""
-	return handlePhysicalContainerNetworkResolve(ctx, reconciler, network, data.state, data, log)
+	handler := getStateInitializer(physicalContainerNetworkDataInitializers, data.state, log)
+	change := handler(ctx, r, network, data.state, data, log)
+	_ = r.networkData.Update(network.NamespacedName(), physicalContainerNetworkDataKey(network), data)
+	dataChange, delay, valid := data.applyTo(network)
+	if !valid {
+		log.Error(fmt.Errorf("invalid physical container network state %v with progress %v", data.state, data.progress),
+			"PhysicalContainerNetwork reached invalid reconciliation state")
+	}
+	return change | dataChange, delay
 }
 
 func handlePhysicalContainerNetworkResolve(
@@ -770,24 +730,49 @@ func (r *PhysicalContainerNetworkReconciler) handleDeletionRequest(
 	network *apiv2.PhysicalContainerNetwork,
 	data *physicalContainerNetworkData,
 	log logr.Logger,
-) objectChange {
+) (change objectChange, delay AdditionalReconciliationDelay) {
+	delay = StandardDelay
+	if data == nil {
+		defer logger.ReleaseResourceLog(network.GetResourceId())
+		return deleteFinalizer(network, physicalContainerNetworkFinalizer, log), delay
+	}
+	defer func() {
+		if data != nil {
+			_ = r.networkData.Update(network.NamespacedName(), physicalContainerNetworkDataKey(network), data)
+			dataChange, projectionDelay, valid := data.applyTo(network)
+			change |= dataChange
+			delay = projectionDelay
+			if !valid {
+				log.Error(fmt.Errorf("invalid physical container network state %v with progress %v", data.state, data.progress),
+					"PhysicalContainerNetwork reached invalid reconciliation state")
+			}
+		}
+	}()
 	if data.state == physicalContainerNetworkStateRemove {
-		return handlePhysicalContainerNetworkRemovalState(ctx, r, network, data.state, data, log)
+		change = handlePhysicalContainerNetworkRemovalState(ctx, r, network, data.state, data, log)
+		if data.progress == physicalContainerNetworkOperationCompleted {
+			data = nil
+		}
+		return change, delay
 	}
 	networkConfig := network.Spec.Network
 	if networkConfig == nil || networkConfig.RetainRuntimeNetwork {
 		r.networkData.DeleteByNamespacedName(network.NamespacedName())
-		return deleteFinalizer(network, physicalContainerNetworkFinalizer, log)
+		data = nil
+		defer logger.ReleaseResourceLog(network.GetResourceId())
+		return deleteFinalizer(network, physicalContainerNetworkFinalizer, log), delay
 	}
 	if (data.state == physicalContainerNetworkStateCreate || data.state == physicalContainerNetworkStateReplace) &&
 		data.progress == physicalContainerNetworkOperationFailed {
 		r.networkData.DeleteByNamespacedName(network.NamespacedName())
-		return deleteFinalizer(network, physicalContainerNetworkFinalizer, log)
+		data = nil
+		defer logger.ReleaseResourceLog(network.GetResourceId())
+		return deleteFinalizer(network, physicalContainerNetworkFinalizer, log), delay
 	}
 
 	networkID := data.networkID
 	resolveOwnedNetworkByName := networkID == ""
-	return r.schedulePhysicalContainerNetworkRemoval(network, data, networkID, resolveOwnedNetworkByName, log)
+	return r.schedulePhysicalContainerNetworkRemoval(network, data, networkID, resolveOwnedNetworkByName, log), delay
 }
 
 func handlePhysicalContainerNetworkRemovalState(
@@ -857,6 +842,7 @@ func handlePhysicalContainerNetworkRemovalCompleted(
 	}
 
 	reconciler.networkData.DeleteByNamespacedName(network.NamespacedName())
+	defer logger.ReleaseResourceLog(network.GetResourceId())
 	return deleteFinalizer(network, physicalContainerNetworkFinalizer, log)
 }
 

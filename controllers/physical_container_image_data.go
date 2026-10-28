@@ -21,8 +21,7 @@ type physicalContainerImageDataStateKey string
 type physicalContainerImageState int
 
 const (
-	physicalContainerImageStateNamespace physicalContainerImageState = iota + 1
-	physicalContainerImageStateResolve
+	physicalContainerImageStateResolve physicalContainerImageState = iota + 1
 	physicalContainerImageStatePull
 	physicalContainerImageStateBuild
 	physicalContainerImageStateRuntime
@@ -34,15 +33,17 @@ type physicalContainerImageOperation struct {
 }
 
 type physicalContainerImageData struct {
-	state           physicalContainerImageState
-	progress        physicalResourceProgress
-	image           string
-	imageID         string
-	imageIDVerified bool
-	digest          string
-	tags            []string
-	failureMessage  string
-	retryAfter      time.Time
+	state                   physicalContainerImageState
+	progress                physicalResourceProgress
+	image                   string
+	imageID                 string
+	imageIDVerified         bool
+	digest                  string
+	tags                    []string
+	failureMessage          string
+	retryAfter              time.Time
+	inspectionFailures      int
+	inspectionFailureReason apiv2.ConditionReason
 
 	// Cancels the queued pull or build operation. Set for as long as the operation may still be running.
 	operation     *physicalContainerImageOperation
@@ -52,18 +53,20 @@ type physicalContainerImageData struct {
 
 func (data *physicalContainerImageData) Clone() *physicalContainerImageData {
 	return &physicalContainerImageData{
-		state:           data.state,
-		progress:        data.progress,
-		image:           data.image,
-		imageID:         data.imageID,
-		imageIDVerified: data.imageIDVerified,
-		digest:          data.digest,
-		tags:            slices.Clone(data.tags),
-		failureMessage:  data.failureMessage,
-		retryAfter:      data.retryAfter,
-		operation:       data.operation,
-		startupStdout:   data.startupStdout,
-		startupStderr:   data.startupStderr,
+		state:                   data.state,
+		progress:                data.progress,
+		image:                   data.image,
+		imageID:                 data.imageID,
+		imageIDVerified:         data.imageIDVerified,
+		digest:                  data.digest,
+		tags:                    slices.Clone(data.tags),
+		failureMessage:          data.failureMessage,
+		retryAfter:              data.retryAfter,
+		inspectionFailures:      data.inspectionFailures,
+		inspectionFailureReason: data.inspectionFailureReason,
+		operation:               data.operation,
+		startupStdout:           data.startupStdout,
+		startupStderr:           data.startupStderr,
 	}
 }
 
@@ -73,6 +76,10 @@ func (data *physicalContainerImageData) UpdateFrom(other *physicalContainerImage
 	}
 
 	updated := false
+	if data.inspectionFailures != other.inspectionFailures || data.inspectionFailureReason != other.inspectionFailureReason {
+		data.inspectionFailures, data.inspectionFailureReason = other.inspectionFailures, other.inspectionFailureReason
+		updated = true
+	}
 	if data.startupStdout != other.startupStdout || data.startupStderr != other.startupStderr {
 		data.startupStdout, data.startupStderr = other.startupStdout, other.startupStderr
 		updated = true
@@ -122,7 +129,7 @@ func (data *physicalContainerImageData) UpdateFrom(other *physicalContainerImage
 }
 
 func (data *physicalContainerImageData) operationInProgress() bool {
-	return (data.state == physicalContainerImageStatePull || data.state == physicalContainerImageStateBuild) &&
+	return data != nil && (data.state == physicalContainerImageStatePull || data.state == physicalContainerImageStateBuild) &&
 		data.progress == physicalResourceProgressInProgress
 }
 
@@ -154,9 +161,14 @@ func (data *physicalContainerImageData) applyTo(
 		change |= setValue(&image.Status.Image, data.image)
 	}
 
-	stateChange, delay, valid := physicalContainerImageProjections.apply(
+	reason := apiv2.ConditionReason("")
+	if data.progress == physicalResourceProgressFailed {
+		reason = data.inspectionFailureReason
+	}
+	stateChange, delay, valid := physicalContainerImageProjections.applyWithReason(
 		data.state,
 		data.progress,
+		reason,
 		data.failureMessage,
 		&image.Status.Phase,
 		&image.Status.Conditions,
@@ -168,27 +180,6 @@ func (data *physicalContainerImageData) applyTo(
 var physicalContainerImageProjections = physicalResourceProjectionTable[physicalContainerImageState, apiv2.PhysicalContainerImagePhase]{
 	invalidPhase: apiv2.PhysicalContainerImagePhaseUnknown,
 	projections: map[physicalResourceProjectionKey[physicalContainerImageState]]physicalResourceProjection[apiv2.PhysicalContainerImagePhase]{
-		{state: physicalContainerImageStateNamespace, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotFound,
-		},
-		{state: physicalContainerImageStateNamespace, progress: physicalResourceProgressNotReady}: {
-			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
-		},
-		{state: physicalContainerImageStateNamespace, progress: physicalResourceProgressTerminating}: {
-			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceTerminating,
-		},
-		{state: physicalContainerImageStateNamespace, progress: physicalResourceProgressNotActive}: {
-			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotActive,
-		},
-		{state: physicalContainerImageStateNamespace, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.PhysicalContainerImagePhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed,
-			requeue:         true, requeueDelay: LongDelay,
-		},
 		{state: physicalContainerImageStateResolve, progress: physicalResourceProgressNotReady}: {
 			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonContainerRuntimeUnhealthy,

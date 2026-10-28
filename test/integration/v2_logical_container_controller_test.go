@@ -21,6 +21,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
@@ -77,7 +78,7 @@ func TestV2LogicalContainerControllerWaitsForNamespace(t *testing.T) {
 }
 
 // Verifies that the LogicalContainer controller surfaces terminal image acquisition failures,
-// releases its startup lease even behind a missing network, and does not resume failed startup.
+// releases its startup lease even behind a missing network, and retains backings until logical deletion.
 func TestV2LogicalContainerControllerFailsStartupWhenImageAcquisitionFails(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -137,13 +138,11 @@ func TestV2LogicalContainerControllerFailsStartupWhenImageAcquisitionFails(t *te
 			require.NoError(t, client.Get(ctx, physicalName, image))
 			require.Equal(t, apiv2.PhysicalContainerImagePhaseFailed, image.Status.Phase)
 			require.NoError(t, client.Delete(ctx, image))
-			ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
-			replacementImage := &apiv2.PhysicalContainerImage{
-				ObjectMeta: metav1.ObjectMeta{Name: image.Name, Namespace: namespace.Name, OwnerReferences: image.OwnerReferences},
-				Spec:       *image.Spec.DeepCopy(),
-			}
-			require.NoError(t, client.Create(ctx, replacementImage))
-			waitPhysicalContainerImagePhase(t, ctx, replacementImage.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+			require.NoError(t, client.Get(ctx, image.NamespacedName(), image))
+			require.NotNil(t, image.DeletionTimestamp)
+			require.Contains(t, image.Finalizers, controllers.LogicalBackingFinalizer)
+			_, pullErr := containerOrchestrator.PullImage(ctx, containers.PullImageOptions{Image: sourceImage})
+			require.NoError(t, pullErr)
 			if testCase.missingNetwork {
 				network := &apiv2.LogicalContainerNetwork{
 					ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
@@ -177,6 +176,12 @@ func TestV2LogicalContainerControllerFailsStartupWhenImageAcquisitionFails(t *te
 				require.Empty(t, updatedPhysical.Status.ContainerID)
 			}
 			require.Zero(t, containerOrchestrator.CreateContainerCallCount(runtimeName))
+			require.NoError(t, client.Delete(ctx, container))
+			if !testCase.missingNetwork {
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
+			}
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, image)
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, container)
 		})
 	}
 }
