@@ -1456,35 +1456,10 @@ func unmarshalListedContainer(data []byte, lc *containers.ListedContainer) error
 	lc.Name = strings.Split(dlc.Names, ",")[0]
 	lc.Image = dlc.Image
 	lc.Status = dlc.State
-	lc.Labels = parseListedLabels(dlc.Labels)
+	lc.Labels = containers.ParseListedLabels(dlc.Labels)
 	lc.Networks = strings.Split(dlc.Networks, ",")
 
 	return nil
-}
-
-func parseListedLabels(rawLabels string) map[string]string {
-	labels := make(map[string]string)
-	var labelKey string
-	var labelValue strings.Builder
-	// Docker's list output does not escape commas; segments containing '=' are treated as new labels.
-	for _, part := range strings.Split(rawLabels, ",") {
-		key, value, hasValue := strings.Cut(part, "=")
-		if hasValue && key != "" {
-			if labelKey != "" {
-				labels[labelKey] = labelValue.String()
-				labelValue.Reset()
-			}
-			labelKey = key
-			labelValue.WriteString(value)
-		} else if labelKey != "" {
-			labelValue.WriteByte(',')
-			labelValue.WriteString(part)
-		}
-	}
-	if labelKey != "" {
-		labels[labelKey] = labelValue.String()
-	}
-	return labels
 }
 
 func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
@@ -1784,7 +1759,7 @@ func unmarshalListedNetwork(data []byte, net *containers.ListedNetwork) error {
 		net.Internal = false
 	}
 
-	net.Labels = parseListedLabels(dln.Labels)
+	net.Labels = containers.ParseListedLabels(dln.Labels)
 
 	net.Name = dln.Name
 

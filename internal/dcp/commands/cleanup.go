@@ -203,10 +203,13 @@ func cleanup(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 			if findErr != nil {
 				return nil, findErr
 			}
-			status := orchestrator.CheckStatus(cmd.Context(), containers.IgnoreCachedRuntimeStatus)
-			if !status.Installed && !runtimeSpecified {
-				log.Info("No container runtime is installed; skipping workload network discovery")
-				return nil, nil
+			status := orchestrator.CheckStatus(cmd.Context(), containers.CachedRuntimeStatusAllowed)
+			if !status.Installed {
+				if !runtimeSpecified {
+					log.Info("No container runtime is installed; skipping workload container and network discovery")
+					return nil, nil
+				}
+				return nil, fmt.Errorf("container runtime %q is not installed: %s", orchestrator.Name(), status.Error)
 			}
 			if !status.Running {
 				return nil, fmt.Errorf("container runtime %q is not running: %s", orchestrator.Name(), status.Error)
@@ -332,34 +335,47 @@ func cleanupWorkloadResources(
 		})
 	}
 
+	processReport := cleanupReport{WorkloadID: workloadID}
+	var processCleanupErr error
+	var processCleanup sync.WaitGroup
+	processCleanup.Add(1)
+	go func() {
+		defer processCleanup.Done()
+		processCleanupErr = runCleanupResourceGroups(&processReport, []cleanupResourceGroup{
+			{
+				gvr:       cleanupResourceExecutableGVR,
+				workItems: processWorkItems,
+			},
+		})
+	}()
+
 	initialCleanupErr := runCleanupResourceGroups(&report, []cleanupResourceGroup{
 		{
 			gvr:       cleanupResourceContainerGVR,
 			workItems: containerWorkItems,
 		},
-		{
-			gvr:       cleanupResourceExecutableGVR,
-			workItems: processWorkItems,
-		},
 	})
 
 	var discoveredNetworks []containers.ListedNetwork
 	var discoveredOrchestrator containers.ContainerOrchestrator
-	var discoveryErr error
+	var discoverRuntimeErr error
+	var listNetworksErr error
 	if options.discoverRuntime != nil {
-		discoveredOrchestrator, discoveryErr = options.discoverRuntime()
-		if discoveryErr == nil && discoveredOrchestrator != nil {
-			discoveredNetworks, discoveryErr = discoveredOrchestrator.ListNetworks(ctx, containers.ListNetworksOptions{
+		discoveryTarget := "workload containers and networks"
+		discoveredOrchestrator, discoverRuntimeErr = options.discoverRuntime()
+		if discoverRuntimeErr == nil && discoveredOrchestrator != nil {
+			discoveryTarget = "workload networks"
+			discoveredNetworks, listNetworksErr = discoveredOrchestrator.ListNetworks(ctx, containers.ListNetworksOptions{
 				Filters: containers.ListNetworksFilters{
 					LabelFilters: []containers.LabelFilter{{Key: controllers.WorkloadIDLabel, Value: string(workloadID)}},
 				},
 			})
 		}
-		if discoveryErr != nil {
+		if discoveryErr := errors.Join(discoverRuntimeErr, listNetworksErr); discoveryErr != nil {
 			report.Failures = append(report.Failures, cleanupFailureEntry{
 				Kind:        cleanupResourceName(cleanupResourceNetworkGVR),
 				ResourceKey: cleanupResourceNetworkGVR.Resource,
-				Error:       fmt.Sprintf("could not discover workload networks: %v", discoveryErr),
+				Error:       fmt.Sprintf("could not discover %s: %v", discoveryTarget, discoveryErr),
 			})
 		}
 	}
@@ -398,7 +414,7 @@ func cleanupWorkloadResources(
 			fallbackResourceID: network.ID,
 			clean: func() (string, bool, error) {
 				verificationErr := verifyWorkloadContainersRemoved(ctx, workloadID, discoveredOrchestrator, network.ID)
-				removeErr := removePersistentNetwork(ctx, discoveredOrchestrator, network.ID)
+				removeErr := removeNetwork(ctx, discoveredOrchestrator, network.ID)
 				networkCleanupErr := errors.Join(verificationErr, removeErr)
 				return network.ID, networkCleanupErr == nil, networkCleanupErr
 			},
@@ -420,7 +436,10 @@ func cleanupWorkloadResources(
 			workItems:    volumeWorkItems,
 		},
 	})
-	return report, errors.Join(initialCleanupErr, discoveryErr, dependentCleanupErr)
+	processCleanup.Wait()
+	report.Stopped.Executables += processReport.Stopped.Executables
+	report.Failures = append(report.Failures, processReport.Failures...)
+	return report, errors.Join(initialCleanupErr, discoverRuntimeErr, listNetworksErr, dependentCleanupErr, processCleanupErr)
 }
 
 func remainingWorkloadContainerWorkItems(
@@ -468,7 +487,7 @@ func remainingWorkloadContainerWorkItems(
 				resourceKey:        cleanupResourceContainerGVR.Resource + "/" + resourceName,
 				fallbackResourceID: containerID,
 				clean: func() (string, bool, error) {
-					removeErr := removeContainerWithRetry(ctx, orchestrator, containerID)
+					removeErr := removeContainerWithRetryTimeout(ctx, orchestrator, containerID, workloadCleanupContainerTimeout)
 					return containerID, removeErr == nil, removeErr
 				},
 			})
@@ -700,7 +719,7 @@ func cleanupPersistentContainerRecord(
 			return fmt.Errorf("could not resolve container runtime %q: %w", currentRecord.RuntimeName, resolveErr)
 		}
 
-		removeErr := removePersistentContainer(ctx, orchestrator, currentRecord.ContainerID)
+		removeErr := removeContainerWithRetryTimeout(ctx, orchestrator, currentRecord.ContainerID, workloadCleanupContainerTimeout)
 		if removeErr != nil {
 			return removeErr
 		}
@@ -816,7 +835,7 @@ func cleanupPersistentNetworkRecord(
 		}
 
 		verificationErr := verifyWorkloadContainersRemoved(ctx, workloadID, orchestrator, currentRecord.NetworkID)
-		removeErr := removePersistentNetwork(ctx, orchestrator, currentRecord.NetworkID)
+		removeErr := removeNetwork(ctx, orchestrator, currentRecord.NetworkID)
 		if verificationErr != nil || removeErr != nil {
 			return errors.Join(verificationErr, removeErr)
 		}
@@ -937,7 +956,7 @@ func withCurrentPersistentVolumeRecord(
 	return resourceID, found, cleanupErr
 }
 
-func removePersistentContainer(ctx context.Context, orchestrator containers.ContainerOrchestrator, containerID string) error {
+func removeContainer(ctx context.Context, orchestrator containers.ContainerOrchestrator, containerID string) error {
 	if strings.TrimSpace(containerID) == "" {
 		return fmt.Errorf("container ID cannot be empty")
 	}
@@ -966,10 +985,6 @@ func removePersistentContainer(ctx context.Context, orchestrator containers.Cont
 	return fmt.Errorf("container %s still exists after cleanup", containerID)
 }
 
-func removeContainerWithRetry(ctx context.Context, orchestrator containers.ContainerOrchestrator, containerID string) error {
-	return removeContainerWithRetryTimeout(ctx, orchestrator, containerID, workloadCleanupContainerTimeout)
-}
-
 func removeContainerWithRetryTimeout(
 	ctx context.Context,
 	orchestrator containers.ContainerOrchestrator,
@@ -980,7 +995,7 @@ func removeContainerWithRetryTimeout(
 	defer cancelCleanupCtx()
 
 	return resiliency.RetryExponential(cleanupCtx, func() error {
-		return removePersistentContainer(cleanupCtx, orchestrator, containerID)
+		return removeContainer(cleanupCtx, orchestrator, containerID)
 	})
 }
 
@@ -1028,7 +1043,7 @@ func removePersistentVolume(
 	return false, fmt.Errorf("volume %s still exists after cleanup", volumeName)
 }
 
-func removePersistentNetwork(ctx context.Context, orchestrator containers.ContainerOrchestrator, networkID string) error {
+func removeNetwork(ctx context.Context, orchestrator containers.ContainerOrchestrator, networkID string) error {
 	if strings.TrimSpace(networkID) == "" {
 		return fmt.Errorf("network ID cannot be empty")
 	}

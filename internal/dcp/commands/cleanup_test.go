@@ -6,7 +6,9 @@
 package commands
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -94,6 +96,35 @@ func TestCleanupRejectsTooLongWorkloadID(t *testing.T) {
 	)
 
 	require.ErrorContains(t, cleanupErr, "workload ID cannot be longer than")
+}
+
+// Verifies that NewCleanupCommand reports an explicitly selected missing runtime as not installed and identifies both blocked discovery kinds.
+func TestCleanupCommandReportsUninstalledExplicitRuntime(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv(statestore.DCP_STATE_STORE_PATH, filepath.Join(t.TempDir(), "state-store", "state.sqlite3"))
+	originalRuntime := container_flags.GetRuntimeFlagValue()
+	t.Cleanup(func() {
+		require.NoError(t, container_flags.SetRuntimeFlagValue(originalRuntime))
+	})
+
+	cleanupCommand := NewCleanupCommand(&logger.Logger{Logger: logr.Discard()})
+	cleanupCommand.SetArgs([]string{"workload-a", "--" + container_flags.RuntimeFlagName, "podman"})
+	var output bytes.Buffer
+	var diagnostics bytes.Buffer
+	cleanupCommand.SetOut(&output)
+	cleanupCommand.SetErr(&diagnostics)
+
+	commandErr := cleanupCommand.ExecuteContext(ctx)
+
+	require.Error(t, commandErr)
+	var report cleanupReport
+	require.NoError(t, json.NewDecoder(&output).Decode(&report), "command error: %v; diagnostics: %s", commandErr, diagnostics.String())
+	require.Equal(t, cleanupStoppedCounts{}, report.Stopped)
+	require.Len(t, report.Failures, 1)
+	require.Contains(t, report.Failures[0].Error, `could not discover workload containers and networks: container runtime "podman" is not installed:`)
+	require.NotContains(t, report.Failures[0].Error, "is not running")
 }
 
 // Verifies that remainingWorkloadContainerWorkItems removes workload containers across networks and excludes recorded and other-workload containers.
@@ -251,8 +282,8 @@ func TestRemainingWorkloadContainerWorkItemsReportsRemovalFailure(t *testing.T) 
 	require.Empty(t, retryReport.Failures)
 }
 
-// Verifies that cleanupWorkloadResources removes recorded and unrecorded workload resources and detaches unrelated containers from removed networks.
-func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
+// Verifies that cleanupWorkloadResources retries recorded container removal, cleans up workload resources, and detaches unrelated containers from removed networks.
+func TestCleanupWorkloadResourcesRetriesRecordedContainerRemovalAndCleansWorkloadResources(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
@@ -303,6 +334,7 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
 	}))
+	orchestrator.FailNextRemoveContainer("api", errors.New("transient removal failure"))
 
 	report, cleanupErr := cleanupWorkloadResources(
 		ctx,
@@ -323,6 +355,7 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 	require.NoError(t, cleanupErr, "cleanup report: %+v", report)
 	require.Equal(t, cleanupStoppedCounts{Containers: 2, Networks: 1}, report.Stopped)
 	require.Empty(t, report.Failures)
+	require.GreaterOrEqual(t, orchestrator.RemoveContainerCallCount("api"), 2)
 	_, inspectContainerErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
 	require.ErrorIs(t, inspectContainerErr, containers.ErrNotFound)
 	_, inspectRemainingContainerErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{remainingContainerID}})
@@ -603,12 +636,12 @@ func TestCleanupWorkloadResourcesDiscoversUnrecordedNetworksOnSelectedRuntime(t 
 	other, inspectOtherErr := selectedRuntime.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{otherContainerID}})
 	require.NoError(t, inspectOtherErr)
 	require.NotContains(t, other[0].Networks, "session-network")
-	for _, networkID := range []string{networkID, recordedNetworkID} {
+	for _, listedNetworkID := range []string{networkID, recordedNetworkID} {
 		orchestrator := selectedRuntime
-		if networkID == recordedNetworkID {
+		if listedNetworkID == recordedNetworkID {
 			orchestrator = recordedRuntime
 		}
-		_, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
+		_, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{listedNetworkID}})
 		require.ErrorIs(t, inspectErr, containers.ErrNotFound)
 	}
 	_, inspectOtherNetworkErr := selectedRuntime.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{otherNetworkID}})
@@ -843,8 +876,8 @@ func TestCleanupWorkloadResourcesFindsResourcesWithCommaInWorkloadID(t *testing.
 	}
 }
 
-// Verifies that cleanupWorkloadResources reports selected-runtime discovery errors as network cleanup failures.
-func TestCleanupWorkloadResourcesReportsNetworkDiscoveryFailure(t *testing.T) {
+// Verifies that cleanupWorkloadResources reports both kinds blocked by runtime discovery failure while still cleaning up executables.
+func TestCleanupWorkloadResourcesReportsRuntimeDiscoveryFailureWithoutBlockingExecutables(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
@@ -855,6 +888,15 @@ func TestCleanupWorkloadResourcesReportsNetworkDiscoveryFailure(t *testing.T) {
 	processExecutor := process.NewOSExecutor(logr.Discard())
 	defer processExecutor.Dispose()
 	discoveryErr := errors.New("runtime not running")
+	const executableResourceKey = "default/missing"
+	require.NoError(t, stateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:  executableResourceKey,
+		LifecycleKey: "missing-lifecycle",
+		PID:          process.Pid_t(999999),
+		IdentityTime: time.Unix(1, 0).UTC(),
+		RunID:        "missing-run",
+		WorkloadID:   "workload-a",
+	}))
 
 	report, cleanupErr := cleanupWorkloadResources(
 		ctx, "workload-a", stateStore, leaseOwner,
@@ -870,13 +912,16 @@ func TestCleanupWorkloadResourcesReportsNetworkDiscoveryFailure(t *testing.T) {
 	)
 
 	require.ErrorIs(t, cleanupErr, discoveryErr)
-	require.Equal(t, cleanupStoppedCounts{}, report.Stopped)
+	require.Equal(t, cleanupStoppedCounts{Executables: 1}, report.Stopped)
 	require.Len(t, report.Failures, 1)
 	require.Equal(t, cleanupResourceName(cleanupResourceNetworkGVR), report.Failures[0].Kind)
-	require.ErrorContains(t, errors.New(report.Failures[0].Error), discoveryErr.Error())
+	require.Equal(t, "could not discover workload containers and networks: "+discoveryErr.Error(), report.Failures[0].Error)
+	_, getProcessErr := stateStore.GetPersistentProcess(ctx, executableResourceKey)
+	require.ErrorIs(t, getProcessErr, statestore.ErrPersistentProcessNotFound)
 }
 
-func TestRemovePersistentNetworkRetriesTransientRemovalFailure(t *testing.T) {
+// Verifies that removeNetwork retries transient runtime failures until the network is removed.
+func TestRemoveNetworkRetriesTransientRemovalFailure(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
@@ -891,7 +936,7 @@ func TestRemovePersistentNetworkRetriesTransientRemovalFailure(t *testing.T) {
 	networkID, createNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "app-network"})
 	require.NoError(t, createNetworkErr)
 
-	removeErr := removePersistentNetwork(ctx, wrappedOrchestrator, networkID)
+	removeErr := removeNetwork(ctx, wrappedOrchestrator, networkID)
 
 	require.NoError(t, removeErr)
 	require.Equal(t, 3, wrappedOrchestrator.removeCalls)
@@ -1076,14 +1121,19 @@ func TestCleanupWorkloadResourcesPreservesReplacementVolume(t *testing.T) {
 	require.ErrorIs(t, getRecordErr, statestore.ErrPersistentVolumeNotFound)
 }
 
-func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworksAndVolumes(t *testing.T) {
+// Verifies that cleanupWorkloadResources orders container cleanup before networks and volumes without waiting for executable cleanup.
+func TestCleanupWorkloadResourcesOrdersContainerCleanupIndependentlyOfExecutables(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+	ctx, cancel := testutil.GetTestContext(t, 0)
 	defer cancel()
 	stateStore := openCleanupTestStore(t, ctx)
-	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
-	require.NoError(t, leaseOwnerErr)
+	heldLeaseOwner, heldLeaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, heldLeaseOwnerErr)
+	cleanupLeaseOwner := process.ProcessHandle{
+		Pid:          heldLeaseOwner.Pid,
+		IdentityTime: heldLeaseOwner.IdentityTime.Add(-time.Hour),
+	}
 	processExecutor := process.NewOSExecutor(logr.Discard())
 	defer processExecutor.Dispose()
 	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
@@ -1107,11 +1157,24 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworksAndVolumes(t *te
 	}))
 	containerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name: "api",
+		Labels: map[string]string{
+			controllers.WorkloadIDLabel: "workload-a",
+		},
 		Networks: []containers.CreateContainerNetworkOptions{
 			{Name: "app-network"},
 		},
 	})
 	require.NoError(t, createContainerErr)
+	_, createSessionContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name: "session-api",
+		Labels: map[string]string{
+			controllers.WorkloadIDLabel: "workload-a",
+		},
+		Networks: []containers.CreateContainerNetworkOptions{
+			{Name: "app-network"},
+		},
+	})
+	require.NoError(t, createSessionContainerErr)
 	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
 		ResourceKey:   "containers/api",
 		ContainerID:   containerID,
@@ -1133,18 +1196,35 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworksAndVolumes(t *te
 		WorkloadID:     "workload-a",
 		OwnershipToken: volumeOwnershipToken,
 	}))
+	const executableResourceKey = "default/missing"
+	require.NoError(t, stateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:  executableResourceKey,
+		LifecycleKey: "missing-lifecycle",
+		PID:          process.Pid_t(999999),
+		IdentityTime: time.Unix(1, 0).UTC(),
+		RunID:        "missing-run",
+		WorkloadID:   "workload-a",
+	}))
+	_, acquireLeaseErr := stateStore.AcquireResourceLease(ctx, cleanupLeaseResource(executableResourceKey), heldLeaseOwner, time.Minute)
+	require.NoError(t, acquireLeaseErr)
 
 	type cleanupResult struct {
 		report cleanupReport
 		err    error
 	}
 	resultCh := make(chan cleanupResult, 1)
+	cleanupDone := make(chan struct{})
+	defer func() {
+		cancel()
+		<-cleanupDone
+	}()
 	go func() {
+		defer close(cleanupDone)
 		report, cleanupErr := cleanupWorkloadResources(
 			ctx,
 			"workload-a",
 			stateStore,
-			leaseOwner,
+			cleanupLeaseOwner,
 			func(runtimeName string) (containers.ContainerOrchestrator, error) {
 				if runtimeName != cleanupTestRuntimeName {
 					return nil, errors.New("unexpected runtime name")
@@ -1152,7 +1232,12 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworksAndVolumes(t *te
 				return wrappedOrchestrator, nil
 			},
 			processExecutor,
-			cleanupWorkloadOptions{Volumes: true},
+			cleanupWorkloadOptions{
+				Volumes: true,
+				discoverRuntime: func() (containers.ContainerOrchestrator, error) {
+					return wrappedOrchestrator, nil
+				},
+			},
 			logr.Discard(),
 		)
 		resultCh <- cleanupResult{report: report, err: cleanupErr}
@@ -1186,6 +1271,26 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworksAndVolumes(t *te
 	}
 	close(wrappedOrchestrator.allowRemoveContainers)
 
+	select {
+	case <-wrappedOrchestrator.removeNetworksEntered:
+	case <-ctx.Done():
+		require.FailNow(t, "network cleanup waited for executable cleanup", ctx.Err())
+	}
+	select {
+	case <-wrappedOrchestrator.removeVolumesEntered:
+	case <-ctx.Done():
+		require.FailNow(t, "volume cleanup waited for executable cleanup", ctx.Err())
+	}
+	require.NoError(t, stateStore.VerifyResourceLeaseHeld(ctx, cleanupLeaseResource(executableResourceKey), heldLeaseOwner))
+	_, getProcessErr := stateStore.GetPersistentProcess(ctx, executableResourceKey)
+	require.NoError(t, getProcessErr)
+	select {
+	case earlyResult := <-resultCh:
+		require.FailNow(t, "cleanup finished before the executable lease was released", earlyResult.err)
+	default:
+	}
+	require.NoError(t, stateStore.ReleaseResourceLease(ctx, cleanupLeaseResource(executableResourceKey), heldLeaseOwner))
+
 	var result cleanupResult
 	select {
 	case result = <-resultCh:
@@ -1193,8 +1298,91 @@ func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworksAndVolumes(t *te
 		require.FailNow(t, "cleanup did not finish", ctx.Err())
 	}
 	require.NoError(t, result.err)
-	require.Equal(t, cleanupStoppedCounts{Containers: 1, Networks: 1, Volumes: 1}, result.report.Stopped)
+	require.Equal(t, cleanupStoppedCounts{Containers: 2, Executables: 1, Networks: 1, Volumes: 1}, result.report.Stopped)
 	require.Empty(t, result.report.Failures)
+	_, getCleanedProcessErr := stateStore.GetPersistentProcess(ctx, executableResourceKey)
+	require.ErrorIs(t, getCleanedProcessErr, statestore.ErrPersistentProcessNotFound)
+}
+
+// Verifies that cleanupWorkloadResources cancels independent executable lease waits and includes their failures in the final report.
+func TestCleanupWorkloadResourcesReportsCanceledExecutableCleanup(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	heldLeaseOwner, heldLeaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, heldLeaseOwnerErr)
+	cleanupLeaseOwner := process.ProcessHandle{
+		Pid:          heldLeaseOwner.Pid,
+		IdentityTime: heldLeaseOwner.IdentityTime.Add(-time.Hour),
+	}
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+
+	const executableResourceKey = "default/missing"
+	require.NoError(t, stateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:  executableResourceKey,
+		LifecycleKey: "missing-lifecycle",
+		PID:          process.Pid_t(999999),
+		IdentityTime: time.Unix(1, 0).UTC(),
+		RunID:        "missing-run",
+		WorkloadID:   "workload-a",
+	}))
+	_, acquireLeaseErr := stateStore.AcquireResourceLease(ctx, cleanupLeaseResource(executableResourceKey), heldLeaseOwner, time.Minute)
+	require.NoError(t, acquireLeaseErr)
+
+	type cleanupResult struct {
+		report cleanupReport
+		err    error
+	}
+	cleanupCtx, cancelCleanup := context.WithCancel(ctx)
+	resultCh := make(chan cleanupResult, 1)
+	cleanupDone := make(chan struct{})
+	defer func() {
+		cancelCleanup()
+		<-cleanupDone
+	}()
+	discoveryStarted := make(chan struct{})
+	go func() {
+		defer close(cleanupDone)
+		report, cleanupErr := cleanupWorkloadResources(
+			cleanupCtx, "workload-a", stateStore, cleanupLeaseOwner,
+			func(string) (containers.ContainerOrchestrator, error) {
+				return nil, errors.New("container runtime should not be requested without container resource records")
+			},
+			processExecutor,
+			cleanupWorkloadOptions{discoverRuntime: func() (containers.ContainerOrchestrator, error) {
+				close(discoveryStarted)
+				return nil, nil
+			}},
+			logr.Discard(),
+		)
+		resultCh <- cleanupResult{report: report, err: cleanupErr}
+	}()
+
+	select {
+	case <-discoveryStarted:
+	case <-ctx.Done():
+		require.FailNow(t, "runtime discovery waited for executable cleanup", ctx.Err())
+	}
+	cancelCleanup()
+
+	var result cleanupResult
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		require.FailNow(t, "cleanup did not finish after cancellation", ctx.Err())
+	}
+	require.Error(t, result.err)
+	require.Equal(t, cleanupStoppedCounts{}, result.report.Stopped)
+	require.Len(t, result.report.Failures, 1)
+	require.Equal(t, cleanupResourceName(cleanupResourceExecutableGVR), result.report.Failures[0].Kind)
+	require.Equal(t, executableResourceKey, result.report.Failures[0].ResourceKey)
+	require.Equal(t, "999999", result.report.Failures[0].ResourceID)
+	require.Contains(t, result.report.Failures[0].Error, context.Canceled.Error())
+	_, getProcessErr := stateStore.GetPersistentProcess(ctx, executableResourceKey)
+	require.NoError(t, getProcessErr)
 }
 
 func TestCleanupWorkloadResourcesTreatsMissingRuntimeResourcesAsSuccess(t *testing.T) {
@@ -1996,6 +2184,7 @@ func TestCleanupPersistentProcessRecordTreatsStopGoneErrorAsSuccess(t *testing.T
 	require.ErrorIs(t, getErr, statestore.ErrPersistentProcessNotFound)
 }
 
+// Verifies that cleanupWorkloadResources reports permanent container removal failures, retains their records, and continues independent cleanup.
 func TestCleanupWorkloadResourcesReportsFailuresAndContinues(t *testing.T) {
 	t.Parallel()
 
@@ -2011,7 +2200,7 @@ func TestCleanupWorkloadResourcesReportsFailuresAndContinues(t *testing.T) {
 	removeContainerErr := errors.New("container removal failed")
 	wrappedOrchestrator := &failingCleanupContainerOrchestrator{
 		ContainerOrchestrator: orchestrator,
-		removeContainersErr:   removeContainerErr,
+		removeContainersErr:   resiliency.Permanent(removeContainerErr),
 	}
 
 	containerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{Name: "invalid"})
@@ -2051,6 +2240,9 @@ func TestCleanupWorkloadResourcesReportsFailuresAndContinues(t *testing.T) {
 	require.Equal(t, "containers/invalid", report.Failures[0].ResourceKey)
 	require.Equal(t, containerID, report.Failures[0].ResourceID)
 	require.ErrorContains(t, errors.New(report.Failures[0].Error), removeContainerErr.Error())
+	retainedRecord, getRetainedRecordErr := stateStore.GetPersistentContainer(ctx, "containers/invalid")
+	require.NoError(t, getRetainedRecordErr)
+	require.Equal(t, containerID, retainedRecord.ContainerID)
 }
 
 func openCleanupTestStore(t *testing.T, ctx context.Context) *statestore.Store {
