@@ -44,6 +44,26 @@ const (
 	LogicalContainerModeExisting LogicalContainerMode = "existing"
 )
 
+// ShouldReuseExisting indicates whether the mode permits adopting an existing runtime container.
+func (mode LogicalContainerMode) ShouldReuseExisting() bool {
+	switch mode {
+	case LogicalContainerModePersistent, LogicalContainerModeExisting:
+		return true
+	default:
+		return false
+	}
+}
+
+// ShouldCreateIfMissing indicates whether the mode permits creating a runtime container.
+func (mode LogicalContainerMode) ShouldCreateIfMissing() bool {
+	switch mode {
+	case LogicalContainerModeSession, LogicalContainerModePersistent:
+		return true
+	default:
+		return false
+	}
+}
+
 // LogicalContainerPhase summarizes the lifecycle of a logical container.
 type LogicalContainerPhase string
 
@@ -56,6 +76,9 @@ const (
 
 	// LogicalContainerPhasePaused indicates that the container is paused.
 	LogicalContainerPhasePaused LogicalContainerPhase = "Paused"
+
+	// LogicalContainerPhaseStopping indicates that stop is requested and has not completed.
+	LogicalContainerPhaseStopping LogicalContainerPhase = "Stopping"
 
 	// LogicalContainerPhaseExited indicates that the container has exited.
 	LogicalContainerPhaseExited LogicalContainerPhase = "Exited"
@@ -236,7 +259,7 @@ type LogicalContainerStatus struct {
 	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
 
 	// Phase summarizes the container lifecycle.
-	// +kubebuilder:validation:Enum=Pending;Running;Paused;Exited;Unknown;Failed
+	// +kubebuilder:validation:Enum=Pending;Running;Paused;Stopping;Exited;Unknown;Failed
 	// +optional
 	Phase LogicalContainerPhase `json:"phase,omitempty"`
 

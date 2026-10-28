@@ -1603,6 +1603,8 @@ func TestV2PhysicalContainerImageControllerPreservesBasePullBudgetWhenRuntimeBec
 	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
 }
 
+// Verifies that PhysicalContainerImage cancels acquisition and publishes completed logs on
+// deletion even while a logical hold retains the API object.
 func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -1615,12 +1617,14 @@ func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 
 	image := &apiv2.PhysicalContainerImage{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "deleted-pulling-image",
-			Namespace: namespace.Name,
+			Name:       "deleted-pulling-image",
+			Namespace:  namespace.Name,
+			Finalizers: []string{controllers.LogicalBackingFinalizer},
 		},
 		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
 	}
 	require.NoError(t, client.Create(ctx, image))
+	removeDependencyHoldOnCleanup(t, ctx, image, controllers.LogicalBackingFinalizer)
 	waitPullImageCallCount(t, ctx, sourceImage, 1)
 
 	pullingImage := waitObjectAssumesState(t, ctx, image.NamespacedName(), func(currentImage *apiv2.PhysicalContainerImage) (bool, error) {
@@ -1630,8 +1634,11 @@ func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 
 	require.NoError(t, client.Delete(ctx, image))
 
-	// The finalizer must be released without waiting for the blocked pull to complete.
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
+	cleaned := waitObjectAssumesState(t, ctx, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+	})
+	require.True(t, cleaned.Status.LogsComplete)
+	require.Equal(t, apiv2.PhysicalContainerImagePhaseFailed, cleaned.Status.Phase)
 
 	// Releasing the block proves the pull was cancelled rather than merely orphaned: a still-running
 	// pull would resume here and register the image with the runtime.
@@ -1640,4 +1647,6 @@ func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 		return containerOrchestrator.HasImage(sourceImage)
 	}, 2*time.Second, 250*time.Millisecond)
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
+	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
 }

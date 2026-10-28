@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -570,8 +571,9 @@ func TestBuildImageUsesIIDFile(t *testing.T) {
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 
-// Verifies that PullImage captures human-readable output and resolves identity through inspection.
-func TestPullImageStreamsOutputAndInspectsIdentity(t *testing.T) {
+// Verifies that PullImage captures human-readable output and retries transient identity inspection
+// failures without repeating the successful pull.
+func TestPullImageStreamsOutputAndRetriesInspection(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
@@ -594,9 +596,15 @@ func TestPullImageStreamsOutputAndInspectsIdentity(t *testing.T) {
 		},
 	})
 	inspectCommand := []string{"docker", "image", "inspect", "--format", "{{json .}}", "example.test/test/image:latest"}
+	var inspectionAttempts atomic.Int32
 	executor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{Command: inspectCommand},
 		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			if inspectionAttempts.Add(1) <= 2 {
+				_, stderrErr := execution.Cmd.Stderr.Write([]byte("Error: No such image: example.test/test/image:latest\n"))
+				require.NoError(t, stderrErr)
+				return 1
+			}
 			_, writeErr := execution.Cmd.Stdout.Write([]byte("{\"Id\":\"sha256:image-id\"}\n"))
 			require.NoError(t, writeErr)
 			return 0
@@ -612,7 +620,7 @@ func TestPullImageStreamsOutputAndInspectsIdentity(t *testing.T) {
 	require.NoError(t, pullErr)
 	require.Equal(t, "sha256:image-id", imageID)
 	require.Equal(t, "layer: Pull complete\n", output.String())
-	require.Len(t, executor.FindAll(inspectCommand, "", nil), 1)
+	require.Len(t, executor.FindAll(inspectCommand, "", nil), 3)
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 

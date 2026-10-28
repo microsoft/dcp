@@ -214,14 +214,11 @@ func (wco *WslcCliOrchestrator) PullImage(ctx context.Context, options container
 		return "", errors.Join(runErr, normalizeCliErrors(errBuf, imageNotFoundMatch))
 	}
 
-	images, inspectErr := wco.InspectImages(ctx, containers.InspectImagesOptions{Images: []string{imageReference}})
+	imageID, inspectErr := containers.InspectPulledImage(ctx, wco, imageReference)
 	if inspectErr != nil {
 		return "", fmt.Errorf("inspect pulled image %q: %w", imageReference, inspectErr)
 	}
-	if len(images) != 1 || images[0].Id == "" {
-		return "", fmt.Errorf("pulled image %q inspection did not return exactly one non-empty image ID", imageReference)
-	}
-	return images[0].Id, nil
+	return imageID, nil
 }
 
 func (wco *WslcCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {

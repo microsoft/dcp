@@ -231,6 +231,8 @@ func TestV2PhysicalContainerVolumeControllerDoesNotDuplicateCreate(t *testing.T)
 	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
 }
 
+// Verifies that PhysicalContainerVolume settles in-flight creation and publishes runtime removal
+// before removing its cleanup finalizer, without waiting for the logical hold to be released.
 func TestV2PhysicalContainerVolumeControllerWaitsForCreateBeforeDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -243,10 +245,12 @@ func TestV2PhysicalContainerVolumeControllerWaitsForCreateBeforeDeletion(t *test
 	defer releaseCreate()
 
 	volume := &apiv2.PhysicalContainerVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "delete-during-create-volume", Namespace: namespace.Name},
-		Spec:       newRemovablePhysicalContainerVolumeSpec(volumeName),
+		ObjectMeta: metav1.ObjectMeta{Name: "delete-during-create-volume", Namespace: namespace.Name,
+			Finalizers: []string{controllers.LogicalBackingFinalizer}},
+		Spec: newRemovablePhysicalContainerVolumeSpec(volumeName),
 	}
 	require.NoError(t, client.Create(ctx, volume))
+	removeDependencyHoldOnCleanup(t, ctx, volume, controllers.LogicalBackingFinalizer)
 	waitCreateVolumeCallCount(t, ctx, volumeName, 1)
 	require.NoError(t, client.Delete(ctx, volume))
 
@@ -265,8 +269,13 @@ func TestV2PhysicalContainerVolumeControllerWaitsForCreateBeforeDeletion(t *test
 	require.Equal(t, 0, containerOrchestrator.RemoveVolumeCallCount(volumeName))
 
 	releaseCreate()
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
+	cleaned := waitObjectAssumesState(t, ctx, volume.NamespacedName(), func(current *apiv2.PhysicalContainerVolume) (bool, error) {
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+	})
+	requireReadyCondition(t, cleaned.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoved)
 	waitRuntimeVolumeMissing(t, ctx, volumeName)
+	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
 	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
 	require.Equal(t, 1, containerOrchestrator.RemoveVolumeCallCount(volumeName))
 }

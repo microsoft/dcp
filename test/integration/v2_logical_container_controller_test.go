@@ -76,6 +76,152 @@ func TestV2LogicalContainerControllerWaitsForNamespace(t *testing.T) {
 	})
 }
 
+type unavailableNamespaceClient struct {
+	ctrl_client.Client
+	unavailable atomic.Bool
+}
+
+func (client *unavailableNamespaceClient) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
+	if _, namespace := obj.(*apiv2.Namespace); namespace && client.unavailable.Load() {
+		return errors.New("injected namespace read failure")
+	}
+	return client.Client.Get(ctx, key, obj, options...)
+}
+
+// Verifies that a logical container with initialized state can forward stop and observe its
+// backing despite subsequent namespace read failures.
+func TestV2LogicalContainerControllerStopsAfterNamespaceReadFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	var decorated *unavailableNamespaceClient
+	server, _, startErr := StartTestEnvironmentWithOptions(t, ctx,
+		NamespaceController|LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController,
+		t.Name(), t.TempDir(), TestEnvironmentOptions{
+			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+				decorated = &unavailableNamespaceClient{Client: client}
+				return decorated
+			},
+		})
+	require.NoError(t, startErr)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-namespace-read-failure"}}
+	require.NoError(t, server.Client.Create(ctx, namespace))
+	container := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
+			Image: &apiv2.PhysicalContainerImageConfig{Image: "namespace-read-failure-image"},
+		}},
+	}
+	require.NoError(t, server.Client.Create(ctx, container))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+	})
+	decorated.unavailable.Store(true)
+	defer decorated.unavailable.Store(false)
+	require.NoError(t, retryOnConflictEx(ctx, server.Client, container.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
+		current.Spec.Stop = true
+		return server.Client.Update(updateCtx, current)
+	}))
+	stopped := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseExited, nil
+	})
+	require.Equal(t, running.Status.ContainerID, stopped.Status.ContainerID)
+	requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, "ContainerStopped")
+}
+
+// Verifies that LogicalContainer reports Stopping while physical status still reports Running,
+// and projects the final exit once the physical status update succeeds.
+func TestV2LogicalContainerControllerReportsStoppingBeforePhysicalStatus(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	var conflicts *backingStatusConflicts
+	server, _, startErr := StartTestEnvironmentWithOptions(t, ctx,
+		NamespaceController|LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController,
+		t.Name(), t.TempDir(), TestEnvironmentOptions{
+			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+				conflicts = &backingStatusConflicts{
+					Client: client, imageConflict: make(chan struct{}), containerConflict: make(chan struct{}),
+				}
+				return conflicts
+			},
+		})
+	require.NoError(t, startErr)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-stopping-status"}}
+	require.NoError(t, server.Client.Create(ctx, namespace))
+	container := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
+			Image: &apiv2.PhysicalContainerImageConfig{Image: "stopping-status-image"},
+		}},
+	}
+	require.NoError(t, server.Client.Create(ctx, container))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+	})
+	conflicts.stopStatusBlocked.Store(true)
+	defer conflicts.stopStatusBlocked.Store(false)
+	require.NoError(t, retryOnConflictEx(ctx, server.Client, container.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
+		current.Spec.Stop = true
+		return server.Client.Update(updateCtx, current)
+	}))
+	stopping := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseStopping, nil
+	})
+	requireReadyCondition(t, stopping.Status.Conditions, metav1.ConditionFalse, "ContainerStopping")
+	require.Equal(t, running.Status.ContainerID, stopping.Status.ContainerID)
+	require.NotNil(t, running.Status.RuntimeLogs)
+	require.NotNil(t, stopping.Status.RuntimeLogs)
+	require.Equal(t, running.Status.RuntimeLogs.ContainerID, stopping.Status.RuntimeLogs.ContainerID)
+	physical := &apiv2.PhysicalContainer{}
+	require.NoError(t, server.Client.Get(ctx, types.NamespacedName{
+		Namespace: namespace.Name, Name: stopping.Status.PhysicalContainerRef,
+	}, physical))
+	require.True(t, physical.Spec.Stop)
+	require.Equal(t, apiv2.PhysicalContainerPhaseRunning, physical.Status.Phase)
+	ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
+	require.NotNil(t, ready)
+	require.Equal(t, string(apiv2.PhysicalContainerReasonRuntimeContainerRunning), ready.Reason)
+
+	conflicts.stopStatusBlocked.Store(false)
+	stopped := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseExited, nil
+	})
+	requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, "ContainerStopped")
+	require.Equal(t, running.Status.ContainerID, stopped.Status.ContainerID)
+}
+
+// Verifies that an initially stopped session waits for its namespace before completing
+// without creating physical image/container resources.
+func TestV2LogicalContainerControllerWaitsForNamespaceBeforeCompletingStop(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	container := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "stopped", Namespace: "v2-logical-stop-missing-namespace"},
+		Spec: apiv2.LogicalContainerSpec{
+			Stop: true, Container: &apiv2.LogicalContainerConfig{ImageRef: "unused"},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	pending := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.LogicalContainerPhasePending &&
+			readyCondition != nil && readyCondition.Reason == string(apiv2.PhysicalResourceReasonNamespaceNotFound), nil
+	})
+	require.Empty(t, pending.Status.PhysicalContainerRef)
+	require.Empty(t, pending.Status.ImageRef)
+	createActiveV2Namespace(t, ctx, container.Namespace)
+	stopped := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseExited, nil
+	})
+	requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, "ContainerStopped")
+	require.Empty(t, stopped.Status.ContainerID)
+	require.Empty(t, stopped.Status.PhysicalContainerRef)
+	require.NoError(t, client.Delete(ctx, container))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, container)
+}
+
 // Verifies that the LogicalContainer controller surfaces terminal image acquisition failures,
 // releases its startup lease, and retains owned backings until logical deletion even if the source image later becomes available.
 func TestV2LogicalContainerControllerFailsStartupWhenImageAcquisitionFails(t *testing.T) {
@@ -540,7 +686,6 @@ type blockingLogicalContainerInspector struct {
 	containerName string
 	blocked       atomic.Bool
 	entered       chan string
-	cancelled     chan string
 	release       chan struct{}
 }
 
@@ -552,7 +697,6 @@ func (inspector *blockingLogicalContainerInspector) InspectContainers(
 		inspector.entered <- inspector.containerName
 		select {
 		case <-ctx.Done():
-			inspector.cancelled <- inspector.containerName
 			return nil, ctx.Err()
 		case _, open := <-inspector.release:
 			if !open {
@@ -563,23 +707,24 @@ func (inspector *blockingLogicalContainerInspector) InspectContainers(
 	return inspector.ContainerOrchestrator.InspectContainers(ctx, options)
 }
 
-// Verifies that the LogicalContainer controller performs lookup asynchronously, lets unrelated
-// containers progress, and cancels the lookup and releases its startup lease on deletion.
-func TestV2LogicalContainerControllerCancelsAsynchronousLookup(t *testing.T) {
+// Verifies that LogicalContainer reconciliation lets unrelated resources progress during lookup
+// and honors deletion on the next reconciliation by removing its backing and releasing its lease.
+func TestV2LogicalContainerControllerDeletesAfterLookup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	var inspector *blockingLogicalContainerInspector
-	serverInfo, environmentInfo, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalContainerController, t.Name(), t.TempDir(),
+	serverInfo, environmentInfo, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		LogicalContainerController|PhysicalContainerController, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateContainerOrchestrator: func(orchestrator containers.ContainerOrchestrator, _ *statestore.Store) containers.ContainerOrchestrator {
 			inspector = &blockingLogicalContainerInspector{
 				ContainerOrchestrator: orchestrator, containerName: "blocked-runtime",
-				entered: make(chan string, 1), cancelled: make(chan string, 1),
+				entered: make(chan string, 1), release: make(chan struct{}, 1),
 			}
 			return inspector
 		}})
 	require.NoError(t, startupErr)
-	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-async"}}
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-delete-after-lookup"}}
 	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
 	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
 		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
@@ -610,26 +755,127 @@ func TestV2LogicalContainerControllerCancelsAsynchronousLookup(t *testing.T) {
 		return current.Status.PhysicalContainerRef != "", nil
 	})
 	require.NoError(t, serverInfo.Client.Delete(ctx, blocked))
+	inspector.release <- struct{}{}
 	ctrl_testutil.WaitObjectDeleted[apiv2.LogicalContainer](t, ctx, serverInfo.Client, blocked)
 	leaseErr := environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, blocked, environmentInfo.ResourceLeaseOwner)
 	require.ErrorIs(t, leaseErr, statestore.ErrResourceLeaseNotHeld)
-	select {
-	case cancelledName, open := <-inspector.cancelled:
-		require.True(t, open)
-		require.Equal(t, inspector.containerName, cancelledName)
-	case <-ctx.Done():
-		require.FailNow(t, "logical container lookup was not cancelled")
+	var backings apiv2.PhysicalContainerList
+	require.NoError(t, serverInfo.Client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+	for _, backing := range backings.Items {
+		require.False(t, metav1.IsControlledBy(&backing, blocked))
+	}
+}
+
+// Verifies that adopting a runtime container never claims it for workload cleanup or reassigns
+// an existing ownership record, including deletion before the backing reports readiness.
+func TestV2LogicalContainerControllerDoesNotClaimAdoptedContainers(t *testing.T) {
+	for _, testCase := range []struct {
+		name              string
+		managed           bool
+		deleteBeforeReady bool
+	}{
+		{name: "unmanaged"},
+		{name: "managed", managed: true},
+		{name: "unmanaged-deleting", deleteBeforeReady: true},
+		{name: "managed-deleting", managed: true, deleteBeforeReady: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			var conflicts *backingStatusConflicts
+			server, environment, startErr := StartTestEnvironmentWithOptions(t, ctx,
+				LogicalContainerController|PhysicalContainerController, t.Name(), t.TempDir(), TestEnvironmentOptions{
+					WorkloadID: "adopting-workload",
+					DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+						conflicts = &backingStatusConflicts{
+							Client: client, imageConflict: make(chan struct{}), containerConflict: make(chan struct{}),
+						}
+						conflicts.containerBlocked.Store(testCase.deleteBeforeReady)
+						return conflicts
+					},
+				})
+			require.NoError(t, startErr)
+			defer conflicts.containerBlocked.Store(false)
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-adopted-ownership"}}
+			require.NoError(t, server.Client.Create(ctx, namespace))
+			var labels map[string]string
+			if testCase.managed {
+				labels = map[string]string{
+					"com.microsoft.developer.usvc-dev.build":         "test",
+					"com.microsoft.developer.usvc-dev.lifecycle-key": "custom",
+				}
+			}
+			runtimeID, runErr := server.ContainerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+				CreateContainerOptions: containers.CreateContainerOptions{Name: "adopted-runtime", Image: "existing-image", Labels: labels},
+			})
+			require.NoError(t, runErr)
+			container := &apiv2.LogicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "persistent", Namespace: namespace.Name},
+				Spec: apiv2.LogicalContainerSpec{
+					Mode: apiv2.LogicalContainerModePersistent, ContainerName: "adopted-runtime",
+					LifecycleKey: "custom", Container: &apiv2.LogicalContainerConfig{ImageRef: "unused-image"},
+				},
+			}
+			if testCase.managed {
+				require.NoError(t, environment.StateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
+					ResourceKey: container.GetLeaseKey(), ContainerID: runtimeID, ContainerName: "adopted-runtime",
+					RuntimeName: server.ContainerOrchestrator.Name(), WorkloadID: "original-workload",
+				}))
+			}
+			require.NoError(t, server.Client.Create(ctx, container))
+			if testCase.deleteBeforeReady {
+				select {
+				case <-conflicts.containerConflict:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				require.NoError(t, server.Client.Delete(ctx, container))
+				waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+					ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+					return ready != nil && ready.Reason == "DeletingPhysicalResources", nil
+				})
+				require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, container, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+				conflicts.containerBlocked.Store(false)
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
+			} else {
+				running := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+					return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+				})
+				require.Equal(t, runtimeID, running.Status.ContainerID)
+			}
+			record, recordErr := environment.StateStore.GetPersistentContainer(ctx, container.GetLeaseKey())
+			if testCase.managed {
+				require.NoError(t, recordErr)
+				require.Equal(t, commonapi.WorkloadID("original-workload"), record.WorkloadID)
+				require.Equal(t, runtimeID, record.ContainerID)
+			} else {
+				require.ErrorIs(t, recordErr, statestore.ErrPersistentContainerNotFound)
+			}
+			records, recordsErr := environment.StateStore.ListPersistentContainersByWorkloadID(ctx, "adopting-workload")
+			require.NoError(t, recordsErr)
+			require.Empty(t, records)
+			require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, container, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+			if !testCase.deleteBeforeReady {
+				require.NoError(t, server.Client.Delete(ctx, container))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
+			}
+			inspected, inspectErr := server.ContainerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{runtimeID}})
+			require.NoError(t, inspectErr)
+			require.Len(t, inspected, 1)
+			require.Equal(t, containers.ContainerStatusRunning, inspected[0].Status)
+		})
 	}
 }
 
 // Verifies that the LogicalContainer controller records persistent workload ownership and
-// releases its startup lease before reporting the adopted runtime container as ready.
+// releases its startup lease before reporting a newly created runtime container as ready.
 func TestV2LogicalContainerControllerRecordsPersistentWorkload(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	serverInfo, environmentInfo, startupErr := StartTestEnvironmentWithOptions(t, ctx,
-		LogicalContainerController|PhysicalContainerController, t.Name(), t.TempDir(),
+		LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{WorkloadID: "logical-container-workload"})
 	require.NoError(t, startupErr)
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-workload"}}
@@ -637,25 +883,21 @@ func TestV2LogicalContainerControllerRecordsPersistentWorkload(t *testing.T) {
 	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
 		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
 	})
-	runtimeID, runErr := serverInfo.ContainerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
-		CreateContainerOptions: containers.CreateContainerOptions{Name: "v2-logical-workload-runtime", Image: "workload-image"},
-	})
-	require.NoError(t, runErr)
 	container := &apiv2.LogicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "persistent", Namespace: namespace.Name},
 		Spec: apiv2.LogicalContainerSpec{
 			Mode: apiv2.LogicalContainerModePersistent, ContainerName: "v2-logical-workload-runtime",
-			LifecycleKey: "custom", Container: &apiv2.LogicalContainerConfig{ImageRef: "unused-image"},
+			LifecycleKey: "custom", Container: &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "workload-image"}},
 		},
 	}
 	require.NoError(t, serverInfo.Client.Create(ctx, container))
 	running := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
 	})
-	require.Equal(t, runtimeID, running.Status.ContainerID)
+	require.NotEmpty(t, running.Status.ContainerID)
 	record, recordErr := environmentInfo.StateStore.GetPersistentContainer(ctx, container.GetLeaseKey())
 	require.NoError(t, recordErr)
-	require.Equal(t, runtimeID, record.ContainerID)
+	require.Equal(t, running.Status.ContainerID, record.ContainerID)
 	require.Equal(t, commonapi.WorkloadID("logical-container-workload"), record.WorkloadID)
 	verifyErr := environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, container, environmentInfo.ResourceLeaseOwner)
 	require.ErrorIs(t, verifyErr, statestore.ErrResourceLeaseNotHeld)
@@ -673,22 +915,21 @@ func TestV2LogicalContainerControllerRecordsNamespaceWorkload(t *testing.T) {
 		return client.Update(updateCtx, current)
 	}))
 	runtimeName := namespace.Name + "-runtime"
-	runtimeID := runExistingTestContainer(t, ctx, runtimeName, "workload-image")
 	container := &apiv2.LogicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "persistent", Namespace: namespace.Name},
 		Spec: apiv2.LogicalContainerSpec{
 			Mode: apiv2.LogicalContainerModePersistent, ContainerName: runtimeName,
-			LifecycleKey: "custom", Container: &apiv2.LogicalContainerConfig{ImageRef: "unused-image"},
+			LifecycleKey: "custom", Container: &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: runtimeName + "-image"}},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
 	running := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
 	})
-	require.Equal(t, runtimeID, running.Status.ContainerID)
+	require.NotEmpty(t, running.Status.ContainerID)
 	record, recordErr := testStateStore.GetPersistentContainer(ctx, container.GetLeaseKey())
 	require.NoError(t, recordErr)
-	require.Equal(t, runtimeID, record.ContainerID)
+	require.Equal(t, running.Status.ContainerID, record.ContainerID)
 	require.Equal(t, commonapi.WorkloadID("namespace-container-workload"), record.WorkloadID)
 	waitResourceLeaseReleased(t, ctx, container)
 }
@@ -787,9 +1028,9 @@ func TestV2LogicalContainerControllerStopsWithoutReplacingPersistentContainer(t 
 	waitResourceLeaseReleased(t, ctx, container)
 }
 
-// Verifies that the LogicalContainer controller honors a stop request received during asynchronous
-// lookup by stopping the found container, even when the lookup's older snapshot selected replacement.
-func TestV2LogicalContainerControllerStopsContainerFoundDuringLookup(t *testing.T) {
+// Verifies that a stop request received during lookup is forwarded to the resulting physical
+// backing on a subsequent reconciliation, regardless of the initial creation decision.
+func TestV2LogicalContainerControllerForwardsStopAfterLookup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -799,7 +1040,7 @@ func TestV2LogicalContainerControllerStopsContainerFoundDuringLookup(t *testing.
 		TestEnvironmentOptions{DecorateContainerOrchestrator: func(orchestrator containers.ContainerOrchestrator, _ *statestore.Store) containers.ContainerOrchestrator {
 			inspector = &blockingLogicalContainerInspector{
 				ContainerOrchestrator: orchestrator, containerName: "v2-logical-stop-during-lookup-runtime",
-				entered: make(chan string, 1), cancelled: make(chan string, 1), release: make(chan struct{}, 1),
+				entered: make(chan string, 1), release: make(chan struct{}, 1),
 			}
 			return inspector
 		}})
@@ -809,7 +1050,7 @@ func TestV2LogicalContainerControllerStopsContainerFoundDuringLookup(t *testing.
 	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
 		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
 	})
-	runtimeID, runErr := serverInfo.ContainerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+	_, runErr := serverInfo.ContainerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
 			Name: inspector.containerName, Image: "existing-image",
 			Labels: map[string]string{
@@ -842,10 +1083,10 @@ func TestV2LogicalContainerControllerStopsContainerFoundDuringLookup(t *testing.
 	stopped := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerPhaseExited, nil
 	})
-	require.Equal(t, runtimeID, stopped.Status.ContainerID)
-	require.Equal(t, "old-key", stopped.Status.LifecycleKey)
-	observed, inspectErr := serverInfo.ContainerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{runtimeID}})
-	require.NoError(t, inspectErr)
-	require.Len(t, observed, 1)
-	require.Equal(t, containers.ContainerStatusExited, observed[0].Status)
+	physical := &apiv2.PhysicalContainer{}
+	require.NoError(t, serverInfo.Client.Get(ctx, types.NamespacedName{
+		Namespace: namespace.Name, Name: stopped.Status.PhysicalContainerRef,
+	}, physical))
+	require.True(t, physical.Spec.Stop)
+	require.Equal(t, apiv2.PhysicalContainerPhaseExited, physical.Status.Phase)
 }

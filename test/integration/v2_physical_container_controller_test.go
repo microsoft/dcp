@@ -839,23 +839,32 @@ func TestV2PhysicalContainerControllerCopiesCreateFilesBeforeStart(t *testing.T)
 
 // Verifies that the PhysicalContainer controller completes stop before creation without
 // creating or starting a runtime container.
+// Verifies that PhysicalContainer waits for its namespace before completing an initial stop
+// without creating a runtime container.
 func TestV2PhysicalContainerControllerCompletesStopBeforeCreation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-stop-before-create")
-	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "image", namespace.Name+"-image")
+	const namespaceName = "v2-pctr-stop-before-create"
 	container := &apiv2.PhysicalContainer{
-		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespaceName},
 		Spec: apiv2.PhysicalContainerSpec{
 			Stop: true,
 			Container: &apiv2.PhysicalContainerConfig{
-				ImageRef: image.Name, ContainerName: namespace.Name + "-runtime",
+				ImageRef: "unused-image", ContainerName: namespaceName + "-runtime",
 			},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
+	pending := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil && readyCondition.Reason == string(apiv2.PhysicalResourceReasonNamespaceNotFound), nil
+	})
+	require.Empty(t, pending.Status.ContainerID)
+	require.Zero(t, containerOrchestrator.CreateContainerCallCount(container.Spec.Container.ContainerName))
+	createActiveV2Namespace(t, ctx, namespaceName)
 	stopped := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseExited)
 	requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonStopRequested)
 	require.Empty(t, stopped.Status.ContainerID)
@@ -1289,6 +1298,8 @@ func TestV2PhysicalContainerControllerReportsRuntimePhases(t *testing.T) {
 	requireReadyCondition(t, deadContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerDead)
 }
 
+// Verifies that PhysicalContainer removes its runtime container and publishes confirmed absence
+// while a logical hold retains the API object for observation.
 func TestV2PhysicalContainerControllerDeletesCreatedContainer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -1298,22 +1309,30 @@ func TestV2PhysicalContainerControllerDeletesCreatedContainer(t *testing.T) {
 	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "deleted-created-image", "deleted-created-image")
 	container := &apiv2.PhysicalContainer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "deleted-created-container",
-			Namespace: namespace.Name,
+			Name:       "deleted-created-container",
+			Namespace:  namespace.Name,
+			Finalizers: []string{controllers.LogicalBackingFinalizer},
 		},
 		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
 			ContainerName: "v2-pctr-delete-created"},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
+	removeDependencyHoldOnCleanup(t, ctx, container, controllers.LogicalBackingFinalizer)
 
 	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
 	containerID := updatedContainer.Status.ContainerID
 	require.NotEmpty(t, containerID)
 
 	require.NoError(t, client.Delete(ctx, updatedContainer))
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
+	cleaned := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+	})
+	requireReadyCondition(t, cleaned.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing)
+	require.Equal(t, containerID, cleaned.Status.ContainerID)
 	waitContainerMissing(t, ctx, containerID)
+	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
 }
 
 func TestV2PhysicalContainerControllerReportsDeletionFailure(t *testing.T) {

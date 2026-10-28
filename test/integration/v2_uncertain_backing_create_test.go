@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -23,10 +24,11 @@ import (
 
 type uncertainBackingCreateClient struct {
 	ctrl_client.Client
-	kind     string
-	attempts atomic.Int32
-	created  chan struct{}
-	release  <-chan struct{}
+	kind          string
+	attempts      atomic.Int32
+	created       chan struct{}
+	release       <-chan struct{}
+	alreadyExists bool
 }
 
 func (client *uncertainBackingCreateClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
@@ -47,17 +49,33 @@ func (client *uncertainBackingCreateClient) Create(ctx context.Context, obj ctrl
 	close(client.created)
 	select {
 	case <-client.release:
+		if client.alreadyExists {
+			resource := "physicalcontainers"
+			if client.kind == "image" {
+				resource = "physicalcontainerimages"
+			}
+			return apierrors.NewAlreadyExists(apiv2.GroupVersion.WithResource(resource).GroupResource(), obj.GetName())
+		}
 		return errors.New("injected response failure after committed backing create")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-// Verifies that uncertain backing creation is resolved immediately through an uncached lookup
-// without retrying Create, and a concurrent stop reaches the successfully created physical container.
+// Verifies that lifecycle preparation, lookup, and backing declaration run in one Pending pass,
+// indeterminate and AlreadyExists responses are verified without another Create, and concurrent stop reaches the backing.
 func TestV2LogicalContainerResolvesUncertainBackingCreate(t *testing.T) {
-	for _, kind := range []string{"container", "image"} {
-		t.Run(kind, func(t *testing.T) {
+	for _, testCase := range []struct {
+		name          string
+		kind          string
+		alreadyExists bool
+	}{
+		{name: "container", kind: "container"},
+		{name: "image", kind: "image"},
+		{name: "container-already-exists", kind: "container", alreadyExists: true},
+		{name: "image-already-exists", kind: "image", alreadyExists: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
@@ -71,7 +89,8 @@ func TestV2LogicalContainerResolvesUncertainBackingCreate(t *testing.T) {
 				t.Name(), t.TempDir(), TestEnvironmentOptions{
 					DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
 						decorated = &uncertainBackingCreateClient{
-							Client: client, kind: kind, created: make(chan struct{}), release: release,
+							Client: client, kind: testCase.kind, created: make(chan struct{}), release: release,
+							alreadyExists: testCase.alreadyExists,
 						}
 						return decorated
 					},
@@ -82,6 +101,7 @@ func TestV2LogicalContainerResolvesUncertainBackingCreate(t *testing.T) {
 			logical := &apiv2.LogicalContainer{
 				ObjectMeta: metav1.ObjectMeta{Name: "logical", Namespace: namespace.Name},
 				Spec: apiv2.LogicalContainerSpec{
+					Mode:          apiv2.LogicalContainerModePersistent,
 					ContainerName: "uncertain-runtime",
 					Container:     &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "uncertain-image"}},
 				},
@@ -92,9 +112,12 @@ func TestV2LogicalContainerResolvesUncertainBackingCreate(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
+			pending := &apiv2.LogicalContainer{}
+			require.NoError(t, server.Client.Get(ctx, logical.NamespacedName(), pending))
+			require.Empty(t, pending.Status.LifecycleKey, "preparation and lookup must not publish intermediate phases before declaring the backing")
 			name := types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(logical.UID)}
 			expectedPhase := apiv2.LogicalContainerPhaseRunning
-			if kind == "container" {
+			if testCase.kind == "container" {
 				waitObjectAssumesStateEx(t, ctx, server.Client, name, func(current *apiv2.PhysicalContainer) (bool, error) {
 					return current.Status.Phase == apiv2.PhysicalContainerPhaseRunning, nil
 				})
@@ -114,7 +137,7 @@ func TestV2LogicalContainerResolvesUncertainBackingCreate(t *testing.T) {
 			physical := &apiv2.PhysicalContainer{}
 			require.NoError(t, server.Client.Get(ctx, name, physical))
 			require.True(t, metav1.IsControlledBy(physical, logical))
-			if kind == "container" {
+			if testCase.kind == "container" {
 				require.True(t, physical.Spec.Stop)
 				require.Equal(t, apiv2.PhysicalContainerPhaseExited, physical.Status.Phase)
 			}

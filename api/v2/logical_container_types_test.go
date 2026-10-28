@@ -23,6 +23,25 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
+// Verifies that LogicalContainerMode exposes creation and reuse policy consistently with its defaults.
+func TestLogicalContainerModePolicies(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		mode   LogicalContainerMode
+		reuse  bool
+		create bool
+	}{
+		{mode: "", create: true},
+		{mode: LogicalContainerModeSession, create: true},
+		{mode: LogicalContainerModePersistent, reuse: true, create: true},
+		{mode: LogicalContainerModeExisting, reuse: true},
+	} {
+		mode := (LogicalContainerSpec{Mode: testCase.mode}).EffectiveMode()
+		require.Equal(t, testCase.reuse, mode.ShouldReuseExisting(), "mode %q", testCase.mode)
+		require.Equal(t, testCase.create, mode.ShouldCreateIfMissing(), "mode %q", testCase.mode)
+	}
+}
+
 // Verifies that LogicalContainerSpec.GetLifecycleKey honors explicit keys, normalizes declared
 // configuration without mutating it, and changes the computed key when runtime configuration changes.
 func TestLogicalContainerSpecGetLifecycleKey(t *testing.T) {
