@@ -34,6 +34,7 @@ import (
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
+	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -365,7 +366,9 @@ func TestCleanupWorkloadResourcesRetriesRecordedContainerRemovalAndCleansWorkloa
 	})
 	require.NoError(t, inspectOtherWorkloadContainerErr)
 	require.Len(t, otherWorkloadContainers, 1)
-	require.NotContains(t, otherWorkloadContainers[0].Networks, "app-network")
+	require.NotContains(t, slices.Map[string](otherWorkloadContainers[0].Networks, func(network containers.InspectedContainerNetwork) string {
+		return network.Id
+	}), networkID)
 	_, inspectNetworkErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
 	require.ErrorIs(t, inspectNetworkErr, containers.ErrNotFound)
 
@@ -432,7 +435,9 @@ func TestCleanupWorkloadResourcesRetriesDetachedContainerAfterRemovalFailure(t *
 	require.Equal(t, cleanupResourceName(cleanupResourceNetworkGVR), report.Failures[1].Kind)
 	inspectedContainer, inspectDetachedErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
 	require.NoError(t, inspectDetachedErr)
-	require.NotContains(t, inspectedContainer[0].Networks, "app-network")
+	require.NotContains(t, slices.Map[string](inspectedContainer[0].Networks, func(network containers.InspectedContainerNetwork) string {
+		return network.Id
+	}), networkID)
 	_, inspectNetworkErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
 	require.ErrorIs(t, inspectNetworkErr, containers.ErrNotFound)
 	networkRecords, listNetworkErr := stateStore.ListPersistentNetworksByWorkloadID(ctx, "workload-a")
@@ -635,7 +640,9 @@ func TestCleanupWorkloadResourcesDiscoversUnrecordedNetworksOnSelectedRuntime(t 
 	}
 	other, inspectOtherErr := selectedRuntime.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{otherContainerID}})
 	require.NoError(t, inspectOtherErr)
-	require.NotContains(t, other[0].Networks, "session-network")
+	require.NotContains(t, slices.Map[string](other[0].Networks, func(network containers.InspectedContainerNetwork) string {
+		return network.Id
+	}), networkID)
 	for _, listedNetworkID := range []string{networkID, recordedNetworkID} {
 		orchestrator := selectedRuntime
 		if listedNetworkID == recordedNetworkID {
@@ -701,7 +708,9 @@ func TestCleanupWorkloadResourcesRemovesUnrecordedNetworkWithoutRecords(t *testi
 	require.ErrorIs(t, inspectContainerErr, containers.ErrNotFound)
 	unrelated, inspectOtherErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{otherID}})
 	require.NoError(t, inspectOtherErr)
-	require.NotContains(t, unrelated[0].Networks, "session-network")
+	require.NotContains(t, slices.Map[string](unrelated[0].Networks, func(network containers.InspectedContainerNetwork) string {
+		return network.Id
+	}), networkID)
 	_, inspectNetworkErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
 	require.ErrorIs(t, inspectNetworkErr, containers.ErrNotFound)
 }
@@ -801,7 +810,9 @@ func TestCleanupWorkloadResourcesRecoversDetachedContainerAfterDiscoveryFailure(
 	require.ErrorContains(t, errors.New(firstReport.Failures[0].Error), "simulated container scan failure")
 	inspectedContainer, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
 	require.NoError(t, inspectErr)
-	require.NotContains(t, inspectedContainer[0].Networks, "session-network")
+	require.NotContains(t, slices.Map[string](inspectedContainer[0].Networks, func(network containers.InspectedContainerNetwork) string {
+		return network.Id
+	}), networkID)
 	_, inspectNetworkErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
 	require.ErrorIs(t, inspectNetworkErr, containers.ErrNotFound)
 
