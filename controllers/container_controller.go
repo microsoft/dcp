@@ -326,6 +326,7 @@ func (r *ContainerReconciler) handleDeletionRequest(ctx context.Context, contain
 		log.V(1).Info("Container is being deleted (in initial or final state; releasing resources and deleting finalizer)...", "CurrentState", rcd.containerState)
 		cleanupErr := r.cleanupContainerResources(ctx, container, rcd, log)
 		if cleanupErr != nil {
+			_ = r.runningContainers.Update(container.NamespacedName(), rcd.containerID, rcd)
 			log.Error(cleanupErr, "Could not clean up Container resources")
 			return additionalReconciliationNeeded
 		}
