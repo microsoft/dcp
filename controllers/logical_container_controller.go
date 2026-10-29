@@ -724,8 +724,20 @@ func handleLogicalContainerRunning(
 		change |= additionalReconciliationNeeded
 	}
 
-	data.reason, data.message = "", ""
 	ready := apimeta.FindStatusCondition(physicalContainer.Status.Conditions, string(apiv2.ConditionReady))
+	if data.lease != nil && physicalContainer.Status.ContainerID != "" &&
+		(ready == nil || ready.Reason != string(apiv2.PhysicalContainerReasonRuntimeContainerAlreadyTracked)) {
+		var record *statestore.PersistentContainerRecord
+		if physicalContainer.Spec.Container != nil {
+			record = &statestore.PersistentContainerRecord{
+				ResourceKey: container.GetLeaseKey(), ContainerID: physicalContainer.Status.ContainerID,
+				ContainerName: physicalContainer.Status.ContainerName, RuntimeName: reconciler.runtimeName,
+			}
+		}
+		change |= reconciler.settleLogicalContainerLease(ctx, container, data, record, log)
+	}
+
+	data.reason, data.message = "", ""
 	switch physicalContainer.Status.Phase {
 	case apiv2.PhysicalContainerPhaseRunning:
 		data.state = logicalContainerStateRunning
@@ -779,17 +791,8 @@ func handleLogicalContainerRunning(
 		data.state == logicalContainerStateFailed ||
 		data.state == logicalContainerStateStopped ||
 		data.state == logicalContainerStateStopFailed
-	if data.lease != nil && settled {
-		var record *statestore.PersistentContainerRecord
-		if physicalContainer.Spec.Container != nil &&
-			data.state != logicalContainerStateFailed && data.state != logicalContainerStateStopFailed &&
-			physicalContainer.Status.ContainerID != "" {
-			record = &statestore.PersistentContainerRecord{
-				ResourceKey: container.GetLeaseKey(), ContainerID: physicalContainer.Status.ContainerID,
-				ContainerName: physicalContainer.Status.ContainerName, RuntimeName: reconciler.runtimeName,
-			}
-		}
-		change |= reconciler.settleLogicalContainerLease(ctx, container, data, record, log)
+	if data.lease != nil && settled && physicalContainer.Status.ContainerID == "" {
+		change |= reconciler.settleLogicalContainerLease(ctx, container, data, nil, log)
 	}
 
 	return change | applyLogicalContainerBackingStatus(container, physicalContainer, startupImage, startupImageObserved)

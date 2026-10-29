@@ -375,6 +375,25 @@ func handlePhysicalContainerResolve(
 	if containerID == "" {
 		containerID = data.containerID
 	}
+	if containerID == "" && container.Spec.Stop && container.Spec.Container != nil && container.Spec.Container.ReplaceExisting {
+		existing, inspectErr := reconciler.inspectPhysicalContainer(ctx, container.Spec.Container.ContainerName)
+		if errors.Is(inspectErr, containers.ErrNotFound) {
+			data.state = physicalContainerStateCreationSkipped
+			data.failureMessage = ""
+			data.retryAfter = time.Time{}
+			return noChange
+		}
+		if inspectErr == nil && (existing == nil || existing.Id == "") {
+			inspectErr = errors.New("container inspection returned no runtime identity")
+		}
+		if inspectErr != nil {
+			log.Error(inspectErr, "Failed to inspect replacement target for stop")
+			data.state = physicalContainerStateInspectFailed
+			data.failureMessage = fmt.Sprintf("Failed to inspect replacement target for stop: %v", inspectErr)
+			return additionalReconciliationNeeded
+		}
+		containerID = existing.Id
+	}
 	if containerID == "" {
 		return handlePhysicalContainerPrepare(ctx, reconciler, container, data.state, data, log)
 	}
@@ -411,12 +430,14 @@ func handlePhysicalContainerPrepare(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
+	if container.Spec.Stop && container.Spec.Container.ReplaceExisting {
+		return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
+	}
 	if data.state == physicalContainerStateImageFailed {
 		return noChange
 	}
 	data.image = ""
 	if container.Spec.Stop {
-
 		data.state = physicalContainerStateCreationSkipped
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}

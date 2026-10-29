@@ -101,9 +101,9 @@ Record the accepted child identities and the lifecycle key associated with that 
 
 This does **not** mean the public phase becomes Running merely because the API child exists. Subsequent child updates determine runtime readiness and completion. Do not immediately fetch a newer physical status or wait for a particular generation in this method.
 
-For adoption or a stopped outcome with no creation work, release any creation lease without registering workload ownership. For requested runtime creation/replacement, retain the lease through the existing creation-completion and ownership-settlement flow.
+For adoption or a stopped outcome with no runtime, release any creation lease without registering workload ownership. Once physical status reports a container ID, Creating settles registration and the creation lease through the existing helper rather than waiting for a settled lifecycle phase.
 
-Workload cleanup registration is not part of creation preparation. Only confirmed runtime creation/replacement may establish new cleanup ownership; adopting a runtime reference must not create or overwrite that ownership.
+Workload cleanup registration is not part of Pending preparation. Template/replacement-backed IDs may be recorded even when stop is set; ordinary ID-reference adoption remains excluded. A reported tracking conflict is not ownership and does not permit registration. Stop does not remove a workload entry.
 
 ## Owner-based deletion propagation
 
