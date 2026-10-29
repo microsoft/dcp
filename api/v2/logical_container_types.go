@@ -332,6 +332,11 @@ func (c *LogicalContainer) GetResourceId() string {
 	return fmt.Sprintf("logicalcontainer-%s", c.UID)
 }
 
+// GetLogSource describes the runtime capture observed for the backing physical container.
+func (c *LogicalContainer) GetLogSource() *LogSource {
+	return c.Status.RuntimeLogs
+}
+
 func (*LogicalContainer) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{&LogicalContainerLogResource{}}
 }

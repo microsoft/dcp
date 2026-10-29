@@ -37,6 +37,10 @@ import (
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
+type logSourceProvider interface {
+	GetLogSource() *apiv2.LogSource
+}
+
 type resourceSnapshot struct {
 	ownerUID types.UID
 	systemID string
@@ -76,14 +80,17 @@ func NewLogStreamer(log logr.Logger) *resourceLogStreamer {
 }
 
 func snapshot(obj resource.Object) (resourceSnapshot, error) {
-	result := resourceSnapshot{ownerUID: obj.GetObjectMeta().UID}
+	provider, supported := obj.(logSourceProvider)
+	if !supported {
+		return resourceSnapshot{}, fmt.Errorf("unsupported log resource %T", obj)
+	}
+	result := resourceSnapshot{ownerUID: obj.GetObjectMeta().UID, runtime: provider.GetLogSource()}
 	switch container := obj.(type) {
 	case *apiv2.PhysicalContainer:
-		result.runtime = container.GetLogSource()
 		result.systemID = container.GetResourceId()
 		result.complete = result.runtime.Complete
 	case *apiv2.LogicalContainer:
-		result.runtime, result.startup = container.Status.RuntimeLogs, container.Status.StartupLogs
+		result.startup = container.Status.StartupLogs
 		result.systemID = container.GetResourceId()
 		result.complete = container.Status.Phase == apiv2.LogicalContainerPhaseExited || container.Status.Phase == apiv2.LogicalContainerPhaseFailed
 		if result.startup == nil && (container.Spec.Container == nil || container.Spec.Container.Image == nil ||
@@ -92,7 +99,6 @@ func snapshot(obj resource.Object) (resourceSnapshot, error) {
 		}
 	case *apiv2.PhysicalContainerImage:
 		result.systemID = container.GetResourceId()
-		result.runtime = container.GetLogSource()
 		result.complete = result.runtime.Complete
 	default:
 		return resourceSnapshot{}, fmt.Errorf("unsupported log resource %T", obj)
@@ -369,14 +375,12 @@ func (streamer *resourceLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcher
 	if len(streamsToStop) > 0 {
 		logs.DelayStopFollowing(streamsToStop)
 	}
-	if evt.Type == watch.Deleted {
-		if physical {
-			streamer.captureLock.Lock()
-			if streamer.captures != nil {
-				streamer.captures.ReleaseForResource(state.ownerUID)
-			}
-			streamer.captureLock.Unlock()
+	if evt.Type == watch.Deleted && state.runtime != nil && state.runtime.UID != "" {
+		streamer.captureLock.Lock()
+		if streamer.captures != nil {
+			streamer.captures.ReleaseForResource(state.runtime.UID)
 		}
+		streamer.captureLock.Unlock()
 	}
 }
 

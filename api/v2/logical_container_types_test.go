@@ -23,6 +23,20 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
+// Verifies that LogicalContainer.GetLogSource exposes only the observed runtime source,
+// returning nil until one is recorded rather than substituting startup output.
+func TestLogicalContainerGetLogSource(t *testing.T) {
+	t.Parallel()
+	container := &LogicalContainer{
+		Status: LogicalContainerStatus{
+			StartupLogs: &LogSource{Name: "image", UID: "image-uid"},
+		},
+	}
+	require.Nil(t, container.GetLogSource())
+	container.Status.RuntimeLogs = &LogSource{Name: "physical", UID: "physical-uid", ContainerID: "runtime-id"}
+	require.Same(t, container.Status.RuntimeLogs, container.GetLogSource())
+}
+
 // Verifies that LogicalContainerMode exposes creation and reuse policy consistently with its defaults.
 func TestLogicalContainerModePolicies(t *testing.T) {
 	t.Parallel()
