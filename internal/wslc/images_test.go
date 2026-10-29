@@ -40,7 +40,9 @@ func TestPullImageRetriesIdentityInspection(t *testing.T) {
 		Condition: internal_testutil.ProcessSearchCriteria{Command: inspectCommand},
 		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
 			if inspectionAttempts.Add(1) <= 2 {
-				_, stderrErr := execution.Cmd.Stderr.Write([]byte("Image 'example.test/image:latest' not found.\n"))
+				_, stdoutErr := execution.Cmd.Stdout.Write([]byte("[]\n"))
+				require.NoError(t, stdoutErr)
+				_, stderrErr := execution.Cmd.Stderr.Write([]byte("WSLC_E_IMAGE_NOT_FOUND (0x80040601)\n"))
 				require.NoError(t, stderrErr)
 				return 1
 			}

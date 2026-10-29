@@ -77,11 +77,9 @@ func (wco *WslcCliOrchestrator) RemoveNetworks(ctx context.Context, options cont
 			return resolveErr
 		}
 
-		args := []string{"network", "remove"}
-		if options.Force {
-			args = append(args, "--force")
-		}
-		args = append(args, network.Name)
+		// WSLC omits the error code if the network disappears after resolution; --force makes
+		// deletion idempotent without parsing localized diagnostics and does not bypass active-endpoint errors.
+		args := []string{"network", "remove", "--force", network.Name}
 
 		cmd := makeWslcCommand(args...)
 		_, errBuf, runErr := wco.runBufferedWslcCommand(
@@ -139,6 +137,15 @@ func (wco *WslcCliOrchestrator) inspectNetworksRaw(
 	)
 
 	rawNetworks, decodeErr := decodeJSONArray[wslcInspectedNetwork](outBuf)
+	for _, rawNetwork := range rawNetworks {
+		if strings.TrimSpace(rawNetwork.ID) == "" || strings.TrimSpace(rawNetwork.Name) == "" {
+			decodeErr = errors.Join(decodeErr, containers.ErrUnmarshalling,
+				fmt.Errorf("inspected WSLC network did not contain both an ID and name"))
+		}
+	}
+	if errors.Is(runErr, errCommandFailed) && decodeErr == nil && len(rawNetworks) < len(networkReferences) {
+		return rawNetworks, errors.Join(runErr, fmt.Errorf("%w: %s", containers.ErrNotFound, errBuf))
+	}
 	if runErr != nil {
 		runErr = errors.Join(
 			runErr,

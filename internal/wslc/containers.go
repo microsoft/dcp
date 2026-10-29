@@ -407,6 +407,15 @@ func (wco *WslcCliOrchestrator) inspectContainersRaw(
 	)
 
 	rawContainers, decodeErr := decodeJSONArray[wslcInspectedContainer](outBuf)
+	for _, rawContainer := range rawContainers {
+		if strings.TrimSpace(rawContainer.ID) == "" || strings.TrimPrefix(strings.TrimSpace(rawContainer.Name), "/") == "" {
+			decodeErr = errors.Join(decodeErr, containers.ErrUnmarshalling,
+				fmt.Errorf("inspected WSLC container did not contain both an ID and name"))
+		}
+	}
+	if errors.Is(runErr, errCommandFailed) && decodeErr == nil && len(rawContainers) < len(containerReferences) {
+		return rawContainers, errors.Join(runErr, fmt.Errorf("%w: %s", containers.ErrNotFound, errBuf))
+	}
 	if runErr != nil {
 		runErr = errors.Join(
 			runErr,

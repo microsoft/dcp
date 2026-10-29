@@ -138,7 +138,11 @@ func openRestrictedFile(
 			componentErr,
 		)
 	}
-	driveRoot, driveRootErr := windows.UTF16PtrFromString(volumeName + `\`)
+	resolvedDrive, resolveErr := resolveRestrictedFileDrive(volumeName)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	driveRoot, driveRootErr := windows.UTF16PtrFromString(`\\?\GLOBALROOT` + resolvedDrive + `\`)
 	if driveRootErr != nil {
 		return nil, fmt.Errorf("creating drive root path %q: %w", volumeName, driveRootErr)
 	}
@@ -173,7 +177,7 @@ func openRestrictedFile(
 		)
 	}
 
-	objectName, objectNameErr := windows.NewNTUnicodeString(`\??\` + absoluteName)
+	objectName, objectNameErr := windows.NewNTUnicodeString(resolvedDrive + strings.TrimPrefix(absoluteName, volumeName))
 	if objectNameErr != nil {
 		return nil, fmt.Errorf("creating native file path %q: %w", name, objectNameErr)
 	}
@@ -248,6 +252,32 @@ func openRestrictedFile(
 	}
 	closeHandle = false
 	return file, nil
+}
+
+// resolveRestrictedFileDrive permits a direct volume mapping but rejects directory aliases and further indirection.
+func resolveRestrictedFileDrive(volumeName string) (string, error) {
+	deviceName, deviceNameErr := windows.UTF16PtrFromString(volumeName)
+	if deviceNameErr != nil {
+		return "", fmt.Errorf("creating drive device name %q: %w", volumeName, deviceNameErr)
+	}
+	var targetBuffer [windows.MAX_LONG_PATH]uint16
+	if _, queryErr := windows.QueryDosDevice(deviceName, &targetBuffer[0], uint32(len(targetBuffer))); queryErr != nil {
+		return "", fmt.Errorf("querying drive mapping for %q: %w", volumeName, queryErr)
+	}
+	target := windows.UTF16ToString(targetBuffer[:])
+	const devicePrefix = `\Device\`
+	if len(target) <= len(devicePrefix) ||
+		!strings.EqualFold(target[:len(devicePrefix)], devicePrefix) ||
+		strings.ContainsRune(target[len(devicePrefix):], '\\') {
+		return "", fmt.Errorf(
+			"%w: %w: drive %q does not map directly to a volume: %q",
+			ErrRestrictedFilePolicy,
+			ErrRestrictedFileReparsePoint,
+			volumeName,
+			target,
+		)
+	}
+	return target, nil
 }
 
 func validateRestrictedFilePathComponents(relativePath string) error {

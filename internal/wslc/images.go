@@ -154,10 +154,6 @@ func (wco *WslcCliOrchestrator) InspectImages(ctx context.Context, options conta
 	)
 
 	rawImages, decodeErr := decodeJSONArray[wslcInspectedImage](outBuf)
-	if runErr != nil {
-		runErr = errors.Join(runErr, normalizeCliErrors(errBuf, imageNotFoundMatch.MaxObjects(len(options.Images))))
-	}
-
 	inspectedImages := make([]containers.InspectedImage, 0, len(rawImages))
 	var conversionErr error
 	for _, rawImage := range rawImages {
@@ -178,6 +174,11 @@ func (wco *WslcCliOrchestrator) InspectImages(ctx context.Context, options conta
 		})
 	}
 
+	if errors.Is(runErr, errCommandFailed) && decodeErr == nil && conversionErr == nil && len(inspectedImages) < len(options.Images) {
+		runErr = errors.Join(runErr, fmt.Errorf("%w: %s", containers.ErrNotFound, errBuf))
+	} else if runErr != nil {
+		runErr = errors.Join(runErr, normalizeCliErrors(errBuf, imageNotFoundMatch.MaxObjects(len(options.Images))))
+	}
 	return inspectedImages, errors.Join(
 		runErr,
 		decodeErr,
