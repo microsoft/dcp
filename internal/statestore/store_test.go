@@ -53,8 +53,7 @@ func openTestStore(t *testing.T, ctx context.Context, path string) *Store {
 
 	require.NoError(t, usvc_io.EnsureRestrictedDirectory(filepath.Dir(path), osutil.PermissionOnlyOwnerReadWriteTraverse))
 	store, openErr := Open(ctx, Options{
-		Path:        path,
-		BusyTimeout: 500 * time.Millisecond,
+		Path: path,
 	})
 	require.NoError(t, openErr)
 	t.Cleanup(func() {
@@ -562,8 +561,7 @@ func TestOpenRejectsDirtyUnknownSchemaMajorVersion(t *testing.T) {
 	)
 
 	_, openErr := Open(ctx, Options{
-		Path:        storePath,
-		BusyTimeout: 500 * time.Millisecond,
+		Path: storePath,
 	})
 
 	require.ErrorContains(t, openErr, "schema major version 3 is dirty")
@@ -596,8 +594,7 @@ func TestOpenRejectsUnknownSchemaMajorVersion(t *testing.T) {
 	)
 
 	_, openErr := Open(ctx, Options{
-		Path:        storePath,
-		BusyTimeout: 500 * time.Millisecond,
+		Path: storePath,
 	})
 
 	require.ErrorContains(t, openErr, "unsupported schema major version 3")
@@ -784,8 +781,7 @@ func TestOpenWithExplicitPathCreatesMissingParentDirectoryRestricted(t *testing.
 	storePath := filepath.Join(stateStoreDir, "state.sqlite3")
 
 	store, openErr := Open(ctx, Options{
-		Path:        storePath,
-		BusyTimeout: 500 * time.Millisecond,
+		Path: storePath,
 	})
 	require.NoError(t, openErr)
 	t.Cleanup(func() {
