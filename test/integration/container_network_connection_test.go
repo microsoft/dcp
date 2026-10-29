@@ -175,6 +175,52 @@ func TestContainerNetworkChanges(t *testing.T) {
 	})
 }
 
+// Verifies that removing the last requested network or stopping a container persists an empty network status through the API server.
+func TestContainerNetworkFinalDisconnect(t *testing.T) {
+	t.Parallel()
+	for _, stop := range []bool{false, true} {
+		name := "remove-last-network"
+		if stop {
+			name = "stop-container"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			testName := "container-final-disconnect-" + name
+			network := apiv1.ContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: testName}}
+			require.NoError(t, client.Create(ctx, &network))
+			ensureNetworkCreated(t, ctx, &network)
+			container := apiv1.Container{
+				ObjectMeta: metav1.ObjectMeta{Name: testName},
+				Spec: apiv1.ContainerSpec{
+					Image:    testName + "-image",
+					Networks: &[]apiv1.ContainerNetworkConnectionConfig{{Name: testName}},
+				},
+			}
+			require.NoError(t, client.Create(ctx, &container))
+			ensureContainerRunning(t, ctx, &container)
+			waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv1.Container) (bool, error) {
+				return slices.Contains(current.Status.Networks, network.NamespacedName().String()), nil
+			})
+
+			patchErr := retryOnConflict(ctx, container.NamespacedName(), func(patchCtx context.Context, current *apiv1.Container) error {
+				updated := current.DeepCopy()
+				if stop {
+					updated.Spec.Stop = true
+				} else {
+					updated.Spec.Networks = &[]apiv1.ContainerNetworkConnectionConfig{}
+				}
+				return client.Patch(patchCtx, updated, ctrl_client.MergeFromWithOptions(current, ctrl_client.MergeFromWithOptimisticLock{}))
+			})
+			require.NoError(t, patchErr)
+			waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv1.Container) (bool, error) {
+				return len(current.Status.Networks) == 0 && (!stop || current.Status.State == apiv1.ContainerStateExited), nil
+			})
+		})
+	}
+}
+
 func TestContainerNetworkDoesNotStartUntilNetworkExists(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

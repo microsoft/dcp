@@ -652,7 +652,7 @@ func ensureContainerFailedToStartState(
 		if rcd.hasValidContainerID() && container.Spec.Networks != nil {
 			connectedNetworks, networkRelatedChange := r.handleContainerNetworkConnections(ctx, container, nil, rcd, log)
 			change |= networkRelatedChange
-			if len(connectedNetworks) > 0 {
+			if networkRelatedChange&statusChanged != 0 {
 				container.Status.Networks = connectedNetworks
 			}
 		}
@@ -719,7 +719,7 @@ func ensureContainerRunningState(
 	if container.Spec.Networks != nil {
 		connectedNetworks, networkRelatedChange := r.handleContainerNetworkConnections(ctx, container, inspected, rcd, log)
 		change |= networkRelatedChange
-		if len(connectedNetworks) > 0 {
+		if networkRelatedChange&statusChanged != 0 {
 			container.Status.Networks = connectedNetworks
 		}
 	}
@@ -759,7 +759,7 @@ func ensureContainerExitedState(ctx context.Context,
 	if container.Spec.Networks != nil {
 		connectedNetworks, networkRelatedChange := r.handleContainerNetworkConnections(ctx, container, inspected, rcd, log)
 		change |= networkRelatedChange
-		if len(connectedNetworks) > 0 {
+		if networkRelatedChange&statusChanged != 0 {
 			container.Status.Networks = connectedNetworks
 		}
 	}
