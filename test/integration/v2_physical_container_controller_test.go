@@ -61,6 +61,8 @@ func (orchestrator *invalidPortMappingContainerOrchestrator) InspectContainers(
 	return inspectedContainers, nil
 }
 
+// Verifies that physical creation applies runtime configuration and authoritative DCP labels,
+// overriding duplicate caller system labels without changing ordinary user-label precedence.
 func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -80,11 +82,16 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 				{Name: "TEST_ENV", Value: "test-value"},
 			},
 			Labels: []commonapi.Label{
+				{Key: "logical-label", Value: "caller-first"},
 				{Key: "logical-label", Value: "logical-value"},
 				{Key: "com.microsoft.developer.usvc-dev.uid", Value: "caller-value"},
 				{Key: controllers.PersistentLabel, Value: "caller-value"},
 				{Key: controllers.CreatorProcessIdLabel, Value: "caller-value"},
 				{Key: controllers.CreatorProcessStartTimeLabel, Value: "caller-value"},
+				{Key: "com.microsoft.developer.usvc-dev.uid", Value: "caller-last"},
+				{Key: controllers.PersistentLabel, Value: "caller-last"},
+				{Key: controllers.CreatorProcessIdLabel, Value: "caller-last"},
+				{Key: controllers.CreatorProcessStartTimeLabel, Value: "caller-last"},
 			},
 		},
 		},
@@ -111,8 +118,10 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 	require.Equal(t, "false", inspectedContainers[0].Labels[controllers.PersistentLabel])
 	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessIdLabel])
 	require.NotEqual(t, "caller-value", inspectedContainers[0].Labels[controllers.CreatorProcessIdLabel])
+	require.NotEqual(t, "caller-last", inspectedContainers[0].Labels[controllers.CreatorProcessIdLabel])
 	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
 	require.NotEqual(t, "caller-value", inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
+	require.NotEqual(t, "caller-last", inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
 	require.Len(t, physicalContainerMonitorProcesses(updatedContainer.Status.ContainerID), 1)
 }
 

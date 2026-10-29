@@ -580,6 +580,60 @@ func TestV2LogicalContainerControllerSelectsPersistentContainer(t *testing.T) {
 	}
 }
 
+// Verifies that duplicate caller lifecycle labels cannot override the selected key or force
+// replacement of a matching persistent runtime, while ordinary labels remain last-value-wins.
+func TestV2LogicalContainerControllerReservedLabelsOverrideDuplicates(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-logical-system-labels")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "image", namespace.Name+"-image")
+	original := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "first", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerSpec{
+			Mode: apiv2.LogicalContainerModePersistent, ContainerName: namespace.Name + "-runtime",
+			LifecycleKey: "controller-selected-key",
+			Container: &apiv2.LogicalContainerConfig{
+				ImageRef: image.Name,
+				Labels: []commonapi.Label{
+					{Key: "com.microsoft.developer.usvc-dev.lifecycle-key", Value: "caller-first"},
+					{Key: "user-label", Value: "first"},
+					{Key: "com.microsoft.developer.usvc-dev.lifecycle-key", Value: "caller-last"},
+					{Key: "user-label", Value: "last"},
+				},
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, original))
+	first := waitObjectAssumesState(t, ctx, original.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+	})
+	removeRuntimeContainerOnCleanup(t, first.Status.ContainerID)
+	inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{first.Status.ContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspected, 1)
+	require.Equal(t, original.Spec.LifecycleKey, inspected[0].Labels["com.microsoft.developer.usvc-dev.lifecycle-key"])
+	require.Equal(t, "last", inspected[0].Labels["user-label"])
+	require.NoError(t, client.Delete(ctx, original))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, original)
+	reused := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "second", Namespace: namespace.Name},
+		Spec:       *original.Spec.DeepCopy(),
+	}
+	require.NoError(t, client.Create(ctx, reused))
+	second := waitObjectAssumesState(t, ctx, reused.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+	})
+	require.Equal(t, first.Status.ContainerID, second.Status.ContainerID)
+	require.Equal(t, original.Spec.LifecycleKey, second.Status.LifecycleKey)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(original.Spec.ContainerName))
+	require.Zero(t, containerOrchestrator.RemoveContainerCallCount(original.Spec.ContainerName))
+	require.NoError(t, client.Delete(ctx, reused))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, reused)
+}
+
 // Verifies that the LogicalContainer controller uses a stable default key across map ordering and
 // resource names, then delegates replacement when the desired command changes.
 func TestV2LogicalContainerControllerCalculatesLifecycleKey(t *testing.T) {

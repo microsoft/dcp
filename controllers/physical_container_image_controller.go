@@ -893,7 +893,7 @@ func (r *PhysicalContainerImageReconciler) buildPhysicalContainerImage(
 			return
 		}
 	}
-	buildContext.Labels = setRuntimeLabel(buildContext.Labels, physicalContainerImageBuildInputsLabel, buildInputs)
+	buildContext.Labels = append(buildContext.Labels, commonapi.Label{Key: physicalContainerImageBuildInputsLabel, Value: buildInputs})
 
 	iidFile, openErr := usvc_io.EnsureEmptyTempFile(physicalContainerImageIDFileName(image), osutil.PermissionOnlyOwnerReadWrite)
 	if openErr != nil {

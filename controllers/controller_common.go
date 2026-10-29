@@ -74,16 +74,6 @@ func v2LabelsToMap(labels []commonapi.Label) map[string]string {
 	})
 }
 
-func setRuntimeLabel(labels []commonapi.Label, key string, value string) []commonapi.Label {
-	for i := range labels {
-		if labels[i].Key == key {
-			labels[i].Value = value
-			return labels
-		}
-	}
-	return append(labels, commonapi.Label{Key: key, Value: value})
-}
-
 func physicalResourceCreationLabels(
 	labels []commonapi.Label,
 	persistent bool,
@@ -91,9 +81,9 @@ func physicalResourceCreationLabels(
 	log logr.Logger,
 ) []commonapi.Label {
 	result := append([]commonapi.Label{}, labels...)
-	result = setRuntimeLabel(result, PersistentLabel, fmt.Sprintf("%t", persistent))
+	result = append(result, commonapi.Label{Key: PersistentLabel, Value: fmt.Sprintf("%t", persistent)})
 	if resourceUID != "" {
-		result = setRuntimeLabel(result, uidLabel, string(resourceUID))
+		result = append(result, commonapi.Label{Key: uidLabel, Value: string(resourceUID)})
 	}
 
 	thisProcess, thisProcessErr := process.This()
@@ -102,8 +92,10 @@ func physicalResourceCreationLabels(
 		return result
 	}
 
-	result = setRuntimeLabel(result, CreatorProcessIdLabel, fmt.Sprintf("%d", thisProcess.Pid))
-	result = setRuntimeLabel(result, CreatorProcessStartTimeLabel, thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat))
+	result = append(result,
+		commonapi.Label{Key: CreatorProcessIdLabel, Value: fmt.Sprintf("%d", thisProcess.Pid)},
+		commonapi.Label{Key: CreatorProcessStartTimeLabel, Value: thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)},
+	)
 	return result
 }
 

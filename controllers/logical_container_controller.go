@@ -434,10 +434,12 @@ func handleLogicalContainerPending(
 			}
 			imageRef := commonapi.AsNamespacedName(container.Spec.Container.ImageRef, container.Namespace).Name
 			desired := container.Spec.Container.DeepCopy()
-			labels := setRuntimeLabel(desired.Labels, dcpBuildLabel, version.ProductVersion)
-			labels = setRuntimeLabel(labels, groupVersionLabel, apiv2.GroupVersion.String())
-			labels = setRuntimeLabel(labels, nameLabel, container.Name)
-			labels = setRuntimeLabel(labels, lifecycleKeyLabel, lifecycleKey)
+			labels := append(desired.Labels,
+				commonapi.Label{Key: dcpBuildLabel, Value: version.ProductVersion},
+				commonapi.Label{Key: groupVersionLabel, Value: apiv2.GroupVersion.String()},
+				commonapi.Label{Key: nameLabel, Value: container.Name},
+				commonapi.Label{Key: lifecycleKeyLabel, Value: lifecycleKey},
+			)
 			spec.Container = &apiv2.PhysicalContainerConfig{
 				RetainRuntimeContainer: mode == apiv2.LogicalContainerModePersistent,
 				MonitorPID:             container.Spec.MonitorPID, MonitorTimestamp: container.Spec.MonitorTimestamp,
