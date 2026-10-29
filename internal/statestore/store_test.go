@@ -68,6 +68,7 @@ func (r testLeasableResource) GetLeaseKey() string {
 	return string(r)
 }
 
+// Verifies that sqliteDSN uses URI path separators and clamps sub-millisecond native busy timeouts.
 func TestSQLiteDSNUsesURIPathSeparators(t *testing.T) {
 	t.Parallel()
 
@@ -81,6 +82,33 @@ func TestSQLiteDSNUsesURIPathSeparators(t *testing.T) {
 		"file:C:/Users/runner/AppData/Local/Temp/state.sqlite3?_pragma=busy_timeout%3D500",
 		sqliteDSN(`C:\Users\runner\AppData\Local\Temp\state.sqlite3`, 500*time.Millisecond),
 	)
+	require.Equal(
+		t,
+		"file:C:/Users/runner/AppData/Local/Temp/state.sqlite3?_pragma=busy_timeout%3D1",
+		sqliteDSN(`C:\Users\runner\AppData\Local\Temp\state.sqlite3`, 500*time.Microsecond),
+	)
+}
+
+// Verifies that sqliteBusyTimeoutMilliseconds clamps values below one millisecond and truncates larger values to native precision.
+func TestSQLiteBusyTimeoutMilliseconds(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		timeout  time.Duration
+		expected int64
+	}{
+		{timeout: -time.Second, expected: 1},
+		{timeout: 0, expected: 1},
+		{timeout: time.Nanosecond, expected: 1},
+		{timeout: 500 * time.Microsecond, expected: 1},
+		{timeout: time.Millisecond, expected: 1},
+		{timeout: 1500 * time.Microsecond, expected: 1},
+		{timeout: 750 * time.Millisecond, expected: 750},
+	} {
+		t.Run(testCase.timeout.String(), func(t *testing.T) {
+			require.Equal(t, testCase.expected, sqliteBusyTimeoutMilliseconds(testCase.timeout))
+		})
+	}
 }
 
 func TestDefaultStateStoreDirRestrictsLeafDirectoryOnly(t *testing.T) {
