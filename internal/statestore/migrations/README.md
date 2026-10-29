@@ -9,7 +9,7 @@ Migration SQL is embedded into the DCP binary by `schema.go`. DCP only applies u
 
 ## How migrations run
 
-At startup, DCP acquires the state store migration lock and reads `schema_migrations`.
+At startup, DCP acquires the state store initialization lock, opens and configures SQLite (including enabling WAL), and reads `schema_migrations`.
 
 For each supported major version, DCP:
 
@@ -17,13 +17,21 @@ For each supported major version, DCP:
 2. Advances `schema_migrations` when moving to the next major version.
 3. Applies the new major version's minor migrations.
 
-### Serializing concurrent migrations
+### Serializing concurrent initialization
 
 `golang-migrate` does not serialize migrations across processes when using SQLite. Its `Driver` interface lets an implementation opt out of locking, and the SQLite driver does: `Lock` only flips an in-process flag on the driver instance. DCP builds a fresh migration runner for every `Open`, so that flag serializes nothing at all.
 
-The lock DCP takes in `migrate` is therefore the only thing that keeps two DCP instances from migrating the same store at once, and it must stay wrapped around the whole read, recover, and migrate sequence.
+The path-scoped lock at `<database path>.migrate.lock` is therefore the only thing that keeps two DCP instances from initializing the same store at once. `Open` acquires it before opening a SQLite connection and keeps it through configuration and the entire schema read, recover, and migrate sequence. Locking only migrations would still allow competing WAL configuration to fail with `SQLITE_BUSY`. The lock is released before `Open` returns; it does not serialize store lifetimes or ordinary lease and process-record operations.
 
 The lock is an advisory file lock held on an open file descriptor, so the operating system releases it when the owning process exits, including a crash. DCP waits for the lock rather than failing when another instance holds it. An interrupted migration therefore leaves a dirty version marker but never a permanently stuck lock, which is what lets the next DCP acquire the lock and clear the marker.
+
+### Retrying SQLite contention
+
+Other SQLite clients, including older DCP binaries, may not take the initialization lock before configuring the database. After acquiring the lock, DCP retries connection/configuration failures whose typed SQLite result has primary code `SQLITE_BUSY`, including extended BUSY codes. It closes the failed connection pool before each retry. Timeout and cancellation errors retain the last failed attempt's error. Other errors and connection-cleanup failures stop initialization immediately; migrations are not replayed by this retry.
+
+The normalized `Options.BusyTimeout` (five seconds by default) is one total budget for all connection/configuration attempts and their backoff, not a fresh timeout per attempt. Earlier caller cancellation or deadlines take precedence. SQLite's native busy handler can outlive a canceled context, so initialization disables native busy waiting before accessing the schema or configuring WAL and uses context-aware retries instead. The full normal-operation SQLite busy timeout is restored after configuration; replacement connections also retain the configured timeout.
+
+This retry budget starts only after the initialization lock is acquired and does not limit lock acquisition or schema migrations. Those continue to use the caller's context and the existing migration timeout settings.
 
 ### How DCP handles failed migrations
 

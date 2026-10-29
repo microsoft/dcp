@@ -94,25 +94,26 @@ var (
 //go:embed migrations/*.sql migrations/*/*.sql
 var migrationFiles embed.FS
 
-func (s *Store) migrate(ctx context.Context, busyTimeout time.Duration) (err error) {
+func (s *Store) initialize(ctx context.Context, busyTimeout time.Duration) (err error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
-	}
-	if _, dbErr := s.requireDB(); dbErr != nil {
-		return dbErr
 	}
 
 	migrationLock, lockErr := lockfile.NewLockfile(s.path + migrationLockFileSuffix)
 	if lockErr != nil {
-		return fmt.Errorf("could not create state store migration lock: %w", lockErr)
+		return fmt.Errorf("could not create state store initialization lock: %w", lockErr)
 	}
-	if lockErr = migrationLock.TryLock(ctx, lockfile.DefaultLockRetryInterval); lockErr != nil {
+	if acquireErr := migrationLock.TryLock(ctx, lockfile.DefaultLockRetryInterval); acquireErr != nil {
 		closeErr := migrationLock.Close()
-		return fmt.Errorf("could not acquire state store migration lock: %w", errors.Join(lockErr, closeErr))
+		return fmt.Errorf("could not acquire state store initialization lock: %w", errors.Join(acquireErr, closeErr))
 	}
 	defer func() {
 		err = errors.Join(err, migrationLock.Close())
 	}()
+
+	if openErr := s.openAndConfigure(ctx, busyTimeout); openErr != nil {
+		return openErr
+	}
 
 	// Reject unknown major versions before making any changes to their schema.
 	if storedVersionErr := s.validateStoredSchemaMajorVersion(ctx); storedVersionErr != nil {
