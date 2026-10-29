@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -208,6 +209,91 @@ func TestV2PhysicalContainerImageControllerCoordinatesTagAcquisition(t *testing.
 	require.Equal(t, firstReady.Status.ImageID, missingReady.Status.ImageID)
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(source))
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(second.Spec.Image.Image))
+}
+
+// Verifies that PhysicalContainerImage lease contenders requeue without blocking unrelated pulls
+// or builds, remain pending without consuming pull retries, and complete after the lease is released.
+func TestV2PhysicalContainerImageControllerRequeuesLeaseContenders(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"pull", "build"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			namespace := createActiveV2Namespace(t, ctx, "v2-image-lease-"+mode)
+			source := namespace.Name + "-source:latest"
+			releasePull := containerOrchestrator.BlockPullImage(source)
+			defer releasePull()
+			noRetries := int32(0)
+			holder := &apiv2.PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{Name: "holder", Namespace: namespace.Name},
+				Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+					Image: source, PullPolicy: apiv2.PullPolicyAlways, PullRetryLimit: &noRetries,
+				}},
+			}
+			require.NoError(t, client.Create(ctx, holder))
+			waitPullImageCallCount(t, ctx, source, 1)
+
+			contenders := make([]*apiv2.PhysicalContainerImage, 0, controllers.MaxConcurrentReconciles)
+			reason := apiv2.PhysicalContainerImageReasonPulling
+			for index := 0; index < controllers.MaxConcurrentReconciles; index++ {
+				contender := &apiv2.PhysicalContainerImage{
+					ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("contender-%d", index), Namespace: namespace.Name},
+					Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+						Image: source, PullPolicy: apiv2.PullPolicyAlways, PullRetryLimit: &noRetries,
+					}},
+				}
+				if mode == "build" {
+					reason = apiv2.PhysicalContainerImageReasonBuilding
+					contender.Spec.Image.Image = fmt.Sprintf("%s-target-%d", namespace.Name, index)
+					contender.Spec.Image.Build = &apiv2.ContainerBuildContext{
+						Context: "test-context", BaseImages: []string{source},
+					}
+				}
+				require.NoError(t, client.Create(ctx, contender))
+				contenders = append(contenders, contender)
+			}
+			for _, contender := range contenders {
+				waitObjectAssumesState(t, ctx, contender.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+					condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+					return current.Status.Phase == apiv2.PhysicalContainerImagePhasePending &&
+						condition != nil && condition.Reason == string(reason), nil
+				})
+			}
+
+			unrelated := &apiv2.PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{Name: "unrelated-pull", Namespace: namespace.Name},
+				Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+					Image: namespace.Name + "-unrelated", PullRetryLimit: &noRetries,
+				}},
+			}
+			require.NoError(t, client.Create(ctx, unrelated))
+			waitPhysicalContainerImagePhase(t, ctx, unrelated.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+			unrelatedBuild := &apiv2.PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{Name: "unrelated-build", Namespace: namespace.Name},
+				Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+					Image: namespace.Name + "-unrelated-build",
+					Build: &apiv2.ContainerBuildContext{Context: "test-context"},
+				}},
+			}
+			require.NoError(t, client.Create(ctx, unrelatedBuild))
+			waitPhysicalContainerImagePhase(t, ctx, unrelatedBuild.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+			for _, contender := range contenders {
+				waiting := waitObjectAssumesState(t, ctx, contender.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+					condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+					return current.Status.Phase == apiv2.PhysicalContainerImagePhasePending &&
+						condition != nil && condition.Message == "Waiting for image pull lease.", nil
+				})
+				require.False(t, waiting.Status.LogsComplete)
+			}
+			require.Equal(t, 1, containerOrchestrator.PullImageCallCount(source))
+			releasePull()
+			waitPhysicalContainerImagePhase(t, ctx, holder.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+			for _, contender := range contenders {
+				waitPhysicalContainerImagePhase(t, ctx, contender.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+			}
+		})
+	}
 }
 
 func TestV2PhysicalContainerImageControllerUsesLocalBestEffortSourceAfterPullFailure(t *testing.T) {

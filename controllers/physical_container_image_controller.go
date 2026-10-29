@@ -366,7 +366,8 @@ func handlePhysicalContainerImageOperation(
 	if data.operationInProgress() {
 		return noChange
 	}
-	if data.state == physicalContainerImageStatePullRetry {
+	if data.state == physicalContainerImageStatePullRetry ||
+		data.state == physicalContainerImageStatePull || data.state == physicalContainerImageStateBuild {
 		if time.Now().Before(data.retryAfter) {
 			return additionalReconciliationNeeded
 		}
@@ -812,6 +813,12 @@ func (r *PhysicalContainerImageReconciler) pullPhysicalContainerImage(
 ) {
 	log.V(1).Info("Pulling PhysicalContainerImage source image", "Image", outputImage)
 	pulledImageID, pullErr := r.pullPhysicalContainerImageWithRetry(ctx, image, data, outputImage, data.startupStreams(), log)
+	if errors.Is(pullErr, statestore.ErrResourceLeaseHeld) {
+		data.failureMessage = "Waiting for image pull lease."
+		data.retryAfter = time.Now().Add(delayDurations[StandardDelay].Duration)
+		r.queuePhysicalContainerImageDataResult(image, stateKey, data)
+		return
+	}
 	if errors.Is(pullErr, containers.ErrRuntimeNotHealthy) {
 		log.V(1).Info("Container runtime became unhealthy while pulling PhysicalContainerImage, retrying reconciliation later", "Image", outputImage, "Error", pullErr)
 		setPhysicalContainerImageRuntimeUnhealthy(data)
@@ -854,6 +861,11 @@ func (r *PhysicalContainerImageReconciler) buildPhysicalContainerImage(
 
 	baseImages, resolveErr := r.resolvePhysicalContainerImageBuildBaseImages(ctx, image, data, buildContext.BaseImages, data.startupStreams(), log)
 	if resolveErr != nil {
+		if errors.Is(resolveErr, statestore.ErrResourceLeaseHeld) {
+			data.failureMessage = "Waiting for image pull lease."
+			data.retryAfter = time.Now().Add(delayDurations[StandardDelay].Duration)
+			return
+		}
 		if errors.Is(resolveErr, containers.ErrRuntimeNotHealthy) {
 			log.V(1).Info("Container runtime became unhealthy while resolving PhysicalContainerImage build base images, retrying reconciliation later", "Image", outputImage, "Error", resolveErr)
 			setPhysicalContainerImageRuntimeUnhealthy(data)
@@ -1038,10 +1050,9 @@ func (r *PhysicalContainerImageReconciler) pullPhysicalContainerImageWithRetry(
 		return "", fmt.Errorf("image pull state store is not configured")
 	}
 	leaseKey := imagePullLeaseKey(imageReference)
-	log.V(1).Info("Waiting for image pull lease", "Image", imageReference)
 	var resultID string
-	leaseErr := r.config.StateStore.WithResourceLeaseRetry(ctx, leaseKey, r.config.ResourceLeaseOwner,
-		resourceLeaseRevalidationInterval, reconciliationDebounceDelay, func(leaseCtx context.Context, _ *statestore.ResourceLease) error {
+	leaseErr := r.config.StateStore.WithResourceLease(ctx, leaseKey, r.config.ResourceLeaseOwner,
+		resourceLeaseRevalidationInterval, func(leaseCtx context.Context, _ *statestore.ResourceLease) error {
 			log.V(1).Info("Acquired image pull lease", "Image", imageReference)
 			policy := image.Spec.Image.PullPolicy
 			if policy == "" || policy == apiv2.PullPolicyMissing {
@@ -1085,6 +1096,9 @@ func (r *PhysicalContainerImageReconciler) pullPhysicalContainerImageWithRetry(
 			resultID = pulledID
 			return pullErr
 		}, statestore.ExclusiveResourceLease)
+	if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
+		logResourceLeaseHeld(log, leaseErr, leaseKey.GetLeaseKey(), "Image pull lease is held, retrying reconciliation")
+	}
 	return resultID, leaseErr
 }
 

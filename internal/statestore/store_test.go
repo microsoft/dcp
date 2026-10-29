@@ -1036,6 +1036,8 @@ func TestResourceLeaseCanBeAcquiredFromInactiveOwnerAfterRevalidationInterval(t 
 	require.NoError(t, retryErr)
 }
 
+// Verifies that WithResourceLease returns contention without invoking its callback or releasing
+// the held claim, including exclusive acquisition by the same process.
 func TestWithResourceLeaseDoesNotRetryHeldLease(t *testing.T) {
 	t.Parallel()
 
@@ -1061,6 +1063,15 @@ func TestWithResourceLeaseDoesNotRetryHeldLease(t *testing.T) {
 
 	require.ErrorIs(t, leaseErr, ErrResourceLeaseHeld)
 	require.False(t, callbackCalled)
+
+	exclusiveCallbackCalled := false
+	exclusiveErr := store1.WithResourceLease(ctx, testLeasableResource("container/test"), owner1, time.Minute, func(context.Context, *ResourceLease) error {
+		exclusiveCallbackCalled = true
+		return nil
+	}, ExclusiveResourceLease)
+	require.ErrorIs(t, exclusiveErr, ErrResourceLeaseHeld)
+	require.False(t, exclusiveCallbackCalled)
+	require.NoError(t, store1.VerifyResourceLeaseHeld(ctx, testLeasableResource("container/test"), owner1))
 }
 
 func TestWithResourceLeaseRetryWaitsForHeldLease(t *testing.T) {
