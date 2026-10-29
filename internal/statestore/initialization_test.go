@@ -11,10 +11,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/require"
 	"modernc.org/sqlite"
@@ -34,7 +37,7 @@ func initializationTestPath(t *testing.T) string {
 	return filepath.Join(storeDir, "state.sqlite3")
 }
 
-func holdSQLiteInitializationLock(t *testing.T, ctx context.Context, path string, beginStatement string) func() {
+func holdSQLiteTransactionLock(t *testing.T, ctx context.Context, path string, beginStatement string) func() {
 	t.Helper()
 
 	db := openRawSQLiteDB(t, ctx, path)
@@ -95,6 +98,204 @@ func requireSQLiteBusyTimeout(t *testing.T, ctx context.Context, store *Store, e
 	require.Equal(t, expected.Milliseconds(), milliseconds)
 }
 
+// Verifies that retrySQLiteInitialization does not time out an uncontended first attempt and gives contention a single full retry budget.
+func TestRetrySQLiteInitializationStartsBudgetAfterFirstBusy(t *testing.T) {
+	t.Parallel()
+
+	for _, withContention := range []bool{false, true} {
+		t.Run(fmt.Sprintf("contention=%t", withContention), func(t *testing.T) {
+			synctest.Test(t, func(test *testing.T) {
+				ctx, cancel := testutil.GetTestContext(test, stateStoreTestTimeout)
+				defer cancel()
+				const busyTimeout = 100 * time.Millisecond
+				busyErr := errors.New("initialization contention")
+				started := time.Now()
+				var firstAttemptFinished time.Time
+				attemptCount := 0
+
+				retryErr := retrySQLiteInitialization(ctx, busyTimeout, logr.Discard(), func(attemptCtx context.Context) (bool, error) {
+					attemptCount++
+					if attemptCount == 1 {
+						require.True(test, attemptCtx == ctx)
+						time.Sleep(2 * busyTimeout)
+						require.NoError(test, attemptCtx.Err())
+						firstAttemptFinished = time.Now()
+						if !withContention {
+							return false, nil
+						}
+					} else {
+						retryDeadline, hasDeadline := attemptCtx.Deadline()
+						require.True(test, hasDeadline)
+						require.Equal(test, firstAttemptFinished.Add(busyTimeout), retryDeadline)
+					}
+					return true, busyErr
+				})
+
+				require.NoError(test, ctx.Err())
+				if withContention {
+					require.ErrorIs(test, retryErr, context.DeadlineExceeded)
+					require.ErrorIs(test, retryErr, busyErr)
+					require.Greater(test, attemptCount, 2)
+					require.Equal(test, 3*busyTimeout, time.Since(started))
+				} else {
+					require.NoError(test, retryErr)
+					require.Equal(test, 1, attemptCount)
+					require.Equal(test, 2*busyTimeout, time.Since(started))
+				}
+			})
+		})
+	}
+}
+
+// Verifies that retrySQLiteInitialization observes an earlier caller deadline without losing the contention error.
+func TestRetrySQLiteInitializationHonorsCallerDeadline(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(test *testing.T) {
+		ctx, cancel := testutil.GetTestContext(test, stateStoreTestTimeout)
+		defer cancel()
+		const busyTimeout = 100 * time.Millisecond
+		const callerTimeout = busyTimeout / 2
+		callerCtx, cancelCaller := context.WithTimeout(ctx, callerTimeout)
+		defer cancelCaller()
+		busyErr := errors.New("initialization contention")
+		started := time.Now()
+
+		retryErr := retrySQLiteInitialization(callerCtx, busyTimeout, logr.Discard(), func(context.Context) (bool, error) {
+			return true, busyErr
+		})
+
+		require.ErrorIs(test, retryErr, context.DeadlineExceeded)
+		require.ErrorIs(test, retryErr, busyErr)
+		require.Equal(test, 1, strings.Count(retryErr.Error(), context.DeadlineExceeded.Error()))
+		require.NoError(test, ctx.Err())
+		require.Equal(test, callerTimeout, time.Since(started))
+	})
+}
+
+// Verifies that retrySQLiteInitialization cancels each retry phase while preserving contention and cleanup errors without duplicating cancellation.
+func TestRetrySQLiteInitializationPreservesErrorsOnCancellation(t *testing.T) {
+	t.Parallel()
+
+	for _, phase := range []string{
+		"before first attempt",
+		"before first retry",
+		"during backoff",
+		"inside retry",
+		"inside retry with cleanup failure",
+		"before later notification",
+	} {
+		t.Run(phase, func(t *testing.T) {
+			synctest.Test(t, func(test *testing.T) {
+				ctx, cancel := testutil.GetTestContext(test, stateStoreTestTimeout)
+				defer cancel()
+				callerCtx, cancelCaller := context.WithCancel(ctx)
+				defer cancelCaller()
+				firstBusyErr := errors.New("first initialization contention")
+				laterBusyErr := errors.New("later initialization contention")
+				cleanupErr := errors.New("could not close failed connection")
+				backoffReady := make(chan struct{})
+				attemptCount := 0
+				logCount := 0
+
+				if phase == "before first attempt" {
+					cancelCaller()
+				}
+				if phase == "during backoff" {
+					go func() {
+						<-backoffReady
+						synctest.Wait()
+						cancelCaller()
+					}()
+				}
+				log := funcr.New(func(_, _ string) {
+					logCount++
+					switch {
+					case phase == "before first retry":
+						cancelCaller()
+					case phase == "during backoff" && logCount == 2:
+						close(backoffReady)
+					case phase == "before later notification" && logCount == 2:
+						cancelCaller()
+					}
+				}, funcr.Options{Verbosity: 1})
+				started := time.Now()
+				retryErr := retrySQLiteInitialization(callerCtx, time.Second, log, func(attemptCtx context.Context) (bool, error) {
+					attemptCount++
+					if attemptCount == 1 {
+						return true, firstBusyErr
+					}
+					if phase == "inside retry" || phase == "inside retry with cleanup failure" {
+						cancelCaller()
+						configureErr := fmt.Errorf("could not configure SQLite: %w", attemptCtx.Err())
+						if phase == "inside retry with cleanup failure" {
+							return false, errors.Join(configureErr, cleanupErr)
+						}
+						return false, configureErr
+					}
+					return true, laterBusyErr
+				})
+
+				require.ErrorIs(test, retryErr, context.Canceled)
+				require.Equal(test, 1, strings.Count(retryErr.Error(), context.Canceled.Error()))
+				require.NoError(test, ctx.Err())
+				require.Zero(test, time.Since(started))
+				switch phase {
+				case "before first attempt":
+					require.Zero(test, attemptCount)
+				case "before first retry":
+					require.Equal(test, 1, attemptCount)
+					require.ErrorIs(test, retryErr, firstBusyErr)
+				default:
+					require.Equal(test, 2, attemptCount)
+					if phase == "during backoff" || phase == "before later notification" {
+						require.ErrorIs(test, retryErr, laterBusyErr)
+					} else {
+						require.ErrorIs(test, retryErr, firstBusyErr)
+					}
+				}
+				if phase == "inside retry with cleanup failure" {
+					require.ErrorIs(test, retryErr, cleanupErr)
+				}
+			})
+		})
+	}
+}
+
+// Verifies that retrySQLiteInitialization does not retry permanent failures or failed cleanup even when contention is also reported.
+func TestRetrySQLiteInitializationStopsOnPermanentFailure(t *testing.T) {
+	t.Parallel()
+
+	permanentErr := errors.New("invalid database")
+	busyErr := errors.New("initialization contention")
+	cleanupErr := errors.New("could not close failed connection")
+	for _, testCase := range []struct {
+		name       string
+		attemptErr error
+	}{
+		{name: "permanent error", attemptErr: permanentErr},
+		{name: "cleanup failure", attemptErr: errors.Join(busyErr, cleanupErr)},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			synctest.Test(t, func(test *testing.T) {
+				ctx, cancel := testutil.GetTestContext(test, stateStoreTestTimeout)
+				defer cancel()
+				attemptCount := 0
+				started := time.Now()
+				retryErr := retrySQLiteInitialization(ctx, time.Second, logr.Discard(), func(context.Context) (bool, error) {
+					attemptCount++
+					return false, testCase.attemptErr
+				})
+
+				require.ErrorIs(test, retryErr, testCase.attemptErr)
+				require.Equal(test, 1, attemptCount)
+				require.Zero(test, time.Since(started))
+				require.NoError(test, ctx.Err())
+			})
+		})
+	}
+}
+
 // Verifies that Open serializes concurrent first opens of one store and creates a clean current schema.
 func TestOpenConcurrentColdStore(t *testing.T) {
 	t.Parallel()
@@ -151,7 +352,7 @@ func TestOpenWaitsForInitializationLockBeforeCreatingDatabase(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
 	defer cancel()
 	storePath := initializationTestPath(t)
-	initializationLock, newLockErr := lockfile.NewLockfile(storePath + migrationLockFileSuffix)
+	initializationLock, newLockErr := lockfile.NewLockfile(storePath + ".migrate.lock")
 	require.NoError(t, newLockErr)
 	require.NoError(t, initializationLock.TryLock(ctx, lockfile.DefaultLockRetryInterval))
 	defer func() {
@@ -170,60 +371,6 @@ func TestOpenWaitsForInitializationLockBeforeCreatingDatabase(t *testing.T) {
 	require.NoFileExists(t, storePath)
 }
 
-// Verifies that Open observes a caller deadline during real SQLite contention instead of waiting for BusyTimeout.
-func TestOpenHonorsCallerDeadlineDuringSQLiteContention(t *testing.T) {
-	for _, beginStatement := range []string{"BEGIN IMMEDIATE", "BEGIN EXCLUSIVE"} {
-		t.Run(beginStatement, func(t *testing.T) {
-			t.Parallel()
-
-			ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
-			defer cancel()
-			storePath := initializationTestPath(t)
-			holdSQLiteInitializationLock(t, ctx, storePath, beginStatement)
-
-			retryObserved := make(chan struct{}, 1)
-			retryAcknowledged := make(chan struct{})
-			log := funcr.New(func(_, _ string) {
-				select {
-				case retryObserved <- struct{}{}:
-				default:
-				}
-				select {
-				case <-retryAcknowledged:
-				case <-ctx.Done():
-				}
-			}, funcr.Options{Verbosity: 1})
-			const callerTimeout = 500 * time.Millisecond
-			waitCtx, cancelWait := context.WithTimeout(ctx, callerTimeout)
-			defer cancelWait()
-			started := time.Now()
-			pending := startStoreOpen(t, waitCtx, Options{Path: storePath, BusyTimeout: DefaultBusyTimeout, Log: log})
-			select {
-			case <-retryObserved:
-				close(retryAcknowledged)
-			case <-pending.done:
-				t.Fatalf("Open returned before real SQLite contention was observed: %v", pending.err)
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
-			select {
-			case <-pending.done:
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
-			elapsed := time.Since(started)
-			t.Logf("Open during %s: caller deadline=%s, native busy timeout=%s, elapsed=%s, error=%v",
-				beginStatement, callerTimeout, DefaultBusyTimeout, elapsed, pending.err)
-			require.Nil(t, pending.store)
-			require.ErrorIs(t, pending.err, context.DeadlineExceeded)
-			require.Less(t, elapsed, callerTimeout+250*time.Millisecond)
-			var sqliteErr *sqlite.Error
-			require.ErrorAs(t, pending.err, &sqliteErr)
-			require.Equal(t, sqlite3.SQLITE_BUSY, sqliteErr.Code()&0xff)
-		})
-	}
-}
-
 // Verifies that Open retries a non-cooperating SQLite lock holder and succeeds after an observed BUSY attempt.
 func TestOpenRetriesSQLiteContentionUntilReleased(t *testing.T) {
 	for _, beginStatement := range []string{"BEGIN IMMEDIATE", "BEGIN EXCLUSIVE"} {
@@ -233,7 +380,7 @@ func TestOpenRetriesSQLiteContentionUntilReleased(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
 			defer cancel()
 			storePath := initializationTestPath(t)
-			releaseSQLiteLock := holdSQLiteInitializationLock(t, ctx, storePath, beginStatement)
+			releaseSQLiteLock := holdSQLiteTransactionLock(t, ctx, storePath, beginStatement)
 			retryObserved := make(chan struct{}, 1)
 			log := funcr.New(func(_, _ string) {
 				select {
@@ -269,8 +416,8 @@ func TestOpenRetriesSQLiteContentionUntilReleased(t *testing.T) {
 	}
 }
 
-// Verifies that Open spends one aggregate BusyTimeout on actual SQLite contention, retaining the typed BUSY error.
-func TestOpenBoundsTotalSQLiteContentionBudget(t *testing.T) {
+// Verifies that Open exhausts its contention budget before the caller context while retaining the typed BUSY error.
+func TestOpenExhaustsSQLiteContentionBudget(t *testing.T) {
 	for _, beginStatement := range []string{"BEGIN IMMEDIATE", "BEGIN EXCLUSIVE"} {
 		t.Run(beginStatement, func(t *testing.T) {
 			t.Parallel()
@@ -278,7 +425,7 @@ func TestOpenBoundsTotalSQLiteContentionBudget(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
 			defer cancel()
 			storePath := initializationTestPath(t)
-			releaseSQLiteLock := holdSQLiteInitializationLock(t, ctx, storePath, beginStatement)
+			releaseSQLiteLock := holdSQLiteTransactionLock(t, ctx, storePath, beginStatement)
 			retryCount := 0
 			log := funcr.New(func(_, _ string) {
 				retryCount++
@@ -294,12 +441,11 @@ func TestOpenBoundsTotalSQLiteContentionBudget(t *testing.T) {
 				beginStatement, busyTimeout, elapsed, retryCount, openErr)
 			require.Nil(t, store)
 			require.ErrorIs(t, openErr, context.DeadlineExceeded)
+			require.Equal(t, 1, strings.Count(openErr.Error(), context.DeadlineExceeded.Error()))
 			var sqliteErr *sqlite.Error
 			require.ErrorAs(t, openErr, &sqliteErr)
 			require.Equal(t, sqlite3.SQLITE_BUSY, sqliteErr.Code()&0xff)
-			require.GreaterOrEqual(t, retryCount, 2)
-			require.GreaterOrEqual(t, elapsed, busyTimeout)
-			require.Less(t, elapsed, busyTimeout+150*time.Millisecond)
+			require.NoError(t, ctx.Err())
 
 			releaseSQLiteLock()
 			recovered := openTestStore(t, ctx, storePath)
@@ -310,44 +456,48 @@ func TestOpenBoundsTotalSQLiteContentionBudget(t *testing.T) {
 
 // Verifies that Open stops context-aware backoff when canceled after a real SQLite BUSY attempt.
 func TestOpenCancelsSQLiteContentionRetry(t *testing.T) {
-	t.Parallel()
+	for _, beginStatement := range []string{"BEGIN IMMEDIATE", "BEGIN EXCLUSIVE"} {
+		t.Run(beginStatement, func(t *testing.T) {
+			t.Parallel()
 
-	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
-	defer cancel()
-	storePath := initializationTestPath(t)
-	releaseSQLiteLock := holdSQLiteInitializationLock(t, ctx, storePath, "BEGIN IMMEDIATE")
-	retryObserved := make(chan struct{}, 1)
-	log := funcr.New(func(_, _ string) {
-		select {
-		case retryObserved <- struct{}{}:
-		default:
-		}
-	}, funcr.Options{Verbosity: 1})
-	waitCtx, cancelWait := context.WithCancel(ctx)
-	defer cancelWait()
-	pending := startStoreOpen(t, waitCtx, Options{Path: storePath, BusyTimeout: 2 * time.Second, Log: log})
+			ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+			defer cancel()
+			storePath := initializationTestPath(t)
+			releaseSQLiteLock := holdSQLiteTransactionLock(t, ctx, storePath, beginStatement)
+			retryObserved := make(chan struct{}, 1)
+			log := funcr.New(func(_, _ string) {
+				select {
+				case retryObserved <- struct{}{}:
+				default:
+				}
+			}, funcr.Options{Verbosity: 1})
+			waitCtx, cancelWait := context.WithCancel(ctx)
+			defer cancelWait()
+			// A native busy wait must outlast the test context, so completion proves it was not used.
+			pending := startStoreOpen(t, waitCtx, Options{Path: storePath, BusyTimeout: time.Hour, Log: log})
 
-	select {
-	case <-retryObserved:
-	case <-pending.done:
-		t.Fatalf("Open returned before cancellation: %v", pending.err)
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
+			select {
+			case <-retryObserved:
+			case <-pending.done:
+				t.Fatalf("Open returned before cancellation: %v", pending.err)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			cancelWait()
+			select {
+			case <-pending.done:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			require.Nil(t, pending.store)
+			require.ErrorIs(t, pending.err, context.Canceled)
+			require.True(t, isSQLiteBusy(pending.err))
+			require.NoError(t, ctx.Err())
+
+			releaseSQLiteLock()
+			openTestStore(t, ctx, storePath)
+		})
 	}
-	started := time.Now()
-	cancelWait()
-	select {
-	case <-pending.done:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	require.Nil(t, pending.store)
-	require.ErrorIs(t, pending.err, context.Canceled)
-	require.True(t, isSQLiteBusy(pending.err))
-	require.Less(t, time.Since(started), 250*time.Millisecond)
-
-	releaseSQLiteLock()
-	openTestStore(t, ctx, storePath)
 }
 
 // Verifies that Open retains the actual SQLite BUSY error if cancellation occurs before backoff can record it.
@@ -357,7 +507,7 @@ func TestOpenPreservesBusyErrorWhenCanceledBeforeBackoff(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
 	defer cancel()
 	storePath := initializationTestPath(t)
-	holdSQLiteInitializationLock(t, ctx, storePath, "BEGIN IMMEDIATE")
+	holdSQLiteTransactionLock(t, ctx, storePath, "BEGIN IMMEDIATE")
 	waitCtx, cancelWait := context.WithCancel(ctx)
 	defer cancelWait()
 	log := funcr.New(func(_, _ string) {
@@ -380,7 +530,7 @@ func TestOpenInitializesAfterLongInitializationLockWait(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
 	defer cancel()
 	storePath := initializationTestPath(t)
-	initializationLock, newLockErr := lockfile.NewLockfile(storePath + migrationLockFileSuffix)
+	initializationLock, newLockErr := lockfile.NewLockfile(storePath + initializationLockFileSuffix)
 	require.NoError(t, newLockErr)
 	require.NoError(t, initializationLock.TryLock(ctx, lockfile.DefaultLockRetryInterval))
 	t.Cleanup(func() {
@@ -499,9 +649,7 @@ func TestOpenDoesNotRetryPermanentSQLiteErrors(t *testing.T) {
 				retryCount++
 			}, funcr.Options{Verbosity: 1})
 
-			started := time.Now()
 			store, openErr := Open(ctx, Options{Path: storePath, BusyTimeout: time.Second, Log: log})
-			elapsed := time.Since(started)
 			if store != nil {
 				require.NoError(t, store.Close())
 			}
@@ -511,7 +659,6 @@ func TestOpenDoesNotRetryPermanentSQLiteErrors(t *testing.T) {
 			require.Equal(t, testCase.expectedCode, sqliteErr.Code())
 			require.False(t, isSQLiteBusy(openErr))
 			require.Zero(t, retryCount)
-			require.Less(t, elapsed, 500*time.Millisecond)
 
 			require.NoError(t, os.Remove(storePath))
 			openTestStore(t, ctx, storePath)
@@ -521,25 +668,61 @@ func TestOpenDoesNotRetryPermanentSQLiteErrors(t *testing.T) {
 
 // Verifies that Open normalizes BusyTimeout and preserves it when SQLite replaces an idle connection.
 func TestOpenPreservesNormalOperationBusyTimeout(t *testing.T) {
-	for _, busyTimeout := range []time.Duration{0, -time.Second, 750 * time.Millisecond} {
-		t.Run(busyTimeout.String(), func(t *testing.T) {
+	for _, testCase := range []struct {
+		busyTimeout time.Duration
+		expected    time.Duration
+	}{
+		{busyTimeout: 0, expected: DefaultBusyTimeout},
+		{busyTimeout: -time.Second, expected: DefaultBusyTimeout},
+		{busyTimeout: 750 * time.Millisecond, expected: 750 * time.Millisecond},
+		{busyTimeout: 500 * time.Microsecond, expected: time.Millisecond},
+	} {
+		t.Run(testCase.busyTimeout.String(), func(t *testing.T) {
 			t.Parallel()
 
 			ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
 			defer cancel()
-			store, openErr := Open(ctx, Options{Path: initializationTestPath(t), BusyTimeout: busyTimeout})
+			store, openErr := Open(ctx, Options{Path: initializationTestPath(t), BusyTimeout: testCase.busyTimeout})
 			require.NoError(t, openErr)
 			t.Cleanup(func() {
 				require.NoError(t, store.Close())
 			})
-			expectedTimeout := busyTimeout
-			if expectedTimeout <= 0 {
-				expectedTimeout = DefaultBusyTimeout
-			}
-			requireSQLiteBusyTimeout(t, ctx, store, expectedTimeout)
+			requireSQLiteBusyTimeout(t, ctx, store, testCase.expected)
 			store.db.SetMaxIdleConns(0)
 			store.db.SetMaxIdleConns(1)
-			requireSQLiteBusyTimeout(t, ctx, store, expectedTimeout)
+			requireSQLiteBusyTimeout(t, ctx, store, testCase.expected)
+		})
+	}
+}
+
+// Verifies that Open can reopen a current WAL store while another connection has an uncommitted write transaction.
+func TestOpenWarmStoreWithActiveSQLiteWriter(t *testing.T) {
+	for _, beginStatement := range []string{"BEGIN IMMEDIATE", "BEGIN EXCLUSIVE"} {
+		t.Run(beginStatement, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+			defer cancel()
+			storePath := initializationTestPath(t)
+			seed := openTestStore(t, ctx, storePath)
+			require.NoError(t, seed.Close())
+			writer := openRawSQLiteDB(t, ctx, storePath)
+			conn, connErr := writer.Conn(ctx)
+			require.NoError(t, connErr)
+			t.Cleanup(func() {
+				_, rollbackErr := conn.ExecContext(context.Background(), "ROLLBACK")
+				require.NoError(t, rollbackErr)
+				require.NoError(t, conn.Close())
+				require.NoError(t, writer.Close())
+			})
+			_, beginErr := conn.ExecContext(ctx, beginStatement)
+			require.NoError(t, beginErr)
+			_, writeErr := conn.ExecContext(ctx, "UPDATE schema_minor_migrations_v1 SET dirty = dirty")
+			require.NoError(t, writeErr)
+
+			reopened := openTestStore(t, ctx, storePath)
+			requireSchemaMajorVersion(t, ctx, reopened, currentSchemaMajorVersion)
+			requireSchemaMinorVersion(t, ctx, reopened, currentSchemaMinorVersion)
 		})
 	}
 }

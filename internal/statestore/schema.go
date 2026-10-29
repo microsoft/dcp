@@ -30,7 +30,9 @@ const (
 	legacySchemaVersion2MinorVersion = 1
 
 	schemaMajorMigrationTableName = "schema_migrations"
-	migrationLockFileSuffix       = ".migrate.lock"
+
+	// Keep the filename shared with older DCP versions for mixed-version coordination.
+	initializationLockFileSuffix = ".migrate.lock"
 
 	// noSchemaVersion clears a golang-migrate version table, which is how the library
 	// represents a stream where no migration has been applied.
@@ -99,16 +101,17 @@ func (s *Store) initialize(ctx context.Context, busyTimeout time.Duration) (err 
 		return ctxErr
 	}
 
-	migrationLock, lockErr := lockfile.NewLockfile(s.path + migrationLockFileSuffix)
+	initializationLock, lockErr := lockfile.NewLockfile(s.path + initializationLockFileSuffix)
 	if lockErr != nil {
 		return fmt.Errorf("could not create state store initialization lock: %w", lockErr)
 	}
-	if acquireErr := migrationLock.TryLock(ctx, lockfile.DefaultLockRetryInterval); acquireErr != nil {
-		closeErr := migrationLock.Close()
+	// Concurrent first-time WAL configuration requires the lock before opening any SQLite connection.
+	if acquireErr := initializationLock.TryLock(ctx, lockfile.DefaultLockRetryInterval); acquireErr != nil {
+		closeErr := initializationLock.Close()
 		return fmt.Errorf("could not acquire state store initialization lock: %w", errors.Join(acquireErr, closeErr))
 	}
 	defer func() {
-		err = errors.Join(err, migrationLock.Close())
+		err = errors.Join(err, initializationLock.Close())
 	}()
 
 	if openErr := s.openAndConfigure(ctx, busyTimeout); openErr != nil {

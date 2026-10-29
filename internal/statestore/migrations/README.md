@@ -29,9 +29,11 @@ The lock is an advisory file lock held on an open file descriptor, so the operat
 
 Other SQLite clients, including older DCP binaries, may not take the initialization lock before configuring the database. After acquiring the lock, DCP retries connection/configuration failures whose typed SQLite result has primary code `SQLITE_BUSY`, including extended BUSY codes. It closes the failed connection pool before each retry. Timeout and cancellation errors retain the last failed attempt's error. Other errors and connection-cleanup failures stop initialization immediately; migrations are not replayed by this retry.
 
-The normalized `Options.BusyTimeout` (five seconds by default) is one total budget for all connection/configuration attempts and their backoff, not a fresh timeout per attempt. Earlier caller cancellation or deadlines take precedence. SQLite's native busy handler can outlive a canceled context, so initialization disables native busy waiting before accessing the schema or configuring WAL and uses context-aware retries instead. The full normal-operation SQLite busy timeout is restored after configuration; replacement connections also retain the configured timeout.
+The initial connection/configuration attempt uses the caller's context. Slow but uncontended I/O does not consume a contention budget. After the first `SQLITE_BUSY`, the normalized `Options.BusyTimeout` (five seconds by default) is one total budget for all subsequent attempts and their backoff, not a fresh timeout per attempt. Earlier caller cancellation or deadlines take precedence. Once that budget starts, configuration work and scheduling delays also count against it.
 
-This retry budget starts only after the initialization lock is acquired and does not limit lock acquisition or schema migrations. Those continue to use the caller's context and the existing migration timeout settings.
+SQLite's native busy handler can outlive a canceled context, so initialization disables native busy waiting before accessing the schema or configuring WAL and uses context-aware retries instead. The full normal-operation SQLite busy timeout is restored after configuration; replacement connections also retain the configured timeout. Native timeouts use whole milliseconds, with positive sub-millisecond values clamped to one millisecond consistently for initial and replacement connections.
+
+The retry budget does not limit initialization lock acquisition, the initial connection/configuration attempt, or schema migrations. Those continue to use the caller's context and the existing migration timeout settings.
 
 ### How DCP handles failed migrations
 

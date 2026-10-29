@@ -56,8 +56,9 @@ type Options struct {
 	// Path is the SQLite database file path. If empty, the default DCP user store path is used.
 	Path string
 
-	// BusyTimeout is the normal-operation SQLite busy timeout and the total connection/configuration
-	// initialization retry budget, excluding initialization lock acquisition and schema migrations.
+	// BusyTimeout is the normal-operation SQLite busy timeout and the connection/configuration retry
+	// budget after the first SQLITE_BUSY. The initial attempt, initialization lock acquisition, and
+	// schema migrations use the caller's context without this additional deadline.
 	// Values <= 0 use DefaultBusyTimeout. An earlier caller cancellation or deadline takes precedence.
 	BusyTimeout time.Duration
 
@@ -144,44 +145,87 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 }
 
 func (s *Store) openAndConfigure(ctx context.Context, busyTimeout time.Duration) error {
-	initializationCtx, cancelInitialization := context.WithTimeout(ctx, busyTimeout)
-	defer cancelInitialization()
-
-	var lastAttemptErr error
-	retryErr := resiliency.Retry(initializationCtx, backoff.NewConstantBackOff(initializationRetryInterval), func() error {
-		if ctxErr := initializationCtx.Err(); ctxErr != nil {
-			return resiliency.Permanent(ctxErr)
-		}
-
+	return retrySQLiteInitialization(ctx, busyTimeout, s.log, func(attemptCtx context.Context) (bool, error) {
 		// Defer schema access until configure disables native busy waiting; Ping would use the full DSN timeout.
 		db, openErr := newSQLiteDB(s.path, busyTimeout)
 		if openErr != nil {
-			return resiliency.Permanent(openErr)
+			return false, openErr
 		}
 		s.db = db
 
-		configureErr := s.configure(initializationCtx, busyTimeout)
+		configureErr := s.configure(attemptCtx, busyTimeout)
 		if configureErr == nil {
-			return nil
+			return false, nil
 		}
 
 		closeErr := s.Close()
-		attemptErr := errors.Join(configureErr, closeErr)
-		lastAttemptErr = attemptErr
-		if ctxErr := initializationCtx.Err(); ctxErr != nil {
-			return resiliency.Permanent(errors.Join(attemptErr, ctxErr))
+		return closeErr == nil && isSQLiteBusy(configureErr), errors.Join(configureErr, closeErr)
+	})
+}
+
+// retrySQLiteInitialization budgets retries only after the first retryable failure.
+// attempt reports whether its error permits retrying after releasing the failed attempt's resources.
+func retrySQLiteInitialization(
+	ctx context.Context,
+	busyTimeout time.Duration,
+	log logr.Logger,
+	attempt func(context.Context) (bool, error),
+) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+
+	canRetryFirst, firstAttemptErr := attempt(ctx)
+	if firstAttemptErr == nil {
+		return nil
+	}
+	if callerErr := ctx.Err(); callerErr != nil {
+		if errors.Is(firstAttemptErr, callerErr) {
+			return firstAttemptErr
 		}
-		if closeErr != nil || !isSQLiteBusy(configureErr) {
+		return errors.Join(firstAttemptErr, callerErr)
+	}
+	if !canRetryFirst {
+		return firstAttemptErr
+	}
+
+	initializationCtx, cancelInitialization := context.WithTimeout(ctx, busyTimeout)
+	defer cancelInitialization()
+	lastBusyErr := firstAttemptErr
+	log.V(1).Info("Retrying state store initialization after SQLite contention", "Error", firstAttemptErr)
+
+	retryErr := resiliency.Retry(initializationCtx, backoff.NewConstantBackOff(initializationRetryInterval), func() error {
+		if attemptContextErr := initializationCtx.Err(); attemptContextErr != nil {
+			return resiliency.Permanent(attemptContextErr)
+		}
+		canRetry, attemptErr := attempt(initializationCtx)
+		if attemptErr == nil {
+			return nil
+		}
+		if !canRetry {
 			return resiliency.Permanent(attemptErr)
 		}
 
-		s.log.V(1).Info("Retrying state store initialization after SQLite contention", "Error", configureErr)
+		lastBusyErr = attemptErr
+		if initializationCtx.Err() != nil {
+			return resiliency.Permanent(attemptErr)
+		}
+		log.V(1).Info("Retrying state store initialization after SQLite contention", "Error", attemptErr)
 		return attemptErr
 	})
-	// Cancellation can stop backoff before Retry records the failed attempt.
-	if retryErr != nil && lastAttemptErr != nil && !errors.Is(retryErr, lastAttemptErr) {
-		return errors.Join(retryErr, lastAttemptErr)
+	if retryErr == nil {
+		return nil
 	}
+	if retryContextErr := initializationCtx.Err(); retryContextErr != nil {
+		// The first BUSY is outside Retry, and cancellation can also precede its notification.
+		if !errors.Is(retryErr, lastBusyErr) {
+			retryErr = errors.Join(retryErr, lastBusyErr)
+		}
+		if !errors.Is(retryErr, retryContextErr) {
+			retryErr = errors.Join(retryErr, retryContextErr)
+		}
+	}
+
 	return retryErr
 }
 
@@ -226,9 +270,17 @@ func sqliteDSN(path string, busyTimeout time.Duration) string {
 		dsn.Path = sqlitePath
 	}
 	query := dsn.Query()
-	query.Add("_pragma", fmt.Sprintf("busy_timeout=%d", busyTimeout.Milliseconds()))
+	query.Add("_pragma", fmt.Sprintf("busy_timeout=%d", sqliteBusyTimeoutMilliseconds(busyTimeout)))
 	dsn.RawQuery = query.Encode()
 	return dsn.String()
+}
+
+func sqliteBusyTimeoutMilliseconds(busyTimeout time.Duration) int64 {
+	milliseconds := busyTimeout.Milliseconds()
+	if milliseconds <= 0 {
+		return 1
+	}
+	return milliseconds
 }
 
 func isWindowsDrivePath(path string) bool {
@@ -300,10 +352,7 @@ func (s *Store) configure(ctx context.Context, busyTimeout time.Duration) error 
 		return fmt.Errorf("could not enable SQLite foreign key checks: %w", foreignKeyErr)
 	}
 
-	busyTimeoutMilliseconds := busyTimeout.Milliseconds()
-	if busyTimeoutMilliseconds <= 0 {
-		busyTimeoutMilliseconds = 1
-	}
+	busyTimeoutMilliseconds := sqliteBusyTimeoutMilliseconds(busyTimeout)
 	if _, restoreErr := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", busyTimeoutMilliseconds)); restoreErr != nil {
 		return fmt.Errorf("could not restore SQLite busy timeout: %w", restoreErr)
 	}
