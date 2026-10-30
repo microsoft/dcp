@@ -372,6 +372,9 @@ func validateLabels(labels []commonapi.Label, labelsPath *field.Path) field.Erro
 		if label.Key == "" {
 			errorList = append(errorList, field.Required(labelPath.Child("key"), "key must be set to a non-empty value"))
 		}
+		if strings.ContainsRune(label.Key, ',') {
+			errorList = append(errorList, field.Invalid(labelPath.Child("key"), label.Key, "key must not contain commas"))
+		}
 		if label.Value == "" {
 			errorList = append(errorList, field.Required(labelPath.Child("value"), "value must be set to a non-empty value"))
 		}

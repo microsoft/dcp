@@ -1452,17 +1452,11 @@ func unmarshalListedContainer(data []byte, lc *containers.ListedContainer) error
 		return err
 	}
 
-	labels := make(map[string]string)
-	for _, label := range strings.Split(dlc.Labels, ",") {
-		key, value, _ := strings.Cut(label, "=")
-		labels[key] = value
-	}
-
 	lc.Id = dlc.Id
 	lc.Name = strings.Split(dlc.Names, ",")[0]
 	lc.Image = dlc.Image
 	lc.Status = dlc.State
-	lc.Labels = labels
+	lc.Labels = containers.ParseListedLabels(dlc.Labels)
 	lc.Networks = strings.Split(dlc.Networks, ",")
 
 	return nil
@@ -1765,18 +1759,7 @@ func unmarshalListedNetwork(data []byte, net *containers.ListedNetwork) error {
 		net.Internal = false
 	}
 
-	labels := make(map[string]string)
-	labelStrs := strings.Split(dln.Labels, ",")
-	for _, labelStr := range labelStrs {
-		if len(labelStr) < 3 {
-			continue // Expect "key=value"
-		}
-		kv := strings.SplitN(labelStr, "=", 2)
-		if len(kv) == 2 && len(kv[0]) > 0 && len(kv[1]) > 0 {
-			labels[kv[0]] = kv[1]
-		}
-	}
-	net.Labels = labels
+	net.Labels = containers.ParseListedLabels(dln.Labels)
 
 	net.Name = dln.Name
 

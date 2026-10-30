@@ -365,6 +365,27 @@ func TestUnmarshalListedNetworks(t *testing.T) {
 	require.NoError(t, timestampErr)
 }
 
+// Verifies that Docker container and network list adapters both preserve comma-containing label values.
+func TestUnmarshalListedResourcesPreservesCommaValues(t *testing.T) {
+	t.Parallel()
+
+	const listedLabels = "com.microsoft.developer.usvc-dev.workloadId=workload-a,segment,owner=dcp"
+	expected := map[string]string{
+		"com.microsoft.developer.usvc-dev.workloadId": "workload-a,segment",
+		"owner": "dcp",
+	}
+
+	var container ct.ListedContainer
+	containerErr := unmarshalListedContainer([]byte(`{"ID":"container-id","Labels":"`+listedLabels+`"}`), &container)
+	require.NoError(t, containerErr)
+	require.Equal(t, expected, container.Labels)
+
+	var network ct.ListedNetwork
+	networkErr := unmarshalListedNetwork([]byte(`{"ID":"network-id","Labels":"`+listedLabels+`","Name":"network-name"}`), &network)
+	require.NoError(t, networkErr)
+	require.Equal(t, expected, network.Labels)
+}
+
 func TestUnmarshalInspectedNetworkReportsIPv6(t *testing.T) {
 	t.Parallel()
 

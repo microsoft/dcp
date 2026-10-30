@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
@@ -558,6 +559,18 @@ func TestArchiveRelativePath(t *testing.T) {
 			require.Equal(t, testCase.valid, isArchiveRelativePath(testCase.path))
 		})
 	}
+}
+
+// Verifies that validateLabels rejects comma-containing keys while allowing comma-containing values.
+func TestValidateLabelsRejectsCommaInKey(t *testing.T) {
+	t.Parallel()
+
+	labelsPath := field.NewPath("spec", "labels")
+	invalidErrors := validateLabels([]commonapi.Label{{Key: "invalid,key", Value: "value"}}, labelsPath)
+	require.ErrorContains(t, invalidErrors.ToAggregate(), "spec.labels[0].key")
+
+	validErrors := validateLabels([]commonapi.Label{{Key: "valid-key", Value: "part-one,part-two"}}, labelsPath)
+	require.Empty(t, validErrors)
 }
 
 func TestPhysicalContainerImageValidateUpdateRejectsSpecChanges(t *testing.T) {
