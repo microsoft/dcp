@@ -20,7 +20,9 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -42,6 +44,7 @@ type delayFlagData struct {
 	holdPipe       bool
 	coupleChildren bool
 	forkChildren   bool
+	readyFile      string
 }
 
 var (
@@ -56,6 +59,7 @@ const (
 	holdPipeFlag       = "hold-pipe"
 	coupleChildrenFlag = "couple-children"
 	forkChildrenFlag   = "fork-children"
+	readyFileFlag      = "ready-file"
 )
 
 func newMainCommand(log *logger.Logger) *cobra.Command {
@@ -79,6 +83,7 @@ You can also ask it to exit with a specific exit code.`,
 	cmd.Flags().BoolVar(&flags.holdPipe, holdPipeFlag, false, "If specified with --child-spec, children inherit stdout and stderr and keep those pipes open after the parent exits.")
 	cmd.Flags().BoolVar(&flags.coupleChildren, coupleChildrenFlag, false, "If specified, child processes stay in the parent's process group instead of being decoupled.")
 	cmd.Flags().BoolVar(&flags.forkChildren, forkChildrenFlag, false, "If specified, child processes are started in a separate process group; on Windows they are also started in a separate console.")
+	cmd.Flags().StringVar(&flags.readyFile, readyFileFlag, "", "Create this file after all direct children have started. The file must not already exist. This option is not passed to children.")
 
 	return cmd
 }
@@ -123,6 +128,16 @@ func runMain(log logr.Logger) error {
 	err := runChildrenAsNeeded()
 	if err != nil {
 		return err
+	}
+
+	if flags.readyFile != "" {
+		readyFile, createErr := usvc_io.CreateNewFile(flags.readyFile, osutil.PermissionOnlyOwnerReadWrite)
+		if createErr != nil {
+			return fmt.Errorf("could not create readiness file: %w", createErr)
+		}
+		if closeErr := readyFile.Close(); closeErr != nil {
+			return fmt.Errorf("could not close readiness file: %w", closeErr)
+		}
 	}
 
 	if flags.delay != 0 {
