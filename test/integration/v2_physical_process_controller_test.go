@@ -219,6 +219,7 @@ func TestV2PhysicalProcessControllerStopsExistingProcessOnRequest(t *testing.T) 
 // Verifies that PhysicalProcess completes policy-specific cleanup and publishes its final
 // outcome while a logical hold retains the API object, including monitor-scoped retention.
 func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T) {
+	t.Parallel()
 	dcppaths.EnableTestPathProbing()
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
 	require.NoError(t, dcpPathErr)
@@ -327,6 +328,7 @@ func TestV2PhysicalProcessControllerReportsExit(t *testing.T) {
 }
 
 func TestV2PhysicalProcessControllerReportsExitBeforeRunningStatus(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
@@ -455,6 +457,7 @@ func TestV2PhysicalProcessControllerDoesNotLaunchStoppedProcess(t *testing.T) {
 }
 
 func TestV2PhysicalProcessControllerDoesNotRetryLaunchAfterStopRequest(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
@@ -555,6 +558,7 @@ func TestV2PhysicalProcessControllerDoesNotDuplicateLaunch(t *testing.T) {
 }
 
 func TestV2PhysicalProcessControllerRetriesLaunchFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 

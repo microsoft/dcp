@@ -886,6 +886,7 @@ func TestV2PhysicalContainerControllerCompletesStopBeforeCreation(t *testing.T) 
 // Verifies that stop acquires an existing replacement target before creation, including
 // after waiting for prerequisites, without creating or removing a runtime container.
 func TestV2PhysicalContainerControllerStopsReplacementBeforeCreation(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name        string
 		initialStop bool
