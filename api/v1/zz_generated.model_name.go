@@ -301,11 +301,6 @@ func (in LogOptionsList) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
-func (in LogStorage) OpenAPIModelName() string {
-	return "github.com/microsoft/dcp/api/v1.LogStorage"
-}
-
-// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in LogStreamer) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v1.LogStreamer"
 }
@@ -318,11 +313,6 @@ func (in LogStreamerList) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in PemCertificate) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v1.PemCertificate"
-}
-
-// OpenAPIModelName returns the OpenAPI model name for this type.
-func (in ResourceWatcherEvent) OpenAPIModelName() string {
-	return "github.com/microsoft/dcp/api/v1.ResourceWatcherEvent"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.

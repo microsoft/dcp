@@ -1475,8 +1475,8 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 					},
 					Networks: []apiv2.ContainerNetworkConnectionConfig{
 						{
-							Name:    V1PhysicalContainerNetworkReferenceName(containerNetwork.UID).Name,
-							Aliases: tunnelProxy.Spec.Aliases,
+							NetworkRef: V1PhysicalContainerNetworkReferenceName(containerNetwork.UID).Name,
+							Aliases:    tunnelProxy.Spec.Aliases,
 						},
 					},
 				},

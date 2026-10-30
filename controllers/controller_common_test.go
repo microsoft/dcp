@@ -25,6 +25,59 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+type namespaceReadFailureReader struct {
+	ctrl_client.Reader
+	readErr error
+}
+
+func (reader *namespaceReadFailureReader) Get(context.Context, ctrl_client.ObjectKey, ctrl_client.Object, ...ctrl_client.GetOption) error {
+	return reader.readErr
+}
+
+// Verifies that checkNamespaceReadiness reports unavailable namespace reasons, preserves lookup
+// errors, and returns ready only for initialized, active namespaces that are not being deleted.
+func TestCheckNamespaceReadiness(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	for _, testCase := range []struct {
+		name      string
+		namespace *apiv2.Namespace
+		reason    apiv2.ConditionReason
+		readErr   error
+	}{
+		{name: "missing", reason: apiv2.PhysicalResourceReasonNamespaceNotFound},
+		{name: "uninitialized", namespace: &apiv2.Namespace{}, reason: apiv2.PhysicalResourceReasonNamespaceNotReady},
+		{name: "inactive", namespace: &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Finalizers: []string{namespaceFinalizer}}}, reason: apiv2.PhysicalResourceReasonNamespaceNotActive},
+		{name: "terminating", namespace: &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Finalizers: []string{namespaceFinalizer}, DeletionTimestamp: &metav1.Time{Time: time.Now()}}}, reason: apiv2.PhysicalResourceReasonNamespaceTerminating},
+		{name: "read failure", readErr: errors.New("namespace read failed"), reason: apiv2.PhysicalResourceReasonNamespaceLookupFailed},
+		{name: "canceled lookup", readErr: context.Canceled, reason: apiv2.PhysicalResourceReasonNamespaceLookupFailed},
+		{name: "active", namespace: &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Finalizers: []string{namespaceFinalizer}}, Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive}}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			require.NoError(t, apiv2.AddToScheme(scheme))
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if testCase.namespace != nil {
+				testCase.namespace.Name = "namespace"
+				builder = builder.WithObjects(testCase.namespace)
+			}
+			var reader ctrl_client.Reader = builder.Build()
+			if testCase.readErr != nil {
+				reader = &namespaceReadFailureReader{Reader: reader, readErr: testCase.readErr}
+			}
+			ready, reason, readinessErr := checkNamespaceReadiness(ctx, reader, "namespace")
+			require.Equal(t, testCase.reason == "", ready)
+			require.Equal(t, testCase.reason, reason)
+			if testCase.readErr != nil {
+				require.ErrorIs(t, readinessErr, testCase.readErr)
+			} else {
+				require.NoError(t, readinessErr)
+			}
+		})
+	}
+}
+
 func TestMapNamespaceToReconcileRequests(t *testing.T) {
 	t.Parallel()
 
