@@ -30,6 +30,7 @@ func NewStopProcessTreeCommand(log logr.Logger) (*cobra.Command, error) {
 	stopProcessTreeCmd := &cobra.Command{
 		Use:          "stop-process-tree",
 		Short:        "Stops a process tree identified by the root process ID.",
+		Long:         "Stops a process tree identified by the root process ID. On Unix, if the root leads an isolated process group, cleanup also signals the whole group. --skip-descendants disables both tree and Unix group cleanup.",
 		RunE:         stopProcessTree(log),
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
