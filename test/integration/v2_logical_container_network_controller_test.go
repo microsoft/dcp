@@ -820,6 +820,130 @@ func TestV2LogicalContainerControllerRejectsFailedNetwork(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, network)
 }
 
+// Verifies that LogicalContainer treats referenced network and volume failures after handoff
+// as terminal startup failures, releases its lease, and does not resume when the reference is replaced.
+func TestV2LogicalContainerControllerFailsStartupWhenReferencedResourceFails(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name          string
+		pendingReason apiv2.ConditionReason
+		failureReason apiv2.ConditionReason
+	}{
+		{name: "network", pendingReason: apiv2.PhysicalContainerReasonNetworkNotReady, failureReason: apiv2.PhysicalContainerReasonNetworkFailed},
+		{name: "volume", pendingReason: apiv2.PhysicalContainerReasonVolumeNotReady, failureReason: apiv2.PhysicalContainerReasonVolumeFailed},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			namespace := createActiveV2Namespace(t, ctx, "v2-logical-failed-reference-"+testCase.name)
+			dependencyRuntimeName := namespace.Name + "-dependency"
+			containerConfig := &apiv2.LogicalContainerConfig{
+				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
+			}
+			var dependency, replacement ctrl_client.Object
+			var releaseCreation func()
+			if testCase.name == "network" {
+				runtimeID, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: dependencyRuntimeName})
+				require.NoError(t, createErr)
+				removeRuntimeNetworkOnCleanup(t, dependencyRuntimeName)
+				releaseCreation = containerOrchestrator.BlockCreateNetwork(dependencyRuntimeName)
+				defer releaseCreation()
+				network := &apiv2.LogicalContainerNetwork{
+					ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+					Spec: apiv2.LogicalContainerNetworkSpec{NetworkName: dependencyRuntimeName,
+						Network: &apiv2.LogicalContainerNetworkConfig{}},
+				}
+				require.NoError(t, client.Create(ctx, network))
+				pendingNetwork := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+					return current.Status.PhysicalNetworkRef != "", nil
+				})
+				dependency = network
+				replacement = &apiv2.PhysicalContainerNetwork{
+					ObjectMeta: metav1.ObjectMeta{Name: pendingNetwork.Status.PhysicalNetworkRef, Namespace: namespace.Name},
+					Spec:       apiv2.PhysicalContainerNetworkSpec{NetworkID: runtimeID},
+				}
+				containerConfig.Networks = []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: network.Name}}
+			} else {
+				require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: dependencyRuntimeName}))
+				removeRuntimeVolumeOnCleanup(t, dependencyRuntimeName)
+				releaseCreation = containerOrchestrator.BlockCreateVolume(dependencyRuntimeName)
+				defer releaseCreation()
+				volume := &apiv2.PhysicalContainerVolume{
+					ObjectMeta: metav1.ObjectMeta{Name: "volume", Namespace: namespace.Name},
+					Spec:       newRemovablePhysicalContainerVolumeSpec(dependencyRuntimeName),
+				}
+				require.NoError(t, client.Create(ctx, volume))
+				dependency = volume
+				replacement = &apiv2.PhysicalContainerVolume{
+					ObjectMeta: metav1.ObjectMeta{Name: volume.Name, Namespace: namespace.Name},
+					Spec:       apiv2.PhysicalContainerVolumeSpec{VolumeID: dependencyRuntimeName},
+				}
+				containerConfig.VolumeMounts = []apiv2.VolumeMount{{Type: apiv2.NamedVolumeMount, VolumeRef: volume.Name, Target: "/data"}}
+			}
+			container := &apiv2.LogicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+				Spec: apiv2.LogicalContainerSpec{
+					Mode: apiv2.LogicalContainerModePersistent, ContainerName: namespace.Name + "-container",
+					Container: containerConfig,
+				},
+			}
+			require.NoError(t, client.Create(ctx, container))
+			pending := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+				return current.Status.PhysicalContainerRef != "", nil
+			})
+			physicalName := types.NamespacedName{Namespace: namespace.Name, Name: pending.Status.PhysicalContainerRef}
+			waitObjectAssumesState(t, ctx, physicalName, func(current *apiv2.PhysicalContainer) (bool, error) {
+				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+				return ready != nil && ready.Reason == string(testCase.pendingReason), nil
+			})
+			require.NoError(t, testStateStore.VerifyResourceLeaseHeld(ctx, container, testResourceLeaseOwner))
+			releaseCreation()
+			failed := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+				return current.Status.Phase == apiv2.LogicalContainerPhaseFailed, nil
+			})
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "PhysicalContainerFailed")
+			failure := apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady))
+			require.Contains(t, failure.Message, string(testCase.failureReason))
+			require.Contains(t, failure.Message, "CreateFailed")
+			require.Empty(t, failed.Status.ContainerID)
+			require.Zero(t, containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName))
+			require.ErrorIs(t, testStateStore.VerifyResourceLeaseHeld(ctx, container, testResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+			_, recordErr := testStateStore.GetPersistentContainer(ctx, container.GetLeaseKey())
+			require.ErrorIs(t, recordErr, statestore.ErrPersistentContainerNotFound)
+			require.NoError(t, client.Delete(ctx, dependency))
+			switch deleted := dependency.(type) {
+			case *apiv2.LogicalContainerNetwork:
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, deleted)
+			case *apiv2.PhysicalContainerVolume:
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, deleted)
+			}
+			require.NoError(t, client.Create(ctx, replacement))
+			switch replaced := replacement.(type) {
+			case *apiv2.PhysicalContainerNetwork:
+				waitPhysicalContainerNetworkPhase(t, ctx, replaced.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+			case *apiv2.PhysicalContainerVolume:
+				waitPhysicalContainerVolumePhase(t, ctx, replaced.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
+			}
+			require.NoError(t, retryOnConflict(ctx, container.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
+				current.Spec.Stop = true
+				return client.Update(updateCtx, current)
+			}))
+			stillFailed := waitObjectAssumesState(t, ctx, physicalName, func(current *apiv2.PhysicalContainer) (bool, error) {
+				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+				return current.Spec.Stop && ready != nil && ready.ObservedGeneration == current.Generation, nil
+			})
+			require.Equal(t, apiv2.PhysicalContainerPhaseFailed, stillFailed.Status.Phase)
+			requireReadyCondition(t, stillFailed.Status.Conditions, metav1.ConditionFalse, testCase.failureReason)
+			require.Empty(t, stillFailed.Status.ContainerID)
+			require.Zero(t, containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName))
+			require.NoError(t, client.Delete(ctx, container))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, container)
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, stillFailed)
+		})
+	}
+}
+
 // Verifies that LogicalContainer preserves adopted persistent container attachments even when
 // its creation configuration references a logical network that has not been realized.
 func TestV2LogicalContainerControllerPreservesAdoptedNetworkAttachments(t *testing.T) {
