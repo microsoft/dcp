@@ -140,6 +140,8 @@ func (cs *LogicalContainerSpec) GetLifecycleKey() (string, bool, error) {
 	}
 
 	desired := cs.Container.DeepCopy()
+	// Network attachments can change without recreating the container.
+	desired.Networks = nil
 	if desired.ImageRef != "" {
 		desired.ImageRef = commonapi.AsNamespacedName(desired.ImageRef, "").Name
 	}
@@ -174,11 +176,6 @@ func (cs *LogicalContainerSpec) GetLifecycleKey() (string, bool, error) {
 	slices.SortStableFunc(desired.CreateFiles, func(left, right CreateFileSystem) int {
 		return strings.Compare(left.Destination, right.Destination)
 	})
-	for i := range desired.Networks {
-		desired.Networks[i].NetworkRef = commonapi.AsNamespacedName(desired.Networks[i].NetworkRef, "").Name
-		slices.Sort(desired.Networks[i].Aliases)
-		desired.Networks[i].Aliases = slices.Compact(desired.Networks[i].Aliases)
-	}
 	for i := range desired.Ports {
 		desired.Ports[i].RangeSize = desired.Ports[i].EffectiveRangeSize()
 		if desired.Ports[i].Protocol == "" {

@@ -175,7 +175,7 @@ func TestLogicalContainerSpecLifecycleKeyIsStable(t *testing.T) {
 	key, computed, keyErr := spec.GetLifecycleKey()
 	require.NoError(t, keyErr)
 	require.True(t, computed)
-	require.Equal(t, "83b72ab2652222f0cb68cb82db460b7d", key, "V2 lifecycle-key encoding changed; existing persistent containers would be replaced")
+	require.Equal(t, "0c393b2a2eb5838203b1ea199818e276", key, "V2 lifecycle-key encoding changed; existing persistent containers would be replaced")
 }
 
 // Verifies that V1 and V2 persistent kinds and log subresource types can share standard API-server registration.

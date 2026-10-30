@@ -105,6 +105,49 @@ func TestLogicalContainerSpecGetLifecycleKey(t *testing.T) {
 	require.Equal(t, "user-key", explicitKey)
 }
 
+// Verifies that LogicalContainerSpec.GetLifecycleKey excludes dynamic network membership,
+// ordering, and aliases without mutating the declared attachments.
+func TestLogicalContainerSpecGetLifecycleKeyIgnoresNetworks(t *testing.T) {
+	t.Parallel()
+	original := &LogicalContainerSpec{Container: &LogicalContainerConfig{ImageRef: "image"}}
+	key, _, keyErr := original.GetLifecycleKey()
+	require.NoError(t, keyErr)
+	for _, testCase := range []struct {
+		name     string
+		networks []LogicalContainerNetworkConnectionConfig
+	}{
+		{name: "nil"},
+		{name: "empty", networks: []LogicalContainerNetworkConnectionConfig{}},
+		{name: "connected", networks: []LogicalContainerNetworkConnectionConfig{
+			{NetworkRef: "first", Aliases: []string{"app"}},
+		}},
+		{name: "additional attachment", networks: []LogicalContainerNetworkConnectionConfig{
+			{NetworkRef: "first", Aliases: []string{"app"}},
+			{NetworkRef: "second", Aliases: []string{"service"}},
+		}},
+		{name: "reordered attachments", networks: []LogicalContainerNetworkConnectionConfig{
+			{NetworkRef: "second", Aliases: []string{"service"}},
+			{NetworkRef: "first", Aliases: []string{"app"}},
+		}},
+		{name: "changed aliases", networks: []LogicalContainerNetworkConnectionConfig{
+			{NetworkRef: "first", Aliases: []string{"second", "first"}},
+		}},
+		{name: "qualified reference", networks: []LogicalContainerNetworkConnectionConfig{
+			{NetworkRef: "namespace/first"},
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			changed := original.DeepCopy()
+			changed.Container.Networks = testCase.networks
+			before := changed.DeepCopy()
+			changedKey, _, changedErr := changed.GetLifecycleKey()
+			require.NoError(t, changedErr)
+			require.Equal(t, key, changedKey)
+			require.Equal(t, before, changed)
+		})
+	}
+}
+
 // Verifies that LogicalContainerSpec.GetLifecycleKey ignores collection order using V1's sort keys,
 // preserves the supplied configuration, and still distinguishes configuration changes.
 func TestLogicalContainerSpecGetLifecycleKeyMatchesV1CollectionOrdering(t *testing.T) {
