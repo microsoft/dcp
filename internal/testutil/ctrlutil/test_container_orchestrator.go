@@ -2491,6 +2491,12 @@ func (to *TestContainerOrchestrator) removeContainers(ctx context.Context, optio
 			err = errors.Join(err, containers.ErrNotFound)
 			continue
 		}
+		if !to.runtimeHealthy {
+			if !errors.Is(err, errRuntimeUnhealthy) {
+				err = errors.Join(err, errRuntimeUnhealthy)
+			}
+			continue
+		}
 		block, operationErr := to.recordRemoveContainerOperationLocked(container.Name)
 		if operationErr != nil {
 			err = errors.Join(err, operationErr)
@@ -2510,7 +2516,9 @@ func (to *TestContainerOrchestrator) removeContainers(ctx context.Context, optio
 				continue
 			}
 			if !to.runtimeHealthy {
-				err = errors.Join(err, errRuntimeUnhealthy)
+				if !errors.Is(err, errRuntimeUnhealthy) {
+					err = errors.Join(err, errRuntimeUnhealthy)
+				}
 				continue
 			}
 		}

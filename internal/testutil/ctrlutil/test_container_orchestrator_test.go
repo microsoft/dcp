@@ -183,6 +183,76 @@ func TestBlockedContainerRemovalHandlesCancellationAndConcurrentDeletion(t *test
 	require.Equal(t, 3, orchestrator.RemoveContainerCallCount(containerName))
 }
 
+// Verifies that TestContainerOrchestrator preserves remaining batch members when runtime health changes during a blocked removal.
+func TestBlockedContainerRemovalPreservesBatchWhenRuntimeBecomesUnhealthy(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 3*time.Minute)
+	defer cancel()
+	orchestrator, orchestratorErr := NewTestContainerOrchestrator(ctx, logr.Discard(), TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	defer func() {
+		require.NoError(t, orchestrator.Close())
+	}()
+	imageID, pullErr := orchestrator.PullImage(ctx, containers.PullImageOptions{Image: "unhealthy-removal-image"})
+	require.NoError(t, pullErr)
+	const blockedContainerName = "unhealthy-blocked-removal"
+	blockedContainerID, createBlockedErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name: blockedContainerName, Image: imageID,
+	})
+	require.NoError(t, createBlockedErr)
+	const remainingContainerName = "unhealthy-remaining-removal"
+	remainingContainerID, createRemainingErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name: remainingContainerName, Image: imageID,
+	})
+	require.NoError(t, createRemainingErr)
+
+	releaseRemoval := orchestrator.BlockRemoveContainerAfterFailures(blockedContainerName)
+	defer releaseRemoval()
+	type removalResult struct {
+		ids []string
+		err error
+	}
+	results := make(chan removalResult, 1)
+	var removals sync.WaitGroup
+	defer func() {
+		releaseRemoval()
+		cancel()
+		removals.Wait()
+	}()
+	removals.Go(func() {
+		removed, removeErr := orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
+			Containers: []string{blockedContainerID, remainingContainerID},
+			Force:      true,
+		})
+		results <- removalResult{ids: removed, err: removeErr}
+	})
+	require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(context.Context) (bool, error) {
+		return orchestrator.RemoveContainerCallCount(blockedContainerName) >= 1, nil
+	}))
+
+	orchestrator.SetRuntimeHealth(false)
+	releaseRemoval()
+	select {
+	case result, ok := <-results:
+		require.True(t, ok)
+		require.ErrorIs(t, result.err, errRuntimeUnhealthy)
+		require.ErrorIs(t, result.err, containers.ErrIncomplete)
+		require.Empty(t, result.ids)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	require.Equal(t, 1, orchestrator.RemoveContainerCallCount(blockedContainerName))
+	require.Equal(t, 0, orchestrator.RemoveContainerCallCount(remainingContainerName))
+
+	orchestrator.SetRuntimeHealth(true)
+	inspected, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{blockedContainerID, remainingContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspected, 2)
+}
+
 func TestRemoveNetworksWithoutForceReturnsSuccessfulResult(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
