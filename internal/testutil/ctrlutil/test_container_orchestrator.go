@@ -1289,14 +1289,27 @@ func (to *TestContainerOrchestrator) FailNextRemoveContainer(name string, remove
 	to.queueOperationError(operationRemoveContainer, name, removeErr)
 }
 
+// BlockRemoveContainerAfterFailures queues removal failures and blocks subsequent attempts until released.
+func (to *TestContainerOrchestrator) BlockRemoveContainerAfterFailures(name string, failures ...error) func() {
+	queuedFailures := make([]error, len(failures))
+	for index, failure := range failures {
+		if failure == nil {
+			queuedFailures[index] = errors.New("simulated container removal failure")
+		} else {
+			queuedFailures[index] = failure
+		}
+	}
+	return to.blockOperation(operationRemoveContainer, name, queuedFailures...)
+}
+
 func (to *TestContainerOrchestrator) RemoveContainerCallCount(name string) int {
 	return to.operationCallCount(operationRemoveContainer, name)
 }
 
-func (to *TestContainerOrchestrator) recordRemoveContainerOperationLocked(name string) error {
+func (to *TestContainerOrchestrator) recordRemoveContainerOperationLocked(name string) (chan struct{}, error) {
 	key := testContainerOperationKey{operation: operationRemoveContainer, resourceID: name}
 	to.operationCallCounts[key]++
-	return to.nextOperationErrorLocked(key)
+	return to.operationBlocks[key], to.nextOperationErrorLocked(key)
 }
 
 func (to *TestContainerOrchestrator) FailInspectImage(image string, inspectErr error) func() {
@@ -1449,11 +1462,14 @@ func (to *TestContainerOrchestrator) recordInspectVolumesOperation(volumes []str
 	}
 }
 
-func (to *TestContainerOrchestrator) blockOperation(operation testContainerOperation, resourceID string) func() {
+func (to *TestContainerOrchestrator) blockOperation(operation testContainerOperation, resourceID string, initialErrors ...error) func() {
 	key := testContainerOperationKey{operation: operation, resourceID: resourceID}
 	block := make(chan struct{})
 	to.mutex.Lock()
 	to.operationBlocks[key] = block
+	if len(initialErrors) > 0 {
+		to.operationErrors[key] = append(to.operationErrors[key], initialErrors...)
+	}
 	to.mutex.Unlock()
 
 	var once sync.Once
@@ -2471,9 +2487,40 @@ func (to *TestContainerOrchestrator) removeContainers(ctx context.Context, optio
 
 	for i := range containersToRemove {
 		container := containersToRemove[i]
-		if removeErr := to.recordRemoveContainerOperationLocked(container.Name); removeErr != nil {
-			err = errors.Join(err, removeErr)
+		if to.containers[container.ID] != container {
+			err = errors.Join(err, containers.ErrNotFound)
 			continue
+		}
+		if !to.runtimeHealthy {
+			if !errors.Is(err, errRuntimeUnhealthy) {
+				err = errors.Join(err, errRuntimeUnhealthy)
+			}
+			continue
+		}
+		block, operationErr := to.recordRemoveContainerOperationLocked(container.Name)
+		if operationErr != nil {
+			err = errors.Join(err, operationErr)
+			continue
+		}
+		if block != nil {
+			// Other operations must remain available while a test controls removal completion.
+			to.mutex.Unlock()
+			blockErr := waitForBlockedOperation(ctx, block)
+			to.mutex.Lock()
+			if blockErr != nil {
+				err = errors.Join(err, blockErr)
+				continue
+			}
+			if to.containers[container.ID] != container {
+				err = errors.Join(err, containers.ErrNotFound)
+				continue
+			}
+			if !to.runtimeHealthy {
+				if !errors.Is(err, errRuntimeUnhealthy) {
+					err = errors.Join(err, errRuntimeUnhealthy)
+				}
+				continue
+			}
 		}
 		if options.Force {
 			stopEvents, stopErr := to.doStopContainer(ctx, container, stopAndRemove)
