@@ -15,8 +15,8 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 )
 
-// Verifies that physical resource projections preserve phase, conditions, and retry policy,
-// including no scheduled retry for confirmed missing containers and networks.
+// Verifies that physical resource projections preserve phase, conditions, and retry policy.
+// Terminal dependency failures and confirmed missing containers and networks never schedule retries.
 func TestPhysicalResourceProjections(t *testing.T) {
 	t.Parallel()
 
@@ -34,6 +34,14 @@ func TestPhysicalResourceProjections(t *testing.T) {
 	networkMissing, networkMissingFound := physicalContainerNetworkProjections.project(physicalContainerNetworkStateMissing)
 	require.True(t, networkMissingFound)
 	require.False(t, networkMissing.requeue)
+	for _, failedState := range []physicalContainerState{
+		physicalContainerStateImageFailed, physicalContainerStateVolumeFailed, physicalContainerStateNetworkFailed,
+	} {
+		failed, found := physicalContainerProjections.project(failedState)
+		require.True(t, found)
+		require.Equal(t, apiv2.PhysicalContainerPhaseFailed, failed.phase)
+		require.False(t, failed.requeue)
+	}
 }
 
 // Verifies that every projected normal state has a reconciliation handler.
@@ -92,6 +100,8 @@ func TestPhysicalResourceStateStringsDistinguishUnsetAndInvalidValues(t *testing
 
 	require.Equal(t, "Unset", physicalContainerState(0).String())
 	require.Equal(t, "Volumes", physicalContainerStateVolumes.String())
+	require.Equal(t, "VolumeFailed", physicalContainerStateVolumeFailed.String())
+	require.Equal(t, "NetworkFailed", physicalContainerStateNetworkFailed.String())
 	require.Equal(t, "physicalContainerState(999)", physicalContainerState(999).String())
 	require.Equal(t, "Unset", physicalContainerImageState(0).String())
 	require.Equal(t, "physicalContainerImageState(999)", physicalContainerImageState(999).String())
