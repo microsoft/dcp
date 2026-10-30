@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -60,6 +61,95 @@ const (
 	physicalContainerStateVolumeNotFound
 	physicalContainerStateVolumes
 )
+
+func (state physicalContainerState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case physicalContainerStateCleanupFailed:
+		return "CleanupFailed"
+	case physicalContainerStateCleanupRetry:
+		return "CleanupRetry"
+	case physicalContainerStateCopyFiles:
+		return "CopyFiles"
+	case physicalContainerStateCreate:
+		return "Create"
+	case physicalContainerStateCreateFailed:
+		return "CreateFailed"
+	case physicalContainerStateCreateRetry:
+		return "CreateRetry"
+	case physicalContainerStateCreated:
+		return "Created"
+	case physicalContainerStateCreationSkipped:
+		return "CreationSkipped"
+	case physicalContainerStateDead:
+		return "Dead"
+	case physicalContainerStateExited:
+		return "Exited"
+	case physicalContainerStateFileCopyFailed:
+		return "FileCopyFailed"
+	case physicalContainerStateFilesCopied:
+		return "FilesCopied"
+	case physicalContainerStateImage:
+		return "Image"
+	case physicalContainerStateImageFailed:
+		return "ImageFailed"
+	case physicalContainerStateImageLookupFailed:
+		return "ImageLookupFailed"
+	case physicalContainerStateImageNotFound:
+		return "ImageNotFound"
+	case physicalContainerStateInspectFailed:
+		return "InspectFailed"
+	case physicalContainerStateInvalid:
+		return "Invalid"
+	case physicalContainerStateMissing:
+		return "Missing"
+	case physicalContainerStateNetworkLookupFailed:
+		return "NetworkLookupFailed"
+	case physicalContainerStateNetworkNotFound:
+		return "NetworkNotFound"
+	case physicalContainerStateNetworks:
+		return "Networks"
+	case physicalContainerStateNotStarted:
+		return "NotStarted"
+	case physicalContainerStatePaused:
+		return "Paused"
+	case physicalContainerStateRemoveRetry:
+		return "RemoveRetry"
+	case physicalContainerStateRemoving:
+		return "Removing"
+	case physicalContainerStateReplaceRetry:
+		return "ReplaceRetry"
+	case physicalContainerStateResolve:
+		return "Resolve"
+	case physicalContainerStateResolveRetry:
+		return "ResolveRetry"
+	case physicalContainerStateRestarting:
+		return "Restarting"
+	case physicalContainerStateRunning:
+		return "Running"
+	case physicalContainerStateStart:
+		return "Start"
+	case physicalContainerStateStartFailed:
+		return "StartFailed"
+	case physicalContainerStateStarted:
+		return "Started"
+	case physicalContainerStateStopRetry:
+		return "StopRetry"
+	case physicalContainerStateStopped:
+		return "Stopped"
+	case physicalContainerStateUnknown:
+		return "Unknown"
+	case physicalContainerStateVolumeLookupFailed:
+		return "VolumeLookupFailed"
+	case physicalContainerStateVolumeNotFound:
+		return "VolumeNotFound"
+	case physicalContainerStateVolumes:
+		return "Volumes"
+	default:
+		return fmt.Sprintf("physicalContainerState(%d)", int(state))
+	}
+}
 
 type physicalContainerData struct {
 	// UID of the PhysicalContainer that owns this data.

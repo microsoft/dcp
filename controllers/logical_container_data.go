@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"fmt"
 	"reflect"
 	"time"
 
@@ -34,6 +35,41 @@ const (
 	logicalContainerStateUnknown
 	logicalContainerStateCreating
 )
+
+func (state logicalContainerState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case logicalContainerStatePending:
+		return "Pending"
+	case logicalContainerStatePreparationFailed:
+		return "PreparationFailed"
+	case logicalContainerStateDelete:
+		return "Delete"
+	case logicalContainerStateExited:
+		return "Exited"
+	case logicalContainerStateFailed:
+		return "Failed"
+	case logicalContainerStateInvalid:
+		return "Invalid"
+	case logicalContainerStatePaused:
+		return "Paused"
+	case logicalContainerStateRunning:
+		return "Running"
+	case logicalContainerStateStopFailed:
+		return "StopFailed"
+	case logicalContainerStateStopped:
+		return "Stopped"
+	case logicalContainerStateStopping:
+		return "Stopping"
+	case logicalContainerStateUnknown:
+		return "Unknown"
+	case logicalContainerStateCreating:
+		return "Creating"
+	default:
+		return fmt.Sprintf("logicalContainerState(%d)", int(state))
+	}
+}
 
 type logicalContainerData struct {
 	state      logicalContainerState

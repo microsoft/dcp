@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"fmt"
 	stdmaps "maps"
 	"time"
 
@@ -35,6 +36,45 @@ const (
 	physicalContainerNetworkStateReplacementRejected
 	physicalContainerNetworkStateResolve
 )
+
+func (state physicalContainerNetworkState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case physicalContainerNetworkStateCreate:
+		return "Create"
+	case physicalContainerNetworkStateCreateFailed:
+		return "CreateFailed"
+	case physicalContainerNetworkStateCreateRetry:
+		return "CreateRetry"
+	case physicalContainerNetworkStateCreated:
+		return "Created"
+	case physicalContainerNetworkStateInspectFailed:
+		return "InspectFailed"
+	case physicalContainerNetworkStateInvalid:
+		return "Invalid"
+	case physicalContainerNetworkStateMissing:
+		return "Missing"
+	case physicalContainerNetworkStateReady:
+		return "Ready"
+	case physicalContainerNetworkStateRemove:
+		return "Remove"
+	case physicalContainerNetworkStateRemoveRetry:
+		return "RemoveRetry"
+	case physicalContainerNetworkStateRemoved:
+		return "Removed"
+	case physicalContainerNetworkStateReplaceRetry:
+		return "ReplaceRetry"
+	case physicalContainerNetworkStateReplaced:
+		return "Replaced"
+	case physicalContainerNetworkStateReplacementRejected:
+		return "ReplacementRejected"
+	case physicalContainerNetworkStateResolve:
+		return "Resolve"
+	default:
+		return fmt.Sprintf("physicalContainerNetworkState(%d)", int(state))
+	}
+}
 
 type physicalContainerNetworkData struct {
 	state          physicalContainerNetworkState

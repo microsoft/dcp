@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"fmt"
 	"reflect"
 	"time"
 
@@ -28,6 +29,31 @@ const (
 	logicalContainerNetworkStateDelete
 	logicalContainerNetworkStateInvalid
 )
+
+func (state logicalContainerNetworkState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case logicalContainerNetworkStatePending:
+		return "Pending"
+	case logicalContainerNetworkStatePreparationFailed:
+		return "PreparationFailed"
+	case logicalContainerNetworkStateCreating:
+		return "Creating"
+	case logicalContainerNetworkStateReady:
+		return "Ready"
+	case logicalContainerNetworkStateFailed:
+		return "Failed"
+	case logicalContainerNetworkStateUnknown:
+		return "Unknown"
+	case logicalContainerNetworkStateDelete:
+		return "Delete"
+	case logicalContainerNetworkStateInvalid:
+		return "Invalid"
+	default:
+		return fmt.Sprintf("logicalContainerNetworkState(%d)", int(state))
+	}
+}
 
 type logicalContainerNetworkData struct {
 	state               logicalContainerNetworkState
