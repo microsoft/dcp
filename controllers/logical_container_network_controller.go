@@ -204,6 +204,7 @@ func handleLogicalContainerNetworkPending(
 		data.reason, data.reconcileErr, data.message = "PhysicalNetworkPreparationFailed", lookupErr, lookupErr.Error()
 		if errors.Is(lookupErr, errMultipleLogicalNetworkBackings) {
 			data.state, data.reason, data.reconcileErr = logicalContainerNetworkStateInvalid, "MultiplePhysicalNetworks", nil
+			return noChange
 		}
 		return additionalReconciliationNeeded
 	}
@@ -343,14 +344,15 @@ func handleLogicalContainerNetworkPending(
 		physical = created
 		data.lifecycleKey = lifecycleKey
 	}
+	change := noChange
 	if physical.Spec.Network == nil && data.lease != nil {
-		change := reconciler.settleLogicalNetworkLease(ctx, network, data, nil, log)
+		change |= reconciler.settleLogicalNetworkLease(ctx, network, data, nil, log)
 		if data.lease != nil {
 			return change
 		}
 	}
 	data.state = logicalContainerNetworkStateCreating
-	return additionalReconciliationNeeded
+	return change
 }
 
 func (r *LogicalContainerNetworkReconciler) createLogicalNetworkBacking(
@@ -413,6 +415,7 @@ func handleLogicalContainerNetworkRunning(
 		data.reason, data.reconcileErr, data.message = "PhysicalNetworkLookupFailed", lookupErr, lookupErr.Error()
 		if errors.Is(lookupErr, errMultipleLogicalNetworkBackings) {
 			data.state, data.reason, data.reconcileErr = logicalContainerNetworkStateInvalid, "MultiplePhysicalNetworks", nil
+			return noChange
 		}
 		return additionalReconciliationNeeded
 	}
@@ -446,7 +449,7 @@ func handleLogicalContainerNetworkRunning(
 	switch physical.Status.Phase {
 	case apiv2.PhysicalContainerNetworkPhaseReady:
 		data.state = logicalContainerNetworkStateReady
-		if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != physical.Generation || physical.Status.NetworkID == "" {
+		if ready == nil || ready.Status != metav1.ConditionTrue {
 			data.state = logicalContainerNetworkStateCreating
 		}
 	case apiv2.PhysicalContainerNetworkPhaseFailed:
