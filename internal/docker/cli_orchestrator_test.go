@@ -10,6 +10,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -384,6 +387,67 @@ func TestUnmarshalInspectedNetworkReportsIPv6(t *testing.T) {
 	require.True(t, network.IPv6)
 }
 
+type contextObservingExecutor struct {
+	process.Executor
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (executor *contextObservingExecutor) StartProcess(
+	ctx context.Context,
+	cmd *exec.Cmd,
+	handler process.ProcessExitHandler,
+	flags process.ProcessCreationFlag,
+	sysCreateProcess process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	executor.deadline, executor.hasDeadline = ctx.Deadline()
+	return executor.Executor.StartProcess(ctx, cmd, handler, flags, sysCreateProcess)
+}
+
+// Verifies that ensureSupportedDockerCliVersion uses the ordinary command timeout without extending an earlier caller deadline.
+func TestDockerVersionCheckDeadline(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name          string
+		parentTimeout time.Duration
+	}{
+		{name: "ordinary command timeout", parentTimeout: time.Minute},
+		{name: "earlier caller deadline", parentTimeout: 5 * time.Second},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			testCtx, testCancel := testutil.GetTestContext(t, 0)
+			defer testCancel()
+			executor := internal_testutil.NewTestProcessExecutor(testCtx)
+			t.Cleanup(func() {
+				require.NoError(t, executor.Close())
+			})
+			installDockerVersionAutoExecution(executor, "Docker version 25.0.0, build 1234567\n", 0)
+			observingExecutor := &contextObservingExecutor{Executor: executor}
+			orchestrator := NewDockerCliOrchestrator(testr.New(t), observingExecutor).(*DockerCliOrchestrator)
+			parentCtx, parentCancel := context.WithTimeout(testCtx, testCase.parentTimeout)
+			defer parentCancel()
+			parentDeadline, hasParentDeadline := parentCtx.Deadline()
+			require.True(t, hasParentDeadline)
+
+			before := time.Now()
+			versionErr := orchestrator.ensureSupportedDockerCliVersion(parentCtx)
+			after := time.Now()
+
+			require.NoError(t, versionErr)
+			require.True(t, observingExecutor.hasDeadline)
+			if parentDeadline.Before(before.Add(ordinaryDockerCommandTimeout)) {
+				require.Equal(t, parentDeadline, observingExecutor.deadline)
+			} else {
+				require.False(t, observingExecutor.deadline.Before(before.Add(ordinaryDockerCommandTimeout)))
+				require.False(t, observingExecutor.deadline.After(after.Add(ordinaryDockerCommandTimeout)))
+			}
+		})
+	}
+}
+
 func TestGetStatusChecksDockerVersionBeforeNetworks(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
@@ -570,8 +634,9 @@ func TestBuildImageUsesIIDFile(t *testing.T) {
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 
-// Verifies that PullImage captures human-readable output and resolves identity through inspection.
-func TestPullImageStreamsOutputAndInspectsIdentity(t *testing.T) {
+// Verifies that PullImage captures human-readable output and retries transient identity inspection
+// failures without repeating the successful pull.
+func TestPullImageStreamsOutputAndRetriesInspection(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
@@ -594,9 +659,15 @@ func TestPullImageStreamsOutputAndInspectsIdentity(t *testing.T) {
 		},
 	})
 	inspectCommand := []string{"docker", "image", "inspect", "--format", "{{json .}}", "example.test/test/image:latest"}
+	var inspectionAttempts atomic.Int32
 	executor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{Command: inspectCommand},
 		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			if inspectionAttempts.Add(1) <= 2 {
+				_, stderrErr := execution.Cmd.Stderr.Write([]byte("Error: No such image: example.test/test/image:latest\n"))
+				require.NoError(t, stderrErr)
+				return 1
+			}
 			_, writeErr := execution.Cmd.Stdout.Write([]byte("{\"Id\":\"sha256:image-id\"}\n"))
 			require.NoError(t, writeErr)
 			return 0
@@ -612,7 +683,7 @@ func TestPullImageStreamsOutputAndInspectsIdentity(t *testing.T) {
 	require.NoError(t, pullErr)
 	require.Equal(t, "sha256:image-id", imageID)
 	require.Equal(t, "layer: Pull complete\n", output.String())
-	require.Len(t, executor.FindAll(inspectCommand, "", nil), 1)
+	require.Len(t, executor.FindAll(inspectCommand, "", nil), 3)
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 

@@ -41,14 +41,14 @@ func TestLogStorageWatchSetupFailureCanBeRetried(t *testing.T) {
 	require.NoError(t, storageErr)
 	t.Cleanup(storage.Destroy)
 
-	resourceWatcher, watchErr := storage.watchResource("resource", logr.Discard())
+	resourceWatcher, watchErr := storage.watchResource(ctx, "resource", logr.Discard())
 	require.ErrorIs(t, watchErr, setupErr)
 	require.Nil(t, resourceWatcher)
 	require.Nil(t, storage.watcher)
 	require.True(t, storage.resourceWatchers.Empty())
 
 	parentStorage.watchErr = nil
-	retryWatcher, retryErr := storage.watchResource("resource", logr.Discard())
+	retryWatcher, retryErr := storage.watchResource(ctx, "resource", logr.Discard())
 	require.NoError(t, retryErr)
 	retryWatcher.Stop()
 	select {
@@ -79,7 +79,7 @@ func TestLogStorageDestroyWithoutParentWatcher(t *testing.T) {
 	default:
 		t.Fatal("log storage disposal signal was not closed")
 	}
-	resourceWatcher, watchErr := storage.watchResource("resource", logr.Discard())
+	resourceWatcher, watchErr := storage.watchResource(context.Background(), "resource", logr.Discard())
 	require.ErrorContains(t, watchErr, "disposed")
 	require.Nil(t, resourceWatcher)
 	require.True(t, storage.resourceWatchers.Empty())

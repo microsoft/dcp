@@ -19,6 +19,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
@@ -30,6 +31,74 @@ import (
 )
 
 type recordedLogSource struct{ captures int }
+
+type liveLogSource struct {
+	stopped chan error
+}
+
+func (source *liveLogSource) CaptureContainerLogs(
+	ctx context.Context, _ string, stdout, stderr usvc_io.WriteSyncerCloser, _ containers.StreamContainerLogsOptions,
+) error {
+	_, writeErr := usvc_io.NewTimestampWriter(stdout).Write([]byte("captured-output\n"))
+	if writeErr != nil {
+		return writeErr
+	}
+	go func() {
+		<-ctx.Done()
+		source.stopped <- errors.Join(stdout.Close(), stderr.Close())
+	}()
+	return nil
+}
+
+// Verifies that a logical-only deletion notification cancels its runtime capture and finishes
+// the client stream without waiting for the scavenger.
+func TestLogicalDeletionReleasesRuntimeCapture(t *testing.T) {
+	t.Parallel()
+	// Allow the normal follower-drain delay, but not the scavenger's 30-second interval.
+	ctx, cancel := testutil.GetTestContext(t, 2*logs.FollowStreamCancellationDelay)
+	defer cancel()
+	ctx = context.WithValue(ctx, contextdata.HostLifetimeContextKey, ctx)
+	folder := t.TempDir()
+	source := &liveLogSource{stopped: make(chan error, 1)}
+	streamer := &resourceLogStreamer{
+		sessions: make(map[types.UID]map[uint64]*logSession), source: source,
+		captures: logs.NewLogDescriptorSet(ctx, folder, logr.Discard()), log: logr.Discard(),
+	}
+	defer func() { require.NoError(t, streamer.Dispose()) }()
+	logical := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "logical", Namespace: "namespace", UID: "logical-uid"},
+		Status: apiv2.LogicalContainerStatus{
+			Phase: apiv2.LogicalContainerPhaseRunning,
+			RuntimeLogs: &apiv2.LogSource{
+				Name: "physical", UID: "physical-uid", ContainerID: "runtime-id", Available: true,
+			},
+		},
+	}
+	reader, writer := io.Pipe()
+	defer func() { require.NoError(t, reader.Close()) }()
+	defer func() { require.NoError(t, writer.Close()) }()
+	status, done, streamErr := streamer.StreamLogs(ctx, writer, logical,
+		&apiv2.ResourceLogOptions{Follow: true}, logr.Discard())
+	require.NoError(t, streamErr)
+	require.Equal(t, logstream.ResourceStreamStatusStreaming, status)
+	output := make([]byte, len("captured-output\n"))
+	_, readErr := io.ReadFull(reader, output)
+	require.NoError(t, readErr)
+	require.Equal(t, "captured-output\n", string(output))
+	streamer.OnResourceUpdated(apiv2.ResourceWatcherEvent{Type: watch.Deleted, Object: logical}, logr.Discard())
+	select {
+	case stopErr := <-source.stopped:
+		require.NoError(t, stopErr)
+		require.NoError(t, ctx.Err(), "capture must stop before the test context expires")
+	case <-ctx.Done():
+		t.Fatal("logical deletion did not cancel its runtime capture")
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("logical log stream did not finish")
+	}
+}
 
 // Verifies that Pending logical containers with external image references finish startup requests
 // empty, while inline image startup requests remain pending until their owned capture is available.

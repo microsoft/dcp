@@ -114,6 +114,7 @@ func (e *recordingPhysicalProcessExecutor) StopProcess(
 	return errors.New("unexpected process stop")
 }
 
+// Verifies that a canceled launch performs no process start and records a retry without outstanding work.
 func TestPhysicalProcessLaunchCanceledBeforeStart(t *testing.T) {
 	t.Parallel()
 
@@ -154,9 +155,9 @@ func TestPhysicalProcessLaunchCanceledBeforeStart(t *testing.T) {
 			}
 			stateKey := physicalProcessDataKey(physicalProcess)
 			initialData := &physicalProcessData{
-				resourceUID: physicalProcess.UID,
-				state:       physicalProcessStateLaunch,
-				progress:    physicalResourceProgressInProgress,
+				resourceUID:    physicalProcess.UID,
+				state:          physicalProcessStateLaunch,
+				workInProgress: true,
 			}
 			executor := &recordingPhysicalProcessExecutor{}
 			reconciler := NewPhysicalProcessReconciler(
@@ -181,14 +182,15 @@ func TestPhysicalProcessLaunchCanceledBeforeStart(t *testing.T) {
 			currentStateKey, currentData := reconciler.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
 			require.Equal(t, stateKey, currentStateKey)
 			require.NotNil(t, currentData)
-			require.Equal(t, physicalProcessStateLaunch, currentData.state)
-			require.Equal(t, physicalResourceProgressRetryPending, currentData.progress)
+			require.Equal(t, physicalProcessStateLaunchRetry, currentData.state)
+			require.False(t, currentData.workInProgress)
 			require.Contains(t, currentData.failureMessage, context.Canceled.Error())
 			require.False(t, currentData.retryAfter.IsZero())
 		})
 	}
 }
 
+// Verifies that process resolution waits for its retry deadline without probing the executor.
 func TestHandlePhysicalProcessResolveWaitsForRetryDeadline(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
@@ -207,8 +209,7 @@ func TestHandlePhysicalProcessResolveWaitsForRetryDeadline(t *testing.T) {
 	}
 	data := &physicalProcessData{
 		resourceUID: physicalProcess.UID,
-		state:       physicalProcessStateResolve,
-		progress:    physicalResourceProgressRetryPending,
+		state:       physicalProcessStateResolveRetry,
 		retryAfter:  time.Now().Add(time.Minute),
 	}
 	executor := &recordingPhysicalProcessExecutor{}
@@ -233,13 +234,13 @@ func TestHandlePhysicalProcessResolveWaitsForRetryDeadline(t *testing.T) {
 	require.Zero(t, executor.findProcessHandleCalls.Load())
 }
 
+// Verifies that an invalid process-state dispatch clears stale diagnostics and reports the state by name.
 func TestHandleUnknownPhysicalProcessStateUsesReadableMessage(t *testing.T) {
 	t.Parallel()
 
 	physicalProcess := &apiv2.PhysicalProcess{}
 	data := &physicalProcessData{
 		state:          physicalProcessStateStop,
-		progress:       physicalResourceProgressCompleted,
 		failureReason:  apiv2.PhysicalProcessReasonStopFailed,
 		failureMessage: "old failure",
 	}
@@ -255,11 +256,12 @@ func TestHandleUnknownPhysicalProcessStateUsesReadableMessage(t *testing.T) {
 
 	require.Equal(t, noChange, change)
 	require.Equal(t, physicalProcessStateInvalid, data.state)
-	require.Equal(t, physicalResourceProgressFailed, data.progress)
+	require.False(t, data.workInProgress)
 	require.Empty(t, data.failureReason)
-	require.Equal(t, "Physical process reached invalid reconciliation state Stop with progress Completed.", data.failureMessage)
+	require.Equal(t, "Physical process reached invalid reconciliation state Stop.", data.failureMessage)
 }
 
+// Verifies that a conflicting launch result preserves the existing process owner and returns to resolution.
 func TestPhysicalProcessLaunchResultDoesNotReplaceExistingOwner(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
@@ -289,21 +291,19 @@ func TestPhysicalProcessLaunchResultDoesNotReplaceExistingOwner(t *testing.T) {
 	)
 	launchStateKey := physicalProcessDataKey(launchedProcess)
 	reconciler.processData.Store(launchedProcess.NamespacedName(), launchStateKey, &physicalProcessData{
-		resourceUID: launchedProcess.UID,
-		state:       physicalProcessStateLaunch,
-		progress:    physicalResourceProgressInProgress,
+		resourceUID:    launchedProcess.UID,
+		state:          physicalProcessStateLaunch,
+		workInProgress: true,
 	})
 	reconciler.processData.Store(existingOwner.NamespacedName(), physicalProcessHandleDataKey(handle), &physicalProcessData{
 		resourceUID: existingOwner.UID,
-		state:       physicalProcessStateRuntime,
-		progress:    physicalResourceProgressRunning,
+		state:       physicalProcessStateRunning,
 		handle:      handle,
 	})
 
 	reconciler.queuePhysicalProcessDataResult(launchedProcess, launchStateKey, &physicalProcessData{
 		resourceUID: launchedProcess.UID,
-		state:       physicalProcessStateRuntime,
-		progress:    physicalResourceProgressRunning,
+		state:       physicalProcessStateRunning,
 		handle:      handle,
 	})
 	reconciler.processData.RunDeferredOps(launchedProcess.NamespacedName(), launchedProcess)
@@ -316,13 +316,14 @@ func TestPhysicalProcessLaunchResultDoesNotReplaceExistingOwner(t *testing.T) {
 	currentStateKey, launchedData := reconciler.processData.BorrowByNamespacedName(launchedProcess.NamespacedName())
 	require.Equal(t, launchStateKey, currentStateKey)
 	require.NotNil(t, launchedData)
-	require.Equal(t, physicalProcessStateResolve, launchedData.state)
-	require.Equal(t, physicalResourceProgressRetryPending, launchedData.progress)
+	require.Equal(t, physicalProcessStateResolveRetry, launchedData.state)
+	require.False(t, launchedData.workInProgress)
 	require.Equal(t, handle, launchedData.handle)
 	require.Equal(t, apiv2.PhysicalProcessReasonRuntimeProcessAlreadyTracked, launchedData.failureReason)
 	require.Contains(t, launchedData.failureMessage, existingOwner.Name)
 }
 
+// Verifies that an exited process result is retained without claiming another resource's process identity.
 func TestPhysicalProcessTerminalResultDoesNotRequireHandleOwnership(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
@@ -352,23 +353,21 @@ func TestPhysicalProcessTerminalResultDoesNotRequireHandleOwnership(t *testing.T
 	)
 	launchStateKey := physicalProcessDataKey(launchedProcess)
 	reconciler.processData.Store(launchedProcess.NamespacedName(), launchStateKey, &physicalProcessData{
-		resourceUID: launchedProcess.UID,
-		state:       physicalProcessStateStop,
-		progress:    physicalResourceProgressInProgress,
-		handle:      handle,
+		resourceUID:    launchedProcess.UID,
+		state:          physicalProcessStateStop,
+		workInProgress: true,
+		handle:         handle,
 	})
 	reconciler.processData.Store(existingOwner.NamespacedName(), physicalProcessHandleDataKey(handle), &physicalProcessData{
 		resourceUID: existingOwner.UID,
-		state:       physicalProcessStateRuntime,
-		progress:    physicalResourceProgressRunning,
+		state:       physicalProcessStateRunning,
 		handle:      handle,
 	})
 
 	finishedAt := time.Now()
 	reconciler.queuePhysicalProcessDataResult(launchedProcess, launchStateKey, &physicalProcessData{
 		resourceUID: launchedProcess.UID,
-		state:       physicalProcessStateRuntime,
-		progress:    physicalResourceProgressExited,
+		state:       physicalProcessStateExited,
 		handle:      handle,
 		finishedAt:  finishedAt,
 	})
@@ -382,8 +381,8 @@ func TestPhysicalProcessTerminalResultDoesNotRequireHandleOwnership(t *testing.T
 	currentStateKey, launchedData := reconciler.processData.BorrowByNamespacedName(launchedProcess.NamespacedName())
 	require.Equal(t, launchStateKey, currentStateKey)
 	require.NotNil(t, launchedData)
-	require.Equal(t, physicalProcessStateRuntime, launchedData.state)
-	require.Equal(t, physicalResourceProgressExited, launchedData.progress)
+	require.Equal(t, physicalProcessStateExited, launchedData.state)
+	require.False(t, launchedData.workInProgress)
 	require.Equal(t, finishedAt, launchedData.finishedAt)
 }
 
@@ -426,8 +425,7 @@ func TestPhysicalProcessCleanupUncertaintyIsScopedToProcessIdentity(t *testing.T
 			)
 			data := &physicalProcessData{
 				resourceUID:        physicalProcess.UID,
-				state:              physicalProcessStateResolve,
-				progress:           physicalResourceProgressRetryPending,
+				state:              physicalProcessStateResolveRetry,
 				handle:             originalHandle,
 				failureReason:      apiv2.PhysicalProcessReasonStopFailed,
 				failureMessage:     "cleanup was not confirmed",
@@ -465,6 +463,7 @@ func TestPhysicalProcessCleanupUncertaintyIsScopedToProcessIdentity(t *testing.T
 	}
 }
 
+// Verifies that observing a missing process records its terminal state and clears stale inspection diagnostics.
 func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
@@ -480,8 +479,7 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 	}
 	data := &physicalProcessData{
 		resourceUID:    physicalProcess.UID,
-		state:          physicalProcessStateRuntime,
-		progress:       physicalResourceProgressRetryPending,
+		state:          physicalProcessStateInspectFailed,
 		handle:         handle,
 		failureReason:  apiv2.PhysicalProcessReasonStopFailed,
 		failureMessage: "stale inspection failure",
@@ -504,13 +502,13 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 		ctx,
 		reconciler,
 		physicalProcess,
-		physicalProcessStateRuntime,
+		data.state,
 		data,
 		logr.Discard(),
 	)
 
 	require.Equal(t, noChange, change)
-	require.Equal(t, physicalResourceProgressMissing, data.progress)
+	require.Equal(t, physicalProcessStateMissing, data.state)
 	require.Empty(t, data.failureReason)
 	require.Empty(t, data.failureMessage)
 }
@@ -533,8 +531,7 @@ func TestHandlePhysicalProcessRuntimeSetsInspectionFailureReason(t *testing.T) {
 	}
 	data := &physicalProcessData{
 		resourceUID:   physicalProcess.UID,
-		state:         physicalProcessStateRuntime,
-		progress:      physicalResourceProgressRetryPending,
+		state:         physicalProcessStateInspectFailed,
 		handle:        handle,
 		failureReason: apiv2.PhysicalProcessReasonStopFailed,
 		retryAfter:    time.Now().Add(-time.Second),
@@ -551,13 +548,13 @@ func TestHandlePhysicalProcessRuntimeSetsInspectionFailureReason(t *testing.T) {
 		ctx,
 		reconciler,
 		physicalProcess,
-		physicalProcessStateRuntime,
+		data.state,
 		data,
 		logr.Discard(),
 	)
 
 	require.Equal(t, noChange, change)
-	require.Equal(t, physicalResourceProgressRetryPending, data.progress)
+	require.Equal(t, physicalProcessStateInspectFailed, data.state)
 	require.Equal(t, apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed, data.failureReason)
 	require.Contains(t, data.failureMessage, inspectionErr.Error())
 }
@@ -579,8 +576,7 @@ func TestSchedulePhysicalProcessStopClearsStaleFailureReason(t *testing.T) {
 	}
 	data := &physicalProcessData{
 		resourceUID:    physicalProcess.UID,
-		state:          physicalProcessStateRuntime,
-		progress:       physicalResourceProgressRunning,
+		state:          physicalProcessStateRunning,
 		handle:         handle,
 		failureReason:  apiv2.PhysicalProcessReasonStopFailed,
 		failureMessage: "stale stop failure",
@@ -601,7 +597,7 @@ func TestSchedulePhysicalProcessStopClearsStaleFailureReason(t *testing.T) {
 	_, _ = reconciler.schedulePhysicalProcessStop(physicalProcess, data, logr.Discard())
 
 	require.Equal(t, physicalProcessStateStop, data.state)
-	require.Equal(t, physicalResourceProgressInProgress, data.progress)
+	require.True(t, data.workInProgress)
 	require.Empty(t, data.failureReason)
 	require.Empty(t, data.failureMessage)
 }

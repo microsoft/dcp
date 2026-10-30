@@ -41,13 +41,19 @@ type physicalContainerExecDataHandlerFunc = stateInitializerFunc[
 ]
 
 var physicalContainerExecDataHandlers = map[physicalContainerExecState]physicalContainerExecDataHandlerFunc{
-	physicalContainerExecStateNamespace: handlePhysicalContainerExecNamespace,
-	physicalContainerExecStateTarget:    handlePhysicalContainerExecTarget,
-	physicalContainerExecStateLaunch:    handlePhysicalContainerExecLaunch,
-	physicalContainerExecStateRuntime:   handlePhysicalContainerExecRuntime,
-	physicalContainerExecStateStop:      handlePhysicalContainerExecStop,
-	physicalContainerExecStateInvalid:   handlePhysicalContainerExecTerminal,
-	0:                                   handleInvalidPhysicalContainerExecState,
+	physicalContainerExecStateNamespace:      handlePhysicalContainerExecNamespace,
+	physicalContainerExecStateNamespaceRetry: handlePhysicalContainerExecNamespace,
+	physicalContainerExecStateTarget:         handlePhysicalContainerExecTarget,
+	physicalContainerExecStateTargetNotFound: handlePhysicalContainerExecTarget,
+	physicalContainerExecStateTargetRetry:    handlePhysicalContainerExecTarget,
+	physicalContainerExecStateLaunch:         handlePhysicalContainerExecLaunch,
+	physicalContainerExecStateLaunchRetry:    handlePhysicalContainerExecLaunch,
+	physicalContainerExecStateRunning:        handlePhysicalContainerExecRuntime,
+	physicalContainerExecStateExited:         handlePhysicalContainerExecTerminal,
+	physicalContainerExecStateFailed:         handlePhysicalContainerExecTerminal,
+	physicalContainerExecStateStop:           handlePhysicalContainerExecStop,
+	physicalContainerExecStateInvalid:        handlePhysicalContainerExecTerminal,
+	0:                                        handleInvalidPhysicalContainerExecState,
 }
 
 // PhysicalContainerExecReconciler owns attached runtime execution and output capture.
@@ -133,7 +139,7 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 	r.executions.RunDeferredOps(req.NamespacedName, &resource)
 	_, data := r.executions.BorrowByNamespacedName(req.NamespacedName)
 	if data == nil {
-		data = &physicalContainerExecData{state: physicalContainerExecStateNamespace, progress: physicalResourceProgressNotReady}
+		data = &physicalContainerExecData{state: physicalContainerExecStateNamespace}
 		r.executions.Store(req.NamespacedName, resource.UID, data.Clone())
 	}
 	patch := ctrl_client.MergeFromWithOptions(resource.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
@@ -158,7 +164,7 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 		change |= projectionChange
 		delay = projectionDelay
 		if !valid {
-			log.Error(fmt.Errorf("invalid physical container execution state %v with progress %v", data.state, data.progress),
+			log.Error(fmt.Errorf("invalid physical container execution state %v", data.state),
 				"PhysicalContainerExec reached invalid reconciliation state")
 		}
 	}
@@ -172,27 +178,21 @@ func handlePhysicalContainerExecNamespace(
 	ctx context.Context, reconciler *PhysicalContainerExecReconciler, resource *apiv2.PhysicalContainerExec,
 	_ physicalContainerExecState, data *physicalContainerExecData, log logr.Logger,
 ) objectChange {
-	if data.progress == physicalResourceProgressFailed {
-		return noChange
-	}
 	if time.Now().Before(data.retryAfter) {
 		return additionalReconciliationNeeded
 	}
-	var namespaceStatus apiv2.ContainerExecStatus
-	ready, namespaceChange := guardResourceNamespace(ctx, reconciler.Client, resource,
-		&namespaceStatus.Phase, &namespaceStatus.Conditions,
-		apiv2.ContainerExecPhasePending, apiv2.ContainerExecPhasePending, log)
+	ready, reason, namespaceErr := checkNamespaceReadiness(ctx, reconciler.Client, resource.Namespace)
 	if !ready {
-		data.state, data.progress = physicalContainerExecStateNamespace, physicalResourceProgressNotReady
-		condition := namespaceStatus.Conditions[0]
-		data.reason, data.message = apiv2.ConditionReason(condition.Reason), condition.Message
-		if namespaceChange&additionalReconciliationNeeded != 0 {
-			data.progress = physicalResourceProgressRetryPending
+		data.state = physicalContainerExecStateNamespace
+		data.reason, data.message = reason, namespaceReadinessMessage(resource.Namespace, reason)
+		if namespaceErr != nil {
+			log.Error(namespaceErr, "Failed to get execution namespace")
+			data.state, data.message = physicalContainerExecStateNamespaceRetry, namespaceErr.Error()
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		}
 		return noChange
 	}
-	data.state, data.progress = physicalContainerExecStateTarget, physicalResourceProgressNotReady
+	data.state = physicalContainerExecStateTarget
 	return handlePhysicalContainerExecTarget(ctx, reconciler, resource, data.state, data, log)
 }
 
@@ -200,13 +200,10 @@ func handlePhysicalContainerExecTarget(
 	ctx context.Context, reconciler *PhysicalContainerExecReconciler, resource *apiv2.PhysicalContainerExec,
 	_ physicalContainerExecState, data *physicalContainerExecData, log logr.Logger,
 ) objectChange {
-	if data.progress == physicalResourceProgressFailed {
-		return noChange
-	}
 	if time.Now().Before(data.retryAfter) {
 		return additionalReconciliationNeeded
 	}
-	data.progress, data.reason, data.message = physicalResourceProgressNotReady, "", ""
+	data.state, data.reason, data.message = physicalContainerExecStateTarget, "", ""
 	var container apiv2.PhysicalContainer
 	getErr := reconciler.Get(ctx, commonapi.AsNamespacedName(resource.Spec.ContainerRef, resource.Namespace), &container)
 	if getErr != nil {
@@ -214,12 +211,12 @@ func handlePhysicalContainerExecTarget(
 			data.fail("ContainerUnavailable", "The selected PhysicalContainer no longer exists.")
 			return noChange
 		}
-		data.progress = physicalResourceProgressNotFound
+		data.state = physicalContainerExecStateTargetNotFound
 		data.reason, data.message = "ContainerNotFound", "Waiting for the target PhysicalContainer."
 		if !apierrors.IsNotFound(getErr) {
 			log.Error(getErr, "Failed to get execution target")
 			data.reason, data.message = "ContainerLookupFailed", getErr.Error()
-			data.progress = physicalResourceProgressRetryPending
+			data.state = physicalContainerExecStateTargetRetry
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		}
 		return noChange
@@ -250,11 +247,11 @@ func handlePhysicalContainerExecLaunch(
 	ctx context.Context, reconciler *PhysicalContainerExecReconciler, resource *apiv2.PhysicalContainerExec,
 	state physicalContainerExecState, data *physicalContainerExecData, log logr.Logger,
 ) objectChange {
-	switch data.progress {
-	case physicalResourceProgressInProgress, physicalResourceProgressFailed:
+	switch data.state {
+	case physicalContainerExecStateLaunch:
 		return noChange
-	case physicalResourceProgressRetryPending:
-		data.state, data.progress = physicalContainerExecStateTarget, physicalResourceProgressNotReady
+	case physicalContainerExecStateLaunchRetry:
+		data.state = physicalContainerExecStateTarget
 		return handlePhysicalContainerExecTarget(ctx, reconciler, resource, data.state, data, log)
 	default:
 		return handleInvalidPhysicalContainerExecState(ctx, reconciler, resource, state, data, log)
@@ -265,10 +262,8 @@ func handlePhysicalContainerExecRuntime(
 	ctx context.Context, reconciler *PhysicalContainerExecReconciler, resource *apiv2.PhysicalContainerExec,
 	state physicalContainerExecState, data *physicalContainerExecData, log logr.Logger,
 ) objectChange {
-	switch data.progress {
-	case physicalResourceProgressExited, physicalResourceProgressFailed:
-		return noChange
-	case physicalResourceProgressRunning:
+	switch data.state {
+	case physicalContainerExecStateRunning:
 		if data.session != nil {
 			return noChange
 		}
@@ -280,7 +275,7 @@ func handlePhysicalContainerExecStop(
 	ctx context.Context, reconciler *PhysicalContainerExecReconciler, resource *apiv2.PhysicalContainerExec,
 	state physicalContainerExecState, data *physicalContainerExecData, log logr.Logger,
 ) objectChange {
-	if data.progress == physicalResourceProgressInProgress && data.session != nil {
+	if data.state == physicalContainerExecStateStop && data.session != nil {
 		return noChange
 	}
 	return handleInvalidPhysicalContainerExecState(ctx, reconciler, resource, state, data, log)
@@ -297,10 +292,10 @@ func handleInvalidPhysicalContainerExecState(
 	_ context.Context, _ *PhysicalContainerExecReconciler, _ *apiv2.PhysicalContainerExec,
 	_ physicalContainerExecState, data *physicalContainerExecData, log logr.Logger,
 ) objectChange {
-	stateErr := fmt.Errorf("invalid physical container execution state %v with progress %v", data.state, data.progress)
+	stateErr := fmt.Errorf("invalid physical container execution state %v", data.state)
 	log.Error(stateErr, "PhysicalContainerExec reached invalid reconciliation state")
-	data.state = physicalContainerExecStateInvalid
 	data.fail(apiv2.PhysicalResourceReasonOperationStateInvalid, stateErr.Error())
+	data.state = physicalContainerExecStateInvalid
 	return noChange
 }
 
@@ -309,7 +304,7 @@ func (r *PhysicalContainerExecReconciler) handleExecutionDeletion(
 ) objectChange {
 	if data.session != nil {
 		data.session.cancel()
-		data.state, data.progress = physicalContainerExecStateStop, physicalResourceProgressInProgress
+		data.state = physicalContainerExecStateStop
 		data.reason, data.message = "Stopping", "Waiting for attached execution cancellation to complete."
 		return noChange
 	}
@@ -318,7 +313,7 @@ func (r *PhysicalContainerExecReconciler) handleExecutionDeletion(
 }
 
 func (data *physicalContainerExecData) fail(reason apiv2.ConditionReason, message string) {
-	data.progress, data.reason, data.message = physicalResourceProgressFailed, reason, message
+	data.state, data.reason, data.message = physicalContainerExecStateFailed, reason, message
 	data.finishedAt = metav1.NowMicro()
 }
 
@@ -330,7 +325,7 @@ func (r *PhysicalContainerExecReconciler) scheduleExecution(
 		data.targetUID, data.containerID = container.UID, container.Status.ContainerID
 	}
 	data.session = &physicalContainerExecSession{cancel: cancel}
-	data.state, data.progress = physicalContainerExecStateLaunch, physicalResourceProgressInProgress
+	data.state = physicalContainerExecStateLaunch
 	data.reason, data.message = "Launching", "Attached command launch is in progress."
 	_ = r.executions.Update(resource.NamespacedName(), resource.UID, data)
 	snapshot, result := resource.DeepCopy(), data.Clone()
@@ -340,7 +335,7 @@ func (r *PhysicalContainerExecReconciler) scheduleExecution(
 	if enqueueErr != nil {
 		cancel()
 		data.session = nil
-		data.progress = physicalResourceProgressRetryPending
+		data.state = physicalContainerExecStateLaunchRetry
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		data.reason, data.message = "LaunchQueueFailed", enqueueErr.Error()
 		log.Error(enqueueErr, "Failed to queue attached execution launch")
@@ -357,21 +352,19 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 		data.fail(reason, failure.Error())
 		r.finishExecution(resource, data, log)
 	}
-	var namespaceStatus apiv2.ContainerExecStatus
-	ready, _ := guardResourceNamespace(ctx, r.NoCacheClient, resource,
-		&namespaceStatus.Phase, &namespaceStatus.Conditions,
-		apiv2.ContainerExecPhasePending, apiv2.ContainerExecPhasePending, log)
+	ready, namespaceReason, namespaceErr := checkNamespaceReadiness(ctx, r.NoCacheClient, resource.Namespace)
 	if !ready {
-		condition := namespaceStatus.Conditions[0]
-		r.retryExecution(resource, data, physicalContainerExecStateNamespace,
-			apiv2.ConditionReason(condition.Reason), fmt.Errorf("%s", condition.Message), log)
+		if namespaceErr == nil {
+			namespaceErr = fmt.Errorf("%s", namespaceReadinessMessage(resource.Namespace, namespaceReason))
+		}
+		r.retryExecution(resource, data, physicalContainerExecStateNamespaceRetry, namespaceReason, namespaceErr, log)
 		return
 	}
 	var current apiv2.PhysicalContainer
 	targetErr := r.NoCacheClient.Get(ctx, commonapi.AsNamespacedName(resource.Spec.ContainerRef, resource.Namespace), &current)
 	condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 	if targetErr != nil && !apierrors.IsNotFound(targetErr) {
-		r.retryExecution(resource, data, physicalContainerExecStateTarget, "ContainerLookupFailed", targetErr, log)
+		r.retryExecution(resource, data, physicalContainerExecStateTargetRetry, "ContainerLookupFailed", targetErr, log)
 		return
 	}
 	if targetErr != nil || !data.matchesTarget(&current) || !current.DeletionTimestamp.IsZero() ||
@@ -381,7 +374,7 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 	}
 	if current.Status.ContainerID == "" || current.Status.Phase != apiv2.PhysicalContainerPhaseRunning ||
 		condition == nil || condition.Status != metav1.ConditionTrue || condition.ObservedGeneration != current.Generation {
-		r.retryExecution(resource, data, physicalContainerExecStateTarget, "ContainerNotReady", fmt.Errorf("target container is not ready for execution"), log)
+		r.retryExecution(resource, data, physicalContainerExecStateTargetRetry, "ContainerNotReady", fmt.Errorf("target container is not ready for execution"), log)
 		return
 	}
 	data.retryAfter = time.Time{}
@@ -411,7 +404,7 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 		fail("LaunchFailed", fmt.Errorf("runtime returned no execution completion channel"))
 		return
 	}
-	data.state, data.progress = physicalContainerExecStateRuntime, physicalResourceProgressRunning
+	data.state = physicalContainerExecStateRunning
 	data.reason, data.message = "ExecutionRunning", "Attached runtime execution is running."
 	data.startedAt = metav1.NowMicro()
 	r.queueExecutionResult(resource, data.Clone())
@@ -425,7 +418,7 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 			log.Error(completionErr, "Container execution completion was not reported")
 			data.fail("CompletionUnknown", completionErr.Error())
 		} else {
-			data.progress, data.reason, data.message = physicalResourceProgressExited, "ExecutionExited", "Attached runtime execution has completed."
+			data.state, data.reason, data.message = physicalContainerExecStateExited, "ExecutionExited", "Attached runtime execution has completed."
 			data.finishedAt = metav1.NowMicro()
 		}
 		r.finishExecution(resource, data, log)
@@ -439,7 +432,7 @@ func (r *PhysicalContainerExecReconciler) retryExecution(
 	log.Error(failure, "Could not establish execution prerequisites; launch will be retried")
 	data.session.cancel()
 	data.session = nil
-	data.state, data.progress = state, physicalResourceProgressRetryPending
+	data.state = state
 	data.reason, data.message = reason, failure.Error()
 	data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 	r.queueExecutionResult(resource, data)

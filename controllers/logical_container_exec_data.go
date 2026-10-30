@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"fmt"
 	"reflect"
 	"time"
 
@@ -19,16 +20,72 @@ type logicalContainerExecState int
 
 const (
 	logicalContainerExecStateNamespace logicalContainerExecState = iota + 1
+	logicalContainerExecStateNamespaceRetry
 	logicalContainerExecStateTarget
+	logicalContainerExecStateTargetNotFound
+	logicalContainerExecStateTargetRetry
 	logicalContainerExecStatePhysical
+	logicalContainerExecStatePhysicalNotFound
+	logicalContainerExecStatePhysicalRetry
 	logicalContainerExecStateRuntime
+	logicalContainerExecStateRuntimeRetry
+	logicalContainerExecStateRunning
+	logicalContainerExecStateExited
+	logicalContainerExecStateRuntimeFailed
+	logicalContainerExecStateMissing
+	logicalContainerExecStateFailed
 	logicalContainerExecStateDelete
+	logicalContainerExecStateDeleteRetry
 	logicalContainerExecStateInvalid
 )
 
+func (state logicalContainerExecState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case logicalContainerExecStateNamespace:
+		return "Namespace"
+	case logicalContainerExecStateNamespaceRetry:
+		return "NamespaceRetry"
+	case logicalContainerExecStateTarget:
+		return "Target"
+	case logicalContainerExecStateTargetNotFound:
+		return "TargetNotFound"
+	case logicalContainerExecStateTargetRetry:
+		return "TargetRetry"
+	case logicalContainerExecStatePhysical:
+		return "Physical"
+	case logicalContainerExecStatePhysicalNotFound:
+		return "PhysicalNotFound"
+	case logicalContainerExecStatePhysicalRetry:
+		return "PhysicalRetry"
+	case logicalContainerExecStateRuntime:
+		return "Runtime"
+	case logicalContainerExecStateRuntimeRetry:
+		return "RuntimeRetry"
+	case logicalContainerExecStateRunning:
+		return "Running"
+	case logicalContainerExecStateExited:
+		return "Exited"
+	case logicalContainerExecStateRuntimeFailed:
+		return "RuntimeFailed"
+	case logicalContainerExecStateMissing:
+		return "Missing"
+	case logicalContainerExecStateFailed:
+		return "Failed"
+	case logicalContainerExecStateDelete:
+		return "Delete"
+	case logicalContainerExecStateDeleteRetry:
+		return "DeleteRetry"
+	case logicalContainerExecStateInvalid:
+		return "Invalid"
+	default:
+		return fmt.Sprintf("logicalContainerExecState(%d)", int(state))
+	}
+}
+
 type logicalContainerExecData struct {
 	state              logicalContainerExecState
-	progress           physicalResourceProgress
 	reason             apiv2.ConditionReason
 	message            string
 	physicalUID        types.UID
@@ -59,7 +116,7 @@ func (data *logicalContainerExecData) applyTo(resource *apiv2.LogicalContainerEx
 	if !data.failureTime.IsZero() {
 		change |= setTimestamp(&resource.Status.FinishedAt, data.failureTime)
 	}
-	if data.state == logicalContainerExecStateRuntime && data.progress == physicalResourceProgressMissing {
+	if data.state == logicalContainerExecStateMissing {
 		source := &apiv2.LogSource{Name: physicalRef, UID: data.physicalUID, Complete: true}
 		if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
 			resource.Status.RuntimeLogs = source
@@ -67,7 +124,7 @@ func (data *logicalContainerExecData) applyTo(resource *apiv2.LogicalContainerEx
 		}
 	}
 	projectionChange, delay, valid := logicalContainerExecProjections.applyWithReason(
-		data.state, data.progress, data.reason, data.message,
+		data.state, data.reason, data.message,
 		&resource.Status.Phase, &resource.Status.Conditions, resource.Generation,
 	)
 	return change | projectionChange, delay, valid
@@ -75,69 +132,66 @@ func (data *logicalContainerExecData) applyTo(resource *apiv2.LogicalContainerEx
 
 var logicalContainerExecProjections = physicalResourceProjectionTable[logicalContainerExecState, apiv2.ContainerExecPhase]{
 	invalidPhase: apiv2.ContainerExecPhaseFailed,
-	projections: map[physicalResourceProjectionKey[logicalContainerExecState]]physicalResourceProjection[apiv2.ContainerExecPhase]{
-		{state: logicalContainerExecStateNamespace, progress: physicalResourceProgressNotReady}: {
+	projections: map[logicalContainerExecState]physicalResourceProjection[apiv2.ContainerExecPhase]{
+		logicalContainerExecStateNamespace: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
 		},
-		{state: logicalContainerExecStateNamespace, progress: physicalResourceProgressRetryPending}: {
+		logicalContainerExecStateNamespaceRetry: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed, requeue: true, requeueDelay: LongDelay,
 		},
-		{state: logicalContainerExecStateTarget, progress: physicalResourceProgressNotFound}: {
+		logicalContainerExecStateTargetNotFound: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerNotFound",
 		},
-		{state: logicalContainerExecStateTarget, progress: physicalResourceProgressNotReady}: {
+		logicalContainerExecStateTarget: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerNotReady",
 		},
-		{state: logicalContainerExecStateTarget, progress: physicalResourceProgressRetryPending}: {
+		logicalContainerExecStateTargetRetry: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionPreparationFailed",
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: logicalContainerExecStateTarget, progress: physicalResourceProgressFailed}: {
-			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerUnavailable",
-		},
-		{state: logicalContainerExecStatePhysical, progress: physicalResourceProgressNotFound}: {
+		logicalContainerExecStatePhysicalNotFound: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerNotFound",
 		},
-		{state: logicalContainerExecStatePhysical, progress: physicalResourceProgressNotReady}: {
+		logicalContainerExecStatePhysical: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionNotReady",
 		},
-		{state: logicalContainerExecStatePhysical, progress: physicalResourceProgressRetryPending}: {
+		logicalContainerExecStatePhysicalRetry: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionPreparationFailed",
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: logicalContainerExecStatePhysical, progress: physicalResourceProgressFailed}: {
+		logicalContainerExecStateFailed: {
 			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionPreparationFailed",
 		},
-		{state: logicalContainerExecStateRuntime, progress: physicalResourceProgressNotReady}: {
+		logicalContainerExecStateRuntime: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionNotReady",
 		},
-		{state: logicalContainerExecStateRuntime, progress: physicalResourceProgressRetryPending}: {
+		logicalContainerExecStateRuntimeRetry: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionLookupFailed",
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: logicalContainerExecStateRuntime, progress: physicalResourceProgressRunning}: {
+		logicalContainerExecStateRunning: {
 			phase: apiv2.ContainerExecPhaseRunning, conditionStatus: metav1.ConditionTrue, conditionReason: "ExecutionRunning",
 		},
-		{state: logicalContainerExecStateRuntime, progress: physicalResourceProgressExited}: {
+		logicalContainerExecStateExited: {
 			phase: apiv2.ContainerExecPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: "ExecutionExited",
 		},
-		{state: logicalContainerExecStateRuntime, progress: physicalResourceProgressFailed}: {
+		logicalContainerExecStateRuntimeFailed: {
 			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionFailed",
 		},
-		{state: logicalContainerExecStateRuntime, progress: physicalResourceProgressMissing}: {
+		logicalContainerExecStateMissing: {
 			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionChanged",
 		},
-		{state: logicalContainerExecStateDelete, progress: physicalResourceProgressNotReady}: {
+		logicalContainerExecStateDelete: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "DeletingPhysicalExecution",
 			requeue: true,
 		},
-		{state: logicalContainerExecStateDelete, progress: physicalResourceProgressRetryPending}: {
+		logicalContainerExecStateDeleteRetry: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionDeletionFailed",
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: logicalContainerExecStateInvalid, progress: physicalResourceProgressFailed}: {
+		logicalContainerExecStateInvalid: {
 			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},

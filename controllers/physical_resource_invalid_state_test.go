@@ -14,12 +14,12 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 )
 
+// Verifies that an unsupported physical container state becomes terminal and clears stale cleanup diagnostics.
 func TestUnknownPhysicalContainerStateBecomesTerminal(t *testing.T) {
 	t.Parallel()
 
 	data := &physicalContainerData{
-		state:          physicalContainerStateStop,
-		progress:       physicalResourceProgressCompleted,
+		state:          physicalContainerState(999),
 		cleanupMessage: "old cleanup failure",
 	}
 
@@ -34,19 +34,18 @@ func TestUnknownPhysicalContainerStateBecomesTerminal(t *testing.T) {
 
 	require.Equal(t, noChange, change)
 	require.Equal(t, physicalContainerStateInvalid, data.state)
-	require.Equal(t, physicalResourceProgressFailed, data.progress)
-	require.Equal(t, "Physical container reached invalid reconciliation state Stop with progress Completed.", data.failureMessage)
+	require.False(t, data.workInProgress)
+	require.Equal(t, "Physical container reached invalid reconciliation state physicalContainerState(999).", data.failureMessage)
 	require.Empty(t, data.cleanupMessage)
 }
 
 // Verifies that the PhysicalContainerImage invalid-state handler records a terminal failure
-// for an unsupported reconciliation state/progress pair.
+// for an unsupported reconciliation state.
 func TestUnknownPhysicalContainerImageStateBecomesTerminal(t *testing.T) {
 	t.Parallel()
 
 	data := &physicalContainerImageData{
-		state:    physicalContainerImageStateBuild,
-		progress: physicalResourceProgressSkipped,
+		state: physicalContainerImageState(999),
 	}
 
 	change := handleUnknownPhysicalContainerImageState(
@@ -60,16 +59,16 @@ func TestUnknownPhysicalContainerImageStateBecomesTerminal(t *testing.T) {
 
 	require.Equal(t, noChange, change)
 	require.Equal(t, physicalContainerImageStateInvalid, data.state)
-	require.Equal(t, physicalResourceProgressFailed, data.progress)
-	require.Equal(t, "PhysicalContainerImage reached invalid reconciliation state Build with progress Skipped.", data.failureMessage)
+	require.False(t, data.workInProgress)
+	require.Equal(t, "PhysicalContainerImage reached invalid reconciliation state physicalContainerImageState(999).", data.failureMessage)
 }
 
+// Verifies that an unsupported physical network state becomes terminal.
 func TestUnknownPhysicalContainerNetworkStateBecomesTerminal(t *testing.T) {
 	t.Parallel()
 
 	data := &physicalContainerNetworkData{
-		state:    physicalContainerNetworkStateRuntime,
-		progress: physicalResourceProgressInProgress,
+		state: physicalContainerNetworkState(999),
 	}
 
 	change := handleUnknownPhysicalContainerNetworkDataReason(
@@ -83,16 +82,16 @@ func TestUnknownPhysicalContainerNetworkStateBecomesTerminal(t *testing.T) {
 
 	require.Equal(t, noChange, change)
 	require.Equal(t, physicalContainerNetworkStateInvalid, data.state)
-	require.Equal(t, physicalResourceProgressFailed, data.progress)
-	require.Equal(t, "Physical container network reached invalid reconciliation state Runtime with progress InProgress.", data.failureMessage)
+	require.False(t, data.workInProgress)
+	require.Equal(t, "Physical container network reached invalid reconciliation state physicalContainerNetworkState(999).", data.failureMessage)
 }
 
+// Verifies that an unsupported physical volume state becomes terminal.
 func TestUnknownPhysicalContainerVolumeStateBecomesTerminal(t *testing.T) {
 	t.Parallel()
 
 	data := &physicalContainerVolumeData{
-		state:    physicalContainerVolumeStateRemove,
-		progress: physicalResourceProgressCompleted,
+		state: physicalContainerVolumeState(999),
 	}
 
 	change := handleUnknownPhysicalContainerVolumeDataReason(
@@ -106,6 +105,6 @@ func TestUnknownPhysicalContainerVolumeStateBecomesTerminal(t *testing.T) {
 
 	require.Equal(t, noChange, change)
 	require.Equal(t, physicalContainerVolumeStateInvalid, data.state)
-	require.Equal(t, physicalResourceProgressFailed, data.progress)
-	require.Equal(t, "Physical container volume reached invalid reconciliation state Remove with progress Completed.", data.failureMessage)
+	require.False(t, data.workInProgress)
+	require.Equal(t, "Physical container volume reached invalid reconciliation state physicalContainerVolumeState(999).", data.failureMessage)
 }

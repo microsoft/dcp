@@ -81,6 +81,12 @@ func (resource *LogicalContainerExec) NamespacedName() types.NamespacedName {
 func (resource *LogicalContainerExec) GetResourceId() string {
 	return fmt.Sprintf("logicalcontainerexec-%s", resource.UID)
 }
+
+// GetLogSource describes output projected from the owned physical execution.
+func (resource *LogicalContainerExec) GetLogSource() *LogSource {
+	return resource.Status.RuntimeLogs
+}
+
 func (resource *LogicalContainerExec) Validate(context.Context) field.ErrorList {
 	errorList := ValidateNamespacedResourceMetadata(resource)
 	if commonapi.ResourceCreationProhibited.Load() && resource.DeletionTimestamp.IsZero() {

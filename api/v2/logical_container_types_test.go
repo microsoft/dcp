@@ -23,6 +23,39 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
+// Verifies that LogicalContainer.GetLogSource exposes only the observed runtime source,
+// returning nil until one is recorded rather than substituting startup output.
+func TestLogicalContainerGetLogSource(t *testing.T) {
+	t.Parallel()
+	container := &LogicalContainer{
+		Status: LogicalContainerStatus{
+			StartupLogs: &LogSource{Name: "image", UID: "image-uid"},
+		},
+	}
+	require.Nil(t, container.GetLogSource())
+	container.Status.RuntimeLogs = &LogSource{Name: "physical", UID: "physical-uid", ContainerID: "runtime-id"}
+	require.Same(t, container.Status.RuntimeLogs, container.GetLogSource())
+}
+
+// Verifies that LogicalContainerMode exposes creation and reuse policy consistently with its defaults.
+func TestLogicalContainerModePolicies(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		mode   LogicalContainerMode
+		reuse  bool
+		create bool
+	}{
+		{mode: "", create: true},
+		{mode: LogicalContainerModeSession, create: true},
+		{mode: LogicalContainerModePersistent, reuse: true, create: true},
+		{mode: LogicalContainerModeExisting, reuse: true},
+	} {
+		mode := (LogicalContainerSpec{Mode: testCase.mode}).EffectiveMode()
+		require.Equal(t, testCase.reuse, mode.ShouldReuseExisting(), "mode %q", testCase.mode)
+		require.Equal(t, testCase.create, mode.ShouldCreateIfMissing(), "mode %q", testCase.mode)
+	}
+}
+
 // Verifies that LogicalContainerSpec.GetLifecycleKey honors explicit keys, normalizes declared
 // configuration without mutating it, and changes the computed key when runtime configuration changes.
 func TestLogicalContainerSpecGetLifecycleKey(t *testing.T) {
@@ -70,6 +103,167 @@ func TestLogicalContainerSpecGetLifecycleKey(t *testing.T) {
 	require.NoError(t, explicitErr)
 	require.False(t, explicitComputed)
 	require.Equal(t, "user-key", explicitKey)
+}
+
+// Verifies that LogicalContainerSpec.GetLifecycleKey excludes dynamic network membership,
+// ordering, and aliases without mutating the declared attachments.
+func TestLogicalContainerSpecGetLifecycleKeyIgnoresNetworks(t *testing.T) {
+	t.Parallel()
+	original := &LogicalContainerSpec{Container: &LogicalContainerConfig{ImageRef: "image"}}
+	key, _, keyErr := original.GetLifecycleKey()
+	require.NoError(t, keyErr)
+	for _, testCase := range []struct {
+		name     string
+		networks []LogicalContainerNetworkConnectionConfig
+	}{
+		{name: "nil"},
+		{name: "empty", networks: []LogicalContainerNetworkConnectionConfig{}},
+		{name: "connected", networks: []LogicalContainerNetworkConnectionConfig{
+			{NetworkRef: "first", Aliases: []string{"app"}},
+		}},
+		{name: "additional attachment", networks: []LogicalContainerNetworkConnectionConfig{
+			{NetworkRef: "first", Aliases: []string{"app"}},
+			{NetworkRef: "second", Aliases: []string{"service"}},
+		}},
+		{name: "reordered attachments", networks: []LogicalContainerNetworkConnectionConfig{
+			{NetworkRef: "second", Aliases: []string{"service"}},
+			{NetworkRef: "first", Aliases: []string{"app"}},
+		}},
+		{name: "changed aliases", networks: []LogicalContainerNetworkConnectionConfig{
+			{NetworkRef: "first", Aliases: []string{"second", "first"}},
+		}},
+		{name: "qualified reference", networks: []LogicalContainerNetworkConnectionConfig{
+			{NetworkRef: "namespace/first"},
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			changed := original.DeepCopy()
+			changed.Container.Networks = testCase.networks
+			before := changed.DeepCopy()
+			changedKey, _, changedErr := changed.GetLifecycleKey()
+			require.NoError(t, changedErr)
+			require.Equal(t, key, changedKey)
+			require.Equal(t, before, changed)
+		})
+	}
+}
+
+// Verifies that LogicalContainerSpec.GetLifecycleKey ignores collection order using V1's sort keys,
+// preserves the supplied configuration, and still distinguishes configuration changes.
+func TestLogicalContainerSpecGetLifecycleKeyMatchesV1CollectionOrdering(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name      string
+		container *LogicalContainerConfig
+		reorder   func(*LogicalContainerConfig)
+		change    func(*LogicalContainerConfig)
+	}{
+		{
+			name: "ports",
+			container: &LogicalContainerConfig{ImageRef: "image", Ports: []ContainerPort{
+				{Protocol: commonapi.PortProtocolUDP, HostPort: 8000, ContainerPort: 80},
+				{Protocol: commonapi.PortProtocolTCP, HostPort: 8001, ContainerPort: 81},
+				{HostPort: 8000, ContainerPort: 80},
+			}},
+			reorder: func(config *LogicalContainerConfig) { slices.Reverse(config.Ports) },
+			change:  func(config *LogicalContainerConfig) { config.Ports[0].ContainerPort++ },
+		},
+		{
+			name: "mounts",
+			container: &LogicalContainerConfig{ImageRef: "image", VolumeMounts: []VolumeMount{
+				{Type: BindMount, Source: "/source-second", Target: "/second"},
+				{Type: NamedVolumeMount, VolumeRef: "namespace/volume", Target: "/first"},
+			}},
+			reorder: func(config *LogicalContainerConfig) { slices.Reverse(config.VolumeMounts) },
+			change:  func(config *LogicalContainerConfig) { config.VolumeMounts[0].ReadOnly = true },
+		},
+		{
+			name: "files",
+			container: &LogicalContainerConfig{ImageRef: "image", CreateFiles: []CreateFileSystem{
+				{Destination: "/second", Entries: []FileSystemEntry{{Name: "config", Contents: "second-value"}}},
+				{Destination: "/first", Entries: []FileSystemEntry{{Name: "config", Contents: "first-value"}}},
+			}},
+			reorder: func(config *LogicalContainerConfig) { slices.Reverse(config.CreateFiles) },
+			change:  func(config *LogicalContainerConfig) { config.CreateFiles[0].Entries[0].Contents = "changed" },
+		},
+		{
+			name: "secrets",
+			container: &LogicalContainerConfig{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+				Context: "/source", Digest: "source-digest",
+				Secrets: []ContainerBuildSecret{
+					{Type: EnvSecret, ID: "second", Value: "second-value"},
+					{Type: EnvSecret, ID: "first", Value: "first-value"},
+				},
+			}}},
+			reorder: func(config *LogicalContainerConfig) { slices.Reverse(config.Image.Build.Secrets) },
+			change:  func(config *LogicalContainerConfig) { config.Image.Build.Secrets[0].Value = "changed" },
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			original := &LogicalContainerSpec{Container: testCase.container}
+			before := original.DeepCopy()
+			key, _, keyErr := original.GetLifecycleKey()
+			require.NoError(t, keyErr)
+			require.Equal(t, before, original)
+			equivalent := original.DeepCopy()
+			testCase.reorder(equivalent.Container)
+			equivalentBefore := equivalent.DeepCopy()
+			equivalentKey, _, equivalentErr := equivalent.GetLifecycleKey()
+			require.NoError(t, equivalentErr)
+			require.Equal(t, key, equivalentKey)
+			require.Equal(t, equivalentBefore, equivalent)
+			testCase.change(equivalent.Container)
+			changedKey, _, changedErr := equivalent.GetLifecycleKey()
+			require.NoError(t, changedErr)
+			require.NotEqual(t, key, changedKey)
+		})
+	}
+}
+
+// Verifies that LogicalContainerSpec.GetLifecycleKey preserves command and file-entry order
+// and the declaration order of entries sharing V1's port, mount, file, or secret sort keys.
+func TestLogicalContainerSpecGetLifecycleKeyPreservesMeaningfulOrder(t *testing.T) {
+	t.Parallel()
+	original := &LogicalContainerSpec{Container: &LogicalContainerConfig{
+		Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+			Context: "/source", Digest: "source-digest",
+			Secrets: []ContainerBuildSecret{
+				{Type: EnvSecret, ID: "same", Value: "first"},
+				{Type: EnvSecret, ID: "same", Value: "second"},
+			},
+		}},
+		Command: []string{"first", "second"},
+		Ports:   []ContainerPort{{ContainerPort: 80}, {ContainerPort: 81}},
+		VolumeMounts: []VolumeMount{
+			{Type: BindMount, Source: "/first", Target: "/same"},
+			{Type: BindMount, Source: "/second", Target: "/same"},
+		},
+		CreateFiles: []CreateFileSystem{
+			{Destination: "/same", Entries: []FileSystemEntry{{Name: "first"}, {Name: "second"}}},
+			{Destination: "/same", Entries: []FileSystemEntry{{Name: "third"}}},
+		},
+	}}
+	key, _, keyErr := original.GetLifecycleKey()
+	require.NoError(t, keyErr)
+	for _, testCase := range []struct {
+		name    string
+		reorder func(*LogicalContainerConfig)
+	}{
+		{name: "command", reorder: func(config *LogicalContainerConfig) { slices.Reverse(config.Command) }},
+		{name: "file entries", reorder: func(config *LogicalContainerConfig) { slices.Reverse(config.CreateFiles[0].Entries) }},
+		{name: "equal port keys", reorder: func(config *LogicalContainerConfig) { slices.Reverse(config.Ports) }},
+		{name: "equal mount targets", reorder: func(config *LogicalContainerConfig) { slices.Reverse(config.VolumeMounts) }},
+		{name: "equal file destinations", reorder: func(config *LogicalContainerConfig) { slices.Reverse(config.CreateFiles) }},
+		{name: "equal secret IDs", reorder: func(config *LogicalContainerConfig) { slices.Reverse(config.Image.Build.Secrets) }},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			changed := original.DeepCopy()
+			testCase.reorder(changed.Container)
+			changedKey, _, changedErr := changed.GetLifecycleKey()
+			require.NoError(t, changedErr)
+			require.NotEqual(t, key, changedKey)
+		})
+	}
 }
 
 // Verifies that LogicalContainerSpec.GetLifecycleKey distinguishes different duplicate precedence

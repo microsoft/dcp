@@ -202,6 +202,60 @@ func TestV2PhysicalContainerVolumeControllerCleansUpOnNamespaceDeletion(t *testi
 	waitRuntimeVolumeMissing(t, ctx, volumeName)
 }
 
+// Verifies that namespace deletion retries removal of an in-use volume during the grace period,
+// then reports abandonment and releases its cleanup finalizer so namespace deletion can finish.
+func TestV2PhysicalContainerVolumeControllerBoundsNamespaceDeletionWhileInUse(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 2*defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcv-ns-in-use-deadline")
+	volumeName := namespace.Name + "-runtime"
+	removeRuntimeVolumeOnCleanup(t, volumeName)
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "in-use-volume", Namespace: namespace.Name,
+			Finalizers: []string{controllers.LogicalBackingFinalizer},
+		},
+		Spec: newRemovablePhysicalContainerVolumeSpec(volumeName),
+	}
+	require.NoError(t, client.Create(ctx, volume))
+	removeDependencyHoldOnCleanup(t, ctx, volume, controllers.LogicalBackingFinalizer)
+	waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
+	containerID, createErr := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name: namespace.Name + "-consumer", Image: "in-use-image",
+		VolumeMounts: []containers.CreateContainerVolumeMount{{
+			Type: containers.NamedVolumeMount, Source: volumeName, Target: "/data",
+		}},
+	})
+	require.NoError(t, createErr)
+	removeRuntimeContainerOnCleanup(t, containerID)
+
+	require.NoError(t, client.Delete(ctx, namespace))
+	terminating := waitPhysicalContainerVolumeReason(t, ctx, volume.NamespacedName(),
+		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoveFailed)
+	require.False(t, terminating.DeletionTimestamp.IsZero())
+	require.Contains(t, terminating.Finalizers, apiv2.GroupName+"/physicalcontainervolume-reconciler")
+
+	abandoned := waitPhysicalContainerVolumeReason(t, ctx, volume.NamespacedName(),
+		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned)
+	require.GreaterOrEqual(t, time.Since(terminating.DeletionTimestamp.Time), 30*time.Second,
+		"namespace cleanup must allow the removal grace period before abandoning the volume")
+	requireReadyCondition(t, abandoned.Status.Conditions, metav1.ConditionFalse,
+		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned)
+	released := waitObjectAssumesState(t, ctx, volume.NamespacedName(), func(current *apiv2.PhysicalContainerVolume) (bool, error) {
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+	})
+	removalAttempts := containerOrchestrator.RemoveVolumeCallCount(volumeName)
+	require.Greater(t, removalAttempts, 1, "the controller must retry failed removal before abandoning it")
+
+	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, released))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, volume)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
+	require.Equal(t, removalAttempts, containerOrchestrator.RemoveVolumeCallCount(volumeName),
+		"the controller must stop attempting removal after abandoning the volume")
+}
+
 func TestV2PhysicalContainerVolumeControllerDoesNotDuplicateCreate(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -231,6 +285,8 @@ func TestV2PhysicalContainerVolumeControllerDoesNotDuplicateCreate(t *testing.T)
 	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
 }
 
+// Verifies that PhysicalContainerVolume settles in-flight creation and publishes runtime removal
+// before removing its cleanup finalizer, without waiting for the logical hold to be released.
 func TestV2PhysicalContainerVolumeControllerWaitsForCreateBeforeDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -243,10 +299,12 @@ func TestV2PhysicalContainerVolumeControllerWaitsForCreateBeforeDeletion(t *test
 	defer releaseCreate()
 
 	volume := &apiv2.PhysicalContainerVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "delete-during-create-volume", Namespace: namespace.Name},
-		Spec:       newRemovablePhysicalContainerVolumeSpec(volumeName),
+		ObjectMeta: metav1.ObjectMeta{Name: "delete-during-create-volume", Namespace: namespace.Name,
+			Finalizers: []string{controllers.LogicalBackingFinalizer}},
+		Spec: newRemovablePhysicalContainerVolumeSpec(volumeName),
 	}
 	require.NoError(t, client.Create(ctx, volume))
+	removeDependencyHoldOnCleanup(t, ctx, volume, controllers.LogicalBackingFinalizer)
 	waitCreateVolumeCallCount(t, ctx, volumeName, 1)
 	require.NoError(t, client.Delete(ctx, volume))
 
@@ -265,8 +323,13 @@ func TestV2PhysicalContainerVolumeControllerWaitsForCreateBeforeDeletion(t *test
 	require.Equal(t, 0, containerOrchestrator.RemoveVolumeCallCount(volumeName))
 
 	releaseCreate()
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
+	cleaned := waitObjectAssumesState(t, ctx, volume.NamespacedName(), func(current *apiv2.PhysicalContainerVolume) (bool, error) {
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+	})
+	requireReadyCondition(t, cleaned.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoved)
 	waitRuntimeVolumeMissing(t, ctx, volumeName)
+	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
 	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
 	require.Equal(t, 1, containerOrchestrator.RemoveVolumeCallCount(volumeName))
 }

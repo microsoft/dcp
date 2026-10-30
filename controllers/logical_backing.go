@@ -12,7 +12,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// LogicalBackingFinalizer holds an owned physical resource until its logical owner permits cleanup.
+// LogicalBackingFinalizer retains an owned physical API object until its logical owner observes cleanup.
 const LogicalBackingFinalizer = "usvc-dev.developer.microsoft.com/logical-backing"
 
 // InitializeLogicalBackingFinalizers installs the logical hold and physical cleanup finalizer at creation.

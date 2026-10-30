@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
@@ -238,8 +239,8 @@ func TestV2PhysicalProcessControllerStopsExistingProcessOnRequest(t *testing.T) 
 	}
 }
 
-// Verifies that deleting a PhysicalProcess stops its runtime process unless retention is requested,
-// including retention scoped to a monitor process.
+// Verifies that PhysicalProcess completes policy-specific cleanup and publishes its final
+// outcome while a logical hold retains the API object, including monitor-scoped retention.
 func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
@@ -267,7 +268,8 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 			executablePath := "v2-pproc-" + testCase.slug + "-command"
 			monitorTimestamp := metav1.NewMicroTime(time.Now().Add(-time.Minute))
 			physicalProcess := &apiv2.PhysicalProcess{
-				ObjectMeta: metav1.ObjectMeta{Name: testCase.slug + "-process", Namespace: namespace.Name},
+				ObjectMeta: metav1.ObjectMeta{Name: testCase.slug + "-process", Namespace: namespace.Name,
+					Finalizers: []string{controllers.LogicalBackingFinalizer}},
 				Spec: apiv2.PhysicalProcessSpec{
 					Process: &apiv2.PhysicalProcessConfig{
 						ExecutablePath:       executablePath,
@@ -281,6 +283,7 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 				physicalProcess.Spec.Process.MonitorTimestamp = metav1.MicroTime{}
 			}
 			require.NoError(t, client.Create(ctx, physicalProcess))
+			removeDependencyHoldOnCleanup(t, ctx, physicalProcess, controllers.LogicalBackingFinalizer)
 			runningProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
 			if testCase.customMonitorPID != nil {
 				require.NotNil(t, runningProcess.Spec.Process.MonitorPID)
@@ -308,7 +311,12 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 			}
 
 			require.NoError(t, client.Delete(ctx, runningProcess))
-			ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, runningProcess)
+			cleaned := waitObjectAssumesState(t, ctx, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+				return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+			})
+			if !testCase.retain {
+				require.Equal(t, apiv2.PhysicalProcessPhaseExited, cleaned.Status.Phase)
+			}
 
 			execution, found := testProcessExecutor.FindByPid(pid)
 			require.True(t, found)
@@ -316,6 +324,8 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 			if testCase.retain {
 				testProcessExecutor.SimulateProcessExit(t, pid, 0)
 			}
+			require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+			ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, physicalProcess)
 		})
 	}
 }

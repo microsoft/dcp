@@ -62,9 +62,6 @@ var (
 	// Telemetry shows there is a very long tail for Docker command completion times, so we use a conservative default.
 	ordinaryDockerCommandTimeout = 30 * time.Second
 
-	// Checking the Docker CLI version should never need to contact the Docker daemon.
-	dockerVersionCommandTimeout = 2 * time.Second
-
 	// We allow up to a minute for diagnostic commands to finish as we'd rather wait a bit longer than miss information.
 	diagnosticDockerCommandTimeout = 1 * time.Minute
 
@@ -306,7 +303,7 @@ func (dco *DockerCliOrchestrator) ensureSupportedDockerCliVersion(ctx context.Co
 	// Use the non-JSON `docker --version` output because `docker version --format` contacts the daemon
 	// and can hang when the engine is unresponsive.
 	cmd := makeDockerCommand("--version")
-	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "Version", cmd, nil, nil, dockerVersionCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "Version", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return errors.Join(err, normalizeCliErrors(errBuf))
 	}
@@ -526,14 +523,11 @@ func (dco *DockerCliOrchestrator) PullImage(ctx context.Context, options contain
 		return "", errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
 	}
 
-	images, inspectErr := dco.InspectImages(ctx, containers.InspectImagesOptions{Images: []string{imageReference}})
+	imageID, inspectErr := containers.InspectPulledImage(ctx, dco, imageReference)
 	if inspectErr != nil {
 		return "", fmt.Errorf("inspect pulled image %q: %w", imageReference, inspectErr)
 	}
-	if len(images) != 1 || images[0].Id == "" {
-		return "", fmt.Errorf("pulled image %q inspection did not return exactly one non-empty image ID", imageReference)
-	}
-	return images[0].Id, nil
+	return imageID, nil
 }
 
 func (dco *DockerCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {

@@ -6,7 +6,7 @@
 package controllers
 
 import (
-	"context"
+	"fmt"
 	"reflect"
 	"time"
 
@@ -21,45 +21,70 @@ import (
 type logicalContainerState int
 
 const (
-	logicalContainerStateLifecycle logicalContainerState = iota + 1
-	logicalContainerStateLookup
-	logicalContainerStatePhysical
-	logicalContainerStateRuntime
-	logicalContainerStatePersistence
+	logicalContainerStatePending logicalContainerState = iota + 1
+	logicalContainerStatePreparationFailed
 	logicalContainerStateDelete
+	logicalContainerStateExited
+	logicalContainerStateFailed
 	logicalContainerStateInvalid
+	logicalContainerStatePaused
+	logicalContainerStateRunning
+	logicalContainerStateStopFailed
+	logicalContainerStateStopped
+	logicalContainerStateStopping
+	logicalContainerStateUnknown
+	logicalContainerStateCreating
 )
 
-type logicalContainerOperation struct {
-	cancel context.CancelFunc
+func (state logicalContainerState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case logicalContainerStatePending:
+		return "Pending"
+	case logicalContainerStatePreparationFailed:
+		return "PreparationFailed"
+	case logicalContainerStateDelete:
+		return "Delete"
+	case logicalContainerStateExited:
+		return "Exited"
+	case logicalContainerStateFailed:
+		return "Failed"
+	case logicalContainerStateInvalid:
+		return "Invalid"
+	case logicalContainerStatePaused:
+		return "Paused"
+	case logicalContainerStateRunning:
+		return "Running"
+	case logicalContainerStateStopFailed:
+		return "StopFailed"
+	case logicalContainerStateStopped:
+		return "Stopped"
+	case logicalContainerStateStopping:
+		return "Stopping"
+	case logicalContainerStateUnknown:
+		return "Unknown"
+	case logicalContainerStateCreating:
+		return "Creating"
+	default:
+		return fmt.Sprintf("logicalContainerState(%d)", int(state))
+	}
 }
 
 type logicalContainerData struct {
 	state      logicalContainerState
-	progress   physicalResourceProgress
 	reason     apiv2.ConditionReason
 	message    string
 	retryAfter time.Time
-	operation  *logicalContainerOperation
+	// Most recent coordination error, retained until the next attempt.
+	reconcileErr error
 	// Lifecycle key selected for creation or adopted from the inspected container.
-	lifecycleKey string
-	// Generated runtime name for a session container without spec.containerName.
-	generatedContainerName string
-	// Runtime identity selected for adoption or a stop request before physical handoff.
-	pendingContainerID        string
-	existingLifecycleKey      string
-	replaceExisting           bool
-	physicalContainerUID      types.UID
-	physicalImageUID          types.UID
-	physicalContainerReleased bool
-	physicalImageReleased     bool
-	lease                     *statestore.ResourceLease
+	lifecycleKey         string
+	physicalContainerUID types.UID
+	physicalImageUID     types.UID
+	lease                *statestore.ResourceLease
 	// Lease settlement failures are independent of the original reconciliation failure.
 	leaseFailureMessage string
-}
-
-func (data *logicalContainerData) operationInProgress() bool {
-	return data != nil && data.operation != nil
 }
 
 func (data *logicalContainerData) Clone() *logicalContainerData {
@@ -72,9 +97,8 @@ func (data *logicalContainerData) UpdateFrom(other *logicalContainerData) bool {
 		return false
 	}
 	left, right := *data, *other
-	left.operation, right.operation = nil, nil
 	left.lease, right.lease = nil, nil
-	if data.operation == other.operation && data.lease == other.lease && reflect.DeepEqual(left, right) {
+	if data.lease == other.lease && reflect.DeepEqual(left, right) {
 		return false
 	}
 	*data = *other.Clone()
@@ -82,11 +106,10 @@ func (data *logicalContainerData) UpdateFrom(other *logicalContainerData) bool {
 }
 
 func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (objectChange, AdditionalReconciliationDelay, bool) {
-	physicalContainerRef := ""
-	if data.physicalContainerUID != "" {
-		physicalContainerRef = "logical-" + string(container.UID)
+	change := noChange
+	if data.physicalContainerUID == "" {
+		change |= setValue(&container.Status.PhysicalContainerRef, "")
 	}
-	change := setValue(&container.Status.PhysicalContainerRef, physicalContainerRef)
 	// After handoff, inline image references come from the backing physical creation spec.
 	if container.Spec.Container == nil || container.Spec.Container.Image == nil || data.physicalContainerUID == "" {
 		imageRef := ""
@@ -97,11 +120,7 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 	}
 	change |= setValue(&container.Status.LifecycleKey, data.lifecycleKey)
 	if data.physicalContainerUID == "" {
-		change |= applyLogicalContainerPhysicalDetails(container, &apiv2.PhysicalContainerStatus{})
-		if container.Status.RuntimeLogs != nil {
-			container.Status.RuntimeLogs = nil
-			change |= statusChanged
-		}
+		change |= applyLogicalContainerBackingStatus(container, &apiv2.PhysicalContainer{}, nil, false)
 	}
 	if data.state == logicalContainerStateInvalid {
 		for _, source := range []*apiv2.LogSource{container.Status.RuntimeLogs, container.Status.StartupLogs} {
@@ -110,110 +129,95 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 			}
 		}
 	}
-	state, progress, reason, message := data.state, data.progress, data.reason, data.message
-	if data.leaseFailureMessage != "" {
-		state, progress = logicalContainerStatePersistence, physicalResourceProgressRetryPending
-		reason, message = "", data.leaseFailureMessage
-	} else if data.lease != nil && data.operation != nil && data.progress != physicalResourceProgressInProgress {
-		// Lease settlement must not overwrite the reconciliation state or its original failure.
-		state, progress = logicalContainerStatePersistence, physicalResourceProgressInProgress
-		reason, message = "", ""
+	if _, valid := logicalContainerProjections.project(data.state); valid &&
+		(data.reconcileErr != nil || data.leaseFailureMessage != "") {
+		phase := apiv2.LogicalContainerPhaseUnknown
+		if data.state == logicalContainerStateStopping || data.state == logicalContainerStateStopped ||
+			data.state == logicalContainerStateStopFailed {
+			phase = apiv2.LogicalContainerPhaseStopping
+		}
+		reason, message := data.reason, data.message
+		if reason == "" {
+			switch data.state {
+			case logicalContainerStatePending:
+				reason = "PhysicalResourcePreparationFailed"
+			case logicalContainerStateDelete:
+				reason = "PhysicalResourceDeletionFailed"
+			default:
+				reason = "PhysicalContainerLookupFailed"
+			}
+		}
+		if data.leaseFailureMessage != "" {
+			reason, message = "PersistenceFailed", data.leaseFailureMessage
+		}
+		change |= setValue(&container.Status.Phase, phase)
+		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation,
+			metav1.ConditionFalse, reason, message)
+		return change | additionalReconciliationNeeded, LongDelay, true
 	}
 	projectionChange, delay, valid := logicalContainerProjections.applyWithReason(
-		state, progress, reason, message,
+		data.state, data.reason, data.message,
 		&container.Status.Phase, &container.Status.Conditions, container.Generation,
 	)
+	if data.state == logicalContainerStatePending && !data.retryAfter.IsZero() {
+		projectionChange |= additionalReconciliationNeeded
+		delay = MonitoringDelay
+	}
 	return change | projectionChange, delay, valid
 }
 
 var logicalContainerProjections = physicalResourceProjectionTable[logicalContainerState, apiv2.LogicalContainerPhase]{
 	invalidPhase: apiv2.LogicalContainerPhaseUnknown,
-	projections: map[physicalResourceProjectionKey[logicalContainerState]]physicalResourceProjection[apiv2.LogicalContainerPhase]{
-		{state: logicalContainerStateLifecycle, progress: physicalResourceProgressInProgress}: {
-			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PreparingLifecycle", message: "Logical container lifecycle preparation is in progress.",
-		},
-		{state: logicalContainerStateLifecycle, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "LifecyclePreparationFailed", requeue: true, requeueDelay: LongDelay,
-		},
-		{state: logicalContainerStateLifecycle, progress: physicalResourceProgressFailed}: {
-			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "LifecyclePreparationFailed",
-		},
-		{state: logicalContainerStateLookup, progress: physicalResourceProgressInProgress}: {
-			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "LookingUpContainer", message: "Looking up the existing runtime container.",
-		},
-		{state: logicalContainerStateLookup, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.LogicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "ContainerLookupFailed", requeue: true, requeueDelay: LongDelay,
-		},
-		{state: logicalContainerStateLookup, progress: physicalResourceProgressNotFound}: {
-			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "ExistingContainerNotFound", requeue: true, requeueDelay: MonitoringDelay,
-		},
-		{state: logicalContainerStatePhysical, progress: physicalResourceProgressNotReady}: {
+	projections: map[logicalContainerState]physicalResourceProjection[apiv2.LogicalContainerPhase]{
+		logicalContainerStatePending: {
 			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: logicalContainerPreparationPendingReason,
 		},
-		{state: logicalContainerStatePhysical, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.LogicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalResourcePreparationFailed", requeue: true, requeueDelay: LongDelay,
-		},
-		{state: logicalContainerStatePhysical, progress: physicalResourceProgressFailed}: {
+		logicalContainerStatePreparationFailed: {
 			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PhysicalResourcePreparationFailed",
 		},
-		{state: logicalContainerStateRuntime, progress: physicalResourceProgressNotReady}: {
+		logicalContainerStateCreating: {
 			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PhysicalContainerNotReady",
 		},
-		{state: logicalContainerStateRuntime, progress: physicalResourceProgressRunning}: {
+		logicalContainerStateRunning: {
 			phase: apiv2.LogicalContainerPhaseRunning, conditionStatus: metav1.ConditionTrue,
 			conditionReason: "ContainerRunning", message: "The logical container is running.",
 		},
-		{state: logicalContainerStateRuntime, progress: physicalResourceProgressPaused}: {
+		logicalContainerStatePaused: {
 			phase: apiv2.LogicalContainerPhasePaused, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "ContainerPaused", message: "The logical container is paused.",
 		},
-		{state: logicalContainerStateRuntime, progress: physicalResourceProgressExited}: {
+		logicalContainerStateExited: {
 			phase: apiv2.LogicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "ContainerExited", message: "The logical container has exited.",
 		},
-		{state: logicalContainerStateRuntime, progress: physicalResourceProgressFailed}: {
+		logicalContainerStateFailed: {
 			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PhysicalContainerFailed",
 		},
-		{state: logicalContainerStateRuntime, progress: physicalResourceProgressUnknown}: {
+		logicalContainerStateUnknown: {
 			phase: apiv2.LogicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PhysicalContainerStateUnknown",
 		},
-		{state: logicalContainerStateRuntime, progress: physicalResourceProgressMissing}: {
-			phase: apiv2.LogicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalContainerMissing",
+		logicalContainerStateStopping: {
+			phase: apiv2.LogicalContainerPhaseStopping, conditionStatus: metav1.ConditionFalse,
+			conditionReason: "ContainerStopping", message: "Waiting for the physical controller to stop the runtime container.",
 		},
-		{state: logicalContainerStateRuntime, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.LogicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalContainerLookupFailed", requeue: true, requeueDelay: LongDelay,
+		logicalContainerStateStopped: {
+			phase: apiv2.LogicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse,
+			conditionReason: "ContainerStopped", message: "The logical container has stopped.",
 		},
-		{state: logicalContainerStatePersistence, progress: physicalResourceProgressInProgress}: {
-			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "RecordingPersistence", message: "Recording the persistent container and releasing its startup lease.",
+		logicalContainerStateStopFailed: {
+			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
+			conditionReason: "PhysicalContainerFailed",
 		},
-		{state: logicalContainerStatePersistence, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.LogicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PersistenceFailed", requeue: true, requeueDelay: LongDelay,
-		},
-		{state: logicalContainerStateDelete, progress: physicalResourceProgressNotReady}: {
+		logicalContainerStateDelete: {
 			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "DeletingPhysicalResources", requeue: true,
 		},
-		{state: logicalContainerStateDelete, progress: physicalResourceProgressRetryPending}: {
-			phase: apiv2.LogicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalResourceDeletionFailed", requeue: true, requeueDelay: LongDelay,
-		},
-		{state: logicalContainerStateInvalid, progress: physicalResourceProgressFailed}: {
+		logicalContainerStateInvalid: {
 			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},

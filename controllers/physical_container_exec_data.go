@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"time"
 
@@ -21,12 +22,51 @@ type physicalContainerExecState int
 
 const (
 	physicalContainerExecStateNamespace physicalContainerExecState = iota + 1
+	physicalContainerExecStateNamespaceRetry
 	physicalContainerExecStateTarget
+	physicalContainerExecStateTargetNotFound
+	physicalContainerExecStateTargetRetry
 	physicalContainerExecStateLaunch
-	physicalContainerExecStateRuntime
+	physicalContainerExecStateLaunchRetry
+	physicalContainerExecStateRunning
+	physicalContainerExecStateExited
+	physicalContainerExecStateFailed
 	physicalContainerExecStateStop
 	physicalContainerExecStateInvalid
 )
+
+func (state physicalContainerExecState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case physicalContainerExecStateNamespace:
+		return "Namespace"
+	case physicalContainerExecStateNamespaceRetry:
+		return "NamespaceRetry"
+	case physicalContainerExecStateTarget:
+		return "Target"
+	case physicalContainerExecStateTargetNotFound:
+		return "TargetNotFound"
+	case physicalContainerExecStateTargetRetry:
+		return "TargetRetry"
+	case physicalContainerExecStateLaunch:
+		return "Launch"
+	case physicalContainerExecStateLaunchRetry:
+		return "LaunchRetry"
+	case physicalContainerExecStateRunning:
+		return "Running"
+	case physicalContainerExecStateExited:
+		return "Exited"
+	case physicalContainerExecStateFailed:
+		return "Failed"
+	case physicalContainerExecStateStop:
+		return "Stop"
+	case physicalContainerExecStateInvalid:
+		return "Invalid"
+	default:
+		return fmt.Sprintf("physicalContainerExecState(%d)", int(state))
+	}
+}
 
 type physicalContainerExecSession struct {
 	cancel context.CancelFunc
@@ -34,7 +74,6 @@ type physicalContainerExecSession struct {
 
 type physicalContainerExecData struct {
 	state       physicalContainerExecState
-	progress    physicalResourceProgress
 	reason      apiv2.ConditionReason
 	message     string
 	targetUID   types.UID
@@ -68,8 +107,7 @@ func (data *physicalContainerExecData) UpdateFrom(other *physicalContainerExecDa
 }
 
 func (data *physicalContainerExecData) operationInProgress() bool {
-	return (data.state == physicalContainerExecStateLaunch || data.state == physicalContainerExecStateStop) &&
-		data.progress == physicalResourceProgressInProgress
+	return data.state == physicalContainerExecStateLaunch || data.state == physicalContainerExecStateStop
 }
 
 func (data *physicalContainerExecData) matchesTarget(target *apiv2.PhysicalContainer) bool {
@@ -82,8 +120,8 @@ func (data *physicalContainerExecData) applyTo(resource *apiv2.PhysicalContainer
 	change |= setTimestamp(&resource.Status.StartedAt, data.startedAt)
 	change |= setTimestamp(&resource.Status.FinishedAt, data.finishedAt)
 	change |= setPhysicalProcessExitCode(&resource.Status.ExitCode, data.exitCode)
-	complete := data.progress == physicalResourceProgressFailed ||
-		(data.state == physicalContainerExecStateRuntime && data.progress == physicalResourceProgressExited)
+	complete := data.state == physicalContainerExecStateFailed ||
+		data.state == physicalContainerExecStateInvalid || data.state == physicalContainerExecStateExited
 	change |= setValue(&resource.Status.LogsComplete, complete)
 	if data.stdout != nil {
 		change |= setValue(&resource.Status.StdoutFile, data.stdout.Path)
@@ -92,7 +130,7 @@ func (data *physicalContainerExecData) applyTo(resource *apiv2.PhysicalContainer
 		change |= setValue(&resource.Status.StderrFile, data.stderr.Path)
 	}
 	projectionChange, delay, valid := physicalContainerExecProjections.applyWithReason(
-		data.state, data.progress, data.reason, data.message,
+		data.state, data.reason, data.message,
 		&resource.Status.Phase, &resource.Status.Conditions, resource.Generation,
 	)
 	return change | projectionChange, delay, valid
@@ -100,51 +138,45 @@ func (data *physicalContainerExecData) applyTo(resource *apiv2.PhysicalContainer
 
 var physicalContainerExecProjections = physicalResourceProjectionTable[physicalContainerExecState, apiv2.ContainerExecPhase]{
 	invalidPhase: apiv2.ContainerExecPhaseFailed,
-	projections: map[physicalResourceProjectionKey[physicalContainerExecState]]physicalResourceProjection[apiv2.ContainerExecPhase]{
-		{state: physicalContainerExecStateNamespace, progress: physicalResourceProgressNotReady}: {
+	projections: map[physicalContainerExecState]physicalResourceProjection[apiv2.ContainerExecPhase]{
+		physicalContainerExecStateNamespace: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
 		},
-		{state: physicalContainerExecStateNamespace, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerExecStateNamespaceRetry: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed, requeue: true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerExecStateTarget, progress: physicalResourceProgressNotFound}: {
+		physicalContainerExecStateTargetNotFound: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerNotFound",
 		},
-		{state: physicalContainerExecStateTarget, progress: physicalResourceProgressNotReady}: {
+		physicalContainerExecStateTarget: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerNotReady",
 		},
-		{state: physicalContainerExecStateTarget, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerExecStateTargetRetry: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerLookupFailed",
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerExecStateTarget, progress: physicalResourceProgressFailed}: {
-			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerUnavailable",
-		},
-		{state: physicalContainerExecStateLaunch, progress: physicalResourceProgressInProgress}: {
+		physicalContainerExecStateLaunch: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "Launching",
 		},
-		{state: physicalContainerExecStateLaunch, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerExecStateLaunchRetry: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "LaunchQueueFailed",
 			requeue: true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerExecStateLaunch, progress: physicalResourceProgressFailed}: {
+		physicalContainerExecStateFailed: {
 			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "LaunchFailed",
 		},
-		{state: physicalContainerExecStateRuntime, progress: physicalResourceProgressRunning}: {
+		physicalContainerExecStateRunning: {
 			phase: apiv2.ContainerExecPhaseRunning, conditionStatus: metav1.ConditionTrue, conditionReason: "ExecutionRunning",
 		},
-		{state: physicalContainerExecStateRuntime, progress: physicalResourceProgressExited}: {
+		physicalContainerExecStateExited: {
 			phase: apiv2.ContainerExecPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: "ExecutionExited",
 		},
-		{state: physicalContainerExecStateRuntime, progress: physicalResourceProgressFailed}: {
-			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "CompletionUnknown",
-		},
-		{state: physicalContainerExecStateStop, progress: physicalResourceProgressInProgress}: {
+		physicalContainerExecStateStop: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "Stopping",
 		},
-		{state: physicalContainerExecStateInvalid, progress: physicalResourceProgressFailed}: {
+		physicalContainerExecStateInvalid: {
 			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},

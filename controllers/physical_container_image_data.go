@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"time"
 
@@ -21,12 +22,58 @@ type physicalContainerImageDataStateKey string
 type physicalContainerImageState int
 
 const (
-	physicalContainerImageStateResolve physicalContainerImageState = iota + 1
-	physicalContainerImageStatePull
-	physicalContainerImageStateBuild
-	physicalContainerImageStateRuntime
+	physicalContainerImageStateBuild physicalContainerImageState = iota + 1
+	physicalContainerImageStateBuildFailed
+	physicalContainerImageStateBuildResultMissing
+	physicalContainerImageStateBuilt
+	physicalContainerImageStateInspectFailed
 	physicalContainerImageStateInvalid
+	physicalContainerImageStateMissing
+	physicalContainerImageStatePull
+	physicalContainerImageStatePullFailed
+	physicalContainerImageStatePullRetry
+	physicalContainerImageStatePulled
+	physicalContainerImageStateReady
+	physicalContainerImageStateResolve
+	physicalContainerImageStateUnavailable
 )
+
+func (state physicalContainerImageState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case physicalContainerImageStateBuild:
+		return "Build"
+	case physicalContainerImageStateBuildFailed:
+		return "BuildFailed"
+	case physicalContainerImageStateBuildResultMissing:
+		return "BuildResultMissing"
+	case physicalContainerImageStateBuilt:
+		return "Built"
+	case physicalContainerImageStateInspectFailed:
+		return "InspectFailed"
+	case physicalContainerImageStateInvalid:
+		return "Invalid"
+	case physicalContainerImageStateMissing:
+		return "Missing"
+	case physicalContainerImageStatePull:
+		return "Pull"
+	case physicalContainerImageStatePullFailed:
+		return "PullFailed"
+	case physicalContainerImageStatePullRetry:
+		return "PullRetry"
+	case physicalContainerImageStatePulled:
+		return "Pulled"
+	case physicalContainerImageStateReady:
+		return "Ready"
+	case physicalContainerImageStateResolve:
+		return "Resolve"
+	case physicalContainerImageStateUnavailable:
+		return "Unavailable"
+	default:
+		return fmt.Sprintf("physicalContainerImageState(%d)", int(state))
+	}
+}
 
 type physicalContainerImageOperation struct {
 	cancel context.CancelFunc
@@ -34,7 +81,7 @@ type physicalContainerImageOperation struct {
 
 type physicalContainerImageData struct {
 	state                   physicalContainerImageState
-	progress                physicalResourceProgress
+	workInProgress          bool
 	image                   string
 	imageID                 string
 	imageIDVerified         bool
@@ -54,7 +101,7 @@ type physicalContainerImageData struct {
 func (data *physicalContainerImageData) Clone() *physicalContainerImageData {
 	return &physicalContainerImageData{
 		state:                   data.state,
-		progress:                data.progress,
+		workInProgress:          data.workInProgress,
 		image:                   data.image,
 		imageID:                 data.imageID,
 		imageIDVerified:         data.imageIDVerified,
@@ -88,8 +135,8 @@ func (data *physicalContainerImageData) UpdateFrom(other *physicalContainerImage
 		data.state = other.state
 		updated = true
 	}
-	if data.progress != other.progress {
-		data.progress = other.progress
+	if data.workInProgress != other.workInProgress {
+		data.workInProgress = other.workInProgress
 		updated = true
 	}
 	if data.imageID != other.imageID {
@@ -129,14 +176,24 @@ func (data *physicalContainerImageData) UpdateFrom(other *physicalContainerImage
 }
 
 func (data *physicalContainerImageData) operationInProgress() bool {
-	return data != nil && (data.state == physicalContainerImageStatePull || data.state == physicalContainerImageStateBuild) &&
-		data.progress == physicalResourceProgressInProgress
+	return data != nil && data.workInProgress
 }
 
 func (data *physicalContainerImageData) logsComplete() bool {
-	return !data.operationInProgress() &&
-		(data.imageID != "" || data.progress == physicalResourceProgressFailed ||
-			(data.state == physicalContainerImageStateBuild && data.progress == physicalResourceProgressResultMissing))
+	if data.operationInProgress() {
+		return false
+	}
+	if data.imageID != "" {
+		return true
+	}
+	switch data.state {
+	case physicalContainerImageStatePullFailed, physicalContainerImageStateBuildFailed,
+		physicalContainerImageStateBuildResultMissing, physicalContainerImageStateUnavailable,
+		physicalContainerImageStateInvalid:
+		return true
+	default:
+		return false
+	}
 }
 
 func (data *physicalContainerImageData) applyTo(
@@ -147,7 +204,8 @@ func (data *physicalContainerImageData) applyTo(
 		change |= setValue(&image.Status.StdoutFile, data.startupStdout.Path)
 		change |= setValue(&image.Status.StderrFile, data.startupStderr.Path)
 	}
-	change |= setValue(&image.Status.LogsComplete, data.logsComplete())
+	change |= setValue(&image.Status.LogsComplete, data.logsComplete() ||
+		(!image.DeletionTimestamp.IsZero() && !data.operationInProgress()))
 	if data.imageID != "" && data.imageIDVerified {
 		change |= setValue(&image.Status.ImageID, data.imageID)
 		change |= setValue(&image.Status.Digest, data.digest)
@@ -162,12 +220,11 @@ func (data *physicalContainerImageData) applyTo(
 	}
 
 	reason := apiv2.ConditionReason("")
-	if data.progress == physicalResourceProgressFailed {
+	if data.state == physicalContainerImageStateBuildFailed || data.state == physicalContainerImageStateInvalid || data.state == physicalContainerImageStatePullFailed || data.state == physicalContainerImageStateUnavailable {
 		reason = data.inspectionFailureReason
 	}
 	stateChange, delay, valid := physicalContainerImageProjections.applyWithReason(
 		data.state,
-		data.progress,
 		reason,
 		data.failureMessage,
 		&image.Status.Phase,
@@ -179,69 +236,69 @@ func (data *physicalContainerImageData) applyTo(
 
 var physicalContainerImageProjections = physicalResourceProjectionTable[physicalContainerImageState, apiv2.PhysicalContainerImagePhase]{
 	invalidPhase: apiv2.PhysicalContainerImagePhaseUnknown,
-	projections: map[physicalResourceProjectionKey[physicalContainerImageState]]physicalResourceProjection[apiv2.PhysicalContainerImagePhase]{
-		{state: physicalContainerImageStateResolve, progress: physicalResourceProgressNotReady}: {
+	projections: map[physicalContainerImageState]physicalResourceProjection[apiv2.PhysicalContainerImagePhase]{
+		physicalContainerImageStateResolve: {
 			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonContainerRuntimeUnhealthy,
 			requeue:         true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerImageStatePull, progress: physicalResourceProgressInProgress}: {
+		physicalContainerImageStatePull: {
 			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonPulling,
 			message:         "Image pull is in progress.",
 		},
-		{state: physicalContainerImageStatePull, progress: physicalResourceProgressCompleted}: {
+		physicalContainerImageStatePulled: {
 			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonPulled,
 			message:         "Image pull completed.",
 		},
-		{state: physicalContainerImageStatePull, progress: physicalResourceProgressFailed}: {
+		physicalContainerImageStatePullFailed: {
 			phase: apiv2.PhysicalContainerImagePhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonPullFailed,
 		},
-		{state: physicalContainerImageStateBuild, progress: physicalResourceProgressInProgress}: {
+		physicalContainerImageStateBuild: {
 			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonBuilding,
 			message:         "Image build is in progress.",
 		},
-		{state: physicalContainerImageStateBuild, progress: physicalResourceProgressCompleted}: {
+		physicalContainerImageStateBuilt: {
 			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonBuilt,
 			message:         "Image build completed.",
 		},
-		{state: physicalContainerImageStateBuild, progress: physicalResourceProgressFailed}: {
+		physicalContainerImageStateBuildFailed: {
 			phase: apiv2.PhysicalContainerImagePhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonBuildFailed,
 		},
-		{state: physicalContainerImageStateRuntime, progress: physicalResourceProgressCompleted}: {
+		physicalContainerImageStateReady: {
 			phase: apiv2.PhysicalContainerImagePhaseReady, conditionStatus: metav1.ConditionTrue,
 			conditionReason: apiv2.PhysicalContainerImageReasonImageAvailable,
 			message:         "Image is available to the container runtime.",
 		},
-		{state: physicalContainerImageStateRuntime, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerImageStateInspectFailed: {
 			phase: apiv2.PhysicalContainerImagePhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed,
 			requeue:         true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerImageStateRuntime, progress: physicalResourceProgressMissing}: {
+		physicalContainerImageStateMissing: {
 			phase: apiv2.PhysicalContainerImagePhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonLocalImageNotFound,
 			requeue:         true, requeueDelay: MonitoringDelay,
 		},
-		{state: physicalContainerImageStateRuntime, progress: physicalResourceProgressFailed}: {
+		physicalContainerImageStateUnavailable: {
 			phase: apiv2.PhysicalContainerImagePhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonLocalImageNotFound,
 		},
-		{state: physicalContainerImageStatePull, progress: physicalResourceProgressResultMissing}: {
+		physicalContainerImageStatePullRetry: {
 			phase: apiv2.PhysicalContainerImagePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonPullResultMissingImageID,
 			requeue:         true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerImageStateBuild, progress: physicalResourceProgressResultMissing}: {
+		physicalContainerImageStateBuildResultMissing: {
 			phase: apiv2.PhysicalContainerImagePhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerImageReasonBuildResultMissingImageID,
 		},
-		{state: physicalContainerImageStateInvalid, progress: physicalResourceProgressFailed}: {
+		physicalContainerImageStateInvalid: {
 			phase: apiv2.PhysicalContainerImagePhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},

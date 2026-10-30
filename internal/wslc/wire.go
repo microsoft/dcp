@@ -174,12 +174,12 @@ func decodeJSONLines[T any](buffer *bytes.Buffer) ([]T, error) {
 
 func decodeJSONArray[T any](buffer *bytes.Buffer) ([]T, error) {
 	if buffer == nil {
-		return nil, fmt.Errorf("wslc command returned no output buffer")
+		return nil, errors.Join(containers.ErrUnmarshalling, fmt.Errorf("wslc command returned no output buffer"))
 	}
 
 	data := bytes.TrimSpace(buffer.Bytes())
-	if len(data) == 0 {
-		return []T{}, nil
+	if len(data) == 0 || data[0] != '[' {
+		return nil, errors.Join(containers.ErrUnmarshalling, fmt.Errorf("wslc inspect command did not return a JSON array"))
 	}
 
 	var rawObjects []json.RawMessage
