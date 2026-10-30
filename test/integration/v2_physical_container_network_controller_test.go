@@ -151,6 +151,7 @@ func TestV2PhysicalContainerNetworkControllerRemovesCreatedNetworkOnDeletion(t *
 }
 
 func TestV2PhysicalContainerNetworkControllerReportsDeletionFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
@@ -733,6 +734,7 @@ func TestV2PhysicalContainerNetworkControllerReportsMissingRuntimeNetwork(t *tes
 }
 
 func TestV2PhysicalContainerNetworkControllerRecoversFromRuntimeFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
@@ -797,6 +799,7 @@ func TestV2PhysicalContainerNetworkControllerRecoversFromRuntimeFailure(t *testi
 }
 
 func TestV2PhysicalContainerNetworkControllerRecoversFromCreateFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
@@ -842,6 +845,7 @@ func TestV2PhysicalContainerNetworkControllerRecoversFromCreateFailure(t *testin
 }
 
 func TestV2PhysicalContainerNetworkControllerRecoversFromReplacementFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 

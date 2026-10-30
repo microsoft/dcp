@@ -228,8 +228,7 @@ func openPersistentProcessCleanupTestStore(t *testing.T, ctx context.Context) *s
 
 	stateStorePath := filepath.Join(t.TempDir(), "state-store", "state.sqlite3")
 	stateStore, openErr := statestore.Open(ctx, statestore.Options{
-		Path:        stateStorePath,
-		BusyTimeout: 500 * time.Millisecond,
+		Path: stateStorePath,
 	})
 	require.NoError(t, openErr)
 	t.Cleanup(func() {

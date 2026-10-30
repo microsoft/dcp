@@ -522,6 +522,7 @@ func TestV2PhysicalContainerVolumeControllerRetriesTransientReplacementRemovalFa
 }
 
 func TestV2PhysicalContainerVolumeControllerRetriesTransientReplacementInspectionFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, NamespaceController|PhysicalContainerVolumeController, t.Name(), NoSeparateWorkingDir)
@@ -617,6 +618,7 @@ func TestV2PhysicalContainerVolumeControllerReportsExternalRemovalWithoutRecreat
 }
 
 func TestV2PhysicalContainerVolumeControllerRecoversFromRuntimeAndCreateFailures(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	serverInfo, _, startupErr := StartTestEnvironment(t, ctx, NamespaceController|PhysicalContainerVolumeController, t.Name(), NoSeparateWorkingDir)

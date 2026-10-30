@@ -536,8 +536,15 @@ func TestV2LogicalContainerControllerForwardsPhysicalSystemDiagnostics(t *testin
 	})
 	physical := &apiv2.PhysicalContainer{}
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: failed.Status.PhysicalContainerRef}, physical))
-	logicalContents, logicalErr := bufio.NewReader(logicalStream).ReadString('\n')
-	require.NoError(t, logicalErr)
+	scanner := bufio.NewScanner(logicalStream)
+	var logicalContents string
+	for scanner.Scan() {
+		logicalContents = scanner.Text()
+		if strings.Contains(logicalContents, "system-log-routing-test") {
+			break
+		}
+	}
+	require.NoError(t, scanner.Err())
 	physicalContents, physicalErr := readV2ContainerLog(ctx, physical, apiv2.ResourceLogOptions{Source: "system"})
 	require.NoError(t, physicalErr)
 	require.Contains(t, logicalContents, "system-log-routing-test")
@@ -553,6 +560,7 @@ func TestV2LogicalContainerControllerForwardsPhysicalSystemDiagnostics(t *testin
 // to persistent lifecycle keys, runtime state, and DCP ownership without upgrading adopted monitors.
 // Inline image references are published only when the image is realized for creation.
 func TestV2LogicalContainerControllerSelectsPersistentContainer(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name     string
 		managed  bool
@@ -875,6 +883,7 @@ func TestV2LogicalContainerControllerDeletesAfterLookup(t *testing.T) {
 // Verifies that adopting a runtime container never claims it for workload cleanup or reassigns
 // an existing ownership record, including deletion before the backing reports readiness.
 func TestV2LogicalContainerControllerDoesNotClaimAdoptedContainers(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name              string
 		managed           bool

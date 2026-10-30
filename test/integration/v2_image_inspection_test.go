@@ -107,6 +107,7 @@ func TestV2ImageInspectionRecoversUnverifiedPulledIdentity(t *testing.T) {
 // Verifies that a known runtime outage during initial local-image inspection remains retryable
 // beyond the ordinary inspection budget, then recovers without pulling an image.
 func TestV2ImageInspectionDefersStartupDuringRuntimeOutage(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"existing", "never-pull"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
@@ -159,6 +160,7 @@ func TestV2ImageInspectionDefersStartupDuringRuntimeOutage(t *testing.T) {
 // Verifies that a runtime outage after acquisition preserves the pinned identity and
 // does not consume inspection retries, repull, or rebuild when observation resumes.
 func TestV2ImageInspectionPreservesIdentityAcrossRuntimeOutage(t *testing.T) {
+	t.Parallel()
 	for _, acquisition := range []string{"pull", "build"} {
 		t.Run(acquisition, func(t *testing.T) {
 			t.Parallel()
@@ -235,6 +237,7 @@ func (inspector *boundedImageInspector) PullImage(ctx context.Context, options c
 // Verifies that pre-pull inspection errors and initially missing acquired image IDs recover
 // within three retries without duplicating image pulls.
 func TestV2ImageInspectionRetriesTransientFailures(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []string{"before-pull", "after-pull"} {
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
