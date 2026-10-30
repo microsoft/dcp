@@ -676,6 +676,12 @@ func ensureContainerRunningState(
 		return ensureContainerUnknownState(ctx, r, container, desiredState, nil, log)
 	}
 
+	if container.Spec.Stop {
+		// The stop worker inspects and verifies the container; a running-state inspection must not block it.
+		rcd.containerState = apiv1.ContainerStateStopping
+		return r.setContainerState(container, apiv1.ContainerStateStopping)
+	}
+
 	log.V(1).Info("Inspecting container resource...")
 	inspected, err := inspectContainer(ctx, r.orchestrator, string(rcd.containerID))
 	if err != nil {
@@ -695,13 +701,6 @@ func ensureContainerRunningState(
 	// This lets us reconcile against the latest container state
 	rcd.updateFromInspectedContainer(inspected)
 	change := noChange
-
-	if container.Spec.Stop {
-		// Start the stopping sequence
-		rcd.containerState = apiv1.ContainerStateStopping
-		change |= r.setContainerState(container, apiv1.ContainerStateStopping)
-		return change
-	}
 
 	if desiredState != apiv1.ContainerStateRunning {
 		r.disableEndpointsAndHealthProbes(ctx, container, rcd, log)
