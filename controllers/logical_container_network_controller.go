@@ -42,10 +42,10 @@ var (
 	logicalContainerNetworkDataHandlers = map[logicalContainerNetworkState]logicalContainerNetworkDataHandlerFunc{
 		logicalContainerNetworkStatePending:           handleLogicalContainerNetworkPending,
 		logicalContainerNetworkStatePreparationFailed: handleLogicalContainerNetworkPending,
-		logicalContainerNetworkStateCreating:          handleLogicalContainerNetworkRuntime,
-		logicalContainerNetworkStateReady:             handleLogicalContainerNetworkRuntime,
-		logicalContainerNetworkStateFailed:            handleLogicalContainerNetworkRuntime,
-		logicalContainerNetworkStateUnknown:           handleLogicalContainerNetworkRuntime,
+		logicalContainerNetworkStateCreating:          handleLogicalContainerNetworkRunning,
+		logicalContainerNetworkStateReady:             handleLogicalContainerNetworkRunning,
+		logicalContainerNetworkStateFailed:            handleLogicalContainerNetworkRunning,
+		logicalContainerNetworkStateUnknown:           handleLogicalContainerNetworkRunning,
 		logicalContainerNetworkStateInvalid:           handleUnknownLogicalContainerNetworkState,
 		0:                                             handleUnknownLogicalContainerNetworkState,
 	}
@@ -401,7 +401,7 @@ func (r *LogicalContainerNetworkReconciler) findLogicalNetworkBacking(
 	return owned, nil
 }
 
-func handleLogicalContainerNetworkRuntime(
+func handleLogicalContainerNetworkRunning(
 	ctx context.Context, reconciler *LogicalContainerNetworkReconciler, network *apiv2.LogicalContainerNetwork,
 	_ logicalContainerNetworkState, data *logicalContainerNetworkData, log logr.Logger,
 ) objectChange {
