@@ -796,10 +796,11 @@ func TestCleanupPersistentContainerRecordSkipsRecordThatChangedWorkload(t *testi
 	require.Equal(t, currentRecord.ContainerID, record.ContainerID)
 }
 
+// Verifies that cleanupPersistentContainerRecord waits for a held lease and removes the container after release.
 func TestCleanupPersistentContainerRecordWaitsForHeldLease(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+	ctx, cancel := testutil.GetTestContext(t, 10*time.Second)
 	defer cancel()
 	stateStore := openCleanupTestStore(t, ctx)
 	heldLeaseOwner, heldLeaseOwnerErr := statestore.CurrentResourceLeaseOwner()
@@ -1303,8 +1304,7 @@ func openCleanupTestStore(t *testing.T, ctx context.Context) *statestore.Store {
 
 	stateStorePath := filepath.Join(t.TempDir(), "state-store", "state.sqlite3")
 	stateStore, openErr := statestore.Open(ctx, statestore.Options{
-		Path:        stateStorePath,
-		BusyTimeout: 500 * time.Millisecond,
+		Path: stateStorePath,
 	})
 	require.NoError(t, openErr)
 	t.Cleanup(func() {

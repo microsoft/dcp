@@ -65,6 +65,7 @@ func (client *uncertainBackingCreateClient) Create(ctx context.Context, obj ctrl
 // Verifies that lifecycle preparation, lookup, and backing declaration run in one Pending pass,
 // indeterminate and AlreadyExists responses are verified without another Create, and concurrent stop reaches the backing.
 func TestV2LogicalContainerResolvesUncertainBackingCreate(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name          string
 		kind          string
