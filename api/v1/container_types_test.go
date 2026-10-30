@@ -12,11 +12,14 @@ import (
 	"testing"
 	"time"
 
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
@@ -133,6 +136,55 @@ func TestContainerSpecLifecycleKeyIsStable(t *testing.T) {
 		key,
 		"container lifecycle key changed; existing containers would be orphaned and recreated",
 	)
+}
+
+// Verifies that LogicalContainerSpec.GetLifecycleKey preserves its encoding under the ordered
+// lifecycle-hash type initialization shared with V1.
+func TestLogicalContainerSpecLifecycleKeyIsStable(t *testing.T) {
+	t.Parallel()
+	monitorPID := int64(42)
+	spec := &apiv2.LogicalContainerSpec{
+		ContainerName: "runtime-container", Mode: apiv2.LogicalContainerModePersistent,
+		MonitorPID: &monitorPID, MonitorTimestamp: metav1.NewMicroTime(time.Unix(123456789, 0).UTC()),
+		Container: &apiv2.LogicalContainerConfig{
+			Image: &apiv2.PhysicalContainerImageConfig{
+				Image: "example/app:dev",
+				Build: &apiv2.ContainerBuildContext{
+					Context: "/source", Digest: "source-digest", Dockerfile: "Dockerfile",
+					Tags: []string{"app:dev"}, Args: []commonapi.EnvVar{{Name: "ARG", Value: "value"}},
+					Secrets: []apiv2.ContainerBuildSecret{{Type: apiv2.FileSecret, ID: "secret", Source: "/missing-secret"}},
+					Stage:   "final", Platform: "linux/arm64", BaseImages: []string{"base:latest"},
+					Labels: []commonapi.Label{{Key: "build", Value: "value"}},
+				},
+			},
+			Entrypoint: "/app", Command: []string{"serve"},
+			Env:          []commonapi.EnvVar{{Name: "VALUE", Value: "test"}},
+			Labels:       []commonapi.Label{{Key: "app", Value: "test"}},
+			VolumeMounts: []apiv2.VolumeMount{{Type: apiv2.NamedVolumeMount, VolumeRef: "volume", Target: "/data"}},
+			Ports:        []apiv2.ContainerPort{{ContainerPort: 8080}},
+			Networks:     []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "network", Aliases: []string{"app"}}},
+			CreateFiles: []apiv2.CreateFileSystem{{
+				Destination: "/etc/app",
+				Entries: []apiv2.FileSystemEntry{{
+					Name: "conf", Type: apiv2.FileSystemEntryTypeDir,
+					Entries: []apiv2.FileSystemEntry{{Name: "config", Contents: "value", Mode: 0o644}},
+				}},
+			}},
+		},
+	}
+	key, computed, keyErr := spec.GetLifecycleKey()
+	require.NoError(t, keyErr)
+	require.True(t, computed)
+	require.Equal(t, "0c393b2a2eb5838203b1ea199818e276", key, "V2 lifecycle-key encoding changed; existing persistent containers would be replaced")
+}
+
+// Verifies that V1 and V2 persistent kinds and log subresource types can share standard API-server registration.
+func TestV1AndV2StorageRegistration(t *testing.T) {
+	storageTypes := append([]apiserver_resource.Object{}, PersistentTypes...)
+	storageTypes = append(storageTypes, AddtionalTypes...)
+	storageTypes = append(storageTypes, apiv2.PersistentTypes...)
+	storageTypes = append(storageTypes, apiv2.AdditionalTypes...)
+	require.NoError(t, apiserver_resource.AddToScheme(storageTypes...)(runtime.NewScheme()))
 }
 
 func TestContainerGetLeaseKey(t *testing.T) {

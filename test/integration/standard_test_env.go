@@ -15,7 +15,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
@@ -52,6 +54,7 @@ type TestEnvironmentInfo struct {
 type TestEnvironmentOptions struct {
 	WorkloadID                    commonapi.WorkloadID
 	DecorateContainerOrchestrator func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
+	DecorateAPIClient             func(ctrl_client.Client) ctrl_client.Client
 }
 
 func (tei *TestEnvironmentInfo) addAfterShutdown(callback func()) {
@@ -193,6 +196,19 @@ func StartTestEnvironmentWithOptions(
 	})
 
 	opts := controllers.NewControllerManagerOptions(ctx, serverInfo.Client.Scheme(), log)
+	if options.DecorateAPIClient != nil {
+		opts.NewClient = func(config *rest.Config, clientOptions ctrl_client.Options) (ctrl_client.Client, error) {
+			apiClient, clientErr := ctrl_client.New(config, clientOptions)
+			if clientErr != nil {
+				return nil, clientErr
+			}
+			decoratedClient := options.DecorateAPIClient(apiClient)
+			if decoratedClient == nil {
+				return nil, fmt.Errorf("API client decorator returned nil")
+			}
+			return decoratedClient, nil
+		}
+	}
 	mgr, err := ctrl.NewManager(serverInfo.ClientConfig, opts)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to initialize controller manager: %w", err)
@@ -297,6 +313,22 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 
+	if inclCtrl&LogicalContainerController != 0 {
+		logicalContainerR := controllers.NewLogicalContainerReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("LogicalContainerReconciler"),
+			serverInfo.ContainerOrchestrator,
+			controllers.LogicalContainerReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: options.WorkloadID,
+			},
+		)
+		if logicalContainerSetupErr := logicalContainerR.SetupWithManager(mgr, instanceTag+"-LogicalContainerReconciler"); logicalContainerSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalContainer reconciler: %w", logicalContainerSetupErr)
+		}
+	}
+
 	if inclCtrl&PhysicalContainerImageController != 0 {
 		physicalContainerImageR := controllers.NewPhysicalContainerImageReconciler(
 			ctx,
@@ -304,6 +336,7 @@ func StartTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerImageReconciler"),
 			serverInfo.ContainerOrchestrator,
+			controllers.PhysicalContainerImageReconcilerConfig{StateStore: stateStore, ResourceLeaseOwner: leaseOwner},
 		)
 		if err = physicalContainerImageR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerImageReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerImage reconciler: %w", err)

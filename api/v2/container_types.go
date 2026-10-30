@@ -159,9 +159,9 @@ func ValidateContainerPorts(ports []ContainerPort, portsPath *field.Path) field.
 // ContainerNetworkConnectionConfig describes a PhysicalContainerNetwork to attach to a container.
 // +k8s:openapi-gen=true
 type ContainerNetworkConnectionConfig struct {
-	// Name identifies a PhysicalContainerNetwork in the same namespace using <name> or <namespace>/<name>.
+	// NetworkRef identifies a PhysicalContainerNetwork in the same namespace using <name> or <namespace>/<name>.
 	// Cross-namespace references are not supported.
-	Name string `json:"name"`
+	NetworkRef string `json:"networkRef"`
 
 	// Aliases of the container on the network.
 	// +listType=set
@@ -178,7 +178,7 @@ func (cncc *ContainerNetworkConnectionConfig) Equal(other *ContainerNetworkConne
 		return false
 	}
 
-	if cncc.Name != other.Name {
+	if cncc.NetworkRef != other.NetworkRef {
 		return false
 	}
 
@@ -232,7 +232,8 @@ type ContainerBuildContext struct {
 	// +optional
 	Digest string `json:"digest,omitempty"`
 
-	// The path to a Dockerfile to use for the build.
+	// The path to a Dockerfile to use for the build, passed unchanged to the container runtime.
+	// Archive paths must be relative to the archive root. If omitted, the runtime uses its default.
 	// +optional
 	Dockerfile string `json:"dockerfile,omitempty"`
 
@@ -467,4 +468,38 @@ type CreateFileSystem struct {
 	// The entries to create.
 	// +listType=atomic
 	Entries []FileSystemEntry `json:"entries,omitempty"`
+}
+
+func validateContainerNetworks(networks []ContainerNetworkConnectionConfig, namespace string, networksPath *field.Path) field.ErrorList {
+	errorList := field.ErrorList{}
+	for i, network := range networks {
+		errorList = append(errorList, validateSameNamespaceResourceReference(network.NetworkRef, namespace, networksPath.Index(i).Child("networkRef"))...)
+	}
+	return errorList
+}
+
+func validateCreateFiles(createFiles []CreateFileSystem, createFilesPath *field.Path) field.ErrorList {
+	errorList := field.ErrorList{}
+	for i, createFile := range createFiles {
+		createFilePath := createFilesPath.Index(i)
+		if createFile.Destination != "" && !path.IsAbs(createFile.Destination) {
+			errorList = append(errorList, field.Invalid(createFilePath.Child("destination"), createFile.Destination, "destination must be absolute"))
+		}
+		if createFile.Umask != nil && !(*createFile.Umask).IsRegular() {
+			errorList = append(errorList, field.Invalid(createFilePath.Child("umask"), *createFile.Umask, "umask must not include type bits"))
+		}
+		if len(createFile.Entries) == 0 {
+			errorList = append(errorList, field.Required(createFilePath.Child("entries"), "at least one child entry must be specified"))
+		}
+		for j, item := range createFile.Entries {
+			errorList = append(errorList, item.Validate(createFilePath.Child("entries").Index(j))...)
+		}
+		if createFile.DefaultOwner < 0 {
+			errorList = append(errorList, field.Invalid(createFilePath.Child("defaultOwner"), createFile.DefaultOwner, "default owner must be a non-negative integer"))
+		}
+		if createFile.DefaultGroup < 0 {
+			errorList = append(errorList, field.Invalid(createFilePath.Child("defaultGroup"), createFile.DefaultGroup, "default group must be a non-negative integer"))
+		}
+	}
+	return errorList
 }

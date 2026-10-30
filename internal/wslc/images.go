@@ -137,10 +137,6 @@ func (wco *WslcCliOrchestrator) BuildImage(ctx context.Context, options containe
 	return nil
 }
 
-func isImageIdentifier(value string) bool {
-	return strings.HasPrefix(value, "sha256:") && len(value) > len("sha256:")
-}
-
 func (wco *WslcCliOrchestrator) InspectImages(ctx context.Context, options containers.InspectImagesOptions) ([]containers.InspectedImage, error) {
 	if len(options.Images) == 0 {
 		return nil, fmt.Errorf("must specify at least one image")
@@ -200,38 +196,30 @@ func (wco *WslcCliOrchestrator) PullImage(ctx context.Context, options container
 	if options.Digest != "" {
 		imageReference += "@" + options.Digest
 	}
+	// Quiet output avoids capturing console progress formatting on WSLC.
 	cmd := makeWslcCommand("image", "pull", "--quiet", imageReference)
 
 	timeout := options.Timeout
 	if timeout == 0 {
 		timeout = defaultPullTimeout
 	}
-	outBuf, errBuf, runErr := wco.runBufferedWslcCommand(
+	_, errBuf, runErr := wco.runBufferedWslcCommand(
 		ctx,
 		"PullImage",
 		cmd,
-		nil,
-		nil,
+		options.StdOutStream,
+		options.StdErrStream,
 		timeout,
 	)
 	if runErr != nil {
 		return "", errors.Join(runErr, normalizeCliErrors(errBuf, imageNotFoundMatch))
 	}
 
-	if imageID, idErr := asId(outBuf); idErr == nil && isImageIdentifier(imageID) {
-		return imageID, nil
-	}
-
-	inspectedImages, inspectErr := wco.InspectImages(ctx, containers.InspectImagesOptions{
-		Images: []string{imageReference},
-	})
+	imageID, inspectErr := containers.InspectPulledImage(ctx, wco, imageReference)
 	if inspectErr != nil {
-		return "", fmt.Errorf("resolving pulled WSLC image ID: %w", inspectErr)
+		return "", fmt.Errorf("inspect pulled image %q: %w", imageReference, inspectErr)
 	}
-	if len(inspectedImages) != 1 || inspectedImages[0].Id == "" {
-		return "", fmt.Errorf("pulled WSLC image %q did not report an image ID", imageReference)
-	}
-	return inspectedImages[0].Id, nil
+	return imageID, nil
 }
 
 func (wco *WslcCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {

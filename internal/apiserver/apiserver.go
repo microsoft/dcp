@@ -36,6 +36,7 @@ import (
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/logs/containerlogs"
 	"github.com/microsoft/dcp/internal/logs/stdiologs"
+	"github.com/microsoft/dcp/internal/logs/v2resourcelogs"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/notifications"
 	"github.com/microsoft/dcp/internal/telemetry/startupspans"
@@ -221,6 +222,10 @@ func (s *ApiServer) Dispose() error {
 		allErrors = errors.Join(allErrors, rls.Dispose())
 		return true // Continue iteration
 	})
+	apiv2.ResourceLogStreamers.Range(func(_ schema.GroupVersionResource, streamer apiv2.ResourceLogStreamer) bool {
+		allErrors = errors.Join(allErrors, streamer.Dispose())
+		return true
+	})
 
 	// Remove the kubeconfig file (best effort)
 	_ = os.Remove(s.config.Path())
@@ -306,10 +311,14 @@ func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error
 	// The following is necessary for the API server to correctly deserialize log request parameters into LogOptions instance.
 	// (the scheme in ExtraConfig contains DCP type definitions, including LogOptions).
 	disableOpenApiForLogsSubresource(config.GenericConfig, apiv1.PersistentTypes)
+	disableOpenApiForLogsSubresource(config.GenericConfig, apiv2.PersistentTypes)
 
 	err := apiv1.RegisterLogOptionsConversions(config.ExtraConfig.Scheme)
 	if err != nil {
 		return err
+	}
+	if v2ConversionErr := apiv2.RegisterLogOptionsConversions(config.ExtraConfig.Scheme); v2ConversionErr != nil {
+		return v2ConversionErr
 	}
 	config.ExtraConfig.ParameterCodec = apiruntime.NewParameterCodec(config.ExtraConfig.Scheme)
 
@@ -330,6 +339,10 @@ func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error
 		(&apiv1.ContainerExec{}).GetGroupVersionResource(),
 		stdiologs.LogStreamer(),
 	)
+	v2ResourceStreamer := v2resourcelogs.NewLogStreamer(log.WithName("v2-resource-logstreamer"))
+	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainer{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainer{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerImage{}).GetGroupVersionResource(), v2ResourceStreamer)
 
 	return nil
 }

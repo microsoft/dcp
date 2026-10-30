@@ -10,13 +10,16 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/zapr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -26,6 +29,129 @@ import (
 
 type countingLogSink struct {
 	errorCount int
+}
+
+// Verifies that WithAdditionalResourceStream preserves context and primary binding, writes each
+// destination once, and leaves the original logger and other resource streams independent.
+func TestAdditionalResourceStreamPreservesScopedLogging(t *testing.T) {
+	t.Parallel()
+	folder := t.TempDir()
+	primaryID := t.Name() + "-physical"
+	logicalID := t.Name() + "-logical"
+	defer ReleaseResourceLogsInFolder(folder)
+	core, entries := observer.New(zap.DebugLevel)
+	sink := newResourceSink(zap.NewAtomicLevelAt(zap.DebugLevel), zapr.NewLogger(zap.New(core)).GetSink(), folder)
+	base := logr.New(sink).WithName("container").WithValues("namespace", "test-namespace")
+	primary := base.WithValues(RESOURCE_LOG_STREAM_ID, primaryID)
+	derived, deriveErr := WithAdditionalResourceStream(primary, logicalID)
+	require.NoError(t, deriveErr)
+	repeated, repeatErr := WithAdditionalResourceStream(derived, logicalID)
+	require.NoError(t, repeatErr)
+	scoped := repeated.WithName("worker").WithValues("operation", "start")
+	scoped.Info("shared-info", "detail", "value")
+	scoped.Error(fmt.Errorf("runtime failure"), "shared-error")
+	base.Info("base-only")
+	primary.Info("primary-only")
+	ReleaseResourceLog(primaryID)
+	parent := base.WithName("logical").WithValues(RESOURCE_LOG_STREAM_ID, logicalID)
+	parent.Info("parent-only")
+	rebound := derived.WithValues(RESOURCE_LOG_STREAM_ID, logicalID)
+	rebound.Info("rebound")
+	sink.Flush()
+
+	readLog := func(resourceID string) string {
+		file, openErr := usvc_io.OpenFileReadOnly(makeResourceLogPath(resourceID, folder))
+		require.NoError(t, openErr)
+		contents, readErr := io.ReadAll(file)
+		closeErr := file.Close()
+		require.NoError(t, readErr)
+		require.NoError(t, closeErr)
+		return string(contents)
+	}
+	physicalContents := readLog(primaryID)
+	logicalContents := readLog(logicalID)
+	require.Equal(t, 1, strings.Count(physicalContents, "shared-info"))
+	require.Equal(t, 1, strings.Count(logicalContents, "shared-info"))
+	require.Equal(t, 1, strings.Count(physicalContents, "shared-error"))
+	require.Equal(t, 1, strings.Count(logicalContents, "shared-error"))
+	require.Contains(t, physicalContents, "container.worker")
+	require.Contains(t, logicalContents, "container.worker")
+	require.Contains(t, logicalContents, "container.logical")
+	require.Contains(t, logicalContents, `"namespace": "test-namespace"`)
+	require.Contains(t, logicalContents, `"operation": "start"`)
+	require.Contains(t, physicalContents, "primary-only")
+	require.NotContains(t, logicalContents, "primary-only")
+	require.Contains(t, logicalContents, "parent-only")
+	require.NotContains(t, physicalContents, "parent-only")
+	require.Equal(t, 1, strings.Count(logicalContents, "rebound"))
+	require.NotContains(t, physicalContents, "base-only")
+	require.NotContains(t, logicalContents, "base-only")
+	require.Equal(t, 6, entries.Len())
+	require.Equal(t, "container.worker", entries.All()[0].LoggerName)
+}
+
+// Verifies that WithAdditionalResourceStream supports a filtering sink without bypassing it
+// and reports invalid or unsupported stream bindings explicitly.
+func TestAdditionalResourceStreamHonorsFilter(t *testing.T) {
+	t.Parallel()
+	folder := t.TempDir()
+	defer ReleaseResourceLogsInFolder(folder)
+	sink := newResourceSink(zap.NewAtomicLevel(), &countingLogSink{}, folder)
+	filtered := logr.New(newFilterSink("ignored", 10, sink)).WithValues(RESOURCE_LOG_STREAM_ID, t.Name()+"-physical")
+	derived, deriveErr := WithAdditionalResourceStream(filtered, t.Name()+"-logical")
+	require.NoError(t, deriveErr)
+	derived.Error(fmt.Errorf("filtered"), "ignored")
+	require.NoFileExists(t, makeResourceLogPath(t.Name()+"-logical", folder))
+	require.NoFileExists(t, makeResourceLogPath(t.Name()+"-physical", folder))
+	_, emptyErr := WithAdditionalResourceStream(filtered, "")
+	require.ErrorContains(t, emptyErr, "must not be empty")
+	_, unsupportedErr := WithAdditionalResourceStream(logr.Discard(), "logical")
+	require.ErrorContains(t, unsupportedErr, "does not contain a resource sink")
+}
+
+// Verifies that nested resource sinks report file creation failures without deadlocking
+// and retain per-resource backoff while unrelated resource logging remains available.
+func TestAdditionalResourceStreamReportsFileCreationFailures(t *testing.T) {
+	t.Parallel()
+	invalidFolder := filepath.Join(t.TempDir(), "missing")
+	validFolder := t.TempDir()
+	primaryID, additionalID := t.Name()+"-primary", t.Name()+"-additional"
+	defer ReleaseResourceLog(primaryID)
+	defer ReleaseResourceLog(additionalID)
+	core, entries := observer.New(zap.DebugLevel)
+	root := zapr.NewLogger(zap.New(core))
+	sink := newResourceSink(zap.NewAtomicLevelAt(zap.DebugLevel), root.GetSink(), invalidFolder)
+	primary := logr.New(sink).WithValues(RESOURCE_LOG_STREAM_ID, primaryID)
+	derived, deriveErr := WithAdditionalResourceStream(primary, additionalID)
+	require.NoError(t, deriveErr)
+
+	derived.Error(fmt.Errorf("operation failed"), "original failure")
+	require.Equal(t, 1, entries.FilterMessage("original failure").Len())
+	failures := entries.FilterMessage("Could not create resource log file").All()
+	require.Len(t, failures, 2)
+	resourceIDs := []any{failures[0].ContextMap()["ResourceID"], failures[1].ContextMap()["ResourceID"]}
+	require.ElementsMatch(t, []any{primaryID, additionalID}, resourceIDs)
+	for _, failure := range failures {
+		require.Contains(t, failure.ContextMap()["error"], invalidFolder)
+	}
+
+	derived.Error(fmt.Errorf("operation failed again"), "subsequent failure")
+	require.Equal(t, 1, entries.FilterMessage("subsequent failure").Len())
+	require.Equal(t, 2, entries.FilterMessage("Could not create resource log file").Len())
+
+	ReleaseResourceLog(additionalID)
+	healthySink := newResourceSink(zap.NewAtomicLevelAt(zap.DebugLevel), root.GetSink(), validFolder)
+	healthy := logr.New(healthySink).WithValues(RESOURCE_LOG_STREAM_ID, additionalID)
+	healthy.Info("healthy resource output")
+	ReleaseResourceLog(primaryID)
+	derived.Error(fmt.Errorf("primary failed again"), "failure with cached healthy destination")
+	require.Equal(t, 3, entries.FilterMessage("Could not create resource log file").Len())
+	healthySink.Flush()
+	contents, readErr := os.ReadFile(makeResourceLogPath(additionalID, validFolder))
+	require.NoError(t, readErr)
+	require.Contains(t, string(contents), "healthy resource output")
+	require.Contains(t, string(contents), "failure with cached healthy destination")
+	require.Contains(t, string(contents), "Could not create resource log file")
 }
 
 func (*countingLogSink) Init(logr.RuntimeInfo) {}

@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -130,6 +131,14 @@ type PhysicalContainerImageConfig struct {
 // PhysicalContainerImageStatus describes the observed runtime image.
 // +k8s:openapi-gen=true
 type PhysicalContainerImageStatus struct {
+	// StdoutFile is the captured pull/build standard-output path.
+	StdoutFile string `json:"stdoutFile,omitempty"`
+	// StderrFile is the captured pull/build standard-error path.
+	StderrFile string `json:"stderrFile,omitempty"`
+
+	// LogsComplete indicates that no further pull or build output is expected.
+	LogsComplete bool `json:"logsComplete,omitempty"`
+
 	// Phase summarizes whether the image is available.
 	// +kubebuilder:validation:Enum=Pending;Ready;Unknown;Failed
 	// +optional
@@ -186,6 +195,38 @@ func (pci *PhysicalContainerImage) GetObjectMeta() *metav1.ObjectMeta {
 	return &pci.ObjectMeta
 }
 
+// GetResourceId identifies the image-specific system log stream.
+func (pci *PhysicalContainerImage) GetResourceId() string {
+	return fmt.Sprintf("physicalcontainerimage-%s", pci.UID)
+}
+
+// GetLogSource describes the pull/build capture selected by the observed image lifecycle.
+func (pci *PhysicalContainerImage) GetLogSource() *LogSource {
+	return &LogSource{
+		Name: pci.Name, UID: pci.UID,
+		StdoutFile: pci.Status.StdoutFile, StderrFile: pci.Status.StderrFile,
+		Available: pci.Status.StdoutFile != "" && pci.Status.StderrFile != "",
+		Complete:  pci.Status.LogsComplete,
+	}
+}
+
+func (*PhysicalContainerImage) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&PhysicalContainerImageLogResource{}}
+}
+
+// PhysicalContainerImageLogResource registers image acquisition and system log storage.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type PhysicalContainerImageLogResource struct{}
+
+func (*PhysicalContainerImageLogResource) Name() string { return LogSubresourceName }
+
+func (*PhysicalContainerImageLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
+}
+
 func (pci *PhysicalContainerImage) GetStatus() apiserver_resource.StatusSubResource {
 	return pci.Status
 }
@@ -236,8 +277,14 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 		return errorList
 	}
 
-	image := pci.Spec.Image
-	imagePath := specPath.Child("image")
+	errorList = append(errorList, pci.Spec.Image.Validate(specPath.Child("image"))...)
+	return errorList
+}
+
+// Validate checks the image source, build configuration, and acquisition policies.
+func (image *PhysicalContainerImageConfig) Validate(imagePath *field.Path) field.ErrorList {
+	errorList := field.ErrorList{}
+
 	if image.Image == "" && image.Build == nil {
 		errorList = append(errorList, field.Required(imagePath.Child("image"), "image or build must be set"))
 	}

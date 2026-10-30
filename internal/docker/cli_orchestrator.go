@@ -503,24 +503,31 @@ func (dco *DockerCliOrchestrator) PullImage(ctx context.Context, options contain
 		return "", fmt.Errorf("must specify an image to pull")
 	}
 
-	args := []string{"image", "pull", "--quiet"}
-	if options.Digest != "" {
-		args = append(args, options.Image+"@"+options.Digest)
-	} else {
-		args = append(args, options.Image)
+	args := []string{"image", "pull"}
+	if options.StdOutStream == nil && options.StdErrStream == nil {
+		args = append(args, "--quiet")
 	}
+	imageReference := options.Image
+	if options.Digest != "" {
+		imageReference += "@" + options.Digest
+	}
+	args = append(args, imageReference)
 
 	cmd := makeDockerCommand(args...)
 	// Pulling large images can take a long time, especially if the image is not available locally and the network is slow.
 	if options.Timeout == 0 {
 		options.Timeout = defaultPullImageTimeout
 	}
-	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "PullImage", cmd, nil, nil, options.Timeout)
+	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "PullImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
 		return "", errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
 	}
 
-	return asId(outBuf)
+	imageID, inspectErr := containers.InspectPulledImage(ctx, dco, imageReference)
+	if inspectErr != nil {
+		return "", fmt.Errorf("inspect pulled image %q: %w", imageReference, inspectErr)
+	}
+	return imageID, nil
 }
 
 func (dco *DockerCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {

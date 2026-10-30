@@ -262,12 +262,28 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return err
 		}
 
+		logicalContainerCtrl := controllers.NewLogicalContainerReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("LogicalContainerReconciler"),
+			containerOrchestrator,
+			controllers.LogicalContainerReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: workloadID,
+			},
+		)
+		if logicalContainerSetupErr := logicalContainerCtrl.SetupWithManager(mgr, defaultControllerName); logicalContainerSetupErr != nil {
+			log.Error(logicalContainerSetupErr, "Unable to set up LogicalContainer controller")
+			return logicalContainerSetupErr
+		}
+
 		physicalContainerImageCtrl := controllers.NewPhysicalContainerImageReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerImageReconciler"),
 			containerOrchestrator,
+			controllers.PhysicalContainerImageReconcilerConfig{StateStore: stateStore, ResourceLeaseOwner: leaseOwner},
 		)
 		if err = physicalContainerImageCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up PhysicalContainerImage controller")
