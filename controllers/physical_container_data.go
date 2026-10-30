@@ -39,6 +39,7 @@ const (
 	physicalContainerStateInspectFailed
 	physicalContainerStateInvalid
 	physicalContainerStateMissing
+	physicalContainerStateNetworkFailed
 	physicalContainerStateNetworkLookupFailed
 	physicalContainerStateNetworkNotFound
 	physicalContainerStateNetworks
@@ -57,6 +58,7 @@ const (
 	physicalContainerStateStopRetry
 	physicalContainerStateStopped
 	physicalContainerStateUnknown
+	physicalContainerStateVolumeFailed
 	physicalContainerStateVolumeLookupFailed
 	physicalContainerStateVolumeNotFound
 	physicalContainerStateVolumes
@@ -104,6 +106,8 @@ func (state physicalContainerState) String() string {
 		return "Invalid"
 	case physicalContainerStateMissing:
 		return "Missing"
+	case physicalContainerStateNetworkFailed:
+		return "NetworkFailed"
 	case physicalContainerStateNetworkLookupFailed:
 		return "NetworkLookupFailed"
 	case physicalContainerStateNetworkNotFound:
@@ -140,6 +144,8 @@ func (state physicalContainerState) String() string {
 		return "Stopped"
 	case physicalContainerStateUnknown:
 		return "Unknown"
+	case physicalContainerStateVolumeFailed:
+		return "VolumeFailed"
 	case physicalContainerStateVolumeLookupFailed:
 		return "VolumeLookupFailed"
 	case physicalContainerStateVolumeNotFound:
@@ -321,6 +327,9 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonVolumeLookupFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
+		physicalContainerStateVolumeFailed: {
+			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonVolumeFailed,
+		},
 		physicalContainerStateNetworkNotFound: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonNetworkNotFound,
 		},
@@ -330,6 +339,9 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 		physicalContainerStateNetworkLookupFailed: {
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonNetworkLookupFailed,
 			requeue: true, requeueDelay: LongDelay,
+		},
+		physicalContainerStateNetworkFailed: {
+			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonNetworkFailed,
 		},
 		physicalContainerStateCreate: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonCreating,

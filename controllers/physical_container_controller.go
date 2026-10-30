@@ -59,9 +59,11 @@ var (
 		physicalContainerStateVolumes:             handlePhysicalContainerPrepare,
 		physicalContainerStateVolumeNotFound:      handlePhysicalContainerPrepare,
 		physicalContainerStateVolumeLookupFailed:  handlePhysicalContainerPrepare,
+		physicalContainerStateVolumeFailed:        handlePhysicalContainerPrepare,
 		physicalContainerStateNetworks:            handlePhysicalContainerPrepare,
 		physicalContainerStateNetworkNotFound:     handlePhysicalContainerPrepare,
 		physicalContainerStateNetworkLookupFailed: handlePhysicalContainerPrepare,
+		physicalContainerStateNetworkFailed:       handlePhysicalContainerPrepare,
 		physicalContainerStateCreate:              handlePhysicalContainerCreating,
 		physicalContainerStateCreated:             handlePhysicalContainerCreated,
 		physicalContainerStateCreateRetry:         handlePhysicalContainerRecoverableCreateFailed,
@@ -443,7 +445,8 @@ func handlePhysicalContainerPrepare(
 	if container.Spec.Stop && container.Spec.Container.ReplaceExisting {
 		return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
 	}
-	if data.state == physicalContainerStateImageFailed {
+	switch data.state {
+	case physicalContainerStateImageFailed, physicalContainerStateVolumeFailed, physicalContainerStateNetworkFailed:
 		return noChange
 	}
 	data.image = ""
@@ -798,6 +801,13 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerVolumes(
 			if volume.DeletionTimestamp != nil && !volume.DeletionTimestamp.IsZero() {
 				return false, nil, physicalContainerStateVolumes, fmt.Sprintf("PhysicalContainerVolume %q is terminating.", mount.VolumeRef)
 			}
+			if volume.Status.Phase == apiv2.PhysicalContainerVolumePhaseFailed {
+				message := fmt.Sprintf("PhysicalContainerVolume %q failed.", mount.VolumeRef)
+				if ready := apimeta.FindStatusCondition(volume.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
+					message = fmt.Sprintf("PhysicalContainerVolume %q failed: %s: %s", mount.VolumeRef, ready.Reason, ready.Message)
+				}
+				return false, nil, physicalContainerStateVolumeFailed, message
+			}
 			if volume.Status.Phase != apiv2.PhysicalContainerVolumePhaseReady || volume.Status.VolumeID == "" {
 				return false, nil, physicalContainerStateVolumes, fmt.Sprintf("PhysicalContainerVolume %q is not ready.", mount.VolumeRef)
 			}
@@ -836,6 +846,13 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerNetworks(
 		}
 		if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
 			return false, nil, physicalContainerStateNetworks, fmt.Sprintf("PhysicalContainerNetwork %q is terminating.", networkConfig.NetworkRef)
+		}
+		if network.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed {
+			message := fmt.Sprintf("PhysicalContainerNetwork %q failed.", networkConfig.NetworkRef)
+			if ready := apimeta.FindStatusCondition(network.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
+				message = fmt.Sprintf("PhysicalContainerNetwork %q failed: %s: %s", networkConfig.NetworkRef, ready.Reason, ready.Message)
+			}
+			return false, nil, physicalContainerStateNetworkFailed, message
 		}
 		if network.Status.Phase != apiv2.PhysicalContainerNetworkPhaseReady || network.Status.NetworkID == "" {
 			return false, nil, physicalContainerStateNetworks, fmt.Sprintf("PhysicalContainerNetwork %q is not ready.", networkConfig.NetworkRef)

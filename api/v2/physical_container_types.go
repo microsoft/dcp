@@ -51,7 +51,8 @@ const (
 	// PhysicalContainerPhaseUnknown indicates that the runtime container state is unavailable or indeterminate.
 	PhysicalContainerPhaseUnknown PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseUnknown)
 
-	// PhysicalContainerPhaseFailed indicates a terminal operation failure.
+	// PhysicalContainerPhaseFailed indicates a terminal dependency or operation failure.
+	// Replacing a failed dependency does not restart this container's startup.
 	PhysicalContainerPhaseFailed PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseFailed)
 )
 
@@ -77,6 +78,9 @@ const (
 	// PhysicalContainerReasonVolumeLookupFailed indicates that a referenced PhysicalContainerVolume could not be read.
 	PhysicalContainerReasonVolumeLookupFailed ConditionReason = "VolumeLookupFailed"
 
+	// PhysicalContainerReasonVolumeFailed indicates that a referenced PhysicalContainerVolume failed terminally.
+	PhysicalContainerReasonVolumeFailed ConditionReason = "VolumeFailed"
+
 	// PhysicalContainerReasonNetworkNotFound indicates that a referenced PhysicalContainerNetwork does not exist.
 	PhysicalContainerReasonNetworkNotFound ConditionReason = "NetworkNotFound"
 
@@ -85,6 +89,9 @@ const (
 
 	// PhysicalContainerReasonNetworkLookupFailed indicates that a referenced PhysicalContainerNetwork could not be read.
 	PhysicalContainerReasonNetworkLookupFailed ConditionReason = "NetworkLookupFailed"
+
+	// PhysicalContainerReasonNetworkFailed indicates that a referenced PhysicalContainerNetwork failed terminally.
+	PhysicalContainerReasonNetworkFailed ConditionReason = "NetworkFailed"
 
 	// PhysicalContainerReasonCreating indicates that runtime container creation is in progress.
 	PhysicalContainerReasonCreating ConditionReason = "Creating"
