@@ -98,15 +98,37 @@ func requireSQLiteBusyTimeout(t *testing.T, ctx context.Context, store *Store, e
 	require.Equal(t, expected.Milliseconds(), milliseconds)
 }
 
+func runSynctestWithTestContext(t *testing.T, testTimeout time.Duration, run func(*testing.T, context.Context)) {
+	t.Helper()
+
+	deadlineContext, cancelDeadlineContext := testutil.GetTestContext(t, testTimeout)
+	deadline, hasDeadline := deadlineContext.Deadline()
+	contextTimeout := time.Duration(0)
+	if hasDeadline {
+		contextTimeout = time.Until(deadline)
+	}
+	cancelDeadlineContext()
+
+	synctest.Test(t, func(test *testing.T) {
+		if !hasDeadline {
+			run(test, test.Context())
+			return
+		}
+
+		ctx, cancelContext := context.WithTimeout(test.Context(), contextTimeout)
+		defer cancelContext()
+
+		run(test, ctx)
+	})
+}
+
 // Verifies that retrySQLiteInitialization does not time out an uncontended first attempt and gives contention a single full retry budget.
 func TestRetrySQLiteInitializationStartsBudgetAfterFirstBusy(t *testing.T) {
 	t.Parallel()
 
 	for _, withContention := range []bool{false, true} {
 		t.Run(fmt.Sprintf("contention=%t", withContention), func(t *testing.T) {
-			synctest.Test(t, func(test *testing.T) {
-				ctx, cancel := testutil.GetTestContext(test, stateStoreTestTimeout)
-				defer cancel()
+			runSynctestWithTestContext(t, stateStoreTestTimeout, func(test *testing.T, ctx context.Context) {
 				const busyTimeout = 100 * time.Millisecond
 				busyErr := errors.New("initialization contention")
 				started := time.Now()
@@ -151,9 +173,7 @@ func TestRetrySQLiteInitializationStartsBudgetAfterFirstBusy(t *testing.T) {
 func TestRetrySQLiteInitializationHonorsCallerDeadline(t *testing.T) {
 	t.Parallel()
 
-	synctest.Test(t, func(test *testing.T) {
-		ctx, cancel := testutil.GetTestContext(test, stateStoreTestTimeout)
-		defer cancel()
+	runSynctestWithTestContext(t, stateStoreTestTimeout, func(test *testing.T, ctx context.Context) {
 		const busyTimeout = 100 * time.Millisecond
 		const callerTimeout = busyTimeout / 2
 		callerCtx, cancelCaller := context.WithTimeout(ctx, callerTimeout)
@@ -186,9 +206,7 @@ func TestRetrySQLiteInitializationPreservesErrorsOnCancellation(t *testing.T) {
 		"before later notification",
 	} {
 		t.Run(phase, func(t *testing.T) {
-			synctest.Test(t, func(test *testing.T) {
-				ctx, cancel := testutil.GetTestContext(test, stateStoreTestTimeout)
-				defer cancel()
+			runSynctestWithTestContext(t, stateStoreTestTimeout, func(test *testing.T, ctx context.Context) {
 				callerCtx, cancelCaller := context.WithCancel(ctx)
 				defer cancelCaller()
 				firstBusyErr := errors.New("first initialization contention")
@@ -277,9 +295,7 @@ func TestRetrySQLiteInitializationStopsOnPermanentFailure(t *testing.T) {
 		{name: "cleanup failure", attemptErr: errors.Join(busyErr, cleanupErr)},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			synctest.Test(t, func(test *testing.T) {
-				ctx, cancel := testutil.GetTestContext(test, stateStoreTestTimeout)
-				defer cancel()
+			runSynctestWithTestContext(t, stateStoreTestTimeout, func(test *testing.T, ctx context.Context) {
 				attemptCount := 0
 				started := time.Now()
 				retryErr := retrySQLiteInitialization(ctx, time.Second, logr.Discard(), func(context.Context) (bool, error) {
