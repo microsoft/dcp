@@ -58,6 +58,7 @@ type ApiServerRunConfig struct {
 	// It should NOT be assumed that this is identical to the cancellation function for the API server run context.
 	// The API server will be shut down by cancelling the run context, but that in general
 	// happens asynchronously to the call to RequestShutdown().
+	// It must not wait for API server shutdown, since it can be called from an active HTTP request.
 	// Mandatory, must not be nil.
 	RequestShutdown func(ApiServerResourceCleanup)
 
@@ -113,12 +114,8 @@ func (s *ApiServer) Name() string {
 	return s.name
 }
 
-// Runs the API server.
-//
-// The passed runCtx is used to control the lifecycle of the API server. When that context is cancelled,
-// the API server should terminate all requests in progress and shut down gracefully.
-//
-
+// Runs the API server. Canceling runCtx starts graceful shutdown and cancels long-running requests.
+// The returned channel closes after finite requests finish or the server shutdown timeout elapses.
 func (s *ApiServer) Run(runCtx context.Context, runConfig ApiServerRunConfig) (<-chan struct{}, error) {
 	log := s.logger.WithName(s.name)
 
@@ -380,6 +377,7 @@ func addDcpHttpHandlers(
 		return namespaceWatchSourceErr
 	}
 	config.GenericConfig.BuildHandlerChainFunc = func(handler http.Handler, c *kubeapiserver.Config) http.Handler {
+		handler = withLongRunningRequestCancellation(handler, ctx, c.LongRunningFunc, log)
 		handler = originalChainBuilder(handler, c)
 		handler = withDcpContextValues(handler, ctx, log)
 		return handler
