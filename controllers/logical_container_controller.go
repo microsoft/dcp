@@ -48,6 +48,7 @@ const (
 
 var (
 	errMultipleLogicalContainerBackings = errors.New("multiple owned physical resources")
+	errLogicalNetworkFailed             = errors.New("logical network failed")
 	logicalContainerFinalizer           = fmt.Sprintf("%s/logicalcontainer-reconciler", apiv2.GroupVersion.Group)
 	logicalContainerDataHandlers        = map[logicalContainerState]logicalContainerDataHandlerFunc{
 		logicalContainerStatePending:           handleLogicalContainerPending,
@@ -456,7 +457,6 @@ func handleLogicalContainerPending(
 	}
 
 	change := noChange
-	var preparedImage *apiv2.PhysicalContainerImage
 	if spec.Container != nil && container.Spec.Container != nil && container.Spec.Container.Image != nil {
 		image, imageErr := reconciler.findLogicalContainerImage(ctx, container, reconciler.Client,
 			ctrl_client.MatchingFields{logicalContainerOwnerUIDField: string(container.UID)})
@@ -489,7 +489,6 @@ func handleLogicalContainerPending(
 			return noChange
 		}
 		data.physicalImageUID = image.UID
-		preparedImage = image
 		change |= applyLogicalContainerBackingStatus(container, nil, image, true)
 		if physical == nil {
 			spec.Container.ImageRef = image.Name
@@ -497,38 +496,21 @@ func handleLogicalContainerPending(
 	}
 	if physical == nil {
 		if spec.Container != nil {
-			networksReady, physicalNetworks, networkMessage, resolveErr := reconciler.resolveLogicalContainerNetworks(ctx, container)
-			if !networksReady {
-				if preparedImage == nil && container.Spec.Container.ImageRef != "" {
-					imageName := commonapi.AsNamespacedName(container.Spec.Container.ImageRef, container.Namespace)
-					image := &apiv2.PhysicalContainerImage{}
-					imageErr := reconciler.Get(ctx, imageName, image)
-					if imageErr == nil {
-						preparedImage = image
-					} else if !apierrors.IsNotFound(imageErr) {
-						log.Error(imageErr, "Failed to observe referenced image while waiting for networks")
-						data.reason, data.reconcileErr = "PhysicalResourcePreparationFailed", imageErr
-						data.message = imageErr.Error()
-						return change | additionalReconciliationNeeded
+			networksResolved, physicalNetworks, networkMessage, resolveErr := reconciler.resolveLogicalContainerNetworks(ctx, container)
+			if resolveErr != nil {
+				log.Error(resolveErr, "Failed to resolve logical container networks")
+				data.message = resolveErr.Error()
+				if errors.Is(resolveErr, errLogicalNetworkFailed) {
+					data.state, data.reason = logicalContainerStatePreparationFailed, "LogicalNetworkFailed"
+					if data.lease != nil {
+						return change | reconciler.settleLogicalContainerLease(ctx, container, data, nil, log)
 					}
+					return change
 				}
-				if preparedImage != nil && preparedImage.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed {
-					imageReady := apimeta.FindStatusCondition(preparedImage.Status.Conditions, string(apiv2.ConditionReady))
-					if imageReady != nil && imageReady.ObservedGeneration == preparedImage.Generation {
-						data.state, data.reason = logicalContainerStatePreparationFailed, apiv2.PhysicalContainerReasonImageFailed
-						data.message = fmt.Sprintf("PhysicalContainerImage %q failed: %s: %s", preparedImage.Name, imageReady.Reason, imageReady.Message)
-						if data.lease != nil {
-							return change | reconciler.settleLogicalContainerLease(ctx, container, data, nil, log)
-						}
-						return change
-					}
-				}
-				if resolveErr != nil {
-					log.Error(resolveErr, "Failed to resolve logical container networks")
-					data.reason, data.reconcileErr = "PhysicalResourcePreparationFailed", resolveErr
-					data.message = resolveErr.Error()
-					return change | additionalReconciliationNeeded
-				}
+				data.reason, data.reconcileErr = "PhysicalResourcePreparationFailed", resolveErr
+				return change | additionalReconciliationNeeded
+			}
+			if !networksResolved {
 				data.message = networkMessage
 				return change
 			}
@@ -600,14 +582,12 @@ func (r *LogicalContainerReconciler) resolveLogicalContainerNetworks(
 		if !network.DeletionTimestamp.IsZero() {
 			return false, nil, fmt.Sprintf("LogicalContainerNetwork %q is terminating.", networkName), nil
 		}
-		ready := apimeta.FindStatusCondition(network.Status.Conditions, string(apiv2.ConditionReady))
-		if network.Status.Phase != apiv2.LogicalContainerNetworkPhaseReady ||
-			ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != network.Generation {
-			message := fmt.Sprintf("LogicalContainerNetwork %q is not ready.", networkName)
-			if ready != nil {
-				message = fmt.Sprintf("LogicalContainerNetwork %q reports %s: %s", networkName, ready.Reason, ready.Message)
+		if network.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed {
+			message := fmt.Sprintf("LogicalContainerNetwork %q failed.", networkName)
+			if failure := apimeta.FindStatusCondition(network.Status.Conditions, string(apiv2.ConditionReady)); failure != nil {
+				message = fmt.Sprintf("LogicalContainerNetwork %q reports %s: %s", networkName, failure.Reason, failure.Message)
 			}
-			return false, nil, message, nil
+			return false, nil, "", fmt.Errorf("%w: %s", errLogicalNetworkFailed, message)
 		}
 		if network.Status.PhysicalNetworkRef == "" {
 			return false, nil, fmt.Sprintf("LogicalContainerNetwork %q has not published its backing physical network reference.", networkName), nil

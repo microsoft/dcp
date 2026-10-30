@@ -688,8 +688,8 @@ func TestV2LogicalContainerNetworkControllerObservesExistingNetwork(t *testing.T
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(runtimeName))
 }
 
-// Verifies that LogicalContainer prepares its image while the logical network is pending,
-// then forwards the published physical reference and aliases for physical-owned membership.
+// Verifies that LogicalContainer declares its backing from a pending network's published reference,
+// while the physical controller waits for runtime readiness and owns membership mutations.
 func TestV2LogicalContainerControllerRealizesNetworkAttachments(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -720,10 +720,9 @@ func TestV2LogicalContainerControllerRealizesNetworkAttachments(t *testing.T) {
 	require.Equal(t, apiv2.LogicalContainerNetworkPhasePending, pendingNetwork.Status.Phase)
 	requireReadyCondition(t, pendingNetwork.Status.Conditions, metav1.ConditionFalse, "PhysicalNetworkNotReady")
 	pending := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == "PhysicalResourcePreparationPending", nil
+		return current.Status.PhysicalContainerRef != "", nil
 	})
-	require.Empty(t, pending.Status.PhysicalContainerRef)
+	require.Equal(t, apiv2.LogicalContainerPhasePending, pending.Status.Phase)
 	require.Zero(t, containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName))
 	image := waitPhysicalContainerImagePhase(t, ctx,
 		types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(container.UID)},
@@ -731,6 +730,12 @@ func TestV2LogicalContainerControllerRealizesNetworkAttachments(t *testing.T) {
 	require.True(t, metav1.IsControlledBy(image, container))
 	require.NotEmpty(t, image.Status.ImageID)
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(container.Spec.Container.Image.Image))
+	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: pending.Status.PhysicalContainerRef}
+	waiting := waitObjectAssumesState(t, ctx, physicalName, func(current *apiv2.PhysicalContainer) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonNetworkNotReady), nil
+	})
+	require.Equal(t, []apiv2.ContainerNetworkConnectionConfig{{NetworkRef: pendingNetwork.Status.PhysicalNetworkRef, Aliases: []string{"app"}}}, waiting.Spec.Container.Networks)
 	require.Zero(t, containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName))
 	unblockCreate()
 	running := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
@@ -764,6 +769,55 @@ func TestV2LogicalContainerControllerRealizesNetworkAttachments(t *testing.T) {
 	require.NoError(t, client.Delete(ctx, network))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, network)
 	waitRuntimeNetworkMissing(t, ctx, readyNetwork.Status.NetworkID)
+}
+
+// Verifies that LogicalContainer rejects a terminal logical network even with a published backing
+// reference, releases its creation lease, and does not declare or create a physical container.
+func TestV2LogicalContainerControllerRejectsFailedNetwork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-logical-container-failed-network")
+	networkRuntimeName := namespace.Name + "-network"
+	_, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkRuntimeName})
+	require.NoError(t, createErr)
+	removeRuntimeNetworkOnCleanup(t, networkRuntimeName)
+	network := &apiv2.LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerNetworkSpec{NetworkName: networkRuntimeName,
+			Network: &apiv2.LogicalContainerNetworkConfig{}},
+	}
+	require.NoError(t, client.Create(ctx, network))
+	failedNetwork := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed, nil
+	})
+	require.NotEmpty(t, failedNetwork.Status.PhysicalNetworkRef)
+	container := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerSpec{
+			Mode: apiv2.LogicalContainerModePersistent, ContainerName: namespace.Name + "-container",
+			Container: &apiv2.LogicalContainerConfig{
+				Image:    &apiv2.PhysicalContainerImageConfig{Image: "failed-network-container-image"},
+				Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: network.Name}},
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	failed := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseFailed, nil
+	})
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "LogicalNetworkFailed")
+	require.Contains(t, apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady)).Message, network.Name)
+	require.Empty(t, failed.Status.PhysicalContainerRef)
+	var physicals apiv2.PhysicalContainerList
+	require.NoError(t, client.List(ctx, &physicals, ctrl_client.InNamespace(namespace.Name)))
+	require.Empty(t, physicals.Items)
+	require.Zero(t, containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName))
+	require.ErrorIs(t, testStateStore.VerifyResourceLeaseHeld(ctx, container, testResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+	require.NoError(t, client.Delete(ctx, container))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, container)
+	require.NoError(t, client.Delete(ctx, network))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, network)
 }
 
 // Verifies that LogicalContainer preserves adopted persistent container attachments even when
