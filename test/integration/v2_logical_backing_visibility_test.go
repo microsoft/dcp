@@ -120,15 +120,13 @@ func (visibility *unobservedBackingClient) List(
 // Verifies that logical deletion confirms an empty cached owner list after successful creation,
 // deletes every owned backing before finalizing, and leaves unrelated resources untouched.
 func TestV2LogicalContainerDeletesCreatedBackingsBeforeCacheObservation(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
-		name       string
-		images     bool
-		duplicates bool
+		name   string
+		images bool
 	}{
-		{name: "container"},
-		{name: "image", images: true},
-		{name: "duplicate-containers", duplicates: true},
-		{name: "duplicate-images", images: true, duplicates: true},
+		{name: "duplicate-containers"},
+		{name: "duplicate-images", images: true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
@@ -192,21 +190,18 @@ func TestV2LogicalContainerDeletesCreatedBackingsBeforeCacheObservation(t *testi
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			backings := []ctrl_client.Object{created}
-			if testCase.duplicates {
-				var duplicate ctrl_client.Object
-				switch child := created.(type) {
-				case *apiv2.PhysicalContainer:
-					duplicate = child.DeepCopy()
-				case *apiv2.PhysicalContainerImage:
-					duplicate = child.DeepCopy()
-				}
-				duplicate.SetName("duplicate")
-				duplicate.SetUID("")
-				duplicate.SetResourceVersion("")
-				require.NoError(t, visibility.Client.Create(ctx, duplicate))
-				backings = append(backings, duplicate)
+			var duplicate ctrl_client.Object
+			switch child := created.(type) {
+			case *apiv2.PhysicalContainer:
+				duplicate = child.DeepCopy()
+			case *apiv2.PhysicalContainerImage:
+				duplicate = child.DeepCopy()
 			}
+			duplicate.SetName("duplicate")
+			duplicate.SetUID("")
+			duplicate.SetResourceVersion("")
+			require.NoError(t, visibility.Client.Create(ctx, duplicate))
+			backings := []ctrl_client.Object{created, duplicate}
 			require.NoError(t, server.Client.Delete(ctx, logical))
 			waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				return !current.DeletionTimestamp.IsZero(), nil

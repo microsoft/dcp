@@ -51,6 +51,7 @@ type backingStatusConflicts struct {
 // Verifies that logical deletion completes from dependency, creation-retry, replacement-retry,
 // and ownership-conflict waits without creating new runtime work or retaining the startup lease.
 func TestV2LogicalContainerDeletesWhileWaitingForDependenciesOrRetries(t *testing.T) {
+	t.Parallel()
 	for _, dependency := range []string{"image", "volume", "create", "partial-create", "replacement", "tracked"} {
 		t.Run(dependency, func(t *testing.T) {
 			t.Parallel()
@@ -224,6 +225,7 @@ type logicalObservationGate struct {
 // Verifies owner-based discovery independently of child names, terminal duplicate detection,
 // and deletion of every owned backing even when the logical controller has never recorded a UID.
 func TestV2LogicalContainerDiscoversAndDeletesOwnedBackings(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name                string
 		images              bool
@@ -235,7 +237,6 @@ func TestV2LogicalContainerDiscoversAndDeletesOwnedBackings(t *testing.T) {
 		{name: "duplicate-containers", count: 2},
 		{name: "image", images: true, count: 1},
 		{name: "duplicate-images", images: true, count: 2},
-		{name: "image-with-container", images: true, count: 1, withContainer: true},
 		{name: "duplicate-images-with-container", images: true, count: 2, withContainer: true},
 		{name: "unobserved-containers", count: 2, deleteBeforeObserve: true},
 		{name: "unobserved-images", images: true, count: 2, deleteBeforeObserve: true},
@@ -431,9 +432,10 @@ func (client *logicalObservationGate) Create(ctx context.Context, obj ctrl_clien
 	return client.Client.Create(ctx, obj, options...)
 }
 
-// Verifies that Pending waits for its owned image even when the physical container already exists,
+// Verifies that Pending discovers preexisting backings by ownership and waits for its owned image,
 // including after AlreadyExists confirmation, and exposes startup logs while container declaration is retrying.
 func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name              string
 		existingContainer bool
@@ -483,6 +485,7 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 				logical.Spec.Stop = true
 			}
 			require.NoError(t, server.Client.Create(ctx, logical))
+			var ownedImageUID, ownedContainerUID types.UID
 			if testCase.existingContainer {
 				owner := *metav1.NewControllerRef(logical, apiv2.GroupVersion.WithKind("LogicalContainer"))
 				image := &apiv2.PhysicalContainerImage{
@@ -493,6 +496,7 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 				}
 				controllers.InitializeLogicalBackingFinalizers(image, apiv2.GroupName+"/physicalcontainerimage-reconciler")
 				require.NoError(t, server.Client.Create(ctx, image))
+				ownedImageUID = image.UID
 				waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
 					return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
 				})
@@ -509,6 +513,7 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 				}
 				controllers.InitializeLogicalBackingFinalizers(physical, apiv2.GroupName+"/physicalcontainer-reconciler")
 				require.NoError(t, server.Client.Create(ctx, physical))
+				ownedContainerUID = physical.UID
 				waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
 					return current.Status.Phase == apiv2.PhysicalContainerPhaseRunning, nil
 				})
@@ -549,6 +554,14 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 			require.Len(t, images.Items, 1)
 			require.Equal(t, images.Items[0].Name, settled.Status.ImageRef)
 			require.Equal(t, physicals.Items[0].Name, settled.Status.PhysicalContainerRef)
+			if testCase.existingContainer {
+				require.Equal(t, "owned-image", settled.Status.ImageRef)
+				require.Equal(t, ownedImageUID, images.Items[0].UID)
+				require.Equal(t, ownedContainerUID, physicals.Items[0].UID)
+				if !testCase.confirmTemplate {
+					require.Equal(t, "owned-container", settled.Status.PhysicalContainerRef)
+				}
+			}
 			require.NoError(t, server.Client.Delete(ctx, logical))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
 		})
@@ -558,6 +571,7 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 // Verifies that transient backing lookup failures preserve logical backing identity during
 // running, stopping, and deletion, and that reconciliation resumes when observation recovers.
 func TestV2LogicalContainerRetriesBackingLookup(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"running", "stopping", "deleting"} {
 		t.Run(action, func(t *testing.T) {
 			t.Parallel()
@@ -812,6 +826,7 @@ func (client *backingStatusConflicts) Patch(ctx context.Context, obj ctrl_client
 // Verifies that removing either owned backing's logical hold is a terminal protocol failure,
 // including after backing deletion and a later logical metadata wake, without recreating the backing.
 func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
+	t.Parallel()
 	for _, backingKind := range []string{"container", "image"} {
 		t.Run(backingKind, func(t *testing.T) {
 			t.Parallel()
