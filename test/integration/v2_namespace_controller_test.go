@@ -241,6 +241,24 @@ func TestV2NamespaceImmediateDeletionCleansPrecreatedResources(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
 }
 
+func createActiveV2Namespace(t *testing.T, ctx context.Context, name string) *apiv2.Namespace {
+	t.Helper()
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+	}
+	require.NoError(t, client.Create(ctx, namespace))
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), defaultIntegrationTestTimeout)
+		defer cleanupCancel()
+		_ = client.Delete(cleanupCtx, namespace)
+	})
+
+	return waitV2NamespaceActive(t, ctx, name)
+}
+
 func waitV2NamespaceActive(t *testing.T, ctx context.Context, name string) *apiv2.Namespace {
 	t.Helper()
 
