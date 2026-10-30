@@ -107,9 +107,11 @@ func (r *LogicalContainerNetworkReconciler) SetupWithManager(mgr ctrl.Manager, n
 
 func (r *LogicalContainerNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	reader, log := r.StartReconciliation(req)
+
 	if ctx.Err() != nil {
 		return ctrl.Result{}, nil
 	}
+
 	var network apiv2.LogicalContainerNetwork
 	getErr := reader.Get(ctx, req.NamespacedName, &network)
 	if getErr != nil {
@@ -126,12 +128,16 @@ func (r *LogicalContainerNetworkReconciler) Reconcile(ctx context.Context, req c
 		getFailedCounter.Add(ctx, 1)
 		return ctrl.Result{}, getErr
 	}
+
 	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, network.GetResourceId())
+
 	_, data := r.networkData.BorrowByNamespacedName(req.NamespacedName)
+
 	patch := ctrl_client.MergeFromWithOptions(network.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 	var change objectChange
 	delay := StandardDelay
+
 	if !network.DeletionTimestamp.IsZero() {
 		change, delay = r.handleDeletionRequest(ctx, &network, data, log)
 	} else {
@@ -140,6 +146,7 @@ func (r *LogicalContainerNetworkReconciler) Reconcile(ctx context.Context, req c
 			change, delay = r.manageLogicalContainerNetwork(ctx, &network, data, log)
 		}
 	}
+
 	return r.SaveChangesWithDelay(ctx, &network, patch, change, delay, nil, log)
 }
 
