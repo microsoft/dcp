@@ -6,6 +6,7 @@
 package v2
 
 import (
+	"cmp"
 	"context"
 	"encoding/gob"
 	"errors"
@@ -159,6 +160,7 @@ func (cs *LogicalContainerSpec) GetLifecycleKey() (string, bool, error) {
 			slices.Sort(build.BaseImages)
 			build.BaseImages = slices.Compact(build.BaseImages)
 			slices.SortStableFunc(build.Labels, func(left, right commonapi.Label) int { return strings.Compare(left.Key, right.Key) })
+			slices.SortStableFunc(build.Secrets, func(left, right ContainerBuildSecret) int { return strings.Compare(left.ID, right.ID) })
 		}
 	}
 	slices.SortStableFunc(desired.Env, func(left, right commonapi.EnvVar) int { return strings.Compare(left.Name, right.Name) })
@@ -168,6 +170,10 @@ func (cs *LogicalContainerSpec) GetLifecycleKey() (string, bool, error) {
 			desired.VolumeMounts[i].VolumeRef = commonapi.AsNamespacedName(desired.VolumeMounts[i].VolumeRef, "").Name
 		}
 	}
+	slices.SortStableFunc(desired.VolumeMounts, func(left, right VolumeMount) int { return strings.Compare(left.Target, right.Target) })
+	slices.SortStableFunc(desired.CreateFiles, func(left, right CreateFileSystem) int {
+		return strings.Compare(left.Destination, right.Destination)
+	})
 	for i := range desired.Networks {
 		desired.Networks[i].NetworkRef = commonapi.AsNamespacedName(desired.Networks[i].NetworkRef, "").Name
 		slices.Sort(desired.Networks[i].Aliases)
@@ -179,6 +185,12 @@ func (cs *LogicalContainerSpec) GetLifecycleKey() (string, bool, error) {
 			desired.Ports[i].Protocol = commonapi.PortProtocolTCP
 		}
 	}
+	slices.SortStableFunc(desired.Ports, func(left, right ContainerPort) int {
+		if protocolOrder := strings.Compare(string(left.Protocol), string(right.Protocol)); protocolOrder != 0 {
+			return protocolOrder
+		}
+		return cmp.Compare(left.HostPort, right.HostPort)
+	})
 
 	fnvHash := fnv.New128()
 	encoder := gob.NewEncoder(fnvHash)

@@ -634,8 +634,8 @@ func TestV2LogicalContainerControllerReservedLabelsOverrideDuplicates(t *testing
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, reused)
 }
 
-// Verifies that the LogicalContainer controller uses a stable default key across map ordering and
-// resource names, then delegates replacement when the desired command changes.
+// Verifies that the LogicalContainer controller uses a stable default key across map and port
+// ordering and resource names, then delegates replacement when the desired command changes.
 func TestV2LogicalContainerControllerCalculatesLifecycleKey(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -650,6 +650,10 @@ func TestV2LogicalContainerControllerCalculatesLifecycleKey(t *testing.T) {
 				ImageRef: image.Name, Command: []string{"initial"},
 				Env:    []commonapi.EnvVar{{Name: "B", Value: "2"}, {Name: "A", Value: "1"}},
 				Labels: []commonapi.Label{{Key: "b", Value: "2"}, {Key: "a", Value: "1"}},
+				Ports: []apiv2.ContainerPort{
+					{ContainerPort: 8080},
+					{ContainerPort: 5353, Protocol: commonapi.PortProtocolUDP},
+				},
 			},
 		},
 	}
@@ -667,6 +671,7 @@ func TestV2LogicalContainerControllerCalculatesLifecycleKey(t *testing.T) {
 	second.Spec.Container.ImageRef = namespace.Name + "/" + image.Name
 	second.Spec.Container.Env[0], second.Spec.Container.Env[1] = second.Spec.Container.Env[1], second.Spec.Container.Env[0]
 	second.Spec.Container.Labels[0], second.Spec.Container.Labels[1] = second.Spec.Container.Labels[1], second.Spec.Container.Labels[0]
+	second.Spec.Container.Ports[0], second.Spec.Container.Ports[1] = second.Spec.Container.Ports[1], second.Spec.Container.Ports[0]
 	require.NoError(t, client.Create(ctx, second))
 	reused := waitObjectAssumesState(t, ctx, second.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
