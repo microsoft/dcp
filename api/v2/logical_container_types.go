@@ -6,6 +6,7 @@
 package v2
 
 import (
+	"cmp"
 	"context"
 	"encoding/gob"
 	"errors"
@@ -44,6 +45,26 @@ const (
 	LogicalContainerModeExisting LogicalContainerMode = "existing"
 )
 
+// ShouldReuseExisting indicates whether the mode permits adopting an existing runtime container.
+func (mode LogicalContainerMode) ShouldReuseExisting() bool {
+	switch mode {
+	case LogicalContainerModePersistent, LogicalContainerModeExisting:
+		return true
+	default:
+		return false
+	}
+}
+
+// ShouldCreateIfMissing indicates whether the mode permits creating a runtime container.
+func (mode LogicalContainerMode) ShouldCreateIfMissing() bool {
+	switch mode {
+	case LogicalContainerModeSession, LogicalContainerModePersistent:
+		return true
+	default:
+		return false
+	}
+}
+
 // LogicalContainerPhase summarizes the lifecycle of a logical container.
 type LogicalContainerPhase string
 
@@ -56,6 +77,9 @@ const (
 
 	// LogicalContainerPhasePaused indicates that the container is paused.
 	LogicalContainerPhasePaused LogicalContainerPhase = "Paused"
+
+	// LogicalContainerPhaseStopping indicates that stop is requested and has not completed.
+	LogicalContainerPhaseStopping LogicalContainerPhase = "Stopping"
 
 	// LogicalContainerPhaseExited indicates that the container has exited.
 	LogicalContainerPhaseExited LogicalContainerPhase = "Exited"
@@ -116,6 +140,8 @@ func (cs *LogicalContainerSpec) GetLifecycleKey() (string, bool, error) {
 	}
 
 	desired := cs.Container.DeepCopy()
+	// Network attachments can change without recreating the container.
+	desired.Networks = nil
 	if desired.ImageRef != "" {
 		desired.ImageRef = commonapi.AsNamespacedName(desired.ImageRef, "").Name
 	}
@@ -136,6 +162,7 @@ func (cs *LogicalContainerSpec) GetLifecycleKey() (string, bool, error) {
 			slices.Sort(build.BaseImages)
 			build.BaseImages = slices.Compact(build.BaseImages)
 			slices.SortStableFunc(build.Labels, func(left, right commonapi.Label) int { return strings.Compare(left.Key, right.Key) })
+			slices.SortStableFunc(build.Secrets, func(left, right ContainerBuildSecret) int { return strings.Compare(left.ID, right.ID) })
 		}
 	}
 	slices.SortStableFunc(desired.Env, func(left, right commonapi.EnvVar) int { return strings.Compare(left.Name, right.Name) })
@@ -145,17 +172,22 @@ func (cs *LogicalContainerSpec) GetLifecycleKey() (string, bool, error) {
 			desired.VolumeMounts[i].VolumeRef = commonapi.AsNamespacedName(desired.VolumeMounts[i].VolumeRef, "").Name
 		}
 	}
-	for i := range desired.Networks {
-		desired.Networks[i].NetworkRef = commonapi.AsNamespacedName(desired.Networks[i].NetworkRef, "").Name
-		slices.Sort(desired.Networks[i].Aliases)
-		desired.Networks[i].Aliases = slices.Compact(desired.Networks[i].Aliases)
-	}
+	slices.SortStableFunc(desired.VolumeMounts, func(left, right VolumeMount) int { return strings.Compare(left.Target, right.Target) })
+	slices.SortStableFunc(desired.CreateFiles, func(left, right CreateFileSystem) int {
+		return strings.Compare(left.Destination, right.Destination)
+	})
 	for i := range desired.Ports {
 		desired.Ports[i].RangeSize = desired.Ports[i].EffectiveRangeSize()
 		if desired.Ports[i].Protocol == "" {
 			desired.Ports[i].Protocol = commonapi.PortProtocolTCP
 		}
 	}
+	slices.SortStableFunc(desired.Ports, func(left, right ContainerPort) int {
+		if protocolOrder := strings.Compare(string(left.Protocol), string(right.Protocol)); protocolOrder != 0 {
+			return protocolOrder
+		}
+		return cmp.Compare(left.HostPort, right.HostPort)
+	})
 
 	fnvHash := fnv.New128()
 	encoder := gob.NewEncoder(fnvHash)
@@ -236,7 +268,7 @@ type LogicalContainerStatus struct {
 	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
 
 	// Phase summarizes the container lifecycle.
-	// +kubebuilder:validation:Enum=Pending;Running;Paused;Exited;Unknown;Failed
+	// +kubebuilder:validation:Enum=Pending;Running;Paused;Stopping;Exited;Unknown;Failed
 	// +optional
 	Phase LogicalContainerPhase `json:"phase,omitempty"`
 
@@ -307,6 +339,11 @@ func (c *LogicalContainer) GetGroupVersionResource() schema.GroupVersionResource
 // GetResourceId identifies the resource-specific system log stream.
 func (c *LogicalContainer) GetResourceId() string {
 	return fmt.Sprintf("logicalcontainer-%s", c.UID)
+}
+
+// GetLogSource describes the runtime capture observed for the backing physical container.
+func (c *LogicalContainer) GetLogSource() *LogSource {
+	return c.Status.RuntimeLogs
 }
 
 func (*LogicalContainer) GenericSubResources() []apiserver_resource.GenericSubResource {

@@ -18,24 +18,26 @@ type physicalContainerVolumeDataStateKey string
 type physicalContainerVolumeState int
 
 const (
-	physicalContainerVolumeStateResolve physicalContainerVolumeState = iota + 1
-	physicalContainerVolumeStateCreate
-	physicalContainerVolumeStateReplace
-	physicalContainerVolumeStateRuntime
-	physicalContainerVolumeStateRemove
+	physicalContainerVolumeStateCreate physicalContainerVolumeState = iota + 1
+	physicalContainerVolumeStateCreateFailed
+	physicalContainerVolumeStateCreateRetry
+	physicalContainerVolumeStateCreated
+	physicalContainerVolumeStateInspectFailed
 	physicalContainerVolumeStateInvalid
-)
-
-const (
-	physicalContainerVolumeOperationInProgress   = physicalResourceProgressInProgress
-	physicalContainerVolumeOperationCompleted    = physicalResourceProgressCompleted
-	physicalContainerVolumeOperationRetryPending = physicalResourceProgressRetryPending
-	physicalContainerVolumeOperationFailed       = physicalResourceProgressFailed
+	physicalContainerVolumeStateMissing
+	physicalContainerVolumeStateReady
+	physicalContainerVolumeStateRemovalAbandoned
+	physicalContainerVolumeStateRemove
+	physicalContainerVolumeStateRemoveRetry
+	physicalContainerVolumeStateRemoved
+	physicalContainerVolumeStateReplaceRetry
+	physicalContainerVolumeStateReplaced
+	physicalContainerVolumeStateResolve
 )
 
 type physicalContainerVolumeData struct {
 	state          physicalContainerVolumeState
-	progress       physicalResourceProgress
+	workInProgress bool
 	volumeID       string
 	failureMessage string
 	retryAfter     time.Time
@@ -43,16 +45,13 @@ type physicalContainerVolumeData struct {
 }
 
 func (data *physicalContainerVolumeData) operationInProgress() bool {
-	return data != nil && (data.state == physicalContainerVolumeStateCreate ||
-		data.state == physicalContainerVolumeStateReplace ||
-		data.state == physicalContainerVolumeStateRemove) &&
-		data.progress == physicalResourceProgressInProgress
+	return data != nil && data.workInProgress
 }
 
 func (data *physicalContainerVolumeData) Clone() *physicalContainerVolumeData {
 	return &physicalContainerVolumeData{
 		state:          data.state,
-		progress:       data.progress,
+		workInProgress: data.workInProgress,
 		volumeID:       data.volumeID,
 		failureMessage: data.failureMessage,
 		retryAfter:     data.retryAfter,
@@ -70,8 +69,8 @@ func (data *physicalContainerVolumeData) UpdateFrom(other *physicalContainerVolu
 		data.state = other.state
 		updated = true
 	}
-	if data.progress != other.progress {
-		data.progress = other.progress
+	if data.workInProgress != other.workInProgress {
+		data.workInProgress = other.workInProgress
 		updated = true
 	}
 	if data.volumeID != other.volumeID {
@@ -104,7 +103,7 @@ func (data *physicalContainerVolumeData) applyTo(
 
 	stateChange, delay, valid := physicalContainerVolumeProjections.apply(
 		data.state,
-		data.progress,
+
 		data.failureMessage,
 		&volume.Status.Phase,
 		&volume.Status.Conditions,
@@ -115,68 +114,68 @@ func (data *physicalContainerVolumeData) applyTo(
 
 var physicalContainerVolumeProjections = physicalResourceProjectionTable[physicalContainerVolumeState, apiv2.PhysicalContainerVolumePhase]{
 	invalidPhase: apiv2.PhysicalContainerVolumePhaseUnknown,
-	projections: map[physicalResourceProjectionKey[physicalContainerVolumeState]]physicalResourceProjection[apiv2.PhysicalContainerVolumePhase]{
-		{state: physicalContainerVolumeStateCreate, progress: physicalResourceProgressInProgress}: {
+	projections: map[physicalContainerVolumeState]physicalResourceProjection[apiv2.PhysicalContainerVolumePhase]{
+		physicalContainerVolumeStateCreate: {
 			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonCreating,
 			message:         "Runtime volume creation is in progress.",
 		},
-		{state: physicalContainerVolumeStateCreate, progress: physicalResourceProgressCompleted}: {
+		physicalContainerVolumeStateCreated: {
 			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonCreated,
 			message:         "Runtime volume creation completed.",
 		},
-		{state: physicalContainerVolumeStateCreate, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerVolumeStateCreateRetry: {
 			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonCreateFailed,
 			requeue:         true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerVolumeStateCreate, progress: physicalResourceProgressFailed}: {
+		physicalContainerVolumeStateCreateFailed: {
 			phase: apiv2.PhysicalContainerVolumePhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonCreateFailed,
 		},
-		{state: physicalContainerVolumeStateReplace, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerVolumeStateReplaceRetry: {
 			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonExistingVolumeReplacementFailed,
 			requeue:         true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerVolumeStateRuntime, progress: physicalResourceProgressCompleted}: {
+		physicalContainerVolumeStateReady: {
 			phase: apiv2.PhysicalContainerVolumePhaseReady, conditionStatus: metav1.ConditionTrue,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonVolumeAvailable,
 			message:         "Runtime volume is available.",
 			requeue:         true, requeueDelay: MonitoringDelay,
 		},
-		{state: physicalContainerVolumeStateRuntime, progress: physicalResourceProgressMissing}: {
+		physicalContainerVolumeStateMissing: {
 			phase: apiv2.PhysicalContainerVolumePhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonRuntimeVolumeMissing,
 			message:         "Runtime volume was not found.",
 			requeue:         true, requeueDelay: MonitoringDelay,
 		},
-		{state: physicalContainerVolumeStateRuntime, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerVolumeStateInspectFailed: {
 			phase: apiv2.PhysicalContainerVolumePhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonRuntimeVolumeInspectFailed,
 			requeue:         true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerVolumeStateRemove, progress: physicalResourceProgressInProgress}: {
+		physicalContainerVolumeStateRemove: {
 			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoving,
 			message:         "Runtime volume removal is in progress.",
 		},
-		{state: physicalContainerVolumeStateRemove, progress: physicalResourceProgressRetryPending}: {
+		physicalContainerVolumeStateRemoveRetry: {
 			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoveFailed,
 			requeue:         true, requeueDelay: LongDelay,
 		},
-		{state: physicalContainerVolumeStateRemove, progress: physicalResourceProgressCompleted}: {
+		physicalContainerVolumeStateRemoved: {
 			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoved,
 			message:         "Runtime volume removal completed.",
 		},
-		{state: physicalContainerVolumeStateRemove, progress: physicalResourceProgressAbandoned}: {
+		physicalContainerVolumeStateRemovalAbandoned: {
 			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned,
 		},
-		{state: physicalContainerVolumeStateInvalid, progress: physicalResourceProgressFailed}: {
+		physicalContainerVolumeStateInvalid: {
 			phase: apiv2.PhysicalContainerVolumePhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},
