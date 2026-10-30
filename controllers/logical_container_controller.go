@@ -930,6 +930,17 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 		data.reconcileErr, data.message = containerListErr, containerListErr.Error()
 		return additionalReconciliationNeeded, delay
 	}
+	if len(physicals.Items) == 0 && data.physicalContainerUID != "" {
+		uncachedContainerListErr := r.NoCacheClient.List(ctx, &physicals, ctrl_client.InNamespace(container.Namespace))
+		if uncachedContainerListErr != nil {
+			log.Error(uncachedContainerListErr, "Failed to verify physical container absence before deletion")
+			data.reconcileErr, data.message = uncachedContainerListErr, uncachedContainerListErr.Error()
+			return additionalReconciliationNeeded, delay
+		}
+		physicals.Items = std_slices.DeleteFunc(physicals.Items, func(candidate apiv2.PhysicalContainer) bool {
+			return !metav1.IsControlledBy(&candidate, container)
+		})
+	}
 	if len(physicals.Items) != 0 {
 		if len(physicals.Items) == 1 && data.physicalContainerUID == "" {
 			data.physicalContainerUID = physicals.Items[0].UID
@@ -985,6 +996,17 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 		log.Error(imageListErr, "Failed to list physical images before deletion")
 		data.reconcileErr, data.message = imageListErr, imageListErr.Error()
 		return additionalReconciliationNeeded, delay
+	}
+	if len(images.Items) == 0 && data.physicalImageUID != "" {
+		uncachedImageListErr := r.NoCacheClient.List(ctx, &images, ctrl_client.InNamespace(container.Namespace))
+		if uncachedImageListErr != nil {
+			log.Error(uncachedImageListErr, "Failed to verify physical image absence before deletion")
+			data.reconcileErr, data.message = uncachedImageListErr, uncachedImageListErr.Error()
+			return additionalReconciliationNeeded, delay
+		}
+		images.Items = std_slices.DeleteFunc(images.Items, func(candidate apiv2.PhysicalContainerImage) bool {
+			return !metav1.IsControlledBy(&candidate, container)
+		})
 	}
 	if len(images.Items) != 0 {
 		if len(images.Items) == 1 && data.physicalImageUID == "" {
