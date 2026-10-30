@@ -329,11 +329,21 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
 	if data == nil {
-		ready, change := guardResourceNamespace(ctx, r.Client, container,
-			&container.Status.Phase, &container.Status.Conditions,
-			apiv2.PhysicalContainerPhasePending, apiv2.PhysicalContainerPhaseUnknown, log)
-		if !ready {
-			return change, StandardDelay
+		namespaceReady, namespaceReason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, container.Namespace)
+		if !namespaceReady {
+			namespaceChange := noChange
+			namespacePhase := apiv2.PhysicalContainerPhasePending
+			namespaceMessage := namespaceReadinessMessage(container.Namespace, namespaceReason)
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to get namespace", "Namespace", container.Namespace)
+				namespacePhase = apiv2.PhysicalContainerPhaseUnknown
+				namespaceMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+				namespaceChange |= additionalReconciliationNeeded
+			}
+			namespaceChange |= setValue(&container.Status.Phase, namespacePhase)
+			namespaceChange |= setCondition(&container.Status.Conditions, apiv2.ConditionReady,
+				container.Generation, metav1.ConditionFalse, namespaceReason, namespaceMessage)
+			return namespaceChange, StandardDelay
 		}
 		data = &physicalContainerData{
 			resourceUID: container.UID, state: physicalContainerStateResolve,

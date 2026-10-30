@@ -242,42 +242,28 @@ func EnsureV1PhysicalContainerNetworkReference(
 	return nil
 }
 
-// guardResourceNamespace checks and projects the namespace prerequisite for any namespaced V2 resource.
-// Callers bypass the guard when settling existing operations or performing deletion cleanup.
-func guardResourceNamespace[Phase ~string](
-	ctx context.Context, client ctrl_client.Client, resource ctrl_client.Object,
-	phase *Phase, conditions *[]metav1.Condition, pendingPhase, unknownPhase Phase, log logr.Logger,
-) (bool, objectChange) {
+// checkNamespaceReadiness reads namespaceName using reader and ctx. Readiness requires the namespace
+// controller's finalizer, Active phase, and no deletion timestamp. Otherwise reason describes the
+// unmet prerequisite; err is non-nil only for lookup failures other than NotFound.
+func checkNamespaceReadiness(
+	ctx context.Context, reader ctrl_client.Reader, namespaceName string,
+) (ready bool, reason apiv2.ConditionReason, err error) {
 	namespace := apiv2.Namespace{}
-	namespaceErr := client.Get(ctx, types.NamespacedName{Name: resource.GetNamespace()}, &namespace)
-	var reason apiv2.ConditionReason
+	namespaceErr := reader.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
 	switch {
 	case apierrors.IsNotFound(namespaceErr):
-		reason = apiv2.PhysicalResourceReasonNamespaceNotFound
-		namespaceErr = nil
+		return false, apiv2.PhysicalResourceReasonNamespaceNotFound, nil
 	case namespaceErr != nil:
-		reason = apiv2.PhysicalResourceReasonNamespaceLookupFailed
+		return false, apiv2.PhysicalResourceReasonNamespaceLookupFailed, namespaceErr
 	case !namespace.DeletionTimestamp.IsZero():
-		reason = apiv2.PhysicalResourceReasonNamespaceTerminating
+		return false, apiv2.PhysicalResourceReasonNamespaceTerminating, nil
 	case !usvc_slices.Contains(namespace.Finalizers, namespaceFinalizer):
-		reason = apiv2.PhysicalResourceReasonNamespaceNotReady
+		return false, apiv2.PhysicalResourceReasonNamespaceNotReady, nil
 	case namespace.Status.Phase != apiv2.NamespacePhaseActive:
-		reason = apiv2.PhysicalResourceReasonNamespaceNotActive
+		return false, apiv2.PhysicalResourceReasonNamespaceNotActive, nil
 	default:
-		return true, noChange
+		return true, "", nil
 	}
-	message := namespaceReadinessMessage(resource.GetNamespace(), reason)
-	change := noChange
-	targetPhase := pendingPhase
-	if namespaceErr != nil {
-		log.Error(namespaceErr, "Failed to get namespace", "Namespace", resource.GetNamespace())
-		message = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
-		targetPhase = unknownPhase
-		change |= additionalReconciliationNeeded
-	}
-	change |= setValue(phase, targetPhase)
-	change |= setCondition(conditions, apiv2.ConditionReady, resource.GetGeneration(), metav1.ConditionFalse, reason, message)
-	return false, change
 }
 
 func namespaceReadinessMessage(namespaceName string, reason apiv2.ConditionReason) string {

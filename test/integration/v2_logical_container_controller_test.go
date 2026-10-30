@@ -88,9 +88,9 @@ func (client *unavailableNamespaceClient) Get(ctx context.Context, key ctrl_clie
 	return client.Client.Get(ctx, key, obj, options...)
 }
 
-// Verifies that a logical container with initialized state can forward stop and observe its
-// backing despite subsequent namespace read failures.
-func TestV2LogicalContainerControllerStopsAfterNamespaceReadFailure(t *testing.T) {
+// Verifies that LogicalContainer reports and retries initial namespace lookup errors, then
+// forwards stop and observes its backing despite namespace read failures after initialization.
+func TestV2LogicalContainerControllerHandlesNamespaceReadFailures(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -106,6 +106,11 @@ func TestV2LogicalContainerControllerStopsAfterNamespaceReadFailure(t *testing.T
 	require.NoError(t, startErr)
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-namespace-read-failure"}}
 	require.NoError(t, server.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, server.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+	decorated.unavailable.Store(true)
+	defer decorated.unavailable.Store(false)
 	container := &apiv2.LogicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
 		Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
@@ -113,11 +118,16 @@ func TestV2LogicalContainerControllerStopsAfterNamespaceReadFailure(t *testing.T
 		}},
 	}
 	require.NoError(t, server.Client.Create(ctx, container))
+	lookupFailed := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseUnknown, nil
+	})
+	requireReadyCondition(t, lookupFailed.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalResourceReasonNamespaceLookupFailed)
+	require.Empty(t, lookupFailed.Status.PhysicalContainerRef)
+	decorated.unavailable.Store(false)
 	running := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
 	})
 	decorated.unavailable.Store(true)
-	defer decorated.unavailable.Store(false)
 	require.NoError(t, retryOnConflictEx(ctx, server.Client, container.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
 		current.Spec.Stop = true
 		return server.Client.Update(updateCtx, current)

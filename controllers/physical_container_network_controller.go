@@ -235,11 +235,21 @@ func (r *PhysicalContainerNetworkReconciler) managePhysicalContainerNetwork(
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
 	if data == nil {
-		ready, change := guardResourceNamespace(ctx, r.Client, network,
-			&network.Status.Phase, &network.Status.Conditions,
-			apiv2.PhysicalContainerNetworkPhasePending, apiv2.PhysicalContainerNetworkPhaseUnknown, log)
-		if !ready {
-			return change, StandardDelay
+		namespaceReady, namespaceReason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, network.Namespace)
+		if !namespaceReady {
+			namespaceChange := noChange
+			namespacePhase := apiv2.PhysicalContainerNetworkPhasePending
+			namespaceMessage := namespaceReadinessMessage(network.Namespace, namespaceReason)
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to get namespace", "Namespace", network.Namespace)
+				namespacePhase = apiv2.PhysicalContainerNetworkPhaseUnknown
+				namespaceMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+				namespaceChange |= additionalReconciliationNeeded
+			}
+			namespaceChange |= setValue(&network.Status.Phase, namespacePhase)
+			namespaceChange |= setCondition(&network.Status.Conditions, apiv2.ConditionReady,
+				network.Generation, metav1.ConditionFalse, namespaceReason, namespaceMessage)
+			return namespaceChange, StandardDelay
 		}
 		data = &physicalContainerNetworkData{state: physicalContainerNetworkStateResolve}
 		r.networkData.Store(network.NamespacedName(), physicalContainerNetworkDataKey(network), data.Clone())

@@ -18,6 +18,7 @@ import (
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -150,11 +151,21 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
 	if data == nil {
-		ready, change := guardResourceNamespace(ctx, r.Client, physicalProcess,
-			&physicalProcess.Status.Phase, &physicalProcess.Status.Conditions,
-			apiv2.PhysicalProcessPhasePending, apiv2.PhysicalProcessPhaseUnknown, log)
-		if !ready {
-			return change, StandardDelay
+		namespaceReady, namespaceReason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, physicalProcess.Namespace)
+		if !namespaceReady {
+			namespaceChange := noChange
+			namespacePhase := apiv2.PhysicalProcessPhasePending
+			namespaceMessage := namespaceReadinessMessage(physicalProcess.Namespace, namespaceReason)
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to get namespace", "Namespace", physicalProcess.Namespace)
+				namespacePhase = apiv2.PhysicalProcessPhaseUnknown
+				namespaceMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+				namespaceChange |= additionalReconciliationNeeded
+			}
+			namespaceChange |= setValue(&physicalProcess.Status.Phase, namespacePhase)
+			namespaceChange |= setCondition(&physicalProcess.Status.Conditions, apiv2.ConditionReady,
+				physicalProcess.Generation, metav1.ConditionFalse, namespaceReason, namespaceMessage)
+			return namespaceChange, StandardDelay
 		}
 		data = &physicalProcessData{
 			resourceUID: physicalProcess.UID, state: physicalProcessStateResolve,

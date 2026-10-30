@@ -298,11 +298,21 @@ func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
 	if data == nil {
-		ready, change := guardResourceNamespace(ctx, r.Client, image,
-			&image.Status.Phase, &image.Status.Conditions,
-			apiv2.PhysicalContainerImagePhasePending, apiv2.PhysicalContainerImagePhaseUnknown, log)
-		if !ready {
-			return change, StandardDelay
+		namespaceReady, namespaceReason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, image.Namespace)
+		if !namespaceReady {
+			namespaceChange := noChange
+			namespacePhase := apiv2.PhysicalContainerImagePhasePending
+			namespaceMessage := namespaceReadinessMessage(image.Namespace, namespaceReason)
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to get namespace", "Namespace", image.Namespace)
+				namespacePhase = apiv2.PhysicalContainerImagePhaseUnknown
+				namespaceMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+				namespaceChange |= additionalReconciliationNeeded
+			}
+			namespaceChange |= setValue(&image.Status.Phase, namespacePhase)
+			namespaceChange |= setCondition(&image.Status.Conditions, apiv2.ConditionReady,
+				image.Generation, metav1.ConditionFalse, namespaceReason, namespaceMessage)
+			return namespaceChange, StandardDelay
 		}
 		data = &physicalContainerImageData{state: physicalContainerImageStateResolve}
 		r.imageData.Store(image.NamespacedName(), physicalContainerImageDataKey(image), data.Clone())

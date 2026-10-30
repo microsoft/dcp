@@ -142,11 +142,21 @@ func (r *PhysicalContainerVolumeReconciler) managePhysicalContainerVolume(
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
 	if data == nil {
-		ready, change := guardResourceNamespace(ctx, r.Client, volume,
-			&volume.Status.Phase, &volume.Status.Conditions,
-			apiv2.PhysicalContainerVolumePhasePending, apiv2.PhysicalContainerVolumePhaseUnknown, log)
-		if !ready {
-			return change, StandardDelay
+		namespaceReady, namespaceReason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, volume.Namespace)
+		if !namespaceReady {
+			namespaceChange := noChange
+			namespacePhase := apiv2.PhysicalContainerVolumePhasePending
+			namespaceMessage := namespaceReadinessMessage(volume.Namespace, namespaceReason)
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to get namespace", "Namespace", volume.Namespace)
+				namespacePhase = apiv2.PhysicalContainerVolumePhaseUnknown
+				namespaceMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+				namespaceChange |= additionalReconciliationNeeded
+			}
+			namespaceChange |= setValue(&volume.Status.Phase, namespacePhase)
+			namespaceChange |= setCondition(&volume.Status.Conditions, apiv2.ConditionReady,
+				volume.Generation, metav1.ConditionFalse, namespaceReason, namespaceMessage)
+			return namespaceChange, StandardDelay
 		}
 		data = &physicalContainerVolumeData{state: physicalContainerVolumeStateResolve}
 		r.volumeData.Store(volume.NamespacedName(), physicalContainerVolumeDataKey(volume), data.Clone())

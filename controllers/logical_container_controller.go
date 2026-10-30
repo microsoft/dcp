@@ -256,10 +256,20 @@ func (r *LogicalContainerReconciler) manageLogicalContainer(
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
 	if data == nil {
-		namespaceReady, namespaceChange := guardResourceNamespace(ctx, r.Client, container,
-			&container.Status.Phase, &container.Status.Conditions,
-			apiv2.LogicalContainerPhasePending, apiv2.LogicalContainerPhaseUnknown, log)
+		namespaceReady, namespaceReason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, container.Namespace)
 		if !namespaceReady {
+			namespaceChange := noChange
+			namespacePhase := apiv2.LogicalContainerPhasePending
+			namespaceMessage := namespaceReadinessMessage(container.Namespace, namespaceReason)
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to get namespace", "Namespace", container.Namespace)
+				namespacePhase = apiv2.LogicalContainerPhaseUnknown
+				namespaceMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+				namespaceChange |= additionalReconciliationNeeded
+			}
+			namespaceChange |= setValue(&container.Status.Phase, namespacePhase)
+			namespaceChange |= setCondition(&container.Status.Conditions, apiv2.ConditionReady,
+				container.Generation, metav1.ConditionFalse, namespaceReason, namespaceMessage)
 			return namespaceChange, StandardDelay
 		}
 		data = &logicalContainerData{
