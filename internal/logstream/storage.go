@@ -27,6 +27,7 @@ import (
 	"github.com/microsoft/dcp/internal/contextdata"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/container"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/syncmap"
 )
@@ -60,10 +61,11 @@ type ResourceLogStreamer[O Options] interface {
 	// Returning nil allows streaming to proceed; returning an error short-circuits the request.
 	Preflight(obj apiserver_resource.Object, opts O) error
 
-	// StreamLogs returns a boolean indicating if the logs are ready to be streamed, a channel that will be closed when the logs are done streaming, and an error if one occurred.
+	// Returns the readiness status, a completion channel for asynchronous delivery, and any error.
 	StreamLogs(ctx context.Context, dest io.Writer, obj apiserver_resource.Object, opts O, log logr.Logger) (ResourceStreamStatus, <-chan struct{}, error)
 
-	// Callback when a resource of the type this streamer is registered for is deleted to allow for resource cleanup.
+	// Receives lifecycle events in order for each resource UID.
+	// Callbacks for different resources may run concurrently.
 	OnResourceUpdated(evt ResourceWatcherEvent, log logr.Logger)
 
 	// Disposes the log streamer and underlying resources.
@@ -76,16 +78,19 @@ type ResourceWatcherEvent struct {
 	Object apiserver_resource.Object
 }
 
-// Resource for receiving parent resource updates for log streaming implementations.
-// Based on watch.Interface
+type resourceLogState struct {
+	processing sync.RWMutex
+	latest     ResourceWatcherEvent
+}
+
+// Notifies a log request that a newer resource state is available.
 // +kubebuilder:object:generate=false
 type resourceWatcher struct {
-	resultChan       *concurrency.UnboundedChan[ResourceWatcherEvent]
-	resultChanCtx    context.Context
-	resultChanCancel context.CancelFunc
-	onStop           func()
-	stopped          bool
-	mutex            *sync.Mutex
+	resource *resourceLogState
+	changed  *concurrency.AutoResetEvent
+	onStop   func()
+	stopped  bool
+	mutex    *sync.Mutex
 }
 
 func (rw *resourceWatcher) Stop() {
@@ -98,7 +103,7 @@ func (rw *resourceWatcher) Stop() {
 	}
 
 	rw.stopped = true
-	rw.resultChanCancel()
+	rw.changed.SetAndFreeze()
 	onStop := rw.onStop
 	rw.mutex.Unlock()
 
@@ -107,8 +112,8 @@ func (rw *resourceWatcher) Stop() {
 	}
 }
 
-func (rw *resourceWatcher) ResultChan() <-chan ResourceWatcherEvent {
-	return rw.resultChan.Out
+func (rw *resourceWatcher) ResultChan() <-chan struct{} {
+	return rw.changed.Wait()
 }
 
 func (rw *resourceWatcher) OnStop(onStop func()) {
@@ -117,25 +122,22 @@ func (rw *resourceWatcher) OnStop(onStop func()) {
 	rw.onStop = onStop
 }
 
-func (rw *resourceWatcher) Queue(evt ResourceWatcherEvent) bool {
+func (rw *resourceWatcher) Notify() bool {
 	rw.mutex.Lock()
 	defer rw.mutex.Unlock()
 	if !rw.stopped {
-		rw.resultChan.In <- evt
+		rw.changed.Set()
 		return true
 	} else {
 		return false
 	}
 }
 
-func newResourceWatcher() *resourceWatcher {
-	resultChanCtx, resultChanCancel := context.WithCancel(context.Background())
+func newResourceWatcher(state *resourceLogState) *resourceWatcher {
 	return &resourceWatcher{
-		resultChanCtx:    resultChanCtx,
-		resultChanCancel: resultChanCancel,
-		resultChan:       concurrency.NewUnboundedChan[ResourceWatcherEvent](resultChanCtx),
-		stopped:          false,
-		mutex:            &sync.Mutex{},
+		resource: state,
+		changed:  concurrency.NewAutoResetEvent(false),
+		mutex:    &sync.Mutex{},
 	}
 }
 
@@ -150,14 +152,16 @@ type LogStorage[O Options] struct {
 	newResponse  func(registry_rest.ResourceStreamer) runtime.Object
 	responseKind schema.GroupVersionKind
 
-	// The queue used for sending resource events to the log streamer
-	logStreamerEventQueue       *resiliency.WorkQueue
-	logStreamerEventQueueCancel context.CancelFunc
+	// Schedules resources with pending lifecycle events.
+	logStreamerResourceQueue       *resiliency.WorkQueue
+	logStreamerResourceQueueCancel context.CancelFunc
+	lifetimeCtx                    context.Context
 
-	// Cache of most recent event for each parent resource
-	// Keyed off UID to handle the scenario where a resource with the same name is created multiple times
-	// Used to send the current status of a resource immediately to a new watcher
-	mostRecentResourceEvents *syncmap.Map[types.UID, ResourceWatcherEvent]
+	// An entry remains while its resource is queued or processing an event, even when its FIFO is empty.
+	pendingResourceEvents map[types.UID]*container.RingBuffer[ResourceWatcherEvent]
+
+	// Shares the latest processed state and processing lock between lifecycle callbacks and log requests.
+	resourceStates *syncmap.Map[types.UID, *resourceLogState]
 
 	// Resource watchers that want to be updated when parent resources change
 	resourceWatchers *syncmap.Map[types.UID, *syncmap.Map[*resourceWatcher, bool]]
@@ -188,36 +192,38 @@ func NewLogStorage[O Options](
 		return nil, fmt.Errorf("log storage requires option and response factories and a response kind")
 	}
 
-	logStreamerEventQueueCtx, logStreamerEventQueueCancel := context.WithCancel(context.Background())
+	logStreamerResourceQueueCtx, logStreamerResourceQueueCancel := context.WithCancel(context.Background())
 
 	return &LogStorage[O]{
-		parentKindStorage:           parentKindStorage,
-		logStreamer:                 logStreamer,
-		logStreamerEventQueue:       resiliency.NewWorkQueue(logStreamerEventQueueCtx, resiliency.DefaultConcurrency),
-		logStreamerEventQueueCancel: logStreamerEventQueueCancel,
-		mostRecentResourceEvents:    &syncmap.Map[types.UID, ResourceWatcherEvent]{},
-		resourceWatchers:            &syncmap.Map[types.UID, *syncmap.Map[*resourceWatcher, bool]]{},
-		mutex:                       &sync.Mutex{},
-		watcher:                     nil,
-		disposeCh:                   make(chan struct{}),
-		newOptions:                  newOptions,
-		newResponse:                 newResponse,
-		responseKind:                responseKind,
+		parentKindStorage:              parentKindStorage,
+		logStreamer:                    logStreamer,
+		logStreamerResourceQueue:       resiliency.NewWorkQueue(logStreamerResourceQueueCtx, resiliency.DefaultConcurrency),
+		logStreamerResourceQueueCancel: logStreamerResourceQueueCancel,
+		lifetimeCtx:                    logStreamerResourceQueueCtx,
+		pendingResourceEvents:          make(map[types.UID]*container.RingBuffer[ResourceWatcherEvent]),
+		resourceStates:                 &syncmap.Map[types.UID, *resourceLogState]{},
+		resourceWatchers:               &syncmap.Map[types.UID, *syncmap.Map[*resourceWatcher, bool]]{},
+		mutex:                          &sync.Mutex{},
+		watcher:                        nil,
+		disposeCh:                      make(chan struct{}),
+		newOptions:                     newOptions,
+		newResponse:                    newResponse,
+		responseKind:                   responseKind,
 	}, nil
 }
 
-func (ls *LogStorage[O]) watchResource(uid types.UID, log logr.Logger) (*resourceWatcher, error) {
-	// Lock the log storage mutex to ensure notifications aren't being sent while a new watcher is registered
+func (ls *LogStorage[O]) watchResource(ctx context.Context, uid types.UID, log logr.Logger) (*resourceWatcher, error) {
+	// Serialize parent-watch setup and subscription registration.
 	ls.mutex.Lock()
-	defer ls.mutex.Unlock()
-
 	if ls.disposed {
+		ls.mutex.Unlock()
 		return nil, fmt.Errorf("log storage has been disposed")
 	}
 
 	if ls.watcher == nil {
 		watchErr := ls.watchResourceEvents(log)
 		if watchErr != nil {
+			ls.mutex.Unlock()
 			return nil, watchErr
 		}
 	}
@@ -226,14 +232,26 @@ func (ls *LogStorage[O]) watchResource(uid types.UID, log logr.Logger) (*resourc
 		return &syncmap.Map[*resourceWatcher, bool]{}
 	})
 
-	rw := newResourceWatcher()
+	state, _ := ls.resourceStates.LoadOrStoreNew(uid, func() *resourceLogState {
+		return &resourceLogState{}
+	})
+	rw := newResourceWatcher(state)
 	rw.OnStop(func() {
 		resourceWatchers.Delete(rw)
 	})
-	if event, found := ls.mostRecentResourceEvents.Load(uid); found {
-		rw.Queue(event)
-	}
 	_, _ = resourceWatchers.LoadOrStore(rw, true)
+	ls.mutex.Unlock()
+
+	state.processing.RLock()
+	if contextErr := ctx.Err(); contextErr != nil {
+		state.processing.RUnlock()
+		rw.Stop()
+		return nil, contextErr
+	}
+	if state.latest.Object != nil {
+		rw.Notify()
+	}
+	state.processing.RUnlock()
 
 	return rw, nil
 }
@@ -325,7 +343,7 @@ func (ls *LogStorage[O]) watchResourceEvents(log logr.Logger) error {
 }
 
 func (ls *LogStorage[O]) resourceEventHandler(evt watch.Event, log logr.Logger) {
-	// Lock the log storage mutex to ensure we don't try to notify resource watchers at the same time a new resource watcher is being added
+	// Serialize incoming events and scheduling for each resource.
 	ls.mutex.Lock()
 	defer ls.mutex.Unlock()
 
@@ -351,11 +369,11 @@ func (ls *LogStorage[O]) resourceEventHandler(evt watch.Event, log logr.Logger) 
 
 	resourceName := commonapi.GetNamespacedNameWithKindForResourceObject(apiObj).String()
 	startTime := time.Now()
-	const longNotificationThreshold = 2 * time.Second
+	const longEventProcessingThreshold = 2 * time.Second
 	defer func() {
 		duration := time.Since(startTime)
-		if duration > longNotificationThreshold {
-			log.Info("Warning: notifying resource watchers of parent resource event took longer than expected",
+		if duration > longEventProcessingThreshold {
+			log.Info("Warning: processing parent resource watch event took longer than expected",
 				"Event", rwevt.Type,
 				"Resource", resourceName,
 				"Duration", duration,
@@ -363,33 +381,105 @@ func (ls *LogStorage[O]) resourceEventHandler(evt watch.Event, log logr.Logger) 
 		}
 	}()
 
-	activeResourceWatchers, found := ls.resourceWatchers.Load(apiObj.GetObjectMeta().GetUID())
-	if found {
-		watcherCount := 0
-		activeResourceWatchers.Range(func(rw *resourceWatcher, _ bool) bool {
-			if rw.Queue(rwevt) {
-				watcherCount += 1
-			}
+	uid := apiObj.GetObjectMeta().GetUID()
+	pending, scheduled := ls.pendingResourceEvents[uid]
+	if !scheduled {
+		pending = container.NewRingBuffer[ResourceWatcherEvent]()
+		ls.pendingResourceEvents[uid] = pending
+	}
+	pending.Push(rwevt)
+	if !scheduled {
+		ls.scheduleResourceEvent(uid, log)
+	}
+}
+
+// scheduleResourceEvent requires ls.mutex to be held.
+func (ls *LogStorage[O]) scheduleResourceEvent(uid types.UID, log logr.Logger) {
+	scheduleErr := ls.logStreamerResourceQueue.Enqueue(func(ctx context.Context) {
+		ls.processResourceEvent(ctx, uid, log)
+	})
+	if scheduleErr != nil {
+		delete(ls.pendingResourceEvents, uid)
+		log.Error(scheduleErr, "Failed to schedule log resource event", "UID", uid)
+	}
+}
+
+func (ls *LogStorage[O]) processResourceEvent(ctx context.Context, uid types.UID, log logr.Logger) {
+	ls.mutex.Lock()
+	if ls.disposed {
+		ls.mutex.Unlock()
+		return
+	}
+	pending := ls.pendingResourceEvents[uid]
+	event, found := pending.Pop()
+	if !found {
+		delete(ls.pendingResourceEvents, uid)
+		ls.mutex.Unlock()
+		log.Error(fmt.Errorf("resource event queue is empty"), "Failed to dispatch log resource event", "UID", uid)
+		return
+	}
+	ls.mutex.Unlock()
+
+	state, _ := ls.resourceStates.LoadOrStoreNew(uid, func() *resourceLogState {
+		return &resourceLogState{}
+	})
+	state.processing.Lock()
+	if ctx.Err() != nil {
+		state.processing.Unlock()
+		return
+	}
+	state.latest = event
+	ls.logStreamer.OnResourceUpdated(event, log)
+	if watchers, watching := ls.resourceWatchers.Load(uid); watching {
+		watchers.Range(func(rw *resourceWatcher, _ bool) bool {
+			rw.Notify()
 			return true
 		})
-		if watcherCount > 0 {
-			log.V(1).Info("Completed notifying resource watchers of parent resource event",
-				"Event", rwevt.Type,
-				"Resource", resourceName,
-				"WatcherCount", watcherCount,
-			)
-		}
 	}
+	state.processing.Unlock()
 
-	_ = ls.logStreamerEventQueue.Enqueue(func(_ context.Context) {
-		ls.logStreamer.OnResourceUpdated(rwevt, log)
-	})
+	ls.mutex.Lock()
+	defer ls.mutex.Unlock()
+	if ls.disposed {
+		return
+	}
+	if pending.Empty() {
+		delete(ls.pendingResourceEvents, uid)
+	} else {
+		ls.scheduleResourceEvent(uid, log)
+	}
+}
 
-	// Store the event so subsequent resource watchers can receive it as the latest value
-	ls.mostRecentResourceEvents.Store(
-		apiObj.GetObjectMeta().GetUID(),
-		rwevt,
-	)
+// Processes the latest state under a read lock, excluding lifecycle updates but allowing other requests.
+func (ls *LogStorage[O]) streamLatestResourceLogs(
+	ctx context.Context, watcher *resourceWatcher, writer io.Writer, options O, log logr.Logger,
+) (ResourceStreamStatus, <-chan struct{}, error) {
+	state := watcher.resource
+	state.processing.RLock()
+	defer state.processing.RUnlock()
+	if contextErr := ctx.Err(); contextErr != nil {
+		return ResourceStreamStatusDone, nil, contextErr
+	}
+	watcher.mutex.Lock()
+	if watcher.stopped {
+		watcher.mutex.Unlock()
+		return ResourceStreamStatusDone, nil, nil
+	}
+	watcher.changed.Clear()
+	watcher.mutex.Unlock()
+	select {
+	case <-ls.disposeCh:
+		return ResourceStreamStatusDone, nil, nil
+	default:
+	}
+	if state.latest.Object == nil {
+		return ResourceStreamStatusNotReady, nil, nil
+	}
+	if state.latest.Type == watch.Deleted {
+		log.V(1).Info("Parent resource was deleted, closing log stream")
+		return ResourceStreamStatusDone, nil, nil
+	}
+	return ls.logStreamer.StreamLogs(ctx, writer, state.latest.Object, options, log)
 }
 
 func (ls *LogStorage[O]) New() runtime.Object {
@@ -408,7 +498,8 @@ func (ls *LogStorage[O]) Destroy() {
 	close(ls.disposeCh)
 	watcher := ls.watcher
 	ls.watcher = nil
-	ls.logStreamerEventQueueCancel()
+	ls.logStreamerResourceQueueCancel()
+	clear(ls.pendingResourceEvents)
 	ls.mutex.Unlock()
 
 	// Logs do not have independent storage/lifecycle, they will be deleted when the parent is deleted,
@@ -477,9 +568,12 @@ func (ls *LogStorage[O]) resourceStreamerFactory(resourceName, namespace string,
 			"Kind", apiObj.GetObjectKind().GroupVersionKind().String(),
 		)
 
-		reader, writer := io.Pipe()
-		watcher, watcherErr := ls.watchResource(apiObj.GetObjectMeta().GetUID(), log)
+		requestCtx, cancelRequest := context.WithCancel(ctx)
+		stopOnDispose := context.AfterFunc(ls.lifetimeCtx, cancelRequest)
+		watcher, watcherErr := ls.watchResource(requestCtx, apiObj.GetObjectMeta().GetUID(), log)
 		if watcherErr != nil {
+			stopOnDispose()
+			cancelRequest()
 			return nil, false, "", apierrors.NewInternalError(fmt.Errorf("failed to register watcher for parent resource: %w", watcherErr))
 		}
 
@@ -489,8 +583,11 @@ func (ls *LogStorage[O]) resourceStreamerFactory(resourceName, namespace string,
 			"Options", options.String(),
 		)
 		log.V(1).Info("Preparing log stream")
+		reader, writer := io.Pipe()
 
 		go func() {
+			defer stopOnDispose()
+			defer cancelRequest()
 			defer func() {
 				closeErr := writer.Close()
 				if closeErr != nil {
@@ -501,19 +598,16 @@ func (ls *LogStorage[O]) resourceStreamerFactory(resourceName, namespace string,
 
 			for {
 				select {
-				case <-ctx.Done():
+				case <-requestCtx.Done():
 					log.V(1).Info("Context was canceled, closing log stream")
 					return
-				case evt, open := <-watcher.ResultChan():
+				case <-ls.disposeCh:
+					return
+				case _, open := <-watcher.ResultChan():
 					if !open {
 						return
 					}
-					if evt.Type == watch.Deleted {
-						log.V(1).Info("Parent resource was deleted, closing log stream")
-						return
-					}
-
-					resourceStreamStatus, doneStreaming, logStreamErr := ls.logStreamer.StreamLogs(ctx, writer, evt.Object, options, log)
+					resourceStreamStatus, doneStreaming, logStreamErr := ls.streamLatestResourceLogs(requestCtx, watcher, writer, options, log)
 					// There was an error attempting to stream logs, close the stream and exit
 					if logStreamErr != nil {
 						log.Error(logStreamErr, "Failed to initialize log stream")
@@ -526,7 +620,7 @@ func (ls *LogStorage[O]) resourceStreamerFactory(resourceName, namespace string,
 						watcher.Stop()
 						log.V(1).Info("Starting log streaming for resource")
 						select {
-						case <-ctx.Done():
+						case <-requestCtx.Done():
 						case <-ls.disposeCh:
 						case <-doneStreaming:
 						}

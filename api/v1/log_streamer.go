@@ -94,13 +94,6 @@ func (lsl *LogStreamerList) GetListMeta() *metav1.ListMeta {
 	return &lsl.ListMeta
 }
 
-// +kubebuilder:object:generate=false
-type ResourceStreamerFunc func(ctx context.Context, apiVersion, acceptHeader string) (io.ReadCloser, bool, string, error)
-
-func (rs ResourceStreamerFunc) InputStream(ctx context.Context, apiVersion, acceptHeader string) (io.ReadCloser, bool, string, error) {
-	return rs(ctx, apiVersion, acceptHeader)
-}
-
 func init() {
 	SchemeBuilder.Register(&LogStreamer{}, &LogStreamerList{})
 }

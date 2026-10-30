@@ -8,8 +8,10 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -131,6 +133,22 @@ func TestV2ProcessRetainedLogsPreserveRawOutput(t *testing.T) {
 	require.Equal(t, payload, preserved)
 }
 
+type processOutputDrainExecutor struct {
+	process.Executor
+	testContext context.Context
+}
+
+func (executor *processOutputDrainExecutor) StartProcess(
+	ctx context.Context, command *exec.Cmd, handler process.ProcessExitHandler,
+	flags process.ProcessCreationFlag, create process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	// Keep the drain open until the test releases the child instead of racing API requests against WaitDelay.
+	if deadline, bounded := executor.testContext.Deadline(); bounded && command.WaitDelay != 0 {
+		command.WaitDelay = time.Until(deadline)
+	}
+	return executor.Executor.StartProcess(ctx, command, handler, flags, create)
+}
+
 // Verifies that physical process output completes after descendant-held pipes drain,
 // rather than when the root process disappears, including for a newly opened follower.
 func TestV2PhysicalProcessLogsWaitForOutputDrain(t *testing.T) {
@@ -143,7 +161,9 @@ func TestV2PhysicalProcessLogsWaitForOutputDrain(t *testing.T) {
 	executor := process.NewOSExecutor(logr.Discard())
 	defer executor.Dispose()
 	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, PhysicalProcessController, t.Name(), t.TempDir(),
-		TestEnvironmentOptions{DecoratePhysicalProcessExecutor: func(process.Executor) process.Executor { return executor }})
+		TestEnvironmentOptions{DecoratePhysicalProcessExecutor: func(process.Executor) process.Executor {
+			return &processOutputDrainExecutor{Executor: executor, testContext: ctx}
+		}})
 	require.NoError(t, startupErr)
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-process-output-drain"}}
 	require.NoError(t, server.Client.Create(ctx, namespace))
@@ -154,7 +174,7 @@ func TestV2PhysicalProcessLogsWaitForOutputDrain(t *testing.T) {
 	require.NoError(t, toolErr)
 	physical := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
 		Spec: apiv2.PhysicalProcessSpec{Process: &apiv2.PhysicalProcessConfig{
-			ExecutablePath: tool, Args: []string{"--child-spec", "1", "--hold-pipe"},
+			ExecutablePath: tool, Args: []string{"--child-spec", "1", "--hold-pipe", "--report-ready"},
 		}}}
 	require.NoError(t, server.Client.Create(ctx, physical))
 	running := waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
@@ -175,6 +195,10 @@ func TestV2PhysicalProcessLogsWaitForOutputDrain(t *testing.T) {
 			require.True(t, stopErr == nil || process.IsProcessGoneErr(stopErr), "%v", stopErr)
 		}
 	}()
+	require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, pollImmediately, func(context.Context) (bool, error) {
+		captured, captureErr := os.ReadFile(running.Status.StdoutFile)
+		return strings.Contains(string(captured), fmt.Sprintf("Ready: %d\n", tree[1].Pid)), captureErr
+	}))
 	root, rootErr := handle.OsProcess()
 	require.NoError(t, rootErr)
 	require.NoError(t, root.Kill())

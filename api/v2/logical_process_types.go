@@ -182,6 +182,11 @@ func (resource *LogicalProcess) GetResourceId() string {
 	return fmt.Sprintf("logicalprocess-%s", resource.UID)
 }
 
+// GetLogSource returns the observed immediate physical process output source.
+func (resource *LogicalProcess) GetLogSource() *LogSource {
+	return resource.Status.RuntimeLogs
+}
+
 func (*LogicalProcess) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{&LogicalProcessLogResource{}}
 }

@@ -5207,7 +5207,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref common.Refere
 					},
 					"physicalNetworkRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>. Published after physical resource creation; logical consumers use this reference when the network is Ready. Cross-namespace references are not supported.",
+							Description: "PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>. Published after physical resource creation; logical consumers may use it before runtime readiness unless the network has failed. Cross-namespace references are not supported.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
