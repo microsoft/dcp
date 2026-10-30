@@ -308,7 +308,7 @@ func handleLogicalContainerPending(
 	physical, lookupErr := reconciler.findLogicalContainerBacking(ctx, container, reconciler.Client,
 		ctrl_client.MatchingFields{logicalContainerOwnerUIDField: string(container.UID)})
 	if lookupErr != nil {
-		log.Error(lookupErr, "Failed to observe physical container creation")
+		log.Error(lookupErr, "Failed to list physical containers backing the current logical container")
 		if errors.Is(lookupErr, errMultipleLogicalContainerBackings) {
 			data.state, data.reason = logicalContainerStateInvalid, "MultiplePhysicalContainers"
 			data.message = lookupErr.Error()
