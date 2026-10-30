@@ -1165,6 +1165,7 @@ func TestV2PhysicalContainerControllerDeletesCreatedContainer(t *testing.T) {
 	waitContainerMissing(t, ctx, containerID)
 }
 
+// Verifies that PhysicalContainerReconciler reports repeated deletion failures and retains its finalizer until a blocked recovery removal succeeds.
 func TestV2PhysicalContainerControllerReportsDeletionFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -1186,15 +1187,26 @@ func TestV2PhysicalContainerControllerReportsDeletionFailure(t *testing.T) {
 	require.NoError(t, client.Create(ctx, container))
 
 	runningContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
-	containerOrchestrator.FailNextRemoveContainer(containerName, errors.New("remove failed"))
-	containerOrchestrator.FailNextRemoveContainer(containerName, errors.New("remove failed"))
+	releaseRemoval := containerOrchestrator.BlockRemoveContainerAfterFailures(
+		containerName, errors.New("remove failed"), errors.New("remove failed"),
+	)
+	t.Cleanup(releaseRemoval)
 	require.NoError(t, client.Delete(ctx, runningContainer))
 
+	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return containerOrchestrator.RemoveContainerCallCount(containerName) >= 3, nil
+	}))
 	failedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseUnknown)
 	requireReadyCondition(t, failedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerRemoveFailed)
 	require.NotEmpty(t, failedContainer.Finalizers)
-	require.Equal(t, 2, containerOrchestrator.RemoveContainerCallCount(containerName))
+	require.Equal(t, 3, containerOrchestrator.RemoveContainerCallCount(containerName))
+	inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{runningContainer.Status.ContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspected, 1)
 
+	releaseRemoval()
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
 	waitContainerMissing(t, ctx, runningContainer.Status.ContainerID)
 	require.Equal(t, 3, containerOrchestrator.RemoveContainerCallCount(containerName))
