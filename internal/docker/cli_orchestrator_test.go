@@ -180,6 +180,78 @@ func TestInspectedContainerDeserialization(t *testing.T) {
 		}, vols[1].Labels)
 }
 
+// Verifies that InspectVolumes recognizes local and Swarm missing-volume errors,
+// preserves diagnostics, and leaves unrelated failures unmatched.
+func TestInspectVolumesClassifiesMissingVolumeErrors(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		stderr   string
+		notFound bool
+	}{
+		{
+			name:     "local volume",
+			stderr:   "Error response from daemon: get missing-volume: no such volume\n",
+			notFound: true,
+		},
+		{
+			name:     "Swarm volume",
+			stderr:   "Error response from daemon: volume missing-volume not found\n",
+			notFound: true,
+		},
+		{
+			name:     "case insensitive",
+			stderr:   "Error response from daemon: Volume missing-volume NOT FOUND\n",
+			notFound: true,
+		},
+		{
+			name:   "unrelated failure",
+			stderr: "Error response from daemon: volume driver unavailable\n",
+		},
+		{
+			name:   "unrelated missing resource",
+			stderr: "Error response from daemon: network missing-network not found\n",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			defer cancel()
+			executor := internal_testutil.NewTestProcessExecutor(ctx)
+			t.Cleanup(func() {
+				require.NoError(t, executor.Close())
+			})
+			inspectCommand := []string{"docker", "volume", "inspect", "--format", "{{json .}}", "missing-volume"}
+			executor.InstallAutoExecution(internal_testutil.AutoExecution{
+				Condition: internal_testutil.ProcessSearchCriteria{Command: inspectCommand},
+				RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+					_, writeErr := execution.Cmd.Stderr.Write([]byte(testCase.stderr))
+					require.NoError(t, writeErr)
+					return 1
+				},
+			})
+			orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
+
+			volumes, inspectErr := orchestrator.InspectVolumes(ctx, ct.InspectVolumesOptions{Volumes: []string{"missing-volume"}})
+
+			require.Empty(t, volumes)
+			require.ErrorContains(t, inspectErr, testCase.stderr)
+			require.ErrorIs(t, inspectErr, ct.ErrIncomplete)
+			if testCase.notFound {
+				require.ErrorIs(t, inspectErr, ct.ErrNotFound)
+				require.NotErrorIs(t, inspectErr, ct.ErrUnmatched)
+			} else {
+				require.NotErrorIs(t, inspectErr, ct.ErrNotFound)
+				require.ErrorIs(t, inspectErr, ct.ErrUnmatched)
+			}
+		})
+	}
+}
+
 func TestReportsContainerEvents(t *testing.T) {
 	t.Parallel()
 
