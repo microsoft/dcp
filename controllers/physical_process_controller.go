@@ -146,7 +146,7 @@ func (r *PhysicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	var change objectChange
 	reconciliationDelay := StandardDelay
 	if !physicalProcess.DeletionTimestamp.IsZero() && !data.operationInProgress() {
-		change, reconciliationDelay = r.handleDeletionRequest(&physicalProcess, data, log)
+		change, reconciliationDelay = r.handleDeletionRequest(ctx, &physicalProcess, data, log)
 	} else {
 		change = ensureFinalizer(&physicalProcess, physicalProcessFinalizer, log)
 		if change == noChange {
@@ -849,6 +849,7 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 }
 
 func (r *PhysicalProcessReconciler) handleDeletionRequest(
+	ctx context.Context,
 	physicalProcess *apiv2.PhysicalProcess,
 	data *physicalProcessData,
 	log logr.Logger,
@@ -902,6 +903,15 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(
 			closeErr := data.closeOutputLogs(option, log)
 			if closeErr != nil {
 				data.failureMessage = fmt.Sprintf("Failed to release process output capture: %v", closeErr)
+				return additionalReconciliationNeeded, LongDelay
+			}
+		}
+		if physicalProcess.Spec.PID != nil && data != nil &&
+			(data.state == physicalProcessStateExited || data.state == physicalProcessStateMissing) {
+			removeErr := logs.RemoveProcessOutput(ctx, physicalProcess.Spec.StdoutFile, physicalProcess.Spec.StderrFile)
+			if removeErr != nil {
+				log.Error(removeErr, "Failed to remove adopted process output")
+				data.failureMessage = fmt.Sprintf("Failed to remove adopted process output: %v", removeErr)
 				return additionalReconciliationNeeded, LongDelay
 			}
 		}

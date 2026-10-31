@@ -482,6 +482,49 @@ func TestV2ProcessLogsForExistingProcessWithoutCapture(t *testing.T) {
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
 }
 
+// Verifies that an identity-bound physical reference reads a supplied stdout file independent of
+// resource naming, keeps it while detached from a running process, and removes it after confirmed exit.
+func TestV2PhysicalProcessReusesExistingOutputCapture(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-physical-process-existing-output")
+	handle := seedAdoptablePhysicalProcess(t, ctx, "v2-physical-process-existing-output-command")
+	pid := int64(handle.Pid)
+	outputPath := filepath.Join(t.TempDir(), "unrelated-original-output.log")
+	const output = "123 items\noriginal capture"
+	require.NoError(t, usvc_io.WriteFile(outputPath, []byte(output), osutil.PermissionOnlyOwnerReadWrite))
+	spec := apiv2.PhysicalProcessSpec{PID: &pid, IdentityTimestamp: metav1.NewMicroTime(handle.IdentityTime), StdoutFile: outputPath}
+	first := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "first", Namespace: namespace.Name}, Spec: *spec.DeepCopy()}
+	require.NoError(t, client.Create(ctx, first))
+	waitPhysicalProcessPhase(t, ctx, first.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
+	readOutput, readErr := readV2ContainerLog(ctx, first, apiv2.ResourceLogOptions{})
+	require.NoError(t, readErr)
+	require.Equal(t, output, readOutput)
+	noStderr, stderrErr := readV2ContainerLog(ctx, first, apiv2.ResourceLogOptions{Source: "stderr", Follow: true})
+	require.NoError(t, stderrErr)
+	require.Empty(t, noStderr)
+	require.NoError(t, client.Delete(ctx, first))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, first)
+	require.FileExists(t, outputPath)
+	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
+	second := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "second", Namespace: namespace.Name}, Spec: *spec.DeepCopy()}
+	require.NoError(t, client.Create(ctx, second))
+	waitPhysicalProcessPhase(t, ctx, second.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
+	require.NoError(t, retryOnConflict(ctx, second.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalProcess) error {
+		current.Spec.Stop = true
+		return client.Update(updateCtx, current)
+	}))
+	exited := waitPhysicalProcessPhase(t, ctx, second.NamespacedName(), apiv2.PhysicalProcessPhaseExited)
+	require.True(t, exited.Status.LogsComplete)
+	finalOutput, finalErr := readV2ContainerLog(ctx, second, apiv2.ResourceLogOptions{Follow: true})
+	require.NoError(t, finalErr)
+	require.Equal(t, output, finalOutput)
+	require.NoError(t, client.Delete(ctx, second))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, second)
+	require.NoFileExists(t, outputPath)
+}
+
 // Verifies that logical and physical followers drain and finish on resource deletion,
 // captured files are cleaned up, and a recreated logical name gets a distinct capture.
 func TestV2ProcessLogsFinishOnDeletionAndIsolateRecreatedResources(t *testing.T) {

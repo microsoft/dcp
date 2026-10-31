@@ -23,6 +23,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/containers/runtimes"
 	"github.com/microsoft/dcp/internal/exerunners"
+	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
@@ -575,6 +576,13 @@ func cleanupPersistentProcessRecord(
 		cleaned = true
 
 		deleteRecord := func(deleteLogMessage string) error {
+			if strings.HasPrefix(currentRecord.ResourceKey, "processes/") {
+				removeErr := logs.RemoveProcessOutput(ctx, currentRecord.StdOutFile, currentRecord.StdErrFile)
+				if removeErr != nil {
+					log.Error(removeErr, "Could not remove retired persistent process output", "ResourceKey", currentRecord.ResourceKey)
+					return removeErr
+				}
+			}
 			if deleteErr := stateStore.DeletePersistentProcess(ctx, currentRecord.ResourceKey); deleteErr != nil {
 				log.Error(deleteErr, deleteLogMessage, "ResourceKey", currentRecord.ResourceKey)
 				return deleteErr

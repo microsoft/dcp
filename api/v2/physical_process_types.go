@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -94,6 +95,14 @@ type PhysicalProcessSpec struct {
 	// When set, a reused PID is reported as missing rather than adopted or stopped.
 	// Forbidden when process is set.
 	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
+
+	// StdoutFile optionally supplies an existing raw stdout capture for an identity-bound PID reference.
+	// It is retained while the process runs and removed after confirmed exit when this resource is deleted.
+	StdoutFile string `json:"stdoutFile,omitempty"`
+
+	// StderrFile optionally supplies an existing raw stderr capture for an identity-bound PID reference.
+	// It is retained while the process runs and removed after confirmed exit when this resource is deleted.
+	StderrFile string `json:"stderrFile,omitempty"`
 
 	// Process describes an operating system process to launch. Exactly one of pid or process must be set.
 	Process *PhysicalProcessConfig `json:"process,omitempty"`
@@ -212,8 +221,8 @@ func (pp *PhysicalProcess) GetResourceId() string {
 func (pp *PhysicalProcess) GetLogSource() *LogSource {
 	return &LogSource{
 		Name: pp.Name, UID: pp.UID, StdoutFile: pp.Status.StdoutFile, StderrFile: pp.Status.StderrFile,
-		Available: pp.Status.StdoutFile != "" && pp.Status.StderrFile != "", Complete: pp.Status.LogsComplete,
-		Raw: pp.Spec.Process != nil && pp.Spec.Process.RetainRuntimeProcess,
+		Available: pp.Status.StdoutFile != "" || pp.Status.StderrFile != "", Complete: pp.Status.LogsComplete,
+		Raw: pp.Spec.PID != nil || (pp.Spec.Process != nil && pp.Spec.Process.RetainRuntimeProcess),
 	}
 }
 
@@ -271,6 +280,19 @@ func (pp *PhysicalProcess) Validate(ctx context.Context) field.ErrorList {
 	}
 
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(pp.Annotations, field.NewPath("metadata", "annotations"))...)
+	for _, capture := range []struct {
+		name string
+		path string
+	}{{"stdoutFile", pp.Spec.StdoutFile}, {"stderrFile", pp.Spec.StderrFile}} {
+		if capture.path == "" {
+			continue
+		}
+		if pp.Spec.PID == nil || pp.Spec.IdentityTimestamp.IsZero() {
+			errorList = append(errorList, field.Forbidden(specPath.Child(capture.name), "existing capture requires pid and identityTimestamp"))
+		} else if !filepath.IsAbs(capture.path) {
+			errorList = append(errorList, field.Invalid(specPath.Child(capture.name), capture.path, "capture path must be absolute"))
+		}
+	}
 
 	if pp.Spec.PID == nil && pp.Spec.Process == nil {
 		errorList = append(errorList, field.Required(specPath, "exactly one of pid or process must be set"))

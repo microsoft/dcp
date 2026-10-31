@@ -8,6 +8,9 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,6 +28,8 @@ import (
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -290,10 +295,19 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	require.Equal(t, commonapi.WorkloadID("logical-process-workload"), record.WorkloadID)
 	require.Equal(t, *created.Status.PID, int64(record.PID))
 	require.Equal(t, created.Status.LifecycleKey, record.LifecycleKey)
+	require.Equal(t, created.Status.RuntimeLogs.StdoutFile, record.StdOutFile)
+	require.Equal(t, created.Status.RuntimeLogs.StderrFile, record.StdErrFile)
+	stdout, stdoutErr := usvc_io.OpenOrCreateFileForAppending(record.StdOutFile, osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, stdoutErr)
+	_, writeErr := io.WriteString(stdout, "123 retained output\n")
+	require.NoError(t, writeErr)
+	require.NoError(t, stdout.Close())
 	require.ErrorIs(t, testStateStore.VerifyResourceLeaseHeld(ctx, first, testResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 	require.NoError(t, client.Delete(ctx, first))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, first)
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(record.ProcessHandle()))
+	require.FileExists(t, record.StdOutFile)
+	require.FileExists(t, record.StdErrFile)
 	second := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name}, Spec: *spec.DeepCopy()}
 	require.NoError(t, client.Create(ctx, second))
 	reused := waitLogicalProcessPhase(t, ctx, second.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
@@ -303,9 +317,17 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	require.Equal(t, reused.Status.PID, adopted.Spec.PID)
 	require.False(t, adopted.Spec.IdentityTimestamp.IsZero())
 	require.Nil(t, adopted.Spec.Process)
+	require.Equal(t, record.StdOutFile, adopted.Spec.StdoutFile)
+	require.Equal(t, record.StdErrFile, adopted.Spec.StderrFile)
+	require.Equal(t, record.StdOutFile, reused.Status.RuntimeLogs.StdoutFile)
+	output, outputErr := readV2ContainerLog(ctx, second, apiv2.ResourceLogOptions{})
+	require.NoError(t, outputErr)
+	require.Equal(t, "123 retained output\n", output)
 	reusedRecord, reusedRecordErr := testStateStore.GetPersistentProcess(ctx, second.GetLeaseKey())
 	require.NoError(t, reusedRecordErr)
 	require.Equal(t, record.RunID, reusedRecord.RunID)
+	require.Equal(t, record.StdOutFile, reusedRecord.StdOutFile)
+	require.Equal(t, record.StdErrFile, reusedRecord.StdErrFile)
 	require.NoError(t, client.Delete(ctx, second))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, second)
 	spec.Process.Args = []string{"changed"}
@@ -313,6 +335,8 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	require.NoError(t, client.Create(ctx, third))
 	replaced := waitLogicalProcessPhase(t, ctx, third.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
 	require.NotEqual(t, *created.Status.PID, *replaced.Status.PID)
+	require.NoFileExists(t, record.StdOutFile)
+	require.NoFileExists(t, record.StdErrFile)
 	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(record.ProcessHandle())))
 	previous := &apiv2.PhysicalProcess{}
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(third.UID) + "-previous"}, previous))
@@ -326,6 +350,8 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	waitLogicalProcessPhase(t, ctx, third.NamespacedName(), apiv2.LogicalProcessPhaseExited)
 	require.NoError(t, client.Delete(ctx, third))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, third)
+	require.NoFileExists(t, replaced.Status.RuntimeLogs.StdoutFile)
+	require.NoFileExists(t, replaced.Status.RuntimeLogs.StderrFile)
 }
 
 // Verifies that LogicalProcess existing mode binds the supplied identity, never launches a process,
@@ -382,9 +408,13 @@ func TestV2LogicalProcessControllerRejectsReusedPersistentPID(t *testing.T) {
 			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-logical-process-new-pid-command"}}}
 	key, _, keyErr := resource.Spec.GetLifecycleKey()
 	require.NoError(t, keyErr)
+	stdoutPath, stderrPath := filepath.Join(t.TempDir(), "old-out"), filepath.Join(t.TempDir(), "old-err")
+	require.NoError(t, usvc_io.WriteFile(stdoutPath, []byte("stale output"), osutil.PermissionOnlyOwnerReadWrite))
+	require.NoError(t, usvc_io.WriteFile(stderrPath, []byte("stale errors"), osutil.PermissionOnlyOwnerReadWrite))
 	require.NoError(t, testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
 		ResourceKey: resource.GetLeaseKey(), LifecycleKey: key, PID: currentHandle.Pid,
 		IdentityTime: currentHandle.IdentityTime.Add(-time.Hour), RunID: "stale-run",
+		StdOutFile: stdoutPath, StdErrFile: stderrPath,
 	}))
 	require.NoError(t, client.Create(ctx, resource))
 	running := waitLogicalProcessPhase(t, ctx, resource.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
@@ -393,6 +423,64 @@ func TestV2LogicalProcessControllerRejectsReusedPersistentPID(t *testing.T) {
 	stored, storedErr := testStateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
 	require.NoError(t, storedErr)
 	require.Equal(t, *running.Status.PID, int64(stored.PID))
+	require.NoFileExists(t, stdoutPath)
+	require.NoFileExists(t, stderrPath)
+}
+
+// Verifies that replacement retains the old process record through retired-output cleanup
+// failure and launches the new process only after cleanup and record retirement succeed.
+func TestV2LogicalProcessControllerRetriesRetiredOutputCleanup(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-process-retired-output-retry")
+	first := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-retired-output-command"}}}
+	require.NoError(t, client.Create(ctx, first))
+	waitLogicalProcessPhase(t, ctx, first.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+	record, recordErr := testStateStore.GetPersistentProcess(ctx, first.GetLeaseKey())
+	require.NoError(t, recordErr)
+	require.NoError(t, client.Delete(ctx, first))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, first)
+	saved := record.StdOutFile + ".saved"
+	obstruction := filepath.Join(record.StdOutFile, "busy")
+	t.Cleanup(func() {
+		_ = os.Remove(obstruction)
+		_ = os.Remove(record.StdOutFile)
+		_ = os.Remove(saved)
+	})
+	require.NoError(t, os.Rename(record.StdOutFile, saved))
+	require.NoError(t, os.Mkdir(record.StdOutFile, 0700))
+	require.NoError(t, usvc_io.WriteFile(obstruction, []byte("busy"), osutil.PermissionOnlyOwnerReadWrite))
+	replacement := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: first.Name, Namespace: namespace.Name}, Spec: *first.Spec.DeepCopy()}
+	replacement.Spec.Process.Args = []string{"replacement"}
+	require.NoError(t, client.Create(ctx, replacement))
+	waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return condition != nil && condition.Reason == "PhysicalProcessPreparationFailed", nil
+	})
+	preserved, preservedErr := testStateStore.GetPersistentProcess(ctx, first.GetLeaseKey())
+	require.NoError(t, preservedErr)
+	require.Equal(t, record.PID, preserved.PID)
+	require.Equal(t, record.StdOutFile, preserved.StdOutFile)
+	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(record.ProcessHandle())))
+	require.Len(t, testProcessExecutor.FindAll([]string{first.Spec.Process.ExecutablePath}, "", nil), 1)
+	require.NoError(t, os.Remove(obstruction))
+	replaced := waitLogicalProcessPhase(t, ctx, replacement.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+	require.NotEqual(t, int64(record.PID), *replaced.Status.PID)
+	newRecord, newRecordErr := testStateStore.GetPersistentProcess(ctx, replacement.GetLeaseKey())
+	require.NoError(t, newRecordErr)
+	require.Equal(t, replaced.Status.RuntimeLogs.StdoutFile, newRecord.StdOutFile)
+	require.NoDirExists(t, record.StdOutFile)
+	require.NoFileExists(t, record.StdErrFile)
+	require.NoError(t, retryOnConflict(ctx, replacement.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
+		current.Spec.Stop = true
+		return client.Update(updateCtx, current)
+	}))
+	waitLogicalProcessPhase(t, ctx, replacement.NamespacedName(), apiv2.LogicalProcessPhaseExited)
+	require.NoError(t, client.Delete(ctx, replacement))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, replacement)
 }
 
 func waitLogicalProcessPhase(t *testing.T, ctx context.Context, name types.NamespacedName, phase apiv2.LogicalProcessPhase) *apiv2.LogicalProcess {
