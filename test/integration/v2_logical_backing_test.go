@@ -59,7 +59,7 @@ func TestV2LogicalContainerDeletesWhileWaitingForDependenciesOrRetries(t *testin
 			defer cancel()
 			namespace := createActiveV2Namespace(t, ctx, "v2-logical-delete-missing-"+dependency)
 			config := &apiv2.LogicalContainerConfig{ImageRef: "missing"}
-			reason := apiv2.PhysicalContainerReasonImageNotFound
+			reason := apiv2.PhysicalContainerReasonDependenciesNotReady
 			runtimeName := namespace.Name + "-runtime"
 			existingID := ""
 			if dependency != "image" {
@@ -69,7 +69,6 @@ func TestV2LogicalContainerDeletesWhileWaitingForDependenciesOrRetries(t *testin
 			switch dependency {
 			case "volume":
 				config.VolumeMounts = []apiv2.VolumeMount{{Type: apiv2.NamedVolumeMount, VolumeRef: "missing", Target: "/data"}}
-				reason = apiv2.PhysicalContainerReasonVolumeNotFound
 			case "create":
 				containerOrchestrator.FailNextCreateContainer(runtimeName, containers.ErrRuntimeNotHealthy)
 				reason = apiv2.PhysicalContainerReasonCreateFailed
@@ -158,7 +157,7 @@ func TestV2LogicalContainerDeletionCancelsPendingOwnedImage(t *testing.T) {
 	name := types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(logical.UID)}
 	physical := waitObjectAssumesState(t, ctx, name, func(current *apiv2.PhysicalContainer) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonImageNotReady), nil
+		return ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonDependenciesNotReady), nil
 	})
 	require.NoError(t, client.Delete(ctx, logical))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, logical)

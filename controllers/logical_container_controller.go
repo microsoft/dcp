@@ -569,32 +569,51 @@ func (r *LogicalContainerReconciler) resolveLogicalContainerNetworks(
 	ctx context.Context, container *apiv2.LogicalContainer,
 ) (bool, []apiv2.ContainerNetworkConnectionConfig, string, error) {
 	var resolved []apiv2.ContainerNetworkConnectionConfig
+	var pendingMessage string
+	var resolutionErr error
 	for _, requested := range container.Spec.Container.Networks {
 		network := &apiv2.LogicalContainerNetwork{}
 		networkName := commonapi.AsNamespacedName(requested.NetworkRef, container.Namespace)
 		getErr := r.Get(ctx, networkName, network)
 		if apierrors.IsNotFound(getErr) {
-			return false, nil, fmt.Sprintf("LogicalContainerNetwork %q does not exist.", networkName), nil
+			if pendingMessage == "" {
+				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q does not exist.", networkName)
+			}
+			continue
 		}
 		if getErr != nil {
-			return false, nil, "", fmt.Errorf("get LogicalContainerNetwork %q: %w", networkName, getErr)
-		}
-		if !network.DeletionTimestamp.IsZero() {
-			return false, nil, fmt.Sprintf("LogicalContainerNetwork %q is terminating.", networkName), nil
+			resolutionErr = errors.Join(resolutionErr, fmt.Errorf("get LogicalContainerNetwork %q: %w", networkName, getErr))
+			continue
 		}
 		if network.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed {
 			message := fmt.Sprintf("LogicalContainerNetwork %q failed.", networkName)
 			if failure := apimeta.FindStatusCondition(network.Status.Conditions, string(apiv2.ConditionReady)); failure != nil {
 				message = fmt.Sprintf("LogicalContainerNetwork %q reports %s: %s", networkName, failure.Reason, failure.Message)
 			}
-			return false, nil, "", fmt.Errorf("%w: %s", errLogicalNetworkFailed, message)
+			resolutionErr = errors.Join(resolutionErr, fmt.Errorf("%w: %s", errLogicalNetworkFailed, message))
+			continue
+		}
+		if !network.DeletionTimestamp.IsZero() {
+			if pendingMessage == "" {
+				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q is terminating.", networkName)
+			}
+			continue
 		}
 		if network.Status.PhysicalNetworkRef == "" {
-			return false, nil, fmt.Sprintf("LogicalContainerNetwork %q has not published its backing physical network reference.", networkName), nil
+			if pendingMessage == "" {
+				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q has not published its backing physical network reference.", networkName)
+			}
+			continue
 		}
 		resolved = append(resolved, apiv2.ContainerNetworkConnectionConfig{
 			NetworkRef: network.Status.PhysicalNetworkRef, Aliases: std_slices.Clone(requested.Aliases),
 		})
+	}
+	if resolutionErr != nil {
+		return false, nil, "", resolutionErr
+	}
+	if pendingMessage != "" {
+		return false, nil, pendingMessage, nil
 	}
 	return true, resolved, "", nil
 }
