@@ -15,7 +15,8 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 )
 
-// Verifies that every registered V2 state projects its declared phase, condition, and requeue policy.
+// Verifies that physical resource projections preserve phase, conditions, and retry policy.
+// Terminal dependency failures and confirmed missing containers and networks never schedule retries.
 func TestPhysicalResourceProjections(t *testing.T) {
 	t.Parallel()
 
@@ -25,6 +26,18 @@ func TestPhysicalResourceProjections(t *testing.T) {
 	assertPhysicalResourceProjections(t, physicalContainerVolumeProjections)
 	assertPhysicalResourceProjections(t, physicalProcessProjections)
 	assertPhysicalResourceProjections(t, logicalContainerProjections)
+	assertPhysicalResourceProjections(t, logicalContainerNetworkProjections)
+
+	containerMissing, containerMissingFound := physicalContainerProjections.project(physicalContainerStateMissing)
+	require.True(t, containerMissingFound)
+	require.False(t, containerMissing.requeue)
+	networkMissing, networkMissingFound := physicalContainerNetworkProjections.project(physicalContainerNetworkStateMissing)
+	require.True(t, networkMissingFound)
+	require.False(t, networkMissing.requeue)
+	dependencyFailed, dependencyFailedFound := physicalContainerProjections.project(physicalContainerStateDependencyFailed)
+	require.True(t, dependencyFailedFound)
+	require.Equal(t, apiv2.PhysicalContainerPhaseFailed, dependencyFailed.phase)
+	require.False(t, dependencyFailed.requeue)
 }
 
 // Verifies that every projected normal state has a reconciliation handler.
@@ -41,6 +54,12 @@ func TestV2ProjectedStatesHaveHandlers(t *testing.T) {
 			continue
 		}
 		require.Contains(t, logicalContainerDataHandlers, state)
+	}
+	for state := range logicalContainerNetworkProjections.projections {
+		if state == logicalContainerNetworkStateDelete {
+			continue
+		}
+		require.Contains(t, logicalContainerNetworkDataHandlers, state)
 	}
 }
 
@@ -76,7 +95,9 @@ func TestPhysicalResourceStateStringsDistinguishUnsetAndInvalidValues(t *testing
 	t.Parallel()
 
 	require.Equal(t, "Unset", physicalContainerState(0).String())
-	require.Equal(t, "Volumes", physicalContainerStateVolumes.String())
+	require.Equal(t, "Dependencies", physicalContainerStateDependencies.String())
+	require.Equal(t, "DependencyFailed", physicalContainerStateDependencyFailed.String())
+	require.Equal(t, "DependencyLookupFailed", physicalContainerStateDependencyLookupFailed.String())
 	require.Equal(t, "physicalContainerState(999)", physicalContainerState(999).String())
 	require.Equal(t, "Unset", physicalContainerImageState(0).String())
 	require.Equal(t, "physicalContainerImageState(999)", physicalContainerImageState(999).String())

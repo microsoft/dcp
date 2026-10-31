@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,19 +29,15 @@ const (
 	physicalContainerStateCreated
 	physicalContainerStateCreationSkipped
 	physicalContainerStateDead
+	physicalContainerStateDependencies
+	physicalContainerStateDependencyFailed
+	physicalContainerStateDependencyLookupFailed
 	physicalContainerStateExited
 	physicalContainerStateFileCopyFailed
 	physicalContainerStateFilesCopied
-	physicalContainerStateImage
-	physicalContainerStateImageFailed
-	physicalContainerStateImageLookupFailed
-	physicalContainerStateImageNotFound
 	physicalContainerStateInspectFailed
 	physicalContainerStateInvalid
 	physicalContainerStateMissing
-	physicalContainerStateNetworkLookupFailed
-	physicalContainerStateNetworkNotFound
-	physicalContainerStateNetworks
 	physicalContainerStateNotStarted
 	physicalContainerStatePaused
 	physicalContainerStateRemoveRetry
@@ -56,10 +53,82 @@ const (
 	physicalContainerStateStopRetry
 	physicalContainerStateStopped
 	physicalContainerStateUnknown
-	physicalContainerStateVolumeLookupFailed
-	physicalContainerStateVolumeNotFound
-	physicalContainerStateVolumes
 )
+
+func (state physicalContainerState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case physicalContainerStateCleanupFailed:
+		return "CleanupFailed"
+	case physicalContainerStateCleanupRetry:
+		return "CleanupRetry"
+	case physicalContainerStateCopyFiles:
+		return "CopyFiles"
+	case physicalContainerStateCreate:
+		return "Create"
+	case physicalContainerStateCreateFailed:
+		return "CreateFailed"
+	case physicalContainerStateCreateRetry:
+		return "CreateRetry"
+	case physicalContainerStateCreated:
+		return "Created"
+	case physicalContainerStateCreationSkipped:
+		return "CreationSkipped"
+	case physicalContainerStateDead:
+		return "Dead"
+	case physicalContainerStateDependencies:
+		return "Dependencies"
+	case physicalContainerStateDependencyFailed:
+		return "DependencyFailed"
+	case physicalContainerStateDependencyLookupFailed:
+		return "DependencyLookupFailed"
+	case physicalContainerStateExited:
+		return "Exited"
+	case physicalContainerStateFileCopyFailed:
+		return "FileCopyFailed"
+	case physicalContainerStateFilesCopied:
+		return "FilesCopied"
+	case physicalContainerStateInspectFailed:
+		return "InspectFailed"
+	case physicalContainerStateInvalid:
+		return "Invalid"
+	case physicalContainerStateMissing:
+		return "Missing"
+	case physicalContainerStateNotStarted:
+		return "NotStarted"
+	case physicalContainerStatePaused:
+		return "Paused"
+	case physicalContainerStateRemoveRetry:
+		return "RemoveRetry"
+	case physicalContainerStateRemoving:
+		return "Removing"
+	case physicalContainerStateReplaceRetry:
+		return "ReplaceRetry"
+	case physicalContainerStateResolve:
+		return "Resolve"
+	case physicalContainerStateResolveRetry:
+		return "ResolveRetry"
+	case physicalContainerStateRestarting:
+		return "Restarting"
+	case physicalContainerStateRunning:
+		return "Running"
+	case physicalContainerStateStart:
+		return "Start"
+	case physicalContainerStateStartFailed:
+		return "StartFailed"
+	case physicalContainerStateStarted:
+		return "Started"
+	case physicalContainerStateStopRetry:
+		return "StopRetry"
+	case physicalContainerStateStopped:
+		return "Stopped"
+	case physicalContainerStateUnknown:
+		return "Unknown"
+	default:
+		return fmt.Sprintf("physicalContainerState(%d)", int(state))
+	}
+}
 
 type physicalContainerData struct {
 	// UID of the PhysicalContainer that owns this data.
@@ -208,38 +277,15 @@ func (data *physicalContainerData) applyTo(
 var physicalContainerProjections = physicalResourceProjectionTable[physicalContainerState, apiv2.PhysicalContainerPhase]{
 	invalidPhase: apiv2.PhysicalContainerPhaseUnknown,
 	projections: map[physicalContainerState]physicalResourceProjection[apiv2.PhysicalContainerPhase]{
-		physicalContainerStateImageNotFound: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonImageNotFound,
+		physicalContainerStateDependencies: {
+			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonDependenciesNotReady,
 		},
-		physicalContainerStateImage: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonImageNotReady,
-		},
-		physicalContainerStateImageLookupFailed: {
-			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonImageLookupFailed,
+		physicalContainerStateDependencyLookupFailed: {
+			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonDependencyLookupFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
-		physicalContainerStateImageFailed: {
-			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonImageFailed,
-		},
-		physicalContainerStateVolumeNotFound: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonVolumeNotFound,
-		},
-		physicalContainerStateVolumes: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonVolumeNotReady,
-		},
-		physicalContainerStateVolumeLookupFailed: {
-			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonVolumeLookupFailed,
-			requeue: true, requeueDelay: LongDelay,
-		},
-		physicalContainerStateNetworkNotFound: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonNetworkNotFound,
-		},
-		physicalContainerStateNetworks: {
-			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonNetworkNotReady,
-		},
-		physicalContainerStateNetworkLookupFailed: {
-			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonNetworkLookupFailed,
-			requeue: true, requeueDelay: LongDelay,
+		physicalContainerStateDependencyFailed: {
+			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonDependencyFailed,
 		},
 		physicalContainerStateCreate: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonCreating,

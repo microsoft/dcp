@@ -8,6 +8,8 @@ package controllers
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -21,9 +23,32 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that physicalResourceCreationLabels overrides duplicate caller values for each
+// DCP ownership label without modifying the input or unrelated user-label precedence.
+func TestPhysicalResourceCreationLabelsOverrideCallerValues(t *testing.T) {
+	t.Parallel()
+	labels := []commonapi.Label{{Key: "app", Value: "first"}, {Key: "app", Value: "last"}}
+	for _, key := range []string{PersistentLabel, uidLabel, CreatorProcessIdLabel, CreatorProcessStartTimeLabel} {
+		labels = append(labels, commonapi.Label{Key: key, Value: "caller-first"}, commonapi.Label{Key: key, Value: "caller-last"})
+	}
+	original := slices.Clone(labels)
+	thisProcess, processErr := process.This()
+	require.NoError(t, processErr)
+	actual := v2LabelsToMap(physicalResourceCreationLabels(labels, true, types.UID("resource-uid"), logr.Discard()))
+	require.Equal(t, "true", actual[PersistentLabel])
+	require.Equal(t, "resource-uid", actual[uidLabel])
+	require.Equal(t, fmt.Sprintf("%d", thisProcess.Pid), actual[CreatorProcessIdLabel])
+	require.Equal(t, thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat), actual[CreatorProcessStartTimeLabel])
+	require.Equal(t, "last", actual["app"])
+	require.Equal(t, original, labels)
+}
 
 type namespaceReadFailureReader struct {
 	ctrl_client.Reader

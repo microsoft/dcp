@@ -298,7 +298,7 @@ func inspectNetwork(ctx context.Context, o containers.NetworkOrchestrator, netwo
 	})
 }
 
-func inspectNetworkIfExists(ctx context.Context, o containers.ContainerOrchestrator, network string) (*containers.InspectedNetwork, error) {
+func inspectNetworkIfExists(ctx context.Context, o containers.InspectNetworks, network string) (*containers.InspectedNetwork, error) {
 	b := exponentialBackoff(networkInspectionTimeout)
 	return resiliency.RetryGet(ctx, b, func() (*containers.InspectedNetwork, error) {
 		networks, err := o.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{network}})

@@ -672,6 +672,8 @@ func TestV2PhysicalContainerNetworkControllerAdoptsNetworkAfterUncertainCreateFa
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
 }
 
+// Verifies that PhysicalContainerNetwork preserves a missing runtime's identity and details,
+// never adopts its same-name replacement, and leaves that replacement intact on deletion.
 func TestV2PhysicalContainerNetworkControllerReportsMissingRuntimeNetwork(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -705,6 +707,30 @@ func TestV2PhysicalContainerNetworkControllerReportsMissingRuntimeNetwork(t *tes
 
 	missingNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseUnknown)
 	requireReadyCondition(t, missingNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing)
+	require.Equal(t, readyNetwork.Status.NetworkID, missingNetwork.Status.NetworkID)
+	require.Equal(t, readyNetwork.Status.NetworkName, missingNetwork.Status.NetworkName)
+	require.Equal(t, readyNetwork.Status.Driver, missingNetwork.Status.Driver)
+	require.Equal(t, readyNetwork.Status.CreatedAt, missingNetwork.Status.CreatedAt)
+	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
+
+	replacementID, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
+	require.NoError(t, createErr)
+	require.NotEqual(t, readyNetwork.Status.NetworkID, replacementID)
+	inspectCount := containerOrchestrator.InspectNetworkCallCount(readyNetwork.Status.NetworkID)
+	missingNetwork.Annotations["test-probe"] = "replacement"
+	require.NoError(t, client.Update(ctx, missingNetwork))
+	waitInspectNetworkCallCount(t, ctx, containerOrchestrator, readyNetwork.Status.NetworkID, inspectCount+1)
+	currentNetwork := &apiv2.PhysicalContainerNetwork{}
+	require.NoError(t, client.Get(ctx, network.NamespacedName(), currentNetwork))
+	requireReadyCondition(t, currentNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing)
+	require.Equal(t, readyNetwork.Status.NetworkID, currentNetwork.Status.NetworkID)
+
+	require.NoError(t, client.Delete(ctx, network))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, network)
+	retained, inspectErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{replacementID}})
+	require.NoError(t, inspectErr)
+	require.Len(t, retained, 1)
+	require.Equal(t, replacementID, retained[0].Id)
 }
 
 func TestV2PhysicalContainerNetworkControllerRecoversFromRuntimeFailure(t *testing.T) {

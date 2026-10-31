@@ -91,6 +91,11 @@ func (in LogicalContainerNetworkList) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalContainerNetworkLogResource) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalContainerNetworkLogResource"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in LogicalContainerNetworkSpec) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.LogicalContainerNetworkSpec"
 }
@@ -203,6 +208,11 @@ func (in PhysicalContainerNetworkConnectionSpec) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in PhysicalContainerNetworkList) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.PhysicalContainerNetworkList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerNetworkLogResource) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerNetworkLogResource"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.

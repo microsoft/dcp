@@ -80,6 +80,12 @@ func NewLogStreamer(log logr.Logger) *resourceLogStreamer {
 }
 
 func snapshot(obj resource.Object) (resourceSnapshot, error) {
+	switch network := obj.(type) {
+	case *apiv2.PhysicalContainerNetwork:
+		return resourceSnapshot{ownerUID: network.UID, systemID: network.GetResourceId()}, nil
+	case *apiv2.LogicalContainerNetwork:
+		return resourceSnapshot{ownerUID: network.UID, systemID: network.GetResourceId()}, nil
+	}
 	provider, supported := obj.(logSourceProvider)
 	if !supported {
 		return resourceSnapshot{}, fmt.Errorf("unsupported log resource %T", obj)
@@ -122,6 +128,12 @@ func (streamer *resourceLogStreamer) Preflight(obj resource.Object, opts *apiv2.
 	state, snapshotErr := snapshot(obj)
 	if snapshotErr != nil {
 		return apierrors.NewInternalError(snapshotErr)
+	}
+	switch obj.(type) {
+	case *apiv2.PhysicalContainerNetwork, *apiv2.LogicalContainerNetwork:
+		if opts.Source != string(apiv2.LogStreamSourceSystem) {
+			return apierrors.NewBadRequest("network log source must be system")
+		}
 	}
 	startup := opts.Source == string(apiv2.LogStreamSourceStartupStdout) || opts.Source == string(apiv2.LogStreamSourceStartupStderr)
 	if _, physical := obj.(*apiv2.PhysicalContainer); physical && startup {
