@@ -34,14 +34,10 @@ func TestPhysicalResourceProjections(t *testing.T) {
 	networkMissing, networkMissingFound := physicalContainerNetworkProjections.project(physicalContainerNetworkStateMissing)
 	require.True(t, networkMissingFound)
 	require.False(t, networkMissing.requeue)
-	for _, failedState := range []physicalContainerState{
-		physicalContainerStateImageFailed, physicalContainerStateVolumeFailed, physicalContainerStateNetworkFailed,
-	} {
-		failed, found := physicalContainerProjections.project(failedState)
-		require.True(t, found)
-		require.Equal(t, apiv2.PhysicalContainerPhaseFailed, failed.phase)
-		require.False(t, failed.requeue)
-	}
+	dependencyFailed, dependencyFailedFound := physicalContainerProjections.project(physicalContainerStateDependencyFailed)
+	require.True(t, dependencyFailedFound)
+	require.Equal(t, apiv2.PhysicalContainerPhaseFailed, dependencyFailed.phase)
+	require.False(t, dependencyFailed.requeue)
 }
 
 // Verifies that every projected normal state has a reconciliation handler.
@@ -99,9 +95,9 @@ func TestPhysicalResourceStateStringsDistinguishUnsetAndInvalidValues(t *testing
 	t.Parallel()
 
 	require.Equal(t, "Unset", physicalContainerState(0).String())
-	require.Equal(t, "Volumes", physicalContainerStateVolumes.String())
-	require.Equal(t, "VolumeFailed", physicalContainerStateVolumeFailed.String())
-	require.Equal(t, "NetworkFailed", physicalContainerStateNetworkFailed.String())
+	require.Equal(t, "Dependencies", physicalContainerStateDependencies.String())
+	require.Equal(t, "DependencyFailed", physicalContainerStateDependencyFailed.String())
+	require.Equal(t, "DependencyLookupFailed", physicalContainerStateDependencyLookupFailed.String())
 	require.Equal(t, "physicalContainerState(999)", physicalContainerState(999).String())
 	require.Equal(t, "Unset", physicalContainerImageState(0).String())
 	require.Equal(t, "physicalContainerImageState(999)", physicalContainerImageState(999).String())

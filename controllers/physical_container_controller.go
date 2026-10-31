@@ -47,52 +47,45 @@ const (
 )
 
 var (
+	errPhysicalContainerDependencyFailed = errors.New("container dependency failed")
+
 	physicalContainerFinalizer string = fmt.Sprintf("%s/physicalcontainer-reconciler", apiv2.GroupVersion.Group)
 
 	physicalContainerDataInitializers = map[physicalContainerState]physicalContainerDataInitializerFunc{
-		physicalContainerStateResolve:             handlePhysicalContainerResolve,
-		physicalContainerStateResolveRetry:        handlePhysicalContainerResolve,
-		physicalContainerStateImage:               handlePhysicalContainerPrepare,
-		physicalContainerStateImageFailed:         handlePhysicalContainerPrepare,
-		physicalContainerStateImageLookupFailed:   handlePhysicalContainerPrepare,
-		physicalContainerStateImageNotFound:       handlePhysicalContainerPrepare,
-		physicalContainerStateVolumes:             handlePhysicalContainerPrepare,
-		physicalContainerStateVolumeNotFound:      handlePhysicalContainerPrepare,
-		physicalContainerStateVolumeLookupFailed:  handlePhysicalContainerPrepare,
-		physicalContainerStateVolumeFailed:        handlePhysicalContainerPrepare,
-		physicalContainerStateNetworks:            handlePhysicalContainerPrepare,
-		physicalContainerStateNetworkNotFound:     handlePhysicalContainerPrepare,
-		physicalContainerStateNetworkLookupFailed: handlePhysicalContainerPrepare,
-		physicalContainerStateNetworkFailed:       handlePhysicalContainerPrepare,
-		physicalContainerStateCreate:              handlePhysicalContainerCreating,
-		physicalContainerStateCreated:             handlePhysicalContainerCreated,
-		physicalContainerStateCreateRetry:         handlePhysicalContainerRecoverableCreateFailed,
-		physicalContainerStateCreateFailed:        handlePhysicalContainerCreateFailed,
-		physicalContainerStateCreationSkipped:     handlePhysicalContainerTerminal,
-		physicalContainerStateReplaceRetry:        handlePhysicalContainerRecoverableCreateFailed,
-		physicalContainerStateCopyFiles:           handlePhysicalContainerOperationInProgress,
-		physicalContainerStateFilesCopied:         handlePhysicalContainerFilesCreated,
-		physicalContainerStateFileCopyFailed:      handlePhysicalContainerOperationFailed,
-		physicalContainerStateStart:               handlePhysicalContainerOperationInProgress,
-		physicalContainerStateStarted:             handlePhysicalContainerRuntime,
-		physicalContainerStateStartFailed:         handlePhysicalContainerOperationFailed,
-		physicalContainerStateCleanupRetry:        handlePhysicalContainerRecoverableCreateFailed,
-		physicalContainerStateCleanupFailed:       handlePhysicalContainerCreateFailed,
-		physicalContainerStateRunning:             handlePhysicalContainerRuntime,
-		physicalContainerStatePaused:              handlePhysicalContainerRuntime,
-		physicalContainerStateRestarting:          handlePhysicalContainerRuntime,
-		physicalContainerStateNotStarted:          handlePhysicalContainerRuntime,
-		physicalContainerStateRemoving:            handlePhysicalContainerRuntime,
-		physicalContainerStateExited:              handlePhysicalContainerRuntime,
-		physicalContainerStateDead:                handlePhysicalContainerRuntime,
-		physicalContainerStateUnknown:             handlePhysicalContainerRuntime,
-		physicalContainerStateMissing:             handlePhysicalContainerRuntime,
-		physicalContainerStateInspectFailed:       handlePhysicalContainerRuntime,
-		physicalContainerStateStopped:             handlePhysicalContainerRuntime,
-		physicalContainerStateStopRetry:           handlePhysicalContainerRuntime,
-		physicalContainerStateRemoveRetry:         handlePhysicalContainerRuntime,
-		physicalContainerStateInvalid:             handlePhysicalContainerTerminal,
-		0:                                         handleUnknownPhysicalContainerDataReason,
+		physicalContainerStateResolve:                handlePhysicalContainerResolve,
+		physicalContainerStateResolveRetry:           handlePhysicalContainerResolve,
+		physicalContainerStateDependencies:           handlePhysicalContainerPrepare,
+		physicalContainerStateDependencyFailed:       handlePhysicalContainerPrepare,
+		physicalContainerStateDependencyLookupFailed: handlePhysicalContainerPrepare,
+		physicalContainerStateCreate:                 handlePhysicalContainerCreating,
+		physicalContainerStateCreated:                handlePhysicalContainerCreated,
+		physicalContainerStateCreateRetry:            handlePhysicalContainerRecoverableCreateFailed,
+		physicalContainerStateCreateFailed:           handlePhysicalContainerCreateFailed,
+		physicalContainerStateCreationSkipped:        handlePhysicalContainerTerminal,
+		physicalContainerStateReplaceRetry:           handlePhysicalContainerRecoverableCreateFailed,
+		physicalContainerStateCopyFiles:              handlePhysicalContainerOperationInProgress,
+		physicalContainerStateFilesCopied:            handlePhysicalContainerFilesCreated,
+		physicalContainerStateFileCopyFailed:         handlePhysicalContainerOperationFailed,
+		physicalContainerStateStart:                  handlePhysicalContainerOperationInProgress,
+		physicalContainerStateStarted:                handlePhysicalContainerRuntime,
+		physicalContainerStateStartFailed:            handlePhysicalContainerOperationFailed,
+		physicalContainerStateCleanupRetry:           handlePhysicalContainerRecoverableCreateFailed,
+		physicalContainerStateCleanupFailed:          handlePhysicalContainerCreateFailed,
+		physicalContainerStateRunning:                handlePhysicalContainerRuntime,
+		physicalContainerStatePaused:                 handlePhysicalContainerRuntime,
+		physicalContainerStateRestarting:             handlePhysicalContainerRuntime,
+		physicalContainerStateNotStarted:             handlePhysicalContainerRuntime,
+		physicalContainerStateRemoving:               handlePhysicalContainerRuntime,
+		physicalContainerStateExited:                 handlePhysicalContainerRuntime,
+		physicalContainerStateDead:                   handlePhysicalContainerRuntime,
+		physicalContainerStateUnknown:                handlePhysicalContainerRuntime,
+		physicalContainerStateMissing:                handlePhysicalContainerRuntime,
+		physicalContainerStateInspectFailed:          handlePhysicalContainerRuntime,
+		physicalContainerStateStopped:                handlePhysicalContainerRuntime,
+		physicalContainerStateStopRetry:              handlePhysicalContainerRuntime,
+		physicalContainerStateRemoveRetry:            handlePhysicalContainerRuntime,
+		physicalContainerStateInvalid:                handlePhysicalContainerTerminal,
+		0:                                            handleUnknownPhysicalContainerDataReason,
 	}
 )
 
@@ -445,8 +438,7 @@ func handlePhysicalContainerPrepare(
 	if container.Spec.Stop && container.Spec.Container.ReplaceExisting {
 		return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
 	}
-	switch data.state {
-	case physicalContainerStateImageFailed, physicalContainerStateVolumeFailed, physicalContainerStateNetworkFailed:
+	if data.state == physicalContainerStateDependencyFailed {
 		return noChange
 	}
 	data.image = ""
@@ -457,29 +449,38 @@ func handlePhysicalContainerPrepare(
 		return noChange
 	}
 
-	imageReady, image, imageState, imageMessage, imageChange := reconciler.resolvePhysicalContainerImage(ctx, container, log)
+	imageReady, image, imageMessage, imageErr := reconciler.resolvePhysicalContainerImage(ctx, container, log)
+	volumesReady, volumeMounts, volumeMessage, volumeErr := reconciler.resolvePhysicalContainerVolumes(ctx, container, log)
+	networksReady, networks, networkMessage, networkErr := reconciler.resolvePhysicalContainerNetworks(ctx, container, log)
+
+	change := noChange
+	if imageReady {
+		change |= setValue(&container.Status.Image, image)
+	}
+	if dependencyErr := errors.Join(imageErr, volumeErr, networkErr); dependencyErr != nil {
+		data.failureMessage = dependencyErr.Error()
+		data.state = physicalContainerStateDependencyLookupFailed
+		if errors.Is(dependencyErr, errPhysicalContainerDependencyFailed) {
+			data.state = physicalContainerStateDependencyFailed
+		}
+		return change
+	}
+	data.state = physicalContainerStateDependencies
 	if !imageReady {
-		data.state = imageState
 		data.failureMessage = imageMessage
-		return imageChange
+		return change
 	}
-
-	volumesReady, volumeMounts, volumeState, volumeMessage := reconciler.resolvePhysicalContainerVolumes(ctx, container, log)
 	if !volumesReady {
-		data.state = volumeState
 		data.failureMessage = volumeMessage
-		return imageChange
+		return change
 	}
-
-	networksReady, networks, networkState, networkMessage := reconciler.resolvePhysicalContainerNetworks(ctx, container, log)
 	if !networksReady {
-		data.state = networkState
 		data.failureMessage = networkMessage
-		return imageChange
+		return change
 	}
 
 	data.image = image
-	return imageChange | reconciler.schedulePhysicalContainerCreate(container, data, volumeMounts, networks, log)
+	return change | reconciler.schedulePhysicalContainerCreate(container, data, volumeMounts, networks, log)
 }
 
 // Observes the runtime container and records what was seen. When the spec requests a stop, the
@@ -747,43 +748,45 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(
 	ctx context.Context,
 	container *apiv2.PhysicalContainer,
 	log logr.Logger,
-) (bool, string, physicalContainerState, string, objectChange) {
+) (bool, string, string, error) {
 	image := apiv2.PhysicalContainerImage{}
 	imageRef := container.Spec.Container.ImageRef
 	imageName := commonapi.AsNamespacedName(imageRef, container.Namespace)
 	getErr := r.Client.Get(ctx, imageName, &image)
 	if apierrors.IsNotFound(getErr) {
-		return false, "", physicalContainerStateImageNotFound, fmt.Sprintf("PhysicalContainerImage %q does not exist.", imageRef), noChange
+		return false, "", fmt.Sprintf("PhysicalContainerImage %q does not exist.", imageRef), nil
 	}
 	if getErr != nil {
 		log.Error(getErr, "Failed to get PhysicalContainerImage", "ImageRef", imageRef)
-		return false, "", physicalContainerStateImageLookupFailed, fmt.Sprintf("Failed to get PhysicalContainerImage: %v", getErr), additionalReconciliationNeeded
-	}
-	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() &&
-		!hasFinalizer(&image, LogicalBackingFinalizer) {
-		return false, "", physicalContainerStateImage, fmt.Sprintf("PhysicalContainerImage %q is terminating.", imageRef), noChange
+		return false, "", "", fmt.Errorf("get PhysicalContainerImage %q: %w", imageRef, getErr)
 	}
 	if image.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed {
 		message := fmt.Sprintf("PhysicalContainerImage %q failed.", imageRef)
 		if ready := apimeta.FindStatusCondition(image.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
 			message = fmt.Sprintf("PhysicalContainerImage %q failed: %s: %s", imageRef, ready.Reason, ready.Message)
 		}
-		return false, "", physicalContainerStateImageFailed, message, noChange
+		return false, "", "", fmt.Errorf("%w: %s", errPhysicalContainerDependencyFailed, message)
+	}
+	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() &&
+		!hasFinalizer(&image, LogicalBackingFinalizer) {
+		return false, "", fmt.Sprintf("PhysicalContainerImage %q is terminating.", imageRef), nil
 	}
 	if image.Status.Phase != apiv2.PhysicalContainerImagePhaseReady || image.Status.ImageID == "" {
-		return false, "", physicalContainerStateImage, fmt.Sprintf("PhysicalContainerImage %q is not ready.", imageRef), noChange
+		return false, "", fmt.Sprintf("PhysicalContainerImage %q is not ready.", imageRef), nil
 	}
 
-	return true, image.Status.ImageID, physicalContainerStateImage, "", setValue(&container.Status.Image, image.Status.ImageID)
+	return true, image.Status.ImageID, "", nil
 }
 
 func (r *PhysicalContainerReconciler) resolvePhysicalContainerVolumes(
 	ctx context.Context,
 	container *apiv2.PhysicalContainer,
 	log logr.Logger,
-) (bool, []containers.CreateContainerVolumeMount, physicalContainerState, string) {
+) (bool, []containers.CreateContainerVolumeMount, string, error) {
 	containerConfig := container.Spec.Container
 	volumeMounts := make([]containers.CreateContainerVolumeMount, 0, len(containerConfig.VolumeMounts))
+	var pendingMessage string
+	var dependencyErr error
 	for i := range containerConfig.VolumeMounts {
 		mount := &containerConfig.VolumeMounts[i]
 		source := mount.Source
@@ -792,24 +795,35 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerVolumes(
 			volumeName := commonapi.AsNamespacedName(mount.VolumeRef, container.Namespace)
 			getErr := r.Client.Get(ctx, volumeName, &volume)
 			if apierrors.IsNotFound(getErr) {
-				return false, nil, physicalContainerStateVolumeNotFound, fmt.Sprintf("PhysicalContainerVolume %q does not exist.", mount.VolumeRef)
+				if pendingMessage == "" {
+					pendingMessage = fmt.Sprintf("PhysicalContainerVolume %q does not exist.", mount.VolumeRef)
+				}
+				continue
 			}
 			if getErr != nil {
 				log.Error(getErr, "Failed to get PhysicalContainerVolume", "VolumeRef", mount.VolumeRef)
-				return false, nil, physicalContainerStateVolumeLookupFailed, fmt.Sprintf("Failed to get PhysicalContainerVolume %q: %v", mount.VolumeRef, getErr)
-			}
-			if volume.DeletionTimestamp != nil && !volume.DeletionTimestamp.IsZero() {
-				return false, nil, physicalContainerStateVolumes, fmt.Sprintf("PhysicalContainerVolume %q is terminating.", mount.VolumeRef)
+				dependencyErr = errors.Join(dependencyErr, fmt.Errorf("get PhysicalContainerVolume %q: %w", mount.VolumeRef, getErr))
+				continue
 			}
 			if volume.Status.Phase == apiv2.PhysicalContainerVolumePhaseFailed {
 				message := fmt.Sprintf("PhysicalContainerVolume %q failed.", mount.VolumeRef)
 				if ready := apimeta.FindStatusCondition(volume.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
 					message = fmt.Sprintf("PhysicalContainerVolume %q failed: %s: %s", mount.VolumeRef, ready.Reason, ready.Message)
 				}
-				return false, nil, physicalContainerStateVolumeFailed, message
+				dependencyErr = errors.Join(dependencyErr, fmt.Errorf("%w: %s", errPhysicalContainerDependencyFailed, message))
+				continue
+			}
+			if volume.DeletionTimestamp != nil && !volume.DeletionTimestamp.IsZero() {
+				if pendingMessage == "" {
+					pendingMessage = fmt.Sprintf("PhysicalContainerVolume %q is terminating.", mount.VolumeRef)
+				}
+				continue
 			}
 			if volume.Status.Phase != apiv2.PhysicalContainerVolumePhaseReady || volume.Status.VolumeID == "" {
-				return false, nil, physicalContainerStateVolumes, fmt.Sprintf("PhysicalContainerVolume %q is not ready.", mount.VolumeRef)
+				if pendingMessage == "" {
+					pendingMessage = fmt.Sprintf("PhysicalContainerVolume %q is not ready.", mount.VolumeRef)
+				}
+				continue
 			}
 			source = volume.Status.VolumeID
 		}
@@ -822,40 +836,59 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerVolumes(
 		})
 	}
 
-	return true, volumeMounts, physicalContainerStateVolumes, ""
+	if dependencyErr != nil {
+		return false, nil, "", dependencyErr
+	}
+	if pendingMessage != "" {
+		return false, nil, pendingMessage, nil
+	}
+	return true, volumeMounts, "", nil
 }
 
 func (r *PhysicalContainerReconciler) resolvePhysicalContainerNetworks(
 	ctx context.Context,
 	container *apiv2.PhysicalContainer,
 	log logr.Logger,
-) (bool, []containers.CreateContainerNetworkOptions, physicalContainerState, string) {
+) (bool, []containers.CreateContainerNetworkOptions, string, error) {
 	containerConfig := container.Spec.Container
 	networks := make([]containers.CreateContainerNetworkOptions, 0, len(containerConfig.Networks))
+	var pendingMessage string
+	var dependencyErr error
 	for i := range containerConfig.Networks {
 		networkConfig := &containerConfig.Networks[i]
 		network := apiv2.PhysicalContainerNetwork{}
 		networkName := commonapi.AsNamespacedName(networkConfig.NetworkRef, container.Namespace)
 		getErr := r.Client.Get(ctx, networkName, &network)
 		if apierrors.IsNotFound(getErr) {
-			return false, nil, physicalContainerStateNetworkNotFound, fmt.Sprintf("PhysicalContainerNetwork %q does not exist.", networkConfig.NetworkRef)
+			if pendingMessage == "" {
+				pendingMessage = fmt.Sprintf("PhysicalContainerNetwork %q does not exist.", networkConfig.NetworkRef)
+			}
+			continue
 		}
 		if getErr != nil {
 			log.Error(getErr, "Failed to get PhysicalContainerNetwork", "NetworkRef", networkConfig.NetworkRef)
-			return false, nil, physicalContainerStateNetworkLookupFailed, fmt.Sprintf("Failed to get PhysicalContainerNetwork %q: %v", networkConfig.NetworkRef, getErr)
-		}
-		if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
-			return false, nil, physicalContainerStateNetworks, fmt.Sprintf("PhysicalContainerNetwork %q is terminating.", networkConfig.NetworkRef)
+			dependencyErr = errors.Join(dependencyErr, fmt.Errorf("get PhysicalContainerNetwork %q: %w", networkConfig.NetworkRef, getErr))
+			continue
 		}
 		if network.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed {
 			message := fmt.Sprintf("PhysicalContainerNetwork %q failed.", networkConfig.NetworkRef)
 			if ready := apimeta.FindStatusCondition(network.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
 				message = fmt.Sprintf("PhysicalContainerNetwork %q failed: %s: %s", networkConfig.NetworkRef, ready.Reason, ready.Message)
 			}
-			return false, nil, physicalContainerStateNetworkFailed, message
+			dependencyErr = errors.Join(dependencyErr, fmt.Errorf("%w: %s", errPhysicalContainerDependencyFailed, message))
+			continue
+		}
+		if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
+			if pendingMessage == "" {
+				pendingMessage = fmt.Sprintf("PhysicalContainerNetwork %q is terminating.", networkConfig.NetworkRef)
+			}
+			continue
 		}
 		if network.Status.Phase != apiv2.PhysicalContainerNetworkPhaseReady || network.Status.NetworkID == "" {
-			return false, nil, physicalContainerStateNetworks, fmt.Sprintf("PhysicalContainerNetwork %q is not ready.", networkConfig.NetworkRef)
+			if pendingMessage == "" {
+				pendingMessage = fmt.Sprintf("PhysicalContainerNetwork %q is not ready.", networkConfig.NetworkRef)
+			}
+			continue
 		}
 
 		networks = append(networks, containers.CreateContainerNetworkOptions{
@@ -864,7 +897,13 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerNetworks(
 		})
 	}
 
-	return true, networks, physicalContainerStateNetworks, ""
+	if dependencyErr != nil {
+		return false, nil, "", dependencyErr
+	}
+	if pendingMessage != "" {
+		return false, nil, pendingMessage, nil
+	}
+	return true, networks, "", nil
 }
 
 func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreate(
