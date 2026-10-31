@@ -37,7 +37,7 @@ import (
 )
 
 var (
-	volumeNotFoundRegEx        = regexp.MustCompile(`(?i)no such volume`)
+	volumeNotFoundRegEx        = regexp.MustCompile(`(?i)(no such volume|volume (.*) not found)`)
 	networkNotFoundRegEx       = regexp.MustCompile(`(?i)network (.*) not found`)
 	containerNotFoundRegEx     = regexp.MustCompile(`(?i)no such container`)
 	networkAlreadyExistsRegEx  = regexp.MustCompile(`(?i)network with name (.*) already exists`)
