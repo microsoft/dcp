@@ -132,10 +132,11 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 	return updated
 }
 
-func (data *physicalProcessData) logsComplete() bool {
+func (data *physicalProcessData) logsComplete(physicalProcess *apiv2.PhysicalProcess) bool {
 	return data.outputComplete || data.state == physicalProcessStateLaunchFailed ||
 		data.state == physicalProcessStateResolveFailed || data.state == physicalProcessStateLaunchSkipped ||
-		(data.stdout == nil && (data.state == physicalProcessStateRunning ||
+		(data.stdout == nil && ((data.state == physicalProcessStateRunning &&
+			physicalProcess.Spec.StdoutFile == "" && physicalProcess.Spec.StderrFile == "") ||
 			data.state == physicalProcessStateExited || data.state == physicalProcessStateMissing))
 }
 
@@ -150,8 +151,11 @@ func (data *physicalProcessData) applyTo(
 	if data.stdout != nil {
 		change |= setValue(&physicalProcess.Status.StdoutFile, data.stdout.Path)
 		change |= setValue(&physicalProcess.Status.StderrFile, data.stderr.Path)
+	} else {
+		change |= setValue(&physicalProcess.Status.StdoutFile, physicalProcess.Spec.StdoutFile)
+		change |= setValue(&physicalProcess.Status.StderrFile, physicalProcess.Spec.StderrFile)
 	}
-	change |= setValue(&physicalProcess.Status.LogsComplete, data.logsComplete())
+	change |= setValue(&physicalProcess.Status.LogsComplete, data.logsComplete(physicalProcess))
 	if data.handle.Pid > 0 {
 		change |= setPhysicalProcessPID(&physicalProcess.Status.PID, int64(data.handle.Pid))
 		change |= setTimestamp(&physicalProcess.Status.IdentityTimestamp, metav1.NewMicroTime(data.handle.IdentityTime))

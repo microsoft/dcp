@@ -172,6 +172,15 @@ func (streamer *resourceLogStreamer) Preflight(obj resource.Object, opts *apiv2.
 				{capture.StdoutFile, logstream.LogStreamSourceStdout},
 				{capture.StderrFile, logstream.LogStreamSourceStderr},
 			} {
+				if output.path == "" {
+					continue
+				}
+				if capture.Raw {
+					if !filepath.IsAbs(output.path) {
+						return apierrors.NewInternalError(fmt.Errorf("invalid observed log capture path"))
+					}
+					continue
+				}
 				expectedName, nameErr := logstream.LogFileName(name, capture.UID, output.source, "")
 				if nameErr != nil || !filepath.IsAbs(output.path) || filepath.Base(output.path) != expectedName {
 					return apierrors.NewInternalError(fmt.Errorf("invalid observed log capture path"))
@@ -232,6 +241,10 @@ func (streamer *resourceLogStreamer) StreamLogs(
 		path = capture.StdoutFile
 		if opts.Source == string(apiv2.LogStreamSourceStderr) || opts.Source == string(apiv2.LogStreamSourceStartupStderr) {
 			path = capture.StderrFile
+		}
+		if capture.ContainerID == "" && path == "" {
+			streamer.finishSession(state.ownerUID, sessionID, session)
+			return logstream.ResourceStreamStatusDone, nil, nil
 		}
 		if capture.ContainerID != "" {
 			capturePath, release, captureErr := streamer.runtimeLogPath(sessionCtx, obj.GetObjectMeta().Namespace, *capture, opts)

@@ -7691,6 +7691,20 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessSpec(ref common.ReferenceCallbac
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
+					"stdoutFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StdoutFile optionally supplies an existing raw stdout capture for an identity-bound PID reference. It is retained while the process runs and removed after confirmed exit when this resource is deleted.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stderrFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StderrFile optionally supplies an existing raw stderr capture for an identity-bound PID reference. It is retained while the process runs and removed after confirmed exit when this resource is deleted.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"process": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Process describes an operating system process to launch. Exactly one of pid or process must be set.",

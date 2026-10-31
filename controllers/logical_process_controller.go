@@ -26,6 +26,7 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/dcpclient"
+	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
@@ -43,21 +44,22 @@ type logicalProcessDataHandlerFunc = stateInitializerFunc[
 ]
 
 var logicalProcessDataHandlers = map[logicalProcessState]logicalProcessDataHandlerFunc{
-	logicalProcessStateNamespace:      handleLogicalProcessNamespace,
-	logicalProcessStatePrepare:        handleLogicalProcessPreparation,
-	logicalProcessStatePhysical:       handleLogicalProcessPhysical,
-	logicalProcessStateRuntime:        handleLogicalProcessRuntime,
-	logicalProcessStateMissing:        handleLogicalProcessMissing,
-	logicalProcessStatePrepared:       handleLogicalProcessPreparation,
-	logicalProcessStatePrepareRetry:   handleLogicalProcessPreparation,
-	logicalProcessStatePrepareFailed:  handleLogicalProcessPreparation,
-	logicalProcessStatePhysicalRetry:  handleLogicalProcessPhysical,
-	logicalProcessStatePhysicalFailed: handleLogicalProcessPhysical,
-	logicalProcessStateRunning:        handleLogicalProcessRuntime,
-	logicalProcessStateExited:         handleLogicalProcessRuntime,
-	logicalProcessStateRuntimeFailed:  handleLogicalProcessRuntime,
-	logicalProcessStateUnknown:        handleLogicalProcessRuntime,
-	logicalProcessStateRuntimeRetry:   handleLogicalProcessRuntime,
+	logicalProcessStateNamespace:        handleLogicalProcessNamespace,
+	logicalProcessStatePrepare:          handleLogicalProcessPreparation,
+	logicalProcessStatePhysical:         handleLogicalProcessPhysical,
+	logicalProcessStatePhysicalRetiring: handleLogicalProcessPhysical,
+	logicalProcessStateRuntime:          handleLogicalProcessRuntime,
+	logicalProcessStateMissing:          handleLogicalProcessMissing,
+	logicalProcessStatePrepared:         handleLogicalProcessPreparation,
+	logicalProcessStatePrepareRetry:     handleLogicalProcessPreparation,
+	logicalProcessStatePrepareFailed:    handleLogicalProcessPreparation,
+	logicalProcessStatePhysicalRetry:    handleLogicalProcessPhysical,
+	logicalProcessStatePhysicalFailed:   handleLogicalProcessPhysical,
+	logicalProcessStateRunning:          handleLogicalProcessRuntime,
+	logicalProcessStateExited:           handleLogicalProcessRuntime,
+	logicalProcessStateRuntimeFailed:    handleLogicalProcessRuntime,
+	logicalProcessStateUnknown:          handleLogicalProcessRuntime,
+	logicalProcessStateRuntimeRetry:     handleLogicalProcessRuntime,
 }
 
 type LogicalProcessReconcilerConfig struct {
@@ -208,6 +210,9 @@ func handleLogicalProcessPhysical(
 	if data.state == logicalProcessStatePhysicalFailed {
 		return noChange
 	}
+	if time.Now().Before(data.retryAfter) {
+		return additionalReconciliationNeeded
+	}
 	data.state, data.reason, data.message = logicalProcessStatePhysical, "", ""
 	if data.lease != nil {
 		verifyErr := reconciler.config.StateStore.VerifyResourceLeaseHeld(ctx, resource, reconciler.config.ResourceLeaseOwner)
@@ -221,7 +226,8 @@ func handleLogicalProcessPhysical(
 		record := data.pendingRecord
 		pid := int64(record.PID)
 		previous, previousErr := reconciler.ensureLogicalPhysicalProcess(ctx, resource, data.replacementUID, "-previous",
-			apiv2.PhysicalProcessSpec{PID: &pid, IdentityTimestamp: metav1.NewMicroTime(record.IdentityTime), Stop: true})
+			apiv2.PhysicalProcessSpec{PID: &pid, IdentityTimestamp: metav1.NewMicroTime(record.IdentityTime), Stop: true,
+				StdoutFile: record.StdOutFile, StderrFile: record.StdErrFile})
 		if previousErr != nil {
 			log.Error(previousErr, "Failed to prepare persistent process replacement")
 			data.state, data.message = logicalProcessStatePhysicalRetry, previousErr.Error()
@@ -235,7 +241,21 @@ func handleLogicalProcessPhysical(
 			}
 			return noChange
 		}
-		data.pendingRecord, data.replaceExisting = nil, false
+		return reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePhysicalRetiring,
+			func(retireCtx context.Context, snapshot *apiv2.LogicalProcess, result *logicalProcessData, operationLog logr.Logger) {
+				retireErr := logs.RemoveProcessOutput(retireCtx, result.pendingRecord.StdOutFile, result.pendingRecord.StdErrFile)
+				if retireErr == nil {
+					retireErr = reconciler.config.StateStore.DeletePersistentProcess(retireCtx, snapshot.GetLeaseKey())
+				}
+				if retireErr != nil {
+					operationLog.Error(retireErr, "Failed to retire replaced process output and record")
+					result.state, result.message = logicalProcessStatePhysicalRetry, retireErr.Error()
+					result.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+					return
+				}
+				result.pendingRecord, result.replaceExisting = nil, false
+				result.state = logicalProcessStatePhysical
+			}, log)
 	}
 	physicalSpec := apiv2.PhysicalProcessSpec{Stop: resource.Spec.Stop}
 	switch {
@@ -244,6 +264,7 @@ func handleLogicalProcessPhysical(
 	case data.pendingRecord != nil:
 		pid := int64(data.pendingRecord.PID)
 		physicalSpec.PID, physicalSpec.IdentityTimestamp = &pid, metav1.NewMicroTime(data.pendingRecord.IdentityTime)
+		physicalSpec.StdoutFile, physicalSpec.StderrFile = data.pendingRecord.StdOutFile, data.pendingRecord.StdErrFile
 	default:
 		desired := resource.Spec.Process
 		physicalSpec.Process = &apiv2.PhysicalProcessConfig{
@@ -540,6 +561,8 @@ func (r *LogicalProcessReconciler) scheduleLogicalProcessOperation(
 		current.operation = nil
 		if state == logicalProcessStatePersistence {
 			current.leaseFailureMessage = enqueueErr.Error()
+		} else if state == logicalProcessStatePhysicalRetiring {
+			current.state, current.message = logicalProcessStatePhysicalRetry, enqueueErr.Error()
 		} else {
 			current.state, current.message = logicalProcessStatePrepareRetry, enqueueErr.Error()
 		}
@@ -587,6 +610,10 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 		}
 		runningErr := r.processExecutor.CheckProcessRunning(record.ProcessHandle())
 		if process.IsProcessGoneErr(runningErr) {
+			removeErr := logs.RemoveProcessOutput(ctx, record.StdOutFile, record.StdErrFile)
+			if removeErr != nil {
+				return removeErr
+			}
 			return r.config.StateStore.DeletePersistentProcess(ctx, resource.GetLeaseKey())
 		}
 		if runningErr != nil {
@@ -644,11 +671,25 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 				}
 				if record == nil || record.PID != pid ||
 					!osutil.Within(record.IdentityTime, physical.Status.IdentityTimestamp.Time, process.ProcessIdentityTimeMaximumDifference) {
+					if record != nil {
+						runningErr := r.processExecutor.CheckProcessRunning(record.ProcessHandle())
+						if runningErr == nil {
+							return errors.New("cannot overwrite the record of a running persistent process")
+						}
+						if !process.IsProcessGoneErr(runningErr) {
+							return runningErr
+						}
+						removeErr := logs.RemoveProcessOutput(ctx, record.StdOutFile, record.StdErrFile)
+						if removeErr != nil {
+							return removeErr
+						}
+					}
 					record = &statestore.PersistentProcessRecord{RunID: string(physical.UID)}
 				}
 				record.ResourceKey, record.LifecycleKey = resource.GetLeaseKey(), data.lifecycleKey
 				record.PID, record.IdentityTime = pid, physical.Status.IdentityTimestamp.Time
 				record.WorkloadID = workloadID
+				record.StdOutFile, record.StdErrFile = physical.Status.StdoutFile, physical.Status.StderrFile
 				storeErr := r.config.StateStore.UpsertPersistentProcess(ctx, *record)
 				if storeErr != nil {
 					return storeErr

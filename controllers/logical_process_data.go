@@ -40,6 +40,7 @@ const (
 	logicalProcessStateRuntimeRetry
 	logicalProcessStatePersistenceRetry
 	logicalProcessStateDeleteRetry
+	logicalProcessStatePhysicalRetiring
 )
 
 func (state logicalProcessState) String() string {
@@ -60,6 +61,8 @@ func (state logicalProcessState) String() string {
 		return "Physical"
 	case logicalProcessStatePhysicalRetry:
 		return "PhysicalRetry"
+	case logicalProcessStatePhysicalRetiring:
+		return "PhysicalRetiring"
 	case logicalProcessStatePhysicalFailed:
 		return "PhysicalFailed"
 	case logicalProcessStateRuntime:
@@ -142,7 +145,8 @@ func (data *logicalProcessData) applyTo(resource *apiv2.LogicalProcess) (objectC
 	state, reason, message := data.state, data.reason, data.message
 	if data.leaseFailureMessage != "" {
 		state, reason, message = logicalProcessStatePersistenceRetry, "", data.leaseFailureMessage
-	} else if data.lease != nil && data.operation != nil && data.state != logicalProcessStatePrepare {
+	} else if data.lease != nil && data.operation != nil &&
+		data.state != logicalProcessStatePrepare && data.state != logicalProcessStatePhysicalRetiring {
 		state, reason, message = logicalProcessStatePersistence, "", ""
 	}
 	projectionChange, delay, valid := logicalProcessProjections.applyWithReason(
@@ -190,6 +194,10 @@ var logicalProcessProjections = physicalResourceProjectionTable[logicalProcessSt
 		logicalProcessStatePhysical: {
 			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PhysicalProcessPreparationPending", requeue: true,
+		},
+		logicalProcessStatePhysicalRetiring: {
+			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: "PhysicalProcessPreparationInProgress",
 		},
 		logicalProcessStatePhysicalRetry: {
 			phase: apiv2.LogicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
