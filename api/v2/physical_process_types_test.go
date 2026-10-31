@@ -8,12 +8,36 @@ package v2
 import (
 	"context"
 	"math"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// Verifies that existing process captures require an identity-bound PID reference and absolute
+// paths, support either stream independently, and remain immutable after creation.
+func TestPhysicalProcessExistingCaptureValidation(t *testing.T) {
+	pid := int64(42)
+	process := &PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test"},
+		Spec: PhysicalProcessSpec{PID: &pid, IdentityTimestamp: metav1.NowMicro(),
+			StdoutFile: filepath.Join(t.TempDir(), "original-stdout")}}
+	require.Empty(t, process.Validate(context.Background()))
+	changed := process.DeepCopy()
+	changed.Spec.StderrFile = filepath.Join(t.TempDir(), "original-stderr")
+	require.Empty(t, changed.Validate(context.Background()))
+	require.NotEmpty(t, changed.ValidateUpdate(context.Background(), process))
+	changed.Spec.IdentityTimestamp = metav1.MicroTime{}
+	require.NotEmpty(t, changed.Validate(context.Background()))
+	changed = process.DeepCopy()
+	changed.Spec.StdoutFile = "relative.log"
+	require.NotEmpty(t, changed.Validate(context.Background()))
+	changed = process.DeepCopy()
+	changed.Spec.PID = nil
+	changed.Spec.Process = &PhysicalProcessConfig{ExecutablePath: "program"}
+	require.NotEmpty(t, changed.Validate(context.Background()))
+}
 
 func TestPhysicalProcessValidate(t *testing.T) {
 	validPID := int64(42)

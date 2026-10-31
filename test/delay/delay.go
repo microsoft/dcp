@@ -44,6 +44,7 @@ type delayFlagData struct {
 	holdPipe       bool
 	coupleChildren bool
 	forkChildren   bool
+	reportReady    bool
 	readyFile      string
 }
 
@@ -59,6 +60,7 @@ const (
 	holdPipeFlag       = "hold-pipe"
 	coupleChildrenFlag = "couple-children"
 	forkChildrenFlag   = "fork-children"
+	reportReadyFlag    = "report-ready"
 	readyFileFlag      = "ready-file"
 )
 
@@ -83,6 +85,7 @@ You can also ask it to exit with a specific exit code.`,
 	cmd.Flags().BoolVar(&flags.holdPipe, holdPipeFlag, false, "If specified with --child-spec, children inherit stdout and stderr and keep those pipes open after the parent exits.")
 	cmd.Flags().BoolVar(&flags.coupleChildren, coupleChildrenFlag, false, "If specified, child processes stay in the parent's process group instead of being decoupled.")
 	cmd.Flags().BoolVar(&flags.forkChildren, forkChildrenFlag, false, "If specified, child processes are started in a separate process group; on Windows they are also started in a separate console.")
+	cmd.Flags().BoolVar(&flags.reportReady, reportReadyFlag, false, "If specified, write the process PID to stdout after signal handling and child startup are ready.")
 	cmd.Flags().StringVar(&flags.readyFile, readyFileFlag, "", "Create this file after all direct children have started. The file must not already exist. This option is not passed to children.")
 
 	return cmd
@@ -128,6 +131,9 @@ func runMain(log logr.Logger) error {
 	err := runChildrenAsNeeded()
 	if err != nil {
 		return err
+	}
+	if flags.reportReady {
+		fmt.Fprintf(os.Stdout, "Ready: %d\n", os.Getpid())
 	}
 
 	if flags.readyFile != "" {
@@ -201,6 +207,9 @@ func runChildrenAsNeeded() error {
 	}
 	if flags.forkChildren {
 		childExecArgs = append(childExecArgs, fmt.Sprintf("--%s", forkChildrenFlag))
+	}
+	if flags.reportReady {
+		childExecArgs = append(childExecArgs, "--"+reportReadyFlag)
 	}
 	if flags.holdPipe && len(descendantCounts) > 0 {
 		childExecArgs = append(childExecArgs, "--"+holdPipeFlag)

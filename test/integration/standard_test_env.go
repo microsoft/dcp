@@ -52,10 +52,11 @@ type TestEnvironmentInfo struct {
 }
 
 type TestEnvironmentOptions struct {
-	WorkloadID                    commonapi.WorkloadID
-	DecorateContainerOrchestrator func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
-	DecorateAPIReader             func(ctrl_client.Reader) ctrl_client.Reader
-	DecorateAPIClient             func(ctrl_client.Client) ctrl_client.Client
+	DecoratePhysicalProcessExecutor func(process.Executor) process.Executor
+	DecorateAPIClient               func(ctrl_client.Client) ctrl_client.Client
+	WorkloadID                      commonapi.WorkloadID
+	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
+	DecorateAPIReader               func(ctrl_client.Reader) ctrl_client.Reader
 }
 
 func (tei *TestEnvironmentInfo) addAfterShutdown(callback func()) {
@@ -317,7 +318,7 @@ func StartTestEnvironmentWithOptions(
 	}
 
 	logicalAPIReader := mgr.GetAPIReader()
-	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController) != 0 && options.DecorateAPIReader != nil {
+	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController) != 0 && options.DecorateAPIReader != nil {
 		logicalAPIReader = options.DecorateAPIReader(logicalAPIReader)
 		if logicalAPIReader == nil {
 			return nil, nil, fmt.Errorf("api reader decorator returned nil")
@@ -349,6 +350,18 @@ func StartTestEnvironmentWithOptions(
 		)
 		if logicalNetworkSetupErr := logicalNetworkR.SetupWithManager(mgr, instanceTag+"-LogicalContainerNetworkReconciler"); logicalNetworkSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize LogicalContainerNetwork reconciler: %w", logicalNetworkSetupErr)
+		}
+	}
+
+	if inclCtrl&LogicalProcessController != 0 {
+		logicalProcessR := controllers.NewLogicalProcessReconciler(
+			ctx, mgr.GetClient(), logicalAPIReader, log.WithName("LogicalProcessReconciler"), pex,
+			controllers.LogicalProcessReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: options.WorkloadID,
+			},
+		)
+		if logicalProcessSetupErr := logicalProcessR.SetupWithManager(mgr, instanceTag+"-LogicalProcessReconciler"); logicalProcessSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalProcess reconciler: %w", logicalProcessSetupErr)
 		}
 	}
 
@@ -407,12 +420,16 @@ func StartTestEnvironmentWithOptions(
 	}
 
 	if inclCtrl&PhysicalProcessController != 0 {
+		var physicalExecutor process.Executor = pex
+		if options.DecoratePhysicalProcessExecutor != nil {
+			physicalExecutor = options.DecoratePhysicalProcessExecutor(physicalExecutor)
+		}
 		physicalProcessR := controllers.NewPhysicalProcessReconciler(
 			ctx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalProcessReconciler"),
-			pex,
+			physicalExecutor,
 		)
 		if err = physicalProcessR.SetupWithManager(mgr, instanceTag+"-PhysicalProcessReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalProcess reconciler: %w", err)

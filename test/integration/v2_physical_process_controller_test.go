@@ -30,6 +30,29 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+// Verifies that PhysicalProcess accepts identity differences within the shared process tolerance,
+// and rejects a stale identity without stopping or claiming the current PID.
+func TestV2PhysicalProcessControllerChecksExpectedIdentity(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-expected-identity")
+	handle := seedAdoptablePhysicalProcess(t, ctx, "v2-pproc-expected-identity-command")
+	pid := int64(handle.Pid)
+	stale := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "stale", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalProcessSpec{PID: &pid, IdentityTimestamp: metav1.NewMicroTime(handle.IdentityTime.Add(-time.Hour)), Stop: true}}
+	require.NoError(t, client.Create(ctx, stale))
+	waitPhysicalProcessPhase(t, ctx, stale.NamespacedName(), apiv2.PhysicalProcessPhaseExited)
+	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
+	withinTolerance := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "matching", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalProcessSpec{PID: &pid, IdentityTimestamp: metav1.NewMicroTime(handle.IdentityTime.Add(time.Millisecond))}}
+	require.NoError(t, client.Create(ctx, withinTolerance))
+	waitPhysicalProcessPhase(t, ctx, withinTolerance.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
+	require.NoError(t, client.Delete(ctx, stale))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, stale)
+	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
+}
+
 func TestV2PhysicalProcessControllerLaunchesProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -456,7 +479,9 @@ func TestV2PhysicalProcessControllerDoesNotLaunchStoppedProcess(t *testing.T) {
 	require.Empty(t, testProcessExecutor.FindAll([]string{executablePath}, "", nil))
 }
 
-func TestV2PhysicalProcessControllerDoesNotRetryLaunchAfterStopRequest(t *testing.T) {
+// Verifies that PhysicalProcess preserves a terminal launch failure after stop is requested,
+// even when the original cause of the launch failure has been removed.
+func TestV2PhysicalProcessControllerPreservesLaunchFailureAfterStopRequest(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -490,8 +515,12 @@ func TestV2PhysicalProcessControllerDoesNotRetryLaunchAfterStopRequest(t *testin
 	}))
 	testProcessExecutor.RemoveAutoExecution(criteria)
 
-	stoppedProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseExited)
-	requireReadyCondition(t, stoppedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonStopRequested)
+	stoppedProcess := waitObjectAssumesState(t, ctx, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalProcessPhaseFailed &&
+			condition != nil && condition.ObservedGeneration == current.Generation && current.Spec.Stop, nil
+	})
+	requireReadyCondition(t, stoppedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonLaunchFailed)
 	require.Len(t, testProcessExecutor.FindAll([]string{executablePath}, "", nil), 1)
 }
 
@@ -557,7 +586,9 @@ func TestV2PhysicalProcessControllerDoesNotDuplicateLaunch(t *testing.T) {
 	}, 3*time.Second, 250*time.Millisecond)
 }
 
-func TestV2PhysicalProcessControllerRetriesLaunchFailure(t *testing.T) {
+// Verifies that PhysicalProcess treats launch errors as terminal and a new resource
+// can explicitly attempt launch again after the original resource is deleted.
+func TestV2PhysicalProcessControllerLaunchFailureRequiresNewResource(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -585,9 +616,14 @@ func TestV2PhysicalProcessControllerRetriesLaunchFailure(t *testing.T) {
 		return condition != nil && apiv2.ConditionReason(condition.Reason) == apiv2.PhysicalProcessReasonLaunchFailed, nil
 	})
 	requireReadyCondition(t, failedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonLaunchFailed)
+	require.Equal(t, apiv2.PhysicalProcessPhaseFailed, failedProcess.Status.Phase)
 
 	testProcessExecutor.RemoveAutoExecution(criteria)
-	waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
+	require.NoError(t, client.Delete(ctx, physicalProcess))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, physicalProcess)
+	replacement := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: physicalProcess.Name, Namespace: namespace.Name}, Spec: *physicalProcess.Spec.DeepCopy()}
+	require.NoError(t, client.Create(ctx, replacement))
+	waitPhysicalProcessPhase(t, ctx, replacement.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
 	require.Len(t, testProcessExecutor.FindAll([]string{executablePath}, "", nil), 2)
 }
 
