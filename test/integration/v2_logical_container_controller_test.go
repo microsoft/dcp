@@ -54,7 +54,7 @@ func TestV2LogicalContainerControllerWaitsForNamespace(t *testing.T) {
 	initializedContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return readyCondition != nil && readyCondition.Reason == "PhysicalContainerNotReady" &&
-			strings.Contains(readyCondition.Message, string(apiv2.PhysicalContainerReasonImageNotFound)), nil
+			strings.Contains(readyCondition.Message, string(apiv2.PhysicalContainerReasonDependenciesNotReady)), nil
 	})
 	require.Equal(t, apiv2.LogicalContainerPhasePending, initializedContainer.Status.Phase)
 	requireReadyCondition(t, initializedContainer.Status.Conditions, metav1.ConditionFalse, "PhysicalContainerNotReady")
@@ -304,7 +304,7 @@ func TestV2LogicalContainerControllerFailsStartupWhenImageAcquisitionFails(t *te
 			physicalName := types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(container.UID)}
 			require.NoError(t, client.Get(ctx, physicalName, physical))
 			require.Equal(t, apiv2.PhysicalContainerPhaseFailed, physical.Status.Phase)
-			requireReadyCondition(t, physical.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonImageFailed)
+			requireReadyCondition(t, physical.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependencyFailed)
 			image := &apiv2.PhysicalContainerImage{}
 			require.NoError(t, client.Get(ctx, physicalName, image))
 			require.Equal(t, apiv2.PhysicalContainerImagePhaseFailed, image.Status.Phase)
@@ -323,7 +323,7 @@ func TestV2LogicalContainerControllerFailsStartupWhenImageAcquisitionFails(t *te
 				return current.Spec.Stop && ready != nil && ready.ObservedGeneration == current.Generation, nil
 			})
 			require.Equal(t, apiv2.PhysicalContainerPhaseFailed, updatedPhysical.Status.Phase)
-			requireReadyCondition(t, updatedPhysical.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonImageFailed)
+			requireReadyCondition(t, updatedPhysical.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependencyFailed)
 			require.Empty(t, updatedPhysical.Status.ContainerID)
 			require.Zero(t, containerOrchestrator.CreateContainerCallCount(runtimeName))
 			require.NoError(t, client.Delete(ctx, container))
@@ -352,7 +352,7 @@ func TestV2LogicalContainerControllerCompletesStopBeforeCreation(t *testing.T) {
 	pending := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return current.Status.PhysicalContainerRef != "" && ready != nil &&
-			strings.Contains(ready.Message, string(apiv2.PhysicalContainerReasonImageNotFound)), nil
+			strings.Contains(ready.Message, string(apiv2.PhysicalContainerReasonDependenciesNotReady)), nil
 	})
 	require.NoError(t, testStateStore.VerifyResourceLeaseHeld(ctx, container, testResourceLeaseOwner))
 	require.NoError(t, retryOnConflict(ctx, container.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
@@ -1237,7 +1237,7 @@ func TestV2LogicalContainerControllerStopsExistingRuntimeDuringReplacement(t *te
 	waitObjectAssumesState(t, ctx, physicalName, func(current *apiv2.PhysicalContainer) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return current.Spec.Container != nil && current.Spec.Container.ReplaceExisting &&
-			ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonImageNotReady), nil
+			ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonDependenciesNotReady), nil
 	})
 	require.NoError(t, retryOnConflictEx(ctx, client, logical.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
 		current.Spec.Stop = true
