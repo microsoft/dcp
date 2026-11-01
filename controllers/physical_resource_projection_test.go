@@ -27,6 +27,7 @@ func TestPhysicalResourceProjections(t *testing.T) {
 	assertPhysicalResourceProjections(t, physicalProcessProjections)
 	assertPhysicalResourceProjections(t, logicalContainerProjections)
 	assertPhysicalResourceProjections(t, logicalContainerNetworkProjections)
+	assertPhysicalResourceProjections(t, logicalProcessProjections)
 
 	containerMissing, containerMissingFound := physicalContainerProjections.project(physicalContainerStateMissing)
 	require.True(t, containerMissingFound)
@@ -38,6 +39,10 @@ func TestPhysicalResourceProjections(t *testing.T) {
 	require.True(t, dependencyFailedFound)
 	require.Equal(t, apiv2.PhysicalContainerPhaseFailed, dependencyFailed.phase)
 	require.False(t, dependencyFailed.requeue)
+	processMissing, processMissingFound := logicalProcessProjections.project(logicalProcessStateMissing)
+	require.True(t, processMissingFound)
+	require.Equal(t, apiv2.LogicalProcessPhaseFailed, processMissing.phase)
+	require.False(t, processMissing.requeue)
 }
 
 // Verifies that every projected normal state has a reconciliation handler.
@@ -60,6 +65,12 @@ func TestV2ProjectedStatesHaveHandlers(t *testing.T) {
 			continue
 		}
 		require.Contains(t, logicalContainerNetworkDataHandlers, state)
+	}
+	for state := range logicalProcessProjections.projections {
+		if state == logicalProcessStateDelete {
+			continue
+		}
+		require.Contains(t, logicalProcessDataHandlers, state)
 	}
 }
 
@@ -111,6 +122,9 @@ func TestPhysicalResourceStateStringsDistinguishUnsetAndInvalidValues(t *testing
 	require.Equal(t, "Pending", logicalContainerStatePending.String())
 	require.Equal(t, "Creating", logicalContainerStateCreating.String())
 	require.Equal(t, "logicalContainerState(999)", logicalContainerState(999).String())
+	require.Equal(t, "Unset", logicalProcessState(0).String())
+	require.Equal(t, "Prepare", logicalProcessStatePrepare.String())
+	require.Equal(t, "logicalProcessState(999)", logicalProcessState(999).String())
 }
 
 // Verifies that an unsupported state produces a terminal invalid-state diagnostic.
@@ -158,6 +172,7 @@ func TestPhysicalResourceInvalidProjectionsAreTerminal(t *testing.T) {
 	assertTerminalPhysicalResourceProjection(t, physicalContainerNetworkProjections, physicalContainerNetworkStateInvalid)
 	assertTerminalPhysicalResourceProjection(t, physicalContainerVolumeProjections, physicalContainerVolumeStateInvalid)
 	assertTerminalPhysicalResourceProjection(t, physicalProcessProjections, physicalProcessStateInvalid)
+	assertTerminalPhysicalResourceProjection(t, logicalProcessProjections, logicalProcessStateInvalid)
 }
 
 // Verifies that a state projection permits a more specific diagnostic condition reason.

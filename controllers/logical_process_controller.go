@@ -32,7 +32,6 @@ import (
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
-	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 var logicalProcessFinalizer = fmt.Sprintf("%s/logicalprocess-reconciler", apiv2.GroupVersion.Group)
@@ -44,22 +43,18 @@ type logicalProcessDataHandlerFunc = stateInitializerFunc[
 ]
 
 var logicalProcessDataHandlers = map[logicalProcessState]logicalProcessDataHandlerFunc{
-	logicalProcessStateNamespace:        handleLogicalProcessNamespace,
-	logicalProcessStatePrepare:          handleLogicalProcessPreparation,
-	logicalProcessStatePhysical:         handleLogicalProcessPhysical,
-	logicalProcessStatePhysicalRetiring: handleLogicalProcessPhysical,
-	logicalProcessStateRuntime:          handleLogicalProcessRuntime,
-	logicalProcessStateMissing:          handleLogicalProcessMissing,
-	logicalProcessStatePrepared:         handleLogicalProcessPreparation,
-	logicalProcessStatePrepareRetry:     handleLogicalProcessPreparation,
-	logicalProcessStatePrepareFailed:    handleLogicalProcessPreparation,
-	logicalProcessStatePhysicalRetry:    handleLogicalProcessPhysical,
-	logicalProcessStatePhysicalFailed:   handleLogicalProcessPhysical,
-	logicalProcessStateRunning:          handleLogicalProcessRuntime,
-	logicalProcessStateExited:           handleLogicalProcessRuntime,
-	logicalProcessStateRuntimeFailed:    handleLogicalProcessRuntime,
-	logicalProcessStateUnknown:          handleLogicalProcessRuntime,
-	logicalProcessStateRuntimeRetry:     handleLogicalProcessRuntime,
+	logicalProcessStatePrepare:        handleLogicalProcessPreparation,
+	logicalProcessStatePrepareFailed:  handleLogicalProcessPreparation,
+	logicalProcessStatePhysical:       handleLogicalProcessPhysical,
+	logicalProcessStatePhysicalFailed: handleLogicalProcessPhysical,
+	logicalProcessStateRuntime:        handleLogicalProcessRuntime,
+	logicalProcessStateMissing:        handleLogicalProcessMissing,
+	logicalProcessStateRunning:        handleLogicalProcessRuntime,
+	logicalProcessStateExited:         handleLogicalProcessRuntime,
+	logicalProcessStateRuntimeFailed:  handleLogicalProcessRuntime,
+	logicalProcessStateUnknown:        handleLogicalProcessRuntime,
+	logicalProcessStateInvalid:        handleUnknownLogicalProcessState,
+	0:                                 handleUnknownLogicalProcessState,
 }
 
 type LogicalProcessReconcilerConfig struct {
@@ -73,7 +68,6 @@ type LogicalProcessReconciler struct {
 	processExecutor process.Executor
 	config          LogicalProcessReconcilerConfig
 	processData     *ObjectStateMap[types.UID, logicalProcessData, *logicalProcessData, *apiv2.LogicalProcess]
-	operationQueue  *resiliency.WorkQueue
 }
 
 func NewLogicalProcessReconciler(
@@ -83,8 +77,7 @@ func NewLogicalProcessReconciler(
 	return &LogicalProcessReconciler{
 		ReconcilerBase:  NewReconcilerBase[apiv2.LogicalProcess](client, noCacheClient, log, lifetimeCtx),
 		processExecutor: executor, config: config,
-		processData:    NewObjectStateMap[types.UID, logicalProcessData, *logicalProcessData, *apiv2.LogicalProcess](),
-		operationQueue: resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
+		processData: NewObjectStateMap[types.UID, logicalProcessData, *logicalProcessData, *apiv2.LogicalProcess](),
 	}
 }
 
@@ -94,7 +87,7 @@ func (r *LogicalProcessReconciler) SetupWithManager(mgr ctrl.Manager, name strin
 		For(&apiv2.LogicalProcess{}).
 		Owns(&apiv2.PhysicalProcess{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.LogicalProcessList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
-		WatchesRawSource(r.GetReconciliationEventSource()).Named(name).Complete(r)
+		Named(name).Complete(r)
 }
 
 func (r *LogicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -106,7 +99,11 @@ func (r *LogicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	getErr := reader.Get(ctx, req.NamespacedName, &resource)
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
-			r.discardLogicalProcessData(req.NamespacedName, log)
+			discardErr := r.discardLogicalProcessData(ctx, req.NamespacedName)
+			if discardErr != nil {
+				log.Error(discardErr, "Failed to discard logical process state")
+				return ctrl.Result{}, discardErr
+			}
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		}
@@ -118,45 +115,22 @@ func (r *LogicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resource.GetResourceId())
 	stateKey, previous := r.processData.BorrowByNamespacedName(req.NamespacedName)
 	if previous != nil && stateKey != resource.UID {
-		r.discardLogicalProcessData(req.NamespacedName, log)
+		discardErr := r.discardLogicalProcessData(ctx, req.NamespacedName)
+		if discardErr != nil {
+			log.Error(discardErr, "Failed to discard previous logical process state")
+			return ctrl.Result{}, discardErr
+		}
 	}
-	r.processData.RunDeferredOps(req.NamespacedName, &resource)
 	_, data := r.processData.BorrowByNamespacedName(req.NamespacedName)
-	if data == nil {
-		data = &logicalProcessData{state: logicalProcessStateNamespace}
-		r.processData.Store(req.NamespacedName, resource.UID, data.Clone())
-	}
 	patch := ctrl_client.MergeFromWithOptions(resource.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 	var change objectChange
-	finalizerAdded := false
-	if !resource.DeletionTimestamp.IsZero() {
-		if data.operation == nil {
-			change = r.handleLogicalProcessDeletion(ctx, &resource, data, log)
-		}
-	} else if change = ensureFinalizer(&resource, logicalProcessFinalizer, log); change != noChange {
-		finalizerAdded = true
-	} else if data.operation == nil || data.physicalUID != "" {
-		stateHandler, known := logicalProcessDataHandlers[data.state]
-		if !known {
-			stateErr := fmt.Errorf("unknown logical process state %v", data.state)
-			log.Error(stateErr, "LogicalProcess reached invalid reconciliation state")
-			data.state = logicalProcessStateRuntimeFailed
-			data.reason, data.message = apiv2.PhysicalResourceReasonOperationStateInvalid, stateErr.Error()
-		} else {
-			change = stateHandler(ctx, r, &resource, data.state, data, log)
-		}
-	}
 	delay := StandardDelay
-	if !finalizerAdded && hasFinalizer(&resource, logicalProcessFinalizer) {
-		_ = r.processData.Update(req.NamespacedName, resource.UID, data)
-		if data.state != logicalProcessStateNamespace {
-			projectionChange, projectionDelay, valid := data.applyTo(&resource)
-			change |= projectionChange
-			delay = projectionDelay
-			if !valid {
-				log.Error(fmt.Errorf("invalid logical process state %v", data.state),
-					"LogicalProcess reached invalid reconciliation state")
-			}
+	if !resource.DeletionTimestamp.IsZero() {
+		change, delay = r.handleLogicalProcessDeletion(ctx, &resource, data, log)
+	} else {
+		change = ensureFinalizer(&resource, logicalProcessFinalizer, log)
+		if change == noChange {
+			change, delay = r.manageLogicalProcess(ctx, &resource, data, log)
 		}
 	}
 	if !hasFinalizer(&resource, logicalProcessFinalizer) {
@@ -165,42 +139,52 @@ func (r *LogicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return r.SaveChangesWithDelay(ctx, &resource, patch, change, delay, nil, log)
 }
 
-func handleLogicalProcessNamespace(
-	ctx context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
-	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
-) objectChange {
-	ready, reason, namespaceErr := checkNamespaceReadiness(ctx, reconciler.Client, resource.Namespace)
-	if !ready {
-		change := noChange
-		phase, message := apiv2.LogicalProcessPhasePending, namespaceReadinessMessage(resource.Namespace, reason)
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get namespace", "Namespace", resource.Namespace)
-			phase, message = apiv2.LogicalProcessPhaseUnknown, fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
-			change |= additionalReconciliationNeeded
+func (r *LogicalProcessReconciler) manageLogicalProcess(
+	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, log logr.Logger,
+) (objectChange, AdditionalReconciliationDelay) {
+	if data == nil {
+		ready, reason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, resource.Namespace)
+		if !ready {
+			change := noChange
+			phase, message := apiv2.LogicalProcessPhasePending, namespaceReadinessMessage(resource.Namespace, reason)
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to get namespace", "Namespace", resource.Namespace)
+				phase, message = apiv2.LogicalProcessPhaseUnknown, fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+				change |= additionalReconciliationNeeded
+			}
+			change |= setValue(&resource.Status.Phase, phase)
+			change |= setCondition(&resource.Status.Conditions, apiv2.ConditionReady, resource.Generation, metav1.ConditionFalse, reason, message)
+			return change, StandardDelay
 		}
-		change |= setValue(&resource.Status.Phase, phase)
-		change |= setCondition(&resource.Status.Conditions, apiv2.ConditionReady, resource.Generation, metav1.ConditionFalse, reason, message)
-		return change
+		data = &logicalProcessData{state: logicalProcessStatePrepare}
+		r.processData.Store(resource.NamespacedName(), resource.UID, data.Clone())
 	}
-	return reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePrepare, reconciler.prepareLogicalProcess, log)
+	stateHandler := getStateInitializer(logicalProcessDataHandlers, data.state, log)
+	change := stateHandler(ctx, r, resource, data.state, data, log)
+	_ = r.processData.Update(resource.NamespacedName(), resource.UID, data)
+	projectionChange, delay, valid := data.applyTo(resource)
+	if !valid {
+		log.Error(fmt.Errorf("invalid logical process state %v", data.state), "LogicalProcess reached invalid reconciliation state")
+	}
+	return change | projectionChange, delay
 }
 
 func handleLogicalProcessPreparation(
 	ctx context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
-	switch data.state {
-	case logicalProcessStatePrepared:
-		data.state = logicalProcessStatePhysical
-		return handleLogicalProcessPhysical(ctx, reconciler, resource, data.state, data, log)
-	case logicalProcessStatePrepareFailed:
+	if data.state == logicalProcessStatePrepareFailed {
 		return noChange
-	default:
-		if time.Now().Before(data.retryAfter) {
-			return additionalReconciliationNeeded
-		}
-		return reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePrepare, reconciler.prepareLogicalProcess, log)
 	}
+	if time.Now().Before(data.retryAfter) {
+		return additionalReconciliationNeeded
+	}
+	data.reconcileErr, data.reason, data.message, data.retryAfter = nil, "", "", time.Time{}
+	reconciler.prepareLogicalProcess(ctx, resource, data, log)
+	if data.state != logicalProcessStatePhysical {
+		return noChange
+	}
+	return handleLogicalProcessPhysical(ctx, reconciler, resource, data.state, data, log)
 }
 
 func handleLogicalProcessPhysical(
@@ -213,7 +197,7 @@ func handleLogicalProcessPhysical(
 	if time.Now().Before(data.retryAfter) {
 		return additionalReconciliationNeeded
 	}
-	data.state, data.reason, data.message = logicalProcessStatePhysical, "", ""
+	data.reconcileErr, data.reason, data.message, data.retryAfter = nil, "", "", time.Time{}
 	if data.lease != nil {
 		verifyErr := reconciler.config.StateStore.VerifyResourceLeaseHeld(ctx, resource, reconciler.config.ResourceLeaseOwner)
 		if verifyErr != nil {
@@ -230,7 +214,7 @@ func handleLogicalProcessPhysical(
 				StdoutFile: record.StdOutFile, StderrFile: record.StdErrFile})
 		if previousErr != nil {
 			log.Error(previousErr, "Failed to prepare persistent process replacement")
-			data.state, data.message = logicalProcessStatePhysicalRetry, previousErr.Error()
+			data.reconcileErr, data.message = previousErr, previousErr.Error()
 			return noChange
 		}
 		data.replacementUID = previous.UID
@@ -241,21 +225,17 @@ func handleLogicalProcessPhysical(
 			}
 			return noChange
 		}
-		return reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePhysicalRetiring,
-			func(retireCtx context.Context, snapshot *apiv2.LogicalProcess, result *logicalProcessData, operationLog logr.Logger) {
-				retireErr := logs.RemoveProcessOutput(retireCtx, result.pendingRecord.StdOutFile, result.pendingRecord.StdErrFile)
-				if retireErr == nil {
-					retireErr = reconciler.config.StateStore.DeletePersistentProcess(retireCtx, snapshot.GetLeaseKey())
-				}
-				if retireErr != nil {
-					operationLog.Error(retireErr, "Failed to retire replaced process output and record")
-					result.state, result.message = logicalProcessStatePhysicalRetry, retireErr.Error()
-					result.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-					return
-				}
-				result.pendingRecord, result.replaceExisting = nil, false
-				result.state = logicalProcessStatePhysical
-			}, log)
+		retireErr := logs.RemoveProcessOutput(ctx, record.StdOutFile, record.StdErrFile)
+		if retireErr == nil {
+			retireErr = reconciler.config.StateStore.DeletePersistentProcess(ctx, resource.GetLeaseKey())
+		}
+		if retireErr != nil {
+			log.Error(retireErr, "Failed to retire replaced process output and record")
+			data.reconcileErr, data.message = retireErr, retireErr.Error()
+			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			return noChange
+		}
+		data.pendingRecord, data.replaceExisting = nil, false
 	}
 	physicalSpec := apiv2.PhysicalProcessSpec{Stop: resource.Spec.Stop}
 	switch {
@@ -277,12 +257,12 @@ func handleLogicalProcessPhysical(
 	physical, physicalErr := reconciler.ensureLogicalPhysicalProcess(ctx, resource, data.physicalUID, "", physicalSpec)
 	if physicalErr != nil {
 		log.Error(physicalErr, "Failed to prepare backing physical process")
-		data.state, data.message = logicalProcessStatePhysicalRetry, physicalErr.Error()
+		data.reconcileErr, data.message = physicalErr, physicalErr.Error()
 		return noChange
 	}
 	data.physicalUID, data.pendingRecord = physical.UID, nil
 	data.state = logicalProcessStateRuntime
-	return handleLogicalProcessRuntime(ctx, reconciler, resource, data.state, data, log)
+	return noChange
 }
 
 func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
@@ -363,11 +343,13 @@ func handleLogicalProcessRuntime(
 	ctx context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
+	data.reconcileErr = nil
 	physical, getErr := reconciler.getLogicalPhysicalProcess(ctx, resource, data.physicalUID, "")
 	if getErr != nil {
 		log.Error(getErr, "Failed to get backing physical process")
-		data.state, data.reason, data.message = logicalProcessStateRuntimeRetry, "", getErr.Error()
+		data.reconcileErr, data.reason, data.message = getErr, "", getErr.Error()
 		if apierrors.IsNotFound(getErr) {
+			data.reconcileErr = nil
 			data.state = logicalProcessStateMissing
 			data.reason, data.message = "PhysicalProcessMissing", "The backing PhysicalProcess no longer exists; the logical process cannot recover."
 			return handleLogicalProcessMissing(ctx, reconciler, resource, data.state, data, log)
@@ -380,7 +362,7 @@ func handleLogicalProcessRuntime(
 		stopErr := reconciler.Patch(ctx, physical, patch)
 		if stopErr != nil {
 			log.Error(stopErr, "Failed to request physical process stop")
-			data.state, data.message = logicalProcessStateRuntimeRetry, stopErr.Error()
+			data.reconcileErr, data.message = stopErr, stopErr.Error()
 			return noChange
 		}
 	}
@@ -409,18 +391,18 @@ func handleLogicalProcessRuntime(
 		data.state = logicalProcessStateUnknown
 	}
 	if data.lease != nil && logicalPhysicalProcessStartupSettled(physical) {
-		return change | reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePersistence, reconciler.persistLogicalProcess, log)
+		return change | reconciler.persistLogicalProcess(ctx, resource, data, log)
 	}
 	return change
 }
 
 func handleLogicalProcessMissing(
-	_ context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
+	ctx context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
 	change := data.applyMissingLogSource(resource)
 	if data.lease != nil {
-		return change | reconciler.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePersistence, reconciler.persistLogicalProcess, log)
+		return change | reconciler.persistLogicalProcess(ctx, resource, data, log)
 	}
 	return change
 }
@@ -463,18 +445,33 @@ func (r *LogicalProcessReconciler) getLogicalPhysicalProcess(
 
 func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, log logr.Logger,
-) objectChange {
+) (change objectChange, delay AdditionalReconciliationDelay) {
+	delay = StandardDelay
+	if data == nil {
+		data = &logicalProcessData{state: logicalProcessStateDelete}
+		r.processData.Store(resource.NamespacedName(), resource.UID, data.Clone())
+	}
+	defer func() {
+		if data != nil {
+			_ = r.processData.Update(resource.NamespacedName(), resource.UID, data)
+			projectionChange, projectionDelay, valid := data.applyTo(resource)
+			change |= projectionChange
+			delay = projectionDelay
+			if !valid {
+				log.Error(fmt.Errorf("invalid logical process state %v", data.state), "LogicalProcess reached invalid reconciliation state")
+			}
+		}
+	}()
 	if data.lease != nil {
 		if data.state == logicalProcessStateMissing {
-			return handleLogicalProcessMissing(ctx, r, resource, data.state, data, log)
+			return handleLogicalProcessMissing(ctx, r, resource, data.state, data, log), delay
 		}
 		if data.physicalUID != "" {
-			data.state = logicalProcessStateRuntime
-			return handleLogicalProcessRuntime(ctx, r, resource, data.state, data, log)
+			return handleLogicalProcessRuntime(ctx, r, resource, data.state, data, log), delay
 		}
-		return r.scheduleLogicalProcessOperation(resource, data, logicalProcessStatePersistence, r.persistLogicalProcess, log)
+		return r.persistLogicalProcess(ctx, resource, data, log), delay
 	}
-	data.state, data.reason, data.message = logicalProcessStateDelete, "", ""
+	data.state, data.reason, data.message, data.reconcileErr = logicalProcessStateDelete, "", "", nil
 	for _, backing := range []struct {
 		suffix string
 		uid    types.UID
@@ -485,89 +482,41 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 		}
 		if getErr != nil {
 			log.Error(getErr, "Failed to get physical process for deletion")
-			data.state, data.message = logicalProcessStateDeleteRetry, getErr.Error()
-			return noChange
+			data.reconcileErr, data.message = getErr, getErr.Error()
+			return noChange, delay
 		}
 		if physical.DeletionTimestamp.IsZero() {
 			uid := physical.UID
 			deleteErr := r.Delete(ctx, physical, ctrl_client.Preconditions{UID: &uid})
 			if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
 				log.Error(deleteErr, "Failed to delete backing physical process")
-				data.state, data.message = logicalProcessStateDeleteRetry, deleteErr.Error()
-				return noChange
+				data.reconcileErr, data.message = deleteErr, deleteErr.Error()
+				return noChange, delay
 			}
 		}
-		return additionalReconciliationNeeded
+		return additionalReconciliationNeeded, delay
 	}
-	r.processData.DeleteByNamespacedName(resource.NamespacedName())
-	return deleteFinalizer(resource, logicalProcessFinalizer, log)
+	discardErr := r.discardLogicalProcessData(ctx, resource.NamespacedName())
+	if discardErr != nil {
+		log.Error(discardErr, "Failed to discard logical process state")
+		data.reconcileErr, data.message = discardErr, discardErr.Error()
+		return additionalReconciliationNeeded, delay
+	}
+	data = nil
+	return deleteFinalizer(resource, logicalProcessFinalizer, log), delay
 }
 
-func (r *LogicalProcessReconciler) scheduleLogicalProcessOperation(
-	resource *apiv2.LogicalProcess, current *logicalProcessData, state logicalProcessState,
-	work func(context.Context, *apiv2.LogicalProcess, *logicalProcessData, logr.Logger), log logr.Logger,
+func handleUnknownLogicalProcessState(
+	_ context.Context, _ *LogicalProcessReconciler, _ *apiv2.LogicalProcess,
+	state logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
-	if current.operation != nil {
+	if state == logicalProcessStateInvalid {
 		return noChange
 	}
-	if state == logicalProcessStatePersistence && current.leaseFailureMessage != "" && time.Now().Before(current.retryAfter) {
-		return additionalReconciliationNeeded
-	}
-	operationCtx, cancel := context.WithCancel(r.LifetimeCtx)
-	data := current.Clone()
-	if state == logicalProcessStatePersistence {
-		data.leaseFailureMessage = ""
-	} else {
-		data.state, data.reason, data.message = state, "", ""
-	}
-	data.retryAfter = time.Time{}
-	data.operation = &logicalProcessOperation{cancel: cancel}
-	if !r.processData.Update(resource.NamespacedName(), resource.UID, data) {
-		cancel()
-		return additionalReconciliationNeeded
-	}
-	current.UpdateFrom(data)
-	snapshot, result := resource.DeepCopy(), data.Clone()
-	enqueueErr := r.operationQueue.Enqueue(func(context.Context) {
-		defer cancel()
-		work(operationCtx, snapshot, result, log)
-		operation := result.operation
-		result.operation = nil
-		queued := r.processData.QueueDeferredOpForStateKey(snapshot.NamespacedName(), snapshot.UID,
-			func(name types.NamespacedName, stateKey types.UID, activeResource *apiv2.LogicalProcess) {
-				_, active := r.processData.BorrowByNamespacedName(name)
-				if activeResource.UID == snapshot.UID && active != nil && active.operation == operation {
-					if state == logicalProcessStatePersistence {
-						active.operation, active.lease = nil, result.lease
-						active.leaseFailureMessage, active.retryAfter = result.leaseFailureMessage, result.retryAfter
-						_ = r.processData.Update(name, stateKey, active)
-					} else {
-						_ = r.processData.Update(name, stateKey, result)
-					}
-				}
-			})
-		if queued {
-			r.ScheduleReconciliation(snapshot.NamespacedName())
-		} else if result.lease != nil {
-			releaseErr := result.lease.Release(r.LifetimeCtx)
-			if releaseErr != nil && !errors.Is(releaseErr, statestore.ErrResourceLeaseNotHeld) {
-				log.Error(releaseErr, "Failed to release stale logical process lease")
-			}
-		}
-	})
-	if enqueueErr != nil {
-		cancel()
-		log.Error(enqueueErr, "Failed to queue logical process operation")
-		current.operation = nil
-		if state == logicalProcessStatePersistence {
-			current.leaseFailureMessage = enqueueErr.Error()
-		} else if state == logicalProcessStatePhysicalRetiring {
-			current.state, current.message = logicalProcessStatePhysicalRetry, enqueueErr.Error()
-		} else {
-			current.state, current.message = logicalProcessStatePrepareRetry, enqueueErr.Error()
-		}
-		current.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-	}
+	log.Error(fmt.Errorf("unknown logical process state %v", state), "LogicalProcess has an invalid reconciliation state")
+	data.state, data.reason, data.message = logicalProcessStateInvalid, apiv2.PhysicalResourceReasonOperationStateInvalid,
+		"Logical process reached an invalid reconciliation state."
+	data.reconcileErr = nil
 	return noChange
 }
 
@@ -575,7 +524,7 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, log logr.Logger,
 ) {
 	if resource.Spec.EffectiveMode() == apiv2.LogicalProcessModeExisting {
-		data.lifecycleKey, data.state = resource.Spec.LifecycleKey, logicalProcessStatePrepared
+		data.lifecycleKey, data.state = resource.Spec.LifecycleKey, logicalProcessStatePhysical
 		return
 	}
 	key, _, keyErr := resource.Spec.GetLifecycleKey()
@@ -586,7 +535,7 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 	}
 	data.lifecycleKey = key
 	if resource.Spec.EffectiveMode() != apiv2.LogicalProcessModePersistent {
-		data.state = logicalProcessStatePrepared
+		data.state = logicalProcessStatePhysical
 		return
 	}
 	preparationErr := func() error {
@@ -624,16 +573,20 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 	}()
 	if preparationErr != nil {
 		log.Error(preparationErr, "Failed to prepare persistent logical process")
-		data.state, data.message = logicalProcessStatePrepareRetry, preparationErr.Error()
+		data.reconcileErr, data.message = preparationErr, preparationErr.Error()
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		return
 	}
-	data.state = logicalProcessStatePrepared
+	data.state = logicalProcessStatePhysical
 }
 
 func (r *LogicalProcessReconciler) persistLogicalProcess(
 	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, log logr.Logger,
-) {
+) objectChange {
+	if data.leaseFailureMessage != "" && time.Now().Before(data.retryAfter) {
+		return additionalReconciliationNeeded
+	}
+	data.leaseFailureMessage = ""
 	persistErr := func() error {
 		verifyErr := r.config.StateStore.VerifyResourceLeaseHeld(ctx, resource, r.config.ResourceLeaseOwner)
 		if verifyErr != nil {
@@ -720,30 +673,25 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 		log.Error(persistErr, "Failed to settle persistent logical process ownership")
 		data.leaseFailureMessage = persistErr.Error()
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		return
+		return additionalReconciliationNeeded
 	}
+	data.retryAfter = time.Time{}
+	return additionalReconciliationNeeded
 }
 
-func (r *LogicalProcessReconciler) discardLogicalProcessData(name types.NamespacedName, log logr.Logger) {
+func (r *LogicalProcessReconciler) discardLogicalProcessData(ctx context.Context, name types.NamespacedName) error {
 	uid, data := r.processData.BorrowByNamespacedName(name)
 	if data == nil {
-		return
+		return nil
 	}
-	if data.operation != nil {
-		data.operation.cancel()
+	if data.lease != nil {
+		releaseErr := data.lease.Release(ctx)
+		if releaseErr != nil && !errors.Is(releaseErr, statestore.ErrResourceLeaseNotHeld) {
+			return fmt.Errorf("release discarded logical process lease: %w", releaseErr)
+		}
 	}
 	missing := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{UID: uid}}
 	defer logger.ReleaseResourceLog(missing.GetResourceId())
 	r.processData.DeleteByNamespacedName(name)
-	if data.lease != nil {
-		enqueueErr := r.operationQueue.Enqueue(func(ctx context.Context) {
-			releaseErr := data.lease.Release(ctx)
-			if releaseErr != nil && !errors.Is(releaseErr, statestore.ErrResourceLeaseNotHeld) {
-				log.Error(releaseErr, "Failed to release discarded logical process lease")
-			}
-		})
-		if enqueueErr != nil {
-			log.Error(enqueueErr, "Failed to queue discarded logical process lease release")
-		}
-	}
+	return nil
 }
