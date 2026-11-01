@@ -6,7 +6,6 @@
 package controllers
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"time"
@@ -21,48 +20,30 @@ import (
 type logicalProcessState int
 
 const (
-	logicalProcessStateNamespace logicalProcessState = iota + 1
-	logicalProcessStatePrepare
+	logicalProcessStatePrepare logicalProcessState = iota + 1
 	logicalProcessStatePhysical
 	logicalProcessStateRuntime
-	logicalProcessStatePersistence
 	logicalProcessStateDelete
 	logicalProcessStateMissing
-	logicalProcessStatePrepared
-	logicalProcessStatePrepareRetry
 	logicalProcessStatePrepareFailed
-	logicalProcessStatePhysicalRetry
 	logicalProcessStatePhysicalFailed
 	logicalProcessStateRunning
 	logicalProcessStateExited
 	logicalProcessStateRuntimeFailed
 	logicalProcessStateUnknown
-	logicalProcessStateRuntimeRetry
-	logicalProcessStatePersistenceRetry
-	logicalProcessStateDeleteRetry
-	logicalProcessStatePhysicalRetiring
+	logicalProcessStateInvalid
 )
 
 func (state logicalProcessState) String() string {
 	switch state {
 	case 0:
 		return "Unset"
-	case logicalProcessStateNamespace:
-		return "Namespace"
 	case logicalProcessStatePrepare:
 		return "Prepare"
-	case logicalProcessStatePrepared:
-		return "Prepared"
-	case logicalProcessStatePrepareRetry:
-		return "PrepareRetry"
 	case logicalProcessStatePrepareFailed:
 		return "PrepareFailed"
 	case logicalProcessStatePhysical:
 		return "Physical"
-	case logicalProcessStatePhysicalRetry:
-		return "PhysicalRetry"
-	case logicalProcessStatePhysicalRetiring:
-		return "PhysicalRetiring"
 	case logicalProcessStatePhysicalFailed:
 		return "PhysicalFailed"
 	case logicalProcessStateRuntime:
@@ -75,16 +56,10 @@ func (state logicalProcessState) String() string {
 		return "RuntimeFailed"
 	case logicalProcessStateUnknown:
 		return "Unknown"
-	case logicalProcessStateRuntimeRetry:
-		return "RuntimeRetry"
-	case logicalProcessStatePersistence:
-		return "Persistence"
-	case logicalProcessStatePersistenceRetry:
-		return "PersistenceRetry"
 	case logicalProcessStateDelete:
 		return "Delete"
-	case logicalProcessStateDeleteRetry:
-		return "DeleteRetry"
+	case logicalProcessStateInvalid:
+		return "Invalid"
 	case logicalProcessStateMissing:
 		return "Missing"
 	default:
@@ -92,16 +67,13 @@ func (state logicalProcessState) String() string {
 	}
 }
 
-type logicalProcessOperation struct {
-	cancel context.CancelFunc
-}
-
 type logicalProcessData struct {
-	state               logicalProcessState
-	reason              apiv2.ConditionReason
-	message             string
-	retryAfter          time.Time
-	operation           *logicalProcessOperation
+	state      logicalProcessState
+	reason     apiv2.ConditionReason
+	message    string
+	retryAfter time.Time
+	// Most recent coordination error, retained until the next attempt.
+	reconcileErr        error
 	lifecycleKey        string
 	physicalUID         types.UID
 	replacementUID      types.UID
@@ -126,9 +98,8 @@ func (data *logicalProcessData) UpdateFrom(other *logicalProcessData) bool {
 		return false
 	}
 	left, right := *data, *other
-	left.operation, right.operation = nil, nil
 	left.lease, right.lease = nil, nil
-	if data.operation == other.operation && data.lease == other.lease && reflect.DeepEqual(left, right) {
+	if data.lease == other.lease && reflect.DeepEqual(left, right) {
 		return false
 	}
 	*data = *other.Clone()
@@ -142,15 +113,32 @@ func (data *logicalProcessData) applyTo(resource *apiv2.LogicalProcess) (objectC
 	}
 	change := setValue(&resource.Status.PhysicalProcessRef, physicalRef)
 	change |= setValue(&resource.Status.LifecycleKey, data.lifecycleKey)
-	state, reason, message := data.state, data.reason, data.message
-	if data.leaseFailureMessage != "" {
-		state, reason, message = logicalProcessStatePersistenceRetry, "", data.leaseFailureMessage
-	} else if data.lease != nil && data.operation != nil &&
-		data.state != logicalProcessStatePrepare && data.state != logicalProcessStatePhysicalRetiring {
-		state, reason, message = logicalProcessStatePersistence, "", ""
+	if _, valid := logicalProcessProjections.project(data.state); valid &&
+		(data.reconcileErr != nil || data.leaseFailureMessage != "") {
+		phase := apiv2.LogicalProcessPhaseUnknown
+		reason, message := data.reason, data.message
+		if reason == "" {
+			switch data.state {
+			case logicalProcessStatePrepare:
+				phase, reason = apiv2.LogicalProcessPhasePending, "LifecyclePreparationFailed"
+			case logicalProcessStatePhysical:
+				reason = "PhysicalProcessPreparationFailed"
+			case logicalProcessStateDelete:
+				reason = "PhysicalProcessDeletionFailed"
+			default:
+				reason = "PhysicalProcessLookupFailed"
+			}
+		}
+		if data.leaseFailureMessage != "" {
+			phase, reason, message = apiv2.LogicalProcessPhaseUnknown, "PersistenceFailed", data.leaseFailureMessage
+		}
+		change |= setValue(&resource.Status.Phase, phase)
+		change |= setCondition(&resource.Status.Conditions, apiv2.ConditionReady, resource.Generation,
+			metav1.ConditionFalse, reason, message)
+		return change | additionalReconciliationNeeded, LongDelay, true
 	}
 	projectionChange, delay, valid := logicalProcessProjections.applyWithReason(
-		state, reason, message,
+		data.state, data.reason, data.message,
 		&resource.Status.Phase, &resource.Status.Conditions, resource.Generation,
 	)
 	return change | projectionChange, delay, valid
@@ -171,21 +159,9 @@ func (data *logicalProcessData) applyMissingLogSource(resource *apiv2.LogicalPro
 var logicalProcessProjections = physicalResourceProjectionTable[logicalProcessState, apiv2.LogicalProcessPhase]{
 	invalidPhase: apiv2.LogicalProcessPhaseUnknown,
 	projections: map[logicalProcessState]physicalResourceProjection[apiv2.LogicalProcessPhase]{
-		logicalProcessStateNamespace: {
-			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
-		},
 		logicalProcessStatePrepare: {
 			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PreparingLifecycle",
-		},
-		logicalProcessStatePrepared: {
-			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "LifecyclePrepared", requeue: true,
-		},
-		logicalProcessStatePrepareRetry: {
-			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "LifecyclePreparationFailed", requeue: true, requeueDelay: LongDelay,
 		},
 		logicalProcessStatePrepareFailed: {
 			phase: apiv2.LogicalProcessPhaseFailed, conditionStatus: metav1.ConditionFalse,
@@ -194,14 +170,6 @@ var logicalProcessProjections = physicalResourceProjectionTable[logicalProcessSt
 		logicalProcessStatePhysical: {
 			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PhysicalProcessPreparationPending", requeue: true,
-		},
-		logicalProcessStatePhysicalRetiring: {
-			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalProcessPreparationInProgress",
-		},
-		logicalProcessStatePhysicalRetry: {
-			phase: apiv2.LogicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalProcessPreparationFailed", requeue: true, requeueDelay: LongDelay,
 		},
 		logicalProcessStatePhysicalFailed: {
 			phase: apiv2.LogicalProcessPhaseFailed, conditionStatus: metav1.ConditionFalse,
@@ -227,29 +195,17 @@ var logicalProcessProjections = physicalResourceProjectionTable[logicalProcessSt
 			phase: apiv2.LogicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PhysicalProcessStateUnknown",
 		},
-		logicalProcessStateRuntimeRetry: {
-			phase: apiv2.LogicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalProcessLookupFailed", requeue: true, requeueDelay: LongDelay,
-		},
 		logicalProcessStateMissing: {
 			phase: apiv2.LogicalProcessPhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "PhysicalProcessMissing",
-		},
-		logicalProcessStatePersistence: {
-			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "RecordingPersistence",
-		},
-		logicalProcessStatePersistenceRetry: {
-			phase: apiv2.LogicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PersistenceFailed", requeue: true, requeueDelay: LongDelay,
 		},
 		logicalProcessStateDelete: {
 			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "DeletingPhysicalProcess", requeue: true,
 		},
-		logicalProcessStateDeleteRetry: {
-			phase: apiv2.LogicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalProcessDeletionFailed", requeue: true, requeueDelay: LongDelay,
+		logicalProcessStateInvalid: {
+			phase: apiv2.LogicalProcessPhaseFailed, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},
 	},
 }
