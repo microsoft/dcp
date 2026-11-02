@@ -330,8 +330,11 @@ func handleLogicalContainerNetworkPending(
 			}
 		}
 		created, createErr := reconciler.createLogicalNetworkBacking(ctx, network, spec)
-		if created != nil && created.UID != "" {
-			data.physicalNetworkUID, data.lifecycleKey = created.UID, lifecycleKey
+		if created != nil {
+			data.lifecycleKey = lifecycleKey
+			if created.UID != "" {
+				data.physicalNetworkUID = created.UID
+			}
 		}
 		if createErr != nil {
 			log.Error(createErr, "Failed to prepare backing physical network")
