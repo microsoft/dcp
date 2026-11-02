@@ -310,7 +310,8 @@ func (apiClient *networkOwnerDiscoveryClient) Create(
 	}
 	apiClient.creates.Add(1)
 	object.SetName("owner-discovered-network")
-	createErr := apiClient.Client.Create(ctx, object, options...)
+	committed := object.DeepCopyObject().(ctrl_client.Object)
+	createErr := apiClient.Client.Create(ctx, committed, options...)
 	if createErr != nil {
 		return createErr
 	}
@@ -332,6 +333,87 @@ func (apiClient *networkOwnerDiscoveryClient) List(
 		}
 	}
 	return nil
+}
+
+type networkConfirmationFailureReader struct {
+	ctrl_client.Reader
+	fail     atomic.Bool
+	failures atomic.Uint32
+}
+
+func (reader *networkConfirmationFailureReader) List(
+	ctx context.Context, objects ctrl_client.ObjectList, options ...ctrl_client.ListOption,
+) error {
+	if _, physical := objects.(*apiv2.PhysicalContainerNetworkList); physical && reader.fail.Load() {
+		reader.failures.Add(1)
+		return errors.New("physical network confirmation unavailable")
+	}
+	return reader.Reader.List(ctx, objects, options...)
+}
+
+// Verifies that logical networks preserve the selected adopted lifecycle key when Create returns
+// no backing UID and confirmation fails, without claiming the adopted runtime for workload cleanup.
+func TestV2LogicalContainerNetworkControllerPreservesAdoptedKeyAfterUndecodedCreate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	var reader *networkConfirmationFailureReader
+	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		LogicalContainerNetworkController|PhysicalContainerNetworkController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{
+			WorkloadID: "adopted-network-key-workload",
+			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+				return &networkOwnerDiscoveryClient{Client: apiClient}
+			},
+			DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
+				reader = &networkConfirmationFailureReader{Reader: apiReader}
+				reader.fail.Store(true)
+				return reader
+			},
+		})
+	require.NoError(t, startupErr)
+	defer reader.fail.Store(false)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-adopted-network-key"}}
+	require.NoError(t, server.Client.Create(ctx, namespace))
+	const lifecycleKey = "adopted-key"
+	runtimeName := namespace.Name + "-runtime"
+	runtimeID, createErr := server.ContainerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: runtimeName,
+		Labels: map[string]string{
+			"com.microsoft.developer.usvc-dev.build": "test", "com.microsoft.developer.usvc-dev.lifecycle-key": lifecycleKey,
+		},
+	})
+	require.NoError(t, createErr)
+	logical := &apiv2.LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerNetworkSpec{
+			Mode: apiv2.LogicalContainerNetworkModePersistent, NetworkName: runtimeName,
+			LifecycleKey: lifecycleKey, Network: &apiv2.LogicalContainerNetworkConfig{},
+		},
+	}
+	require.NoError(t, server.Client.Create(ctx, logical))
+	ready := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+	})
+	require.Positive(t, reader.failures.Load())
+	require.Equal(t, runtimeID, ready.Status.NetworkID)
+	require.Equal(t, lifecycleKey, ready.Status.LifecycleKey)
+	physical := &apiv2.PhysicalContainerNetwork{}
+	require.NoError(t, server.Client.Get(ctx, types.NamespacedName{
+		Namespace: namespace.Name, Name: ready.Status.PhysicalNetworkRef,
+	}, physical))
+	require.Nil(t, physical.Spec.Network)
+	require.Equal(t, runtimeID, physical.Spec.NetworkID)
+	require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+	_, recordErr := environment.StateStore.GetPersistentNetwork(ctx, logical.GetLeaseKey())
+	require.ErrorIs(t, recordErr, statestore.ErrPersistentNetworkNotFound)
+	reader.fail.Store(false)
+	require.NoError(t, server.Client.Delete(ctx, logical))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+	retained, inspectErr := server.ContainerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{runtimeID}})
+	require.NoError(t, inspectErr)
+	require.Len(t, retained, 1)
 }
 
 // Verifies that LogicalContainerNetwork discovers an uncertain-create backing by owner, fails
