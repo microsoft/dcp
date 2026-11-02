@@ -252,11 +252,7 @@ func handleLogicalContainerNetworkPending(
 		}
 		var inspected *containers.InspectedNetwork
 		if mode != apiv2.LogicalContainerNetworkModeSession {
-			if !reconciler.harvester.TryProtectNetwork(ctx, network.Spec.NetworkName) {
-				data.reason, data.message = "NetworkHarvestingInProgress", "Waiting for resource harvesting before selecting the runtime network."
-				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-				return additionalReconciliationNeeded
-			}
+			isNetworkSafeToReuse := reconciler.harvester.IsDone() || reconciler.harvester.TryProtectNetwork(ctx, network.Spec.NetworkName)
 			lookupCtx, cancelLookup := context.WithTimeout(ctx, networkInspectionTimeout)
 			inspection, inspectErr := inspectNetworkIfExists(lookupCtx, reconciler.networkInspector, network.Spec.NetworkName)
 			cancelLookup()
@@ -270,6 +266,10 @@ func handleLogicalContainerNetworkPending(
 				return additionalReconciliationNeeded
 			}
 			if inspectErr == nil {
+				if !isNetworkSafeToReuse {
+					data.reason, data.message = "NetworkHarvestingInProgress", "Waiting for resource harvesting before reusing the runtime network."
+					return additionalReconciliationNeeded
+				}
 				inspected = inspection
 			}
 		}
