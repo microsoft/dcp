@@ -1132,6 +1132,75 @@ func TestV2PhysicalContainerControllerStopsReplacementBeforeCreation(t *testing.
 	}
 }
 
+// Verifies that stopping a replacement after terminal dependency failure preserves the failure
+// without claiming or stopping a surviving runtime target or treating an absent target as success.
+func TestV2PhysicalContainerControllerKeepsReplacementDependencyFailureAfterStop(t *testing.T) {
+	t.Parallel()
+	for _, targetExists := range []bool{false, true} {
+		name := "missing"
+		if targetExists {
+			name = "existing"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			namespace := createActiveV2Namespace(t, ctx, "v2-pctr-failed-replacement-stop-"+name)
+			image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "image", namespace.Name+"-image")
+			runtimeName := namespace.Name + "-container"
+			runtimeID := ""
+			if targetExists {
+				runtimeID = runExistingTestContainer(t, ctx, runtimeName, "existing-image")
+			}
+			initialCreates := containerOrchestrator.CreateContainerCallCount(runtimeName)
+			networkName := namespace.Name + "-network"
+			_, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
+			require.NoError(t, createErr)
+			removeRuntimeNetworkOnCleanup(t, networkName)
+			network := &apiv2.PhysicalContainerNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+				Spec: apiv2.PhysicalContainerNetworkSpec{
+					Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
+				},
+			}
+			require.NoError(t, client.Create(ctx, network))
+			waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseFailed)
+			physical := &apiv2.PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+				Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+					ContainerName: runtimeName, ImageRef: image.Name, ReplaceExisting: true, RetainRuntimeContainer: true,
+					Networks: []apiv2.ContainerNetworkConnectionConfig{{NetworkRef: network.Name}},
+				}},
+			}
+			require.NoError(t, client.Create(ctx, physical))
+			failed := waitPhysicalContainerPhase(t, ctx, physical.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependencyFailed)
+			failure := *apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady))
+			failed.Spec.Stop = true
+			require.NoError(t, client.Update(ctx, failed))
+			require.Never(t, func() bool {
+				current := &apiv2.PhysicalContainer{}
+				getErr := client.Get(ctx, physical.NamespacedName(), current)
+				require.NoError(t, getErr)
+				return current.Status.Phase != apiv2.PhysicalContainerPhaseFailed || current.Status.ContainerID != ""
+			}, 3*time.Second, 100*time.Millisecond)
+			current := &apiv2.PhysicalContainer{}
+			require.NoError(t, client.Get(ctx, physical.NamespacedName(), current))
+			require.Equal(t, failure.Message, apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady)).Message)
+			require.Equal(t, initialCreates, containerOrchestrator.CreateContainerCallCount(runtimeName))
+			require.Zero(t, containerOrchestrator.RemoveContainerCallCount(runtimeName))
+			if targetExists {
+				inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{runtimeID}})
+				require.NoError(t, inspectErr)
+				require.Len(t, inspected, 1)
+				require.Equal(t, containers.ContainerStatusRunning, inspected[0].Status)
+			}
+			require.NoError(t, client.Delete(ctx, physical))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
+		})
+	}
+}
+
 // Verifies that stopping a replacement waits for exclusive runtime tracking rather than
 // stopping a container currently tracked by another physical resource.
 func TestV2PhysicalContainerControllerWaitsToAcquireReplacementForStop(t *testing.T) {

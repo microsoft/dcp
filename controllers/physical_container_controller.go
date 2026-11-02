@@ -435,11 +435,11 @@ func handlePhysicalContainerPrepare(
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	if container.Spec.Stop && container.Spec.Container.ReplaceExisting {
-		return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
-	}
 	if data.state == physicalContainerStateDependencyFailed {
 		return noChange
+	}
+	if container.Spec.Stop && container.Spec.Container.ReplaceExisting {
+		return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
 	}
 	data.image = ""
 	if container.Spec.Stop {
