@@ -1000,7 +1000,7 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 		data.reconcileErr, data.message = containerListErr, containerListErr.Error()
 		return additionalReconciliationNeeded, delay
 	}
-	if len(physicals.Items) == 0 && data.physicalContainerUID != "" {
+	if len(physicals.Items) == 0 {
 		uncachedContainerListErr := r.NoCacheClient.List(ctx, &physicals, ctrl_client.InNamespace(container.Namespace))
 		if uncachedContainerListErr != nil {
 			log.Error(uncachedContainerListErr, "Failed to verify physical container absence before deletion")
@@ -1067,7 +1067,7 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 		data.reconcileErr, data.message = imageListErr, imageListErr.Error()
 		return additionalReconciliationNeeded, delay
 	}
-	if len(images.Items) == 0 && data.physicalImageUID != "" {
+	if len(images.Items) == 0 {
 		uncachedImageListErr := r.NoCacheClient.List(ctx, &images, ctrl_client.InNamespace(container.Namespace))
 		if uncachedImageListErr != nil {
 			log.Error(uncachedImageListErr, "Failed to verify physical image absence before deletion")

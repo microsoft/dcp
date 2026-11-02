@@ -7,21 +7,256 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
+	"github.com/microsoft/dcp/internal/containers"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+type undecodedBackingClient struct {
+	ctrl_client.Client
+	kind string
+}
+
+func (apiClient *undecodedBackingClient) Create(
+	ctx context.Context, object ctrl_client.Object, options ...ctrl_client.CreateOption,
+) error {
+	if metav1.GetControllerOf(object) == nil || !apiClient.matchesBacking(object) {
+		return apiClient.Client.Create(ctx, object, options...)
+	}
+	committed := object.DeepCopyObject().(ctrl_client.Object)
+	createErr := apiClient.Client.Create(ctx, committed, options...)
+	if createErr != nil {
+		return createErr
+	}
+	return errors.New("physical backing Create committed without decoding its response")
+}
+
+func (apiClient *undecodedBackingClient) matchesBacking(object ctrl_client.Object) bool {
+	switch object.(type) {
+	case *apiv2.PhysicalContainer:
+		return apiClient.kind == "container"
+	case *apiv2.PhysicalContainerImage:
+		return apiClient.kind == "image"
+	case *apiv2.PhysicalContainerNetwork:
+		return apiClient.kind == "network"
+	default:
+		return false
+	}
+}
+
+func (apiClient *undecodedBackingClient) List(
+	ctx context.Context, objects ctrl_client.ObjectList, options ...ctrl_client.ListOption,
+) error {
+	listErr := apiClient.Client.List(ctx, objects, options...)
+	if listErr != nil {
+		return listErr
+	}
+	listOptions := (&ctrl_client.ListOptions{}).ApplyOptions(options)
+	if listOptions.FieldSelector == nil {
+		return nil
+	}
+	switch children := objects.(type) {
+	case *apiv2.PhysicalContainerList:
+		if apiClient.kind == "container" {
+			children.Items = nil
+		}
+	case *apiv2.PhysicalContainerImageList:
+		if apiClient.kind == "image" {
+			children.Items = nil
+		}
+	case *apiv2.PhysicalContainerNetworkList:
+		if apiClient.kind == "network" {
+			children.Items = nil
+		}
+	}
+	return nil
+}
+
+type undecodedBackingReader struct {
+	ctrl_client.Reader
+	kind                 string
+	logicalName          types.NamespacedName
+	failDeletion         atomic.Bool
+	confirmationFailures atomic.Uint32
+	deletionFailures     atomic.Uint32
+}
+
+func (reader *undecodedBackingReader) List(
+	ctx context.Context, objects ctrl_client.ObjectList, options ...ctrl_client.ListOption,
+) error {
+	target := false
+	switch objects.(type) {
+	case *apiv2.PhysicalContainerList:
+		target = reader.kind == "container"
+	case *apiv2.PhysicalContainerImageList:
+		target = reader.kind == "image"
+	case *apiv2.PhysicalContainerNetworkList:
+		target = reader.kind == "network"
+	}
+	if target {
+		var logical ctrl_client.Object = &apiv2.LogicalContainer{}
+		if reader.kind == "network" {
+			logical = &apiv2.LogicalContainerNetwork{}
+		}
+		getErr := reader.Reader.Get(ctx, reader.logicalName, logical)
+		if getErr != nil {
+			return getErr
+		}
+		if logical.GetDeletionTimestamp().IsZero() {
+			reader.confirmationFailures.Add(1)
+			return errors.New("uncached Create confirmation unavailable")
+		}
+		if reader.failDeletion.Load() {
+			reader.deletionFailures.Add(1)
+			return errors.New("uncached deletion confirmation unavailable")
+		}
+	}
+	return reader.Reader.List(ctx, objects, options...)
+}
+
+// Verifies that logical deletion discovers owned containers, images, and networks without decoded
+// Create UIDs, retains the owner while uncached confirmation fails, and cleans backings before finalizing.
+func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"container", "image", "network"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			logicalName := types.NamespacedName{Namespace: "v2-undecoded-backing-" + kind, Name: "logical"}
+			var reader *undecodedBackingReader
+			server, _, startErr := StartTestEnvironmentWithOptions(t, ctx,
+				LogicalContainerController|LogicalContainerNetworkController|PhysicalContainerController|
+					PhysicalContainerImageController|PhysicalContainerNetworkController,
+				t.Name(), t.TempDir(), TestEnvironmentOptions{
+					DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+						return &undecodedBackingClient{Client: apiClient, kind: kind}
+					},
+					DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
+						reader = &undecodedBackingReader{Reader: apiReader, kind: kind, logicalName: logicalName}
+						reader.failDeletion.Store(true)
+						return reader
+					},
+				})
+			require.NoError(t, startErr)
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: logicalName.Namespace}}
+			require.NoError(t, server.Client.Create(ctx, namespace))
+			var logical, unrelated ctrl_client.Object
+			config := &apiv2.LogicalContainerConfig{
+				Image: &apiv2.PhysicalContainerImageConfig{Image: logicalName.Namespace + "-image"},
+			}
+			if kind == "container" {
+				image := &apiv2.PhysicalContainerImage{
+					ObjectMeta: metav1.ObjectMeta{Name: "ready-image", Namespace: logicalName.Namespace},
+					Spec:       apiv2.PhysicalContainerImageSpec{Image: config.Image},
+				}
+				require.NoError(t, server.Client.Create(ctx, image))
+				waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+					return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+				})
+				config = &apiv2.LogicalContainerConfig{ImageRef: image.Name}
+			}
+			if kind == "network" {
+				logical = &apiv2.LogicalContainerNetwork{
+					ObjectMeta: metav1.ObjectMeta{Name: logicalName.Name, Namespace: logicalName.Namespace},
+					Spec: apiv2.LogicalContainerNetworkSpec{
+						NetworkName: logicalName.Namespace + "-runtime", Network: &apiv2.LogicalContainerNetworkConfig{},
+					},
+				}
+				unrelated = &apiv2.PhysicalContainerNetwork{
+					ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: logicalName.Namespace},
+					Spec:       apiv2.PhysicalContainerNetworkSpec{NetworkID: "unrelated-runtime"},
+				}
+			} else {
+				logical = &apiv2.LogicalContainer{
+					ObjectMeta: metav1.ObjectMeta{Name: logicalName.Name, Namespace: logicalName.Namespace},
+					Spec: apiv2.LogicalContainerSpec{
+						ContainerName: logicalName.Namespace + "-runtime", Container: config,
+					},
+				}
+				if kind == "image" {
+					unrelated = &apiv2.PhysicalContainerImage{
+						ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: logicalName.Namespace},
+						Spec:       apiv2.PhysicalContainerImageSpec{ImageID: "unrelated-runtime"},
+					}
+				} else {
+					unrelated = &apiv2.PhysicalContainer{
+						ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: logicalName.Namespace},
+						Spec:       apiv2.PhysicalContainerSpec{ContainerID: "unrelated-runtime"},
+					}
+				}
+			}
+			require.NoError(t, server.Client.Create(ctx, unrelated))
+			require.NoError(t, server.Client.Create(ctx, logical))
+			require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(context.Context) (bool, error) {
+				return reader.confirmationFailures.Load() > 0, nil
+			}))
+			backingName := types.NamespacedName{Namespace: logicalName.Namespace, Name: "logical-" + string(logical.GetUID())}
+			var backing ctrl_client.Object
+			switch kind {
+			case "container":
+				backing = waitObjectAssumesStateEx(t, ctx, server.Client, backingName, func(current *apiv2.PhysicalContainer) (bool, error) {
+					return current.Status.Phase == apiv2.PhysicalContainerPhaseRunning, nil
+				})
+			case "image":
+				backing = waitObjectAssumesStateEx(t, ctx, server.Client, backingName, func(current *apiv2.PhysicalContainerImage) (bool, error) {
+					return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+				})
+			case "network":
+				backing = waitObjectAssumesStateEx(t, ctx, server.Client, backingName, func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
+					return current.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady, nil
+				})
+			}
+			require.True(t, metav1.IsControlledBy(backing, logical))
+			require.Contains(t, backing.GetFinalizers(), controllers.LogicalBackingFinalizer)
+			require.NoError(t, server.Client.Delete(ctx, logical))
+			require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(context.Context) (bool, error) {
+				return reader.deletionFailures.Load() > 0, nil
+			}))
+			require.NoError(t, server.Client.Get(ctx, logicalName, logical))
+			require.False(t, logical.GetDeletionTimestamp().IsZero())
+			require.NotEmpty(t, logical.GetFinalizers())
+			require.NoError(t, server.Client.Get(ctx, backingName, backing))
+			require.True(t, backing.GetDeletionTimestamp().IsZero())
+			reader.failDeletion.Store(false)
+			switch owner := logical.(type) {
+			case *apiv2.LogicalContainer:
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, owner)
+			case *apiv2.LogicalContainerNetwork:
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, owner)
+			}
+			switch child := backing.(type) {
+			case *apiv2.PhysicalContainer:
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, child)
+				_, inspectErr := server.ContainerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{child.Status.ContainerID}})
+				require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+			case *apiv2.PhysicalContainerImage:
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, child)
+			case *apiv2.PhysicalContainerNetwork:
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, child)
+				_, inspectErr := server.ContainerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{child.Status.NetworkID}})
+				require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+			}
+			require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(unrelated), unrelated))
+			require.True(t, unrelated.GetDeletionTimestamp().IsZero())
+		})
+	}
+}
 
 type unobservedBackingClient struct {
 	ctrl_client.Client
