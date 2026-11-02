@@ -294,10 +294,18 @@ func handleLogicalContainerPending(
 	_ logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
 	if data.state == logicalContainerStatePreparationFailed {
-		if data.lease != nil {
-			return reconciler.settleLogicalContainerLease(ctx, container, data, nil, log)
+		change := noChange
+		startupImage, imageErr := reconciler.getLogicalContainerStartupImage(ctx, container)
+		if imageErr != nil {
+			log.Error(imageErr, "Failed to observe image startup logs after preparation failure")
+			change |= additionalReconciliationNeeded
+		} else if startupImage != nil {
+			change |= applyLogicalContainerBackingStatus(container, nil, startupImage, true)
 		}
-		return noChange
+		if data.lease != nil {
+			change |= reconciler.settleLogicalContainerLease(ctx, container, data, nil, log)
+		}
+		return change
 	}
 	if time.Now().Before(data.retryAfter) {
 		return additionalReconciliationNeeded
