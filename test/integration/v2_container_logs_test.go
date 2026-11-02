@@ -22,6 +22,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpclient"
+	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -144,6 +145,114 @@ func TestV2ContainerStartupLogsExposeOwnedImagePull(t *testing.T) {
 	logicalErrOut, logicalErr := readV2ContainerLog(ctx, container, apiv2.ResourceLogOptions{Source: "startup_stderr"})
 	require.NoError(t, logicalErr)
 	require.Equal(t, "Resolving image manifest\n", logicalErrOut)
+}
+
+// Verifies that failed logical preparation continues projecting owned image logs through
+// acquisition success or failure, so later followers receive EOF without restarting container startup.
+func TestV2ContainerStartupLogsCompleteAfterPreparationFailure(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name               string
+		networkFailedFirst bool
+		pullFails          bool
+	}{
+		{name: "network-already-failed", networkFailedFirst: true},
+		{name: "pull-completes-after-failure"},
+		{name: "network-already-failed-pull-fails", networkFailedFirst: true, pullFails: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			namespace := createActiveV2Namespace(t, ctx, "v2-preparation-logs-"+testCase.name)
+			runtimeNetworkName := namespace.Name + "-network"
+			_, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: runtimeNetworkName})
+			require.NoError(t, createErr)
+			removeRuntimeNetworkOnCleanup(t, runtimeNetworkName)
+			releaseNetwork := containerOrchestrator.BlockCreateNetwork(runtimeNetworkName)
+			defer releaseNetwork()
+			network := &apiv2.LogicalContainerNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+				Spec: apiv2.LogicalContainerNetworkSpec{
+					NetworkName: runtimeNetworkName, Network: &apiv2.LogicalContainerNetworkConfig{},
+				},
+			}
+			require.NoError(t, client.Create(ctx, network))
+			waitingNetwork := &apiv2.LogicalContainerNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "waiting", Namespace: namespace.Name},
+				Spec: apiv2.LogicalContainerNetworkSpec{
+					Mode: apiv2.LogicalContainerNetworkModeExisting, NetworkName: namespace.Name + "-absent",
+				},
+			}
+			require.NoError(t, client.Create(ctx, waitingNetwork))
+			if testCase.networkFailedFirst {
+				releaseNetwork()
+				waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+					return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed, nil
+				})
+			}
+			source := namespace.Name + "-image"
+			releasePull := containerOrchestrator.BlockPullImage(source)
+			defer releasePull()
+			if testCase.pullFails {
+				containerOrchestrator.FailNextPullImage(source, errors.New("image acquisition failed after logical preparation"))
+			}
+			noRetries := int32(0)
+			logical := &apiv2.LogicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+				Spec: apiv2.LogicalContainerSpec{
+					Mode: apiv2.LogicalContainerModePersistent, ContainerName: namespace.Name + "-container",
+					Container: &apiv2.LogicalContainerConfig{
+						Image: &apiv2.PhysicalContainerImageConfig{Image: source, PullRetryLimit: &noRetries},
+						Networks: []apiv2.LogicalContainerNetworkConnectionConfig{
+							{NetworkRef: waitingNetwork.Name}, {NetworkRef: network.Name},
+						},
+					},
+				},
+			}
+			require.NoError(t, client.Create(ctx, logical))
+			if !testCase.networkFailedFirst {
+				waitObjectAssumesState(t, ctx, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+					return current.Status.StartupLogs != nil && current.Status.StartupLogs.Available && !current.Status.StartupLogs.Complete, nil
+				})
+				releaseNetwork()
+			}
+			failed := waitObjectAssumesState(t, ctx, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+				return current.Status.Phase == apiv2.LogicalContainerPhaseFailed, nil
+			})
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "LogicalNetworkFailed")
+			require.Empty(t, failed.Status.PhysicalContainerRef)
+			waitPullImageCallCount(t, ctx, source, 1)
+			require.ErrorIs(t, testStateStore.VerifyResourceLeaseHeld(ctx, logical, testResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+			releasePull()
+			image := waitObjectAssumesState(t, ctx,
+				types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(logical.UID)},
+				func(current *apiv2.PhysicalContainerImage) (bool, error) {
+					phase := apiv2.PhysicalContainerImagePhaseReady
+					if testCase.pullFails {
+						phase = apiv2.PhysicalContainerImagePhaseFailed
+					}
+					return current.Status.Phase == phase && current.Status.LogsComplete, nil
+				})
+			for _, stream := range []struct{ logicalSource, imageSource string }{
+				{"startup_stdout", "stdout"}, {"startup_stderr", "stderr"},
+			} {
+				expected, imageLogErr := readV2ContainerLog(ctx, image, apiv2.ResourceLogOptions{Source: stream.imageSource})
+				require.NoError(t, imageLogErr)
+				actual, startupLogErr := readV2ContainerLog(ctx, logical, apiv2.ResourceLogOptions{Source: stream.logicalSource, Follow: true})
+				require.NoError(t, startupLogErr)
+				require.Equal(t, expected, actual)
+			}
+			require.NoError(t, client.Get(ctx, logical.NamespacedName(), failed))
+			require.Equal(t, apiv2.LogicalContainerPhaseFailed, failed.Status.Phase)
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "LogicalNetworkFailed")
+			require.Equal(t, image.GetLogSource(), failed.Status.StartupLogs)
+			require.Zero(t, containerOrchestrator.CreateContainerCallCount(logical.Spec.ContainerName))
+			require.NoError(t, client.Delete(ctx, logical))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, logical)
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, image)
+		})
+	}
 }
 
 // Verifies that owned physical image failures reach both image and logical system endpoints,
