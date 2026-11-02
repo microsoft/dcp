@@ -8,10 +8,13 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -27,6 +30,7 @@ import (
 	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -159,6 +163,130 @@ func TestV2LogicalContainerNetworkControllerRecordsNamespaceWorkload(t *testing.
 	require.Equal(t, commonapi.WorkloadID("namespace-network-workload"), record.WorkloadID)
 	require.Equal(t, ready.Status.NetworkID, record.NetworkID)
 	require.ErrorIs(t, testStateStore.VerifyResourceLeaseHeld(ctx, network, testResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+}
+
+type networkHarvestRemovalGate struct {
+	containers.ContainerOrchestrator
+	networkID string
+	entered   chan<- struct{}
+	resume    <-chan struct{}
+}
+
+func (gate *networkHarvestRemovalGate) RemoveNetworks(
+	ctx context.Context, options containers.RemoveNetworksOptions,
+) ([]string, error) {
+	if slices.Contains(options.Networks, gate.networkID) {
+		select {
+		case gate.entered <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		select {
+		case _, open := <-gate.resume:
+			if open {
+				return nil, errors.New("unexpected value on network harvest gate")
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return gate.ContainerOrchestrator.RemoveNetworks(ctx, options)
+}
+
+// Verifies that LogicalContainerNetwork creates a missing runtime during harvest contention,
+// defers reuse of a found runtime, and retries promptly after cleanup without an API wake.
+func TestV2LogicalContainerNetworkControllerMatchesV1HarvestProtection(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	orchestrator, orchestratorErr := ctrl_testutil.NewTestContainerOrchestrator(ctx,
+		testutil.NewLogForTesting(t.Name()), ctrl_testutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	defer func() { require.NoError(t, orchestrator.Close()) }()
+	const namespaceName = "v2-logical-network-harvest"
+	const existingRuntimeName = namespaceName + "-existing"
+	missingProcess := nonExistentProcess(t)
+	oldNetworkID, createErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: existingRuntimeName,
+		Labels: map[string]string{
+			controllers.PersistentLabel:              "true",
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", missingProcess.Pid),
+			controllers.CreatorProcessStartTimeLabel: missingProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+		},
+	})
+	require.NoError(t, createErr)
+	harvestEntered := make(chan struct{}, 1)
+	resumeHarvest := make(chan struct{})
+	releaseHarvest := sync.OnceFunc(func() { close(resumeHarvest) })
+	defer releaseHarvest()
+	gate := &networkHarvestRemovalGate{
+		ContainerOrchestrator: orchestrator, networkID: oldNetworkID,
+		entered: harvestEntered, resume: resumeHarvest,
+	}
+	serverInfo, _, startupErr := StartAdvancedTestEnvironmentWithOptions(ctx,
+		LogicalContainerNetworkController|PhysicalContainerNetworkController,
+		t.Name(), t.TempDir(), AdvancedTestEnvironmentOptions{
+			ApiServerFlags: ctrl_testutil.ApiServerFlagsNone, ContainerOrchestrator: gate,
+		})
+	require.NoError(t, startupErr)
+	defer func() {
+		releaseHarvest()
+		shutdownTestEnvironment(t, serverInfo, cancel)
+	}()
+	select {
+	case _, open := <-harvestEntered:
+		require.True(t, open)
+	case <-ctx.Done():
+		require.FailNow(t, "network harvesting did not reach runtime removal")
+	}
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceName}}
+	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+	existing := &apiv2.LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "existing", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerNetworkSpec{
+			Mode: apiv2.LogicalContainerNetworkModePersistent, NetworkName: existingRuntimeName,
+			Network: &apiv2.LogicalContainerNetworkConfig{},
+		},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, existing))
+	waiting := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, existing.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return ready != nil && ready.Reason == "NetworkHarvestingInProgress", nil
+	})
+	require.Empty(t, waiting.Status.PhysicalNetworkRef)
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(existingRuntimeName))
+	missing := &apiv2.LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "missing", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerNetworkSpec{
+			Mode: apiv2.LogicalContainerNetworkModePersistent, NetworkName: namespaceName + "-missing",
+			Network: &apiv2.LogicalContainerNetworkConfig{},
+		},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, missing))
+	// Startup must progress before the erroneous 30-second monitoring retry could fire.
+	startupCtx, cancelStartup := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelStartup()
+	created := waitObjectAssumesStateEx(t, startupCtx, serverInfo.Client, missing.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+	})
+	require.NotEmpty(t, created.Status.NetworkID)
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(missing.Spec.NetworkName))
+	inspectionCount := orchestrator.InspectNetworkCallCount(existingRuntimeName)
+	waitInspectNetworkCallCount(t, startupCtx, orchestrator, existingRuntimeName, inspectionCount+1)
+	require.NoError(t, serverInfo.Client.Get(ctx, existing.NamespacedName(), waiting))
+	require.Empty(t, waiting.Status.PhysicalNetworkRef)
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(existingRuntimeName))
+	releaseHarvest()
+	retryCtx, cancelRetry := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelRetry()
+	recovered := waitObjectAssumesStateEx(t, retryCtx, serverInfo.Client, existing.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+	})
+	require.NotEqual(t, oldNetworkID, recovered.Status.NetworkID)
+	require.Equal(t, 2, orchestrator.CreateNetworkCallCount(existingRuntimeName))
 }
 
 type namespaceWorkloadFailureReader struct {
