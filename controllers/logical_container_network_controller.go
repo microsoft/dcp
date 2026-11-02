@@ -533,7 +533,7 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 		data.reconcileErr, data.message = listErr, listErr.Error()
 		return additionalReconciliationNeeded, delay
 	}
-	if len(children.Items) == 0 && data.physicalNetworkUID != "" {
+	if len(children.Items) == 0 {
 		verifyErr := r.NoCacheClient.List(ctx, &children, ctrl_client.InNamespace(network.Namespace))
 		if verifyErr != nil {
 			log.Error(verifyErr, "Failed to verify physical network absence before deletion")
