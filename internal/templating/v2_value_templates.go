@@ -19,6 +19,8 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/maps"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 type errV2ServiceLookup struct {
@@ -135,7 +137,19 @@ func EvaluateV2Values(
 		}
 		return output.String(), nil
 	}
-	resolvedArgs, resolvedEnv := slices.Clone(arguments), slices.Clone(environment)
+	environmentMode := maps.StringMapModeCaseSensitive
+	if osutil.IsWindows() {
+		environmentMode = maps.StringMapModeCaseInsensitive
+	}
+	lastDeclarations := maps.NewStringKeyMap[int](environmentMode)
+	for declarationIndex, variable := range environment {
+		lastDeclarations.Override(variable.Name, declarationIndex)
+	}
+	resolvedArgs := slices.Clone(arguments)
+	var resolvedEnv []commonapi.EnvVar
+	if environment != nil {
+		resolvedEnv = make([]commonapi.EnvVar, 0, lastDeclarations.Len())
+	}
 	for argumentIndex, argument := range arguments {
 		value, argumentErr := evaluate(argument)
 		if argumentErr != nil {
@@ -144,11 +158,15 @@ func EvaluateV2Values(
 		resolvedArgs[argumentIndex] = value
 	}
 	for environmentIndex, variable := range environment {
+		winningIndex, found := lastDeclarations.Get(variable.Name)
+		if !found || winningIndex != environmentIndex {
+			continue
+		}
 		value, environmentErr := evaluate(variable.Value)
 		if environmentErr != nil {
 			return nil, nil, fmt.Errorf("environment variable %q: %w", variable.Name, environmentErr)
 		}
-		resolvedEnv[environmentIndex].Value = value
+		resolvedEnv = append(resolvedEnv, commonapi.EnvVar{Name: variable.Name, Value: value})
 	}
 	return resolvedArgs, resolvedEnv, nil
 }

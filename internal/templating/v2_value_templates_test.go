@@ -18,6 +18,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 type countedServiceReader struct {
@@ -86,5 +87,44 @@ func TestEvaluateV2ValuesErrors(t *testing.T) {
 			require.Error(t, evaluationErr)
 			require.Equal(t, testCase.transient, IsTransientTemplateError(evaluationErr))
 		})
+	}
+}
+
+// Verifies that EvaluateV2Values ignores overwritten environment declarations before evaluating
+// their templates, so unavailable references and malformed shadowed values cannot block startup.
+func TestEvaluateV2ValuesIgnoresOverriddenEnvironment(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	reader := &countedServiceReader{Reader: fake.NewClientBuilder().WithScheme(scheme).Build()}
+	owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test-namespace"}}
+	environment := []commonapi.EnvVar{
+		{Name: "PORT", Value: `{{portFor "missing"}}`},
+		{Name: "OTHER", Value: "{{"},
+		{Name: "PORT", Value: "8080"},
+		{Name: "OTHER", Value: ""},
+	}
+	_, resolvedEnv, evaluationErr := EvaluateV2Values(context.Background(), reader, owner, nil, nil, environment)
+	require.NoError(t, evaluationErr)
+	require.Equal(t, []commonapi.EnvVar{{Name: "PORT", Value: "8080"}, {Name: "OTHER", Value: ""}}, resolvedEnv)
+	require.Zero(t, reader.reads)
+	require.Equal(t, `{{portFor "missing"}}`, environment[0].Value)
+}
+
+// Verifies that EvaluateV2Values applies Windows case-insensitive environment overrides
+// without treating differently cased Unix variable names as equivalent.
+func TestEvaluateV2ValuesEnvironmentCasing(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	reader := fake.NewClientBuilder().WithScheme(scheme).Build()
+	owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test-namespace"}}
+	environment := []commonapi.EnvVar{{Name: "VALUE", Value: "{{"}, {Name: "value", Value: "effective"}}
+	_, resolvedEnv, evaluationErr := EvaluateV2Values(context.Background(), reader, owner, nil, nil, environment)
+	if osutil.IsWindows() {
+		require.NoError(t, evaluationErr)
+		require.Equal(t, []commonapi.EnvVar{{Name: "value", Value: "effective"}}, resolvedEnv)
+	} else {
+		require.Error(t, evaluationErr)
 	}
 }
