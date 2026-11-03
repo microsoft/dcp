@@ -158,7 +158,7 @@ func TestV2PhysicalProcessControllerReportsMissingExistingProcess(t *testing.T) 
 	require.Equal(t, pid, *exitedProcess.Status.PID)
 	requireReadyCondition(t, exitedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessMissing)
 
-	// Deletion must not be blocked by the inability to identify the runtime process.
+	// Deletion must not be blocked by the inability to identify the process.
 	require.NoError(t, client.Delete(ctx, exitedProcess))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, exitedProcess)
 }

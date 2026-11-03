@@ -38,7 +38,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that physical process cleanup retains its finalizer and capture ownership after
+// Verifies that PhysicalProcess cleanup retains its finalizer and capture ownership after
 // a removal failure, then normal reconciliation completes deletion when removal becomes possible.
 func TestV2ProcessCleanupRetriesOutputRemoval(t *testing.T) {
 	t.Parallel()
@@ -85,7 +85,7 @@ func TestV2ProcessCleanupRetriesOutputRemoval(t *testing.T) {
 }
 
 // Verifies that retained raw process capture preserves application numbers, timestamps, and
-// a final fragment through logical/physical endpoints while retaining line selection behavior.
+// a final fragment through LogicalProcess and PhysicalProcess endpoints while retaining line selection behavior.
 func TestV2ProcessRetainedLogsPreserveRawOutput(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -150,7 +150,7 @@ func (executor *processOutputDrainExecutor) StartProcess(
 	return executor.Executor.StartProcess(ctx, command, handler, flags, create)
 }
 
-// Verifies that physical process output completes after descendant-held pipes drain,
+// Verifies that PhysicalProcess output completes after descendant-held pipes drain,
 // rather than when the root process disappears, including for a newly opened follower.
 func TestV2PhysicalProcessLogsWaitForOutputDrain(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -259,7 +259,7 @@ func (reader *processBackingDeletionConflictReader) Get(
 	return getErr
 }
 
-// Verifies that logical-only process log followers finish when physical backing disappears,
+// Verifies that LogicalProcess log followers finish when the backing PhysicalProcess disappears,
 // and completion remains projected when a real API resource-version conflict rejects the first status write.
 func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T) {
 	t.Parallel()
@@ -307,7 +307,7 @@ func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T)
 			require.True(t, found)
 			_, writeErr := io.WriteString(execution.Cmd.Stdout, "logical-only-output\n")
 			require.NoError(t, writeErr)
-			// No physical log request is made: its lazily started log lifecycle watch must not be required.
+			// No PhysicalProcess log request is made: its lazily started log lifecycle watch must not be required.
 			stream, streamErr := logsClient.Get().
 				AbsPath("/apis", apiv2.GroupVersion.Group, apiv2.GroupVersion.Version, "namespaces",
 					namespaceName, "logicalprocesses", resource.Name, apiv2.LogSubresourceName).
@@ -346,7 +346,7 @@ func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T)
 	}
 }
 
-// Verifies that logical and physical process endpoints share immediate captured stdout/stderr,
+// Verifies that LogicalProcess and PhysicalProcess endpoints share captured stdout/stderr,
 // support standard formatting and filtering, and finish followers when the process exits.
 func TestV2ProcessLogEndpointsShareOutputAndCompleteOnExit(t *testing.T) {
 	t.Parallel()
@@ -423,7 +423,7 @@ func TestV2ProcessLogEndpointsShareOutputAndCompleteOnExit(t *testing.T) {
 	}
 }
 
-// Verifies that namespace deletion projects drained physical output to a logical-only follower
+// Verifies that namespace deletion projects drained PhysicalProcess output to a LogicalProcess follower
 // while capture removal is blocked, allowing the follower and resource cleanup to finish.
 func TestV2ProcessLogicalOnlyFollowerCompletesDuringNamespaceDeletion(t *testing.T) {
 	t.Parallel()
@@ -463,7 +463,7 @@ func TestV2ProcessLogicalOnlyFollowerCompletesDuringNamespaceDeletion(t *testing
 	require.False(t, running.Status.RuntimeLogs.Complete)
 	var unblockRemoval func()
 	if runtime.GOOS != "windows" {
-		// Model Windows' open-reader removal failure without opening the physical log endpoint.
+		// Model Windows' open-reader removal failure without opening the PhysicalProcess log endpoint.
 		path := running.Status.RuntimeLogs.StdoutFile
 		saved := path + ".saved"
 		obstruction := filepath.Join(path, "busy")
@@ -500,8 +500,8 @@ func TestV2ProcessLogicalOnlyFollowerCompletesDuringNamespaceDeletion(t *testing
 	})
 }
 
-// Verifies that physical process launch diagnostics are routed into both physical and owning
-// logical system streams, while failed launch output completes without hanging.
+// Verifies that PhysicalProcess launch diagnostics are routed into both its own and the owning
+// LogicalProcess system streams, while failed launch output completes without hanging.
 func TestV2ProcessSystemLogsFollowLogicalOwnership(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -560,7 +560,7 @@ func TestV2ProcessLogsForExistingProcessWithoutCapture(t *testing.T) {
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
 }
 
-// Verifies that an identity-bound physical reference reads a supplied stdout file independent of
+// Verifies that an identity-bound PhysicalProcess reads a supplied stdout file independent of
 // resource naming, keeps it while detached from a running process, and removes it after confirmed exit.
 func TestV2PhysicalProcessReusesExistingOutputCapture(t *testing.T) {
 	t.Parallel()
@@ -603,7 +603,7 @@ func TestV2PhysicalProcessReusesExistingOutputCapture(t *testing.T) {
 	require.NoFileExists(t, outputPath)
 }
 
-// Verifies that logical and physical followers drain and finish on resource deletion,
+// Verifies that LogicalProcess and PhysicalProcess log followers drain and finish on resource deletion,
 // captured files are cleaned up, and a recreated logical name gets a distinct capture.
 func TestV2ProcessLogsFinishOnDeletionAndIsolateRecreatedResources(t *testing.T) {
 	t.Parallel()
@@ -653,7 +653,7 @@ func TestV2ProcessLogsFinishOnDeletionAndIsolateRecreatedResources(t *testing.T)
 }
 
 // Verifies that created session and exited persistent process captures honor executable-log
-// preservation while their logical and physical resources complete normal deletion.
+// preservation while their LogicalProcess and PhysicalProcess resources complete normal deletion.
 func TestV2ProcessCreatedCapturesHonorPreservation(t *testing.T) {
 	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "1")
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
