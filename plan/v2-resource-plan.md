@@ -193,6 +193,7 @@ After the physical primitives are in place, add logical V2 resources that expres
    - Normalize explicit environment declarations with V1's platform-aware last-value-wins rules before evaluating templates, so overwritten values cannot introduce dependencies or failures. Evaluate the effective environment and process arguments/container command arguments before computing lifecycle keys and creating physical runtime configuration. Hash and launch the same evaluated snapshot; preserve explicit key overrides and exclude implicit inherited values.
    - Follow V1 lifecycle-key boundaries: process port/service declarations are not hashed; container keys include only resolved runtime port-publication settings, sorted by protocol and host port. Logical port names, service references/templates, and proxy address policy do not contribute independently of evaluated launch values.
    - Retain V1 helper names: `portForServing` and `addressForServing` select a named logical port; `portFor` and `addressFor` select a same-namespace service reference, using the existing IP-family preference with an optional `IPv4` or `IPv6` selector. Select matching address/port pairs consistently.
+   - Keep service/endpoint API addresses separate from ports, but bracket IPv6 literals when rendering template hosts or constructing socket authorities. Existing-mode processes require explicit serving ports because PID observation cannot inject a newly allocated port into an already-running process.
 
 5. Add V2 project.
    - Represent a debuggable application.

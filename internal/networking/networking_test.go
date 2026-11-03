@@ -141,3 +141,53 @@ func TestCheckPortAvailable(t *testing.T) {
 		})
 	}
 }
+
+// Verifies that AddressAndPort preserves IPv4/hostname authorities and accepts bare, bracketed,
+// mapped, and zoned IPv6 literals without producing malformed or double-bracketed addresses.
+func TestAddressAndPortIPv6Formatting(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		address  string
+		expected string
+		host     string
+	}{
+		{"127.0.0.1", "127.0.0.1:5001", "127.0.0.1"},
+		{"localhost", "localhost:5001", "localhost"},
+		{"service.example", "service.example:5001", "service.example"},
+		{"::1", "[::1]:5001", "::1"},
+		{"[::1]", "[::1]:5001", "::1"},
+		{"2001:db8::1", "[2001:db8::1]:5001", "2001:db8::1"},
+		{"::ffff:127.0.0.1", "[::ffff:127.0.0.1]:5001", "::ffff:127.0.0.1"},
+		{"fe80::1%lo0", "[fe80::1%lo0]:5001", "fe80::1%lo0"},
+	} {
+		t.Run(testCase.address, func(t *testing.T) {
+			t.Parallel()
+			authority := AddressAndPort(testCase.address, 5001)
+			require.Equal(t, testCase.expected, authority)
+			host, port, splitErr := net.SplitHostPort(authority)
+			require.NoError(t, splitErr)
+			require.Equal(t, testCase.host, host)
+			require.Equal(t, "5001", port)
+		})
+	}
+}
+
+// Verifies that TCP and UDP address parsers accept authorities built from bare IPv6 endpoints,
+// matching the formatting boundary used by the runtime proxy without opening network connections.
+func TestAddressAndPortParsesIPv6ProxyEndpoint(t *testing.T) {
+	t.Parallel()
+	for _, address := range []string{"::1", "[::1]"} {
+		t.Run(address, func(t *testing.T) {
+			t.Parallel()
+			authority := AddressAndPort(address, 5001)
+			tcpAddress, tcpErr := net.ResolveTCPAddr("tcp", authority)
+			require.NoError(t, tcpErr)
+			require.True(t, net.ParseIP("::1").Equal(tcpAddress.IP))
+			require.Equal(t, 5001, tcpAddress.Port)
+			udpAddress, udpErr := net.ResolveUDPAddr("udp", authority)
+			require.NoError(t, udpErr)
+			require.True(t, net.ParseIP("::1").Equal(udpAddress.IP))
+			require.Equal(t, 5001, udpAddress.Port)
+		})
+	}
+}

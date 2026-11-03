@@ -153,3 +153,28 @@ func TestV2ServiceAPIRejectsInvalidConfiguration(t *testing.T) {
 	require.NoError(t, client.Delete(ctx, namespace))
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
 }
+
+// Verifies that the real API rejects dynamically allocated ports for existing processes
+// without launching, stopping, or publishing endpoints for the observed identity.
+func TestV2LogicalProcessExistingModeRejectsDynamicPorts(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-existing-port-validation")
+	handle := seedAdoptablePhysicalProcess(t, ctx, "v2-existing-port-validation-command")
+	pid := int64(handle.Pid)
+	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "existing", Namespace: namespace.Name},
+		Spec: apiv2.LogicalProcessSpec{
+			Mode: apiv2.LogicalProcessModeExisting, PID: &pid, IdentityTimestamp: metav1.NewMicroTime(handle.IdentityTime),
+			Ports: []apiv2.LogicalProcessPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http", ServiceRef: "service"}}},
+		}}
+	createErr := client.Create(ctx, resource)
+	require.True(t, apierrors.IsInvalid(createErr), "%v", createErr)
+	require.Contains(t, createErr.Error(), "spec.ports[0].port")
+	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
+	var endpoints apiv2.ServiceEndpointList
+	require.NoError(t, client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
+	require.Empty(t, endpoints.Items)
+	require.NoError(t, client.Delete(ctx, namespace))
+	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
+}

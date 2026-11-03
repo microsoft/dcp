@@ -339,7 +339,7 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 				physical := &apiv2.PhysicalProcess{}
 				require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: name.Namespace, Name: running.Status.PhysicalProcessRef}, physical))
 				require.Equal(t, []string{strconv.Itoa(5001)}, physical.Spec.Process.Args)
-				require.Equal(t, []commonapi.EnvVar{{Name: "HOST", Value: "::1"}}, physical.Spec.Process.Env)
+				require.Equal(t, []commonapi.EnvVar{{Name: "HOST", Value: "[::1]"}}, physical.Spec.Process.Env)
 			} else {
 				running := waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalContainer) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
@@ -347,7 +347,7 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 				physical := &apiv2.PhysicalContainer{}
 				require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: name.Namespace, Name: running.Status.PhysicalContainerRef}, physical))
 				require.Equal(t, []string{strconv.Itoa(5001)}, physical.Spec.Container.Command)
-				require.Equal(t, []commonapi.EnvVar{{Name: "HOST", Value: "::1"}}, physical.Spec.Container.Env)
+				require.Equal(t, []commonapi.EnvVar{{Name: "HOST", Value: "[::1]"}}, physical.Spec.Container.Env)
 			}
 			require.NoError(t, client.Delete(ctx, namespace))
 			ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)

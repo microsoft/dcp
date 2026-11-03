@@ -296,6 +296,12 @@ func (resource *LogicalProcess) Validate(ctx context.Context) field.ErrorList {
 		} else if *resource.Spec.PID <= 0 || *resource.Spec.PID > math.MaxUint32 {
 			errorList = append(errorList, field.Invalid(specPath.Child("pid"), *resource.Spec.PID, "pid must be between 1 and 4294967295"))
 		}
+		for portIndex, port := range resource.Spec.Ports {
+			if port.Port == 0 {
+				errorList = append(errorList, field.Invalid(specPath.Child("ports").Index(portIndex).Child("port"), port.Port,
+					"an explicit serving port is required in existing mode"))
+			}
+		}
 	default:
 		errorList = append(errorList, field.NotSupported(specPath.Child("mode"), resource.Spec.Mode, []string{
 			string(LogicalProcessModeSession), string(LogicalProcessModePersistent), string(LogicalProcessModeExisting),

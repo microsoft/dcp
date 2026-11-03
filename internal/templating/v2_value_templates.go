@@ -44,7 +44,8 @@ type ServingPort struct {
 
 // EvaluateV2Values evaluates declared arguments and environment against one service-address snapshot.
 // Serving helpers use logical port names; consumer helpers accept same-namespace service references
-// and an optional "IPv4" or "IPv6" selector. Inputs are never modified.
+// and an optional "IPv4" or "IPv6" selector. Address helpers bracket IPv6 literals for URL/authority
+// interpolation. Inputs are never modified.
 func EvaluateV2Values(
 	ctx context.Context, reader ctrl_client.Reader, owner commonapi.DcpModelObject,
 	ports []ServingPort, arguments []string, environment []commonapi.EnvVar,
@@ -108,7 +109,7 @@ func EvaluateV2Values(
 		},
 		"addressForServing": func(name string) (string, error) {
 			port, findErr := findPort(name)
-			return port.Address, findErr
+			return networking.ToHostAddress(port.Address), findErr
 		},
 		"portFor": func(reference string, family ...string) (int32, error) {
 			address, selectErr := selectAddress(reference, family)
@@ -116,7 +117,7 @@ func EvaluateV2Values(
 		},
 		"addressFor": func(reference string, family ...string) (string, error) {
 			address, selectErr := selectAddress(reference, family)
-			return address.Address, selectErr
+			return networking.ToHostAddress(address.Address), selectErr
 		},
 	})
 	evaluate := func(value string) (string, error) {

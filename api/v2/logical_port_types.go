@@ -124,7 +124,8 @@ type LogicalProcessPort struct {
 	// Address is the process's listening IP address or hostname, defaulting to localhost.
 	Address string `json:"address,omitempty"`
 
-	// Port is the port on which the process listens. Zero allocates a port for portForServing templates.
+	// Port is the port on which the process listens. Zero allocates a port for portForServing templates
+	// in session and persistent modes; existing mode requires an explicit nonzero port.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port"`
