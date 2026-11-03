@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -670,63 +671,90 @@ func TestV2LogicalProcessControllerNamespaceCleanup(t *testing.T) {
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(handles[apiv2.LogicalProcessModePersistent]))
 }
 
+type retainedProcessLaunchGate struct {
+	process.Executor
+	command string
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (gate *retainedProcessLaunchGate) StartProcess(
+	ctx context.Context, command *exec.Cmd, handler process.ProcessExitHandler,
+	flags process.ProcessCreationFlag, create process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	if command.Path == gate.command {
+		close(gate.started)
+		select {
+		case <-gate.release:
+		case <-ctx.Done():
+			return process.ProcessHandle{}, nil, ctx.Err()
+		}
+	}
+	return gate.Executor.StartProcess(ctx, command, handler, flags, create)
+}
+
 // Verifies that LogicalProcess settles an in-flight retained launch and records its identity
-// before deleting physical backing during logical-resource or namespace deletion.
+// before deleting physical backing, without blocking unrelated process launches.
 func TestV2LogicalProcessControllerDeletesDuringRetainedLaunch(t *testing.T) {
 	t.Parallel()
 	for _, target := range []string{"logical", "namespace"} {
 		t.Run(target, func(t *testing.T) {
+			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
-			namespace := createActiveV2Namespace(t, ctx, "v2-logical-process-delete-launch-"+target)
 			started, release := make(chan struct{}), make(chan struct{})
 			unblock := sync.OnceFunc(func() { close(release) })
 			defer unblock()
 			command := "v2-logical-process-delete-launch-" + target
-			criteria := internal_testutil.ProcessSearchCriteria{Command: []string{command}}
-			testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{Condition: criteria,
-				StartupError: func(*internal_testutil.ProcessExecution) error {
-					close(started)
-					select {
-					case <-release:
-						return nil
-					case <-ctx.Done():
-						return ctx.Err()
-					}
+			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+				LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{DecoratePhysicalProcessExecutor: func(executor process.Executor) process.Executor {
+					return &retainedProcessLaunchGate{Executor: executor, command: command, started: started, release: release}
 				}})
-			defer func() {
-				unblock()
-				testProcessExecutor.RemoveAutoExecution(criteria)
-			}()
+			require.NoError(t, startupErr)
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-process-delete-launch-" + target}}
+			require.NoError(t, server.Client.Create(ctx, namespace))
+			waitObjectAssumesStateEx(t, ctx, server.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+				return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+			})
 			resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
 				Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
 					Process: &apiv2.LogicalProcessConfig{ExecutablePath: command}}}
-			require.NoError(t, client.Create(ctx, resource))
+			require.NoError(t, server.Client.Create(ctx, resource))
 			select {
 			case <-started:
 			case <-ctx.Done():
 				t.Fatal("physical process launch did not start")
 			}
+			unrelated := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: namespace.Name},
+				Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-unrelated-process-" + target}}}
+			require.NoError(t, server.Client.Create(ctx, unrelated))
+			waitObjectAssumesStateEx(t, ctx, server.Client, unrelated.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+				return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+			})
 			physical := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(resource.UID), Namespace: namespace.Name}}
 			if target == "logical" {
-				require.NoError(t, client.Delete(ctx, resource))
+				require.NoError(t, server.Client.Delete(ctx, resource))
 			} else {
-				require.NoError(t, client.Delete(ctx, namespace))
+				require.NoError(t, server.Client.Delete(ctx, namespace))
 			}
-			waitObjectAssumesState(t, ctx, resource.NamespacedName(),
+			waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(),
 				func(current *apiv2.LogicalProcess) (bool, error) { return !current.DeletionTimestamp.IsZero(), nil })
-			require.NoError(t, client.Get(ctx, physical.NamespacedName(), physical))
+			require.NoError(t, server.Client.Get(ctx, physical.NamespacedName(), physical))
 			require.True(t, physical.DeletionTimestamp.IsZero(), "physical deletion must wait for startup settlement")
 			require.Len(t, physical.Finalizers, 1)
 			unblock()
-			ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
-			record, recordErr := testStateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+			record, recordErr := environment.StateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
 			require.NoError(t, recordErr)
-			require.NoError(t, testProcessExecutor.CheckProcessRunning(record.ProcessHandle()))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
-			if target == "namespace" {
-				ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
+			require.NoError(t, environment.TestProcessExecutor.CheckProcessRunning(record.ProcessHandle()))
+			require.Len(t, environment.TestProcessExecutor.FindAll([]string{command}, "", nil), 1)
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+			if target == "logical" {
+				require.NoError(t, server.Client.Delete(ctx, namespace))
 			}
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, namespace)
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, unrelated)
 		})
 	}
 }
