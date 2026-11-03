@@ -30,15 +30,15 @@ func TestV2NetworkSystemLogsFollowPhysicalOwnership(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	namespace := createActiveV2Namespace(t, ctx, "v2-network-log-owner")
-	runtimeName := namespace.Name + "-runtime"
-	removeRuntimeNetworkOnCleanup(t, runtimeName)
-	_, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: runtimeName})
+	networkName := namespace.Name + "-runtime"
+	removeRuntimeNetworkOnCleanup(t, networkName)
+	_, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
 	require.NoError(t, createErr)
-	releaseCreate := containerOrchestrator.BlockCreateNetwork(runtimeName)
+	releaseCreate := containerOrchestrator.BlockCreateNetwork(networkName)
 	defer releaseCreate()
 	network := &apiv2.LogicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
-		Spec:       apiv2.LogicalContainerNetworkSpec{NetworkName: runtimeName, Network: &apiv2.LogicalContainerNetworkConfig{}},
+		Spec:       apiv2.LogicalContainerNetworkSpec{NetworkName: networkName, Network: &apiv2.LogicalContainerNetworkConfig{}},
 	}
 	require.NoError(t, client.Create(ctx, network))
 	pending := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
@@ -68,10 +68,10 @@ func TestV2NetworkSystemLogsFollowPhysicalOwnership(t *testing.T) {
 		for {
 			line, readErr := reader.ReadString('\n')
 			require.NoError(t, readErr)
-			if !strings.Contains(line, "Failed to create runtime network") {
+			if !strings.Contains(line, "Failed to create container network") {
 				continue
 			}
-			require.Contains(t, line, runtimeName)
+			require.Contains(t, line, networkName)
 			require.Contains(t, line, "PhysicalContainerNetworkReconciler")
 			break
 		}
@@ -80,8 +80,8 @@ func TestV2NetworkSystemLogsFollowPhysicalOwnership(t *testing.T) {
 	require.NoError(t, physicalSystemErr)
 	logicalSystem, logicalSystemErr := readV2ContainerLog(ctx, network, apiv2.ResourceLogOptions{Source: "system"})
 	require.NoError(t, logicalSystemErr)
-	require.Contains(t, physicalSystem, runtimeName)
-	require.Contains(t, logicalSystem, runtimeName)
+	require.Contains(t, physicalSystem, networkName)
+	require.Contains(t, logicalSystem, networkName)
 	require.NotEqual(t, network.GetResourceId(), physical.GetResourceId())
 	require.NoError(t, client.Delete(ctx, network))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, network)
@@ -92,27 +92,27 @@ func TestV2NetworkSystemLogsFollowPhysicalOwnership(t *testing.T) {
 }
 
 // Verifies that standalone physical-network endpoints preserve namespace/resource isolation
-// and reject stdout, stderr, and startup streams rather than creating runtime log capture.
+// and reject stdout, stderr, and startup streams rather than creating container log capture.
 func TestV2NetworkLogEndpointsAreSystemOnlyAndNamespaced(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	for _, namespaceName := range []string{"v2-network-log-first", "v2-network-log-second"} {
 		namespace := createActiveV2Namespace(t, ctx, namespaceName)
-		runtimeName := namespaceName + "-runtime"
-		removeRuntimeNetworkOnCleanup(t, runtimeName)
-		_, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: runtimeName})
+		networkName := namespaceName + "-runtime"
+		removeRuntimeNetworkOnCleanup(t, networkName)
+		_, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
 		require.NoError(t, createErr)
 		physical := &apiv2.PhysicalContainerNetwork{
 			ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
-			Spec:       apiv2.PhysicalContainerNetworkSpec{Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: runtimeName}},
+			Spec:       apiv2.PhysicalContainerNetworkSpec{Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName}},
 		}
 		require.NoError(t, client.Create(ctx, physical))
 		waitPhysicalContainerNetworkPhase(t, ctx, physical.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseFailed)
 		output, readErr := readV2ContainerLog(ctx, physical, apiv2.ResourceLogOptions{Source: "system"})
 		require.NoError(t, readErr)
-		require.Contains(t, output, runtimeName)
-		require.Contains(t, output, "Failed to create runtime network")
+		require.Contains(t, output, networkName)
+		require.Contains(t, output, "Failed to create container network")
 		if namespaceName == "v2-network-log-second" {
 			require.NotContains(t, output, "v2-network-log-first-runtime")
 		}

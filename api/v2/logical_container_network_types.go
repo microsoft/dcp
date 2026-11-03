@@ -64,8 +64,8 @@ const (
 // LogicalContainerNetworkSpec describes network lifecycle policy and desired configuration.
 // +k8s:openapi-gen=true
 type LogicalContainerNetworkSpec struct {
-	// NetworkName is the runtime name to create or look up. Required for persistent and existing modes.
-	// If omitted in session mode, a runtime name is generated.
+	// NetworkName is the container network name to create or look up. Required for persistent and existing modes.
+	// If omitted in session mode, a container network name is generated.
 	NetworkName string `json:"networkName,omitempty"`
 
 	// Mode controls creation, reuse, and retention. Defaults to session.
@@ -108,10 +108,10 @@ func (spec *LogicalContainerNetworkSpec) GetLifecycleKey() (string, bool, error)
 // LogicalContainerNetworkConfig describes the desired configuration used to create a network.
 // +k8s:openapi-gen=true
 type LogicalContainerNetworkConfig struct {
-	// IPv6 enables IPv6 on a newly created runtime network.
+	// IPv6 enables IPv6 on a newly created container network.
 	IPv6 bool `json:"ipv6,omitempty"`
 
-	// Labels contains labels to apply to a newly-created runtime network.
+	// Labels contains labels to apply to a newly-created container network.
 	// DCP lifecycle and physical resource ownership labels are reserved and set by controllers.
 	// +listType=map
 	// +listMapKey=key
@@ -127,38 +127,38 @@ type LogicalContainerNetworkStatus struct {
 	Phase LogicalContainerNetworkPhase `json:"phase,omitempty"`
 
 	// PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>.
-	// Published after physical resource creation; logical consumers may use it before runtime readiness unless the network has failed.
+	// Published after PhysicalContainerNetwork creation; logical consumers may use it before the container network is ready unless the network has failed.
 	// Cross-namespace references are not supported.
 	PhysicalNetworkRef string `json:"physicalNetworkRef,omitempty"`
 
-	// LifecycleKey is the supplied, calculated, or adopted runtime lifecycle key.
+	// LifecycleKey is the supplied, calculated, or adopted container network lifecycle key.
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
 
-	// NetworkID is the observed runtime network ID.
+	// NetworkID is the observed container network ID.
 	NetworkID string `json:"networkID,omitempty"`
 
-	// NetworkName is the observed runtime network name.
+	// NetworkName is the observed container network name.
 	NetworkName string `json:"networkName,omitempty"`
 
-	// Driver is the runtime network driver.
+	// Driver is the container network driver.
 	Driver string `json:"driver,omitempty"`
 
-	// IPv6 reports whether IPv6 is enabled on the runtime network.
+	// IPv6 reports whether IPv6 is enabled on the container network.
 	IPv6 bool `json:"ipv6,omitempty"`
 
-	// Subnets are the subnets allocated to the runtime network.
+	// Subnets are the subnets allocated to the container network.
 	// +listType=set
 	Subnets []string `json:"subnets,omitempty"`
 
-	// Gateways are the gateways allocated to the runtime network.
+	// Gateways are the gateways allocated to the container network.
 	// +listType=set
 	Gateways []string `json:"gateways,omitempty"`
 
-	// ContainerIDs are the runtime container IDs currently attached to the network.
+	// ContainerIDs are the IDs of containers currently attached to the container network.
 	// +listType=set
 	ContainerIDs []string `json:"containerIDs,omitempty"`
 
-	// CreatedAt is the runtime network creation timestamp.
+	// CreatedAt is the container network creation timestamp.
 	CreatedAt metav1.MicroTime `json:"createdAt,omitempty"`
 
 	// Conditions describe readiness and reconciliation progress.
@@ -211,7 +211,7 @@ func (*LogicalContainerNetworkLogResource) GetStorageProvider(
 	return newLogStorageProvider(obj, parentProvider)
 }
 
-// GetLeaseKey identifies the runtime network shared by logical resources and V1 networks.
+// GetLeaseKey identifies the container network shared by logical resources and V1 networks.
 func (network *LogicalContainerNetwork) GetLeaseKey() string {
 	return "containernetworks/" + strings.TrimSpace(network.Spec.NetworkName)
 }
