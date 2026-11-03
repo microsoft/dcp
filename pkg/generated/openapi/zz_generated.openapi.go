@@ -5014,7 +5014,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkConfig(ref common.Refere
 				Properties: map[string]spec.Schema{
 					"ipv6": {
 						SchemaProps: spec.SchemaProps{
-							Description: "IPv6 enables IPv6 on a newly created runtime network.",
+							Description: "IPv6 enables IPv6 on a newly created container network.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -5029,7 +5029,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkConfig(ref common.Refere
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Labels contains labels to apply to a newly-created runtime network. DCP lifecycle and physical resource ownership labels are reserved and set by controllers.",
+							Description: "Labels contains labels to apply to a newly-created container network. DCP lifecycle and physical resource ownership labels are reserved and set by controllers.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -5146,7 +5146,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkSpec(ref common.Referenc
 				Properties: map[string]spec.Schema{
 					"networkName": {
 						SchemaProps: spec.SchemaProps{
-							Description: "NetworkName is the runtime name to create or look up. Required for persistent and existing modes. If omitted in session mode, a runtime name is generated.",
+							Description: "NetworkName is the container network name to create or look up. Required for persistent and existing modes. If omitted in session mode, a container network name is generated.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -5195,42 +5195,42 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref common.Refere
 					},
 					"physicalNetworkRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>. Published after physical resource creation; logical consumers may use it before runtime readiness unless the network has failed. Cross-namespace references are not supported.",
+							Description: "PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>. Published after PhysicalContainerNetwork creation; logical consumers may use it before the container network is ready unless the network has failed. Cross-namespace references are not supported.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"lifecycleKey": {
 						SchemaProps: spec.SchemaProps{
-							Description: "LifecycleKey is the supplied, calculated, or adopted runtime lifecycle key.",
+							Description: "LifecycleKey is the supplied, calculated, or adopted container network lifecycle key.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"networkID": {
 						SchemaProps: spec.SchemaProps{
-							Description: "NetworkID is the observed runtime network ID.",
+							Description: "NetworkID is the observed container network ID.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"networkName": {
 						SchemaProps: spec.SchemaProps{
-							Description: "NetworkName is the observed runtime network name.",
+							Description: "NetworkName is the observed container network name.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"driver": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Driver is the runtime network driver.",
+							Description: "Driver is the container network driver.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"ipv6": {
 						SchemaProps: spec.SchemaProps{
-							Description: "IPv6 reports whether IPv6 is enabled on the runtime network.",
+							Description: "IPv6 reports whether IPv6 is enabled on the container network.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -5242,7 +5242,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref common.Refere
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Subnets are the subnets allocated to the runtime network.",
+							Description: "Subnets are the subnets allocated to the container network.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -5261,7 +5261,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref common.Refere
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Gateways are the gateways allocated to the runtime network.",
+							Description: "Gateways are the gateways allocated to the container network.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -5280,7 +5280,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref common.Refere
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "ContainerIDs are the runtime container IDs currently attached to the network.",
+							Description: "ContainerIDs are the IDs of containers currently attached to the container network.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -5294,7 +5294,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref common.Refere
 					},
 					"createdAt": {
 						SchemaProps: spec.SchemaProps{
-							Description: "CreatedAt is the runtime network creation timestamp.",
+							Description: "CreatedAt is the container network creation timestamp.",
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
@@ -6232,7 +6232,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetwork(ref common.ReferenceCa
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PhysicalContainerNetwork represents one runtime container network in a DCP V2 namespace.",
+				Description: "PhysicalContainerNetwork represents one container network in a DCP V2 namespace.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -6279,33 +6279,33 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConfig(ref common.Refer
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PhysicalContainerNetworkConfig describes a runtime network to create.",
+				Description: "PhysicalContainerNetworkConfig describes a container network to create.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"networkName": {
 						SchemaProps: spec.SchemaProps{
-							Description: "NetworkName is the runtime name to use when creating a new network.",
+							Description: "NetworkName is the name to use when creating a new container network.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"ipv6": {
 						SchemaProps: spec.SchemaProps{
-							Description: "IPv6 enables IPv6 on a newly created runtime network.",
+							Description: "IPv6 enables IPv6 on a newly created container network.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
 					},
 					"retainRuntimeNetwork": {
 						SchemaProps: spec.SchemaProps{
-							Description: "RetainRuntimeNetwork keeps the created runtime network in place when this resource is deleted.",
+							Description: "RetainRuntimeNetwork keeps the created container network in place when this resource is deleted.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
 					},
 					"replaceExisting": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ReplaceExisting removes an existing runtime network with networkName before creating a new one. Attached containers are disconnected but are not removed.",
+							Description: "ReplaceExisting removes an existing container network with networkName before creating a new one. Attached containers are disconnected but are not removed.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -6320,7 +6320,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConfig(ref common.Refer
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Labels contains labels to apply to a newly-created runtime network. DCP harvesting and physical resource UID labels are reserved and set by the controller.",
+							Description: "Labels contains labels to apply to a newly-created container network. DCP harvesting and physical resource UID labels are reserved and set by the controller.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -6529,19 +6529,19 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkSpec(ref common.Referen
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PhysicalContainerNetworkSpec describes either an existing runtime network or how to create one.",
+				Description: "PhysicalContainerNetworkSpec describes either an existing container network or how to create one.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"networkID": {
 						SchemaProps: spec.SchemaProps{
-							Description: "NetworkID identifies an existing runtime network to track. Exactly one of networkID or network must be set.",
+							Description: "NetworkID identifies an existing container network to track. Exactly one of networkID or network must be set.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"network": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Network describes a runtime network to create. Exactly one of networkID or network must be set.",
+							Description: "Network describes a container network to create. Exactly one of networkID or network must be set.",
 							Ref:         ref(v2.PhysicalContainerNetworkConfig{}.OpenAPIModelName()),
 						},
 					},
@@ -6557,40 +6557,40 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkStatus(ref common.Refer
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PhysicalContainerNetworkStatus describes the observed runtime network.",
+				Description: "PhysicalContainerNetworkStatus describes the observed container network.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"phase": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase summarizes whether the runtime network is available.",
+							Description: "Phase summarizes whether the container network is available.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"networkID": {
 						SchemaProps: spec.SchemaProps{
-							Description: "NetworkID is the runtime network ID being tracked.",
+							Description: "NetworkID is the container network ID being tracked.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"networkName": {
 						SchemaProps: spec.SchemaProps{
-							Description: "NetworkName is the runtime network name.",
+							Description: "NetworkName is the container network name.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"driver": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Driver is the runtime network driver.",
+							Description: "Driver is the container network driver.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"ipv6": {
 						SchemaProps: spec.SchemaProps{
-							Description: "IPv6 reports whether IPv6 is enabled on the runtime network.",
+							Description: "IPv6 reports whether IPv6 is enabled on the container network.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -6602,7 +6602,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkStatus(ref common.Refer
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Subnets are the subnets allocated to the runtime network.",
+							Description: "Subnets are the subnets allocated to the container network.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -6621,7 +6621,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkStatus(ref common.Refer
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Gateways are the gateways allocated to the runtime network.",
+							Description: "Gateways are the gateways allocated to the container network.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -6640,7 +6640,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkStatus(ref common.Refer
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "ContainerIDs are the runtime container IDs currently attached to the network.",
+							Description: "ContainerIDs are the IDs of containers currently attached to the container network.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -6654,7 +6654,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkStatus(ref common.Refer
 					},
 					"createdAt": {
 						SchemaProps: spec.SchemaProps{
-							Description: "CreatedAt is the runtime network creation timestamp.",
+							Description: "CreatedAt is the container network creation timestamp.",
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
