@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -35,34 +34,10 @@ import (
 )
 
 const (
-	DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR = "DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR"
-
-	persistentExecutableOutputDirName = "dcp-peo"
-
 	defaultProcessCleanupTimeout = 2 * time.Second
 )
 
-var persistentExecutableOutputDir = func() (string, error) {
-	isAdmin, adminErr := osutil.IsAdmin()
-	if adminErr != nil {
-		return "", fmt.Errorf("could not determine current elevation: %w", adminErr)
-	}
-	baseDir, absolutePathErr := filepath.Abs(persistentExecutableOutputBaseDir())
-	if absolutePathErr != nil {
-		return "", fmt.Errorf("could not resolve persistent Executable output directory: %w", absolutePathErr)
-	}
-	if isAdmin {
-		return baseDir + "-admin", nil
-	}
-	return baseDir, nil
-}
-
-func persistentExecutableOutputBaseDir() string {
-	if outputDir, found := os.LookupEnv(DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR); found && strings.TrimSpace(outputDir) != "" {
-		return strings.TrimSpace(outputDir)
-	}
-	return filepath.Join(os.TempDir(), persistentExecutableOutputDirName)
-}
+var persistentExecutableOutputDir = logs.PersistentProcessOutputDirectory
 
 type processRunState struct {
 	handle process.ProcessHandle

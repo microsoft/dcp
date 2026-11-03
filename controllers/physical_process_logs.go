@@ -14,6 +14,8 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/logstream"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 func (data *physicalProcessData) ensureOutputLogs(resource *apiv2.PhysicalProcess) error {
@@ -22,7 +24,7 @@ func (data *physicalProcessData) ensureOutputLogs(resource *apiv2.PhysicalProces
 	}
 	var options []logs.CaptureFileOption
 	if resource.Spec.Process.RetainRuntimeProcess {
-		options = append(options, logs.CaptureFileDirectOutput)
+		options = append(options, logs.CaptureFileDirectOutput|logs.CaptureFilePersistentOutput)
 	}
 	stdout, stdoutErr := logs.NewCaptureFile(resource, logstream.LogStreamSourceStdout, options...)
 	if stdoutErr != nil {
@@ -37,6 +39,9 @@ func (data *physicalProcessData) ensureOutputLogs(resource *apiv2.PhysicalProces
 }
 
 func (data *physicalProcessData) closeOutputLogs(option logs.CaptureFileCloseOption, log logr.Logger) error {
+	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+		option &^= logs.CaptureFileDisposeOnClose
+	}
 	if data.stdout != nil {
 		closeErr := errors.Join(data.stdout.Close(option), data.stderr.Close(option))
 		if closeErr != nil {

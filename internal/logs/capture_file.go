@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -38,6 +39,8 @@ type CaptureFileOption uint
 const (
 	// CaptureFileDirectOutput creates a new raw file suitable for exec.Cmd stdout/stderr redirection.
 	CaptureFileDirectOutput CaptureFileOption = 1
+	// CaptureFilePersistentOutput stores capture outside the DCP session directory.
+	CaptureFilePersistentOutput CaptureFileOption = 2
 )
 
 // NewCaptureFile opens a resource's output capture while preserving existing file contents.
@@ -49,22 +52,38 @@ func NewCaptureFile(resource apiserver_resource.Object, logSource logstream.LogS
 		return nil, nameErr
 	}
 
-	direct := false
+	direct, persistent := false, false
 	for _, option := range options {
 		direct = direct || option&CaptureFileDirectOutput != 0
+		persistent = persistent || option&CaptureFilePersistentOutput != 0
 	}
+	var directory string
+	if persistent {
+		persistentDirectory, directoryErr := PersistentProcessOutputDirectory()
+		if directoryErr != nil {
+			return nil, directoryErr
+		}
+		ensureErr := usvc_io.EnsureRestrictedDirectory(persistentDirectory, osutil.PermissionOnlyOwnerReadWriteTraverse)
+		if ensureErr != nil {
+			return nil, ensureErr
+		}
+		directory = persistentDirectory
+	} else {
+		directory = usvc_io.DcpTempDir()
+	}
+	outputPath := filepath.Join(directory, fileName)
 	var output usvc_io.WriteSyncerCloser
 	var path string
 	var directFile *os.File
 	var err error
 	if direct {
-		directFile, err = usvc_io.CreateNewTempFile(fileName, osutil.PermissionOnlyOwnerReadWrite)
+		directFile, err = usvc_io.CreateNewFile(outputPath, osutil.PermissionOnlyOwnerReadWrite)
 		if err == nil {
 			output, path = directFile, directFile.Name()
 		}
 	} else {
 		var file *usvc_io.AppendFile
-		file, err = usvc_io.OpenOrCreateTempFileForAppending(fileName, osutil.PermissionOnlyOwnerReadWrite)
+		file, err = usvc_io.OpenOrCreateFileForAppending(outputPath, osutil.PermissionOnlyOwnerReadWrite)
 		if err == nil {
 			output, path = usvc_io.NewTimestampWriter(file), file.Name()
 		}

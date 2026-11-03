@@ -71,18 +71,27 @@ func TestCaptureFileFormattingAndLifecycle(t *testing.T) {
 }
 
 // Verifies that direct capture uses inherited file handles rather than DCP-owned pipes,
-// allowing retained process output after capture closure and DCP-side lifetime cancellation.
+// allowing retained output after capture closure, DCP-side lifetime cancellation, and session-folder cleanup.
 func TestCaptureFileDirectProcessOutputSurvivesCaptureLifetime(t *testing.T) {
-	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
+	root := t.TempDir()
+	session := filepath.Join(root, "session")
+	require.NoError(t, os.Mkdir(session, 0700))
+	originalSession, originalTemp := usvc_io.DcpSessionDir, usvc_io.DcpTempDir
+	usvc_io.DcpSessionDir, usvc_io.DcpTempDir = func() string { return session }, func() string { return session }
+	t.Cleanup(func() {
+		usvc_io.DcpSessionDir, usvc_io.DcpTempDir = originalSession, originalTemp
+	})
+	t.Setenv(DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR, filepath.Join(root, "persistent"))
+	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "")
 	uid, uidErr := randdata.MakeRandomString(8)
 	require.NoError(t, uidErr)
 	resource := &apiv1.Executable{ObjectMeta: metav1.ObjectMeta{Name: "direct", UID: types.UID(uid)}}
-	stdout, stdoutErr := NewCaptureFile(resource, logstream.LogStreamSourceStdout, CaptureFileDirectOutput)
+	stdout, stdoutErr := NewCaptureFile(resource, logstream.LogStreamSourceStdout, CaptureFileDirectOutput|CaptureFilePersistentOutput)
 	require.NoError(t, stdoutErr)
 	defer func() { require.NoError(t, stdout.Close(CaptureFileDisposeOnClose)) }()
-	stderr, stderrErr := NewCaptureFile(resource, logstream.LogStreamSourceStderr, CaptureFileDirectOutput)
+	stderr, stderrErr := NewCaptureFile(resource, logstream.LogStreamSourceStderr, CaptureFileDirectOutput|CaptureFilePersistentOutput)
 	require.NoError(t, stderrErr)
 	defer func() { require.NoError(t, stderr.Close(CaptureFileDisposeOnClose)) }()
 	toolPath, toolErr := internal_testutil.GetTestToolPath("delay")
@@ -109,6 +118,10 @@ func TestCaptureFileDirectProcessOutputSurvivesCaptureLifetime(t *testing.T) {
 	cancelLifetime()
 	executor.Dispose()
 	require.NoError(t, executor.CheckProcessRunning(handle))
+	usvc_io.CleanupSessionFolderIfNeeded()
+	require.NoDirExists(t, session)
+	require.FileExists(t, stdout.Path)
+	require.FileExists(t, stderr.Path)
 	select {
 	case <-exited:
 	case <-ctx.Done():

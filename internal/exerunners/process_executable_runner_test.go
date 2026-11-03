@@ -144,19 +144,6 @@ func TestPersistentExecutableOutputFileUsesPersistentOutputDir(t *testing.T) {
 	require.Equal(t, "api-uid_out", filepath.Base(file.Name()))
 }
 
-func TestPersistentExecutableOutputBaseDirCanBeConfigured(t *testing.T) {
-	outputDir := filepath.Join(t.TempDir(), "custom-peo")
-	t.Setenv(DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR, outputDir)
-
-	require.Equal(t, outputDir, persistentExecutableOutputBaseDir())
-}
-
-func TestPersistentExecutableOutputBaseDirDefaultsForEmptyEnvVar(t *testing.T) {
-	t.Setenv(DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR, " ")
-
-	require.Equal(t, filepath.Join(os.TempDir(), persistentExecutableOutputDirName), persistentExecutableOutputBaseDir())
-}
-
 func TestProcessExecutableRunnerSkipsTimestampsForPersistentOutput(t *testing.T) {
 	testCases := []struct {
 		name       string
