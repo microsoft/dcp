@@ -15,6 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/pkg/maps"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 func TestExecutableShouldStart(t *testing.T) {
@@ -56,6 +59,57 @@ func TestExecutableShouldStart(t *testing.T) {
 			}
 
 			assert.Equal(t, testCase.expected, exe.ShouldStart())
+		})
+	}
+}
+
+// Verifies that LogicalProcessSpec and Executable lifecycle keys agree on effective explicit
+// environment equivalence, including overwritten values and Windows case-insensitive duplicate names.
+func TestLogicalProcessLifecycleEnvironmentMatchesExecutable(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name       string
+		original   []EnvVar
+		changed    []EnvVar
+		equivalent bool
+	}{
+		{"ordering", []EnvVar{{Name: "B", Value: "2"}, {Name: "A", Value: "1"}},
+			[]EnvVar{{Name: "A", Value: "1"}, {Name: "B", Value: "2"}}, true},
+		{"overwritten value", []EnvVar{{Name: "A", Value: "first"}, {Name: "A", Value: "last"}},
+			[]EnvVar{{Name: "A", Value: "different"}, {Name: "A", Value: "last"}}, true},
+		{"redundant declaration", []EnvVar{{Name: "A", Value: "first"}, {Name: "A", Value: "last"}},
+			[]EnvVar{{Name: "A", Value: "last"}}, true},
+		{"duplicate precedence", []EnvVar{{Name: "A", Value: "first"}, {Name: "A", Value: "last"}},
+			[]EnvVar{{Name: "A", Value: "last"}, {Name: "A", Value: "first"}}, false},
+		{"case-insensitive duplicate", []EnvVar{{Name: "PATH", Value: "first"}, {Name: "Path", Value: "last"}},
+			[]EnvVar{{Name: "Path", Value: "last"}}, osutil.IsWindows()},
+		{"case-sensitive declared name", []EnvVar{{Name: "Path", Value: "value"}},
+			[]EnvVar{{Name: "PATH", Value: "value"}}, false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			var executableKeys, processKeys [2]string
+			for index, environment := range [][]EnvVar{testCase.original, testCase.changed} {
+				effective := lifecycleEnvMap()
+				for _, variable := range environment {
+					effective.Override(variable.Name, variable.Value)
+				}
+				executable := &Executable{Spec: ExecutableSpec{ExecutablePath: "program", Env: environment}}
+				executable.Status.EffectiveEnv = maps.MapToSlice[EnvVar](effective.Data(), func(name, value string) EnvVar {
+					return EnvVar{Name: name, Value: value}
+				})
+				executableKey, _, executableErr := executable.GetLifecycleKey()
+				require.NoError(t, executableErr)
+				executableKeys[index] = executableKey
+				spec := apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: "program", Env: environment}}
+				original := spec.DeepCopy()
+				processKey, _, processErr := spec.GetLifecycleKey()
+				require.NoError(t, processErr)
+				require.Equal(t, original, &spec)
+				processKeys[index] = processKey
+			}
+			require.Equal(t, testCase.equivalent, executableKeys[0] == executableKeys[1], "V1 environment equivalence")
+			require.Equal(t, executableKeys[0] == executableKeys[1], processKeys[0] == processKeys[1], "V2 must match V1 environment equivalence")
 		})
 	}
 }

@@ -28,6 +28,8 @@ import (
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/maps"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 // LogicalProcessMode controls process creation, reuse, and retention.
@@ -110,7 +112,8 @@ func (spec LogicalProcessSpec) EffectiveMode() LogicalProcessMode {
 }
 
 // GetLifecycleKey returns the explicit key or computes one from the desired process configuration.
-// The second result is true when the key is computed; inherited environment values are not hashed.
+// The second result is true when the key is computed. Explicit environment values use the platform's
+// last-value-wins semantics; inherited environment values are not hashed.
 func (spec *LogicalProcessSpec) GetLifecycleKey() (string, bool, error) {
 	if spec.LifecycleKey != "" {
 		return spec.LifecycleKey, false, nil
@@ -118,15 +121,33 @@ func (spec *LogicalProcessSpec) GetLifecycleKey() (string, bool, error) {
 	if spec.Process == nil {
 		return "", false, errors.New("process configuration is required to compute a lifecycle key")
 	}
-	desired := spec.Process.DeepCopy()
+	desired := spec.Process
 	inherit := desired.InheritEnvironment == nil || *desired.InheritEnvironment
-	desired.InheritEnvironment = &inherit
-	slices.SortStableFunc(desired.Env, func(left, right commonapi.EnvVar) int { return strings.Compare(left.Name, right.Name) })
 	fnvHash := fnv.New128()
 	encoder := gob.NewEncoder(fnvHash)
-	hashErr := encoder.Encode(desired)
+	var hashErr error
+	hashErr = errors.Join(hashErr, encoder.Encode(desired.ExecutablePath))
+	hashErr = errors.Join(hashErr, encoder.Encode(desired.WorkingDirectory))
+	hashErr = errors.Join(hashErr, encoder.Encode(inherit))
+	hashErr = errors.Join(hashErr, encoder.Encode(desired.Args))
 	if spec.MonitorPID != nil {
 		hashErr = errors.Join(hashErr, encoder.Encode(*spec.MonitorPID), encoder.Encode(spec.MonitorTimestamp.Time))
+	}
+	mode := maps.StringMapModeCaseSensitive
+	if osutil.IsWindows() {
+		mode = maps.StringMapModeCaseInsensitive
+	}
+	environment := maps.NewStringKeyMap[string](mode)
+	for _, variable := range desired.Env {
+		environment.Override(variable.Name, variable.Value)
+	}
+	sortedEnv := make([]commonapi.EnvVar, 0, environment.Len())
+	for name, value := range environment.Data() {
+		sortedEnv = append(sortedEnv, commonapi.EnvVar{Name: name, Value: value})
+	}
+	slices.SortFunc(sortedEnv, func(left, right commonapi.EnvVar) int { return strings.Compare(left.Name, right.Name) })
+	for _, variable := range sortedEnv {
+		hashErr = errors.Join(hashErr, encoder.Encode(variable))
 	}
 	return fmt.Sprintf("%x", fnvHash.Sum(nil)), true, hashErr
 }
