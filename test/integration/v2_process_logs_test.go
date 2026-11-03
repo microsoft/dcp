@@ -29,6 +29,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/logs"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
@@ -572,4 +573,102 @@ func TestV2ProcessLogsFinishOnDeletionAndIsolateRecreatedResources(t *testing.T)
 	output, outputErr := readV2ContainerLog(ctx, replacement, apiv2.ResourceLogOptions{})
 	require.NoError(t, outputErr)
 	require.Empty(t, output)
+}
+
+// Verifies that created session and exited persistent process captures honor executable-log
+// preservation while their logical and physical resources complete normal deletion.
+func TestV2ProcessCreatedCapturesHonorPreservation(t *testing.T) {
+	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "1")
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	for _, mode := range []apiv2.LogicalProcessMode{apiv2.LogicalProcessModeSession, apiv2.LogicalProcessModePersistent} {
+		t.Run(string(mode), func(t *testing.T) {
+			namespace := createActiveV2Namespace(t, ctx, "v2-process-preserved-capture-"+string(mode))
+			resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+				Spec: apiv2.LogicalProcessSpec{Mode: mode,
+					Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-preserved-capture-" + string(mode)}}}
+			require.NoError(t, client.Create(ctx, resource))
+			running := waitLogicalProcessPhase(t, ctx, resource.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+			paths := []string{running.Status.RuntimeLogs.StdoutFile, running.Status.RuntimeLogs.StderrFile}
+			t.Cleanup(func() {
+				for _, path := range paths {
+					_ = os.Remove(path)
+				}
+			})
+			for _, path := range paths {
+				file, openErr := usvc_io.OpenOrCreateFileForAppending(path, osutil.PermissionOnlyOwnerReadWrite)
+				require.NoError(t, openErr)
+				_, writeErr := file.WriteString("preserved process output\n")
+				require.NoError(t, writeErr)
+				require.NoError(t, file.Close())
+			}
+			require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
+				current.Spec.Stop = true
+				return client.Update(updateCtx, current)
+			}))
+			waitLogicalProcessPhase(t, ctx, resource.NamespacedName(), apiv2.LogicalProcessPhaseExited)
+			require.NoError(t, client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+			for _, path := range paths {
+				output, readErr := os.ReadFile(path)
+				require.NoError(t, readErr)
+				require.Contains(t, string(output), "preserved process output\n")
+			}
+		})
+	}
+}
+
+// Verifies that retained captures survive normal session-folder cleanup and remain available
+// through persistent-process adoption, while exited process deletion still removes them.
+func TestV2ProcessRetainedCapturesSurviveSessionCleanup(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	root := t.TempDir()
+	session := filepath.Join(root, "session")
+	require.NoError(t, os.Mkdir(session, 0700))
+	originalSession, originalTemp := usvc_io.DcpSessionDir, usvc_io.DcpTempDir
+	usvc_io.DcpSessionDir, usvc_io.DcpTempDir = func() string { return session }, func() string { return session }
+	t.Cleanup(func() {
+		usvc_io.DcpSessionDir, usvc_io.DcpTempDir = originalSession, originalTemp
+	})
+	t.Setenv(logs.DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR, filepath.Join(root, "persistent"))
+	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "")
+	namespace := createActiveV2Namespace(t, ctx, "v2-process-capture-session-cleanup")
+	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-capture-session-cleanup-command"}}}
+	require.NoError(t, client.Create(ctx, resource))
+	running := waitLogicalProcessPhase(t, ctx, resource.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+	record, recordErr := testStateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
+	require.NoError(t, recordErr)
+	require.NotEqual(t, session, filepath.Dir(record.StdOutFile))
+	stdout, openErr := usvc_io.OpenOrCreateFileForAppending(record.StdOutFile, osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, openErr)
+	_, writeErr := stdout.WriteString("output from the original session\n")
+	require.NoError(t, writeErr)
+	require.NoError(t, stdout.Close())
+	require.NoError(t, client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+	require.NoError(t, testProcessExecutor.CheckProcessRunning(record.ProcessHandle()))
+	usvc_io.CleanupSessionFolderIfNeeded()
+	require.NoDirExists(t, session)
+	require.FileExists(t, record.StdOutFile)
+	require.FileExists(t, record.StdErrFile)
+	reused := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: resource.Name, Namespace: namespace.Name}, Spec: *resource.Spec.DeepCopy()}
+	require.NoError(t, client.Create(ctx, reused))
+	adopted := waitLogicalProcessPhase(t, ctx, reused.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+	require.Equal(t, running.Status.PID, adopted.Status.PID)
+	require.Equal(t, record.StdOutFile, adopted.Status.RuntimeLogs.StdoutFile)
+	output, outputErr := readV2ContainerLog(ctx, reused, apiv2.ResourceLogOptions{})
+	require.NoError(t, outputErr)
+	require.Equal(t, "output from the original session\n", output)
+	require.NoError(t, retryOnConflict(ctx, reused.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
+		current.Spec.Stop = true
+		return client.Update(updateCtx, current)
+	}))
+	waitLogicalProcessPhase(t, ctx, reused.NamespacedName(), apiv2.LogicalProcessPhaseExited)
+	require.NoError(t, client.Delete(ctx, reused))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, reused)
+	require.NoFileExists(t, record.StdOutFile)
+	require.NoFileExists(t, record.StdErrFile)
 }
