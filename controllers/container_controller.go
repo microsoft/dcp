@@ -2309,13 +2309,16 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		// if the ContainerNetworkConnection object is not deleted.
 		var err error
 		for i := range childNetworkConnections.Items {
-			if deleteErr := r.Delete(ctx, &childNetworkConnections.Items[i], ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
+			if deleteErr := r.Delete(ctx, &childNetworkConnections.Items[i], ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(deleteErr) != nil {
 				err = errors.Join(err, deleteErr)
 			}
 		}
 
 		if err != nil {
+			// Report the failure so that the caller preserves the current network status and retries;
+			// the connections still exist, so the container cannot be considered disconnected yet.
 			log.Error(err, "Could not delete some child ContainerNetworkConnection objects")
+			return []*apiv1.ContainerNetwork{}, err
 		}
 
 		return []*apiv1.ContainerNetwork{}, nil

@@ -98,3 +98,81 @@ func TestContainerStateNetworkStatus(t *testing.T) {
 		})
 	}
 }
+
+// Verifies that failing to delete child network connections while disconnecting a container preserves the network status
+// and schedules another reconciliation, while successful deletion clears the status.
+func TestContainerStateNetworkStatusConnectionDelete(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name         string
+		state        apiv1.ContainerState
+		runtimeState containers.ContainerStatus
+		stop         bool
+		initialize   containerStateInitializerFunc
+	}{
+		{name: "stopped", state: apiv1.ContainerStateExited, runtimeState: containers.ContainerStatusExited, stop: true, initialize: ensureContainerExitedState},
+		{name: "failed to start", state: apiv1.ContainerStateFailedToStart, initialize: ensureContainerFailedToStartState},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			for _, deleteFails := range []bool{false, true} {
+				t.Run(map[bool]string{false: "deleted", true: "delete failed"}[deleteFails], func(t *testing.T) {
+					t.Parallel()
+					ctx, cancel := testutil.GetTestContext(t, 0)
+					defer cancel()
+					log := logr.Discard()
+					scheme := runtime.NewScheme()
+					require.NoError(t, apiv1.AddToScheme(scheme))
+					connection := &apiv1.ContainerNetworkConnection{
+						ObjectMeta: metav1.ObjectMeta{Name: "container-network"},
+						Spec:       apiv1.ContainerNetworkConnectionSpec{ContainerNetworkName: "network", ContainerID: "container-id"},
+					}
+					client := fake.NewClientBuilder().WithScheme(scheme).
+						WithObjects(connection).
+						WithIndex(&apiv1.ContainerNetworkConnection{}, ownerKey, func(ctrl_client.Object) []string { return []string{"container"} }).
+						WithIndex(&apiv1.Endpoint{}, commonapi.WorkloadOwnerKey, func(ctrl_client.Object) []string { return nil }).
+						WithInterceptorFuncs(interceptor.Funcs{
+							Delete: func(deleteCtx context.Context, innerClient ctrl_client.WithWatch, obj ctrl_client.Object, options ...ctrl_client.DeleteOption) error {
+								if _, isConnection := obj.(*apiv1.ContainerNetworkConnection); isConnection && deleteFails {
+									return errors.New("network connection delete failed")
+								}
+								return innerClient.Delete(deleteCtx, obj, options...)
+							},
+						}).Build()
+					inspected := containers.InspectedContainer{Id: "container-id", Name: "container", Status: testCase.runtimeState}
+					reconciler := &ContainerReconciler{
+						ReconcilerBase: NewReconcilerBase[apiv1.Container](client, client, log, ctx),
+						orchestrator:   networkStatusOrchestrator{inspected: inspected},
+					}
+					container := &apiv1.Container{
+						ObjectMeta: metav1.ObjectMeta{Name: "container"},
+						Spec: apiv1.ContainerSpec{
+							Image:    "test-image",
+							Stop:     testCase.stop,
+							Networks: &[]apiv1.ContainerNetworkConnectionConfig{{Name: "network"}},
+						},
+					}
+					data := newRunningContainerData(container)
+					data.updateFromInspectedContainer(&inspected)
+					data.containerState = testCase.state
+					data.applyTo(container, log)
+					container.Status.Networks = []string{"previous-network"}
+
+					change := testCase.initialize(ctx, reconciler, container, testCase.state, data, log)
+					var remaining apiv1.ContainerNetworkConnectionList
+					require.NoError(t, client.List(ctx, &remaining))
+					if deleteFails {
+						require.Equal(t, additionalReconciliationNeeded, change)
+						require.Equal(t, []string{"previous-network"}, container.Status.Networks)
+						require.Len(t, remaining.Items, 1)
+						return
+					}
+					require.Equal(t, statusChanged, change)
+					require.Empty(t, container.Status.Networks)
+					require.Empty(t, remaining.Items)
+				})
+			}
+		})
+	}
+}
