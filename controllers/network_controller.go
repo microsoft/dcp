@@ -400,6 +400,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 				change = r.ensureNetworkWithName(ctx, network, networkName, log)
 				return nil
 			},
+			statestore.ExclusiveResourceLease,
 		)
 		if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
 			logResourceLeaseHeld(log, leaseErr, network.GetLeaseKey(), "Persistent network is being updated by another DCP instance, retrying")
@@ -408,11 +409,6 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 		if leaseErr != nil {
 			log.Error(leaseErr, "Could not acquire persistent network lease")
 			return r.failNetworkToStart(network, networkName, leaseErr)
-		}
-
-		if persistentNetworkLeaseReleaseState(network.Status.State) {
-			// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
-			_ = r.releasePersistentNetworkResourceLease(context.Background(), network, log, true)
 		}
 
 		return change
@@ -761,24 +757,7 @@ func (r *NetworkReconciler) setNetworkState(network *apiv1.ContainerNetwork, sta
 		change = statusChanged
 	}
 
-	if network.Spec.EffectiveMode() == apiv1.ContainerNetworkModePersistent && persistentNetworkLeaseReleaseState(state) {
-		// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
-		_ = r.releasePersistentNetworkResourceLease(context.Background(), network, r.Log, true)
-	}
-
 	return change
-}
-
-func persistentNetworkLeaseReleaseState(state apiv1.ContainerNetworkState) bool {
-	switch state {
-	case apiv1.ContainerNetworkStateRunning,
-		apiv1.ContainerNetworkStateFailedToStart,
-		apiv1.ContainerNetworkStateRemoved,
-		apiv1.ContainerNetworkStateNotFound:
-		return true
-	default:
-		return false
-	}
 }
 
 func shouldReuseExistingNetwork(mode apiv1.ContainerNetworkMode) bool {
@@ -810,30 +789,6 @@ func shouldDeleteNetwork(mode apiv1.ContainerNetworkMode) bool {
 	default:
 		return false
 	}
-}
-
-func (r *NetworkReconciler) releasePersistentNetworkResourceLease(
-	ctx context.Context,
-	network *apiv1.ContainerNetwork,
-	log logr.Logger,
-	suppressNotHeldLog bool,
-) error {
-	if network.Spec.EffectiveMode() != apiv1.ContainerNetworkModePersistent || r.config.StateStore == nil ||
-		r.config.ResourceLeaseOwner.Pid <= 0 || r.config.ResourceLeaseOwner.IdentityTime.IsZero() {
-		return nil
-	}
-
-	releaseErr := r.config.StateStore.ReleaseResourceLease(ctx, network, r.config.ResourceLeaseOwner)
-	if releaseErr != nil {
-		if errors.Is(releaseErr, statestore.ErrResourceLeaseNotHeld) {
-			logResourceLeaseNotHeld(log, suppressNotHeldLog, network.GetLeaseKey(), "Persistent network resource lease was not held")
-			return releaseErr
-		}
-		log.Error(releaseErr, "Could not release persistent network resource lease")
-		return releaseErr
-	}
-
-	return nil
 }
 
 func (r *NetworkReconciler) ensureNetworkWatch(network *apiv1.ContainerNetwork, log logr.Logger) {

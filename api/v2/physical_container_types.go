@@ -51,40 +51,20 @@ const (
 	// PhysicalContainerPhaseUnknown indicates that the runtime container state is unavailable or indeterminate.
 	PhysicalContainerPhaseUnknown PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseUnknown)
 
-	// PhysicalContainerPhaseFailed indicates a terminal operation failure.
+	// PhysicalContainerPhaseFailed indicates a terminal dependency or operation failure.
+	// Replacing a failed dependency does not restart this container's startup.
 	PhysicalContainerPhaseFailed PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseFailed)
 )
 
 const (
-	// PhysicalContainerReasonImageNotFound indicates that the referenced PhysicalContainerImage does not exist.
-	PhysicalContainerReasonImageNotFound ConditionReason = "ImageNotFound"
+	// PhysicalContainerReasonDependenciesNotReady indicates that a referenced dependency is missing, terminating, or not ready.
+	PhysicalContainerReasonDependenciesNotReady ConditionReason = "DependenciesNotReady"
 
-	// PhysicalContainerReasonImageNotReady indicates that the referenced PhysicalContainerImage is not ready.
-	PhysicalContainerReasonImageNotReady ConditionReason = "ImageNotReady"
+	// PhysicalContainerReasonDependencyLookupFailed indicates that a referenced dependency could not be read.
+	PhysicalContainerReasonDependencyLookupFailed ConditionReason = "DependencyLookupFailed"
 
-	// PhysicalContainerReasonImageLookupFailed indicates that the referenced PhysicalContainerImage could not be read.
-	PhysicalContainerReasonImageLookupFailed ConditionReason = "ImageLookupFailed"
-
-	// PhysicalContainerReasonImageFailed indicates that image acquisition failed terminally.
-	PhysicalContainerReasonImageFailed ConditionReason = "ImageFailed"
-
-	// PhysicalContainerReasonVolumeNotFound indicates that a referenced PhysicalContainerVolume does not exist.
-	PhysicalContainerReasonVolumeNotFound ConditionReason = "VolumeNotFound"
-
-	// PhysicalContainerReasonVolumeNotReady indicates that a referenced PhysicalContainerVolume is not ready.
-	PhysicalContainerReasonVolumeNotReady ConditionReason = "VolumeNotReady"
-
-	// PhysicalContainerReasonVolumeLookupFailed indicates that a referenced PhysicalContainerVolume could not be read.
-	PhysicalContainerReasonVolumeLookupFailed ConditionReason = "VolumeLookupFailed"
-
-	// PhysicalContainerReasonNetworkNotFound indicates that a referenced PhysicalContainerNetwork does not exist.
-	PhysicalContainerReasonNetworkNotFound ConditionReason = "NetworkNotFound"
-
-	// PhysicalContainerReasonNetworkNotReady indicates that a referenced PhysicalContainerNetwork is not ready.
-	PhysicalContainerReasonNetworkNotReady ConditionReason = "NetworkNotReady"
-
-	// PhysicalContainerReasonNetworkLookupFailed indicates that a referenced PhysicalContainerNetwork could not be read.
-	PhysicalContainerReasonNetworkLookupFailed ConditionReason = "NetworkLookupFailed"
+	// PhysicalContainerReasonDependencyFailed indicates that a referenced dependency failed terminally.
+	PhysicalContainerReasonDependencyFailed ConditionReason = "DependencyFailed"
 
 	// PhysicalContainerReasonCreating indicates that runtime container creation is in progress.
 	PhysicalContainerReasonCreating ConditionReason = "Creating"

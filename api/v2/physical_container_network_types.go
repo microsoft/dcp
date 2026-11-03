@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -40,7 +41,7 @@ const (
 	// PhysicalContainerNetworkPhasePending indicates that the network is waiting for prerequisites.
 	PhysicalContainerNetworkPhasePending PhysicalContainerNetworkPhase = PhysicalContainerNetworkPhase(PhysicalResourcePhasePending)
 
-	// PhysicalContainerNetworkPhaseReady indicates that the runtime network is available.
+	// PhysicalContainerNetworkPhaseReady indicates that the container network is available.
 	PhysicalContainerNetworkPhaseReady PhysicalContainerNetworkPhase = PhysicalContainerNetworkPhase(PhysicalResourcePhaseReady)
 
 	// PhysicalContainerNetworkPhaseUnknown indicates that network availability cannot be determined.
@@ -51,106 +52,106 @@ const (
 )
 
 const (
-	// PhysicalContainerNetworkReasonCreating indicates that runtime network creation is in progress.
+	// PhysicalContainerNetworkReasonCreating indicates that container network creation is in progress.
 	PhysicalContainerNetworkReasonCreating ConditionReason = "Creating"
 
-	// PhysicalContainerNetworkReasonCreated indicates that runtime network creation completed.
+	// PhysicalContainerNetworkReasonCreated indicates that container network creation completed.
 	PhysicalContainerNetworkReasonCreated ConditionReason = "Created"
 
-	// PhysicalContainerNetworkReasonCreateFailed indicates that runtime network creation failed.
+	// PhysicalContainerNetworkReasonCreateFailed indicates that container network creation failed.
 	PhysicalContainerNetworkReasonCreateFailed ConditionReason = "CreateFailed"
 
-	// PhysicalContainerNetworkReasonExistingNetworkReplacementFailed indicates that an existing runtime network could not be replaced.
+	// PhysicalContainerNetworkReasonExistingNetworkReplacementFailed indicates that an existing container network could not be replaced.
 	PhysicalContainerNetworkReasonExistingNetworkReplacementFailed ConditionReason = "ExistingNetworkReplacementFailed"
 
-	// PhysicalContainerNetworkReasonNetworkAvailable indicates that the runtime network is available.
+	// PhysicalContainerNetworkReasonNetworkAvailable indicates that the container network is available.
 	PhysicalContainerNetworkReasonNetworkAvailable ConditionReason = "NetworkAvailable"
 
-	// PhysicalContainerNetworkReasonRuntimeNetworkMissing indicates that the runtime network was not found.
+	// PhysicalContainerNetworkReasonRuntimeNetworkMissing indicates that the container network was not found.
 	PhysicalContainerNetworkReasonRuntimeNetworkMissing ConditionReason = "RuntimeNetworkMissing"
 
-	// PhysicalContainerNetworkReasonRuntimeNetworkInspectFailed indicates that the runtime network could not be inspected.
+	// PhysicalContainerNetworkReasonRuntimeNetworkInspectFailed indicates that the container network could not be inspected.
 	PhysicalContainerNetworkReasonRuntimeNetworkInspectFailed ConditionReason = "RuntimeNetworkInspectFailed"
 
-	// PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed indicates that the runtime network could not be removed.
+	// PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed indicates that the container network could not be removed.
 	PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed ConditionReason = "RuntimeNetworkRemoveFailed"
 
-	// PhysicalContainerNetworkReasonRuntimeNetworkRemoving indicates that the runtime network is being removed.
+	// PhysicalContainerNetworkReasonRuntimeNetworkRemoving indicates that the container network is being removed.
 	PhysicalContainerNetworkReasonRuntimeNetworkRemoving ConditionReason = "RuntimeNetworkRemoving"
 
-	// PhysicalContainerNetworkReasonRuntimeNetworkRemoved indicates that the runtime network was removed.
+	// PhysicalContainerNetworkReasonRuntimeNetworkRemoved indicates that the container network was removed.
 	PhysicalContainerNetworkReasonRuntimeNetworkRemoved ConditionReason = "RuntimeNetworkRemoved"
 
-	// PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable indicates that replacement targeted a built-in runtime network.
+	// PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable indicates that replacement targeted a built-in container network.
 	PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable ConditionReason = "BuiltInNetworkNotRemovable"
 )
 
-// PhysicalContainerNetworkSpec describes either an existing runtime network or how to create one.
+// PhysicalContainerNetworkSpec describes either an existing container network or how to create one.
 // +k8s:openapi-gen=true
 type PhysicalContainerNetworkSpec struct {
-	// NetworkID identifies an existing runtime network to track. Exactly one of networkID or network must be set.
+	// NetworkID identifies an existing container network to track. Exactly one of networkID or network must be set.
 	NetworkID string `json:"networkID,omitempty"`
 
-	// Network describes a runtime network to create. Exactly one of networkID or network must be set.
+	// Network describes a container network to create. Exactly one of networkID or network must be set.
 	Network *PhysicalContainerNetworkConfig `json:"network,omitempty"`
 }
 
-// PhysicalContainerNetworkConfig describes a runtime network to create.
+// PhysicalContainerNetworkConfig describes a container network to create.
 // +k8s:openapi-gen=true
 type PhysicalContainerNetworkConfig struct {
-	// NetworkName is the runtime name to use when creating a new network.
+	// NetworkName is the name to use when creating a new container network.
 	NetworkName string `json:"networkName,omitempty"`
 
-	// IPv6 enables IPv6 on a newly created runtime network.
+	// IPv6 enables IPv6 on a newly created container network.
 	IPv6 bool `json:"ipv6,omitempty"`
 
-	// RetainRuntimeNetwork keeps the created runtime network in place when this resource is deleted.
+	// RetainRuntimeNetwork keeps the created container network in place when this resource is deleted.
 	RetainRuntimeNetwork bool `json:"retainRuntimeNetwork,omitempty"`
 
-	// ReplaceExisting removes an existing runtime network with networkName before creating a new one.
+	// ReplaceExisting removes an existing container network with networkName before creating a new one.
 	// Attached containers are disconnected but are not removed.
 	ReplaceExisting bool `json:"replaceExisting,omitempty"`
 
-	// Labels contains labels to apply to a newly-created runtime network.
+	// Labels contains labels to apply to a newly-created container network.
 	// DCP harvesting and physical resource UID labels are reserved and set by the controller.
 	// +listType=map
 	// +listMapKey=key
 	Labels []commonapi.Label `json:"labels,omitempty"`
 }
 
-// PhysicalContainerNetworkStatus describes the observed runtime network.
+// PhysicalContainerNetworkStatus describes the observed container network.
 // +k8s:openapi-gen=true
 type PhysicalContainerNetworkStatus struct {
-	// Phase summarizes whether the runtime network is available.
+	// Phase summarizes whether the container network is available.
 	// +kubebuilder:validation:Enum=Pending;Ready;Unknown;Failed
 	// +optional
 	Phase PhysicalContainerNetworkPhase `json:"phase,omitempty"`
 
-	// NetworkID is the runtime network ID being tracked.
+	// NetworkID is the container network ID being tracked.
 	NetworkID string `json:"networkID,omitempty"`
 
-	// NetworkName is the runtime network name.
+	// NetworkName is the container network name.
 	NetworkName string `json:"networkName,omitempty"`
 
-	// Driver is the runtime network driver.
+	// Driver is the container network driver.
 	Driver string `json:"driver,omitempty"`
 
-	// IPv6 reports whether IPv6 is enabled on the runtime network.
+	// IPv6 reports whether IPv6 is enabled on the container network.
 	IPv6 bool `json:"ipv6,omitempty"`
 
-	// Subnets are the subnets allocated to the runtime network.
+	// Subnets are the subnets allocated to the container network.
 	// +listType=set
 	Subnets []string `json:"subnets,omitempty"`
 
-	// Gateways are the gateways allocated to the runtime network.
+	// Gateways are the gateways allocated to the container network.
 	// +listType=set
 	Gateways []string `json:"gateways,omitempty"`
 
-	// ContainerIDs are the runtime container IDs currently attached to the network.
+	// ContainerIDs are the IDs of containers currently attached to the container network.
 	// +listType=set
 	ContainerIDs []string `json:"containerIDs,omitempty"`
 
-	// CreatedAt is the runtime network creation timestamp.
+	// CreatedAt is the container network creation timestamp.
 	CreatedAt metav1.MicroTime `json:"createdAt,omitempty"`
 
 	// Conditions describe readiness and reconciliation progress.
@@ -164,7 +165,7 @@ func (pns PhysicalContainerNetworkStatus) CopyTo(dest apiserver_resource.ObjectW
 	pns.DeepCopyInto(&dest.(*PhysicalContainerNetwork).Status)
 }
 
-// PhysicalContainerNetwork represents one runtime container network in a DCP V2 namespace.
+// PhysicalContainerNetwork represents one container network in a DCP V2 namespace.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +k8s:openapi-gen=true
@@ -187,6 +188,28 @@ func (pn *PhysicalContainerNetwork) GetGroupVersionResource() schema.GroupVersio
 
 func (pn *PhysicalContainerNetwork) GetObjectMeta() *metav1.ObjectMeta {
 	return &pn.ObjectMeta
+}
+
+// GetResourceId identifies the network-specific system log stream.
+func (pn *PhysicalContainerNetwork) GetResourceId() string {
+	return fmt.Sprintf("physicalcontainernetwork-%s", pn.UID)
+}
+
+func (*PhysicalContainerNetwork) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&PhysicalContainerNetworkLogResource{}}
+}
+
+// PhysicalContainerNetworkLogResource registers system diagnostics for a PhysicalContainerNetwork.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type PhysicalContainerNetworkLogResource struct{}
+
+func (*PhysicalContainerNetworkLogResource) Name() string { return LogSubresourceName }
+
+func (*PhysicalContainerNetworkLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
 }
 
 func (pn *PhysicalContainerNetwork) GetStatus() apiserver_resource.StatusSubResource {
@@ -300,6 +323,8 @@ func init() {
 // Ensure types support interfaces expected by our API server.
 var _ apiserver_resource.Object = (*PhysicalContainerNetwork)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalContainerNetwork)(nil)
+var _ apiserver_resource.ObjectWithGenericSubResource = (*PhysicalContainerNetwork)(nil)
+var _ apiserver_resource.GenericSubResource = (*PhysicalContainerNetworkLogResource)(nil)
 var _ apiserver_resource.StatusSubResource = (*PhysicalContainerNetworkStatus)(nil)
 var _ apiserver_resource.ObjectList = (*PhysicalContainerNetworkList)(nil)
 var _ commonapi.ListWithObjectItems[PhysicalContainerNetwork, *PhysicalContainerNetwork] = (*PhysicalContainerNetworkList)(nil)

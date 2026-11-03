@@ -190,11 +190,13 @@ func StartAdvancedTestEnvironmentWithOptions(
 		}
 	}
 
-	if inclCtrl&NetworkController != 0 {
+	harvester := controllers.NewResourceHarvester()
+	if inclCtrl&(NetworkController|LogicalContainerNetworkController) != 0 {
 		// Run the harvester in a separate goroutine to ensure that it does not block controller startup
-		harvester := controllers.NewResourceHarvester()
 		go harvester.Harvest(ctx, serverInfo.ContainerOrchestrator, log.WithName("ResourceCleanup"))
+	}
 
+	if inclCtrl&NetworkController != 0 {
 		networkR := controllers.NewNetworkReconcilerWithConfig(
 			ctx,
 			mgr.GetClient(),
@@ -245,6 +247,19 @@ func StartAdvancedTestEnvironmentWithOptions(
 		)
 		if logicalContainerSetupErr := logicalContainerR.SetupWithManager(mgr, instanceTag+"-LogicalContainerReconciler"); logicalContainerSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize LogicalContainer reconciler: %w", logicalContainerSetupErr)
+		}
+	}
+
+	if inclCtrl&LogicalContainerNetworkController != 0 {
+		logicalNetworkR := controllers.NewLogicalContainerNetworkReconciler(
+			ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalContainerNetworkReconciler"),
+			serverInfo.ContainerOrchestrator, harvester,
+			controllers.LogicalContainerNetworkReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner,
+			},
+		)
+		if logicalNetworkSetupErr := logicalNetworkR.SetupWithManager(mgr, instanceTag+"-LogicalContainerNetworkReconciler"); logicalNetworkSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalContainerNetwork reconciler: %w", logicalNetworkSetupErr)
 		}
 	}
 

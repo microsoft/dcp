@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +35,45 @@ const (
 	physicalContainerVolumeStateReplaced
 	physicalContainerVolumeStateResolve
 )
+
+func (state physicalContainerVolumeState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case physicalContainerVolumeStateCreate:
+		return "Create"
+	case physicalContainerVolumeStateCreateFailed:
+		return "CreateFailed"
+	case physicalContainerVolumeStateCreateRetry:
+		return "CreateRetry"
+	case physicalContainerVolumeStateCreated:
+		return "Created"
+	case physicalContainerVolumeStateInspectFailed:
+		return "InspectFailed"
+	case physicalContainerVolumeStateInvalid:
+		return "Invalid"
+	case physicalContainerVolumeStateMissing:
+		return "Missing"
+	case physicalContainerVolumeStateReady:
+		return "Ready"
+	case physicalContainerVolumeStateRemovalAbandoned:
+		return "RemovalAbandoned"
+	case physicalContainerVolumeStateRemove:
+		return "Remove"
+	case physicalContainerVolumeStateRemoveRetry:
+		return "RemoveRetry"
+	case physicalContainerVolumeStateRemoved:
+		return "Removed"
+	case physicalContainerVolumeStateReplaceRetry:
+		return "ReplaceRetry"
+	case physicalContainerVolumeStateReplaced:
+		return "Replaced"
+	case physicalContainerVolumeStateResolve:
+		return "Resolve"
+	default:
+		return fmt.Sprintf("physicalContainerVolumeState(%d)", int(state))
+	}
+}
 
 type physicalContainerVolumeData struct {
 	state          physicalContainerVolumeState

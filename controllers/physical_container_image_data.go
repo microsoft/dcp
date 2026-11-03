@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"time"
 
@@ -36,6 +37,43 @@ const (
 	physicalContainerImageStateResolve
 	physicalContainerImageStateUnavailable
 )
+
+func (state physicalContainerImageState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case physicalContainerImageStateBuild:
+		return "Build"
+	case physicalContainerImageStateBuildFailed:
+		return "BuildFailed"
+	case physicalContainerImageStateBuildResultMissing:
+		return "BuildResultMissing"
+	case physicalContainerImageStateBuilt:
+		return "Built"
+	case physicalContainerImageStateInspectFailed:
+		return "InspectFailed"
+	case physicalContainerImageStateInvalid:
+		return "Invalid"
+	case physicalContainerImageStateMissing:
+		return "Missing"
+	case physicalContainerImageStatePull:
+		return "Pull"
+	case physicalContainerImageStatePullFailed:
+		return "PullFailed"
+	case physicalContainerImageStatePullRetry:
+		return "PullRetry"
+	case physicalContainerImageStatePulled:
+		return "Pulled"
+	case physicalContainerImageStateReady:
+		return "Ready"
+	case physicalContainerImageStateResolve:
+		return "Resolve"
+	case physicalContainerImageStateUnavailable:
+		return "Unavailable"
+	default:
+		return fmt.Sprintf("physicalContainerImageState(%d)", int(state))
+	}
+}
 
 type physicalContainerImageOperation struct {
 	cancel context.CancelFunc

@@ -7,8 +7,13 @@ package v2
 
 import (
 	"context"
+	"encoding/gob"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"reflect"
+	"slices"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -16,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -58,13 +64,17 @@ const (
 // LogicalContainerNetworkSpec describes network lifecycle policy and desired configuration.
 // +k8s:openapi-gen=true
 type LogicalContainerNetworkSpec struct {
-	// NetworkName is the runtime name to create or look up. Required for persistent and existing modes.
-	// If omitted in session mode, a runtime name is generated.
+	// NetworkName is the container network name to create or look up. Required for persistent and existing modes.
+	// If omitted in session mode, a container network name is generated.
 	NetworkName string `json:"networkName,omitempty"`
 
 	// Mode controls creation, reuse, and retention. Defaults to session.
 	// +kubebuilder:default:=session
 	Mode LogicalContainerNetworkMode `json:"mode,omitempty"`
+
+	// LifecycleKey identifies the desired configuration for persistent network reuse.
+	// If omitted, a key is calculated from the network configuration.
+	LifecycleKey string `json:"lifecycleKey,omitempty"`
 
 	// Network describes the desired network. Required for session and persistent modes,
 	// and forbidden for existing mode.
@@ -79,13 +89,29 @@ func (spec LogicalContainerNetworkSpec) EffectiveMode() LogicalContainerNetworkM
 	return spec.Mode
 }
 
+// GetLifecycleKey returns the explicit key or computes one from the desired network configuration.
+// The second result is true when the key is computed.
+func (spec *LogicalContainerNetworkSpec) GetLifecycleKey() (string, bool, error) {
+	if spec.LifecycleKey != "" {
+		return spec.LifecycleKey, false, nil
+	}
+	if spec.Network == nil {
+		return "", false, errors.New("network configuration is required to compute a lifecycle key")
+	}
+	desired := spec.Network.DeepCopy()
+	slices.SortStableFunc(desired.Labels, func(left, right commonapi.Label) int { return strings.Compare(left.Key, right.Key) })
+	fnvHash := fnv.New128()
+	hashErr := gob.NewEncoder(fnvHash).Encode(desired)
+	return fmt.Sprintf("%x", fnvHash.Sum(nil)), true, hashErr
+}
+
 // LogicalContainerNetworkConfig describes the desired configuration used to create a network.
 // +k8s:openapi-gen=true
 type LogicalContainerNetworkConfig struct {
-	// IPv6 enables IPv6 on a newly created runtime network.
+	// IPv6 enables IPv6 on a newly created container network.
 	IPv6 bool `json:"ipv6,omitempty"`
 
-	// Labels contains labels to apply to a newly-created runtime network.
+	// Labels contains labels to apply to a newly-created container network.
 	// DCP lifecycle and physical resource ownership labels are reserved and set by controllers.
 	// +listType=map
 	// +listMapKey=key
@@ -101,34 +127,38 @@ type LogicalContainerNetworkStatus struct {
 	Phase LogicalContainerNetworkPhase `json:"phase,omitempty"`
 
 	// PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>.
+	// Published after PhysicalContainerNetwork creation; logical consumers may use it before the container network is ready unless the network has failed.
 	// Cross-namespace references are not supported.
 	PhysicalNetworkRef string `json:"physicalNetworkRef,omitempty"`
 
-	// NetworkID is the observed runtime network ID.
+	// LifecycleKey is the supplied, calculated, or adopted container network lifecycle key.
+	LifecycleKey string `json:"lifecycleKey,omitempty"`
+
+	// NetworkID is the observed container network ID.
 	NetworkID string `json:"networkID,omitempty"`
 
-	// NetworkName is the observed runtime network name.
+	// NetworkName is the observed container network name.
 	NetworkName string `json:"networkName,omitempty"`
 
-	// Driver is the runtime network driver.
+	// Driver is the container network driver.
 	Driver string `json:"driver,omitempty"`
 
-	// IPv6 reports whether IPv6 is enabled on the runtime network.
+	// IPv6 reports whether IPv6 is enabled on the container network.
 	IPv6 bool `json:"ipv6,omitempty"`
 
-	// Subnets are the subnets allocated to the runtime network.
+	// Subnets are the subnets allocated to the container network.
 	// +listType=set
 	Subnets []string `json:"subnets,omitempty"`
 
-	// Gateways are the gateways allocated to the runtime network.
+	// Gateways are the gateways allocated to the container network.
 	// +listType=set
 	Gateways []string `json:"gateways,omitempty"`
 
-	// ContainerIDs are the runtime container IDs currently attached to the network.
+	// ContainerIDs are the IDs of containers currently attached to the container network.
 	// +listType=set
 	ContainerIDs []string `json:"containerIDs,omitempty"`
 
-	// CreatedAt is the runtime network creation timestamp.
+	// CreatedAt is the container network creation timestamp.
 	CreatedAt metav1.MicroTime `json:"createdAt,omitempty"`
 
 	// Conditions describe readiness and reconciliation progress.
@@ -157,6 +187,33 @@ type LogicalContainerNetwork struct {
 
 func (network *LogicalContainerNetwork) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: GroupVersion.Group, Version: GroupVersion.Version, Resource: "logicalcontainernetworks"}
+}
+
+// GetResourceId identifies the network-specific system log stream.
+func (network *LogicalContainerNetwork) GetResourceId() string {
+	return fmt.Sprintf("logicalcontainernetwork-%s", network.UID)
+}
+
+func (*LogicalContainerNetwork) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&LogicalContainerNetworkLogResource{}}
+}
+
+// LogicalContainerNetworkLogResource registers system diagnostics for a logical network and its physical backing.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type LogicalContainerNetworkLogResource struct{}
+
+func (*LogicalContainerNetworkLogResource) Name() string { return LogSubresourceName }
+
+func (*LogicalContainerNetworkLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
+}
+
+// GetLeaseKey identifies the container network shared by logical resources and V1 networks.
+func (network *LogicalContainerNetwork) GetLeaseKey() string {
+	return "containernetworks/" + strings.TrimSpace(network.Spec.NetworkName)
 }
 
 func (network *LogicalContainerNetwork) GetObjectMeta() *metav1.ObjectMeta {
@@ -267,6 +324,8 @@ func init() {
 
 var _ apiserver_resource.Object = (*LogicalContainerNetwork)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*LogicalContainerNetwork)(nil)
+var _ apiserver_resource.ObjectWithGenericSubResource = (*LogicalContainerNetwork)(nil)
+var _ apiserver_resource.GenericSubResource = (*LogicalContainerNetworkLogResource)(nil)
 var _ apiserver_resource.StatusSubResource = (*LogicalContainerNetworkStatus)(nil)
 var _ apiserver_resource.ObjectList = (*LogicalContainerNetworkList)(nil)
 var _ commonapi.ListWithObjectItems[LogicalContainerNetwork, *LogicalContainerNetwork] = (*LogicalContainerNetworkList)(nil)

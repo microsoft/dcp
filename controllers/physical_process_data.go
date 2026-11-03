@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,6 +36,43 @@ const (
 	physicalProcessStateStop
 	physicalProcessStateStopRetry
 )
+
+func (state physicalProcessState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case physicalProcessStateExited:
+		return "Exited"
+	case physicalProcessStateInspectFailed:
+		return "InspectFailed"
+	case physicalProcessStateInvalid:
+		return "Invalid"
+	case physicalProcessStateLaunch:
+		return "Launch"
+	case physicalProcessStateLaunchFailed:
+		return "LaunchFailed"
+	case physicalProcessStateLaunchRetry:
+		return "LaunchRetry"
+	case physicalProcessStateLaunchSkipped:
+		return "LaunchSkipped"
+	case physicalProcessStateMissing:
+		return "Missing"
+	case physicalProcessStateResolve:
+		return "Resolve"
+	case physicalProcessStateResolveFailed:
+		return "ResolveFailed"
+	case physicalProcessStateResolveRetry:
+		return "ResolveRetry"
+	case physicalProcessStateRunning:
+		return "Running"
+	case physicalProcessStateStop:
+		return "Stop"
+	case physicalProcessStateStopRetry:
+		return "StopRetry"
+	default:
+		return fmt.Sprintf("physicalProcessState(%d)", int(state))
+	}
+}
 
 type physicalProcessData struct {
 	resourceUID        types.UID

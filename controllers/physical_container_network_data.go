@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"fmt"
 	stdmaps "maps"
 	"time"
 
@@ -35,6 +36,45 @@ const (
 	physicalContainerNetworkStateReplacementRejected
 	physicalContainerNetworkStateResolve
 )
+
+func (state physicalContainerNetworkState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case physicalContainerNetworkStateCreate:
+		return "Create"
+	case physicalContainerNetworkStateCreateFailed:
+		return "CreateFailed"
+	case physicalContainerNetworkStateCreateRetry:
+		return "CreateRetry"
+	case physicalContainerNetworkStateCreated:
+		return "Created"
+	case physicalContainerNetworkStateInspectFailed:
+		return "InspectFailed"
+	case physicalContainerNetworkStateInvalid:
+		return "Invalid"
+	case physicalContainerNetworkStateMissing:
+		return "Missing"
+	case physicalContainerNetworkStateReady:
+		return "Ready"
+	case physicalContainerNetworkStateRemove:
+		return "Remove"
+	case physicalContainerNetworkStateRemoveRetry:
+		return "RemoveRetry"
+	case physicalContainerNetworkStateRemoved:
+		return "Removed"
+	case physicalContainerNetworkStateReplaceRetry:
+		return "ReplaceRetry"
+	case physicalContainerNetworkStateReplaced:
+		return "Replaced"
+	case physicalContainerNetworkStateReplacementRejected:
+		return "ReplacementRejected"
+	case physicalContainerNetworkStateResolve:
+		return "Resolve"
+	default:
+		return fmt.Sprintf("physicalContainerNetworkState(%d)", int(state))
+	}
+}
 
 type physicalContainerNetworkData struct {
 	state          physicalContainerNetworkState
@@ -137,12 +177,12 @@ var physicalContainerNetworkProjections = physicalResourceProjectionTable[physic
 		physicalContainerNetworkStateCreate: {
 			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerNetworkReasonCreating,
-			message:         "Runtime network creation is in progress.",
+			message:         "Container network creation is in progress.",
 		},
 		physicalContainerNetworkStateCreated: {
 			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerNetworkReasonCreated,
-			message:         "Runtime network creation completed.",
+			message:         "Container network creation completed.",
 		},
 		physicalContainerNetworkStateCreateRetry: {
 			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
@@ -161,14 +201,13 @@ var physicalContainerNetworkProjections = physicalResourceProjectionTable[physic
 		physicalContainerNetworkStateReady: {
 			phase: apiv2.PhysicalContainerNetworkPhaseReady, conditionStatus: metav1.ConditionTrue,
 			conditionReason: apiv2.PhysicalContainerNetworkReasonNetworkAvailable,
-			message:         "Runtime network is available.",
+			message:         "Container network is available.",
 			requeue:         true, requeueDelay: MonitoringDelay,
 		},
 		physicalContainerNetworkStateMissing: {
 			phase: apiv2.PhysicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing,
-			message:         "Runtime network was not found.",
-			requeue:         true, requeueDelay: MonitoringDelay,
+			message:         "Container network was not found.",
 		},
 		physicalContainerNetworkStateInspectFailed: {
 			phase: apiv2.PhysicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
@@ -178,7 +217,7 @@ var physicalContainerNetworkProjections = physicalResourceProjectionTable[physic
 		physicalContainerNetworkStateRemove: {
 			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoving,
-			message:         "Runtime network removal is in progress.",
+			message:         "Container network removal is in progress.",
 		},
 		physicalContainerNetworkStateRemoveRetry: {
 			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
@@ -188,7 +227,7 @@ var physicalContainerNetworkProjections = physicalResourceProjectionTable[physic
 		physicalContainerNetworkStateRemoved: {
 			phase: apiv2.PhysicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoved,
-			message:         "Runtime network removal completed.",
+			message:         "Container network removal completed.",
 		},
 		physicalContainerNetworkStateReplacementRejected: {
 			phase: apiv2.PhysicalContainerNetworkPhaseFailed, conditionStatus: metav1.ConditionFalse,
