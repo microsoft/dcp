@@ -53,6 +53,7 @@ func TestLogicalProcessValidate(t *testing.T) {
 // Verifies that LogicalProcessSpec lifecycle keys normalize defaults and environment ordering,
 // preserve duplicate precedence and argument order, and include the persistent monitor identity.
 func TestLogicalProcessLifecycleKey(t *testing.T) {
+	t.Parallel()
 	spec := LogicalProcessSpec{Process: &LogicalProcessConfig{
 		ExecutablePath: "program", Args: []string{"a", "b"}, Env: []commonapi.EnvVar{{Name: "B", Value: "2"}, {Name: "A", Value: "1"}},
 	}}
@@ -96,12 +97,70 @@ func TestLogicalProcessLifecycleKey(t *testing.T) {
 	lastKey, _, lastErr := duplicates.GetLifecycleKey()
 	require.NoError(t, lastErr)
 	require.NotEqual(t, firstKey, lastKey)
+	effective := duplicates.DeepCopy()
+	effective.Process.Env = []commonapi.EnvVar{duplicates.Process.Env[1]}
+	effectiveKey, _, effectiveErr := effective.GetLifecycleKey()
+	require.NoError(t, effectiveErr)
+	require.Equal(t, lastKey, effectiveKey, "overwritten environment declarations must not affect the key")
 	explicitKey, explicitComputed, explicitErr := (&LogicalProcessSpec{LifecycleKey: "explicit"}).GetLifecycleKey()
 	require.NoError(t, explicitErr)
 	require.False(t, explicitComputed)
 	require.Equal(t, "explicit", explicitKey)
 	_, _, missingErr := (&LogicalProcessSpec{}).GetLifecycleKey()
 	require.Error(t, missingErr)
+}
+
+// Verifies that LogicalProcessSpec hashes executable and argument boundaries and monitor identity,
+// while excluding lifecycle policy and treating nil and empty collections equivalently.
+func TestLogicalProcessLifecycleKeyInputs(t *testing.T) {
+	t.Parallel()
+	pid := int64(123)
+	spec := LogicalProcessSpec{Mode: LogicalProcessModePersistent, MonitorPID: &pid,
+		MonitorTimestamp: metav1.NewMicroTime(time.Unix(100, 0)),
+		Process:          &LogicalProcessConfig{ExecutablePath: "ab", WorkingDirectory: "c", Args: []string{"a", "bc"}}}
+	original := spec.DeepCopy()
+	key, _, keyErr := spec.GetLifecycleKey()
+	require.NoError(t, keyErr)
+	require.Equal(t, original, &spec)
+	for _, testCase := range []struct {
+		name   string
+		change func(*LogicalProcessSpec)
+	}{
+		{"path boundaries", func(changed *LogicalProcessSpec) {
+			changed.Process.ExecutablePath, changed.Process.WorkingDirectory = "a", "bc"
+		}},
+		{"argument boundaries", func(changed *LogicalProcessSpec) { changed.Process.Args = []string{"ab", "c"} }},
+		{"monitor pid", func(changed *LogicalProcessSpec) { *changed.MonitorPID = 124 }},
+		{"monitor timestamp", func(changed *LogicalProcessSpec) {
+			changed.MonitorTimestamp = metav1.NewMicroTime(changed.MonitorTimestamp.Add(time.Microsecond))
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			changed := spec.DeepCopy()
+			testCase.change(changed)
+			changedKey, _, changedErr := changed.GetLifecycleKey()
+			require.NoError(t, changedErr)
+			require.NotEqual(t, key, changedKey)
+		})
+	}
+	policy := spec.DeepCopy()
+	policy.Mode, policy.Stop = LogicalProcessModeSession, true
+	policy.MonitorPID, policy.MonitorTimestamp = nil, metav1.MicroTime{}
+	baseline := spec.DeepCopy()
+	baseline.MonitorPID, baseline.MonitorTimestamp = nil, metav1.MicroTime{}
+	baselineKey, _, baselineErr := baseline.GetLifecycleKey()
+	require.NoError(t, baselineErr)
+	policyKey, _, policyErr := policy.GetLifecycleKey()
+	require.NoError(t, policyErr)
+	require.Equal(t, baselineKey, policyKey)
+	empty := LogicalProcessSpec{Process: &LogicalProcessConfig{ExecutablePath: "program"}}
+	nilKey, _, nilErr := empty.GetLifecycleKey()
+	require.NoError(t, nilErr)
+	empty.Process.Args, empty.Process.Env = []string{}, []commonapi.EnvVar{}
+	emptyKey, _, emptyErr := empty.GetLifecycleKey()
+	require.NoError(t, emptyErr)
+	require.Equal(t, nilKey, emptyKey)
 }
 
 // Verifies that LogicalProcess permits only monotonic stop changes and uses a namespace-scoped persistent identity.
