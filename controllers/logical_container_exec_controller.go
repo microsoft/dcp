@@ -7,9 +7,9 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
-	"time"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,6 +27,7 @@ import (
 )
 
 const logicalContainerExecRefField = "spec.containerRef"
+const logicalContainerExecOwnerUIDField = ".metadata.logicalContainerExecOwnerUID"
 
 var logicalContainerExecFinalizer = apiv2.GroupName + "/logicalcontainerexec-reconciler"
 
@@ -37,25 +38,15 @@ type logicalContainerExecDataHandlerFunc = stateInitializerFunc[
 ]
 
 var logicalContainerExecDataHandlers = map[logicalContainerExecState]logicalContainerExecDataHandlerFunc{
-	logicalContainerExecStateNamespace:        handleLogicalContainerExecNamespace,
-	logicalContainerExecStateNamespaceRetry:   handleLogicalContainerExecNamespace,
-	logicalContainerExecStateTarget:           handleLogicalContainerExecPrerequisites,
-	logicalContainerExecStateTargetNotFound:   handleLogicalContainerExecPrerequisites,
-	logicalContainerExecStateTargetRetry:      handleLogicalContainerExecPrerequisites,
-	logicalContainerExecStatePhysical:         handleLogicalContainerExecPhysical,
-	logicalContainerExecStatePhysicalNotFound: handleLogicalContainerExecPhysical,
-	logicalContainerExecStatePhysicalRetry:    handleLogicalContainerExecPhysical,
-	logicalContainerExecStateRuntime:          handleLogicalContainerExecRuntime,
-	logicalContainerExecStateRuntimeRetry:     handleLogicalContainerExecRuntime,
-	logicalContainerExecStateRunning:          handleLogicalContainerExecRuntime,
-	logicalContainerExecStateExited:           handleLogicalContainerExecRuntime,
-	logicalContainerExecStateRuntimeFailed:    handleLogicalContainerExecRuntime,
-	logicalContainerExecStateMissing:          handleLogicalContainerExecTerminal,
-	logicalContainerExecStateFailed:           handleLogicalContainerExecTerminal,
-	logicalContainerExecStateDelete:           handleLogicalContainerExecDeletion,
-	logicalContainerExecStateDeleteRetry:      handleLogicalContainerExecDeletion,
-	logicalContainerExecStateInvalid:          handleLogicalContainerExecTerminal,
-	0:                                         handleInvalidLogicalContainerExecState,
+	logicalContainerExecStatePending:       handleLogicalContainerExecPending,
+	logicalContainerExecStateCreating:      handleLogicalContainerExecRuntime,
+	logicalContainerExecStateRunning:       handleLogicalContainerExecRuntime,
+	logicalContainerExecStateExited:        handleLogicalContainerExecRuntime,
+	logicalContainerExecStateRuntimeFailed: handleLogicalContainerExecRuntime,
+	logicalContainerExecStateMissing:       handleLogicalContainerExecTerminal,
+	logicalContainerExecStateFailed:        handleLogicalContainerExecTerminal,
+	logicalContainerExecStateInvalid:       handleLogicalContainerExecTerminal,
+	0:                                      handleInvalidLogicalContainerExecState,
 }
 
 // LogicalContainerExecReconciler translates logical target readiness into one physical execution.
@@ -81,12 +72,23 @@ func (r *LogicalContainerExecReconciler) SetupWithManager(mgr ctrl.Manager, name
 	if indexErr != nil {
 		return fmt.Errorf("index logical container execution references: %w", indexErr)
 	}
+	ownerIndexErr := mgr.GetFieldIndexer().IndexField(r.LifetimeCtx, &apiv2.PhysicalContainerExec{}, logicalContainerExecOwnerUIDField,
+		func(obj ctrl_client.Object) []string {
+			owner := metav1.GetControllerOf(obj)
+			if owner == nil {
+				return nil
+			}
+			return []string{string(owner.UID)}
+		})
+	if ownerIndexErr != nil {
+		return fmt.Errorf("index logical container execution owner: %w", ownerIndexErr)
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.LogicalContainerExec{}).Owns(&apiv2.PhysicalContainerExec{}).
 		Watches(&apiv2.LogicalContainer{}, handler.EnqueueRequestsFromMapFunc(r.mapContainer)).
 		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.LogicalContainerExecList{}))).
-		WatchesRawSource(r.GetReconciliationEventSource()).Named(name).Complete(r)
+		Named(name).Complete(r)
 }
 
 func (r *LogicalContainerExecReconciler) mapContainer(ctx context.Context, obj ctrl_client.Object) []ctrl.Request {
@@ -122,33 +124,20 @@ func (r *LogicalContainerExecReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resource.GetResourceId())
 	stateKey, data := r.executions.BorrowByNamespacedName(req.NamespacedName)
-	if data == nil || stateKey != resource.UID {
-		if data != nil {
-			logger.ReleaseResourceLog((&apiv2.LogicalContainerExec{ObjectMeta: metav1.ObjectMeta{UID: stateKey}}).GetResourceId())
-		}
-		data = &logicalContainerExecData{state: logicalContainerExecStateNamespace}
-		r.executions.Store(req.NamespacedName, resource.UID, data.Clone())
+	if data != nil && stateKey != resource.UID {
+		logger.ReleaseResourceLog((&apiv2.LogicalContainerExec{ObjectMeta: metav1.ObjectMeta{UID: stateKey}}).GetResourceId())
+		r.executions.DeleteByNamespacedName(req.NamespacedName)
+		data = nil
 	}
 	patch := ctrl_client.MergeFromWithOptions(resource.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 	var change objectChange
 	delay := StandardDelay
-	finalizerAdded := false
 	if !resource.DeletionTimestamp.IsZero() {
-		change = handleLogicalContainerExecDeletion(ctx, r, &resource, data.state, data, log)
-	} else if change = ensureFinalizer(&resource, logicalContainerExecFinalizer, log); change != noChange {
-		finalizerAdded = true
+		change, delay = r.handleLogicalContainerExecDeletion(ctx, &resource, data, log)
 	} else {
-		stateHandler := getStateInitializer(logicalContainerExecDataHandlers, data.state, log)
-		change = stateHandler(ctx, r, &resource, data.state, data, log)
-	}
-	if !finalizerAdded && hasFinalizer(&resource, logicalContainerExecFinalizer) {
-		_ = r.executions.Update(req.NamespacedName, resource.UID, data)
-		projectionChange, projectionDelay, valid := data.applyTo(&resource)
-		change |= projectionChange
-		delay = projectionDelay
-		if !valid {
-			log.Error(fmt.Errorf("invalid logical container execution state %v", data.state),
-				"LogicalContainerExec reached invalid reconciliation state")
+		change = ensureFinalizer(&resource, logicalContainerExecFinalizer, log)
+		if change == noChange {
+			change, delay = r.manageLogicalContainerExec(ctx, &resource, data, log)
 		}
 	}
 	if !hasFinalizer(&resource, logicalContainerExecFinalizer) {
@@ -158,71 +147,70 @@ func (r *LogicalContainerExecReconciler) Reconcile(ctx context.Context, req ctrl
 	return r.SaveChangesWithDelay(ctx, &resource, patch, change, delay, nil, log)
 }
 
-func handleLogicalContainerExecNamespace(
-	ctx context.Context, reconciler *LogicalContainerExecReconciler, resource *apiv2.LogicalContainerExec,
-	_ logicalContainerExecState, data *logicalContainerExecData, log logr.Logger,
-) objectChange {
-	if time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
-	}
-	ready, reason, namespaceErr := checkNamespaceReadiness(ctx, reconciler.Client, resource.Namespace)
-	if !ready {
-		data.state, data.reason = logicalContainerExecStateNamespace, reason
-		data.message = namespaceReadinessMessage(resource.Namespace, reason)
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get logical execution namespace")
-			data.state, data.message = logicalContainerExecStateNamespaceRetry, namespaceErr.Error()
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+func (r *LogicalContainerExecReconciler) manageLogicalContainerExec(
+	ctx context.Context, resource *apiv2.LogicalContainerExec, data *logicalContainerExecData, log logr.Logger,
+) (objectChange, AdditionalReconciliationDelay) {
+	if data == nil {
+		ready, reason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, resource.Namespace)
+		if !ready {
+			change := noChange
+			message := namespaceReadinessMessage(resource.Namespace, reason)
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to get logical execution namespace")
+				message = namespaceErr.Error()
+				change |= additionalReconciliationNeeded
+			}
+			change |= setValue(&resource.Status.Phase, apiv2.ContainerExecPhasePending)
+			change |= setCondition(&resource.Status.Conditions, apiv2.ConditionReady, resource.Generation, metav1.ConditionFalse, reason, message)
+			return change, StandardDelay
 		}
-		return noChange
+		data = &logicalContainerExecData{state: logicalContainerExecStatePending}
+		r.executions.Store(resource.NamespacedName(), resource.UID, data.Clone())
 	}
-	data.state = logicalContainerExecStateTarget
-	return handleLogicalContainerExecPrerequisites(ctx, reconciler, resource, data.state, data, log)
+	stateHandler := getStateInitializer(logicalContainerExecDataHandlers, data.state, log)
+	change := stateHandler(ctx, r, resource, data.state, data, log)
+	_ = r.executions.Update(resource.NamespacedName(), resource.UID, data)
+	projectionChange, delay, valid := data.applyTo(resource)
+	if !valid {
+		log.Error(fmt.Errorf("invalid logical container execution state %v", data.state), "LogicalContainerExec reached invalid reconciliation state")
+	}
+	return change | projectionChange, delay
 }
 
-func handleLogicalContainerExecPrerequisites(
+func handleLogicalContainerExecPending(
 	ctx context.Context, reconciler *LogicalContainerExecReconciler, resource *apiv2.LogicalContainerExec,
 	_ logicalContainerExecState, data *logicalContainerExecData, log logr.Logger,
 ) objectChange {
-	if time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
+	data.reconcileErr, data.reason, data.message = nil, "", ""
+	if data.pendingPhysicalRef == "" {
+		target := reconciler.resolveExecutionTarget(ctx, resource, data, log)
+		if target == nil {
+			return noChange
+		}
+		data.pendingPhysicalRef = target.Status.PhysicalContainerRef
 	}
-	target := reconciler.resolveExecutionTarget(ctx, resource, data, log)
-	if target == nil {
-		return noChange
-	}
-	data.pendingPhysicalRef = target.Status.PhysicalContainerRef
-	data.state = logicalContainerExecStatePhysical
-	return handleLogicalContainerExecPhysical(ctx, reconciler, resource, data.state, data, log)
+	return reconciler.ensureLogicalPhysicalContainerExec(ctx, resource, data, log)
 }
 
 func (r *LogicalContainerExecReconciler) resolveExecutionTarget(
 	ctx context.Context, resource *apiv2.LogicalContainerExec, data *logicalContainerExecData, log logr.Logger,
 ) *apiv2.LogicalContainer {
-	waitingState, retryState, notFoundState := logicalContainerExecStateTarget, logicalContainerExecStateTargetRetry, logicalContainerExecStateTargetNotFound
-	switch data.state {
-	case logicalContainerExecStatePhysical, logicalContainerExecStatePhysicalNotFound, logicalContainerExecStatePhysicalRetry:
-		waitingState, retryState, notFoundState = logicalContainerExecStatePhysical, logicalContainerExecStatePhysicalRetry, logicalContainerExecStatePhysicalNotFound
-	}
-	data.state, data.reason, data.message = waitingState, "", ""
 	ready, reason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, resource.Namespace)
 	if !ready {
 		data.reason, data.message = reason, namespaceReadinessMessage(resource.Namespace, reason)
 		if namespaceErr != nil {
 			log.Error(namespaceErr, "Failed to get logical execution namespace")
-			data.state, data.message = retryState, namespaceErr.Error()
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			data.reconcileErr, data.message = namespaceErr, namespaceErr.Error()
 		}
 		return nil
 	}
 	var target apiv2.LogicalContainer
 	getErr := r.Get(ctx, commonapi.AsNamespacedName(resource.Spec.ContainerRef, resource.Namespace), &target)
 	if getErr != nil {
-		data.state, data.reason, data.message = notFoundState, "ContainerNotFound", "Waiting for the target LogicalContainer."
+		data.reason, data.message = "ContainerNotFound", "Waiting for the target LogicalContainer."
 		if !apierrors.IsNotFound(getErr) {
 			log.Error(getErr, "Failed to get logical execution target")
-			data.state, data.reason, data.message = retryState, "ContainerLookupFailed", getErr.Error()
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			data.reconcileErr, data.reason, data.message = getErr, "ContainerLookupFailed", getErr.Error()
 		}
 		return nil
 	}
@@ -245,24 +233,15 @@ func (r *LogicalContainerExecReconciler) resolveExecutionTarget(
 	return &target
 }
 
-func handleLogicalContainerExecPhysical(
-	ctx context.Context, reconciler *LogicalContainerExecReconciler, resource *apiv2.LogicalContainerExec,
-	state logicalContainerExecState, data *logicalContainerExecData, log logr.Logger,
+func (reconciler *LogicalContainerExecReconciler) ensureLogicalPhysicalContainerExec(
+	ctx context.Context, resource *apiv2.LogicalContainerExec, data *logicalContainerExecData, log logr.Logger,
 ) objectChange {
-	switch data.state {
-	case logicalContainerExecStatePhysical, logicalContainerExecStatePhysicalNotFound, logicalContainerExecStatePhysicalRetry:
-	default:
-		return handleInvalidLogicalContainerExecState(ctx, reconciler, resource, state, data, log)
-	}
-	if time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
-	}
 	physical := &apiv2.PhysicalContainerExec{
 		ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(resource.UID), Namespace: resource.Namespace},
 		Spec:       apiv2.PhysicalContainerExecSpec{ContainerRef: data.pendingPhysicalRef, Execution: *resource.Spec.Execution.DeepCopy()},
 	}
 	desiredSpec := physical.Spec
-	getErr := reconciler.NoCacheClient.Get(ctx, physical.NamespacedName(), physical)
+	observed, getErr := reconciler.getLogicalPhysicalContainerExec(ctx, resource)
 	if apierrors.IsNotFound(getErr) {
 		if reconciler.resolveExecutionTarget(ctx, resource, data, log) == nil {
 			return noChange
@@ -274,51 +253,52 @@ func handleLogicalContainerExecPhysical(
 			data.fail("PhysicalExecutionPreparationFailed", ownerErr.Error())
 			return noChange
 		}
+		InitializeLogicalBackingFinalizers(physical, physicalContainerExecFinalizer)
 		createErr := reconciler.Create(ctx, physical)
 		if createErr != nil {
-			log.Error(createErr, "Failed to prepare physical container execution")
-			data.state, data.reason, data.message = logicalContainerExecStatePhysicalRetry, "PhysicalExecutionPreparationFailed", createErr.Error()
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-			return noChange
+			confirmErr := reconciler.NoCacheClient.Get(ctx, physical.NamespacedName(), physical)
+			if confirmErr != nil {
+				data.reconcileErr = fmt.Errorf("create physical execution and verify backing: %w", errors.Join(createErr, confirmErr))
+				data.message = data.reconcileErr.Error()
+				log.Error(data.reconcileErr, "Failed to prepare physical container execution")
+				return noChange
+			}
 		}
 	} else if getErr != nil {
 		log.Error(getErr, "Failed to resolve physical execution creation outcome")
-		data.state, data.reason, data.message = logicalContainerExecStatePhysicalRetry, "PhysicalExecutionPreparationFailed", getErr.Error()
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.reconcileErr, data.message = getErr, getErr.Error()
 		return noChange
+	} else {
+		physical = observed
 	}
-	if !metav1.IsControlledBy(physical, resource) || !reflect.DeepEqual(physical.Spec, desiredSpec) {
+	if !metav1.IsControlledBy(physical, resource) || !reflect.DeepEqual(physical.Spec, desiredSpec) ||
+		!hasFinalizer(physical, LogicalBackingFinalizer) {
 		data.fail("PhysicalExecutionChanged", "The backing physical execution has a different owner or configuration.")
 		return noChange
 	}
 	data.physicalUID, data.pendingPhysicalRef = physical.UID, ""
-	data.state, data.reason, data.message = logicalContainerExecStateRuntime, "", ""
+	data.state, data.reason, data.message = logicalContainerExecStateCreating, "", ""
 	data.failureTime = metav1.MicroTime{}
-	data.retryAfter = time.Time{}
-	return handleLogicalContainerExecRuntime(ctx, reconciler, resource, data.state, data, log)
+	return additionalReconciliationNeeded
 }
 
 func handleLogicalContainerExecRuntime(
 	ctx context.Context, reconciler *LogicalContainerExecReconciler, resource *apiv2.LogicalContainerExec,
 	_ logicalContainerExecState, data *logicalContainerExecData, log logr.Logger,
 ) objectChange {
-	if time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
-	}
-	var physical apiv2.PhysicalContainerExec
-	getErr := reconciler.NoCacheClient.Get(ctx, types.NamespacedName{Namespace: resource.Namespace, Name: "logical-" + string(resource.UID)}, &physical)
+	data.reconcileErr = nil
+	physical, getErr := reconciler.getLogicalPhysicalContainerExec(ctx, resource)
 	if getErr != nil && !apierrors.IsNotFound(getErr) {
 		log.Error(getErr, "Failed to observe physical execution")
-		data.state, data.reason, data.message = logicalContainerExecStateRuntimeRetry, "PhysicalExecutionLookupFailed", getErr.Error()
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.reconcileErr, data.reason, data.message = getErr, "PhysicalExecutionLookupFailed", getErr.Error()
 		return noChange
 	}
-	if getErr != nil || physical.UID != data.physicalUID || !metav1.IsControlledBy(&physical, resource) {
+	if getErr != nil || physical.UID != data.physicalUID || !metav1.IsControlledBy(physical, resource) ||
+		!hasFinalizer(physical, LogicalBackingFinalizer) {
 		data.state, data.reason = logicalContainerExecStateMissing, "PhysicalExecutionChanged"
 		data.message = "The backing physical execution is missing or its identity changed."
 		return noChange
 	}
-	data.retryAfter = time.Time{}
 	change := setValue(&resource.Status.ContainerID, physical.Status.ContainerID)
 	change |= setTimestamp(&resource.Status.StartedAt, physical.Status.StartedAt)
 	change |= setTimestamp(&resource.Status.FinishedAt, physical.Status.FinishedAt)
@@ -329,8 +309,12 @@ func handleLogicalContainerExecRuntime(
 		change |= statusChanged
 	}
 	condition := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
-	data.state, data.reason, data.message = logicalContainerExecStateRuntime, "PhysicalExecutionNotReady", "Waiting for current physical execution state."
-	if condition == nil || condition.ObservedGeneration != physical.Generation || !physical.DeletionTimestamp.IsZero() {
+	data.state, data.reason, data.message = logicalContainerExecStateCreating, "PhysicalExecutionNotReady", "Waiting for current physical execution state."
+	if condition == nil || condition.ObservedGeneration != physical.Generation ||
+		(!physical.DeletionTimestamp.IsZero() && hasFinalizer(physical, physicalContainerExecFinalizer)) {
+		if !physical.DeletionTimestamp.IsZero() {
+			return change | additionalReconciliationNeeded
+		}
 		return change
 	}
 	data.reason, data.message = apiv2.ConditionReason(condition.Reason), condition.Message
@@ -350,35 +334,95 @@ func handleLogicalContainerExecRuntime(
 	return change
 }
 
-func handleLogicalContainerExecDeletion(
-	ctx context.Context, reconciler *LogicalContainerExecReconciler, resource *apiv2.LogicalContainerExec,
-	_ logicalContainerExecState, data *logicalContainerExecData, log logr.Logger,
-) objectChange {
-	data.state, data.reason, data.message = logicalContainerExecStateDelete, "", ""
-	var physical apiv2.PhysicalContainerExec
-	getErr := reconciler.NoCacheClient.Get(ctx, types.NamespacedName{Namespace: resource.Namespace, Name: "logical-" + string(resource.UID)}, &physical)
-	if apierrors.IsNotFound(getErr) {
-		return deleteFinalizer(resource, logicalContainerExecFinalizer, log)
+func (r *LogicalContainerExecReconciler) getLogicalPhysicalContainerExec(
+	ctx context.Context, resource *apiv2.LogicalContainerExec,
+) (*apiv2.PhysicalContainerExec, error) {
+	var children apiv2.PhysicalContainerExecList
+	listErr := r.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace),
+		ctrl_client.MatchingFields{logicalContainerExecOwnerUIDField: string(resource.UID)})
+	if listErr != nil {
+		return nil, listErr
 	}
-	if getErr != nil {
-		log.Error(getErr, "Failed to get physical execution for deletion")
-		data.state, data.message = logicalContainerExecStateDeleteRetry, getErr.Error()
-		return noChange
-	}
-	if !metav1.IsControlledBy(&physical, resource) || (data.physicalUID != "" && physical.UID != data.physicalUID) {
-		log.Info("Leaving independently owned physical execution untouched", "Execution", physical.NamespacedName())
-		return deleteFinalizer(resource, logicalContainerExecFinalizer, log)
-	}
-	if physical.DeletionTimestamp.IsZero() {
-		uid := physical.UID
-		deleteErr := reconciler.Delete(ctx, &physical, ctrl_client.Preconditions{UID: &uid})
-		if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-			log.Error(deleteErr, "Failed to delete physical execution")
-			data.state, data.message = logicalContainerExecStateDeleteRetry, deleteErr.Error()
-			return noChange
+	name := "logical-" + string(resource.UID)
+	for i := range children.Items {
+		child := &children.Items[i]
+		if child.Name == name && metav1.IsControlledBy(child, resource) {
+			return child, nil
 		}
 	}
-	return noChange
+	physical := &apiv2.PhysicalContainerExec{}
+	getErr := r.NoCacheClient.Get(ctx, types.NamespacedName{Namespace: resource.Namespace, Name: name}, physical)
+	if getErr != nil {
+		return nil, getErr
+	}
+	return physical, nil
+}
+
+func (r *LogicalContainerExecReconciler) handleLogicalContainerExecDeletion(
+	ctx context.Context, resource *apiv2.LogicalContainerExec, data *logicalContainerExecData, log logr.Logger,
+) (change objectChange, delay AdditionalReconciliationDelay) {
+	delay = StandardDelay
+	if data == nil {
+		data = &logicalContainerExecData{state: logicalContainerExecStateDelete}
+		r.executions.Store(resource.NamespacedName(), resource.UID, data.Clone())
+	}
+	defer func() {
+		if data != nil {
+			_ = r.executions.Update(resource.NamespacedName(), resource.UID, data)
+			projectionChange, projectionDelay, valid := data.applyTo(resource)
+			change |= projectionChange
+			delay = projectionDelay
+			if !valid {
+				log.Error(fmt.Errorf("invalid logical container execution state %v", data.state), "LogicalContainerExec reached invalid reconciliation state")
+			}
+		}
+	}()
+	data.state, data.reason, data.message, data.reconcileErr = logicalContainerExecStateDelete, "", "", nil
+	var children apiv2.PhysicalContainerExecList
+	listErr := r.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace),
+		ctrl_client.MatchingFields{logicalContainerExecOwnerUIDField: string(resource.UID)})
+	if listErr == nil && len(children.Items) == 0 {
+		listErr = r.NoCacheClient.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace))
+	}
+	if listErr != nil {
+		log.Error(listErr, "Failed to list physical executions before deletion")
+		data.reconcileErr, data.message = listErr, listErr.Error()
+		return additionalReconciliationNeeded, delay
+	}
+	waiting := false
+	for i := range children.Items {
+		physical := &children.Items[i]
+		if !metav1.IsControlledBy(physical, resource) {
+			continue
+		}
+		if data.physicalUID == "" && physical.Name == "logical-"+string(resource.UID) {
+			data.physicalUID = physical.UID
+		}
+		waiting = true
+		if physical.DeletionTimestamp.IsZero() {
+			uid := physical.UID
+			deleteErr := r.Delete(ctx, physical, ctrl_client.Preconditions{UID: &uid})
+			if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+				log.Error(deleteErr, "Failed to delete physical execution")
+				data.reconcileErr, data.message = deleteErr, deleteErr.Error()
+			}
+			continue
+		}
+		if hasFinalizer(physical, physicalContainerExecFinalizer) {
+			continue
+		}
+		releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, physical)
+		if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
+			log.Error(releaseErr, "Failed to release logical execution backing")
+			data.reconcileErr, data.message = releaseErr, releaseErr.Error()
+		}
+	}
+	if waiting {
+		return additionalReconciliationNeeded, delay
+	}
+	r.executions.DeleteByNamespacedName(resource.NamespacedName())
+	data = nil
+	return deleteFinalizer(resource, logicalContainerExecFinalizer, log), delay
 }
 
 func (data *logicalContainerExecData) fail(reason apiv2.ConditionReason, message string) {
@@ -386,6 +430,7 @@ func (data *logicalContainerExecData) fail(reason apiv2.ConditionReason, message
 		return
 	}
 	data.state, data.reason, data.message = logicalContainerExecStateFailed, reason, message
+	data.reconcileErr = nil
 	data.failureTime = metav1.NowMicro()
 }
 

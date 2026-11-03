@@ -268,7 +268,7 @@ func TestV2ContainerExecDeletionSettlesAttachedExecution(t *testing.T) {
 	}
 }
 
-// Verifies that deleting a backing physical execution fails its logical owner without
+// Verifies that forcibly removing a backing physical execution fails its logical owner without
 // recreating the child or launching the command again.
 func TestV2LogicalContainerExecDoesNotRecreateMissingBacking(t *testing.T) {
 	t.Parallel()
@@ -280,7 +280,7 @@ func TestV2LogicalContainerExecDoesNotRecreateMissingBacking(t *testing.T) {
 	require.NoError(t, client.Create(ctx, resource))
 	running := waitV2LogicalExecPhase(t, ctx, resource, apiv2.ContainerExecPhaseRunning)
 	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalExecRef, Namespace: target.Namespace}}
-	require.NoError(t, client.Delete(ctx, physical))
+	forceRemoveLogicalContainerExecBacking(t, ctx, client, physical)
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerExec](t, ctx, client, physical)
 	failed := waitV2LogicalExecPhase(t, ctx, resource, apiv2.ContainerExecPhaseFailed)
 	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "PhysicalExecutionChanged")

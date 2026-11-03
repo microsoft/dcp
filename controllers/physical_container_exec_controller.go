@@ -41,8 +41,6 @@ type physicalContainerExecDataHandlerFunc = stateInitializerFunc[
 ]
 
 var physicalContainerExecDataHandlers = map[physicalContainerExecState]physicalContainerExecDataHandlerFunc{
-	physicalContainerExecStateNamespace:      handlePhysicalContainerExecNamespace,
-	physicalContainerExecStateNamespaceRetry: handlePhysicalContainerExecNamespace,
 	physicalContainerExecStateTarget:         handlePhysicalContainerExecTarget,
 	physicalContainerExecStateTargetNotFound: handlePhysicalContainerExecTarget,
 	physicalContainerExecStateTargetRetry:    handlePhysicalContainerExecTarget,
@@ -115,7 +113,11 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 	getErr := reader.Get(ctx, req.NamespacedName, &resource)
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
-			r.discardExecution(req.NamespacedName, log)
+			discardErr := r.discardExecution(req.NamespacedName)
+			if discardErr != nil {
+				log.Error(discardErr, "Failed to dispose deleted execution output")
+				return ctrl.Result{}, discardErr
+			}
 			return ctrl.Result{}, nil
 		}
 		log.Error(getErr, "Failed to get PhysicalContainerExec")
@@ -134,66 +136,63 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 	}
 	stateKey, previous := r.executions.BorrowByNamespacedName(req.NamespacedName)
 	if previous != nil && stateKey != resource.UID {
-		r.discardExecution(req.NamespacedName, log)
+		discardErr := r.discardExecution(req.NamespacedName)
+		if discardErr != nil {
+			log.Error(discardErr, "Failed to dispose previous execution output")
+			return ctrl.Result{}, discardErr
+		}
 	}
 	r.executions.RunDeferredOps(req.NamespacedName, &resource)
 	_, data := r.executions.BorrowByNamespacedName(req.NamespacedName)
-	if data == nil {
-		data = &physicalContainerExecData{state: physicalContainerExecStateNamespace}
-		r.executions.Store(req.NamespacedName, resource.UID, data.Clone())
-	}
 	patch := ctrl_client.MergeFromWithOptions(resource.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 	var change objectChange
 	delay := StandardDelay
 	deleting := !resource.DeletionTimestamp.IsZero()
-	if deleting && data.session != nil {
+	if deleting && data != nil && data.session != nil {
 		data.session.cancel()
 	}
-	finalizerAdded := false
 	if deleting && !data.operationInProgress() {
-		change = r.handleExecutionDeletion(&resource, data, log)
-	} else if change = ensureFinalizer(&resource, physicalContainerExecFinalizer, log); change != noChange {
-		finalizerAdded = true
+		change, delay = r.handleExecutionDeletion(&resource, data, log)
 	} else {
-		stateHandler := getStateInitializer(physicalContainerExecDataHandlers, data.state, log)
-		change = stateHandler(ctx, r, &resource, data.state, data, log)
-	}
-	if !finalizerAdded && hasFinalizer(&resource, physicalContainerExecFinalizer) {
-		_ = r.executions.Update(req.NamespacedName, resource.UID, data)
-		projectionChange, projectionDelay, valid := data.applyTo(&resource)
-		change |= projectionChange
-		delay = projectionDelay
-		if !valid {
-			log.Error(fmt.Errorf("invalid physical container execution state %v", data.state),
-				"PhysicalContainerExec reached invalid reconciliation state")
+		change = ensureFinalizer(&resource, physicalContainerExecFinalizer, log)
+		if change == noChange {
+			change, delay = r.managePhysicalContainerExec(ctx, &resource, data, log)
 		}
 	}
-	if !hasFinalizer(&resource, physicalContainerExecFinalizer) {
+	if !hasFinalizer(&resource, physicalContainerExecFinalizer) && !hasFinalizer(&resource, LogicalBackingFinalizer) {
 		defer logger.ReleaseResourceLog(resource.GetResourceId())
 	}
 	return r.SaveChangesWithDelay(ctx, &resource, patch, change, delay, nil, log)
 }
 
-func handlePhysicalContainerExecNamespace(
-	ctx context.Context, reconciler *PhysicalContainerExecReconciler, resource *apiv2.PhysicalContainerExec,
-	_ physicalContainerExecState, data *physicalContainerExecData, log logr.Logger,
-) objectChange {
-	if time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
-	}
-	ready, reason, namespaceErr := checkNamespaceReadiness(ctx, reconciler.Client, resource.Namespace)
-	if !ready {
-		data.state = physicalContainerExecStateNamespace
-		data.reason, data.message = reason, namespaceReadinessMessage(resource.Namespace, reason)
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to get execution namespace")
-			data.state, data.message = physicalContainerExecStateNamespaceRetry, namespaceErr.Error()
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+func (r *PhysicalContainerExecReconciler) managePhysicalContainerExec(
+	ctx context.Context, resource *apiv2.PhysicalContainerExec, data *physicalContainerExecData, log logr.Logger,
+) (objectChange, AdditionalReconciliationDelay) {
+	if data == nil {
+		ready, reason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, resource.Namespace)
+		if !ready {
+			change := noChange
+			message := namespaceReadinessMessage(resource.Namespace, reason)
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to get execution namespace")
+				message = namespaceErr.Error()
+				change |= additionalReconciliationNeeded
+			}
+			change |= setValue(&resource.Status.Phase, apiv2.ContainerExecPhasePending)
+			change |= setCondition(&resource.Status.Conditions, apiv2.ConditionReady, resource.Generation, metav1.ConditionFalse, reason, message)
+			return change, StandardDelay
 		}
-		return noChange
+		data = &physicalContainerExecData{state: physicalContainerExecStateTarget}
+		r.executions.Store(resource.NamespacedName(), resource.UID, data.Clone())
 	}
-	data.state = physicalContainerExecStateTarget
-	return handlePhysicalContainerExecTarget(ctx, reconciler, resource, data.state, data, log)
+	stateHandler := getStateInitializer(physicalContainerExecDataHandlers, data.state, log)
+	change := stateHandler(ctx, r, resource, data.state, data, log)
+	_ = r.executions.Update(resource.NamespacedName(), resource.UID, data)
+	projectionChange, delay, valid := data.applyTo(resource)
+	if !valid {
+		log.Error(fmt.Errorf("invalid physical container execution state %v", data.state), "PhysicalContainerExec reached invalid reconciliation state")
+	}
+	return change | projectionChange, delay
 }
 
 func handlePhysicalContainerExecTarget(
@@ -301,15 +300,46 @@ func handleInvalidPhysicalContainerExecState(
 
 func (r *PhysicalContainerExecReconciler) handleExecutionDeletion(
 	resource *apiv2.PhysicalContainerExec, data *physicalContainerExecData, log logr.Logger,
-) objectChange {
+) (objectChange, AdditionalReconciliationDelay) {
+	if data == nil {
+		if !hasFinalizer(resource, physicalContainerExecFinalizer) {
+			return noChange, StandardDelay
+		}
+		data = &physicalContainerExecData{
+			state: physicalContainerExecStateExited, reason: "ExecutionCancelled",
+			message: "Execution was cancelled before launch.", finishedAt: metav1.NowMicro(),
+		}
+		r.executions.Store(resource.NamespacedName(), resource.UID, data.Clone())
+	}
 	if data.session != nil {
 		data.session.cancel()
 		data.state = physicalContainerExecStateStop
+		data.workInProgress = true
 		data.reason, data.message = "Stopping", "Waiting for attached execution cancellation to complete."
-		return noChange
+		_ = r.executions.Update(resource.NamespacedName(), resource.UID, data)
+		change, delay, _ := data.applyTo(resource)
+		return change, delay
 	}
-	r.discardExecution(resource.NamespacedName(), log)
-	return deleteFinalizer(resource, physicalContainerExecFinalizer, log)
+	if data.state != physicalContainerExecStateExited && data.state != physicalContainerExecStateFailed &&
+		data.state != physicalContainerExecStateInvalid {
+		data.state, data.reason, data.message = physicalContainerExecStateExited, "ExecutionCancelled", "Execution was cancelled before launch."
+		data.finishedAt = metav1.NowMicro()
+	}
+	_ = r.executions.Update(resource.NamespacedName(), resource.UID, data)
+	change, _, valid := data.applyTo(resource)
+	if !valid || change&statusChanged != 0 {
+		return change | additionalReconciliationNeeded, StandardDelay
+	}
+	option := logs.CaptureFileDisposeOnClose
+	if hasFinalizer(resource, LogicalBackingFinalizer) {
+		option = logs.CaptureFileCloseDefault
+	}
+	closeErr := data.closeOutputLogs(option)
+	if closeErr != nil {
+		log.Error(closeErr, "Failed to dispose execution output capture")
+		return additionalReconciliationNeeded, LongDelay
+	}
+	return deleteFinalizer(resource, physicalContainerExecFinalizer, log), StandardDelay
 }
 
 func (data *physicalContainerExecData) fail(reason apiv2.ConditionReason, message string) {
@@ -326,6 +356,7 @@ func (r *PhysicalContainerExecReconciler) scheduleExecution(
 	}
 	data.session = &physicalContainerExecSession{cancel: cancel}
 	data.state = physicalContainerExecStateLaunch
+	data.workInProgress = true
 	data.reason, data.message = "Launching", "Attached command launch is in progress."
 	_ = r.executions.Update(resource.NamespacedName(), resource.UID, data)
 	snapshot, result := resource.DeepCopy(), data.Clone()
@@ -335,6 +366,7 @@ func (r *PhysicalContainerExecReconciler) scheduleExecution(
 	if enqueueErr != nil {
 		cancel()
 		data.session = nil
+		data.workInProgress = false
 		data.state = physicalContainerExecStateLaunchRetry
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		data.reason, data.message = "LaunchQueueFailed", enqueueErr.Error()
@@ -357,7 +389,7 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 		if namespaceErr == nil {
 			namespaceErr = fmt.Errorf("%s", namespaceReadinessMessage(resource.Namespace, namespaceReason))
 		}
-		r.retryExecution(resource, data, physicalContainerExecStateNamespaceRetry, namespaceReason, namespaceErr, log)
+		r.retryExecution(resource, data, physicalContainerExecStateTargetRetry, namespaceReason, namespaceErr, log)
 		return
 	}
 	var current apiv2.PhysicalContainer
@@ -405,6 +437,7 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 		return
 	}
 	data.state = physicalContainerExecStateRunning
+	data.workInProgress = false
 	data.reason, data.message = "ExecutionRunning", "Attached runtime execution is running."
 	data.startedAt = metav1.NowMicro()
 	r.queueExecutionResult(resource, data.Clone())
@@ -432,6 +465,7 @@ func (r *PhysicalContainerExecReconciler) retryExecution(
 	log.Error(failure, "Could not establish execution prerequisites; launch will be retried")
 	data.session.cancel()
 	data.session = nil
+	data.workInProgress = false
 	data.state = state
 	data.reason, data.message = reason, failure.Error()
 	data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
@@ -443,6 +477,7 @@ func (r *PhysicalContainerExecReconciler) finishExecution(
 ) {
 	data.session.cancel()
 	data.session = nil
+	data.workInProgress = false
 	if data.stdout != nil {
 		data.stdout.CloseAndLog(logs.CaptureFileCloseDefault, log)
 	}
@@ -472,20 +507,19 @@ func (r *PhysicalContainerExecReconciler) queueExecutionResult(resource *apiv2.P
 	return queued
 }
 
-func (r *PhysicalContainerExecReconciler) discardExecution(name types.NamespacedName, log logr.Logger) {
+func (r *PhysicalContainerExecReconciler) discardExecution(name types.NamespacedName) error {
 	uid, data := r.executions.BorrowByNamespacedName(name)
 	if data != nil {
 		if data.session != nil {
 			data.session.cancel()
 		} else {
-			if data.stdout != nil {
-				data.stdout.CloseAndLog(logs.CaptureFileDisposeOnClose, log)
-			}
-			if data.stderr != nil {
-				data.stderr.CloseAndLog(logs.CaptureFileDisposeOnClose, log)
+			closeErr := data.closeOutputLogs(logs.CaptureFileDisposeOnClose)
+			if closeErr != nil {
+				return closeErr
 			}
 		}
 		logger.ReleaseResourceLog((&apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{UID: uid}}).GetResourceId())
 	}
 	r.executions.DeleteByNamespacedName(name)
+	return nil
 }

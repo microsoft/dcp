@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -21,9 +22,7 @@ import (
 type physicalContainerExecState int
 
 const (
-	physicalContainerExecStateNamespace physicalContainerExecState = iota + 1
-	physicalContainerExecStateNamespaceRetry
-	physicalContainerExecStateTarget
+	physicalContainerExecStateTarget physicalContainerExecState = iota + 1
 	physicalContainerExecStateTargetNotFound
 	physicalContainerExecStateTargetRetry
 	physicalContainerExecStateLaunch
@@ -39,10 +38,6 @@ func (state physicalContainerExecState) String() string {
 	switch state {
 	case 0:
 		return "Unset"
-	case physicalContainerExecStateNamespace:
-		return "Namespace"
-	case physicalContainerExecStateNamespaceRetry:
-		return "NamespaceRetry"
 	case physicalContainerExecStateTarget:
 		return "Target"
 	case physicalContainerExecStateTargetNotFound:
@@ -73,18 +68,19 @@ type physicalContainerExecSession struct {
 }
 
 type physicalContainerExecData struct {
-	state       physicalContainerExecState
-	reason      apiv2.ConditionReason
-	message     string
-	targetUID   types.UID
-	containerID string
-	startedAt   metav1.MicroTime
-	finishedAt  metav1.MicroTime
-	exitCode    *int32
-	retryAfter  time.Time
-	session     *physicalContainerExecSession
-	stdout      *logs.CaptureFile
-	stderr      *logs.CaptureFile
+	state          physicalContainerExecState
+	workInProgress bool
+	reason         apiv2.ConditionReason
+	message        string
+	targetUID      types.UID
+	containerID    string
+	startedAt      metav1.MicroTime
+	finishedAt     metav1.MicroTime
+	exitCode       *int32
+	retryAfter     time.Time
+	session        *physicalContainerExecSession
+	stdout         *logs.CaptureFile
+	stderr         *logs.CaptureFile
 }
 
 func (data *physicalContainerExecData) Clone() *physicalContainerExecData {
@@ -107,7 +103,17 @@ func (data *physicalContainerExecData) UpdateFrom(other *physicalContainerExecDa
 }
 
 func (data *physicalContainerExecData) operationInProgress() bool {
-	return data.state == physicalContainerExecStateLaunch || data.state == physicalContainerExecStateStop
+	return data != nil && data.workInProgress
+}
+
+func (data *physicalContainerExecData) closeOutputLogs(option logs.CaptureFileCloseOption) error {
+	var closeErr error
+	for _, capture := range []*logs.CaptureFile{data.stdout, data.stderr} {
+		if capture != nil {
+			closeErr = errors.Join(closeErr, capture.Close(option))
+		}
+	}
+	return closeErr
 }
 
 func (data *physicalContainerExecData) matchesTarget(target *apiv2.PhysicalContainer) bool {
@@ -139,14 +145,6 @@ func (data *physicalContainerExecData) applyTo(resource *apiv2.PhysicalContainer
 var physicalContainerExecProjections = physicalResourceProjectionTable[physicalContainerExecState, apiv2.ContainerExecPhase]{
 	invalidPhase: apiv2.ContainerExecPhaseFailed,
 	projections: map[physicalContainerExecState]physicalResourceProjection[apiv2.ContainerExecPhase]{
-		physicalContainerExecStateNamespace: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceNotReady,
-		},
-		physicalContainerExecStateNamespaceRetry: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonNamespaceLookupFailed, requeue: true, requeueDelay: LongDelay,
-		},
 		physicalContainerExecStateTargetNotFound: {
 			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerNotFound",
 		},
