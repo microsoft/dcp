@@ -420,8 +420,8 @@ func TestV2LogicalProcessControllerRejectsReleasedBackingHold(t *testing.T) {
 	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(handle)))
 }
 
-// Verifies that LogicalProcess records namespace ownership, retains and reuses matching persistent processes,
-// and delegates changed-lifecycle replacement to an identity-bound stopping physical resource.
+// Verifies that LogicalProcess preserves workload ownership and capture paths through unscoped persistent reuse.
+// Changed lifecycle keys replace the process without inheriting the retired process's workload association.
 func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -454,6 +454,10 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(record.ProcessHandle()))
 	require.FileExists(t, record.StdOutFile)
 	require.FileExists(t, record.StdErrFile)
+	require.NoError(t, retryOnConflict(ctx, namespace.NamespacedName(), func(updateCtx context.Context, current *apiv2.Namespace) error {
+		delete(current.Annotations, apiv2.NamespaceWorkloadIDAnnotation)
+		return client.Update(updateCtx, current)
+	}))
 	second := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name}, Spec: *spec.DeepCopy()}
 	require.NoError(t, client.Create(ctx, second))
 	reused := waitLogicalProcessPhase(t, ctx, second.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
@@ -472,8 +476,13 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	reusedRecord, reusedRecordErr := testStateStore.GetPersistentProcess(ctx, second.GetLeaseKey())
 	require.NoError(t, reusedRecordErr)
 	require.Equal(t, record.RunID, reusedRecord.RunID)
+	require.Equal(t, record.WorkloadID, reusedRecord.WorkloadID)
 	require.Equal(t, record.StdOutFile, reusedRecord.StdOutFile)
 	require.Equal(t, record.StdErrFile, reusedRecord.StdErrFile)
+	owned, ownedErr := testStateStore.ListPersistentProcessesByWorkloadID(ctx, record.WorkloadID)
+	require.NoError(t, ownedErr)
+	require.Len(t, owned, 1)
+	require.Equal(t, record.PID, owned[0].PID)
 	require.NoError(t, client.Delete(ctx, second))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, second)
 	spec.Process.Args = []string{"changed"}
@@ -481,6 +490,12 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	require.NoError(t, client.Create(ctx, third))
 	replaced := waitLogicalProcessPhase(t, ctx, third.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
 	require.NotEqual(t, *created.Status.PID, *replaced.Status.PID)
+	replacedRecord, replacedRecordErr := testStateStore.GetPersistentProcess(ctx, third.GetLeaseKey())
+	require.NoError(t, replacedRecordErr)
+	require.Empty(t, replacedRecord.WorkloadID)
+	retiredOwnerRecords, retiredOwnerErr := testStateStore.ListPersistentProcessesByWorkloadID(ctx, record.WorkloadID)
+	require.NoError(t, retiredOwnerErr)
+	require.Empty(t, retiredOwnerRecords)
 	require.NoFileExists(t, record.StdOutFile)
 	require.NoFileExists(t, record.StdErrFile)
 	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(record.ProcessHandle())))

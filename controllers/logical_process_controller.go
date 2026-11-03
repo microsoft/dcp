@@ -736,7 +736,9 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 				}
 				record.ResourceKey, record.LifecycleKey = resource.GetLeaseKey(), data.lifecycleKey
 				record.PID, record.IdentityTime = pid, physical.Status.IdentityTimestamp.Time
-				record.WorkloadID = workloadID
+				if workloadID != "" {
+					record.WorkloadID = workloadID
+				}
 				record.StdOutFile, record.StdErrFile = physical.Status.StdoutFile, physical.Status.StderrFile
 				storeErr := r.config.StateStore.UpsertPersistentProcess(ctx, *record)
 				if storeErr != nil {
