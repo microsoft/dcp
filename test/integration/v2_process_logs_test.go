@@ -423,6 +423,83 @@ func TestV2ProcessLogEndpointsShareOutputAndCompleteOnExit(t *testing.T) {
 	}
 }
 
+// Verifies that namespace deletion projects drained physical output to a logical-only follower
+// while capture removal is blocked, allowing the follower and resource cleanup to finish.
+func TestV2ProcessLogicalOnlyFollowerCompletesDuringNamespaceDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	server, environment, startupErr := StartTestEnvironment(t, ctx,
+		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir())
+	require.NoError(t, startupErr)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-only-deletion-follow"}}
+	require.NoError(t, server.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, server.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+	logical := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+		Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-logical-only-deletion-command"}}}
+	require.NoError(t, server.Client.Create(ctx, logical))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+	})
+	pid, pidErr := process.Int64_ToPidT(*running.Status.PID)
+	require.NoError(t, pidErr)
+	execution, found := environment.TestProcessExecutor.FindByPid(pid)
+	require.True(t, found)
+	const payload = "logical-only-before-deletion\n"
+	_, writeErr := io.WriteString(execution.Cmd.Stdout, payload)
+	require.NoError(t, writeErr)
+	stream, streamErr := server.RestClient.Get().
+		AbsPath("/apis", apiv2.GroupVersion.Group, apiv2.GroupVersion.Version,
+			"namespaces", namespace.Name, "logicalprocesses", logical.Name, apiv2.LogSubresourceName).
+		Param("source", "stdout").Param("follow", "true").Stream(ctx)
+	require.NoError(t, streamErr)
+	defer func() { require.NoError(t, stream.Close()) }()
+	initial := make([]byte, len(payload))
+	_, readErr := io.ReadFull(stream, initial)
+	require.NoError(t, readErr)
+	require.Equal(t, payload, string(initial))
+	require.False(t, running.Status.RuntimeLogs.Complete)
+	var unblockRemoval func()
+	if runtime.GOOS != "windows" {
+		// Model Windows' open-reader removal failure without opening the physical log endpoint.
+		path := running.Status.RuntimeLogs.StdoutFile
+		saved := path + ".saved"
+		obstruction := filepath.Join(path, "busy")
+		require.NoError(t, os.Rename(path, saved))
+		require.NoError(t, os.Mkdir(path, 0700))
+		require.NoError(t, usvc_io.WriteFile(obstruction, []byte("busy"), osutil.PermissionOnlyOwnerReadWrite))
+		t.Cleanup(func() {
+			_ = os.Remove(obstruction)
+			_ = os.Remove(path)
+			_ = os.Remove(saved)
+		})
+		unblockRemoval = func() { require.NoError(t, os.Remove(obstruction)) }
+	}
+	require.NoError(t, server.Client.Delete(ctx, namespace))
+	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalProcessRef}
+	waitObjectAssumesStateEx(t, ctx, server.Client, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
+		return current.Status.LogsComplete, nil
+	})
+	completed := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return !current.DeletionTimestamp.IsZero() && current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete, nil
+	})
+	require.Equal(t, running.Status.RuntimeLogs.UID, completed.Status.RuntimeLogs.UID)
+	remaining, remainingErr := io.ReadAll(stream)
+	require.NoError(t, remainingErr)
+	require.Empty(t, remaining)
+	require.NoError(t, stream.Close())
+	if unblockRemoval != nil {
+		unblockRemoval()
+	}
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, namespace)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: physicalName.Name, Namespace: physicalName.Namespace},
+	})
+}
+
 // Verifies that physical process launch diagnostics are routed into both physical and owning
 // logical system streams, while failed launch output completes without hanging.
 func TestV2ProcessSystemLogsFollowLogicalOwnership(t *testing.T) {

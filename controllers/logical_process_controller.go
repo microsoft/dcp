@@ -556,6 +556,7 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 				}
 				if physical.UID == data.physicalUID {
 					current = physical
+					change |= applyLogicalProcessPhysicalDetails(resource, physical)
 				}
 			}
 			if physical.DeletionTimestamp.IsZero() {
@@ -572,10 +573,10 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 			}
 		}
 		if waiting {
-			return additionalReconciliationNeeded, delay
+			return change | additionalReconciliationNeeded, delay
 		}
 		if data.lease != nil {
-			return r.persistLogicalProcess(ctx, resource, data, current, log), delay
+			return change | r.persistLogicalProcess(ctx, resource, data, current, log), delay
 		}
 		for i := range children.Items {
 			physical := &children.Items[i]
@@ -585,7 +586,7 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 				data.reconcileErr, data.message = releaseErr, releaseErr.Error()
 			}
 		}
-		return additionalReconciliationNeeded, delay
+		return change | additionalReconciliationNeeded, delay
 	}
 	if data.lease != nil {
 		return r.persistLogicalProcess(ctx, resource, data, nil, log), delay
