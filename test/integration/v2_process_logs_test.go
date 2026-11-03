@@ -320,7 +320,7 @@ func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T)
 			if conflictReader != nil {
 				conflictReader.armed.Store(true)
 			}
-			require.NoError(t, apiClient.Delete(ctx, physical))
+			forceRemoveLogicalProcessBacking(t, ctx, apiClient, physical)
 			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, physical)
 			completed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 				return current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete &&
