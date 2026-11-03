@@ -6,10 +6,11 @@
 package integration_test
 
 import (
-	"bytes"
 	"context"
+	"fmt"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +23,6 @@ import (
 	"github.com/microsoft/dcp/internal/podman"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/internal/wslc"
-	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -30,7 +30,6 @@ import (
 type containerExecOutputExecutor struct {
 	process.Executor
 	tool      string
-	drain     bool
 	handle    process.ProcessHandle
 	waitDelay time.Duration
 }
@@ -41,11 +40,8 @@ func (executor *containerExecOutputExecutor) StartProcess(
 ) (process.ProcessHandle, func(), error) {
 	executor.waitDelay = cmd.WaitDelay
 	cmd.Path = executor.tool
-	cmd.Args = []string{executor.tool, "--child-spec", "1", "--hold-pipe"}
+	cmd.Args = []string{executor.tool, "--child-spec", "1", "--hold-pipe", "--report-ready"}
 	cmd.Err = nil
-	if executor.drain {
-		cmd.Args = append(cmd.Args, "--delay", "1s")
-	}
 	handle, startWait, startErr := executor.Executor.StartProcess(ctx, cmd, handler, flags, sysCreateProcess)
 	executor.handle = handle
 	return handle, startWait, startErr
@@ -80,13 +76,13 @@ func TestV2ContainerExecAdaptersBoundOutputDrain(t *testing.T) {
 				defer osExecutor.Dispose()
 				tool, toolErr := internal_testutil.GetTestToolPath("delay")
 				require.NoError(t, toolErr)
-				executor := &containerExecOutputExecutor{Executor: osExecutor, tool: tool, drain: !holdOutput}
+				executor := &containerExecOutputExecutor{Executor: osExecutor, tool: tool}
 				orchestrator := adapter.new(logr.Discard(), executor)
-				var stdout, stderr bytes.Buffer
+				stdout, stderr := testutil.NewBufferWriter(), testutil.NewBufferWriter()
 				completion, launchErr := orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
 					Container: "test-container", Command: "test-command",
 					StreamCommandOptions: containers.StreamCommandOptions{
-						StdOutStream: usvc_io.NopWriteCloser(&stdout), StdErrStream: usvc_io.NopWriteCloser(&stderr),
+						StdOutStream: stdout, StdErrStream: stderr,
 					},
 				})
 				require.NoError(t, launchErr)
@@ -103,10 +99,16 @@ func TestV2ContainerExecAdaptersBoundOutputDrain(t *testing.T) {
 						require.True(t, stopErr == nil || process.IsProcessGoneErr(stopErr), "%v", stopErr)
 					}
 				}()
+				require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(context.Context) (bool, error) {
+					return strings.Contains(string(stdout.Bytes()), fmt.Sprintf("Ready: %d\n", tree[1].Pid)), nil
+				}))
 				root, rootErr := executor.handle.OsProcess()
 				require.NoError(t, rootErr)
 				require.NoError(t, root.Kill())
 				require.NoError(t, root.Release())
+				if !holdOutput {
+					require.NoError(t, osExecutor.StopProcess(ctx, tree[1], process.StopRootOnly()))
+				}
 				timer := time.NewTimer(5 * time.Second)
 				defer timer.Stop()
 				select {
@@ -121,7 +123,7 @@ func TestV2ContainerExecAdaptersBoundOutputDrain(t *testing.T) {
 					require.NoError(t, osExecutor.CheckProcessRunning(tree[1]),
 						"completion must not require termination of a descendant holding output open")
 				} else {
-					require.Contains(t, stdout.String(), "Ran to completion\n")
+					require.Contains(t, string(stdout.Bytes()), "Received request to exit\n")
 				}
 			})
 		}
