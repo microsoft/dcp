@@ -72,6 +72,9 @@ type LogicalProcessSpec struct {
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
 	// Process describes the desired process. Required for session and persistent modes, forbidden for existing mode.
 	Process *LogicalProcessConfig `json:"process,omitempty"`
+	// Ports declares service-backed process endpoints in all lifecycle modes.
+	// +listType=atomic
+	Ports []LogicalProcessPort `json:"ports,omitempty"`
 	// PID identifies the process to observe in existing mode; forbidden in other modes.
 	PID *int64 `json:"pid,omitempty"`
 	// IdentityTimestamp identifies the expected process in pid. Required in existing mode.
@@ -155,6 +158,11 @@ func (spec *LogicalProcessSpec) GetLifecycleKey() (string, bool, error) {
 // LogicalProcessStatus describes the observed process and its physical backing resource.
 // +k8s:openapi-gen=true
 type LogicalProcessStatus struct {
+	// Ports describes service selection and the listening address/port for each logical port.
+	// +listType=map
+	// +listMapKey=name
+	Ports []LogicalPortStatus `json:"ports,omitempty"`
+
 	// RuntimeLogs describes output from the immediate physical process backing.
 	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
 	// Phase summarizes process availability.
@@ -294,6 +302,7 @@ func (resource *LogicalProcess) Validate(ctx context.Context) field.ErrorList {
 		}))
 	}
 	errorList = append(errorList, validateRetainedResourceMonitor(mode == LogicalProcessModePersistent, resource.Spec.MonitorPID, resource.Spec.MonitorTimestamp, specPath)...)
+	errorList = append(errorList, validateLogicalProcessPorts(resource.Spec.Ports, resource.Namespace, resource.Name, specPath.Child("ports"))...)
 	return errorList
 }
 

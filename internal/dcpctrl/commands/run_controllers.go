@@ -207,6 +207,11 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			log.Error(err, "Unable to set up Service controller")
 			return err
 		}
+		logicalServiceCtrl := controllers.NewLogicalServiceReconciler(ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalServiceReconciler"), nil)
+		if logicalServiceSetupErr := logicalServiceCtrl.SetupWithManager(mgr, defaultControllerName); logicalServiceSetupErr != nil {
+			log.Error(logicalServiceSetupErr, "Unable to set up LogicalService controller")
+			return logicalServiceSetupErr
+		}
 
 		if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
 			log.Error(err, "Unable to set up Endpoint owner index")

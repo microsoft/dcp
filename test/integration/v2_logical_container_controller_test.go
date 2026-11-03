@@ -452,12 +452,13 @@ func TestV2LogicalContainerControllerDelegatesSessionLifecycle(t *testing.T) {
 	namespace := createActiveV2Namespace(t, ctx, "v2-logical-session")
 	container := &apiv2.LogicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "session", Namespace: namespace.Name},
-		Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
-			Image:   &apiv2.PhysicalContainerImageConfig{Image: "v2-logical-session-image"},
-			Command: []string{"run"}, Env: []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}},
-			Ports:  []apiv2.ContainerPort{{ContainerPort: 8080}},
-			Labels: []commonapi.Label{{Key: "user-label", Value: "preserved"}},
-		}},
+		Spec: apiv2.LogicalContainerSpec{
+			Ports: []apiv2.LogicalContainerPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http", Service: &apiv2.LogicalServiceTemplate{Name: "http"}}, ContainerPort: 8080}},
+			Container: &apiv2.LogicalContainerConfig{
+				Image:   &apiv2.PhysicalContainerImageConfig{Image: "v2-logical-session-image"},
+				Command: []string{"run"}, Env: []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}},
+				Labels: []commonapi.Label{{Key: "user-label", Value: "preserved"}},
+			}},
 	}
 	require.NoError(t, client.Create(ctx, container))
 	running := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
@@ -465,12 +466,12 @@ func TestV2LogicalContainerControllerDelegatesSessionLifecycle(t *testing.T) {
 	})
 	requireReadyCondition(t, running.Status.Conditions, metav1.ConditionTrue, "ContainerRunning")
 	require.True(t, strings.HasPrefix(running.Status.ContainerName, "session-"))
-	expectedLifecycleKey, _, lifecycleKeyErr := container.Spec.GetLifecycleKey()
-	require.NoError(t, lifecycleKeyErr)
-	require.Equal(t, expectedLifecycleKey, running.Status.LifecycleKey)
 	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef}
 	physical := &apiv2.PhysicalContainer{}
 	require.NoError(t, client.Get(ctx, physicalName, physical))
+	expectedLifecycleKey, _, lifecycleKeyErr := container.Spec.GetLifecycleKey(physical.Spec.Container.Ports)
+	require.NoError(t, lifecycleKeyErr)
+	require.Equal(t, expectedLifecycleKey, running.Status.LifecycleKey)
 	require.True(t, metav1.IsControlledBy(physical, running))
 	require.False(t, physical.Spec.Container.RetainRuntimeContainer)
 	require.Equal(t, running.Status.ImageRef, physical.Spec.Container.ImageRef)
@@ -689,8 +690,8 @@ func TestV2LogicalContainerControllerReservedLabelsOverrideDuplicates(t *testing
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, reused)
 }
 
-// Verifies that the LogicalContainer controller uses a stable default key across map and port
-// ordering and resource names, then delegates replacement when the desired command changes.
+// Verifies that the LogicalContainer controller reuses containers across map/port ordering,
+// logical port and service identity, and proxy policy changes, then replaces them when the desired command changes.
 func TestV2LogicalContainerControllerCalculatesLifecycleKey(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -701,14 +702,16 @@ func TestV2LogicalContainerControllerCalculatesLifecycleKey(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "first", Namespace: namespace.Name},
 		Spec: apiv2.LogicalContainerSpec{
 			Mode: apiv2.LogicalContainerModePersistent, ContainerName: "v2-logical-default-key-runtime",
+			Ports: []apiv2.LogicalContainerPort{
+				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http", Service: &apiv2.LogicalServiceTemplate{Name: "http"}}, ContainerPort: 8080},
+				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "dns", Service: &apiv2.LogicalServiceTemplate{
+					Name: "dns", LogicalServiceConfig: apiv2.LogicalServiceConfig{Protocol: commonapi.PortProtocolUDP},
+				}}, ContainerPort: 5353},
+			},
 			Container: &apiv2.LogicalContainerConfig{
 				ImageRef: image.Name, Command: []string{"initial"},
 				Env:    []commonapi.EnvVar{{Name: "B", Value: "2"}, {Name: "A", Value: "1"}},
 				Labels: []commonapi.Label{{Key: "b", Value: "2"}, {Key: "a", Value: "1"}},
-				Ports: []apiv2.ContainerPort{
-					{ContainerPort: 8080},
-					{ContainerPort: 5353, Protocol: commonapi.PortProtocolUDP},
-				},
 			},
 		},
 	}
@@ -726,7 +729,10 @@ func TestV2LogicalContainerControllerCalculatesLifecycleKey(t *testing.T) {
 	second.Spec.Container.ImageRef = namespace.Name + "/" + image.Name
 	second.Spec.Container.Env[0], second.Spec.Container.Env[1] = second.Spec.Container.Env[1], second.Spec.Container.Env[0]
 	second.Spec.Container.Labels[0], second.Spec.Container.Labels[1] = second.Spec.Container.Labels[1], second.Spec.Container.Labels[0]
-	second.Spec.Container.Ports[0], second.Spec.Container.Ports[1] = second.Spec.Container.Ports[1], second.Spec.Container.Ports[0]
+	second.Spec.Ports[0], second.Spec.Ports[1] = second.Spec.Ports[1], second.Spec.Ports[0]
+	second.Spec.Ports[0].Name = "renamed-dns"
+	second.Spec.Ports[0].Service.Name = "renamed-service"
+	second.Spec.Ports[0].Service.AddressAllocationMode = apiv2.ServiceAddressAllocationModeProxyless
 	require.NoError(t, client.Create(ctx, second))
 	reused := waitObjectAssumesState(t, ctx, second.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil

@@ -74,6 +74,8 @@ type logicalProcessData struct {
 	retryAfter time.Time
 	// Most recent coordination error, retained until the next attempt.
 	reconcileErr        error
+	runConfig           *apiv2.LogicalProcessConfig
+	ports               []logicalPortData
 	lifecycleKey        string
 	physicalUID         types.UID
 	replacementUID      types.UID
@@ -86,6 +88,8 @@ type logicalProcessData struct {
 
 func (data *logicalProcessData) Clone() *logicalProcessData {
 	cloned := *data
+	cloned.runConfig = data.runConfig.DeepCopy()
+	cloned.ports = append([]logicalPortData(nil), data.ports...)
 	if data.pendingRecord != nil {
 		record := *data.pendingRecord
 		cloned.pendingRecord = &record
@@ -112,6 +116,7 @@ func (data *logicalProcessData) applyTo(resource *apiv2.LogicalProcess) (objectC
 		physicalRef = "logical-" + string(resource.UID)
 	}
 	change := setValue(&resource.Status.PhysicalProcessRef, physicalRef)
+	change |= projectLogicalPorts(data.ports, &resource.Status.Ports)
 	change |= setValue(&resource.Status.LifecycleKey, data.lifecycleKey)
 	if _, valid := logicalProcessProjections.project(data.state); valid &&
 		(data.reconcileErr != nil || data.leaseFailureMessage != "") {

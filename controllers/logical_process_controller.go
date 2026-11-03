@@ -103,6 +103,7 @@ func (r *LogicalProcessReconciler) SetupWithManager(mgr ctrl.Manager, name strin
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.LogicalProcess{}).
 		Owns(&apiv2.PhysicalProcess{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Owns(&apiv2.ServiceEndpoint{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.LogicalProcessList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Named(name).Complete(r)
 }
@@ -197,6 +198,12 @@ func handleLogicalProcessPreparation(
 		return additionalReconciliationNeeded
 	}
 	data.reconcileErr, data.reason, data.message, data.retryAfter = nil, "", "", time.Time{}
+	if !reconciler.prepareLogicalProcessValues(ctx, resource, data, log) {
+		if data.state == logicalProcessStatePrepareFailed {
+			return noChange
+		}
+		return additionalReconciliationNeeded
+	}
 	reconciler.prepareLogicalProcess(ctx, resource, data, log)
 	if data.state != logicalProcessStatePhysical {
 		return noChange
@@ -266,7 +273,10 @@ func handleLogicalProcessPhysical(
 		physicalSpec.PID, physicalSpec.IdentityTimestamp = &pid, metav1.NewMicroTime(data.pendingRecord.IdentityTime)
 		physicalSpec.StdoutFile, physicalSpec.StderrFile = data.pendingRecord.StdOutFile, data.pendingRecord.StdErrFile
 	default:
-		desired := resource.Spec.Process
+		desired := data.runConfig
+		if resource.Spec.Stop {
+			desired = resource.Spec.Process
+		}
 		physicalSpec.Process = &apiv2.PhysicalProcessConfig{
 			ExecutablePath: desired.ExecutablePath, Args: desired.Args, WorkingDirectory: desired.WorkingDirectory,
 			InheritEnvironment: desired.InheritEnvironment, Env: desired.Env,
@@ -430,6 +440,15 @@ func handleLogicalProcessRuntime(
 	case apiv2.PhysicalProcessPhaseUnknown:
 		data.state = logicalProcessStateUnknown
 	}
+	var addresses [][]apiv2.ServiceAddress
+	if data.state == logicalProcessStateRunning && !resource.Spec.Stop {
+		addresses = processEndpointAddresses(data.ports)
+	}
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data.ports, addresses); endpointErr != nil {
+		log.Error(endpointErr, "Failed to synchronize logical process endpoints")
+		data.reconcileErr, data.message = endpointErr, endpointErr.Error()
+		change |= additionalReconciliationNeeded
+	}
 	if data.lease != nil && logicalPhysicalProcessStartupSettled(physical) {
 		return change | reconciler.persistLogicalProcess(ctx, resource, data, physical, log)
 	}
@@ -590,6 +609,19 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 	if data.lease != nil {
 		return r.persistLogicalProcess(ctx, resource, data, nil, log), delay
 	}
+	bindings := make([]apiv2.LogicalServiceBinding, len(resource.Spec.Ports))
+	for portIndex, port := range resource.Spec.Ports {
+		bindings[portIndex] = port.LogicalServiceBinding
+	}
+	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, bindings)
+	if portDeleteErr != nil {
+		log.Error(portDeleteErr, "Failed to delete logical process endpoints")
+		data.reconcileErr, data.message = portDeleteErr, portDeleteErr.Error()
+		return additionalReconciliationNeeded, delay
+	}
+	if !portsDeleted {
+		return additionalReconciliationNeeded, delay
+	}
 	discardErr := r.discardLogicalProcessData(ctx, resource.NamespacedName())
 	if discardErr != nil {
 		log.Error(discardErr, "Failed to discard logical process state")
@@ -625,7 +657,11 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 		data.lifecycleKey, data.state = resource.Spec.LifecycleKey, logicalProcessStatePhysical
 		return
 	}
-	key, _, keyErr := resource.Spec.GetLifecycleKey()
+	lifecycleSpec := resource.Spec.DeepCopy()
+	if !resource.Spec.Stop {
+		lifecycleSpec.Process = data.runConfig.DeepCopy()
+	}
+	key, _, keyErr := lifecycleSpec.GetLifecycleKey()
 	if keyErr != nil {
 		log.Error(keyErr, "Failed to calculate logical process lifecycle key")
 		data.state, data.message = logicalProcessStatePrepareFailed, keyErr.Error()

@@ -1,0 +1,154 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+package templating
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"text/template"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+
+	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/commonapi"
+)
+
+type errV2ServiceLookup struct {
+	cause error
+}
+
+func (failure errV2ServiceLookup) Error() string {
+	return fmt.Sprintf("get logical service: %v", failure.cause)
+}
+
+func (failure errV2ServiceLookup) Unwrap() error {
+	return failure.cause
+}
+
+// ServingPort describes a named workload listening address after port allocation.
+type ServingPort struct {
+	Name    string
+	Address string
+	Port    int32
+}
+
+// EvaluateV2Values evaluates declared arguments and environment against one service-address snapshot.
+// Serving helpers use logical port names; consumer helpers accept same-namespace service references
+// and an optional "IPv4" or "IPv6" selector. Inputs are never modified.
+func EvaluateV2Values(
+	ctx context.Context, reader ctrl_client.Reader, owner commonapi.DcpModelObject,
+	ports []ServingPort, arguments []string, environment []commonapi.EnvVar,
+) ([]string, []commonapi.EnvVar, error) {
+	selectedAddresses := make(map[string]apiv2.ServiceAddress)
+	serviceSnapshots := make(map[types.NamespacedName]*apiv2.LogicalService)
+	selectAddress := func(reference string, family []string) (apiv2.ServiceAddress, error) {
+		if len(family) > 1 || (len(family) == 1 && family[0] != "IPv4" && family[0] != "IPv6") {
+			return apiv2.ServiceAddress{}, fmt.Errorf("service address selector must be IPv4 or IPv6")
+		}
+		serviceName := commonapi.AsNamespacedName(reference, owner.GetNamespace())
+		if serviceName.Namespace != owner.GetNamespace() {
+			return apiv2.ServiceAddress{}, fmt.Errorf("cross-namespace service references are not supported")
+		}
+		selector := ""
+		if len(family) == 1 {
+			selector = family[0]
+		}
+		key := serviceName.String() + "/" + selector
+		if selected, found := selectedAddresses[key]; found {
+			return selected, nil
+		}
+		service, found := serviceSnapshots[serviceName]
+		if !found {
+			service = &apiv2.LogicalService{}
+			getErr := reader.Get(ctx, serviceName, service)
+			if apierrors.IsNotFound(getErr) {
+				return apiv2.ServiceAddress{}, errServiceDoesNotExist{Service: serviceName, ContextObject: owner.NamespacedName()}
+			}
+			if getErr != nil {
+				return apiv2.ServiceAddress{}, errV2ServiceLookup{cause: fmt.Errorf("service %q: %w", serviceName, getErr)}
+			}
+			serviceSnapshots[serviceName] = service
+		}
+		if !service.DeletionTimestamp.IsZero() {
+			return apiv2.ServiceAddress{}, errServiceNotAssignedAddress{Service: serviceName}
+		}
+		selected, addressFound, selectionErr := networking.SelectServiceAddress(
+			service.Status.EffectiveAddresses, networking.IpVersionPreference(selector), networking.GetIpVersionPreference())
+		if selectionErr != nil {
+			return apiv2.ServiceAddress{}, selectionErr
+		}
+		if !addressFound {
+			return apiv2.ServiceAddress{}, errServiceNotAssignedAddress{Service: serviceName}
+		}
+		selectedAddresses[key] = selected
+		return selected, nil
+	}
+	findPort := func(name string) (ServingPort, error) {
+		for _, port := range ports {
+			if port.Name == name {
+				return port, nil
+			}
+		}
+		return ServingPort{}, fmt.Errorf("logical port %q is not declared by %s", name, owner.NamespacedName())
+	}
+	base := template.New("logical-value").Option("missingkey=error").Funcs(template.FuncMap{
+		"portForServing": func(name string) (int32, error) {
+			port, findErr := findPort(name)
+			return port.Port, findErr
+		},
+		"addressForServing": func(name string) (string, error) {
+			port, findErr := findPort(name)
+			return port.Address, findErr
+		},
+		"portFor": func(reference string, family ...string) (int32, error) {
+			address, selectErr := selectAddress(reference, family)
+			return address.Port, selectErr
+		},
+		"addressFor": func(reference string, family ...string) (string, error) {
+			address, selectErr := selectAddress(reference, family)
+			return address.Address, selectErr
+		},
+	})
+	evaluate := func(value string) (string, error) {
+		if !strings.Contains(value, "{{") {
+			return value, nil
+		}
+		cloned, cloneErr := base.Clone()
+		if cloneErr != nil {
+			return "", fmt.Errorf("clone logical value template: %w", cloneErr)
+		}
+		parsed, parseErr := cloned.Parse(value)
+		if parseErr != nil {
+			return "", fmt.Errorf("parse logical value template: %w", parseErr)
+		}
+		var output strings.Builder
+		if executeErr := parsed.Execute(&output, owner); executeErr != nil {
+			return "", fmt.Errorf("evaluate logical value template: %w", executeErr)
+		}
+		return output.String(), nil
+	}
+	resolvedArgs, resolvedEnv := slices.Clone(arguments), slices.Clone(environment)
+	for argumentIndex, argument := range arguments {
+		value, argumentErr := evaluate(argument)
+		if argumentErr != nil {
+			return nil, nil, fmt.Errorf("argument %d: %w", argumentIndex, argumentErr)
+		}
+		resolvedArgs[argumentIndex] = value
+	}
+	for environmentIndex, variable := range environment {
+		value, environmentErr := evaluate(variable.Value)
+		if environmentErr != nil {
+			return nil, nil, fmt.Errorf("environment variable %q: %w", variable.Name, environmentErr)
+		}
+		resolvedEnv[environmentIndex].Value = value
+	}
+	return resolvedArgs, resolvedEnv, nil
+}

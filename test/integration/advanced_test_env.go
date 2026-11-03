@@ -372,6 +372,12 @@ func StartAdvancedTestEnvironmentWithOptions(
 		}
 	}
 
+	if inclCtrl&LogicalServiceController != 0 {
+		logicalServiceR := controllers.NewLogicalServiceReconciler(ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalServiceReconciler"), nil)
+		if setupErr := logicalServiceR.SetupWithManager(mgr, instanceTag+"-LogicalServiceReconciler"); setupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalService reconciler: %w", setupErr)
+		}
+	}
 	if inclCtrl&ServiceController != 0 {
 		serviceR := controllers.NewServiceReconciler(
 			ctx,

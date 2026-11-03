@@ -78,6 +78,9 @@ type logicalContainerData struct {
 	retryAfter time.Time
 	// Most recent coordination error, retained until the next attempt.
 	reconcileErr error
+	// Evaluated launch configuration and service-backed port allocations.
+	runConfig *apiv2.LogicalContainerConfig
+	ports     []logicalPortData
 	// Lifecycle key selected for creation or adopted from the inspected container.
 	lifecycleKey         string
 	physicalContainerUID types.UID
@@ -89,6 +92,8 @@ type logicalContainerData struct {
 
 func (data *logicalContainerData) Clone() *logicalContainerData {
 	cloned := *data
+	cloned.runConfig = data.runConfig.DeepCopy()
+	cloned.ports = append([]logicalPortData(nil), data.ports...)
 	return &cloned
 }
 
@@ -106,7 +111,7 @@ func (data *logicalContainerData) UpdateFrom(other *logicalContainerData) bool {
 }
 
 func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (objectChange, AdditionalReconciliationDelay, bool) {
-	change := noChange
+	change := projectLogicalPorts(data.ports, &container.Status.Ports)
 	if data.physicalContainerUID == "" {
 		change |= setValue(&container.Status.PhysicalContainerRef, "")
 	}

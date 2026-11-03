@@ -15,6 +15,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 )
 
+// Verifies that ShutdownResources includes V1 resources and V2 namespaces, leaving namespaced V2 cleanup to namespace deletion.
 func TestShutdownResourcesIncludeV1AndV2Namespace(t *testing.T) {
 	shutdownResourceGVRs := cleanupResourceGVRSet(ShutdownResources)
 
@@ -24,6 +25,8 @@ func TestShutdownResourcesIncludeV1AndV2Namespace(t *testing.T) {
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.LogicalContainer{}).GetGroupVersionResource())
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.LogicalContainerNetwork{}).GetGroupVersionResource())
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.LogicalProcess{}).GetGroupVersionResource())
+	require.NotContains(t, shutdownResourceGVRs, (&apiv2.LogicalService{}).GetGroupVersionResource())
+	require.NotContains(t, shutdownResourceGVRs, (&apiv2.ServiceEndpoint{}).GetGroupVersionResource())
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.PhysicalContainer{}).GetGroupVersionResource())
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.PhysicalContainerImage{}).GetGroupVersionResource())
 	require.NotContains(t, shutdownResourceGVRs, (&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource())
@@ -55,7 +58,7 @@ func TestNamespaceResourcesCleanLogicalResourcesBeforePhysicalDependencies(t *te
 	physicalProcessGVR := (&apiv2.PhysicalProcess{}).GetGroupVersionResource()
 	logicalProcessGVR := (&apiv2.LogicalProcess{}).GetGroupVersionResource()
 
-	require.Len(t, namespaceResourcesByGVR, 9)
+	require.Len(t, namespaceResourcesByGVR, 11)
 	require.Contains(t, namespaceResourcesByGVR, containerGVR)
 	require.Contains(t, namespaceResourcesByGVR, logicalNetworkGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerGVR)

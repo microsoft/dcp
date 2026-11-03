@@ -72,6 +72,12 @@ var ShutdownResources = []*CleanupResource{
 // NamespaceResources are namespace-scoped V2 resource kinds that are deleted when a V2 Namespace is deleted.
 var NamespaceResources = []*CleanupResource{
 	{
+		GVR: (&apiv2.LogicalService{}).GetGroupVersionResource(),
+	},
+	{
+		GVR: (&apiv2.ServiceEndpoint{}).GetGroupVersionResource(),
+	},
+	{
 		GVR: (&apiv2.LogicalProcess{}).GetGroupVersionResource(),
 	},
 	{

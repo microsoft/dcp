@@ -141,6 +141,7 @@ func (r *LogicalContainerReconciler) SetupWithManager(mgr ctrl.Manager, name str
 		For(&apiv2.LogicalContainer{}).
 		Owns(&apiv2.PhysicalContainer{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Owns(&apiv2.PhysicalContainerImage{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Owns(&apiv2.ServiceEndpoint{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Watches(&apiv2.PhysicalContainerImage{}, handler.EnqueueRequestsFromMapFunc(r.mapReferencedResourceToReconcileRequests(logicalContainerImageRefField)), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Watches(&apiv2.PhysicalContainerVolume{}, handler.EnqueueRequestsFromMapFunc(r.mapReferencedResourceToReconcileRequests(logicalContainerVolumeRefField)), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Watches(&apiv2.LogicalContainerNetwork{}, handler.EnqueueRequestsFromMapFunc(r.mapReferencedResourceToReconcileRequests(logicalContainerNetworkRefField)), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
@@ -314,6 +315,13 @@ func handleLogicalContainerPending(
 	data.reason, data.message = "", ""
 	data.retryAfter = time.Time{}
 
+	if !reconciler.prepareLogicalContainerValues(ctx, container, data, log) {
+		if data.state == logicalContainerStatePreparationFailed {
+			return noChange
+		}
+		return additionalReconciliationNeeded
+	}
+
 	physical, lookupErr := reconciler.findLogicalContainerBacking(ctx, container, reconciler.Client,
 		ctrl_client.MatchingFields{logicalContainerOwnerUIDField: string(container.UID)})
 	if lookupErr != nil {
@@ -417,9 +425,17 @@ func handleLogicalContainerPending(
 			containerID, lifecycleKey = inspected.Id, inspected.Labels[lifecycleKeyLabel]
 			_, managed = inspected.Labels[dcpBuildLabel]
 		}
+		var physicalPorts []apiv2.ContainerPort
+		if !container.Spec.Stop {
+			for portIndex, port := range container.Spec.Ports {
+				physicalPorts = append(physicalPorts, port.ToContainerPort(data.ports[portIndex].protocol))
+			}
+		}
 		replaceExisting := false
 		if mode.ShouldCreateIfMissing() && !container.Spec.Stop && (inspected == nil || managed) {
-			desiredKey, _, keyErr := container.Spec.GetLifecycleKey()
+			lifecycleSpec := container.Spec.DeepCopy()
+			lifecycleSpec.Container = data.runConfig.DeepCopy()
+			desiredKey, _, keyErr := lifecycleSpec.GetLifecycleKey(physicalPorts)
 			if keyErr != nil {
 				log.Error(keyErr, "Failed to calculate logical container lifecycle key")
 				data.state, data.reason = logicalContainerStatePreparationFailed, "LifecycleKeyCalculationFailed"
@@ -447,7 +463,7 @@ func handleLogicalContainerPending(
 				containerName = generatedName
 			}
 			imageRef := commonapi.AsNamespacedName(container.Spec.Container.ImageRef, container.Namespace).Name
-			desired := container.Spec.Container.DeepCopy()
+			desired := data.runConfig.DeepCopy()
 			labels := append(desired.Labels,
 				commonapi.Label{Key: dcpBuildLabel, Value: version.ProductVersion},
 				commonapi.Label{Key: groupVersionLabel, Value: apiv2.GroupVersion.String()},
@@ -459,7 +475,7 @@ func handleLogicalContainerPending(
 				MonitorPID:             container.Spec.MonitorPID, MonitorTimestamp: container.Spec.MonitorTimestamp,
 				ImageRef: imageRef, ContainerName: containerName, ReplaceExisting: replaceExisting,
 				Entrypoint: desired.Entrypoint, Command: desired.Command, Env: desired.Env,
-				Ports: desired.Ports, VolumeMounts: desired.VolumeMounts, CreateFiles: desired.CreateFiles, Labels: labels,
+				Ports: physicalPorts, VolumeMounts: desired.VolumeMounts, CreateFiles: desired.CreateFiles, Labels: labels,
 			}
 		}
 	}
@@ -885,6 +901,16 @@ func handleLogicalContainerRunning(
 		change |= reconciler.settleLogicalContainerLease(ctx, container, data, nil, log)
 	}
 
+	var addresses [][]apiv2.ServiceAddress
+	if data.state == logicalContainerStateRunning && !container.Spec.Stop {
+		addresses = containerEndpointAddresses(container.Spec.Ports, data.ports, physicalContainer.Status.PortMappings)
+	}
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data.ports, addresses); endpointErr != nil {
+		log.Error(endpointErr, "Failed to synchronize logical container endpoints")
+		data.reconcileErr, data.message = endpointErr, endpointErr.Error()
+		change |= additionalReconciliationNeeded
+	}
+
 	return change | applyLogicalContainerBackingStatus(container, physicalContainer, startupImage, startupImageObserved)
 }
 
@@ -1119,6 +1145,20 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 
 	if data.lease != nil {
 		return r.settleLogicalContainerLease(ctx, container, data, nil, log), delay
+	}
+
+	bindings := make([]apiv2.LogicalServiceBinding, len(container.Spec.Ports))
+	for portIndex, port := range container.Spec.Ports {
+		bindings[portIndex] = port.LogicalServiceBinding
+	}
+	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, container, bindings)
+	if portDeleteErr != nil {
+		log.Error(portDeleteErr, "Failed to delete logical container endpoints")
+		data.reconcileErr, data.message = portDeleteErr, portDeleteErr.Error()
+		return additionalReconciliationNeeded, delay
+	}
+	if !portsDeleted {
+		return additionalReconciliationNeeded, delay
 	}
 
 	discardErr := r.discardLogicalContainerData(ctx, container.NamespacedName())

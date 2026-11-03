@@ -25,6 +25,7 @@ import (
 	"github.com/microsoft/dcp/internal/dcpproc"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/proxy"
 	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
@@ -57,6 +58,7 @@ type TestEnvironmentOptions struct {
 	WorkloadID                      commonapi.WorkloadID
 	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
 	DecorateAPIReader               func(ctrl_client.Reader) ctrl_client.Reader
+	CreateLogicalServiceProxy       proxy.ProxyFactory
 }
 
 func (tei *TestEnvironmentInfo) addAfterShutdown(callback func()) {
@@ -467,6 +469,16 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 
+	if inclCtrl&LogicalServiceController != 0 {
+		createServiceProxy := options.CreateLogicalServiceProxy
+		if createServiceProxy == nil {
+			createServiceProxy = ctrl_testutil.NewTestProxy
+		}
+		logicalServiceR := controllers.NewLogicalServiceReconciler(ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalServiceReconciler"), createServiceProxy)
+		if setupErr := logicalServiceR.SetupWithManager(mgr, instanceTag+"-LogicalServiceReconciler"); setupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalService reconciler: %w", setupErr)
+		}
+	}
 	if inclCtrl&ServiceController != 0 {
 		serviceR := controllers.NewServiceReconciler(
 			ctx,
