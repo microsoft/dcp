@@ -117,7 +117,7 @@ type PhysicalProcessConfig struct {
 	// RetainRuntimeProcess keeps a process launched by this resource running when the resource is deleted.
 	RetainRuntimeProcess bool `json:"retainRuntimeProcess,omitempty"`
 
-	// MonitorPID optionally scopes a retained runtime process to another process lifetime.
+	// MonitorPID optionally scopes a retained process to another process lifetime.
 	// When set, monitorTimestamp must also be set and retainRuntimeProcess must be true.
 	// The retained process is stopped when the monitored process exits.
 	MonitorPID *int64 `json:"monitorPID,omitempty"`
@@ -212,12 +212,12 @@ func (pp *PhysicalProcess) GetObjectMeta() *metav1.ObjectMeta {
 	return &pp.ObjectMeta
 }
 
-// GetResourceId identifies the physical process system log stream.
+// GetResourceId identifies the PhysicalProcess system log stream.
 func (pp *PhysicalProcess) GetResourceId() string {
 	return fmt.Sprintf("physicalprocess-%s", pp.UID)
 }
 
-// GetLogSource describes output captured by this physical process.
+// GetLogSource describes output captured or referenced by this PhysicalProcess.
 func (pp *PhysicalProcess) GetLogSource() *LogSource {
 	return &LogSource{
 		Name: pp.Name, UID: pp.UID, StdoutFile: pp.Status.StdoutFile, StderrFile: pp.Status.StderrFile,

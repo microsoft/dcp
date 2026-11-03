@@ -68,7 +68,7 @@ type processCreateLostResponseClient struct {
 	injected      atomic.Bool
 }
 
-// Verifies that forcibly removing retained physical backing before startup settlement terminally fails the
+// Verifies that forcibly removing the backing PhysicalProcess before startup settlement terminally fails the
 // logical process, releases its lease, and permits namespace deletion without recreating or adopting a process.
 func TestV2LogicalProcessControllerFailsWhenPersistentBackingDisappears(t *testing.T) {
 	t.Parallel()
@@ -245,7 +245,7 @@ func TestV2LogicalProcessControllerRecoversCreatedChildBeforeForwardingStop(t *t
 }
 
 // Verifies that LogicalProcess waits for namespace readiness, delegates session launch and configuration,
-// and stops the runtime process by deleting its physical backing.
+// and stops the process by deleting its backing PhysicalProcess.
 func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -282,7 +282,7 @@ func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 }
 
 // Verifies that LogicalProcess deletion before namespace admission does not prepare lifecycle policy,
-// acquire a persistent lease, or create physical backing.
+// acquire a persistent lease, or create a backing PhysicalProcess.
 func TestV2LogicalProcessControllerDeletesBeforeNamespaceAdmission(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -323,7 +323,7 @@ func (reader *processBackingLookupFailureClient) List(
 	return reader.Client.List(ctx, object, options...)
 }
 
-// Verifies that LogicalProcess preserves runtime identity during a recoverable backing lookup failure,
+// Verifies that LogicalProcess preserves process identity during a recoverable backing lookup failure,
 // then forwards stop and observes completion after the reader recovers without launching another process.
 func TestV2LogicalProcessControllerRetriesBackingObservation(t *testing.T) {
 	t.Parallel()
@@ -543,7 +543,7 @@ func TestV2LogicalProcessControllerExistingIdentity(t *testing.T) {
 	require.Len(t, testProcessExecutor.FindAll([]string{"v2-logical-process-existing-command"}, "", nil), 1)
 }
 
-// Verifies that LogicalProcess suppresses launch when stop is requested before physical creation.
+// Verifies that LogicalProcess does not launch a process when created with stop requested.
 func TestV2LogicalProcessControllerDoesNotLaunchStoppedProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -670,7 +670,7 @@ func (apiClient *processBackingReleaseResponseClient) Patch(
 	return patchErr
 }
 
-// Verifies that LogicalProcess permits physical cleanup while ownership recording fails, retains its
+// Verifies that LogicalProcess permits PhysicalProcess cleanup while ownership recording fails, retains its
 // startup lease and backing hold, then completes registration and hold release despite a lost release response.
 func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndSettlesBeforeDeletion(t *testing.T) {
 	t.Parallel()
@@ -800,7 +800,7 @@ func TestV2LogicalProcessControllerReleasesLeaseForMissingAdoptedProcess(t *test
 	require.Empty(t, record.WorkloadID)
 }
 
-// Verifies that LogicalProcess namespace cleanup removes logical and physical resources,
+// Verifies that LogicalProcess namespace cleanup removes LogicalProcess and PhysicalProcess resources,
 // stops session processes, and preserves persistent processes.
 func TestV2LogicalProcessControllerNamespaceCleanup(t *testing.T) {
 	t.Parallel()
@@ -933,8 +933,8 @@ func forceRemoveLogicalProcessBacking(
 	}))
 }
 
-// Verifies that LogicalProcess projects terminal physical launch failure and releases the
-// persistent startup lease even when no runtime process was successfully launched.
+// Verifies that LogicalProcess projects terminal PhysicalProcess launch failure and releases the
+// persistent startup lease even when no process was successfully launched.
 func TestV2LogicalProcessControllerDeletesAfterLaunchFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

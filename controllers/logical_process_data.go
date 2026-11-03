@@ -81,7 +81,7 @@ type logicalProcessData struct {
 	replacementUID      types.UID
 	lease               *statestore.ResourceLease
 	leaseFailureMessage string
-	// Stored identity is a handoff input, cleared after physical realization.
+	// Stored process identity is a handoff input, cleared after the backing PhysicalProcess is established.
 	pendingRecord   *statestore.PersistentProcessRecord
 	replaceExisting bool
 }
