@@ -257,7 +257,7 @@ func handleLogicalContainerNetworkPending(
 			inspection, inspectErr := inspectNetworkIfExists(lookupCtx, reconciler.networkInspector, network.Spec.NetworkName)
 			cancelLookup()
 			if inspectErr == nil && (inspection == nil || inspection.Id == "") {
-				inspectErr = errors.New("network inspection returned no runtime identity")
+				inspectErr = errors.New("network inspection returned no container network ID")
 			}
 			if inspectErr != nil && !errors.Is(inspectErr, containers.ErrNotFound) {
 				log.Error(inspectErr, "Failed to inspect logical network by name")
@@ -267,14 +267,14 @@ func handleLogicalContainerNetworkPending(
 			}
 			if inspectErr == nil {
 				if !isNetworkSafeToReuse {
-					data.reason, data.message = "NetworkHarvestingInProgress", "Waiting for resource harvesting before reusing the runtime network."
+					data.reason, data.message = "NetworkHarvestingInProgress", "Waiting for resource harvesting before reusing the container network."
 					return additionalReconciliationNeeded
 				}
 				inspected = inspection
 			}
 		}
 		if mode == apiv2.LogicalContainerNetworkModeExisting && inspected == nil {
-			data.reason, data.message = "ExistingNetworkNotFound", fmt.Sprintf("Runtime network %q was not found.", network.Spec.NetworkName)
+			data.reason, data.message = "ExistingNetworkNotFound", fmt.Sprintf("Container network %q was not found.", network.Spec.NetworkName)
 			data.retryAfter = time.Now().Add(delayDurations[MonitoringDelay].Duration)
 			return additionalReconciliationNeeded
 		}
@@ -299,15 +299,15 @@ func handleLogicalContainerNetworkPending(
 		}
 		spec := apiv2.PhysicalContainerNetworkSpec{NetworkID: networkID}
 		if networkID == "" {
-			runtimeName := network.Spec.NetworkName
-			if runtimeName == "" {
+			networkName := network.Spec.NetworkName
+			if networkName == "" {
 				generatedName, _, nameErr := MakeUniqueName(network.Name)
 				if nameErr != nil {
-					log.Error(nameErr, "Failed to generate logical network runtime name")
+					log.Error(nameErr, "Failed to generate container network name")
 					data.reason, data.reconcileErr, data.message = "LifecyclePreparationFailed", nameErr, nameErr.Error()
 					return additionalReconciliationNeeded
 				}
-				runtimeName = generatedName
+				networkName = generatedName
 			}
 			desired := network.Spec.Network.DeepCopy()
 			labels := append(desired.Labels,
@@ -317,7 +317,7 @@ func handleLogicalContainerNetworkPending(
 				commonapi.Label{Key: lifecycleKeyLabel, Value: lifecycleKey},
 			)
 			spec.Network = &apiv2.PhysicalContainerNetworkConfig{
-				NetworkName: runtimeName, IPv6: desired.IPv6, Labels: labels,
+				NetworkName: networkName, IPv6: desired.IPv6, Labels: labels,
 				RetainRuntimeNetwork: mode == apiv2.LogicalContainerNetworkModePersistent, ReplaceExisting: replaceExisting,
 			}
 		}

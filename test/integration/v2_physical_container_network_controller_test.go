@@ -73,7 +73,7 @@ func TestV2PhysicalContainerNetworkControllerCreatesNetwork(t *testing.T) {
 	require.Len(t, inspectedNetworks, 1)
 	require.Equal(t, networkName, inspectedNetworks[0].Name)
 
-	labels := runtimeNetworkLabels(t, ctx, networkName)
+	labels := containerNetworkLabels(t, ctx, networkName)
 	require.Equal(t, "test-value", labels["test-label"])
 	require.Equal(t, string(updatedNetwork.UID), labels["com.microsoft.developer.usvc-dev.uid"])
 	require.Equal(t, "false", labels[controllers.PersistentLabel])
@@ -113,7 +113,7 @@ func TestV2PhysicalContainerNetworkControllerTracksExistingNetwork(t *testing.T)
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
 }
 
-// Verifies that PhysicalContainerNetwork removes its runtime network and publishes the final
+// Verifies that PhysicalContainerNetwork removes its container network and publishes the final
 // disposition while a logical hold retains the API object.
 func TestV2PhysicalContainerNetworkControllerRemovesCreatedNetworkOnDeletion(t *testing.T) {
 	t.Parallel()
@@ -269,7 +269,7 @@ func TestV2PhysicalContainerNetworkControllerPreservesCreatedNetworkOnDeletion(t
 
 	updatedNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	networkID := updatedNetwork.Status.NetworkID
-	require.Equal(t, "true", runtimeNetworkLabels(t, ctx, networkName)[controllers.PersistentLabel])
+	require.Equal(t, "true", containerNetworkLabels(t, ctx, networkName)[controllers.PersistentLabel])
 
 	require.NoError(t, client.Delete(ctx, network))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
@@ -997,7 +997,7 @@ func waitRuntimeNetworkMissing(t *testing.T, ctx context.Context, networkID stri
 	require.NoError(t, waitErr)
 }
 
-func runtimeNetworkLabels(t *testing.T, ctx context.Context, networkName string) map[string]string {
+func containerNetworkLabels(t *testing.T, ctx context.Context, networkName string) map[string]string {
 	t.Helper()
 
 	listedNetworks, listErr := containerOrchestrator.ListNetworks(ctx, containers.ListNetworksOptions{})
