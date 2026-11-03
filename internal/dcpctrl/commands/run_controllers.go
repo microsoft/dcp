@@ -51,7 +51,7 @@ func NewRunControllersCommand(log *logger.Logger) *cobra.Command {
 		Short: "Runs the standard DCP controllers (for Executable, Container, and ContainerVolume objects)",
 		Long: `Runs the standard DCP controllers (for Executable, Container, and ContainerVolume objects).
 
-If --workload-id is set, newly-created persistent Containers, Executables, ContainerNetworks, and ContainerVolumes are associated with that workload ID. If --workload-id is not set, DCP_WORKLOAD_ID is used when present. The cleanup command can stop persistent resources associated with a workload ID.`,
+If --workload-id is set, newly-created Containers and ContainerNetworks (session and persistent) are labeled with that workload ID, and persistent Containers, Executables, ContainerNetworks, and ContainerVolumes are recorded for cleanup. If --workload-id is not set, DCP_WORKLOAD_ID is used when present. The cleanup command can stop persistent resources and remove remaining workload-labeled Containers and ContainerNetworks associated with a workload ID.`,
 		RunE: runControllers(controllerLog),
 		Args: cobra.NoArgs,
 	}

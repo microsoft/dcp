@@ -287,19 +287,13 @@ func (wco *WslcCliOrchestrator) ListContainers(ctx context.Context, options cont
 			continue
 		}
 
-		labels := make(map[string]string)
-		for _, label := range strings.Split(rawContainer.Labels, ",") {
-			key, value, _ := strings.Cut(label, "=")
-			labels[key] = value
-		}
-
 		containerName := strings.TrimPrefix(strings.TrimSpace(strings.Split(rawContainer.Names, ",")[0]), "/")
 		listedContainers = append(listedContainers, containers.ListedContainer{
 			Id:       rawContainer.ID,
 			Name:     containerName,
 			Image:    rawContainer.Image,
 			Status:   rawContainer.State,
-			Labels:   labels,
+			Labels:   containers.ParseListedLabels(rawContainer.Labels),
 			Networks: splitCommaSeparated(rawContainer.Networks),
 		})
 	}

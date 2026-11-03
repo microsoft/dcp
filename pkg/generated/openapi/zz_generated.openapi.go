@@ -724,7 +724,7 @@ func schema_microsoft_dcp_api_v1_ContainerLabel(ref common.ReferenceCallback) co
 				Properties: map[string]spec.Schema{
 					"key": {
 						SchemaProps: spec.SchemaProps{
-							Description: "The label key",
+							Description: "The label key must not contain commas.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -7641,7 +7641,7 @@ func schema_microsoft_dcp_pkg_commonapi_Label(ref common.ReferenceCallback) comm
 				Properties: map[string]spec.Schema{
 					"key": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Key is the label key.",
+							Description: "Key is the label key and must not contain commas.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",

@@ -490,22 +490,12 @@ func (wco *WslcCliOrchestrator) ListNetworks(ctx context.Context, options contai
 
 	listedNetworks := make([]containers.ListedNetwork, 0, len(rawNetworks))
 	for _, rawNetwork := range rawNetworks {
-		labels := make(map[string]string)
-		for _, label := range strings.Split(rawNetwork.Labels, ",") {
-			if len(label) < 3 {
-				continue
-			}
-			keyValue := strings.SplitN(label, "=", 2)
-			if len(keyValue) == 2 && len(keyValue[0]) > 0 && len(keyValue[1]) > 0 {
-				labels[keyValue[0]] = keyValue[1]
-			}
-		}
 		listedNetworks = append(listedNetworks, containers.ListedNetwork{
 			Driver:   rawNetwork.Driver,
 			ID:       rawNetwork.ID,
 			IPv6:     rawNetwork.IPv6 == "true",
 			Internal: rawNetwork.Internal == "true",
-			Labels:   labels,
+			Labels:   containers.ParseListedLabels(rawNetwork.Labels),
 			Name:     rawNetwork.Name,
 		})
 	}

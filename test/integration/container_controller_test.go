@@ -49,6 +49,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -144,6 +145,42 @@ func TestPersistentContainerRecordsWorkloadID(t *testing.T) {
 	require.NoError(t, getErr)
 	require.Equal(t, commonapi.WorkloadID("workload-a"), record.WorkloadID)
 	require.Equal(t, updatedCtr.Status.ContainerID, record.ContainerID)
+}
+
+// Verifies that ContainerReconciler labels both session and persistent containers with the configured workload ID.
+func TestCreatedContainersHaveWorkloadIDLabel(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	serverInfo, _, envStartErr := StartTestEnvironmentWithOptions(
+		t, ctx, ContainerController, "ContainerWorkloadIDLabel", t.TempDir(),
+		TestEnvironmentOptions{WorkloadID: "workload-a"},
+	)
+	require.NoError(t, envStartErr)
+
+	for _, testCase := range []struct {
+		name string
+		mode apiv1.ContainerMode
+	}{
+		{name: "session", mode: apiv1.ContainerModeSession},
+		{name: "persistent", mode: apiv1.ContainerModePersistent},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctr := apiv1.Container{
+				ObjectMeta: metav1.ObjectMeta{Name: "container-workload-label-" + testCase.name},
+				Spec: apiv1.ContainerSpec{
+					ContainerName: "container-workload-label-" + testCase.name,
+					Image:         "container-workload-label-" + testCase.name + "-image",
+					Mode:          testCase.mode,
+				},
+			}
+			require.NoError(t, serverInfo.Client.Create(ctx, &ctr))
+
+			_, inspected := ensureContainerRunningEx(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, &ctr)
+			require.Equal(t, "workload-a", inspected.Labels[controllers.WorkloadIDLabel])
+		})
+	}
 }
 
 func TestContainerLifecycleKey(t *testing.T) {
@@ -1394,6 +1431,49 @@ readEvents:
 			t.Fatal("timed out waiting for container events")
 		}
 	}
+}
+
+// Verifies that ContainerReconciler retains deletion work after a runtime removal failure and retries until the container is gone.
+func TestContainerDeletionRetriesRemovalFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-deletion-retries-removal-failure"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: testName + "-image",
+		},
+	}
+
+	require.NoError(t, client.Create(ctx, &ctr))
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+	inspectedContainers, inspectRunningErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
+	require.NoError(t, inspectRunningErr)
+	require.Len(t, inspectedContainers, 1)
+	runtimeContainerName := inspectedContainers[0].Name
+
+	containerOrchestrator.FailNextRemoveContainer(runtimeContainerName, resiliency.Permanent(errors.New("simulated removal failure")))
+
+	deleteErr := retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, deleteErr)
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
+	require.GreaterOrEqual(t, containerOrchestrator.RemoveContainerCallCount(runtimeContainerName), 2)
+
+	_, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
+	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
 }
 
 func TestContainerRestart(t *testing.T) {
