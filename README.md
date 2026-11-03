@@ -27,7 +27,7 @@ DCP's main executable (`dcp`) can run in one of several modes depending on how i
 
 ### Supported container runtimes
 
-DCP supports Docker, Podman, and WSLC (Windows only). The runtime's CLI must be available on `PATH`. WSLC requires both the client and session manager to be version **3.0.2.0 or newer**.
+DCP supports Docker, Podman, and WSLC (Windows only). The runtime's CLI must be available on `PATH`. WSLC requires both the client and session manager to be version **3.0.4.0 or newer**.
 
 Select a runtime explicitly with `--container-runtime docker`, `--container-runtime podman`, or `--container-runtime wslc`. When no runtime is specified, DCP prefers healthy Docker, then Podman, then WSLC.
 

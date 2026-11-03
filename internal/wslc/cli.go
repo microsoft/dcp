@@ -40,7 +40,7 @@ const (
 	defaultCreateTimeout     = 10 * time.Minute
 	defaultRunTimeout        = 10 * time.Minute
 	statusRefreshInterval    = 5 * time.Second
-	minimumWslcVersion       = "3.0.2.0"
+	minimumWslcVersion       = "3.0.4.0"
 	defaultWslcContainerHost = "host.wslc.internal"
 	unsupportedHostMessage   = "WSLC is only available on Windows hosts"
 )
