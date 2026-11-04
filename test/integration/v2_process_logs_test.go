@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,7 +30,9 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/logs"
+	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
@@ -630,8 +633,7 @@ func TestV2ProcessLogsFinishOnDeletionAndIsolateRecreatedResources(t *testing.T)
 		require.Empty(t, remaining)
 	}
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
-	require.NoFileExists(t, physical.Status.StdoutFile)
-	require.NoFileExists(t, physical.Status.StderrFile)
+	waitOutputFilesRemoved(t, ctx, physical.Status.StdoutFile, physical.Status.StderrFile)
 	replacement := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: resource.Name, Namespace: namespace.Name}, Spec: *resource.Spec.DeepCopy()}
 	require.NoError(t, client.Create(ctx, replacement))
 	recreated := waitLogicalProcessPhase(t, ctx, replacement.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
@@ -644,6 +646,7 @@ func TestV2ProcessLogsFinishOnDeletionAndIsolateRecreatedResources(t *testing.T)
 
 // Verifies that created session and exited persistent process captures honor executable-log
 // preservation while their LogicalProcess and PhysicalProcess resources complete normal deletion.
+// Runs serially because log preservation is controlled by a process-wide environment variable.
 func TestV2ProcessCreatedCapturesHonorPreservation(t *testing.T) {
 	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "1")
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -685,57 +688,110 @@ func TestV2ProcessCreatedCapturesHonorPreservation(t *testing.T) {
 	}
 }
 
-// Verifies that retained captures survive normal session-folder cleanup and remain available
-// through persistent-process adoption, while exited process deletion still removes them.
-func TestV2ProcessRetainedCapturesSurviveSessionCleanup(t *testing.T) {
+// Verifies that a blocked shared output cleanup queue does not block process/image deletion or
+// stale persistent-process replacement, and queued files are removed after the workers are released.
+func TestV2OutputCleanupDoesNotBlockReconciliation(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	root := t.TempDir()
-	session := filepath.Join(root, "session")
-	require.NoError(t, os.Mkdir(session, 0700))
-	originalSession, originalTemp := usvc_io.DcpSessionDir, usvc_io.DcpTempDir
-	usvc_io.DcpSessionDir, usvc_io.DcpTempDir = func() string { return session }, func() string { return session }
-	t.Cleanup(func() {
-		usvc_io.DcpSessionDir, usvc_io.DcpTempDir = originalSession, originalTemp
+	server, environment, startupErr := StartTestEnvironment(t, ctx,
+		LogicalProcessController|PhysicalProcessController|PhysicalContainerImageController, t.Name(), t.TempDir())
+	require.NoError(t, startupErr)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-queued-output-cleanup"}}
+	require.NoError(t, server.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, server.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
 	})
-	t.Setenv(logs.DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR, filepath.Join(root, "persistent"))
-	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "")
-	namespace := createActiveV2Namespace(t, ctx, "v2-process-capture-session-cleanup")
-	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+
+	started := make(chan struct{}, controllers.MaxConcurrentReconciles)
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	for range controllers.MaxConcurrentReconciles {
+		require.NoError(t, environment.OutputCleanupQueue.Enqueue(func(cleanupCtx context.Context) {
+			started <- struct{}{}
+			select {
+			case <-release:
+			case <-cleanupCtx.Done():
+			}
+		}))
+	}
+	for range controllers.MaxConcurrentReconciles {
+		select {
+		case _, received := <-started:
+			require.True(t, received)
+		case <-ctx.Done():
+			t.Fatal("cleanup workers did not start")
+		}
+	}
+
+	session := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "session", Namespace: namespace.Name},
+		Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-queued-cleanup-session"}}}
+	require.NoError(t, server.Client.Create(ctx, session))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, session.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+	})
+	paths := []string{running.Status.RuntimeLogs.StdoutFile, running.Status.RuntimeLogs.StderrFile}
+	require.NoError(t, server.Client.Delete(ctx, session))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, session)
+
+	image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: "image", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: "v2-queued-cleanup-image"}}}
+	require.NoError(t, server.Client.Create(ctx, image))
+	readyImage := waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+	})
+	paths = append(paths, readyImage.Status.StdoutFile, readyImage.Status.StderrFile)
+	require.NoError(t, server.Client.Delete(ctx, image))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, image)
+
+	persistent := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "persistent", Namespace: namespace.Name},
 		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
-			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-capture-session-cleanup-command"}}}
-	require.NoError(t, client.Create(ctx, resource))
-	running := waitLogicalProcessPhase(t, ctx, resource.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
-	record, recordErr := testStateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
-	require.NoError(t, recordErr)
-	require.NotEqual(t, session, filepath.Dir(record.StdOutFile))
-	stdout, openErr := usvc_io.OpenOrCreateFileForAppending(record.StdOutFile, osutil.PermissionOnlyOwnerReadWrite)
-	require.NoError(t, openErr)
-	_, writeErr := stdout.WriteString("output from the original session\n")
-	require.NoError(t, writeErr)
-	require.NoError(t, stdout.Close())
-	require.NoError(t, client.Delete(ctx, resource))
-	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
-	require.NoError(t, testProcessExecutor.CheckProcessRunning(record.ProcessHandle()))
-	usvc_io.CleanupSessionFolderIfNeeded()
-	require.NoDirExists(t, session)
-	require.FileExists(t, record.StdOutFile)
-	require.FileExists(t, record.StdErrFile)
-	reused := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: resource.Name, Namespace: namespace.Name}, Spec: *resource.Spec.DeepCopy()}
-	require.NoError(t, client.Create(ctx, reused))
-	adopted := waitLogicalProcessPhase(t, ctx, reused.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
-	require.Equal(t, running.Status.PID, adopted.Status.PID)
-	require.Equal(t, record.StdOutFile, adopted.Status.RuntimeLogs.StdoutFile)
-	output, outputErr := readV2ContainerLog(ctx, reused, apiv2.ResourceLogOptions{})
-	require.NoError(t, outputErr)
-	require.Equal(t, "output from the original session\n", output)
-	require.NoError(t, retryOnConflict(ctx, reused.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
-		current.Spec.Stop = true
-		return client.Update(updateCtx, current)
+			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-queued-cleanup-persistent"}}}
+	staleHandle, _, startErr := environment.TestProcessExecutor.StartProcess(ctx, exec.Command("v2-queued-cleanup-stale"),
+		nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startErr)
+	require.NoError(t, environment.TestProcessExecutor.StopProcess(ctx, staleHandle))
+	staleOutput := filepath.Join(t.TempDir(), "stale-output")
+	require.NoError(t, usvc_io.WriteFile(staleOutput, []byte("retired output"), osutil.PermissionOnlyOwnerReadWrite))
+	require.NoError(t, environment.StateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey: persistent.GetLeaseKey(), PID: staleHandle.Pid, IdentityTime: staleHandle.IdentityTime,
+		RunID: "stale", StdOutFile: staleOutput,
 	}))
-	waitLogicalProcessPhase(t, ctx, reused.NamespacedName(), apiv2.LogicalProcessPhaseExited)
-	require.NoError(t, client.Delete(ctx, reused))
-	ctrl_testutil.WaitObjectDeleted(t, ctx, client, reused)
-	require.NoFileExists(t, record.StdOutFile)
-	require.NoFileExists(t, record.StdErrFile)
+	require.NoError(t, server.Client.Create(ctx, persistent))
+	replacement := waitObjectAssumesStateEx(t, ctx, server.Client, persistent.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+	})
+	require.NotEqual(t, int64(staleHandle.Pid), *replacement.Status.PID)
+	paths = append(paths, staleOutput, replacement.Status.RuntimeLogs.StdoutFile, replacement.Status.RuntimeLogs.StderrFile)
+	require.NoError(t, server.Client.Patch(ctx, persistent,
+		ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	waitObjectAssumesStateEx(t, ctx, server.Client, persistent.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
+	})
+	require.NoError(t, server.Client.Delete(ctx, persistent))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, persistent)
+	require.NoError(t, server.Client.Delete(ctx, namespace))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, namespace)
+	for _, path := range paths {
+		require.FileExists(t, path)
+	}
+	unblock()
+	waitOutputFilesRemoved(t, ctx, paths...)
+}
+
+func waitOutputFilesRemoved(t *testing.T, ctx context.Context, paths ...string) {
+	t.Helper()
+	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		for _, path := range paths {
+			_, statErr := os.Stat(path)
+			if statErr == nil {
+				return false, nil
+			}
+			if !os.IsNotExist(statErr) {
+				return false, statErr
+			}
+		}
+		return true, nil
+	}))
 }

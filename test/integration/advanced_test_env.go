@@ -22,6 +22,7 @@ import (
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -263,9 +264,11 @@ func StartAdvancedTestEnvironmentWithOptions(
 		}
 	}
 
+	outputCleanupQueue := resiliency.NewWorkQueue(ctx, controllers.MaxConcurrentReconciles)
 	if inclCtrl&LogicalProcessController != 0 {
 		logicalProcessR := controllers.NewLogicalProcessReconciler(
 			ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalProcessReconciler"), pe,
+			outputCleanupQueue,
 			controllers.LogicalProcessReconcilerConfig{
 				StateStore: stateStore, ResourceLeaseOwner: leaseOwner,
 			},
@@ -282,6 +285,7 @@ func StartAdvancedTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerImageReconciler"),
 			serverInfo.ContainerOrchestrator,
+			outputCleanupQueue,
 			controllers.PhysicalContainerImageReconcilerConfig{StateStore: stateStore, ResourceLeaseOwner: leaseOwner},
 		)
 		if err = physicalContainerImageR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerImageReconciler"); err != nil {
@@ -336,6 +340,7 @@ func StartAdvancedTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalProcessReconciler"),
 			pe,
+			outputCleanupQueue,
 		)
 		if err = physicalProcessR.SetupWithManager(mgr, instanceTag+"-PhysicalProcessReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalProcess reconciler: %w", err)
@@ -345,6 +350,7 @@ func StartAdvancedTestEnvironmentWithOptions(
 	if inclCtrl&PhysicalContainerExecController != 0 {
 		physicalExecR := controllers.NewPhysicalContainerExecReconciler(
 			ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("PhysicalContainerExecReconciler"), serverInfo.ContainerOrchestrator,
+			outputCleanupQueue,
 		)
 		if physicalExecSetupErr := physicalExecR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerExecReconciler"); physicalExecSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerExec reconciler: %w", physicalExecSetupErr)

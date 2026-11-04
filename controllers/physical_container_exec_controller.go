@@ -57,20 +57,23 @@ var physicalContainerExecDataHandlers = map[physicalContainerExecState]physicalC
 // PhysicalContainerExecReconciler owns attached runtime execution and output capture.
 type PhysicalContainerExecReconciler struct {
 	*ReconcilerBase[apiv2.PhysicalContainerExec, *apiv2.PhysicalContainerExec]
-	orchestrator   containers.ExecContainers
-	executions     *ObjectStateMap[types.UID, physicalContainerExecData, *physicalContainerExecData, *apiv2.PhysicalContainerExec]
-	operationQueue *resiliency.WorkQueue
+	orchestrator       containers.ExecContainers
+	executions         *ObjectStateMap[types.UID, physicalContainerExecData, *physicalContainerExecData, *apiv2.PhysicalContainerExec]
+	operationQueue     *resiliency.WorkQueue
+	outputCleanupQueue *resiliency.WorkQueue
 }
 
 func NewPhysicalContainerExecReconciler(
 	lifetimeCtx context.Context, client ctrl_client.Client, reader ctrl_client.Reader, log logr.Logger,
 	orchestrator containers.ExecContainers,
+	outputCleanupQueue *resiliency.WorkQueue,
 ) *PhysicalContainerExecReconciler {
 	return &PhysicalContainerExecReconciler{
-		ReconcilerBase: NewReconcilerBase[apiv2.PhysicalContainerExec](client, reader, log, lifetimeCtx),
-		orchestrator:   orchestrator,
-		executions:     NewObjectStateMap[types.UID, physicalContainerExecData, *physicalContainerExecData, *apiv2.PhysicalContainerExec](),
-		operationQueue: resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
+		ReconcilerBase:     NewReconcilerBase[apiv2.PhysicalContainerExec](client, reader, log, lifetimeCtx),
+		orchestrator:       orchestrator,
+		executions:         NewObjectStateMap[types.UID, physicalContainerExecData, *physicalContainerExecData, *apiv2.PhysicalContainerExec](),
+		operationQueue:     resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
+		outputCleanupQueue: outputCleanupQueue,
 	}
 }
 
@@ -113,10 +116,7 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 	getErr := reader.Get(ctx, req.NamespacedName, &resource)
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
-			discardErr := r.discardExecution(req.NamespacedName)
-			if discardErr != nil {
-				log.Error(discardErr, "Failed to dispose deleted execution output")
-			}
+			r.discardExecution(req.NamespacedName, log)
 			return ctrl.Result{}, nil
 		}
 		log.Error(getErr, "Failed to get PhysicalContainerExec")
@@ -135,10 +135,7 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 	}
 	stateKey, previous := r.executions.BorrowByNamespacedName(req.NamespacedName)
 	if previous != nil && stateKey != resource.UID {
-		discardErr := r.discardExecution(req.NamespacedName)
-		if discardErr != nil {
-			log.Error(discardErr, "Failed to dispose previous execution output")
-		}
+		r.discardExecution(req.NamespacedName, log)
 	}
 	r.executions.RunDeferredOps(req.NamespacedName, &resource)
 	_, data := r.executions.BorrowByNamespacedName(req.NamespacedName)
@@ -328,13 +325,12 @@ func (r *PhysicalContainerExecReconciler) handleExecutionDeletion(
 	if !valid || change&statusChanged != 0 {
 		return change | additionalReconciliationNeeded, StandardDelay
 	}
-	option := logs.CaptureFileDisposeOnClose
-	if hasFinalizer(resource, LogicalBackingFinalizer) {
-		option = logs.CaptureFileCloseDefault
-	}
-	closeErr := data.closeOutputLogs(option)
+	closeErr := data.closeOutputLogs(logs.CaptureFileCloseDefault)
 	if closeErr != nil {
-		log.Error(closeErr, "Failed to dispose execution output capture")
+		log.Error(closeErr, "Failed to close execution output capture")
+	}
+	if !hasFinalizer(resource, LogicalBackingFinalizer) {
+		enqueueCaptureFileCleanup(r.outputCleanupQueue, log, data.stdout, data.stderr)
 	}
 	return deleteFinalizer(resource, physicalContainerExecFinalizer, log), StandardDelay
 }
@@ -482,12 +478,7 @@ func (r *PhysicalContainerExecReconciler) finishExecution(
 		data.stderr.CloseAndLog(logs.CaptureFileCloseDefault, log)
 	}
 	if !r.queueExecutionResult(resource, data) {
-		if data.stdout != nil {
-			data.stdout.CloseAndLog(logs.CaptureFileDisposeOnClose, log)
-		}
-		if data.stderr != nil {
-			data.stderr.CloseAndLog(logs.CaptureFileDisposeOnClose, log)
-		}
+		enqueueCaptureFileCleanup(r.outputCleanupQueue, log, data.stdout, data.stderr)
 	}
 }
 
@@ -504,17 +495,15 @@ func (r *PhysicalContainerExecReconciler) queueExecutionResult(resource *apiv2.P
 	return queued
 }
 
-func (r *PhysicalContainerExecReconciler) discardExecution(name types.NamespacedName) error {
+func (r *PhysicalContainerExecReconciler) discardExecution(name types.NamespacedName, log logr.Logger) {
 	uid, data := r.executions.BorrowByNamespacedName(name)
-	var closeErr error
 	if data != nil {
 		if data.session != nil {
 			data.session.cancel()
 		} else {
-			closeErr = data.closeOutputLogs(logs.CaptureFileDisposeOnClose)
+			enqueueCaptureFileCleanup(r.outputCleanupQueue, log, data.stdout, data.stderr)
 		}
 		logger.ReleaseResourceLog((&apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{UID: uid}}).GetResourceId())
 	}
 	r.executions.DeleteByNamespacedName(name)
-	return closeErr
 }

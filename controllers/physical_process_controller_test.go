@@ -22,6 +22,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -166,7 +167,9 @@ func TestPhysicalProcessLaunchCanceledBeforeStart(t *testing.T) {
 				nil,
 				logr.Discard(),
 				executor,
+				resiliency.NewWorkQueue(lifetimeCtx, 1),
 			)
+
 			reconciler.processData.Store(physicalProcess.NamespacedName(), stateKey, initialData)
 
 			reconciler.launchPhysicalProcess(
@@ -219,6 +222,7 @@ func TestHandlePhysicalProcessResolveWaitsForRetryDeadline(t *testing.T) {
 		nil,
 		logr.Discard(),
 		executor,
+		resiliency.NewWorkQueue(ctx, 1),
 	)
 
 	change := handlePhysicalProcessResolve(
@@ -288,7 +292,9 @@ func TestPhysicalProcessLaunchResultDoesNotReplaceExistingOwner(t *testing.T) {
 		nil,
 		logr.Discard(),
 		&missingPhysicalProcessExecutor{},
+		resiliency.NewWorkQueue(ctx, 1),
 	)
+
 	launchStateKey := physicalProcessDataKey(launchedProcess)
 	reconciler.processData.Store(launchedProcess.NamespacedName(), launchStateKey, &physicalProcessData{
 		resourceUID:    launchedProcess.UID,
@@ -350,7 +356,9 @@ func TestPhysicalProcessTerminalResultDoesNotRequireHandleOwnership(t *testing.T
 		nil,
 		logr.Discard(),
 		&missingPhysicalProcessExecutor{},
+		resiliency.NewWorkQueue(ctx, 1),
 	)
+
 	launchStateKey := physicalProcessDataKey(launchedProcess)
 	reconciler.processData.Store(launchedProcess.NamespacedName(), launchStateKey, &physicalProcessData{
 		resourceUID:    launchedProcess.UID,
@@ -437,7 +445,9 @@ func TestPhysicalProcessCleanupUncertaintyIsScopedToProcessIdentity(t *testing.T
 				nil,
 				logr.Discard(),
 				&missingPhysicalProcessExecutor{},
+				resiliency.NewWorkQueue(ctx, 1),
 			)
+
 			reconciler.processData.Store(
 				physicalProcess.NamespacedName(),
 				physicalProcessDataKey(physicalProcess),
@@ -491,7 +501,9 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 		nil,
 		logr.Discard(),
 		&missingPhysicalProcessExecutor{},
+		resiliency.NewWorkQueue(ctx, 1),
 	)
+
 	reconciler.processData.Store(
 		physicalProcess.NamespacedName(),
 		physicalProcessHandleDataKey(handle),
@@ -542,6 +554,7 @@ func TestHandlePhysicalProcessRuntimeSetsInspectionFailureReason(t *testing.T) {
 		nil,
 		logr.Discard(),
 		&failingPhysicalProcessInspectionExecutor{err: inspectionErr},
+		resiliency.NewWorkQueue(ctx, 1),
 	)
 
 	change := handlePhysicalProcessRuntime(
@@ -587,7 +600,9 @@ func TestSchedulePhysicalProcessStopClearsStaleFailureReason(t *testing.T) {
 		nil,
 		logr.Discard(),
 		&recordingPhysicalProcessExecutor{},
+		resiliency.NewWorkQueue(ctx, 1),
 	)
+
 	reconciler.processData.Store(
 		physicalProcess.NamespacedName(),
 		physicalProcessHandleDataKey(handle),

@@ -27,12 +27,12 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/dcpclient"
-	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 var (
@@ -71,19 +71,21 @@ type LogicalProcessReconcilerConfig struct {
 
 type LogicalProcessReconciler struct {
 	*ReconcilerBase[apiv2.LogicalProcess, *apiv2.LogicalProcess]
-	processExecutor process.Executor
-	config          LogicalProcessReconcilerConfig
-	processData     *ObjectStateMap[types.UID, logicalProcessData, *logicalProcessData, *apiv2.LogicalProcess]
+	processExecutor    process.Executor
+	config             LogicalProcessReconcilerConfig
+	processData        *ObjectStateMap[types.UID, logicalProcessData, *logicalProcessData, *apiv2.LogicalProcess]
+	outputCleanupQueue *resiliency.WorkQueue
 }
 
 func NewLogicalProcessReconciler(
 	lifetimeCtx context.Context, client ctrl_client.Client, noCacheClient ctrl_client.Reader,
-	log logr.Logger, executor process.Executor, config LogicalProcessReconcilerConfig,
+	log logr.Logger, executor process.Executor, outputCleanupQueue *resiliency.WorkQueue, config LogicalProcessReconcilerConfig,
 ) *LogicalProcessReconciler {
 	return &LogicalProcessReconciler{
 		ReconcilerBase:  NewReconcilerBase[apiv2.LogicalProcess](client, noCacheClient, log, lifetimeCtx),
 		processExecutor: executor, config: config,
-		processData: NewObjectStateMap[types.UID, logicalProcessData, *logicalProcessData, *apiv2.LogicalProcess](),
+		outputCleanupQueue: outputCleanupQueue,
+		processData:        NewObjectStateMap[types.UID, logicalProcessData, *logicalProcessData, *apiv2.LogicalProcess](),
 	}
 }
 
@@ -245,10 +247,9 @@ func handleLogicalProcessPhysical(
 			}
 			return noChange
 		}
-		removeErr := logs.RemoveProcessOutput(ctx, record.StdOutFile, record.StdErrFile)
-		if removeErr != nil {
-			log.Error(removeErr, "Failed to remove replaced process output")
-		}
+		enqueueProcessOutputCleanup(reconciler.outputCleanupQueue,
+			reconciler.Log.WithValues("LogicalProcess", resource.NamespacedName(), "ResourceUID", resource.UID),
+			record.StdOutFile, record.StdErrFile)
 		retireErr := reconciler.config.StateStore.DeletePersistentProcess(ctx, resource.GetLeaseKey())
 		if retireErr != nil {
 			log.Error(retireErr, "Failed to retire replaced process record")
@@ -659,10 +660,9 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 		}
 		runningErr := r.processExecutor.CheckProcessRunning(record.ProcessHandle())
 		if process.IsProcessGoneErr(runningErr) {
-			removeErr := logs.RemoveProcessOutput(ctx, record.StdOutFile, record.StdErrFile)
-			if removeErr != nil {
-				log.Error(removeErr, "Failed to remove stale process output")
-			}
+			enqueueProcessOutputCleanup(r.outputCleanupQueue,
+				r.Log.WithValues("LogicalProcess", resource.NamespacedName(), "ResourceUID", resource.UID),
+				record.StdOutFile, record.StdErrFile)
 			return r.config.StateStore.DeletePersistentProcess(ctx, resource.GetLeaseKey())
 		}
 		if runningErr != nil {
@@ -728,10 +728,9 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 						if !process.IsProcessGoneErr(runningErr) {
 							return runningErr
 						}
-						removeErr := logs.RemoveProcessOutput(ctx, record.StdOutFile, record.StdErrFile)
-						if removeErr != nil {
-							log.Error(removeErr, "Failed to remove retired process output")
-						}
+						enqueueProcessOutputCleanup(r.outputCleanupQueue,
+							r.Log.WithValues("LogicalProcess", resource.NamespacedName(), "ResourceUID", resource.UID),
+							record.StdOutFile, record.StdErrFile)
 					}
 					record = &statestore.PersistentProcessRecord{RunID: string(physical.UID)}
 				}
