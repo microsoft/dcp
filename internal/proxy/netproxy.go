@@ -616,7 +616,12 @@ func (p *netProxy) tryStartingUDPStream(stream udpStream, proxyConn net.PacketCo
 
 	lc := net.ListenConfig{}
 	ctx, cancel := context.WithCancel(p.lifetimeCtx)
-	streamListener, err := lc.ListenPacket(ctx, "udp", fmt.Sprintf("%s:", p.listenAddress))
+	// The backend may use a different address family than the frontend listener.
+	network := "udp6"
+	if endpointAddr.IP.To4() != nil {
+		network = "udp4"
+	}
+	streamListener, err := lc.ListenPacket(ctx, network, ":0")
 	if err != nil {
 		p.log.Error(err, "Could not create an endpoint listener for client", "ClientAddr", stream.clientAddr.String())
 		cancel()

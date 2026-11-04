@@ -217,6 +217,53 @@ func TestUDPModeProxy(t *testing.T) {
 	require.NoError(t, serverConn.Close())
 }
 
+// Verifies that UDP proxies forward requests and replies across all frontend/backend address-family
+// combinations, including hostname backends, without changing the client-facing listener identity.
+func TestUDPProxyFrontendAndBackendAddressFamilies(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name           string
+		listenAddress  string
+		backendAddress string
+	}{
+		{"IPv4-to-IPv4", networking.IPv4LocalhostDefaultAddress, networking.IPv4LocalhostDefaultAddress},
+		{"IPv4-to-IPv6", networking.IPv4LocalhostDefaultAddress, "::1"},
+		{"IPv6-to-IPv4", networking.IPv6LocalhostDefaultAddress, networking.IPv4LocalhostDefaultAddress},
+		{"IPv6-to-IPv6", networking.IPv6LocalhostDefaultAddress, "::1"},
+		{"IPv4-to-hostname", networking.IPv4LocalhostDefaultAddress, networking.Localhost},
+		{"IPv6-to-hostname", networking.IPv6LocalhostDefaultAddress, networking.Localhost},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			if (testCase.listenAddress == networking.IPv6LocalhostDefaultAddress || testCase.backendAddress == "::1") &&
+				!networking.IsIPv6(networking.IPv6LocalhostDefaultAddress) {
+				t.Skip("IPv6 is unavailable")
+			}
+			ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+			defer cancel()
+			serverAddress, resolveErr := net.ResolveUDPAddr("udp", networking.AddressAndPort(testCase.backendAddress, 0))
+			require.NoError(t, resolveErr)
+			serverConn, listenErr := net.ListenUDP("udp", serverAddress)
+			require.NoError(t, listenErr)
+			defer func() { require.NoError(t, serverConn.Close()) }()
+			runtimeProxy := newNetProxy(commonapi.PortProtocolUDP, testCase.listenAddress, 0, ctx, logr.Discard())
+			require.NoError(t, runtimeProxy.Start())
+			require.NoError(t, runtimeProxy.Configure(ProxyConfig{Endpoints: []Endpoint{{
+				Address: testCase.backendAddress, Port: int32(serverConn.LocalAddr().(*net.UDPAddr).Port),
+			}}}))
+			clientConn, clientErr := net.ListenPacket("udp", networking.AddressAndPort(testCase.listenAddress, 0))
+			require.NoError(t, clientErr)
+			defer func() { require.NoError(t, clientConn.Close()) }()
+			deadline, hasDeadline := ctx.Deadline()
+			require.True(t, hasDeadline)
+			require.NoError(t, serverConn.SetDeadline(deadline))
+			require.NoError(t, clientConn.SetDeadline(deadline))
+			verifyUDPPacketFlow(t, runtimeProxy, serverConn, clientConn)
+			verifyUDPPacketFlow(t, runtimeProxy, serverConn, clientConn)
+		})
+	}
+}
+
 func TestUDPTwoEndpoints(t *testing.T) {
 	t.Parallel()
 
@@ -832,7 +879,8 @@ func verifyUDPPacketFlow(
 ) {
 	// Have the client send a message
 	msg := []byte(testutil.GetRandLetters(t, 6))
-	n, err := clientConn.WriteTo(msg, &net.UDPAddr{IP: net.ParseIP(proxy.EffectiveAddress()), Port: int(proxy.EffectivePort())})
+	proxyIP := net.ParseIP(networking.ToStandaloneAddress(proxy.EffectiveAddress()))
+	n, err := clientConn.WriteTo(msg, &net.UDPAddr{IP: proxyIP, Port: int(proxy.EffectivePort())})
 	require.NoError(t, err)
 	require.Equal(t, len(msg), n)
 
@@ -857,7 +905,7 @@ func verifyUDPPacketFlow(
 	n, proxyAddr, err := clientConn.ReadFrom(buffer)
 	require.NoError(t, err)
 	require.Equal(t, len(msg), n)
-	require.Equal(t, proxy.EffectiveAddress(), proxyAddr.(*net.UDPAddr).IP.String())
+	require.True(t, proxyIP.Equal(proxyAddr.(*net.UDPAddr).IP))
 	require.Equal(t, proxy.EffectivePort(), int32(proxyAddr.(*net.UDPAddr).Port))
 	require.True(t, bytes.Equal(buffer, msg), "Response message received by the client ('%s') is not the same as the message sent by the server ('%s')", string(buffer), string(msg))
 }
