@@ -117,11 +117,14 @@ func (r *LogicalContainerExecReconciler) Reconcile(ctx context.Context, req ctrl
 			uid, _ := r.executions.BorrowByNamespacedName(req.NamespacedName)
 			r.executions.DeleteByNamespacedName(req.NamespacedName)
 			logger.ReleaseResourceLog((&apiv2.LogicalContainerExec{ObjectMeta: metav1.ObjectMeta{UID: uid}}).GetResourceId())
+			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		}
 		log.Error(getErr, "Failed to get LogicalContainerExec")
+		getFailedCounter.Add(ctx, 1)
 		return ctrl.Result{}, getErr
 	}
+	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resource.GetResourceId())
 	stateKey, data := r.executions.BorrowByNamespacedName(req.NamespacedName)
 	if data != nil && stateKey != resource.UID {

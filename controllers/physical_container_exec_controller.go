@@ -117,11 +117,14 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
 			r.discardExecution(req.NamespacedName)
+			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		}
 		log.Error(getErr, "Failed to get PhysicalContainerExec")
+		getFailedCounter.Add(ctx, 1)
 		return ctrl.Result{}, getErr
 	}
+	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resource.GetResourceId())
 	if owner := metav1.GetControllerOf(&resource); owner != nil &&
 		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainerExec" {
@@ -393,9 +396,18 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 		r.retryExecution(resource, data, physicalContainerExecStateTargetRetry, "ContainerLookupFailed", targetErr, log)
 		return
 	}
-	if targetErr != nil || !data.matchesTarget(&current) || !current.DeletionTimestamp.IsZero() ||
-		current.Status.Phase == apiv2.PhysicalContainerPhaseExited || current.Status.Phase == apiv2.PhysicalContainerPhaseFailed {
-		fail("ContainerUnavailable", fmt.Errorf("target container changed or became unavailable before execution launch: %v", targetErr))
+	switch {
+	case targetErr != nil:
+		fail("ContainerUnavailable", fmt.Errorf("target PhysicalContainer no longer exists before execution launch: %w", targetErr))
+		return
+	case !data.matchesTarget(&current):
+		fail("ContainerUnavailable", fmt.Errorf("selected PhysicalContainer identity changed before execution launch"))
+		return
+	case !current.DeletionTimestamp.IsZero():
+		fail("ContainerUnavailable", fmt.Errorf("target PhysicalContainer is being deleted before execution launch"))
+		return
+	case current.Status.Phase == apiv2.PhysicalContainerPhaseExited || current.Status.Phase == apiv2.PhysicalContainerPhaseFailed:
+		fail("ContainerUnavailable", fmt.Errorf("target PhysicalContainer has exited or failed before execution launch"))
 		return
 	}
 	if current.Status.ContainerID == "" || current.Status.Phase != apiv2.PhysicalContainerPhaseRunning ||
