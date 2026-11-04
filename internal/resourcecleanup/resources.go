@@ -87,6 +87,13 @@ var NamespaceResources = []*CleanupResource{
 		},
 	},
 	{
+		GVR: (&apiv2.Project{}).GetGroupVersionResource(),
+		CleanUpAfter: []schema.GroupVersionResource{
+			(&apiv2.LogicalContainerExec{}).GetGroupVersionResource(),
+			(&apiv2.PhysicalContainerExec{}).GetGroupVersionResource(),
+		},
+	},
+	{
 		GVR: (&apiv2.LogicalProcess{}).GetGroupVersionResource(),
 	},
 	{
@@ -106,6 +113,7 @@ var NamespaceResources = []*CleanupResource{
 		GVR: (&apiv2.PhysicalProcess{}).GetGroupVersionResource(),
 		CleanUpAfter: []schema.GroupVersionResource{
 			(&apiv2.LogicalProcess{}).GetGroupVersionResource(),
+			(&apiv2.Project{}).GetGroupVersionResource(),
 		},
 	},
 	{
@@ -116,6 +124,7 @@ var NamespaceResources = []*CleanupResource{
 		CleanUpAfter: []schema.GroupVersionResource{
 			(&apiv2.PhysicalContainerExec{}).GetGroupVersionResource(),
 			(&apiv2.LogicalContainer{}).GetGroupVersionResource(),
+			(&apiv2.Project{}).GetGroupVersionResource(),
 			(&apiv2.PhysicalContainerNetworkConnection{}).GetGroupVersionResource(),
 		},
 	},

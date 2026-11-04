@@ -46,6 +46,7 @@ type delayFlagData struct {
 	forkChildren   bool
 	reportReady    bool
 	readyFile      string
+	dapStdio       bool
 }
 
 var (
@@ -62,6 +63,7 @@ const (
 	forkChildrenFlag   = "fork-children"
 	reportReadyFlag    = "report-ready"
 	readyFileFlag      = "ready-file"
+	dapStdioFlag       = "dap-stdio"
 )
 
 func newMainCommand(log *logger.Logger) *cobra.Command {
@@ -87,6 +89,7 @@ You can also ask it to exit with a specific exit code.`,
 	cmd.Flags().BoolVar(&flags.forkChildren, forkChildrenFlag, false, "If specified, child processes are started in a separate process group; on Windows they are also started in a separate console.")
 	cmd.Flags().BoolVar(&flags.reportReady, reportReadyFlag, false, "If specified, write the process PID to stdout after signal handling and child startup are ready.")
 	cmd.Flags().StringVar(&flags.readyFile, readyFileFlag, "", "Create this file after all direct children have started. The file must not already exist. This option is not passed to children.")
+	cmd.Flags().BoolVar(&flags.dapStdio, dapStdioFlag, false, "Serve minimal DAP responses on stdin/stdout and exit after disconnect. This option is not passed to children.")
 
 	return cmd
 }
@@ -100,6 +103,12 @@ func runMain(log logr.Logger) error {
 	}
 	if flags.holdPipe && flags.childSpec == "" {
 		return fmt.Errorf("the %s flag requires %s", holdPipeFlag, childSpecFlag)
+	}
+	if flags.dapStdio {
+		if flags.childSpec != "" || flags.reportReady || flags.readyFile != "" {
+			return fmt.Errorf("DAP mode cannot be combined with child or readiness output")
+		}
+		return serveDAP(os.Stdin, os.Stdout)
 	}
 
 	shutdownCh := make(chan os.Signal, 1)

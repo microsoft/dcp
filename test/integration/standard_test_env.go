@@ -323,7 +323,7 @@ func StartTestEnvironmentWithOptions(
 
 	outputCleanupQueue := resiliency.NewWorkQueue(ctx, controllers.MaxConcurrentReconciles)
 	controllerAPIReader := mgr.GetAPIReader()
-	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController|LogicalContainerExecController|PhysicalContainerExecController) != 0 && options.DecorateAPIReader != nil {
+	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController|LogicalContainerExecController|PhysicalContainerExecController|ProjectController) != 0 && options.DecorateAPIReader != nil {
 		controllerAPIReader = options.DecorateAPIReader(controllerAPIReader)
 		if controllerAPIReader == nil {
 			return nil, nil, fmt.Errorf("api reader decorator returned nil")
@@ -368,6 +368,13 @@ func StartTestEnvironmentWithOptions(
 		)
 		if logicalProcessSetupErr := logicalProcessR.SetupWithManager(mgr, instanceTag+"-LogicalProcessReconciler"); logicalProcessSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize LogicalProcess reconciler: %w", logicalProcessSetupErr)
+		}
+	}
+
+	if inclCtrl&ProjectController != 0 {
+		projectR := controllers.NewProjectReconciler(ctx, mgr.GetClient(), controllerAPIReader, log.WithName("ProjectReconciler"))
+		if projectSetupErr := projectR.SetupWithManager(mgr, instanceTag+"-ProjectReconciler"); projectSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize Project reconciler: %w", projectSetupErr)
 		}
 	}
 

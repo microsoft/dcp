@@ -289,11 +289,15 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, container.GetResourceId())
 	if owner := metav1.GetControllerOf(&container); owner != nil &&
-		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainer" && owner.UID != "" {
+		owner.APIVersion == apiv2.GroupVersion.String() && (owner.Kind == "LogicalContainer" || owner.Kind == "Project") && owner.UID != "" {
 		logicalOwner := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}
-		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, logicalOwner.GetResourceId())
+		ownerStream := logicalOwner.GetResourceId()
+		if owner.Kind == "Project" {
+			ownerStream = (&apiv2.Project{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}).GetResourceId()
+		}
+		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, ownerStream)
 		if forwardErr != nil {
-			log.Error(forwardErr, "Failed to attach logical container system log stream")
+			log.Error(forwardErr, "Failed to attach owner system log stream")
 		} else {
 			log = forwardedLog
 		}

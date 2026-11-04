@@ -324,7 +324,7 @@ func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error
 
 	config.GenericConfig.LongRunningFunc = kubeserverfilters.BasicLongRunningRequestCheck(
 		sets.NewString("watch"),
-		sets.NewString(apiv1.LogSubresourceName),
+		sets.NewString(apiv1.LogSubresourceName, apiv2.DebugSubresourceName),
 	)
 
 	apiv1.ResourceLogStreamers.Store(
@@ -349,6 +349,7 @@ func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error
 	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalProcess{}).GetGroupVersionResource(), v2ResourceStreamer)
 	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerExec{}).GetGroupVersionResource(), v2ResourceStreamer)
 	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainerExec{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.Project{}).GetGroupVersionResource(), v2ResourceStreamer)
 
 	return nil
 }
@@ -390,6 +391,9 @@ func addDcpHttpHandlers(
 	namespaceLifecycleGate := newV2NamespaceLifecycleGate()
 	if storageErr := decorateV2NamespaceStorageProviders(config, namespaceLifecycleGate); storageErr != nil {
 		return storageErr
+	}
+	if debugServingErr := configureProjectDebugServing(config, ctx, log.WithName("ProjectDebug")); debugServingErr != nil {
+		return debugServingErr
 	}
 	namespaceWatchSource, namespaceWatchSourceErr := newV2NamespaceWatchSource(namespaceWatchClientConfig)
 	if namespaceWatchSourceErr != nil {

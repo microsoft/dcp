@@ -36,6 +36,7 @@ const (
 	PhysicalContainerExecController
 	LogicalContainerExecController
 	LogicalServiceController
+	ProjectController
 	NoControllers  IncludedController = 0
 	AllControllers IncludedController = ^NoControllers
 )

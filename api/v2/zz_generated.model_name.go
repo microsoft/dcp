@@ -56,6 +56,11 @@ func (in CreateFileSystem) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in DebugAdapterConfig) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.DebugAdapterConfig"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in FileSystemEntry) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.FileSystemEntry"
 }
@@ -438,6 +443,56 @@ func (in PhysicalProcessSpec) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in PhysicalProcessStatus) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.PhysicalProcessStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in Project) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.Project"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ProjectContainerTemplate) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ProjectContainerTemplate"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ProjectDebugExecutionStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ProjectDebugExecutionStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ProjectDebugSessionStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ProjectDebugSessionStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ProjectDebugStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ProjectDebugStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ProjectList) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ProjectList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ProjectLogResource) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ProjectLogResource"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ProjectProcessTemplate) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ProjectProcessTemplate"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ProjectSpec) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ProjectSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ProjectStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ProjectStatus"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
