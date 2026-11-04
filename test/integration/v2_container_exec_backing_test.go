@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,7 +20,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -167,9 +165,9 @@ func TestV2ContainerExecDeletionPreservesDurableDisposition(t *testing.T) {
 	require.Equal(t, 1, orchestrator.ExecContainerCallCount(logical.Spec.Execution.Command))
 }
 
-// Verifies that physical exec retains its cleanup finalizer and reports disposal failures,
-// then retries capture disposal after the filesystem obstruction is removed.
-func TestV2ContainerExecRetriesCaptureDisposal(t *testing.T) {
+// Verifies that physical exec completes deletion after bounded best-effort capture disposal
+// fails, rather than allowing an output-file obstruction to retain the execution resource.
+func TestV2ContainerExecDisposalFailureDoesNotBlockDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -209,23 +207,9 @@ func TestV2ContainerExecRetriesCaptureDisposal(t *testing.T) {
 		}
 	}()
 	decorated.blockFinalStatus.Store(false)
-	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
-		gvr := physical.GetGroupVersionResource()
-		output, readErr := server.RestClient.Get().
-			AbsPath("/apis", gvr.Group, gvr.Version, "namespaces", physical.Namespace, gvr.Resource, physical.Name, apiv2.LogSubresourceName).
-			Param("source", "system").DoRaw(ctx)
-		if readErr != nil {
-			return false, readErr
-		}
-		return strings.Contains(string(output), "Failed to dispose execution output capture"), nil
-	}))
-	require.NoError(t, server.Client.Get(ctx, physical.NamespacedName(), physical))
-	require.True(t, physical.Status.LogsComplete)
-	require.Contains(t, physical.Finalizers, execCleanupFinalizer)
-	require.NoError(t, os.Remove(obstruction))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
-	_, captureErr := os.Stat(path)
-	require.ErrorIs(t, captureErr, os.ErrNotExist)
+	_, captureErr := os.Stat(obstruction)
+	require.NoError(t, captureErr, "failed output deletion must not block resource finalization")
 }
 
 // Verifies that logical exec retries observation errors without losing its selected backing

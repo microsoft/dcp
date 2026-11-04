@@ -110,12 +110,12 @@ func (r *PhysicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	getErr := reader.Get(ctx, req.NamespacedName, &physicalProcess)
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
-			_, previous := r.processData.BorrowByNamespacedName(req.NamespacedName)
-			if previous != nil {
-				missing := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{UID: previous.resourceUID}}
-				defer logger.ReleaseResourceLog(missing.GetResourceId())
-				if !previous.operationInProgress() {
-					_ = previous.closeOutputLogs(logs.CaptureFileDisposeOnClose, log)
+			_, missingData := r.processData.BorrowByNamespacedName(req.NamespacedName)
+			if missingData != nil {
+				missingProcess := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{UID: missingData.resourceUID}}
+				defer logger.ReleaseResourceLog(missingProcess.GetResourceId())
+				if !missingData.operationInProgress() {
+					_ = missingData.closeOutputLogs(logs.CaptureFileDisposeOnClose, log)
 				}
 			}
 			r.processData.DeleteByNamespacedName(req.NamespacedName)
@@ -900,19 +900,14 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(
 			option = logs.CaptureFileCloseDefault
 		}
 		if data != nil {
-			closeErr := data.closeOutputLogs(option, log)
-			if closeErr != nil {
-				data.failureMessage = fmt.Sprintf("Failed to release process output capture: %v", closeErr)
-				return additionalReconciliationNeeded, LongDelay
-			}
+			// Output removal is best effort; a reader must not keep the process resource alive.
+			_ = data.closeOutputLogs(option, log)
 		}
 		if physicalProcess.Spec.PID != nil && data != nil &&
 			(data.state == physicalProcessStateExited || data.state == physicalProcessStateMissing) {
 			removeErr := logs.RemoveProcessOutput(ctx, physicalProcess.Spec.StdoutFile, physicalProcess.Spec.StderrFile)
 			if removeErr != nil {
 				log.Error(removeErr, "Failed to remove adopted process output")
-				data.failureMessage = fmt.Sprintf("Failed to remove adopted process output: %v", removeErr)
-				return additionalReconciliationNeeded, LongDelay
 			}
 		}
 		if data != nil {

@@ -116,7 +116,6 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 			discardErr := r.discardExecution(req.NamespacedName)
 			if discardErr != nil {
 				log.Error(discardErr, "Failed to dispose deleted execution output")
-				return ctrl.Result{}, discardErr
 			}
 			return ctrl.Result{}, nil
 		}
@@ -139,7 +138,6 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 		discardErr := r.discardExecution(req.NamespacedName)
 		if discardErr != nil {
 			log.Error(discardErr, "Failed to dispose previous execution output")
-			return ctrl.Result{}, discardErr
 		}
 	}
 	r.executions.RunDeferredOps(req.NamespacedName, &resource)
@@ -337,7 +335,6 @@ func (r *PhysicalContainerExecReconciler) handleExecutionDeletion(
 	closeErr := data.closeOutputLogs(option)
 	if closeErr != nil {
 		log.Error(closeErr, "Failed to dispose execution output capture")
-		return additionalReconciliationNeeded, LongDelay
 	}
 	return deleteFinalizer(resource, physicalContainerExecFinalizer, log), StandardDelay
 }
@@ -509,17 +506,15 @@ func (r *PhysicalContainerExecReconciler) queueExecutionResult(resource *apiv2.P
 
 func (r *PhysicalContainerExecReconciler) discardExecution(name types.NamespacedName) error {
 	uid, data := r.executions.BorrowByNamespacedName(name)
+	var closeErr error
 	if data != nil {
 		if data.session != nil {
 			data.session.cancel()
 		} else {
-			closeErr := data.closeOutputLogs(logs.CaptureFileDisposeOnClose)
-			if closeErr != nil {
-				return closeErr
-			}
+			closeErr = data.closeOutputLogs(logs.CaptureFileDisposeOnClose)
 		}
 		logger.ReleaseResourceLog((&apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{UID: uid}}).GetResourceId())
 	}
 	r.executions.DeleteByNamespacedName(name)
-	return nil
+	return closeErr
 }

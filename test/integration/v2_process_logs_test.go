@@ -38,9 +38,9 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that PhysicalProcess cleanup retains its finalizer and capture ownership after
-// a removal failure, then normal reconciliation completes deletion when removal becomes possible.
-func TestV2ProcessCleanupRetriesOutputRemoval(t *testing.T) {
+// Verifies that output removal failure does not block LogicalProcess, PhysicalProcess,
+// or namespace deletion after the process has stopped.
+func TestV2ProcessCleanupDoesNotBlockOnOutputRemovalFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -69,17 +69,11 @@ func TestV2ProcessCleanupRetriesOutputRemoval(t *testing.T) {
 	require.NoError(t, usvc_io.WriteFile(obstruction, []byte("busy"), osutil.PermissionOnlyOwnerReadWrite))
 	require.NoError(t, client.Delete(ctx, logical))
 	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalProcessRef}
-	failed := waitObjectAssumesState(t, ctx, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
-		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && strings.Contains(ready.Message, "Failed to release process output capture"), nil
-	})
-	require.NotEmpty(t, failed.Finalizers)
-	require.False(t, failed.DeletionTimestamp.IsZero())
-	// Let the controller remove the emptied directory; never recreate the path after disposal can succeed.
-	require.NoError(t, os.Remove(obstruction))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, logical)
-	ctrl_testutil.WaitObjectDeleted(t, ctx, client, failed)
-	require.NoFileExists(t, capturePath)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: physicalName.Name, Namespace: physicalName.Namespace},
+	})
+	require.FileExists(t, obstruction)
 	require.NoError(t, client.Delete(ctx, namespace))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
 }
@@ -423,8 +417,8 @@ func TestV2ProcessLogEndpointsShareOutputAndCompleteOnExit(t *testing.T) {
 	}
 }
 
-// Verifies that namespace deletion projects drained PhysicalProcess output to a LogicalProcess follower
-// while capture removal is blocked, allowing the follower and resource cleanup to finish.
+// Verifies that namespace deletion completes and LogicalProcess log followers finish
+// even when output capture removal fails.
 func TestV2ProcessLogicalOnlyFollowerCompletesDuringNamespaceDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -461,7 +455,10 @@ func TestV2ProcessLogicalOnlyFollowerCompletesDuringNamespaceDeletion(t *testing
 	require.NoError(t, readErr)
 	require.Equal(t, payload, string(initial))
 	require.False(t, running.Status.RuntimeLogs.Complete)
-	var unblockRemoval func()
+	t.Cleanup(func() {
+		_ = logs.RemoveProcessOutput(context.WithoutCancel(ctx),
+			running.Status.RuntimeLogs.StdoutFile, running.Status.RuntimeLogs.StderrFile)
+	})
 	if runtime.GOOS != "windows" {
 		// Model Windows' open-reader removal failure without opening the PhysicalProcess log endpoint.
 		path := running.Status.RuntimeLogs.StdoutFile
@@ -475,24 +472,13 @@ func TestV2ProcessLogicalOnlyFollowerCompletesDuringNamespaceDeletion(t *testing
 			_ = os.Remove(path)
 			_ = os.Remove(saved)
 		})
-		unblockRemoval = func() { require.NoError(t, os.Remove(obstruction)) }
 	}
 	require.NoError(t, server.Client.Delete(ctx, namespace))
 	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalProcessRef}
-	waitObjectAssumesStateEx(t, ctx, server.Client, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
-		return current.Status.LogsComplete, nil
-	})
-	completed := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
-		return !current.DeletionTimestamp.IsZero() && current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete, nil
-	})
-	require.Equal(t, running.Status.RuntimeLogs.UID, completed.Status.RuntimeLogs.UID)
 	remaining, remainingErr := io.ReadAll(stream)
 	require.NoError(t, remainingErr)
 	require.Empty(t, remaining)
 	require.NoError(t, stream.Close())
-	if unblockRemoval != nil {
-		unblockRemoval()
-	}
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, namespace)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, &apiv2.PhysicalProcess{
@@ -561,7 +547,7 @@ func TestV2ProcessLogsForExistingProcessWithoutCapture(t *testing.T) {
 }
 
 // Verifies that an identity-bound PhysicalProcess reads a supplied stdout file independent of
-// resource naming, keeps it while detached from a running process, and removes it after confirmed exit.
+// resource naming, keeps it while detached, and completes deletion after exit even if output removal fails.
 func TestV2PhysicalProcessReusesExistingOutputCapture(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -598,9 +584,13 @@ func TestV2PhysicalProcessReusesExistingOutputCapture(t *testing.T) {
 	finalOutput, finalErr := readV2ContainerLog(ctx, second, apiv2.ResourceLogOptions{Follow: true})
 	require.NoError(t, finalErr)
 	require.Equal(t, output, finalOutput)
+	require.NoError(t, os.Rename(outputPath, outputPath+".saved"))
+	require.NoError(t, os.Mkdir(outputPath, 0700))
+	obstruction := filepath.Join(outputPath, "busy")
+	require.NoError(t, usvc_io.WriteFile(obstruction, []byte("busy"), osutil.PermissionOnlyOwnerReadWrite))
 	require.NoError(t, client.Delete(ctx, second))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, second)
-	require.NoFileExists(t, outputPath)
+	require.FileExists(t, obstruction)
 }
 
 // Verifies that LogicalProcess and PhysicalProcess log followers drain and finish on resource deletion,

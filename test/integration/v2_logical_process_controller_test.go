@@ -557,9 +557,9 @@ func TestV2LogicalProcessControllerDoesNotLaunchStoppedProcess(t *testing.T) {
 	require.Empty(t, testProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil))
 }
 
-// Verifies that LogicalProcess discards a persistent record whose PID identity is stale,
+// Verifies that LogicalProcess discards a stale PID record despite output removal failure,
 // creates a new process, and does not stop the unrelated process currently using that PID.
-func TestV2LogicalProcessControllerRejectsReusedPersistentPID(t *testing.T) {
+func TestV2LogicalProcessControllerRejectsReusedPersistentPIDWithBusyOutput(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -571,7 +571,9 @@ func TestV2LogicalProcessControllerRejectsReusedPersistentPID(t *testing.T) {
 	key, _, keyErr := resource.Spec.GetLifecycleKey()
 	require.NoError(t, keyErr)
 	stdoutPath, stderrPath := filepath.Join(t.TempDir(), "old-out"), filepath.Join(t.TempDir(), "old-err")
-	require.NoError(t, usvc_io.WriteFile(stdoutPath, []byte("stale output"), osutil.PermissionOnlyOwnerReadWrite))
+	require.NoError(t, os.Mkdir(stdoutPath, 0700))
+	obstruction := filepath.Join(stdoutPath, "busy")
+	require.NoError(t, usvc_io.WriteFile(obstruction, []byte("busy"), osutil.PermissionOnlyOwnerReadWrite))
 	require.NoError(t, usvc_io.WriteFile(stderrPath, []byte("stale errors"), osutil.PermissionOnlyOwnerReadWrite))
 	require.NoError(t, testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
 		ResourceKey: resource.GetLeaseKey(), LifecycleKey: key, PID: currentHandle.Pid,
@@ -585,13 +587,13 @@ func TestV2LogicalProcessControllerRejectsReusedPersistentPID(t *testing.T) {
 	stored, storedErr := testStateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
 	require.NoError(t, storedErr)
 	require.Equal(t, *running.Status.PID, int64(stored.PID))
-	require.NoFileExists(t, stdoutPath)
+	require.FileExists(t, obstruction)
 	require.NoFileExists(t, stderrPath)
 }
 
-// Verifies that replacement retains the old process record through retired-output cleanup
-// failure and launches the new process only after cleanup and record retirement succeed.
-func TestV2LogicalProcessControllerRetriesRetiredOutputCleanup(t *testing.T) {
+// Verifies that LogicalProcess stops the old process and replaces its persistent record
+// without waiting for retired output removal to succeed.
+func TestV2LogicalProcessControllerReplacesProcessDespiteOutputRemovalFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -618,23 +620,13 @@ func TestV2LogicalProcessControllerRetriesRetiredOutputCleanup(t *testing.T) {
 	replacement := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: first.Name, Namespace: namespace.Name}, Spec: *first.Spec.DeepCopy()}
 	replacement.Spec.Process.Args = []string{"replacement"}
 	require.NoError(t, client.Create(ctx, replacement))
-	waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
-		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return condition != nil && condition.Reason == "PhysicalProcessPreparationFailed", nil
-	})
-	preserved, preservedErr := testStateStore.GetPersistentProcess(ctx, first.GetLeaseKey())
-	require.NoError(t, preservedErr)
-	require.Equal(t, record.PID, preserved.PID)
-	require.Equal(t, record.StdOutFile, preserved.StdOutFile)
-	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(record.ProcessHandle())))
-	require.Len(t, testProcessExecutor.FindAll([]string{first.Spec.Process.ExecutablePath}, "", nil), 1)
-	require.NoError(t, os.Remove(obstruction))
 	replaced := waitLogicalProcessPhase(t, ctx, replacement.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
 	require.NotEqual(t, int64(record.PID), *replaced.Status.PID)
+	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(record.ProcessHandle())))
 	newRecord, newRecordErr := testStateStore.GetPersistentProcess(ctx, replacement.GetLeaseKey())
 	require.NoError(t, newRecordErr)
 	require.Equal(t, replaced.Status.RuntimeLogs.StdoutFile, newRecord.StdOutFile)
-	require.NoDirExists(t, record.StdOutFile)
+	require.FileExists(t, obstruction)
 	require.NoFileExists(t, record.StdErrFile)
 	require.NoError(t, retryOnConflict(ctx, replacement.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
 		current.Spec.Stop = true

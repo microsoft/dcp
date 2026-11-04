@@ -29,9 +29,9 @@ type CaptureFile struct {
 	// Set only when CaptureFileDirectOutput is requested. Do not also write through Writer.
 	DirectFile *os.File
 	// Writer formats captured output and separates successive operations.
-	Writer    usvc_io.ParagraphWriter
-	closeOnce func() error
-	dispose   func() error
+	Writer      usvc_io.ParagraphWriter
+	closeOnce   func() error
+	disposeOnce func() error
 }
 
 type CaptureFileOption uint
@@ -94,9 +94,6 @@ func NewCaptureFile(resource apiserver_resource.Object, logSource logstream.LogS
 
 	// Readers strip numbering and timestamps when the request does not ask for them.
 	writer := usvc_io.NewParagraphWriter(output, osutil.LineSep())
-	var disposalLock sync.Mutex
-	disposed := false
-
 	result := &CaptureFile{
 		Path:       path,
 		DirectFile: directFile,
@@ -108,16 +105,9 @@ func NewCaptureFile(resource apiserver_resource.Object, logSource logstream.LogS
 			}
 			return nil
 		}),
-		dispose: func() error {
-			disposalLock.Lock()
-			defer disposalLock.Unlock()
-			if disposed {
-				return nil
-			}
-			removeErr := RemoveWithRetry(context.Background(), path)
-			disposed = removeErr == nil
-			return removeErr
-		},
+		disposeOnce: sync.OnceValue(func() error {
+			return RemoveWithRetry(context.Background(), path)
+		}),
 	}
 	return result, nil
 }
@@ -139,11 +129,11 @@ func (capture *CaptureFile) CloseAndLog(opt CaptureFileCloseOption, log logr.Log
 }
 
 // Close closes the capture file, optionally deleting it, and returns any errors.
-// Repeated calls return the original close result and retry failed deletion.
+// Repeated calls return the original close and deletion results.
 func (capture *CaptureFile) Close(opt CaptureFileCloseOption) error {
 	closeErr := capture.closeOnce()
 	if opt&CaptureFileDisposeOnClose != 0 {
-		return errors.Join(closeErr, capture.dispose())
+		return errors.Join(closeErr, capture.disposeOnce())
 	} else {
 		return closeErr
 	}
