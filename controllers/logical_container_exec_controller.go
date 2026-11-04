@@ -309,7 +309,7 @@ func handleLogicalContainerExecRuntime(
 	change := setValue(&resource.Status.ContainerID, physical.Status.ContainerID)
 	change |= setTimestamp(&resource.Status.StartedAt, physical.Status.StartedAt)
 	change |= setTimestamp(&resource.Status.FinishedAt, physical.Status.FinishedAt)
-	change |= setPhysicalProcessExitCode(&resource.Status.ExitCode, physical.Status.ExitCode)
+	change |= setExitCode(&resource.Status.ExitCode, physical.Status.ExitCode)
 	source := physical.GetLogSource()
 	if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
 		resource.Status.RuntimeLogs = source

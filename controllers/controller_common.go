@@ -426,6 +426,14 @@ func setValue[T comparable](target *T, value T) objectChange {
 	return statusChanged
 }
 
+func setExitCode(target **int32, value *int32) objectChange {
+	if int32PointersEqual(*target, value) {
+		return noChange
+	}
+	*target = cloneInt32Pointer(value)
+	return statusChanged
+}
+
 // Records the condition, reporting noChange when the condition already holds the same values
 // so that repeated reconciliation of an unchanged state does not produce status writes.
 func setCondition(
