@@ -17,9 +17,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -85,9 +87,11 @@ func (r *LogicalContainerExecReconciler) SetupWithManager(mgr ctrl.Manager, name
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
-		For(&apiv2.LogicalContainerExec{}).Owns(&apiv2.PhysicalContainerExec{}).
+		For(&apiv2.LogicalContainerExec{}).
+		Owns(&apiv2.PhysicalContainerExec{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Watches(&apiv2.LogicalContainer{}, handler.EnqueueRequestsFromMapFunc(r.mapContainer)).
-		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.LogicalContainerExecList{}))).
+		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.LogicalContainerExecList{})),
+			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Named(name).Complete(r)
 }
 
