@@ -578,7 +578,7 @@ func cleanupPersistentProcessRecord(
 
 		deleteRecord := func(deleteLogMessage string) error {
 			if strings.HasPrefix(currentRecord.ResourceKey, apiv2.LogicalProcessResourceKeyPrefix) {
-				removeErr := logs.RemoveProcessOutput(ctx, currentRecord.StdOutFile, currentRecord.StdErrFile)
+				removeErr := logs.RemoveOutputFiles(ctx, currentRecord.StdOutFile, currentRecord.StdErrFile)
 				if removeErr != nil {
 					log.Error(removeErr, "Could not remove retired persistent process output", "ResourceKey", currentRecord.ResourceKey)
 				}
