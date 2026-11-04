@@ -32,6 +32,7 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -45,6 +46,7 @@ type TestEnvironmentInfo struct {
 	ContainerAttachFactoryDispatcher *ctrl_testutil.ContainerAttachFactoryDispatcher
 	StateStore                       *statestore.Store
 	ResourceLeaseOwner               process.ProcessHandle
+	OutputCleanupQueue               *resiliency.WorkQueue
 	Log                              logr.Logger
 	SessionFolder                    string
 	afterShutdownLock                sync.Mutex
@@ -317,6 +319,7 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 
+	outputCleanupQueue := resiliency.NewWorkQueue(ctx, controllers.MaxConcurrentReconciles)
 	logicalAPIReader := mgr.GetAPIReader()
 	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController) != 0 && options.DecorateAPIReader != nil {
 		logicalAPIReader = options.DecorateAPIReader(logicalAPIReader)
@@ -356,6 +359,7 @@ func StartTestEnvironmentWithOptions(
 	if inclCtrl&LogicalProcessController != 0 {
 		logicalProcessR := controllers.NewLogicalProcessReconciler(
 			ctx, mgr.GetClient(), logicalAPIReader, log.WithName("LogicalProcessReconciler"), pex,
+			outputCleanupQueue,
 			controllers.LogicalProcessReconcilerConfig{
 				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: options.WorkloadID,
 			},
@@ -372,6 +376,7 @@ func StartTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerImageReconciler"),
 			serverInfo.ContainerOrchestrator,
+			outputCleanupQueue,
 			controllers.PhysicalContainerImageReconcilerConfig{StateStore: stateStore, ResourceLeaseOwner: leaseOwner},
 		)
 		if err = physicalContainerImageR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerImageReconciler"); err != nil {
@@ -430,6 +435,7 @@ func StartTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalProcessReconciler"),
 			physicalExecutor,
+			outputCleanupQueue,
 		)
 		if err = physicalProcessR.SetupWithManager(mgr, instanceTag+"-PhysicalProcessReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalProcess reconciler: %w", err)
@@ -527,6 +533,7 @@ func StartTestEnvironmentWithOptions(
 		ContainerAttachFactoryDispatcher: containerAttachDispatcher,
 		StateStore:                       stateStore,
 		ResourceLeaseOwner:               leaseOwner,
+		OutputCleanupQueue:               outputCleanupQueue,
 		Log:                              log,
 		SessionFolder:                    sessionFolder,
 	}

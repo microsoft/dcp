@@ -70,9 +70,10 @@ type physicalProcessDataHandlerFunc = stateInitializerFunc[
 type PhysicalProcessReconciler struct {
 	*ReconcilerBase[apiv2.PhysicalProcess, *apiv2.PhysicalProcess]
 
-	processExecutor process.Executor
-	processData     *ObjectStateMap[physicalProcessDataStateKey, physicalProcessData, *physicalProcessData, *apiv2.PhysicalProcess]
-	operationQueue  *resiliency.WorkQueue
+	processExecutor    process.Executor
+	processData        *ObjectStateMap[physicalProcessDataStateKey, physicalProcessData, *physicalProcessData, *apiv2.PhysicalProcess]
+	operationQueue     *resiliency.WorkQueue
+	outputCleanupQueue *resiliency.WorkQueue
 }
 
 func NewPhysicalProcessReconciler(
@@ -81,12 +82,14 @@ func NewPhysicalProcessReconciler(
 	noCacheClient ctrl_client.Reader,
 	log logr.Logger,
 	processExecutor process.Executor,
+	outputCleanupQueue *resiliency.WorkQueue,
 ) *PhysicalProcessReconciler {
 	return &PhysicalProcessReconciler{
-		ReconcilerBase:  NewReconcilerBase[apiv2.PhysicalProcess](client, noCacheClient, log, lifetimeCtx),
-		processExecutor: processExecutor,
-		processData:     NewObjectStateMap[physicalProcessDataStateKey, physicalProcessData, *physicalProcessData, *apiv2.PhysicalProcess](),
-		operationQueue:  resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
+		ReconcilerBase:     NewReconcilerBase[apiv2.PhysicalProcess](client, noCacheClient, log, lifetimeCtx),
+		processExecutor:    processExecutor,
+		processData:        NewObjectStateMap[physicalProcessDataStateKey, physicalProcessData, *physicalProcessData, *apiv2.PhysicalProcess](),
+		operationQueue:     resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
+		outputCleanupQueue: outputCleanupQueue,
 	}
 }
 
@@ -115,7 +118,9 @@ func (r *PhysicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				missingProcess := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{UID: missingData.resourceUID}}
 				defer logger.ReleaseResourceLog(missingProcess.GetResourceId())
 				if !missingData.operationInProgress() {
-					_ = missingData.closeOutputLogs(logs.CaptureFileDisposeOnClose, log)
+					_ = missingData.closeOutputLogs(logs.CaptureFileCloseDefault, log)
+					missingData.enqueueOutputCleanup(r.outputCleanupQueue,
+						r.Log.WithValues("PhysicalProcess", req.NamespacedName, "ResourceUID", missingData.resourceUID))
 				}
 			}
 			r.processData.DeleteByNamespacedName(req.NamespacedName)
@@ -901,14 +906,17 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(
 		}
 		if data != nil {
 			// Output removal is best effort; a reader must not keep the process resource alive.
-			_ = data.closeOutputLogs(option, log)
+			_ = data.closeOutputLogs(logs.CaptureFileCloseDefault, log)
+			if option == logs.CaptureFileDisposeOnClose {
+				data.enqueueOutputCleanup(r.outputCleanupQueue,
+					r.Log.WithValues("PhysicalProcess", physicalProcess.NamespacedName(), "ResourceUID", physicalProcess.UID))
+			}
 		}
 		if physicalProcess.Spec.PID != nil && data != nil &&
 			(data.state == physicalProcessStateExited || data.state == physicalProcessStateMissing) {
-			removeErr := logs.RemoveProcessOutput(ctx, physicalProcess.Spec.StdoutFile, physicalProcess.Spec.StderrFile)
-			if removeErr != nil {
-				log.Error(removeErr, "Failed to remove adopted process output")
-			}
+			enqueueProcessOutputCleanup(r.outputCleanupQueue,
+				r.Log.WithValues("PhysicalProcess", physicalProcess.NamespacedName(), "ResourceUID", physicalProcess.UID),
+				physicalProcess.Spec.StdoutFile, physicalProcess.Spec.StderrFile)
 		}
 		if data != nil {
 			dataChange, _, valid := data.applyTo(physicalProcess)
