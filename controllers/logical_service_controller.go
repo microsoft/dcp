@@ -34,11 +34,12 @@ const (
 )
 
 type logicalServiceData struct {
-	uid          types.UID
-	proxies      []proxyInstanceData
-	attempts     uint32
-	selectedUID  types.UID
-	selectedName string
+	uid           types.UID
+	proxies       []proxyInstanceData
+	appliedConfig *proxy.ProxyConfig
+	attempts      uint32
+	selectedUID   types.UID
+	selectedName  string
 }
 
 // LogicalServiceReconciler owns proxy listeners and projects listener or endpoint-selected addresses.
@@ -200,6 +201,7 @@ func (r *LogicalServiceReconciler) configureProxies(
 	service *apiv2.LogicalService, data *logicalServiceData, endpoints []apiv2.ServiceEndpoint, log logr.Logger,
 ) error {
 	if len(data.proxies) == 0 {
+		data.appliedConfig = nil
 		if data.attempts >= MaxServiceStartAttempts {
 			return fmt.Errorf("service listener startup attempts exhausted")
 		}
@@ -232,13 +234,22 @@ func (r *LogicalServiceReconciler) configureProxies(
 		if listener.proxy.State() != proxy.ProxyStateRunning {
 			stopProxies(data.proxies, log)
 			data.proxies = nil
+			data.appliedConfig = nil
 			return fmt.Errorf("service listener is not running")
 		}
+	}
+	if data.appliedConfig != nil && reflect.DeepEqual(*data.appliedConfig, config) {
+		return nil
+	}
+	for _, listener := range data.proxies {
 		if configErr := listener.proxy.Configure(config); configErr != nil {
 			stopProxies(data.proxies, log)
 			data.proxies = nil
+			data.appliedConfig = nil
 			return fmt.Errorf("configure service listener: %w", configErr)
 		}
 	}
+	applied := config.Clone()
+	data.appliedConfig = &applied
 	return nil
 }
