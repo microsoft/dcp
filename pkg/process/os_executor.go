@@ -509,6 +509,29 @@ func (e *OSExecutor) releaseLock() {
 }
 
 func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHandle, options processStopOptions) error {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	if handleErr := handle.Validate(); handleErr != nil {
+		return handleErr
+	}
+	if (options.opts & optSkipDescendants) != 0 {
+		options.group = nil
+	} else if options.group == nil {
+		var groupErr error
+		options.group, groupErr = FindProcessGroup(handle)
+		if groupErr != nil && !IsProcessGoneErr(groupErr) {
+			return fmt.Errorf("could not identify process group for process %d: %w", handle.Pid, groupErr)
+		}
+	}
+	if options.group != nil {
+		if options.group.leader.Pid != handle.Pid {
+			return fmt.Errorf("process group leader does not match process handle %d", handle.Pid)
+		}
+		if identityErr := validateIdentity(handle, options.group.leader); identityErr != nil {
+			return identityErr
+		}
+	}
 	return e.stopProcessTreeInternal(ctx, handle, options, GetProcessTree)
 }
 
@@ -519,7 +542,8 @@ func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHand
 // graceful-stop budget to stop concurrently. If the root required a force kill, or the graceful
 // budget expires, remaining descendants are force-killed concurrently during the final bounded
 // cleanup phase. Caller cancellation stops further work. Every signal and kill revalidates the
-// target process identity before acting.
+// target process identity before acting. A captured Unix group is stopped with the root, using
+// the same graceful and forced deadlines.
 func (e *OSExecutor) stopProcessTreeInternal(
 	ctx context.Context,
 	handle ProcessHandle,
@@ -549,8 +573,14 @@ func (e *OSExecutor) stopProcessTreeInternal(
 	rootWasVerified := false
 
 	stopRootProcess := func(stopCtx context.Context, rootOpts processStoppingOpts) (singleProcessStopResult, error, error) {
-		stopResult, stopErr := e.stopSingleProcess(stopCtx, handle, rootOpts|optNotFoundIsError|optWaitForStdio)
-		if rootWasVerified && IsProcessGoneErr(stopErr) {
+		var stopResult singleProcessStopResult
+		var stopErr error
+		if options.group != nil {
+			stopResult, stopErr = e.stopProcessGroup(stopCtx, options.group, rootOpts|optWaitForStdio)
+		} else {
+			stopResult, stopErr = e.stopSingleProcess(stopCtx, handle, rootOpts|optNotFoundIsError|optWaitForStdio)
+		}
+		if options.group == nil && rootWasVerified && IsProcessGoneErr(stopErr) {
 			return singleProcessStopResult{waitEndedCh: makeClosedChan()}, nil, nil
 		}
 		if stopErr != nil &&
@@ -589,11 +619,13 @@ func (e *OSExecutor) stopProcessTreeInternal(
 
 		forceCtx, forceCancel := context.WithTimeout(ctx, signalAndWaitTimeout)
 		defer forceCancel()
-		rootResult, rootStopErr := e.stopSingleProcess(
-			forceCtx,
-			handle,
-			forceProcessOpts|optWaitForStdio,
-		)
+		var rootResult singleProcessStopResult
+		var rootStopErr error
+		if options.group != nil {
+			rootResult, rootStopErr = e.stopProcessGroup(forceCtx, options.group, forceProcessOpts|optWaitForStdio)
+		} else {
+			rootResult, rootStopErr = e.stopSingleProcess(forceCtx, handle, forceProcessOpts|optWaitForStdio)
+		}
 		if rootStopErr != nil &&
 			!errors.Is(rootStopErr, ErrTimedOutWaitingForProcessToStop) &&
 			!errors.Is(rootStopErr, context.DeadlineExceeded) {
@@ -640,11 +672,16 @@ func (e *OSExecutor) stopProcessTreeInternal(
 
 	tree, treeErr := resolveProcessTree(graceCtx, handle)
 	if treeErr != nil && !errors.Is(treeErr, ErrIncompleteProcessTree) {
-		if errors.Is(treeErr, context.DeadlineExceeded) && ctx.Err() == nil {
+		if options.group != nil && IsProcessGoneErr(treeErr) && !errors.Is(treeErr, ErrProcessIdentityMismatch) {
+			// Captured group members remain addressable after the leader's ancestry is gone.
+			tree = []ProcessHandle{handle}
+			treeErr = nil
+		} else if errors.Is(treeErr, context.DeadlineExceeded) && ctx.Err() == nil {
 			procTreeLog.Error(treeErr, "Process tree enumeration exceeded the graceful-stop deadline; force-stopping only the root")
 			return forceRootAfterIncompleteEnumeration(treeErr)
+		} else {
+			return fmt.Errorf("could not get process tree for process %d: %w", handle.Pid, treeErr)
 		}
-		return fmt.Errorf("could not get process tree for process %d: %w", handle.Pid, treeErr)
 	}
 	if errors.Is(treeErr, ErrIncompleteProcessTree) {
 		procTreeLog.Error(
