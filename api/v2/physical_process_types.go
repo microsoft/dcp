@@ -97,11 +97,13 @@ type PhysicalProcessSpec struct {
 	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
 
 	// StdoutFile optionally supplies an existing raw stdout capture for an identity-bound PID reference.
-	// It is retained while the process runs and removed after confirmed exit when this resource is deleted.
+	// It is retained while that process instance is running. On resource deletion,
+	// removal is best effort after exit or confirmed absence, including PID reuse.
 	StdoutFile string `json:"stdoutFile,omitempty"`
 
 	// StderrFile optionally supplies an existing raw stderr capture for an identity-bound PID reference.
-	// It is retained while the process runs and removed after confirmed exit when this resource is deleted.
+	// It is retained while that process instance is running. On resource deletion,
+	// removal is best effort after exit or confirmed absence, including PID reuse.
 	StderrFile string `json:"stderrFile,omitempty"`
 
 	// Process describes an operating system process to launch. Exactly one of pid or process must be set.
@@ -164,8 +166,8 @@ type PhysicalProcessStatus struct {
 	// PID is the operating system process ID being tracked.
 	PID *int64 `json:"pid,omitempty"`
 
-	// IdentityTimestamp reports the process identity captured by the controller for PID-reuse protection.
-	// It is diagnostic and is not used to reconstruct controller state.
+	// IdentityTimestamp identifies the observed process instance together with PID.
+	// It is used to guard against PID reuse for subsequent persistent processes.
 	// On Linux this value represents elapsed time since boot rather than wall-clock time.
 	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
 
