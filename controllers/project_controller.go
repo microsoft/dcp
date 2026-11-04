@@ -27,6 +27,8 @@ import (
 	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 const (
@@ -60,13 +62,17 @@ var projectDataHandlers = map[projectState]projectDataHandlerFunc{
 // ProjectReconciler prepares launch inputs and reusable context for AppHost-controlled debugging.
 type ProjectReconciler struct {
 	*ReconcilerBase[apiv2.Project, *apiv2.Project]
-	projects *ObjectStateMap[types.UID, projectData, *projectData, *apiv2.Project]
+	projects            *ObjectStateMap[types.UID, projectData, *projectData, *apiv2.Project]
+	processExecutor     process.Executor
+	processCleanupQueue *resiliency.WorkQueue
 }
 
-func NewProjectReconciler(ctx context.Context, client ctrl_client.Client, reader ctrl_client.Reader, log logr.Logger) *ProjectReconciler {
+func NewProjectReconciler(ctx context.Context, client ctrl_client.Client, reader ctrl_client.Reader, log logr.Logger, executor process.Executor) *ProjectReconciler {
 	return &ProjectReconciler{
-		ReconcilerBase: NewReconcilerBase[apiv2.Project](client, reader, log, ctx),
-		projects:       NewObjectStateMap[types.UID, projectData, *projectData, *apiv2.Project](),
+		ReconcilerBase:      NewReconcilerBase[apiv2.Project](client, reader, log, ctx),
+		projects:            NewObjectStateMap[types.UID, projectData, *projectData, *apiv2.Project](),
+		processExecutor:     executor,
+		processCleanupQueue: resiliency.NewWorkQueue(ctx, MaxConcurrentReconciles),
 	}
 }
 
@@ -108,7 +114,7 @@ func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager, name string) erro
 		Owns(&apiv2.ServiceEndpoint{}).
 		Watches(&apiv2.LogicalContainerNetwork{}, handler.EnqueueRequestsFromMapFunc(r.mapProjectReference(projectNetworkRefField))).
 		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.ProjectList{}))).
-		Named(name).Complete(r)
+		WatchesRawSource(r.GetReconciliationEventSource()).Named(name).Complete(r)
 }
 
 func (r *ProjectReconciler) mapProjectReference(indexField string) handler.MapFunc {
@@ -147,6 +153,12 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resource.GetResourceId())
+	if !resource.DeletionTimestamp.IsZero() && !hasFinalizer(&resource, projectFinalizer) {
+		r.projects.DeleteByNamespacedName(req.NamespacedName)
+		logger.ReleaseResourceLog(resource.GetResourceId())
+		return ctrl.Result{}, nil
+	}
+	r.projects.RunDeferredOps(req.NamespacedName, &resource)
 	stateKey, data := r.projects.BorrowByNamespacedName(req.NamespacedName)
 	if data != nil && stateKey != resource.UID {
 		logger.ReleaseResourceLog((&apiv2.Project{ObjectMeta: metav1.ObjectMeta{UID: stateKey}}).GetResourceId())
@@ -165,11 +177,6 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if change == noChange {
 			change, delay = r.manageProject(ctx, &resource, data, log)
 		}
-	}
-
-	if !hasFinalizer(&resource, projectFinalizer) {
-		r.projects.DeleteByNamespacedName(req.NamespacedName)
-		defer logger.ReleaseResourceLog(resource.GetResourceId())
 	}
 
 	return r.SaveChangesWithDelay(ctx, &resource, patch, change, delay, nil, log)
@@ -495,6 +502,7 @@ func handleProjectReady(
 	_ projectState, data *projectData, log logr.Logger,
 ) objectChange {
 	data.reconcileErr, data.reason, data.message = nil, "", ""
+	reconciler.observeProjectProcesses(resource, data, log)
 	ready, reason, namespaceErr := checkNamespaceReadiness(ctx, reconciler.Client, resource.Namespace)
 	if !ready {
 		if namespaceErr != nil {
@@ -540,6 +548,15 @@ func handleProjectTerminal(
 	ctx context.Context, reconciler *ProjectReconciler, resource *apiv2.Project,
 	_ projectState, data *projectData, log logr.Logger,
 ) objectChange {
+	reconciler.observeProjectProcesses(resource, data, log)
+	if data.state == projectStateStopped {
+		for _, target := range data.processes {
+			if !target.cleanupAttempted {
+				data.state = projectStateStopping
+				return additionalReconciliationNeeded
+			}
+		}
+	}
 	if data.physicalUID != "" && data.state == projectStateFailed {
 		reason, message := data.reason, data.message
 		change := reconciler.observeProjectContainerContext(ctx, resource, data, log)
@@ -701,6 +718,14 @@ func (r *ProjectReconciler) handleDeletionRequest(
 			}
 		}
 	}()
+	if data.state != projectStateDelete {
+		for handle, target := range data.processes {
+			if target.observation.Cleanup == apiv2.ProjectDebugProcessCleanupUnconfirmed {
+				target.cleanupAttempted = false
+				data.processes[handle] = target
+			}
+		}
+	}
 	data.state, data.reason, data.message, data.reconcileErr = projectStateDelete, "", "", nil
 
 	if resource.Status.Debug != nil {
@@ -722,6 +747,9 @@ func (r *ProjectReconciler) handleDeletionRequest(
 		}
 	}
 
+	if !r.settleProjectProcesses(resource, data, log) {
+		return additionalReconciliationNeeded, delay
+	}
 	cleaned, cleanupErr := r.cleanupProjectBackings(ctx, resource, log)
 	if cleanupErr != nil {
 		data.retry("PhysicalDeletionFailed", cleanupErr)
@@ -730,8 +758,7 @@ func (r *ProjectReconciler) handleDeletionRequest(
 	if !cleaned {
 		return additionalReconciliationNeeded, delay
 	}
-	r.projects.DeleteByNamespacedName(resource.NamespacedName())
-	data = nil
+	logUnconfirmedProjectTargets(resource, log)
 	return deleteFinalizer(resource, projectFinalizer, log), delay
 }
 
@@ -800,6 +827,9 @@ func handleProjectStopping(
 		data.reason, data.message = "DebugShutdownPending", "Waiting for debug sessions to finish graceful shutdown."
 		return additionalReconciliationNeeded
 	}
+	if !reconciler.settleProjectProcesses(resource, data, log) {
+		return additionalReconciliationNeeded
+	}
 	cleaned, cleanupErr := reconciler.cleanupProjectBackings(ctx, resource, log)
 	if cleanupErr != nil {
 		data.retry("PhysicalDeletionFailed", cleanupErr)
@@ -809,6 +839,7 @@ func handleProjectStopping(
 		return additionalReconciliationNeeded
 	}
 	data.state = projectStateStopped
+	logUnconfirmedProjectTargets(resource, log)
 	return noChange
 }
 

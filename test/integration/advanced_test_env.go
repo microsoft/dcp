@@ -279,7 +279,7 @@ func StartAdvancedTestEnvironmentWithOptions(
 	}
 
 	if inclCtrl&ProjectController != 0 {
-		projectR := controllers.NewProjectReconciler(ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("ProjectReconciler"))
+		projectR := controllers.NewProjectReconciler(ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("ProjectReconciler"), pe)
 		if projectSetupErr := projectR.SetupWithManager(mgr, instanceTag+"-ProjectReconciler"); projectSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Project reconciler: %w", projectSetupErr)
 		}

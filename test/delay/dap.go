@@ -36,6 +36,15 @@ func serveDAP(input io.Reader, output io.Writer) error {
 		if commandErr := json.Unmarshal(message["command"], &command); commandErr != nil {
 			return commandErr
 		}
+		if command == "reportProcess" {
+			sequence++
+			if writeErr := dap.WriteMessage(output, dap.Message{
+				"seq": json.RawMessage(strconv.FormatInt(sequence, 10)), "type": json.RawMessage(`"event"`),
+				"event": json.RawMessage(`"process"`), "body": message["arguments"],
+			}); writeErr != nil {
+				return writeErr
+			}
+		}
 		sequence++
 		response := dap.Message{
 			"seq": json.RawMessage(strconv.FormatInt(sequence, 10)), "type": json.RawMessage(`"response"`),

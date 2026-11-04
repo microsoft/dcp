@@ -165,6 +165,14 @@ type ProjectDebugSessionStatus struct {
 	ID string `json:"id"`
 	// ExecutionID references an entry in debug.executions when DCP owns its adapter process.
 	ExecutionID string `json:"executionID,omitempty"`
+	// Processes retains adapter-reported targets independently of the stream and adapter lifetimes.
+	// +listType=map
+	// +listMapKey=id
+	Processes []ProjectDebugProcessStatus `json:"processes,omitempty"`
+	// ProcessTrackingUnconfirmed indicates targets whose local identity cannot be confirmed.
+	ProcessTrackingUnconfirmed bool `json:"processTrackingUnconfirmed,omitempty"`
+	// ProcessTrackingMessage describes missing or unavailable target identity information.
+	ProcessTrackingMessage string `json:"processTrackingMessage,omitempty"`
 	// Phase reports transport setup, established transport, normal closure, or failure.
 	// +kubebuilder:validation:Enum=Pending;Running;Exited;Failed
 	Phase ProjectDebugPhase `json:"phase"`
@@ -174,6 +182,55 @@ type ProjectDebugSessionStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ProjectDebugProcessStatus registers one adapter-reported process instance with its originating session.
+// Registration fields are API-server-owned; Observation is controller-owned.
+// +k8s:openapi-gen=true
+type ProjectDebugProcessStatus struct {
+	// ID identifies this registration independently of reusable operating system PIDs.
+	ID string `json:"id"`
+	// Name is the diagnostic name supplied by the adapter.
+	Name string `json:"name,omitempty"`
+	// PID is the reported operating system process ID, if provided.
+	PID *int64 `json:"pid,omitempty"`
+	// IdentityTimestamp captures local PID-reuse identity; absent when identity could not be resolved.
+	// On Linux this represents elapsed time since boot, not a wall-clock start time.
+	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
+	// TrackingError reports unavailable or non-local process identity without failing the DAP session.
+	TrackingError string `json:"trackingError,omitempty"`
+	// Observation reports Project-owned process observation and cleanup independently of session phase.
+	Observation ProjectDebugProcessObservation `json:"observation,omitempty"`
+}
+
+type ProjectDebugProcessPhase string
+
+const (
+	ProjectDebugProcessUnknown ProjectDebugProcessPhase = "Unknown"
+	ProjectDebugProcessRunning ProjectDebugProcessPhase = "Running"
+	ProjectDebugProcessExited  ProjectDebugProcessPhase = "Exited"
+)
+
+type ProjectDebugProcessCleanup string
+
+const (
+	ProjectDebugProcessCleanupComplete    ProjectDebugProcessCleanup = "Complete"
+	ProjectDebugProcessCleanupUnconfirmed ProjectDebugProcessCleanup = "Unconfirmed"
+)
+
+// ProjectDebugProcessObservation describes an observed process instance and its cleanup disposition.
+// +k8s:openapi-gen=true
+type ProjectDebugProcessObservation struct {
+	// Phase is Unknown, Running, or Exited; Exited also covers confirmed absence or PID reuse.
+	// +kubebuilder:validation:Enum=Unknown;Running;Exited
+	Phase ProjectDebugProcessPhase `json:"phase,omitempty"`
+	// FinishedAt records when exit or absence was confirmed, without claiming an unavailable exit code.
+	FinishedAt metav1.MicroTime `json:"finishedAt,omitempty"`
+	// Cleanup is empty while pending, Complete when confirmed, or Unconfirmed when cleanup cannot be confirmed.
+	// +kubebuilder:validation:Enum=Complete;Unconfirmed
+	Cleanup ProjectDebugProcessCleanup `json:"cleanup,omitempty"`
+	// Message describes observation failures or unconfirmed cleanup.
+	Message string `json:"message,omitempty"`
 }
 
 // ProjectPhase summarizes preparation and debug-session coordination.

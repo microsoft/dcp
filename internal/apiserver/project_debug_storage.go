@@ -343,7 +343,9 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 	sessionErr = dap.Bridge(ctx,
 		&debugDAPTransport{reader: bufio.NewReader(stream), writer: stream, close: connection.Close},
 		&debugDAPTransport{reader: bufio.NewReader(transport), writer: transport, close: transport.Close},
-		execution.done, apiv2.ProjectDebugShutdownGrace)
+		execution.done, apiv2.ProjectDebugShutdownGrace, func(message dap.Message) error {
+			return storage.runtime.observeProcessMessage(project, session.ID, message)
+		})
 	if ctx.Err() != nil && !errors.Is(context.Cause(ctx), dap.ErrShutdownRequested) {
 		sessionErr = errors.Join(sessionErr, context.Cause(ctx))
 	}

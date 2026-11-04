@@ -16,6 +16,7 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 type projectState int
@@ -78,10 +79,19 @@ type projectData struct {
 	ports            []logicalPortData
 	processConfig    *apiv2.LogicalProcessConfig
 	containerConfig  *apiv2.LogicalContainerConfig
+	processes        map[process.ProcessHandle]projectProcessData
+	processCleanup   *projectProcessCleanupOperation
+	processPoll      bool
 }
 
 func (data *projectData) Clone() *projectData {
 	cloned := *data
+	if data.processes != nil {
+		cloned.processes = make(map[process.ProcessHandle]projectProcessData, len(data.processes))
+		for handle, target := range data.processes {
+			cloned.processes[handle] = target
+		}
+	}
 	cloned.ports = slices.Clone(data.ports)
 	cloned.processConfig = data.processConfig.DeepCopy()
 	cloned.containerConfig = data.containerConfig.DeepCopy()
@@ -102,6 +112,7 @@ func (data *projectData) UpdateFrom(other *projectData) bool {
 
 func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, AdditionalReconciliationDelay, bool) {
 	change := projectLogicalPorts(data.ports, &resource.Status.Ports)
+	change |= projectProcessObservations(resource, data)
 	inputsReady := data.processConfig != nil || data.containerConfig != nil
 	var arguments []string
 	var environment []commonapi.EnvVar
@@ -164,6 +175,10 @@ func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, Additio
 	}
 	projectionChange, delay, valid := projectProjections.applyWithReason(
 		data.state, data.reason, data.message, &resource.Status.Phase, &resource.Status.Conditions, resource.Generation)
+	if data.processPoll && projectionChange&additionalReconciliationNeeded == 0 {
+		projectionChange |= additionalReconciliationNeeded
+		delay = MonitoringDelay
+	}
 	return change | projectionChange, delay, valid
 }
 

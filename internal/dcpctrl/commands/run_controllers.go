@@ -308,7 +308,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		}
 
 		projectCtrl := controllers.NewProjectReconciler(
-			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("ProjectReconciler"),
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("ProjectReconciler"), processExecutor,
 		)
 		if projectSetupErr := projectCtrl.SetupWithManager(mgr, defaultControllerName); projectSetupErr != nil {
 			log.Error(projectSetupErr, "Unable to set up Project controller")

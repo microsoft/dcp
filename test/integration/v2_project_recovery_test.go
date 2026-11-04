@@ -164,7 +164,10 @@ func TestV2ProjectMissingBackingCompletesFollowerThroughConflict(t *testing.T) {
 	require.NoError(t, server.Client.Delete(ctx, physical))
 	removeProjectBackingHold(t, ctx, server.Client, physical)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
-	failed := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
+	failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Status.RuntimeLogs != nil &&
+			current.Status.RuntimeLogs.Complete && !current.Status.RuntimeLogs.Available, nil
+	})
 	require.True(t, decorated.conflicted.Load())
 	require.Equal(t, prepared.Status.RuntimeLogs.UID, failed.Status.RuntimeLogs.UID)
 	require.True(t, failed.Status.RuntimeLogs.Complete)

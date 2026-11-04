@@ -167,6 +167,8 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.Project{}.OpenAPIModelName():                                 schema_microsoft_dcp_api_v2_Project(ref),
 		v2.ProjectContainerTemplate{}.OpenAPIModelName():                schema_microsoft_dcp_api_v2_ProjectContainerTemplate(ref),
 		v2.ProjectDebugExecutionStatus{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_ProjectDebugExecutionStatus(ref),
+		v2.ProjectDebugProcessObservation{}.OpenAPIModelName():          schema_microsoft_dcp_api_v2_ProjectDebugProcessObservation(ref),
+		v2.ProjectDebugProcessStatus{}.OpenAPIModelName():               schema_microsoft_dcp_api_v2_ProjectDebugProcessStatus(ref),
 		v2.ProjectDebugSessionStatus{}.OpenAPIModelName():               schema_microsoft_dcp_api_v2_ProjectDebugSessionStatus(ref),
 		v2.ProjectDebugStatus{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_ProjectDebugStatus(ref),
 		v2.ProjectList{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v2_ProjectList(ref),
@@ -9324,6 +9326,106 @@ func schema_microsoft_dcp_api_v2_ProjectDebugExecutionStatus(ref common.Referenc
 	}
 }
 
+func schema_microsoft_dcp_api_v2_ProjectDebugProcessObservation(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProjectDebugProcessObservation describes an observed process instance and its cleanup disposition.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase is Unknown, Running, or Exited; Exited also covers confirmed absence or PID reuse.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"finishedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FinishedAt records when exit or absence was confirmed, without claiming an unavailable exit code.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"cleanup": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Cleanup is empty while pending, Complete when confirmed, or Unconfirmed when cleanup cannot be confirmed.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Message describes observation failures or unconfirmed cleanup.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ProjectDebugProcessStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProjectDebugProcessStatus registers one adapter-reported process instance with its originating session. Registration fields are API-server-owned; Observation is controller-owned.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"id": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ID identifies this registration independently of reusable operating system PIDs.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the diagnostic name supplied by the adapter.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PID is the reported operating system process ID, if provided.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"identityTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IdentityTimestamp captures local PID-reuse identity; absent when identity could not be resolved. On Linux this represents elapsed time since boot, not a wall-clock start time.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"trackingError": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TrackingError reports unavailable or non-local process identity without failing the DAP session.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"observation": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Observation reports Project-owned process observation and cleanup independently of session phase.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(v2.ProjectDebugProcessObservation{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"id"},
+			},
+		},
+		Dependencies: []string{
+			v2.ProjectDebugProcessObservation{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_ProjectDebugSessionStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -9342,6 +9444,41 @@ func schema_microsoft_dcp_api_v2_ProjectDebugSessionStatus(ref common.ReferenceC
 					"executionID": {
 						SchemaProps: spec.SchemaProps{
 							Description: "ExecutionID references an entry in debug.executions when DCP owns its adapter process.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"processes": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"id",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Processes retains adapter-reported targets independently of the stream and adapter lifetimes.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.ProjectDebugProcessStatus{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"processTrackingUnconfirmed": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ProcessTrackingUnconfirmed indicates targets whose local identity cannot be confirmed.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"processTrackingMessage": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ProcessTrackingMessage describes missing or unavailable target identity information.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -9386,7 +9523,7 @@ func schema_microsoft_dcp_api_v2_ProjectDebugSessionStatus(ref common.ReferenceC
 			},
 		},
 		Dependencies: []string{
-			metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.ProjectDebugProcessStatus{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 

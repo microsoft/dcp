@@ -138,7 +138,8 @@ func (writer *messageWriter) remap(message Message) (bool, error) {
 // On ErrShutdownRequested it injects disconnect unless shutdown was already forwarded, allowing
 // final messages to drain until adapter EOF or grace expiry. Other cancellation and client loss fail.
 // It never synthesizes application exit or terminated events.
-func Bridge(ctx context.Context, client, adapter Transport, exited <-chan struct{}, grace time.Duration) error {
+// Observe, when non-nil, runs before forwarding adapter messages and must be bounded and leave them unchanged.
+func Bridge(ctx context.Context, client, adapter Transport, exited <-chan struct{}, grace time.Duration, observe func(Message) error) error {
 	toAdapter, toClient := newMessageWriter(adapter), newMessageWriter(client)
 	type result struct {
 		client bool
@@ -175,6 +176,12 @@ func Bridge(ctx context.Context, client, adapter Transport, exited <-chan struct
 			if readErr != nil {
 				results <- result{err: readErr}
 				return
+			}
+			if observe != nil {
+				if observationErr := observe(message); observationErr != nil {
+					results <- result{err: observationErr}
+					return
+				}
 			}
 			forward, remapErr := toAdapter.remap(message)
 			if remapErr != nil {

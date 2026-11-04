@@ -456,6 +456,16 @@ func (in ProjectDebugExecutionStatus) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ProjectDebugProcessObservation) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ProjectDebugProcessObservation"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ProjectDebugProcessStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ProjectDebugProcessStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ProjectDebugSessionStatus) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.ProjectDebugSessionStatus"
 }

@@ -27,7 +27,7 @@ import (
 func serviceProject(name, namespace, root, kind string, arguments []string, environment []commonapi.EnvVar) *apiv2.Project {
 	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: apiv2.ProjectSpec{RootDirectory: root}}
 	binding := apiv2.LogicalServiceBinding{Name: "http", Service: &apiv2.LogicalServiceTemplate{
-		Name: "management", LogicalServiceConfig: apiv2.LogicalServiceConfig{Address: "127.0.0.1", Protocol: commonapi.PortProtocolUDP},
+		Name: "management", LogicalServiceSpec: apiv2.LogicalServiceSpec{Address: "127.0.0.1", Protocol: commonapi.PortProtocolUDP},
 	}}
 	if kind == "process" {
 		resource.Spec.Process = &apiv2.ProjectProcessTemplate{
@@ -131,7 +131,7 @@ func TestV2ProjectTemplatePreparationFailures(t *testing.T) {
 				t.Parallel()
 				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 				t.Cleanup(cancel)
-				server, _, startupErr := StartTestEnvironment(t, ctx, projectTestControllers, t.Name(), t.TempDir())
+				server, _, startupErr := StartTestEnvironment(t, ctx, projectTestControllers|LogicalServiceController, t.Name(), t.TempDir())
 				require.NoError(t, startupErr)
 				namespace := createV2ExecNamespace(t, ctx, server.Client, fmt.Sprintf("v2-project-template-%s-%t", kind, malformed))
 				arguments := []string{`{{portFor "absent"}}`}
@@ -155,10 +155,8 @@ func TestV2ProjectTemplatePreparationFailures(t *testing.T) {
 				})
 				if !malformed {
 					service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "absent", Namespace: namespace.Name},
-						Spec: apiv2.LogicalServiceSpec{Mode: apiv2.LogicalServiceModeExisting, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 43210}}}}
+						Spec: apiv2.LogicalServiceSpec{Address: "127.0.0.1"}}
 					require.NoError(t, server.Client.Create(ctx, service))
-					service.Status.EffectiveAddresses = service.Spec.Addresses
-					require.NoError(t, server.Client.Status().Update(ctx, service))
 					waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
 				}
 				require.NoError(t, server.Client.Delete(ctx, resource))
@@ -194,8 +192,8 @@ func (apiClient *projectEvaluatedCreateClient) Create(ctx context.Context, objec
 	return nil
 }
 
-// Verifies that a committed physical create pins evaluated launch values even if the source
-// service changes before a lost response is recovered, without evaluating or launching again.
+// Verifies that a committed physical create pins evaluated launch values even if a managed
+// service's producer addresses change before recovery, without evaluating or launching again.
 func TestV2ProjectPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"container"} {
@@ -203,7 +201,7 @@ func TestV2ProjectPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
 			var decorated *projectEvaluatedCreateClient
-			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
+			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers|LogicalServiceController, t.Name(), t.TempDir(),
 				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
 					decorated = &projectEvaluatedCreateClient{Client: apiClient, created: make(chan ctrl_client.Object, 1), release: make(chan struct{})}
 					return decorated
@@ -213,10 +211,15 @@ func TestV2ProjectPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 			t.Cleanup(release)
 			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-snapshot-"+kind)
 			service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "source", Namespace: namespace.Name},
-				Spec: apiv2.LogicalServiceSpec{Mode: apiv2.LogicalServiceModeExisting, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 43210}}}}
+				Spec: apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}}
 			require.NoError(t, server.Client.Create(ctx, service))
-			service.Status.EffectiveAddresses = service.Spec.Addresses
-			require.NoError(t, server.Client.Status().Update(ctx, service))
+			producer := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "producer", Namespace: namespace.Name},
+				Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 43210}}}}
+			require.NoError(t, server.Client.Create(ctx, producer))
+			waitObjectAssumesStateEx(t, ctx, server.Client, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+				return current.Status.Phase == apiv2.LogicalServicePhaseReady && len(current.Status.EffectiveAddresses) == 1 &&
+					current.Status.EffectiveAddresses[0].Port == 43210, nil
+			})
 			resource := serviceProject("project", namespace.Name, t.TempDir(), kind, []string{`{{portFor "source"}}`}, nil)
 			if kind == "process" {
 				resource.Spec.Process.Ports = nil
@@ -230,8 +233,12 @@ func TestV2ProjectPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("Project did not declare evaluated execution")
 			}
-			service.Status.EffectiveAddresses[0].Port = 54321
-			require.NoError(t, server.Client.Status().Update(ctx, service))
+			producer.Spec.Addresses[0].Port = 54321
+			require.NoError(t, server.Client.Update(ctx, producer))
+			waitObjectAssumesStateEx(t, ctx, server.Client, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+				return current.Status.Phase == apiv2.LogicalServicePhaseReady && len(current.Status.EffectiveAddresses) == 1 &&
+					current.Status.EffectiveAddresses[0].Port == 54321, nil
+			})
 			release()
 			running := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
 			require.Equal(t, backing.GetUID(), running.Status.RuntimeLogs.UID)

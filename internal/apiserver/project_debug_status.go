@@ -70,12 +70,31 @@ func (storage *projectControllerStatusStorage) Update(
 			return next, nil
 		}
 		prerequisitesReady := next.Status.Debug != nil && next.Status.Debug.PrerequisitesReady
+		proposedDebug := next.Status.Debug
 		next.Status.Debug = current.(*apiv2.Project).Status.Debug.DeepCopy()
 		if next.Status.Debug == nil && prerequisitesReady {
 			next.Status.Debug = &apiv2.ProjectDebugStatus{}
 		}
 		if next.Status.Debug != nil {
 			next.Status.Debug.PrerequisitesReady = prerequisitesReady
+			if proposedDebug != nil {
+				for sessionIndex := range next.Status.Debug.Sessions {
+					storedSession := &next.Status.Debug.Sessions[sessionIndex]
+					for _, proposedSession := range proposedDebug.Sessions {
+						if proposedSession.ID != storedSession.ID {
+							continue
+						}
+						for processIndex := range storedSession.Processes {
+							storedProcess := &storedSession.Processes[processIndex]
+							for _, proposedProcess := range proposedSession.Processes {
+								if proposedProcess.ID == storedProcess.ID && proposedProcess.Observation.Phase != "" {
+									storedProcess.Observation = proposedProcess.Observation
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 		return next, nil
 	})
@@ -99,14 +118,7 @@ func (writer *projectDebugStatusWriter) update(
 	}
 	// Storage can retry the transformation, so snapshot inputs before invoking it.
 	executionSnapshot, sessionSnapshot := execution.DeepCopy(), session.DeepCopy()
-	info := rest.DefaultUpdatedObjectInfo(nil, func(_ context.Context, _, current runtime.Object) (runtime.Object, error) {
-		if current == nil {
-			return nil, apierrors.NewNotFound((&apiv2.Project{}).GetGroupVersionResource().GroupResource(), name.Name)
-		}
-		project := current.(*apiv2.Project).DeepCopy()
-		if project.UID != uid {
-			return nil, apierrors.NewConflict(project.GetGroupVersionResource().GroupResource(), name.Name, fmt.Errorf("project UID changed"))
-		}
+	return writer.mutate(ctx, name, uid, func(project *apiv2.Project) error {
 		if project.Status.Debug == nil {
 			project.Status.Debug = &apiv2.ProjectDebugStatus{}
 		}
@@ -120,7 +132,7 @@ func (writer *projectDebugStatusWriter) update(
 		}
 		if (!project.DeletionTimestamp.IsZero() || project.Spec.Stop) &&
 			((executionSnapshot != nil && executionIndex < 0) || (sessionSnapshot != nil && sessionIndex < 0)) {
-			return nil, apierrors.NewForbidden(project.GetGroupVersionResource().GroupResource(), name.Name, fmt.Errorf("cannot add debug entries to a stopping or deleting project"))
+			return apierrors.NewForbidden(project.GetGroupVersionResource().GroupResource(), name.Name, fmt.Errorf("cannot add debug entries to a stopping or deleting project"))
 		}
 		if executionSnapshot != nil {
 			if executionIndex < 0 {
@@ -130,11 +142,43 @@ func (writer *projectDebugStatusWriter) update(
 			}
 		}
 		if sessionSnapshot != nil {
+			nextSession := sessionSnapshot.DeepCopy()
 			if sessionIndex < 0 {
-				debug.Sessions = append(debug.Sessions, *sessionSnapshot.DeepCopy())
+				nextSession.Processes = nil
+				nextSession.ProcessTrackingUnconfirmed = false
+				nextSession.ProcessTrackingMessage = ""
+				debug.Sessions = append(debug.Sessions, *nextSession)
 			} else {
-				debug.Sessions[sessionIndex] = *sessionSnapshot.DeepCopy()
+				storedSession := &debug.Sessions[sessionIndex]
+				nextSession.Processes = storedSession.Processes
+				nextSession.ProcessTrackingUnconfirmed = storedSession.ProcessTrackingUnconfirmed
+				nextSession.ProcessTrackingMessage = storedSession.ProcessTrackingMessage
+				debug.Sessions[sessionIndex] = *nextSession
 			}
+		}
+		return nil
+	})
+}
+
+func (writer *projectDebugStatusWriter) mutate(
+	ctx context.Context, name types.NamespacedName, uid types.UID, mutate func(*apiv2.Project) error,
+) (*apiv2.Project, error) {
+	if writer.storage == nil || uid == "" {
+		return nil, fmt.Errorf("project debug status storage and UID are required")
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
+	info := rest.DefaultUpdatedObjectInfo(nil, func(_ context.Context, _, current runtime.Object) (runtime.Object, error) {
+		if current == nil {
+			return nil, apierrors.NewNotFound((&apiv2.Project{}).GetGroupVersionResource().GroupResource(), name.Name)
+		}
+		project := current.(*apiv2.Project).DeepCopy()
+		if project.UID != uid {
+			return nil, apierrors.NewConflict(project.GetGroupVersionResource().GroupResource(), name.Name, fmt.Errorf("project UID changed"))
+		}
+		if mutationErr := mutate(project); mutationErr != nil {
+			return nil, mutationErr
 		}
 		return project, nil
 	})
