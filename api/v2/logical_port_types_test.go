@@ -236,8 +236,8 @@ func TestLogicalContainerLifecycleKeyUsesRuntimePorts(t *testing.T) {
 	require.Equal(t, "explicit", explicitKey)
 }
 
-// Verifies that LogicalProcess.Validate requires actual serving ports for existing-mode
-// registrations while preserving dynamic allocation for newly launched processes.
+// Verifies that LogicalProcess.Validate requires fixed serving ports in persistent and existing modes
+// regardless of lifecycle key, while preserving dynamic allocation for session processes.
 func TestLogicalProcessPortValidationByMode(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -248,29 +248,35 @@ func TestLogicalProcessPortValidationByMode(t *testing.T) {
 	}{
 		{"default session dynamic", "", 0, true},
 		{"session dynamic", LogicalProcessModeSession, 0, true},
-		{"persistent dynamic", LogicalProcessModePersistent, 0, true},
+		{"persistent dynamic rejected", LogicalProcessModePersistent, 0, false},
+		{"persistent minimum", LogicalProcessModePersistent, 1, true},
+		{"persistent explicit", LogicalProcessModePersistent, 8080, true},
+		{"persistent maximum", LogicalProcessModePersistent, 65535, true},
 		{"existing dynamic rejected", LogicalProcessModeExisting, 0, false},
 		{"existing explicit", LogicalProcessModeExisting, 8080, true},
 		{"existing maximum", LogicalProcessModeExisting, 65535, true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			spec := LogicalProcessSpec{Mode: testCase.mode, Ports: []LogicalProcessPort{{
-				LogicalServiceBinding: LogicalServiceBinding{Name: "http", ServiceRef: "service"}, Port: testCase.port,
-			}}}
-			if testCase.mode == LogicalProcessModeExisting {
-				pid := int64(42)
-				spec.PID, spec.IdentityTimestamp = &pid, metav1.NowMicro()
-			} else {
-				spec.Process = &LogicalProcessConfig{ExecutablePath: "app"}
-			}
-			resource := &LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test-namespace"}, Spec: spec}
-			validationErrors := resource.Validate(context.Background())
-			if testCase.valid {
-				require.Empty(t, validationErrors)
-			} else {
-				require.Len(t, validationErrors, 1)
-				require.Equal(t, "spec.ports[0].port", validationErrors[0].Field)
+			for _, lifecycleKey := range []string{"", "explicit"} {
+				spec := LogicalProcessSpec{Mode: testCase.mode, LifecycleKey: lifecycleKey, Ports: []LogicalProcessPort{{
+					LogicalServiceBinding: LogicalServiceBinding{Name: "http", ServiceRef: "service"}, Port: testCase.port,
+				}}}
+				if testCase.mode == LogicalProcessModeExisting {
+					pid := int64(42)
+					spec.PID, spec.IdentityTimestamp = &pid, metav1.NowMicro()
+				} else {
+					spec.Process = &LogicalProcessConfig{ExecutablePath: "app"}
+				}
+				resource := &LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test-namespace"}, Spec: spec}
+				validationErrors := resource.Validate(context.Background())
+				if testCase.valid {
+					require.Empty(t, validationErrors, "lifecycle key %q", lifecycleKey)
+				} else {
+					require.Len(t, validationErrors, 1, "lifecycle key %q", lifecycleKey)
+					require.Equal(t, "spec.ports[0].port", validationErrors[0].Field)
+					require.Contains(t, validationErrors[0].Detail, "an explicit serving port is required")
+				}
 			}
 		})
 	}

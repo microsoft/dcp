@@ -6368,7 +6368,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessPort(ref common.ReferenceCallback
 					},
 					"port": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Port is the port on which the process listens. Zero allocates a port for portForServing templates in session and persistent modes; existing mode requires an explicit nonzero port.",
+							Description: "Port is the port on which the process listens. Zero allocates a port for portForServing templates in session mode; persistent and existing modes require an explicit nonzero port regardless of lifecycle key.",
 							Default:     0,
 							Type:        []string{"integer"},
 							Format:      "int32",

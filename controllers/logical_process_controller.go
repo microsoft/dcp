@@ -276,7 +276,7 @@ func handleLogicalProcessPhysical(
 		physicalSpec.StdoutFile, physicalSpec.StderrFile = data.pendingRecord.StdOutFile, data.pendingRecord.StdErrFile
 	default:
 		desired := data.runConfig
-		if resource.Spec.Stop {
+		if desired == nil && resource.Spec.Stop {
 			desired = resource.Spec.Process
 		}
 		physicalSpec.Process = &apiv2.PhysicalProcessConfig{

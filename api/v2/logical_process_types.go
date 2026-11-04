@@ -301,16 +301,20 @@ func (resource *LogicalProcess) Validate(ctx context.Context) field.ErrorList {
 		} else if *resource.Spec.PID <= 0 || *resource.Spec.PID > math.MaxUint32 {
 			errorList = append(errorList, field.Invalid(specPath.Child("pid"), *resource.Spec.PID, "pid must be between 1 and 4294967295"))
 		}
-		for portIndex, port := range resource.Spec.Ports {
-			if port.Port == 0 {
-				errorList = append(errorList, field.Invalid(specPath.Child("ports").Index(portIndex).Child("port"), port.Port,
-					"an explicit serving port is required in existing mode"))
-			}
-		}
 	default:
 		errorList = append(errorList, field.NotSupported(specPath.Child("mode"), resource.Spec.Mode, []string{
 			string(LogicalProcessModeSession), string(LogicalProcessModePersistent), string(LogicalProcessModeExisting),
 		}))
+	}
+	// Allocated ports are not persisted with retained process identities. A new allocation on reuse
+	// could advertise a port the process never opened; existing processes cannot receive new allocations either.
+	if mode == LogicalProcessModePersistent || mode == LogicalProcessModeExisting {
+		for portIndex, port := range resource.Spec.Ports {
+			if port.Port == 0 {
+				errorList = append(errorList, field.Invalid(specPath.Child("ports").Index(portIndex).Child("port"), port.Port,
+					fmt.Sprintf("an explicit serving port is required in %s mode", mode)))
+			}
+		}
 	}
 	errorList = append(errorList, validateRetainedResourceMonitor(mode == LogicalProcessModePersistent, resource.Spec.MonitorPID, resource.Spec.MonitorTimestamp, specPath)...)
 	errorList = append(errorList, validateLogicalProcessPorts(resource.Spec.Ports, resource.Namespace, resource.Name, specPath.Child("ports"))...)
