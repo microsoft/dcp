@@ -116,7 +116,7 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 	getErr := reader.Get(ctx, req.NamespacedName, &resource)
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
-			r.discardExecution(req.NamespacedName, log)
+			r.discardExecution(req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		log.Error(getErr, "Failed to get PhysicalContainerExec")
@@ -135,7 +135,7 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 	}
 	stateKey, previous := r.executions.BorrowByNamespacedName(req.NamespacedName)
 	if previous != nil && stateKey != resource.UID {
-		r.discardExecution(req.NamespacedName, log)
+		r.discardExecution(req.NamespacedName)
 	}
 	r.executions.RunDeferredOps(req.NamespacedName, &resource)
 	_, data := r.executions.BorrowByNamespacedName(req.NamespacedName)
@@ -330,7 +330,8 @@ func (r *PhysicalContainerExecReconciler) handleExecutionDeletion(
 		log.Error(closeErr, "Failed to close execution output capture")
 	}
 	if !hasFinalizer(resource, LogicalBackingFinalizer) {
-		enqueueCaptureFileCleanup(r.outputCleanupQueue, log, data.stdout, data.stderr)
+		enqueueCaptureFileCleanup(r.outputCleanupQueue,
+			r.Log.WithValues("PhysicalContainerExec", resource.NamespacedName(), "UID", resource.UID), data.stdout, data.stderr)
 	}
 	return deleteFinalizer(resource, physicalContainerExecFinalizer, log), StandardDelay
 }
@@ -478,7 +479,8 @@ func (r *PhysicalContainerExecReconciler) finishExecution(
 		data.stderr.CloseAndLog(logs.CaptureFileCloseDefault, log)
 	}
 	if !r.queueExecutionResult(resource, data) {
-		enqueueCaptureFileCleanup(r.outputCleanupQueue, log, data.stdout, data.stderr)
+		enqueueCaptureFileCleanup(r.outputCleanupQueue,
+			r.Log.WithValues("PhysicalContainerExec", resource.NamespacedName(), "UID", resource.UID), data.stdout, data.stderr)
 	}
 }
 
@@ -495,13 +497,14 @@ func (r *PhysicalContainerExecReconciler) queueExecutionResult(resource *apiv2.P
 	return queued
 }
 
-func (r *PhysicalContainerExecReconciler) discardExecution(name types.NamespacedName, log logr.Logger) {
+func (r *PhysicalContainerExecReconciler) discardExecution(name types.NamespacedName) {
 	uid, data := r.executions.BorrowByNamespacedName(name)
 	if data != nil {
 		if data.session != nil {
 			data.session.cancel()
 		} else {
-			enqueueCaptureFileCleanup(r.outputCleanupQueue, log, data.stdout, data.stderr)
+			enqueueCaptureFileCleanup(r.outputCleanupQueue,
+				r.Log.WithValues("PhysicalContainerExec", name, "UID", uid), data.stdout, data.stderr)
 		}
 		logger.ReleaseResourceLog((&apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{UID: uid}}).GetResourceId())
 	}
