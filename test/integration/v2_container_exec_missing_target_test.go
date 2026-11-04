@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -58,7 +59,7 @@ func TestV2ContainerExecRejectsConfirmedMissingRuntime(t *testing.T) {
 }
 
 // Verifies that physical exec rejects confirmed runtime loss between target selection and
-// uncached preflight without launching a command against the vanished identity.
+// uncached preflight, reporting the terminal target state without a misleading nil lookup error.
 func TestV2ContainerExecRejectsRuntimeLossDuringPreflight(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -92,6 +93,9 @@ func TestV2ContainerExecRejectsRuntimeLossDuringPreflight(t *testing.T) {
 		return current.Status.Phase == apiv2.ContainerExecPhaseFailed, nil
 	})
 	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "ContainerUnavailable")
+	condition := apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady))
+	require.Equal(t, "target PhysicalContainer has exited or failed before execution launch", condition.Message)
+	require.NotContains(t, condition.Message, "<nil>")
 	require.Equal(t, target.Status.ContainerID, failed.Status.ContainerID)
 	require.Zero(t, orchestrator.ExecContainerCallCount(physical.Spec.Execution.Command))
 }
