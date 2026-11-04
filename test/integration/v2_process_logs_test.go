@@ -459,7 +459,7 @@ func TestV2ProcessLogicalOnlyFollowerCompletesDuringNamespaceDeletion(t *testing
 	require.Equal(t, payload, string(initial))
 	require.False(t, running.Status.RuntimeLogs.Complete)
 	t.Cleanup(func() {
-		_ = logs.RemoveProcessOutput(context.WithoutCancel(ctx),
+		_ = logs.RemoveOutputFiles(context.WithoutCancel(ctx),
 			running.Status.RuntimeLogs.StdoutFile, running.Status.RuntimeLogs.StderrFile)
 	})
 	if runtime.GOOS != "windows" {
@@ -611,7 +611,7 @@ func TestV2ProcessLogsFinishOnDeletionAndIsolateRecreatedResources(t *testing.T)
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalProcessRef}, physical))
 	// Clean up any captures left by best-effort deletion after both followers have closed.
 	t.Cleanup(func() {
-		cleanupErr := logs.RemoveProcessOutput(context.WithoutCancel(ctx), physical.Status.StdoutFile, physical.Status.StderrFile)
+		cleanupErr := logs.RemoveOutputFiles(context.WithoutCancel(ctx), physical.Status.StdoutFile, physical.Status.StderrFile)
 		if cleanupErr != nil {
 			t.Logf("Could not remove test output files: %v", cleanupErr)
 		}

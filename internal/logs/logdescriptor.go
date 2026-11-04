@@ -132,7 +132,7 @@ func (l *LogDescriptor) Usage() (uint32, time.Time) {
 }
 
 // Waits for all log watchers to stop (with a context + extra time serving as deadline)
-// and then deletes the log files (best effort).
+// and then deletes the log files (best effort), unless log preservation is enabled.
 func (l *LogDescriptor) Dispose(ctx context.Context, extraTime time.Duration) error {
 	l.lock.Lock()
 	if l.disposed {
@@ -177,9 +177,7 @@ func (l *LogDescriptor) doCleanup(deadline context.Context) error {
 
 	stdOutPath := l.stdOut.Id()
 	stdErrPath := l.stdErr.Id()
-	stdOutRemoveErr := RemoveWithRetry(deadline, stdOutPath)
-	stdErrRemoveErr := RemoveWithRetry(deadline, stdErrPath)
-	return errors.Join(stdOutRemoveErr, stdErrRemoveErr)
+	return RemoveOutputFiles(deadline, stdOutPath, stdErrPath)
 }
 
 func (l *LogDescriptor) createLogFiles(logsFolder string) error {

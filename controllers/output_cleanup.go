@@ -28,6 +28,14 @@ func enqueueOutputCleanup(queue *resiliency.WorkQueue, log logr.Logger, cleanup 
 }
 
 func enqueueCaptureFileCleanup(queue *resiliency.WorkQueue, log logr.Logger, captures ...*logs.CaptureFile) {
+	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+		for _, capture := range captures {
+			if capture != nil {
+				capture.CloseAndLog(logs.CaptureFileCloseDefault, log)
+			}
+		}
+		return
+	}
 	enqueueOutputCleanup(queue, log, func(ctx context.Context) error {
 		for _, capture := range captures {
 			if contextErr := ctx.Err(); contextErr != nil {
@@ -42,10 +50,10 @@ func enqueueCaptureFileCleanup(queue *resiliency.WorkQueue, log logr.Logger, cap
 }
 
 func enqueueProcessOutputCleanup(queue *resiliency.WorkQueue, log logr.Logger, stdoutPath, stderrPath string) {
-	if (stdoutPath == "" && stderrPath == "") || osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+	if stdoutPath == "" && stderrPath == "" {
 		return
 	}
 	enqueueOutputCleanup(queue, log, func(ctx context.Context) error {
-		return logs.RemoveProcessOutput(ctx, stdoutPath, stderrPath)
+		return logs.RemoveOutputFiles(ctx, stdoutPath, stderrPath)
 	})
 }

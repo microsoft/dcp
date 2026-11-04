@@ -43,13 +43,13 @@ func RemoveWithRetry(ctx context.Context, path string) error {
 	})
 }
 
-// RemoveProcessOutput removes retired process captures, honoring the existing executable-log preservation setting.
-func RemoveProcessOutput(ctx context.Context, stdoutPath, stderrPath string) error {
+// RemoveOutputFiles removes captured output with bounded retries unless log preservation is enabled.
+func RemoveOutputFiles(ctx context.Context, paths ...string) error {
 	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
 		return nil
 	}
 	var removeErr error
-	for _, path := range slices.Compact([]string{stdoutPath, stderrPath}) {
+	for _, path := range slices.Compact(slices.Clone(paths)) {
 		if path != "" {
 			removeErr = errors.Join(removeErr, RemoveWithRetry(ctx, path))
 		}
