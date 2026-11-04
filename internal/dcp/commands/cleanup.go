@@ -19,10 +19,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	cmds "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/containers/runtimes"
 	"github.com/microsoft/dcp/internal/exerunners"
+	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
@@ -575,6 +577,12 @@ func cleanupPersistentProcessRecord(
 		cleaned = true
 
 		deleteRecord := func(deleteLogMessage string) error {
+			if strings.HasPrefix(currentRecord.ResourceKey, apiv2.LogicalProcessResourceKeyPrefix) {
+				removeErr := logs.RemoveProcessOutput(ctx, currentRecord.StdOutFile, currentRecord.StdErrFile)
+				if removeErr != nil {
+					log.Error(removeErr, "Could not remove retired persistent process output", "ResourceKey", currentRecord.ResourceKey)
+				}
+			}
 			if deleteErr := stateStore.DeletePersistentProcess(ctx, currentRecord.ResourceKey); deleteErr != nil {
 				log.Error(deleteErr, deleteLogMessage, "ResourceKey", currentRecord.ResourceKey)
 				return deleteErr

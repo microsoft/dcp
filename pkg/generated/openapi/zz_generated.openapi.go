@@ -87,6 +87,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1.TunnelConfiguration{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_TunnelConfiguration(ref),
 		v1.TunnelStatus{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_TunnelStatus(ref),
 		v1.VolumeMount{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v1_VolumeMount(ref),
+		v2.AmbientEnvironment{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_AmbientEnvironment(ref),
 		v2.ContainerBuildContext{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_ContainerBuildContext(ref),
 		v2.ContainerBuildContextArchive{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref),
 		v2.ContainerBuildSecret{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_ContainerBuildSecret(ref),
@@ -106,6 +107,11 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.LogicalContainerNetworkStatus{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref),
 		v2.LogicalContainerSpec{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalContainerSpec(ref),
 		v2.LogicalContainerStatus{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref),
+		v2.LogicalProcess{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v2_LogicalProcess(ref),
+		v2.LogicalProcessConfig{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalProcessConfig(ref),
+		v2.LogicalProcessList{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_LogicalProcessList(ref),
+		v2.LogicalProcessSpec{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_LogicalProcessSpec(ref),
+		v2.LogicalProcessStatus{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref),
 		v2.Namespace{}.OpenAPIModelName():                               schema_microsoft_dcp_api_v2_Namespace(ref),
 		v2.NamespaceList{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v2_NamespaceList(ref),
 		v2.NamespaceStatus{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v2_NamespaceStatus(ref),
@@ -4150,6 +4156,26 @@ func schema_microsoft_dcp_api_v1_VolumeMount(ref common.ReferenceCallback) commo
 	}
 }
 
+func schema_microsoft_dcp_api_v2_AmbientEnvironment(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AmbientEnvironment configures inheritance from the controller process environment.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"behavior": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Behavior controls environment inheritance. Defaults to Inherit.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_ContainerBuildContext(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -4671,6 +4697,13 @@ func schema_microsoft_dcp_api_v2_LogSource(ref common.ReferenceCallback) common.
 						SchemaProps: spec.SchemaProps{
 							Description: "StderrFile is the pre-captured standard-error path.",
 							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"raw": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Raw indicates that captured bytes have no DCP-generated timestamp or line-number metadata.",
+							Type:        []string{"boolean"},
 							Format:      "",
 						},
 					},
@@ -5526,6 +5559,336 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 		},
 		Dependencies: []string{
 			v2.LogSource{}.OpenAPIModelName(), v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalProcess(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalProcess defines lifecycle and reuse policy for a process executed or observed by a PhysicalProcess.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.LogicalProcessSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.LogicalProcessStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalProcessSpec{}.OpenAPIModelName(), v2.LogicalProcessStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalProcessConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalProcessConfig describes the desired configuration used to launch a process.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"executablePath": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExecutablePath is the executable path or name to launch.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"args": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Args are arguments passed to the executable.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"workingDirectory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "WorkingDirectory is the process working directory, defaulting to the controller working directory.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ambientEnvironment": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AmbientEnvironment controls inheritance from the controller process environment.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(v2.AmbientEnvironment{}.OpenAPIModelName()),
+						},
+					},
+					"env": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Env contains environment variables that override inherited values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"executablePath"},
+			},
+		},
+		Dependencies: []string{
+			v2.AmbientEnvironment{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalProcessList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalProcessList contains a list of LogicalProcess instances.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalProcess{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalProcess{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalProcessSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalProcessSpec describes process lifecycle policy and desired configuration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Mode controls creation, reuse, and retention. Defaults to session.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lifecycleKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LifecycleKey identifies the desired configuration for persistent process reuse. If omitted, a key is calculated from the process configuration and monitor identity.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"process": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Process describes the desired process. Required for session and persistent modes, forbidden for existing mode.",
+							Ref:         ref(v2.LogicalProcessConfig{}.OpenAPIModelName()),
+						},
+					},
+					"pid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PID identifies the process to observe in existing mode; forbidden in other modes.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"identityTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IdentityTimestamp identifies the expected process in pid. Required in existing mode.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"monitorPID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MonitorPID optionally scopes a persistent process to another process lifetime.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"monitorTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MonitorTimestamp identifies the process in monitorPID and guards against PID reuse.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"stop": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Stop requests process termination through the PhysicalProcess controller. Once true, it cannot be reset.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalProcessConfig{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalProcessStatus describes the observed process and its backing PhysicalProcess.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"runtimeLogs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RuntimeLogs describes output captured or referenced by the backing PhysicalProcess.",
+							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
+						},
+					},
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase summarizes process availability.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"physicalProcessRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PhysicalProcessRef identifies the same-namespace backing PhysicalProcess.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"lifecycleKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LifecycleKey is the supplied or calculated lifecycle key.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PID is the observed operating system process ID.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"identityTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IdentityTimestamp is the observed process identity, not necessarily a wall-clock timestamp.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"finishedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FinishedAt is when the PhysicalProcess controller observed process exit.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"exitCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExitCode is the observed exit code, when available.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe readiness and reconciliation progress.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogSource{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -7199,7 +7562,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 					},
 					"monitorPID": {
 						SchemaProps: spec.SchemaProps{
-							Description: "MonitorPID optionally scopes a retained runtime process to another process lifetime. When set, monitorTimestamp must also be set and retainRuntimeProcess must be true. The retained process is stopped when the monitored process exits.",
+							Description: "MonitorPID optionally scopes a retained process to another process lifetime. When set, monitorTimestamp must also be set and retainRuntimeProcess must be true. The retained process is stopped when the monitored process exits.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},
@@ -7244,11 +7607,11 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 							Format:      "",
 						},
 					},
-					"inheritEnvironment": {
+					"ambientEnvironment": {
 						SchemaProps: spec.SchemaProps{
-							Description: "InheritEnvironment controls whether the controller process environment is included. Defaults to true.",
-							Type:        []string{"boolean"},
-							Format:      "",
+							Description: "AmbientEnvironment controls inheritance from the controller process environment.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(v2.AmbientEnvironment{}.OpenAPIModelName()),
 						},
 					},
 					"env": {
@@ -7277,7 +7640,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 			},
 		},
 		Dependencies: []string{
-			commonapi.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.AmbientEnvironment{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -7343,6 +7706,26 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessSpec(ref common.ReferenceCallbac
 							Format:      "int64",
 						},
 					},
+					"identityTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IdentityTimestamp optionally identifies the expected process in pid. When set, a reused PID is reported as missing rather than adopted or stopped. Forbidden when process is set.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"stdoutFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StdoutFile optionally supplies an existing raw stdout capture for an identity-bound PID reference. It is retained while that process instance is running. On resource deletion, removal is best effort after exit or confirmed absence, including PID reuse.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stderrFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StderrFile optionally supplies an existing raw stderr capture for an identity-bound PID reference. It is retained while that process instance is running. On resource deletion, removal is best effort after exit or confirmed absence, including PID reuse.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"process": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Process describes an operating system process to launch. Exactly one of pid or process must be set.",
@@ -7360,7 +7743,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessSpec(ref common.ReferenceCallbac
 			},
 		},
 		Dependencies: []string{
-			v2.PhysicalProcessConfig{}.OpenAPIModelName()},
+			v2.PhysicalProcessConfig{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -7371,6 +7754,27 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref common.ReferenceCallb
 				Description: "PhysicalProcessStatus describes the observed operating system process.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"stdoutFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StdoutFile is the output capture for a process launched by this resource.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stderrFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StderrFile is the error capture for a process launched by this resource.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"logsComplete": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LogsComplete indicates that this resource will not publish more process output.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"phase": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Phase summarizes the operating system process lifecycle.",
@@ -7387,7 +7791,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref common.ReferenceCallb
 					},
 					"identityTimestamp": {
 						SchemaProps: spec.SchemaProps{
-							Description: "IdentityTimestamp reports the process identity captured by the controller for PID-reuse protection. It is diagnostic and is not used to reconstruct controller state. On Linux this value represents elapsed time since boot rather than wall-clock time.",
+							Description: "IdentityTimestamp identifies the observed process instance together with PID. It is used to guard against PID reuse for subsequent persistent processes. On Linux this value represents elapsed time since boot rather than wall-clock time.",
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},

@@ -70,8 +70,7 @@ type resourceLogStreamer struct {
 	log         logr.Logger
 }
 
-// NewLogStreamer creates shared capture with resource-scoped client sessions
-// for logical containers, physical containers, and physical images.
+// NewLogStreamer creates shared capture with resource-scoped client sessions for V2 resources.
 func NewLogStreamer(log logr.Logger) *resourceLogStreamer {
 	return &resourceLogStreamer{
 		sessions: make(map[types.UID]map[uint64]*logSession),
@@ -106,6 +105,15 @@ func snapshot(obj resource.Object) (resourceSnapshot, error) {
 	case *apiv2.PhysicalContainerImage:
 		result.systemID = container.GetResourceId()
 		result.complete = result.runtime.Complete
+	case *apiv2.PhysicalProcess:
+		result.systemID = container.GetResourceId()
+		result.runtime = container.GetLogSource()
+		result.complete = result.runtime.Complete
+	case *apiv2.LogicalProcess:
+		result.systemID = container.GetResourceId()
+		result.runtime = container.Status.RuntimeLogs
+		result.complete = container.Status.Phase == apiv2.LogicalProcessPhaseExited ||
+			container.Status.Phase == apiv2.LogicalProcessPhaseFailed
 	default:
 		return resourceSnapshot{}, fmt.Errorf("unsupported log resource %T", obj)
 	}
@@ -142,6 +150,12 @@ func (streamer *resourceLogStreamer) Preflight(obj resource.Object, opts *apiv2.
 	if _, image := obj.(*apiv2.PhysicalContainerImage); image && startup {
 		return apierrors.NewBadRequest("image log sources are stdout, stderr, and system")
 	}
+	switch obj.(type) {
+	case *apiv2.LogicalProcess, *apiv2.PhysicalProcess:
+		if startup {
+			return apierrors.NewBadRequest("process log sources are stdout, stderr, and system")
+		}
+	}
 	capture := state.logSource(opts.Source)
 	if opts.Source != string(apiv2.LogStreamSourceSystem) && capture != nil && capture.Available {
 		name := capture.Name
@@ -157,6 +171,15 @@ func (streamer *resourceLogStreamer) Preflight(obj resource.Object, opts *apiv2.
 				{capture.StdoutFile, logstream.LogStreamSourceStdout},
 				{capture.StderrFile, logstream.LogStreamSourceStderr},
 			} {
+				if output.path == "" {
+					continue
+				}
+				if capture.Raw {
+					if !filepath.IsAbs(output.path) {
+						return apierrors.NewInternalError(fmt.Errorf("invalid observed log capture path"))
+					}
+					continue
+				}
 				expectedName, nameErr := logstream.LogFileName(name, capture.UID, output.source, "")
 				if nameErr != nil || !filepath.IsAbs(output.path) || filepath.Base(output.path) != expectedName {
 					return apierrors.NewInternalError(fmt.Errorf("invalid observed log capture path"))
@@ -217,6 +240,12 @@ func (streamer *resourceLogStreamer) StreamLogs(
 		path = capture.StdoutFile
 		if opts.Source == string(apiv2.LogStreamSourceStderr) || opts.Source == string(apiv2.LogStreamSourceStartupStderr) {
 			path = capture.StderrFile
+		}
+		// A log source using supplied output paths may omit the requested stream. Complete it as empty
+		// and release the registered session, since no follower will be started.
+		if capture.ContainerID == "" && path == "" {
+			streamer.finishSession(state.ownerUID, sessionID, session)
+			return logstream.ResourceStreamStatusDone, nil, nil
 		}
 		if capture.ContainerID != "" {
 			capturePath, release, captureErr := streamer.runtimeLogPath(sessionCtx, obj.GetObjectMeta().Namespace, *capture, opts)
@@ -326,10 +355,15 @@ func (streamer *resourceLogStreamer) followFile(
 	if opts.Tail != nil {
 		source = usvc_io.NewTailReader(source, int(*opts.Tail))
 	}
-	source = usvc_io.NewTimestampAwareReader(source, usvc_io.TimestampAwareReaderOptions{
+	readerOptions := usvc_io.TimestampAwareReaderOptions{
 		Timestamps: opts.Timestamps, LineNumbers: opts.LineNumbers,
 		Limit: pointers.GetValueOrDefault(opts.Limit, 0), Skip: pointers.GetValueOrDefault(opts.Skip, 0),
-	})
+	}
+	if opts.Source != string(apiv2.LogStreamSourceSystem) && session.capture.Raw {
+		// Ensure no timestamp or line number log filtering for raw logs.
+		readerOptions.Timestamps, readerOptions.LineNumbers = true, true
+	}
+	source = usvc_io.NewTimestampAwareReader(source, readerOptions)
 	writer := usvc_io.NewFollowWriter(ctx, source, dest,
 		usvc_io.WithNoDataStopRetries(3), usvc_io.WithCloseSourceOnCancel())
 	streamer.lock.Lock()
@@ -355,12 +389,13 @@ func (streamer *resourceLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcher
 	}
 	_, physical := evt.Object.(*apiv2.PhysicalContainer)
 	_, image := evt.Object.(*apiv2.PhysicalContainerImage)
+	_, process := evt.Object.(*apiv2.PhysicalProcess)
 	var streamsToStop []*usvc_io.FollowWriter
 	streamer.lock.Lock()
 	for ownerUID, sessions := range streamer.sessions {
 		for _, session := range sessions {
 			system := session.source == string(apiv2.LogStreamSourceSystem)
-			sourceUpdated := !system && (physical || image) && session.capture.UID == state.ownerUID
+			sourceUpdated := !system && (physical || image || process) && session.capture.UID == state.ownerUID
 			if ownerUID != state.ownerUID && !sourceUpdated {
 				continue
 			}

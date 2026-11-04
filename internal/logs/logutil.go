@@ -9,10 +9,12 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"time"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -39,6 +41,20 @@ func RemoveWithRetry(ctx context.Context, path string) error {
 			return removeErr
 		}
 	})
+}
+
+// RemoveProcessOutput removes retired process captures, honoring the existing executable-log preservation setting.
+func RemoveProcessOutput(ctx context.Context, stdoutPath, stderrPath string) error {
+	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+		return nil
+	}
+	var removeErr error
+	for _, path := range slices.Compact([]string{stdoutPath, stderrPath}) {
+		if path != "" {
+			removeErr = errors.Join(removeErr, RemoveWithRetry(ctx, path))
+		}
+	}
+	return removeErr
 }
 
 func ToTimestampReaderOptions(opts *apiv1.LogOptions) usvc_io.TimestampAwareReaderOptions {

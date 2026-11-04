@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,13 +24,15 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 type undecodedBackingClient struct {
 	ctrl_client.Client
-	kind string
+	kind                string
+	processVisibleLists atomic.Uint32
 }
 
 func (apiClient *undecodedBackingClient) Create(
@@ -54,6 +57,8 @@ func (apiClient *undecodedBackingClient) matchesBacking(object ctrl_client.Objec
 		return apiClient.kind == "image"
 	case *apiv2.PhysicalContainerNetwork:
 		return apiClient.kind == "network"
+	case *apiv2.PhysicalProcess:
+		return apiClient.kind == "process"
 	default:
 		return false
 	}
@@ -83,6 +88,15 @@ func (apiClient *undecodedBackingClient) List(
 		if apiClient.kind == "network" {
 			children.Items = nil
 		}
+	case *apiv2.PhysicalProcessList:
+		if apiClient.kind == "process" {
+			children.Items = slices.DeleteFunc(children.Items, func(child apiv2.PhysicalProcess) bool {
+				return child.Name != "visible"
+			})
+			if len(children.Items) != 0 {
+				apiClient.processVisibleLists.Add(1)
+			}
+		}
 	}
 	return nil
 }
@@ -96,6 +110,25 @@ type undecodedBackingReader struct {
 	deletionFailures     atomic.Uint32
 }
 
+func (reader *undecodedBackingReader) Get(
+	ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption,
+) error {
+	getErr := reader.Reader.Get(ctx, key, object, options...)
+	if _, physical := object.(*apiv2.PhysicalProcess); !physical || reader.kind != "process" || getErr != nil {
+		return getErr
+	}
+	logical := &apiv2.LogicalProcess{}
+	logicalErr := reader.Reader.Get(ctx, reader.logicalName, logical)
+	if logicalErr != nil {
+		return logicalErr
+	}
+	if logical.DeletionTimestamp.IsZero() {
+		reader.confirmationFailures.Add(1)
+		return errors.New("uncached Create confirmation unavailable")
+	}
+	return nil
+}
+
 func (reader *undecodedBackingReader) List(
 	ctx context.Context, objects ctrl_client.ObjectList, options ...ctrl_client.ListOption,
 ) error {
@@ -107,11 +140,15 @@ func (reader *undecodedBackingReader) List(
 		target = reader.kind == "image"
 	case *apiv2.PhysicalContainerNetworkList:
 		target = reader.kind == "network"
+	case *apiv2.PhysicalProcessList:
+		target = reader.kind == "process"
 	}
 	if target {
 		var logical ctrl_client.Object = &apiv2.LogicalContainer{}
 		if reader.kind == "network" {
 			logical = &apiv2.LogicalContainerNetwork{}
+		} else if reader.kind == "process" {
+			logical = &apiv2.LogicalProcess{}
 		}
 		getErr := reader.Reader.Get(ctx, reader.logicalName, logical)
 		if getErr != nil {
@@ -129,23 +166,29 @@ func (reader *undecodedBackingReader) List(
 	return reader.Reader.List(ctx, objects, options...)
 }
 
-// Verifies that logical deletion discovers owned containers, images, and networks without decoded
-// Create UIDs, retains the owner while uncached confirmation fails, and cleans backings before finalizing.
+// Verifies that logical deletion discovers owned containers, images, networks, and processes without decoded
+// Create UIDs, retains the owner and lease while uncached confirmation fails, and cleans backings before finalizing.
 func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"container", "image", "network"} {
+	for _, kind := range []string{"container", "image", "network", "process"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
 			logicalName := types.NamespacedName{Namespace: "v2-undecoded-backing-" + kind, Name: "logical"}
 			var reader *undecodedBackingReader
-			server, _, startErr := StartTestEnvironmentWithOptions(t, ctx,
-				LogicalContainerController|LogicalContainerNetworkController|PhysicalContainerController|
-					PhysicalContainerImageController|PhysicalContainerNetworkController,
+			var backingClient *undecodedBackingClient
+			included := LogicalContainerController | LogicalContainerNetworkController | PhysicalContainerController |
+				PhysicalContainerImageController | PhysicalContainerNetworkController
+			if kind == "process" {
+				included = LogicalProcessController | PhysicalProcessController
+			}
+			server, environment, startErr := StartTestEnvironmentWithOptions(t, ctx,
+				included,
 				t.Name(), t.TempDir(), TestEnvironmentOptions{
 					DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-						return &undecodedBackingClient{Client: apiClient, kind: kind}
+						backingClient = &undecodedBackingClient{Client: apiClient, kind: kind}
+						return backingClient
 					},
 					DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
 						reader = &undecodedBackingReader{Reader: apiReader, kind: kind, logicalName: logicalName}
@@ -181,6 +224,18 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 				unrelated = &apiv2.PhysicalContainerNetwork{
 					ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: logicalName.Namespace},
 					Spec:       apiv2.PhysicalContainerNetworkSpec{NetworkID: "unrelated-runtime"},
+				}
+			} else if kind == "process" {
+				logical = &apiv2.LogicalProcess{
+					ObjectMeta: metav1.ObjectMeta{Name: logicalName.Name, Namespace: logicalName.Namespace},
+					Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, Process: &apiv2.LogicalProcessConfig{
+						ExecutablePath: "v2-undecoded-backing-process-command",
+					}},
+				}
+				pid := int64(99999999)
+				unrelated = &apiv2.PhysicalProcess{
+					ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: logicalName.Namespace},
+					Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
 				}
 			} else {
 				logical = &apiv2.LogicalContainer{
@@ -221,9 +276,26 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 				backing = waitObjectAssumesStateEx(t, ctx, server.Client, backingName, func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
 					return current.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady, nil
 				})
+			case "process":
+				backing = waitObjectAssumesStateEx(t, ctx, server.Client, backingName, func(current *apiv2.PhysicalProcess) (bool, error) {
+					return current.Status.Phase == apiv2.PhysicalProcessPhaseRunning, nil
+				})
 			}
 			require.True(t, metav1.IsControlledBy(backing, logical))
 			require.Contains(t, backing.GetFinalizers(), controllers.LogicalBackingFinalizer)
+			var visible *apiv2.PhysicalProcess
+			if kind == "process" {
+				pid := int64(99999998)
+				visible = &apiv2.PhysicalProcess{
+					ObjectMeta: metav1.ObjectMeta{Name: "visible", Namespace: logicalName.Namespace, OwnerReferences: backing.GetOwnerReferences()},
+					Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
+				}
+				controllers.InitializeLogicalBackingFinalizers(visible, apiv2.GroupName+"/physicalprocess-reconciler")
+				require.NoError(t, server.Client.Create(ctx, visible))
+				require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(context.Context) (bool, error) {
+					return backingClient.processVisibleLists.Load() > 0, nil
+				}))
+			}
 			require.NoError(t, server.Client.Delete(ctx, logical))
 			require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(context.Context) (bool, error) {
 				return reader.deletionFailures.Load() > 0, nil
@@ -233,12 +305,21 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 			require.NotEmpty(t, logical.GetFinalizers())
 			require.NoError(t, server.Client.Get(ctx, backingName, backing))
 			require.True(t, backing.GetDeletionTimestamp().IsZero())
+			if owner, processResource := logical.(*apiv2.LogicalProcess); processResource {
+				require.NoError(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, owner, environment.ResourceLeaseOwner))
+			}
 			reader.failDeletion.Store(false)
 			switch owner := logical.(type) {
 			case *apiv2.LogicalContainer:
 				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, owner)
 			case *apiv2.LogicalContainerNetwork:
 				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, owner)
+			case *apiv2.LogicalProcess:
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, owner)
+				require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, owner, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+				record, recordErr := environment.StateStore.GetPersistentProcess(ctx, owner.GetLeaseKey())
+				require.NoError(t, recordErr)
+				require.Equal(t, *backing.(*apiv2.PhysicalProcess).Status.PID, int64(record.PID))
 			}
 			switch child := backing.(type) {
 			case *apiv2.PhysicalContainer:
@@ -251,6 +332,9 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, child)
 				_, inspectErr := server.ContainerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{child.Status.NetworkID}})
 				require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+			case *apiv2.PhysicalProcess:
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, child)
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, visible)
 			}
 			require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(unrelated), unrelated))
 			require.True(t, unrelated.GetDeletionTimestamp().IsZero())

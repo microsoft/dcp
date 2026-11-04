@@ -7,7 +7,9 @@ package v2
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"path/filepath"
 	"reflect"
 	"strings"
 
@@ -17,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -88,6 +91,21 @@ type PhysicalProcessSpec struct {
 	// The controller resolves the PID once and guards against PID reuse with an in-memory process identity.
 	PID *int64 `json:"pid,omitempty"`
 
+	// IdentityTimestamp optionally identifies the expected process in pid.
+	// When set, a reused PID is reported as missing rather than adopted or stopped.
+	// Forbidden when process is set.
+	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
+
+	// StdoutFile optionally supplies an existing raw stdout capture for an identity-bound PID reference.
+	// It is retained while that process instance is running. On resource deletion,
+	// removal is best effort after exit or confirmed absence, including PID reuse.
+	StdoutFile string `json:"stdoutFile,omitempty"`
+
+	// StderrFile optionally supplies an existing raw stderr capture for an identity-bound PID reference.
+	// It is retained while that process instance is running. On resource deletion,
+	// removal is best effort after exit or confirmed absence, including PID reuse.
+	StderrFile string `json:"stderrFile,omitempty"`
+
 	// Process describes an operating system process to launch. Exactly one of pid or process must be set.
 	Process *PhysicalProcessConfig `json:"process,omitempty"`
 
@@ -101,7 +119,7 @@ type PhysicalProcessConfig struct {
 	// RetainRuntimeProcess keeps a process launched by this resource running when the resource is deleted.
 	RetainRuntimeProcess bool `json:"retainRuntimeProcess,omitempty"`
 
-	// MonitorPID optionally scopes a retained runtime process to another process lifetime.
+	// MonitorPID optionally scopes a retained process to another process lifetime.
 	// When set, monitorTimestamp must also be set and retainRuntimeProcess must be true.
 	// The retained process is stopped when the monitored process exits.
 	MonitorPID *int64 `json:"monitorPID,omitempty"`
@@ -119,9 +137,8 @@ type PhysicalProcessConfig struct {
 	// WorkingDirectory is the process working directory. The controller process working directory is used when omitted.
 	WorkingDirectory string `json:"workingDirectory,omitempty"`
 
-	// InheritEnvironment controls whether the controller process environment is included. Defaults to true.
-	// +kubebuilder:default:=true
-	InheritEnvironment *bool `json:"inheritEnvironment,omitempty"`
+	// AmbientEnvironment controls inheritance from the controller process environment.
+	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 
 	// Env contains process environment variables. These values override inherited variables with the same name.
 	// +listType=map
@@ -132,6 +149,15 @@ type PhysicalProcessConfig struct {
 // PhysicalProcessStatus describes the observed operating system process.
 // +k8s:openapi-gen=true
 type PhysicalProcessStatus struct {
+	// StdoutFile is the output capture for a process launched by this resource.
+	StdoutFile string `json:"stdoutFile,omitempty"`
+
+	// StderrFile is the error capture for a process launched by this resource.
+	StderrFile string `json:"stderrFile,omitempty"`
+
+	// LogsComplete indicates that this resource will not publish more process output.
+	LogsComplete bool `json:"logsComplete,omitempty"`
+
 	// Phase summarizes the operating system process lifecycle.
 	// +kubebuilder:validation:Enum=Pending;Running;Exited;Unknown;Failed
 	// +optional
@@ -140,8 +166,8 @@ type PhysicalProcessStatus struct {
 	// PID is the operating system process ID being tracked.
 	PID *int64 `json:"pid,omitempty"`
 
-	// IdentityTimestamp reports the process identity captured by the controller for PID-reuse protection.
-	// It is diagnostic and is not used to reconstruct controller state.
+	// IdentityTimestamp identifies the observed process instance together with PID.
+	// It is used to guard against PID reuse for subsequent persistent processes.
 	// On Linux this value represents elapsed time since boot rather than wall-clock time.
 	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
 
@@ -187,6 +213,37 @@ func (pp *PhysicalProcess) GetObjectMeta() *metav1.ObjectMeta {
 	return &pp.ObjectMeta
 }
 
+// GetResourceId identifies the PhysicalProcess system log stream.
+func (pp *PhysicalProcess) GetResourceId() string {
+	return fmt.Sprintf("physicalprocess-%s", pp.UID)
+}
+
+// GetLogSource describes output captured or referenced by this PhysicalProcess.
+func (pp *PhysicalProcess) GetLogSource() *LogSource {
+	return &LogSource{
+		Name: pp.Name, UID: pp.UID, StdoutFile: pp.Status.StdoutFile, StderrFile: pp.Status.StderrFile,
+		Available: pp.Status.StdoutFile != "" || pp.Status.StderrFile != "", Complete: pp.Status.LogsComplete,
+		Raw: pp.Spec.PID != nil || (pp.Spec.Process != nil && pp.Spec.Process.RetainRuntimeProcess),
+	}
+}
+
+func (*PhysicalProcess) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&PhysicalProcessLogResource{}}
+}
+
+// PhysicalProcessLogResource registers process output and system log storage.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type PhysicalProcessLogResource struct{}
+
+func (*PhysicalProcessLogResource) Name() string { return LogSubresourceName }
+
+func (*PhysicalProcessLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
+}
+
 func (pp *PhysicalProcess) GetStatus() apiserver_resource.StatusSubResource {
 	return pp.Status
 }
@@ -224,6 +281,19 @@ func (pp *PhysicalProcess) Validate(ctx context.Context) field.ErrorList {
 	}
 
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(pp.Annotations, field.NewPath("metadata", "annotations"))...)
+	for _, capture := range []struct {
+		name string
+		path string
+	}{{"stdoutFile", pp.Spec.StdoutFile}, {"stderrFile", pp.Spec.StderrFile}} {
+		if capture.path == "" {
+			continue
+		}
+		if pp.Spec.PID == nil || pp.Spec.IdentityTimestamp.IsZero() {
+			errorList = append(errorList, field.Forbidden(specPath.Child(capture.name), "existing capture requires pid and identityTimestamp"))
+		} else if !filepath.IsAbs(capture.path) {
+			errorList = append(errorList, field.Invalid(specPath.Child(capture.name), capture.path, "capture path must be absolute"))
+		}
+	}
 
 	if pp.Spec.PID == nil && pp.Spec.Process == nil {
 		errorList = append(errorList, field.Required(specPath, "exactly one of pid or process must be set"))
@@ -242,6 +312,10 @@ func (pp *PhysicalProcess) Validate(ctx context.Context) field.ErrorList {
 
 	processConfig := pp.Spec.Process
 	processPath := specPath.Child("process")
+	errorList = append(errorList, processConfig.AmbientEnvironment.validate(processPath.Child("ambientEnvironment"))...)
+	if !pp.Spec.IdentityTimestamp.IsZero() {
+		errorList = append(errorList, field.Forbidden(specPath.Child("identityTimestamp"), "identityTimestamp requires pid"))
+	}
 	errorList = append(
 		errorList,
 		validateRetainedResourceMonitor(

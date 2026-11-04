@@ -34,6 +34,7 @@ var (
 		&Namespace{},
 		&LogicalContainer{},
 		&LogicalContainerNetwork{},
+		&LogicalProcess{},
 		&PhysicalContainerImage{},
 		&PhysicalContainer{},
 		&PhysicalContainerNetwork{},

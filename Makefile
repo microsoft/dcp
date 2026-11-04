@@ -379,7 +379,7 @@ test-prereqs: $(TEST_PREREQS) ## Ensures all prerequisites for running tests are
 .PHONY: test-ci-prereqs
 test-ci-prereqs: $(TEST_PREREQS)
 
-COMMON_TEST_OPTS := -coverprofile cover.out -count 1
+COMMON_TEST_OPTS := -coverprofile cover.out -count 1 -timeout 20m
 ifeq ($(CGO_ENABLED),0)
 TEST_OPTS := $(COMMON_TEST_OPTS)
 else

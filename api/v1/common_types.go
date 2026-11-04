@@ -53,6 +53,7 @@ func initializeLifecycleHashEncoder() {
 	_ = initEncoder.Encode(apiv2.LogicalContainerNetworkConnectionConfig{})
 	_ = initEncoder.Encode(apiv2.LogicalContainerConfig{})
 	_ = initEncoder.Encode(apiv2.LogicalContainerNetworkConfig{})
+	_ = initEncoder.Encode(apiv2.LogicalProcessConfig{})
 }
 
 func init() {

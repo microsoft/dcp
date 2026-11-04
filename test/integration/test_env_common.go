@@ -32,6 +32,7 @@ const (
 	PhysicalProcessController
 	LogicalContainerController
 	LogicalContainerNetworkController
+	LogicalProcessController
 	NoControllers  IncludedController = 0
 	AllControllers IncludedController = ^NoControllers
 )

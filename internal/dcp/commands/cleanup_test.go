@@ -8,6 +8,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/exerunners"
 	"github.com/microsoft/dcp/internal/statestore"
@@ -920,50 +922,72 @@ func TestCleanupWorkloadResourcesTreatsMissingProcessAsSuccess(t *testing.T) {
 	require.Empty(t, records)
 }
 
-func TestCleanupPersistentProcessRecordPreservesLogFiles(t *testing.T) {
+// Verifies that workload cleanup preserves V1 output while removing output recorded by V2
+// processes only after the referenced process identity is confirmed gone.
+func TestCleanupPersistentProcessRecordOutputOwnership(t *testing.T) {
 	t.Parallel()
+	for _, key := range []string{"default/missing", "processes/default/missing"} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+			defer cancel()
+			stateStore := openCleanupTestStore(t, ctx)
+			leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+			require.NoError(t, leaseOwnerErr)
+			stdoutPath := filepath.Join(t.TempDir(), "stdout.log")
+			stderrPath := filepath.Join(t.TempDir(), "stderr.log")
+			require.NoError(t, dcpio.WriteFile(stdoutPath, []byte("stdout"), 0o600))
+			require.NoError(t, dcpio.WriteFile(stderrPath, []byte("stderr"), 0o600))
+			record := statestore.PersistentProcessRecord{
+				ResourceKey: key, LifecycleKey: "missing-lifecycle", PID: process.Pid_t(999999),
+				IdentityTime: time.Unix(1, 0).UTC(), RunID: "missing-run",
+				StdOutFile: stdoutPath, StdErrFile: stderrPath, WorkloadID: "workload-a",
+			}
+			require.NoError(t, stateStore.UpsertPersistentProcess(ctx, record))
+			resourceID, cleaned, cleanupErr := cleanupPersistentProcessRecord(ctx, "workload-a", stateStore, leaseOwner,
+				&fakePersistentProcessCleanupRunner{checkErr: &process.ErrProcessNotFound{Pid: record.PID}}, record, logr.Discard())
+			require.NoError(t, cleanupErr)
+			require.Equal(t, "999999", resourceID)
+			require.True(t, cleaned)
+			_, getErr := stateStore.GetPersistentProcess(ctx, record.ResourceKey)
+			require.ErrorIs(t, getErr, statestore.ErrPersistentProcessNotFound)
+			if strings.HasPrefix(key, apiv2.LogicalProcessResourceKeyPrefix) {
+				require.NoFileExists(t, stdoutPath)
+				require.NoFileExists(t, stderrPath)
+			} else {
+				require.FileExists(t, stdoutPath)
+				require.FileExists(t, stderrPath)
+			}
+		})
+	}
+}
 
+// Verifies that V2 workload cleanup retires a confirmed-gone process record
+// even when best-effort output removal fails.
+func TestCleanupPersistentProcessRecordDoesNotBlockOnOutputRemovalFailure(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
 	defer cancel()
 	stateStore := openCleanupTestStore(t, ctx)
 	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
 	require.NoError(t, leaseOwnerErr)
-
-	stdoutPath := filepath.Join(t.TempDir(), "stdout.log")
-	stderrPath := filepath.Join(t.TempDir(), "stderr.log")
-	require.NoError(t, dcpio.WriteFile(stdoutPath, []byte("stdout"), 0o600))
-	require.NoError(t, dcpio.WriteFile(stderrPath, []byte("stderr"), 0o600))
+	outputPath := filepath.Join(t.TempDir(), "output")
+	require.NoError(t, os.Mkdir(outputPath, 0700))
+	blockingPath := filepath.Join(outputPath, "busy")
+	require.NoError(t, dcpio.WriteFile(blockingPath, []byte("busy"), 0600))
 	record := statestore.PersistentProcessRecord{
-		ResourceKey:  "default/missing",
-		LifecycleKey: "missing-lifecycle",
-		PID:          process.Pid_t(999999),
-		IdentityTime: time.Unix(1, 0).UTC(),
-		RunID:        "missing-run",
-		StdOutFile:   stdoutPath,
-		StdErrFile:   stderrPath,
-		WorkloadID:   "workload-a",
+		ResourceKey: "processes/default/missing", PID: process.Pid_t(999999),
+		IdentityTime: time.Unix(1, 0).UTC(), RunID: "missing-run",
+		StdOutFile: outputPath, WorkloadID: "workload-a",
 	}
 	require.NoError(t, stateStore.UpsertPersistentProcess(ctx, record))
-
-	resourceID, cleaned, cleanupErr := cleanupPersistentProcessRecord(
-		ctx,
-		"workload-a",
-		stateStore,
-		leaseOwner,
-		&fakePersistentProcessCleanupRunner{
-			checkErr: &process.ErrProcessNotFound{Pid: record.PID},
-		},
-		record,
-		logr.Discard(),
-	)
-
+	runner := &fakePersistentProcessCleanupRunner{checkErr: &process.ErrProcessNotFound{Pid: record.PID}}
+	_, cleaned, cleanupErr := cleanupPersistentProcessRecord(ctx, "workload-a", stateStore, leaseOwner, runner, record, logr.Discard())
 	require.NoError(t, cleanupErr)
-	require.Equal(t, "999999", resourceID)
 	require.True(t, cleaned)
 	_, getErr := stateStore.GetPersistentProcess(ctx, record.ResourceKey)
 	require.ErrorIs(t, getErr, statestore.ErrPersistentProcessNotFound)
-	require.FileExists(t, stdoutPath)
-	require.FileExists(t, stderrPath)
+	require.FileExists(t, blockingPath)
 }
 
 func TestCleanupWorkloadResourcesRuntimeFailureDoesNotPreventExecutableCleanup(t *testing.T) {

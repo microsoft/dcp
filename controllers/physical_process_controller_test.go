@@ -22,6 +22,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -41,37 +42,37 @@ type recordingPhysicalProcessExecutor struct {
 	stopProcessCalls       atomic.Int32
 }
 
+// Verifies that PhysicalProcess environment construction defaults to inheritance, honors explicit
+// inheritance behavior, and appends explicit values after inherited values so they take precedence.
 func TestPhysicalProcessEnvironment(t *testing.T) {
 	t.Setenv("DCP_PHYSICAL_PROCESS_ENV_TEST", "inherited")
 
-	inheritEnvironment := true
-	doNotInheritEnvironment := false
-	explicitEnvironment := []commonapi.EnvVar{{Name: "EXPLICIT", Value: "configured"}}
+	explicitEnvironment := []commonapi.EnvVar{{Name: "DCP_PHYSICAL_PROCESS_ENV_TEST", Value: "configured"}}
 	testCases := []struct {
-		name               string
-		inheritEnvironment *bool
-		expected           []string
+		name     string
+		behavior apiv2.EnvironmentBehavior
+		expected []string
 	}{
 		{
 			name:     "defaults to inherited environment",
-			expected: append(os.Environ(), "EXPLICIT=configured"),
+			expected: append(os.Environ(), "DCP_PHYSICAL_PROCESS_ENV_TEST=configured"),
 		},
 		{
-			name:               "inherits environment explicitly",
-			inheritEnvironment: &inheritEnvironment,
-			expected:           append(os.Environ(), "EXPLICIT=configured"),
+			name:     "inherits environment explicitly",
+			behavior: apiv2.EnvironmentBehaviorInherit,
+			expected: append(os.Environ(), "DCP_PHYSICAL_PROCESS_ENV_TEST=configured"),
 		},
 		{
-			name:               "does not inherit environment explicitly",
-			inheritEnvironment: &doNotInheritEnvironment,
-			expected:           []string{"EXPLICIT=configured"},
+			name:     "does not inherit environment explicitly",
+			behavior: apiv2.EnvironmentBehaviorDoNotInherit,
+			expected: []string{"DCP_PHYSICAL_PROCESS_ENV_TEST=configured"},
 		},
 	}
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			environment := physicalProcessEnvironment(&apiv2.PhysicalProcessConfig{
-				InheritEnvironment: testCase.inheritEnvironment,
+				AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: testCase.behavior},
 				Env:                explicitEnvironment,
 			})
 
@@ -166,7 +167,9 @@ func TestPhysicalProcessLaunchCanceledBeforeStart(t *testing.T) {
 				nil,
 				logr.Discard(),
 				executor,
+				resiliency.NewWorkQueue(lifetimeCtx, 1),
 			)
+
 			reconciler.processData.Store(physicalProcess.NamespacedName(), stateKey, initialData)
 
 			reconciler.launchPhysicalProcess(
@@ -219,6 +222,7 @@ func TestHandlePhysicalProcessResolveWaitsForRetryDeadline(t *testing.T) {
 		nil,
 		logr.Discard(),
 		executor,
+		resiliency.NewWorkQueue(ctx, 1),
 	)
 
 	change := handlePhysicalProcessResolve(
@@ -288,7 +292,9 @@ func TestPhysicalProcessLaunchResultDoesNotReplaceExistingOwner(t *testing.T) {
 		nil,
 		logr.Discard(),
 		&missingPhysicalProcessExecutor{},
+		resiliency.NewWorkQueue(ctx, 1),
 	)
+
 	launchStateKey := physicalProcessDataKey(launchedProcess)
 	reconciler.processData.Store(launchedProcess.NamespacedName(), launchStateKey, &physicalProcessData{
 		resourceUID:    launchedProcess.UID,
@@ -350,7 +356,9 @@ func TestPhysicalProcessTerminalResultDoesNotRequireHandleOwnership(t *testing.T
 		nil,
 		logr.Discard(),
 		&missingPhysicalProcessExecutor{},
+		resiliency.NewWorkQueue(ctx, 1),
 	)
+
 	launchStateKey := physicalProcessDataKey(launchedProcess)
 	reconciler.processData.Store(launchedProcess.NamespacedName(), launchStateKey, &physicalProcessData{
 		resourceUID:    launchedProcess.UID,
@@ -437,7 +445,9 @@ func TestPhysicalProcessCleanupUncertaintyIsScopedToProcessIdentity(t *testing.T
 				nil,
 				logr.Discard(),
 				&missingPhysicalProcessExecutor{},
+				resiliency.NewWorkQueue(ctx, 1),
 			)
+
 			reconciler.processData.Store(
 				physicalProcess.NamespacedName(),
 				physicalProcessDataKey(physicalProcess),
@@ -491,7 +501,9 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 		nil,
 		logr.Discard(),
 		&missingPhysicalProcessExecutor{},
+		resiliency.NewWorkQueue(ctx, 1),
 	)
+
 	reconciler.processData.Store(
 		physicalProcess.NamespacedName(),
 		physicalProcessHandleDataKey(handle),
@@ -542,6 +554,7 @@ func TestHandlePhysicalProcessRuntimeSetsInspectionFailureReason(t *testing.T) {
 		nil,
 		logr.Discard(),
 		&failingPhysicalProcessInspectionExecutor{err: inspectionErr},
+		resiliency.NewWorkQueue(ctx, 1),
 	)
 
 	change := handlePhysicalProcessRuntime(
@@ -587,7 +600,9 @@ func TestSchedulePhysicalProcessStopClearsStaleFailureReason(t *testing.T) {
 		nil,
 		logr.Discard(),
 		&recordingPhysicalProcessExecutor{},
+		resiliency.NewWorkQueue(ctx, 1),
 	)
+
 	reconciler.processData.Store(
 		physicalProcess.NamespacedName(),
 		physicalProcessHandleDataKey(handle),
