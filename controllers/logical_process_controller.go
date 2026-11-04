@@ -245,12 +245,13 @@ func handleLogicalProcessPhysical(
 			}
 			return noChange
 		}
-		retireErr := logs.RemoveProcessOutput(ctx, record.StdOutFile, record.StdErrFile)
-		if retireErr == nil {
-			retireErr = reconciler.config.StateStore.DeletePersistentProcess(ctx, resource.GetLeaseKey())
+		removeErr := logs.RemoveProcessOutput(ctx, record.StdOutFile, record.StdErrFile)
+		if removeErr != nil {
+			log.Error(removeErr, "Failed to remove replaced process output")
 		}
+		retireErr := reconciler.config.StateStore.DeletePersistentProcess(ctx, resource.GetLeaseKey())
 		if retireErr != nil {
-			log.Error(retireErr, "Failed to retire replaced process output and record")
+			log.Error(retireErr, "Failed to retire replaced process record")
 			data.reconcileErr, data.message = retireErr, retireErr.Error()
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 			return noChange
@@ -660,7 +661,7 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 		if process.IsProcessGoneErr(runningErr) {
 			removeErr := logs.RemoveProcessOutput(ctx, record.StdOutFile, record.StdErrFile)
 			if removeErr != nil {
-				return removeErr
+				log.Error(removeErr, "Failed to remove stale process output")
 			}
 			return r.config.StateStore.DeletePersistentProcess(ctx, resource.GetLeaseKey())
 		}
@@ -729,7 +730,7 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 						}
 						removeErr := logs.RemoveProcessOutput(ctx, record.StdOutFile, record.StdErrFile)
 						if removeErr != nil {
-							return removeErr
+							log.Error(removeErr, "Failed to remove retired process output")
 						}
 					}
 					record = &statestore.PersistentProcessRecord{RunID: string(physical.UID)}

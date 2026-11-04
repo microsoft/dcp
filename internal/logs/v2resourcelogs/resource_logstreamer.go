@@ -241,6 +241,8 @@ func (streamer *resourceLogStreamer) StreamLogs(
 		if opts.Source == string(apiv2.LogStreamSourceStderr) || opts.Source == string(apiv2.LogStreamSourceStartupStderr) {
 			path = capture.StderrFile
 		}
+		// A log source using supplied output paths may omit the requested stream. Complete it as empty
+		// and release the registered session, since no follower will be started.
 		if capture.ContainerID == "" && path == "" {
 			streamer.finishSession(state.ownerUID, sessionID, session)
 			return logstream.ResourceStreamStatusDone, nil, nil
@@ -358,6 +360,7 @@ func (streamer *resourceLogStreamer) followFile(
 		Limit: pointers.GetValueOrDefault(opts.Limit, 0), Skip: pointers.GetValueOrDefault(opts.Skip, 0),
 	}
 	if opts.Source != string(apiv2.LogStreamSourceSystem) && session.capture.Raw {
+		// Ensure no timestamp or line number log filtering for raw logs.
 		readerOptions.Timestamps, readerOptions.LineNumbers = true, true
 	}
 	source = usvc_io.NewTimestampAwareReader(source, readerOptions)
