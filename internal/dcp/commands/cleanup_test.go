@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/exerunners"
 	"github.com/microsoft/dcp/internal/statestore"
@@ -950,7 +951,7 @@ func TestCleanupPersistentProcessRecordOutputOwnership(t *testing.T) {
 			require.True(t, cleaned)
 			_, getErr := stateStore.GetPersistentProcess(ctx, record.ResourceKey)
 			require.ErrorIs(t, getErr, statestore.ErrPersistentProcessNotFound)
-			if strings.HasPrefix(key, "processes/") {
+			if strings.HasPrefix(key, apiv2.LogicalProcessResourceKeyPrefix) {
 				require.NoFileExists(t, stdoutPath)
 				require.NoFileExists(t, stderrPath)
 			} else {
@@ -961,9 +962,9 @@ func TestCleanupPersistentProcessRecordOutputOwnership(t *testing.T) {
 	}
 }
 
-// Verifies that V2 workload cleanup preserves its process record when output removal fails,
-// then normal retry removes the output and record once the obstruction is cleared.
-func TestCleanupPersistentProcessRecordRetriesOutputRemoval(t *testing.T) {
+// Verifies that V2 workload cleanup retires a confirmed-gone process record
+// even when best-effort output removal fails.
+func TestCleanupPersistentProcessRecordDoesNotBlockOnOutputRemovalFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
 	defer cancel()
@@ -981,17 +982,12 @@ func TestCleanupPersistentProcessRecordRetriesOutputRemoval(t *testing.T) {
 	}
 	require.NoError(t, stateStore.UpsertPersistentProcess(ctx, record))
 	runner := &fakePersistentProcessCleanupRunner{checkErr: &process.ErrProcessNotFound{Pid: record.PID}}
-	_, _, cleanupErr := cleanupPersistentProcessRecord(ctx, "workload-a", stateStore, leaseOwner, runner, record, logr.Discard())
-	require.Error(t, cleanupErr)
-	preserved, readErr := stateStore.GetPersistentProcess(ctx, record.ResourceKey)
-	require.NoError(t, readErr)
-	require.Equal(t, outputPath, preserved.StdOutFile)
-	require.NoError(t, os.Remove(blockingPath))
-	_, _, retryErr := cleanupPersistentProcessRecord(ctx, "workload-a", stateStore, leaseOwner, runner, record, logr.Discard())
-	require.NoError(t, retryErr)
+	_, cleaned, cleanupErr := cleanupPersistentProcessRecord(ctx, "workload-a", stateStore, leaseOwner, runner, record, logr.Discard())
+	require.NoError(t, cleanupErr)
+	require.True(t, cleaned)
 	_, getErr := stateStore.GetPersistentProcess(ctx, record.ResourceKey)
 	require.ErrorIs(t, getErr, statestore.ErrPersistentProcessNotFound)
-	require.NoDirExists(t, outputPath)
+	require.FileExists(t, blockingPath)
 }
 
 func TestCleanupWorkloadResourcesRuntimeFailureDoesNotPreventExecutableCleanup(t *testing.T) {

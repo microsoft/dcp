@@ -161,9 +161,9 @@ func TestCaptureFileAppendAndSourceSelection(t *testing.T) {
 	require.ErrorContains(t, sourceErr, "unknown capture log source")
 }
 
-// Verifies that CaptureFile retries a transient removal failure instead of caching it after
-// the obstruction disappears, and treats repeated successful disposal as idempotent.
-func TestCaptureFileRetriesFailedDisposal(t *testing.T) {
+// Verifies that CaptureFile makes one bounded disposal attempt and caches its failure,
+// even if a subsequent call could remove the file.
+func TestCaptureFileCachesFailedDisposal(t *testing.T) {
 	t.Parallel()
 	uid, uidErr := randdata.MakeRandomString(8)
 	require.NoError(t, uidErr)
@@ -181,11 +181,12 @@ func TestCaptureFileRetriesFailedDisposal(t *testing.T) {
 	require.NoError(t, os.Rename(capture.Path, saved))
 	require.NoError(t, os.Mkdir(capture.Path, 0700))
 	require.NoError(t, usvc_io.WriteFile(obstruction, []byte("busy"), osutil.PermissionOnlyOwnerReadWrite))
-	require.Error(t, capture.Close(CaptureFileDisposeOnClose))
+	disposeErr := capture.Close(CaptureFileDisposeOnClose)
+	require.Error(t, disposeErr)
 	require.NoError(t, os.Remove(obstruction))
 	require.NoError(t, os.Remove(capture.Path))
 	require.NoError(t, os.Rename(saved, capture.Path))
-	require.NoError(t, capture.Close(CaptureFileDisposeOnClose))
-	require.NoError(t, capture.Close(CaptureFileDisposeOnClose))
-	require.NoFileExists(t, capture.Path)
+	require.EqualError(t, capture.Close(CaptureFileDisposeOnClose), disposeErr.Error())
+	require.EqualError(t, capture.Close(CaptureFileDisposeOnClose), disposeErr.Error())
+	require.FileExists(t, capture.Path)
 }

@@ -32,6 +32,9 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
+// LogicalProcessResourceKeyPrefix identifies logical process records and leases in the shared state store.
+const LogicalProcessResourceKeyPrefix = "processes/"
+
 // LogicalProcessMode controls process creation, reuse, and retention.
 // +kubebuilder:validation:Enum=session;persistent;existing
 type LogicalProcessMode string
@@ -234,7 +237,7 @@ func (*LogicalProcessLogResource) GetStorageProvider(
 
 // GetLeaseKey identifies the persistent process by its logical namespace and name.
 func (resource *LogicalProcess) GetLeaseKey() string {
-	return "processes/" + resource.NamespacedName().String()
+	return LogicalProcessResourceKeyPrefix + resource.NamespacedName().String()
 }
 
 func (resource *LogicalProcess) GetObjectMeta() *metav1.ObjectMeta {
