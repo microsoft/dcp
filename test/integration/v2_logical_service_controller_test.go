@@ -84,7 +84,7 @@ func (recorder *serviceProxyRecorder) snapshot() []*recordedServiceProxy {
 
 // Verifies that LogicalService allocates listeners before readiness, updates routes as endpoints
 // change without replacing listeners, and cancels listeners on explicit or namespace deletion.
-func TestV2LogicalServiceSessionReadinessAndListenerLifetime(t *testing.T) {
+func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 	t.Parallel()
 	for _, protocol := range []commonapi.PortProtocol{commonapi.PortProtocolTCP, commonapi.PortProtocolUDP} {
 		for _, cleanup := range []string{"service", "namespace"} {
@@ -100,7 +100,7 @@ func TestV2LogicalServiceSessionReadinessAndListenerLifetime(t *testing.T) {
 				namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "service-lifetime"}}
 				require.NoError(t, apiClient.Create(ctx, namespace))
 				service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
-					Spec: apiv2.LogicalServiceSpec{LogicalServiceConfig: apiv2.LogicalServiceConfig{Protocol: protocol, Address: "127.0.0.1"}}}
+					Spec: apiv2.LogicalServiceSpec{Protocol: protocol, Address: "127.0.0.1"}}
 				require.NoError(t, apiClient.Create(ctx, service))
 				pending := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalServicePhasePending && len(current.Status.EffectiveAddresses) == 1, nil
@@ -239,9 +239,9 @@ func TestV2LogicalServiceProxylessKeepsSelectedProducer(t *testing.T) {
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "proxyless-service"}}
 	require.NoError(t, apiClient.Create(ctx, namespace))
 	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
-		Spec: apiv2.LogicalServiceSpec{LogicalServiceConfig: apiv2.LogicalServiceConfig{
+		Spec: apiv2.LogicalServiceSpec{
 			Address: "not-bound.invalid", Port: 12345, AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless,
-		}}}
+		}}
 	require.NoError(t, apiClient.Create(ctx, service))
 	pending := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalServicePhasePending, nil
@@ -281,39 +281,6 @@ func TestV2LogicalServiceProxylessKeepsSelectedProducer(t *testing.T) {
 		return current.Status.Phase == apiv2.LogicalServicePhasePending && current.Status.ProxylessEndpointRef == "", nil
 	})
 	require.Empty(t, empty.Status.EffectiveAddresses)
-	require.Empty(t, recorder.snapshot())
-	require.NoError(t, apiClient.Delete(ctx, namespace))
-	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, apiClient, namespace)
-}
-
-// Verifies that existing LogicalService publishes supplied address/port pairs without endpoints,
-// listener allocation, or reachability requirements, and can be deleted without creating a proxy.
-func TestV2LogicalServiceExistingModeDoesNotAllocateListeners(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-	recorder := &serviceProxyRecorder{}
-	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalServiceController, t.Name(), t.TempDir(),
-		TestEnvironmentOptions{CreateLogicalServiceProxy: recorder.create})
-	require.NoError(t, startupErr)
-	apiClient := serverInfo.Client
-	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "existing-service"}}
-	require.NoError(t, apiClient.Create(ctx, namespace))
-	addresses := []apiv2.ServiceAddress{{Address: "predefined.invalid", Port: 54321}, {Address: "::1", Port: 54322}}
-	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
-		Spec: apiv2.LogicalServiceSpec{Mode: apiv2.LogicalServiceModeExisting, Addresses: addresses}}
-	require.NoError(t, apiClient.Create(ctx, service))
-	ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
-	})
-	requireReadyCondition(t, ready.Status.Conditions, metav1.ConditionTrue, "ExistingService")
-	require.Equal(t, addresses, ready.Status.EffectiveAddresses)
-	require.Empty(t, recorder.snapshot())
-	var endpoints apiv2.ServiceEndpointList
-	require.NoError(t, apiClient.List(ctx, &endpoints))
-	require.Empty(t, endpoints.Items)
-	require.NoError(t, apiClient.Delete(ctx, service))
-	ctrl_testutil.WaitObjectDeleted[apiv2.LogicalService](t, ctx, apiClient, service)
 	require.Empty(t, recorder.snapshot())
 	require.NoError(t, apiClient.Delete(ctx, namespace))
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, apiClient, namespace)

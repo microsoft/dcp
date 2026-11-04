@@ -12,7 +12,7 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
-// LogicalServiceBinding references a service or ensures that a matching session service exists.
+// LogicalServiceBinding references a service or ensures that a matching service exists.
 // Exactly one of serviceRef or service must be set.
 // +k8s:openapi-gen=true
 type LogicalServiceBinding struct {
@@ -23,15 +23,15 @@ type LogicalServiceBinding struct {
 	// Cross-namespace references are not supported. The referenced service is not owned by the workload.
 	ServiceRef string `json:"serviceRef,omitempty"`
 
-	// Service creates a named session-mode LogicalService if absent, or references it if its configuration matches.
+	// Service creates a named LogicalService if absent, or references it if its configuration matches.
 	// The service has an independent lifetime and is not deleted with the workload.
 	Service *LogicalServiceTemplate `json:"service,omitempty"`
 }
 
-// LogicalServiceTemplate describes a named session service to create if absent or reuse when its configuration matches.
+// LogicalServiceTemplate describes a named service to create if absent or reuse when its configuration matches.
 // +k8s:openapi-gen=true
 type LogicalServiceTemplate struct {
-	LogicalServiceConfig `json:",inline"`
+	LogicalServiceSpec `json:",inline"`
 
 	// Name forms the service resource name as <parent-name>-<name>.
 	Name string `json:"name"`

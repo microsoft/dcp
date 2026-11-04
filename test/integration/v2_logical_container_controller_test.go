@@ -705,7 +705,7 @@ func TestV2LogicalContainerControllerCalculatesLifecycleKey(t *testing.T) {
 			Ports: []apiv2.LogicalContainerPort{
 				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http", Service: &apiv2.LogicalServiceTemplate{Name: "http"}}, ContainerPort: 8080},
 				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "dns", Service: &apiv2.LogicalServiceTemplate{
-					Name: "dns", LogicalServiceConfig: apiv2.LogicalServiceConfig{Protocol: commonapi.PortProtocolUDP},
+					Name: "dns", LogicalServiceSpec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolUDP},
 				}}, ContainerPort: 5353},
 			},
 			Container: &apiv2.LogicalContainerConfig{

@@ -19,35 +19,23 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
-// Verifies that LogicalService.Validate accepts session and existing services while rejecting
-// persistence, invalid transports, and configuration belonging to the other mode.
+// Verifies that LogicalService.Validate accepts listener and proxyless configurations
+// while rejecting invalid transports, ports, and allocation modes.
 func TestLogicalServiceValidate(t *testing.T) {
 	t.Parallel()
-	addresses := []ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "::1", Port: 5001}}
 	for _, testCase := range []struct {
 		name           string
 		spec           LogicalServiceSpec
 		expectedFields []string
 	}{
-		{"default session", LogicalServiceSpec{}, nil},
-		{"session TCP", LogicalServiceSpec{Mode: LogicalServiceModeSession, LogicalServiceConfig: LogicalServiceConfig{Protocol: commonapi.PortProtocolTCP, Port: 65535}}, nil},
-		{"session UDP", LogicalServiceSpec{LogicalServiceConfig: LogicalServiceConfig{Protocol: commonapi.PortProtocolUDP, Port: 1}}, nil},
-		{"existing without workload", LogicalServiceSpec{Mode: LogicalServiceModeExisting, Addresses: addresses}, nil},
-		{"existing UDP hostname", LogicalServiceSpec{Mode: LogicalServiceModeExisting, LogicalServiceConfig: LogicalServiceConfig{Protocol: commonapi.PortProtocolUDP}, Addresses: []ServiceAddress{{Address: "localhost", Port: 53}}}, nil},
-		{"session with existing addresses", LogicalServiceSpec{Addresses: addresses}, []string{"spec.addresses"}},
-		{"missing existing addresses", LogicalServiceSpec{Mode: LogicalServiceModeExisting}, []string{"spec.addresses"}},
-		{"existing with requested address", LogicalServiceSpec{Mode: LogicalServiceModeExisting, Addresses: addresses, LogicalServiceConfig: LogicalServiceConfig{Address: "localhost"}}, []string{"spec.address"}},
-		{"existing with requested port", LogicalServiceSpec{Mode: LogicalServiceModeExisting, Addresses: addresses, LogicalServiceConfig: LogicalServiceConfig{Port: 5000}}, []string{"spec.port"}},
-		{"existing with allocation mode", LogicalServiceSpec{Mode: LogicalServiceModeExisting, Addresses: addresses, LogicalServiceConfig: LogicalServiceConfig{AddressAllocationMode: ServiceAddressAllocationModeLocalhost}}, []string{"spec.addressAllocationMode"}},
-		{"persistent unsupported", LogicalServiceSpec{Mode: "persistent"}, []string{"spec.mode"}},
-		{"unknown mode", LogicalServiceSpec{Mode: "unknown"}, []string{"spec.mode"}},
-		{"invalid protocol", LogicalServiceSpec{LogicalServiceConfig: LogicalServiceConfig{Protocol: "HTTP"}}, []string{"spec.protocol"}},
-		{"negative requested port", LogicalServiceSpec{LogicalServiceConfig: LogicalServiceConfig{Port: -1}}, []string{"spec.port"}},
-		{"excessive requested port", LogicalServiceSpec{LogicalServiceConfig: LogicalServiceConfig{Port: 65536}}, []string{"spec.port"}},
-		{"unknown allocation mode", LogicalServiceSpec{LogicalServiceConfig: LogicalServiceConfig{AddressAllocationMode: "unknown"}}, []string{"spec.addressAllocationMode"}},
-		{"blank existing address", LogicalServiceSpec{Mode: LogicalServiceModeExisting, Addresses: []ServiceAddress{{Address: " ", Port: 1}}}, []string{"spec.addresses[0].address"}},
-		{"unallocated existing port", LogicalServiceSpec{Mode: LogicalServiceModeExisting, Addresses: []ServiceAddress{{Address: "::1"}}}, []string{"spec.addresses[0].port"}},
-		{"duplicate existing address", LogicalServiceSpec{Mode: LogicalServiceModeExisting, Addresses: []ServiceAddress{addresses[0], addresses[0]}}, []string{"spec.addresses[1]"}},
+		{"default allocation", LogicalServiceSpec{}, nil},
+		{"TCP", LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP, Port: 65535}, nil},
+		{"UDP", LogicalServiceSpec{Protocol: commonapi.PortProtocolUDP, Port: 1}, nil},
+		{"hostname", LogicalServiceSpec{Address: "localhost", Port: 5000}, nil},
+		{"invalid protocol", LogicalServiceSpec{Protocol: "HTTP"}, []string{"spec.protocol"}},
+		{"negative requested port", LogicalServiceSpec{Port: -1}, []string{"spec.port"}},
+		{"excessive requested port", LogicalServiceSpec{Port: 65536}, []string{"spec.port"}},
+		{"unknown allocation mode", LogicalServiceSpec{AddressAllocationMode: "unknown"}, []string{"spec.addressAllocationMode"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			service := &LogicalService{
@@ -76,43 +64,40 @@ func TestLogicalServiceValidateAddressAllocationModes(t *testing.T) {
 		t.Run(string(mode), func(t *testing.T) {
 			service := &LogicalService{
 				ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: "test-namespace"},
-				Spec:       LogicalServiceSpec{LogicalServiceConfig: LogicalServiceConfig{AddressAllocationMode: mode}},
+				Spec:       LogicalServiceSpec{AddressAllocationMode: mode},
 			}
 			require.Empty(t, service.Validate(context.Background()))
 		})
 	}
 }
 
-// Verifies that LogicalServiceSpec defaults to session and TCP without replacing explicitly supplied values.
+// Verifies that LogicalServiceSpec defaults to TCP without replacing explicitly supplied values.
 func TestLogicalServiceSpecDefaults(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, LogicalServiceModeSession, (LogicalServiceSpec{}).EffectiveMode())
-	require.Equal(t, commonapi.PortProtocolTCP, (LogicalServiceConfig{}).EffectiveProtocol())
-	require.Equal(t, LogicalServiceModeExisting, (LogicalServiceSpec{Mode: LogicalServiceModeExisting}).EffectiveMode())
-	require.Equal(t, commonapi.PortProtocolUDP, (LogicalServiceConfig{Protocol: commonapi.PortProtocolUDP}).EffectiveProtocol())
-	require.Equal(t, LogicalServiceMode("invalid"), (LogicalServiceSpec{Mode: "invalid"}).EffectiveMode())
-	require.Equal(t, commonapi.PortProtocol("invalid"), (LogicalServiceConfig{Protocol: "invalid"}).EffectiveProtocol())
+	require.Equal(t, commonapi.PortProtocolTCP, (LogicalServiceSpec{}).EffectiveProtocol())
+	require.Equal(t, commonapi.PortProtocolUDP, (LogicalServiceSpec{Protocol: commonapi.PortProtocolUDP}).EffectiveProtocol())
+	require.Equal(t, commonapi.PortProtocol("invalid"), (LogicalServiceSpec{Protocol: "invalid"}).EffectiveProtocol())
 }
 
-// Verifies that LogicalServiceConfig.Equal accepts explicit defaults, compares every requested
+// Verifies that LogicalServiceSpec.Equal accepts explicit defaults, compares every requested
 // configuration field symmetrically, and leaves its inputs unchanged.
-func TestLogicalServiceConfigEqual(t *testing.T) {
+func TestLogicalServiceSpecEqual(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		name  string
-		left  LogicalServiceConfig
-		right LogicalServiceConfig
+		left  LogicalServiceSpec
+		right LogicalServiceSpec
 		equal bool
 	}{
-		{"empty", LogicalServiceConfig{}, LogicalServiceConfig{}, true},
-		{"protocol default", LogicalServiceConfig{}, LogicalServiceConfig{Protocol: commonapi.PortProtocolTCP}, true},
-		{"allocation default", LogicalServiceConfig{}, LogicalServiceConfig{AddressAllocationMode: ServiceAddressAllocationModeLocalhost}, true},
-		{"both defaults", LogicalServiceConfig{Address: "localhost", Port: 5000},
-			LogicalServiceConfig{Protocol: commonapi.PortProtocolTCP, Address: "localhost", Port: 5000, AddressAllocationMode: ServiceAddressAllocationModeLocalhost}, true},
-		{"protocol mismatch", LogicalServiceConfig{}, LogicalServiceConfig{Protocol: commonapi.PortProtocolUDP}, false},
-		{"address mismatch", LogicalServiceConfig{Address: "127.0.0.1"}, LogicalServiceConfig{Address: "::1"}, false},
-		{"port mismatch", LogicalServiceConfig{Port: 5000}, LogicalServiceConfig{Port: 5001}, false},
-		{"allocation mismatch", LogicalServiceConfig{}, LogicalServiceConfig{AddressAllocationMode: ServiceAddressAllocationModeProxyless}, false},
+		{"empty", LogicalServiceSpec{}, LogicalServiceSpec{}, true},
+		{"protocol default", LogicalServiceSpec{}, LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP}, true},
+		{"allocation default", LogicalServiceSpec{}, LogicalServiceSpec{AddressAllocationMode: ServiceAddressAllocationModeLocalhost}, true},
+		{"both defaults", LogicalServiceSpec{Address: "localhost", Port: 5000},
+			LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP, Address: "localhost", Port: 5000, AddressAllocationMode: ServiceAddressAllocationModeLocalhost}, true},
+		{"protocol mismatch", LogicalServiceSpec{}, LogicalServiceSpec{Protocol: commonapi.PortProtocolUDP}, false},
+		{"address mismatch", LogicalServiceSpec{Address: "127.0.0.1"}, LogicalServiceSpec{Address: "::1"}, false},
+		{"port mismatch", LogicalServiceSpec{Port: 5000}, LogicalServiceSpec{Port: 5001}, false},
+		{"allocation mismatch", LogicalServiceSpec{}, LogicalServiceSpec{AddressAllocationMode: ServiceAddressAllocationModeProxyless}, false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
@@ -130,10 +115,7 @@ func TestLogicalServiceValidateUpdate(t *testing.T) {
 	t.Parallel()
 	original := &LogicalService{
 		ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: "test-namespace"},
-		Spec: LogicalServiceSpec{
-			Mode:                 LogicalServiceModeSession,
-			LogicalServiceConfig: LogicalServiceConfig{Protocol: commonapi.PortProtocolTCP, Address: "localhost", Port: 5000, AddressAllocationMode: ServiceAddressAllocationModeLocalhost},
-		},
+		Spec:       LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP, Address: "localhost", Port: 5000, AddressAllocationMode: ServiceAddressAllocationModeLocalhost},
 	}
 	for _, testCase := range []struct {
 		name    string
@@ -145,14 +127,12 @@ func TestLogicalServiceValidateUpdate(t *testing.T) {
 			service.Status.EffectiveAddresses = []ServiceAddress{{Address: "::1", Port: 5000}}
 		}, true},
 		{"metadata", func(service *LogicalService) { service.Annotations = map[string]string{"key": "value"} }, true},
-		{"mode", func(service *LogicalService) { service.Spec.Mode = LogicalServiceModeExisting }, false},
 		{"protocol", func(service *LogicalService) { service.Spec.Protocol = commonapi.PortProtocolUDP }, false},
 		{"address", func(service *LogicalService) { service.Spec.Address = "127.0.0.1" }, false},
 		{"port", func(service *LogicalService) { service.Spec.Port++ }, false},
 		{"allocation mode", func(service *LogicalService) {
 			service.Spec.AddressAllocationMode = ServiceAddressAllocationModeProxyless
 		}, false},
-		{"existing addresses", func(service *LogicalService) { service.Spec.Addresses = []ServiceAddress{{Address: "::1", Port: 5000}} }, false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			updated := original.DeepCopy()
@@ -252,10 +232,10 @@ func TestLogicalServiceJSONAndDeepCopy(t *testing.T) {
 	service := &LogicalService{
 		TypeMeta:   metav1.TypeMeta{Kind: "LogicalService", APIVersion: GroupVersion.String()},
 		ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: "test-namespace"},
-		Spec:       LogicalServiceSpec{Mode: LogicalServiceModeExisting, Addresses: addresses},
+		Spec:       LogicalServiceSpec{Address: "localhost", Port: 5000},
 		Status: LogicalServiceStatus{
 			Phase: LogicalServicePhaseReady, EffectiveAddresses: addresses,
-			Conditions: []metav1.Condition{{Type: string(ConditionReady), Status: metav1.ConditionTrue, Reason: "ExistingService"}},
+			Conditions: []metav1.Condition{{Type: string(ConditionReady), Status: metav1.ConditionTrue, Reason: "ServiceReady"}},
 		},
 	}
 	encoded, encodeErr := json.Marshal(service)
@@ -264,29 +244,27 @@ func TestLogicalServiceJSONAndDeepCopy(t *testing.T) {
 	require.NoError(t, json.Unmarshal(encoded, &document))
 	var statusDocument map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(document["status"], &statusDocument))
+	var specDocument map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(document["spec"], &specDocument))
+	require.NotContains(t, specDocument, "mode")
+	require.NotContains(t, specDocument, "addresses")
 	require.Contains(t, statusDocument, "effectiveAddresses")
 	require.NotContains(t, statusDocument, "effectiveAddress")
 	require.NotContains(t, statusDocument, "effectivePort")
 	var roundTrip LogicalService
 	require.NoError(t, json.Unmarshal(encoded, &roundTrip))
-	require.Equal(t, addresses, roundTrip.Spec.Addresses)
+	require.Equal(t, service.Spec, roundTrip.Spec)
 	require.Equal(t, addresses, roundTrip.Status.EffectiveAddresses)
-	require.Empty(t, roundTrip.Spec.Address)
 
 	copied := service.DeepCopy()
-	copied.Spec.Addresses[0].Port++
+	copied.Spec.Port++
 	copied.Status.EffectiveAddresses[1].Address = "localhost"
 	copied.Status.Conditions[0].Reason = "Changed"
-	require.Equal(t, int32(5000), service.Spec.Addresses[0].Port)
+	require.Equal(t, int32(5000), service.Spec.Port)
 	require.Equal(t, "::1", service.Status.EffectiveAddresses[1].Address)
-	require.Equal(t, "ExistingService", service.Status.Conditions[0].Reason)
+	require.Equal(t, "ServiceReady", service.Status.Conditions[0].Reason)
 	projected := &LogicalService{}
 	service.Status.CopyTo(projected)
 	projected.Status.EffectiveAddresses[0].Port++
 	require.Equal(t, int32(5000), service.Status.EffectiveAddresses[0].Port)
-
-	session := &LogicalService{Spec: LogicalServiceSpec{LogicalServiceConfig: LogicalServiceConfig{Port: 5000}}}
-	sessionCopy := session.DeepCopy()
-	sessionCopy.Spec.Port++
-	require.Equal(t, int32(5000), session.Spec.Port)
 }

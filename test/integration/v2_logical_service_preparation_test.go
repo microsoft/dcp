@@ -89,7 +89,7 @@ func TestV2LogicalServicePreparationRecoversOnLaterReconciliation(t *testing.T) 
 			})
 			name := types.NamespacedName{Namespace: namespace.Name, Name: "workload"}
 			binding := apiv2.LogicalServiceBinding{Name: "http", Service: &apiv2.LogicalServiceTemplate{
-				Name: "management", LogicalServiceConfig: apiv2.LogicalServiceConfig{Address: "127.0.0.1"},
+				Name: "management", LogicalServiceSpec: apiv2.LogicalServiceSpec{Address: "127.0.0.1"},
 			}}
 			arguments := []string{`--listen={{portForServing "http"}}`, `--front={{portFor "workload-management"}}`}
 			environment := []commonapi.EnvVar{{Name: "FRONT", Value: `{{addressFor "workload-management"}}:{{portFor "workload-management"}}`}}
@@ -193,10 +193,10 @@ func TestV2LogicalServiceTemplateSurvivesWorkloadReplacement(t *testing.T) {
 							OwnerReferences: []metav1.OwnerReference{{APIVersion: apiv2.GroupVersion.String(), Kind: "Namespace",
 								Name: namespace.Name, UID: namespace.UID, Controller: &controller}},
 						},
-						Spec: apiv2.LogicalServiceSpec{LogicalServiceConfig: apiv2.LogicalServiceConfig{
+						Spec: apiv2.LogicalServiceSpec{
 							Protocol: commonapi.PortProtocolTCP, Address: "127.0.0.1",
 							AddressAllocationMode: apiv2.ServiceAddressAllocationModeLocalhost,
-						}},
+						},
 					}
 					require.NoError(t, client.Create(ctx, service))
 				}
@@ -205,7 +205,7 @@ func TestV2LogicalServiceTemplateSurvivesWorkloadReplacement(t *testing.T) {
 				var retainedSpec *apiv2.LogicalServiceSpec
 				for instance := range 3 {
 					binding := apiv2.LogicalServiceBinding{Name: "http", Service: &apiv2.LogicalServiceTemplate{
-						Name: "management", LogicalServiceConfig: apiv2.LogicalServiceConfig{Address: "127.0.0.1"},
+						Name: "management", LogicalServiceSpec: apiv2.LogicalServiceSpec{Address: "127.0.0.1"},
 					}}
 					if instance > 0 {
 						binding.Service.Protocol = commonapi.PortProtocolTCP
@@ -307,8 +307,8 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 			defer cancel()
 			namespace := createActiveV2Namespace(t, ctx, "v2-template-reference-"+kind)
 			name := types.NamespacedName{Namespace: namespace.Name, Name: "workload"}
-			arguments := []string{`{{portFor "external" "IPv6"}}`}
-			environment := []commonapi.EnvVar{{Name: "HOST", Value: `{{addressFor "external" "IPv6"}}`}}
+			arguments := []string{`{{portFor "dependency" "IPv6"}}`}
+			environment := []commonapi.EnvVar{{Name: "HOST", Value: `{{addressFor "dependency" "IPv6"}}`}}
 			if kind == "process" {
 				resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: name.Name, Namespace: name.Namespace},
 					Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: "template-reference-process", Args: arguments, Env: environment}}}
@@ -328,10 +328,15 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 						current.Status.Conditions[0].Reason == "TemplateEvaluationFailed" && current.Status.PhysicalContainerRef == "", nil
 				})
 			}
-			service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "external", Namespace: namespace.Name},
-				Spec: apiv2.LogicalServiceSpec{Mode: apiv2.LogicalServiceModeExisting,
-					Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "::1", Port: 5001}}}}
+			service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "dependency", Namespace: namespace.Name},
+				Spec: apiv2.LogicalServiceSpec{
+					AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless,
+				}}
 			require.NoError(t, client.Create(ctx, service))
+			endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "dependency", Namespace: namespace.Name},
+				Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name,
+					Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "::1", Port: 5001}}}}
+			require.NoError(t, client.Create(ctx, endpoint))
 			if kind == "process" {
 				running := waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalProcess) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil

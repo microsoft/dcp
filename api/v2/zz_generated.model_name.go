@@ -211,11 +211,6 @@ func (in LogicalServiceBinding) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
-func (in LogicalServiceConfig) OpenAPIModelName() string {
-	return "github.com/microsoft/dcp/api/v2.LogicalServiceConfig"
-}
-
-// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in LogicalServiceList) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.LogicalServiceList"
 }

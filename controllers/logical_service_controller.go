@@ -41,7 +41,7 @@ type logicalServiceData struct {
 	selectedName string
 }
 
-// LogicalServiceReconciler owns session proxy listeners and projects predefined or endpoint-selected addresses.
+// LogicalServiceReconciler owns proxy listeners and projects listener or endpoint-selected addresses.
 type LogicalServiceReconciler struct {
 	*ReconcilerBase[apiv2.LogicalService, *apiv2.LogicalService]
 	createProxy proxy.ProxyFactory
@@ -124,9 +124,6 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			log.Error(namespaceErr, "Failed to check service namespace")
 			message, requeue = namespaceErr.Error(), true
 		}
-	case service.Spec.EffectiveMode() == apiv2.LogicalServiceModeExisting:
-		status.Phase, status.EffectiveAddresses = apiv2.LogicalServicePhaseReady, slices.Clone(service.Spec.Addresses)
-		reason, message = "ExistingService", "The predefined service addresses are available."
 	default:
 		var endpoints apiv2.ServiceEndpointList
 		listErr := r.List(ctx, &endpoints, ctrl_client.InNamespace(service.Namespace), ctrl_client.MatchingFields{

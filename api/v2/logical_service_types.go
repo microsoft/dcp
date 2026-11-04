@@ -22,18 +22,6 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
-// LogicalServiceMode controls whether DCP allocates a service or describes an existing one.
-// +kubebuilder:validation:Enum=session;existing
-type LogicalServiceMode string
-
-const (
-	// LogicalServiceModeSession allocates a service and releases its listeners when the resource is deleted.
-	LogicalServiceModeSession LogicalServiceMode = "session"
-
-	// LogicalServiceModeExisting describes supplied addresses without allocating listeners or managing their lifetime.
-	LogicalServiceModeExisting LogicalServiceMode = "existing"
-)
-
 // LogicalServicePhase summarizes the availability of a logical service.
 type LogicalServicePhase string
 
@@ -41,7 +29,7 @@ const (
 	// LogicalServicePhasePending indicates that the service is waiting for allocation or endpoints.
 	LogicalServicePhasePending LogicalServicePhase = "Pending"
 
-	// LogicalServicePhaseReady indicates that the service has usable addresses and, for session mode, an endpoint.
+	// LogicalServicePhaseReady indicates that the service has usable addresses and an endpoint.
 	// It does not indicate that network reachability has been probed.
 	LogicalServicePhaseReady LogicalServicePhase = "Ready"
 
@@ -52,7 +40,7 @@ const (
 	LogicalServicePhaseFailed LogicalServicePhase = "Failed"
 )
 
-// ServiceAddressAllocationMode controls listener address selection for session services.
+// ServiceAddressAllocationMode controls listener address selection for DCP-managed services.
 // +kubebuilder:validation:Enum=Localhost;IPv4ZeroOne;IPv4Loopback;IPv6ZeroOne;AllInterfaces;IPv4AllInterfaces;IPv6AllInterfaces;Proxyless
 type ServiceAddressAllocationMode string
 
@@ -82,25 +70,9 @@ const (
 	ServiceAddressAllocationModeProxyless ServiceAddressAllocationMode = "Proxyless"
 )
 
-// LogicalServiceSpec describes service lifecycle policy and requested addresses.
+// LogicalServiceSpec describes a DCP-managed service's listener allocation or endpoint selection.
 // +k8s:openapi-gen=true
 type LogicalServiceSpec struct {
-	LogicalServiceConfig `json:",inline"`
-
-	// Mode controls address allocation and ownership. Defaults to session.
-	// +kubebuilder:default:=session
-	Mode LogicalServiceMode `json:"mode,omitempty"`
-
-	// Addresses are the predefined addresses in existing mode; forbidden in session mode.
-	// They require no workload or endpoint resource and are published without reachability probes.
-	// +listType=atomic
-	// +kubebuilder:validation:MinItems=1
-	Addresses []ServiceAddress `json:"addresses,omitempty"`
-}
-
-// LogicalServiceConfig describes listener allocation or endpoint selection for a session service.
-// +k8s:openapi-gen=true
-type LogicalServiceConfig struct {
 	// Protocol is the transport protocol, defaulting to TCP.
 	// +kubebuilder:validation:Enum=TCP;UDP
 	// +kubebuilder:default:=TCP
@@ -121,24 +93,16 @@ type LogicalServiceConfig struct {
 	AddressAllocationMode ServiceAddressAllocationMode `json:"addressAllocationMode,omitempty"`
 }
 
-// EffectiveMode returns the configured lifecycle mode, defaulting to session.
-func (spec LogicalServiceSpec) EffectiveMode() LogicalServiceMode {
-	if spec.Mode == "" {
-		return LogicalServiceModeSession
-	}
-	return spec.Mode
-}
-
 // EffectiveProtocol returns the configured transport protocol, defaulting to TCP.
-func (config LogicalServiceConfig) EffectiveProtocol() commonapi.PortProtocol {
+func (config LogicalServiceSpec) EffectiveProtocol() commonapi.PortProtocol {
 	if config.Protocol == "" {
 		return commonapi.PortProtocolTCP
 	}
 	return config.Protocol
 }
 
-// Equal compares requested session configuration after normalizing transport and allocation defaults.
-func (config LogicalServiceConfig) Equal(other LogicalServiceConfig) bool {
+// Equal compares requested service configuration after normalizing transport and allocation defaults.
+func (config LogicalServiceSpec) Equal(other LogicalServiceSpec) bool {
 	config.Protocol, other.Protocol = config.EffectiveProtocol(), other.EffectiveProtocol()
 	if config.AddressAllocationMode == "" {
 		config.AddressAllocationMode = ServiceAddressAllocationModeLocalhost
@@ -150,7 +114,7 @@ func (config LogicalServiceConfig) Equal(other LogicalServiceConfig) bool {
 }
 
 // Validate checks the requested transport, listener port, and address-allocation mode.
-func (config *LogicalServiceConfig) Validate(configPath *field.Path) field.ErrorList {
+func (config *LogicalServiceSpec) Validate(configPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 	if config.Protocol != "" && config.Protocol != commonapi.PortProtocolTCP && config.Protocol != commonapi.PortProtocolUDP {
 		errorList = append(errorList, field.NotSupported(configPath.Child("protocol"), config.Protocol,
@@ -199,7 +163,7 @@ func (status LogicalServiceStatus) CopyTo(dest apiserver_resource.ObjectWithStat
 	status.DeepCopyInto(&dest.(*LogicalService).Status)
 }
 
-// LogicalService represents a session-scoped service or predefined addresses independent of a workload.
+// LogicalService represents a DCP-managed service with a lifetime independent of its workloads.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +k8s:openapi-gen=true
@@ -256,28 +220,7 @@ func (service *LogicalService) Validate(ctx context.Context) field.ErrorList {
 	}
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(service.Annotations, field.NewPath("metadata", "annotations"))...)
 
-	switch service.Spec.EffectiveMode() {
-	case LogicalServiceModeSession:
-		if len(service.Spec.Addresses) != 0 {
-			errorList = append(errorList, field.Forbidden(specPath.Child("addresses"), "addresses can only be set in existing mode"))
-		}
-	case LogicalServiceModeExisting:
-		if service.Spec.Address != "" {
-			errorList = append(errorList, field.Forbidden(specPath.Child("address"), "address cannot be set in existing mode; use addresses"))
-		}
-		if service.Spec.Port != 0 {
-			errorList = append(errorList, field.Forbidden(specPath.Child("port"), "port cannot be set in existing mode; use addresses"))
-		}
-		if service.Spec.AddressAllocationMode != "" {
-			errorList = append(errorList, field.Forbidden(specPath.Child("addressAllocationMode"), "addressAllocationMode cannot be set in existing mode"))
-		}
-		errorList = append(errorList, validateServiceAddresses(service.Spec.Addresses, specPath.Child("addresses"))...)
-	default:
-		errorList = append(errorList, field.NotSupported(specPath.Child("mode"), service.Spec.Mode, []string{
-			string(LogicalServiceModeSession), string(LogicalServiceModeExisting),
-		}))
-	}
-	errorList = append(errorList, service.Spec.LogicalServiceConfig.Validate(specPath)...)
+	errorList = append(errorList, service.Spec.Validate(specPath)...)
 	return errorList
 }
 
