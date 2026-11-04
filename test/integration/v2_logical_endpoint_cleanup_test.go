@@ -161,15 +161,12 @@ func TestV2LogicalEndpointDeletionDoesNotWaitForBackingCleanup(t *testing.T) {
 	}
 }
 
-// Verifies that normal exit, missing process backing, and invalid logical backing holds
+// Verifies that normal exit, missing runtime or process backing, and invalid logical backing holds
 // withdraw endpoints without deleting their services, including retry after an endpoint deletion failure.
 func TestV2LogicalEndpointsWithdrawOnTerminalState(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
 		for _, terminal := range []string{"exit", "invalid", "missing"} {
-			if kind == "container" && terminal == "missing" {
-				continue
-			}
 			t.Run(kind+"/"+terminal, func(t *testing.T) {
 				t.Parallel()
 				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -210,7 +207,15 @@ func TestV2LogicalEndpointsWithdrawOnTerminalState(t *testing.T) {
 						return apiClient.Update(ctx, workload.backing)
 					}))
 				case "missing":
-					forceRemoveLogicalProcessBacking(t, ctx, apiClient, workload.backing.(*apiv2.PhysicalProcess))
+					if physicalProcess, isProcess := workload.backing.(*apiv2.PhysicalProcess); isProcess {
+						forceRemoveLogicalProcessBacking(t, ctx, apiClient, physicalProcess)
+					} else {
+						containerLogical := workload.logical.(*apiv2.LogicalContainer)
+						_, removeErr := server.ContainerOrchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
+							Containers: []string{containerLogical.Status.ContainerID}, Force: true,
+						})
+						require.NoError(t, removeErr)
+					}
 				}
 				if kind == "process" {
 					waitObjectAssumesStateEx(t, ctx, apiClient, ctrl_client.ObjectKeyFromObject(workload.logical), func(current *apiv2.LogicalProcess) (bool, error) {

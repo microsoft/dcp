@@ -373,7 +373,7 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 			requeue: true,
 		},
 		physicalContainerStateMissing: {
-			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerMissing,
+			phase: apiv2.PhysicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerMissing,
 			message: "Runtime container was not found.",
 		},
 		physicalContainerStateInspectFailed: {
