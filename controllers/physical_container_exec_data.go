@@ -125,7 +125,7 @@ func (data *physicalContainerExecData) applyTo(resource *apiv2.PhysicalContainer
 	change := setValue(&resource.Status.ContainerID, data.containerID)
 	change |= setTimestamp(&resource.Status.StartedAt, data.startedAt)
 	change |= setTimestamp(&resource.Status.FinishedAt, data.finishedAt)
-	change |= setPhysicalProcessExitCode(&resource.Status.ExitCode, data.exitCode)
+	change |= setExitCode(&resource.Status.ExitCode, data.exitCode)
 	complete := data.state == physicalContainerExecStateFailed ||
 		data.state == physicalContainerExecStateInvalid || data.state == physicalContainerExecStateExited
 	change |= setValue(&resource.Status.LogsComplete, complete)
