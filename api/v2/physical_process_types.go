@@ -135,9 +135,8 @@ type PhysicalProcessConfig struct {
 	// WorkingDirectory is the process working directory. The controller process working directory is used when omitted.
 	WorkingDirectory string `json:"workingDirectory,omitempty"`
 
-	// InheritEnvironment controls whether the controller process environment is included. Defaults to true.
-	// +kubebuilder:default:=true
-	InheritEnvironment *bool `json:"inheritEnvironment,omitempty"`
+	// AmbientEnvironment controls inheritance from the controller process environment.
+	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 
 	// Env contains process environment variables. These values override inherited variables with the same name.
 	// +listType=map
@@ -311,6 +310,7 @@ func (pp *PhysicalProcess) Validate(ctx context.Context) field.ErrorList {
 
 	processConfig := pp.Spec.Process
 	processPath := specPath.Child("process")
+	errorList = append(errorList, processConfig.AmbientEnvironment.validate(processPath.Child("ambientEnvironment"))...)
 	if !pp.Spec.IdentityTimestamp.IsZero() {
 		errorList = append(errorList, field.Forbidden(specPath.Child("identityTimestamp"), "identityTimestamp requires pid"))
 	}

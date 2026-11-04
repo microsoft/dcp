@@ -114,6 +114,38 @@ func TestLogicalProcessLifecycleEnvironmentMatchesExecutable(t *testing.T) {
 	}
 }
 
+// Verifies that V2 ambient environment behaviors retain the published boolean-based process lifecycle keys
+// under the shared production lifecycle-hash type registration.
+func TestLogicalProcessAmbientEnvironmentLifecycleKeysRemainStable(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		behavior apiv2.EnvironmentBehavior
+		key      string
+	}{
+		{"default", "", "a562429189fc17d949aed1eae7092cf4"},
+		{"inherit", apiv2.EnvironmentBehaviorInherit, "a562429189fc17d949aed1eae7092cf4"},
+		{"do not inherit", apiv2.EnvironmentBehaviorDoNotInherit, "f9e6175d973c55f94d6fe0cecb889ccd"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			pid := int64(123)
+			spec := apiv2.LogicalProcessSpec{
+				MonitorPID: &pid, MonitorTimestamp: metav1.NewMicroTime(time.Unix(100, 0).UTC()),
+				Process: &apiv2.LogicalProcessConfig{
+					ExecutablePath: "program", Args: []string{"one"}, WorkingDirectory: "/working",
+					AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: testCase.behavior},
+					Env:                []EnvVar{{Name: "B", Value: "2"}, {Name: "A", Value: "1"}},
+				},
+			}
+			key, computed, keyErr := spec.GetLifecycleKey()
+			require.NoError(t, keyErr)
+			require.True(t, computed)
+			require.Equal(t, testCase.key, key)
+		})
+	}
+}
+
 func TestExecutableGetLeaseKey(t *testing.T) {
 	t.Parallel()
 

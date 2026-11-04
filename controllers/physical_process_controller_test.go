@@ -41,37 +41,37 @@ type recordingPhysicalProcessExecutor struct {
 	stopProcessCalls       atomic.Int32
 }
 
+// Verifies that PhysicalProcess environment construction defaults to inheritance, honors explicit
+// inheritance behavior, and appends explicit values after inherited values so they take precedence.
 func TestPhysicalProcessEnvironment(t *testing.T) {
 	t.Setenv("DCP_PHYSICAL_PROCESS_ENV_TEST", "inherited")
 
-	inheritEnvironment := true
-	doNotInheritEnvironment := false
-	explicitEnvironment := []commonapi.EnvVar{{Name: "EXPLICIT", Value: "configured"}}
+	explicitEnvironment := []commonapi.EnvVar{{Name: "DCP_PHYSICAL_PROCESS_ENV_TEST", Value: "configured"}}
 	testCases := []struct {
-		name               string
-		inheritEnvironment *bool
-		expected           []string
+		name     string
+		behavior apiv2.EnvironmentBehavior
+		expected []string
 	}{
 		{
 			name:     "defaults to inherited environment",
-			expected: append(os.Environ(), "EXPLICIT=configured"),
+			expected: append(os.Environ(), "DCP_PHYSICAL_PROCESS_ENV_TEST=configured"),
 		},
 		{
-			name:               "inherits environment explicitly",
-			inheritEnvironment: &inheritEnvironment,
-			expected:           append(os.Environ(), "EXPLICIT=configured"),
+			name:     "inherits environment explicitly",
+			behavior: apiv2.EnvironmentBehaviorInherit,
+			expected: append(os.Environ(), "DCP_PHYSICAL_PROCESS_ENV_TEST=configured"),
 		},
 		{
-			name:               "does not inherit environment explicitly",
-			inheritEnvironment: &doNotInheritEnvironment,
-			expected:           []string{"EXPLICIT=configured"},
+			name:     "does not inherit environment explicitly",
+			behavior: apiv2.EnvironmentBehaviorDoNotInherit,
+			expected: []string{"DCP_PHYSICAL_PROCESS_ENV_TEST=configured"},
 		},
 	}
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			environment := physicalProcessEnvironment(&apiv2.PhysicalProcessConfig{
-				InheritEnvironment: testCase.inheritEnvironment,
+				AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: testCase.behavior},
 				Env:                explicitEnvironment,
 			})
 
