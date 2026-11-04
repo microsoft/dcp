@@ -178,3 +178,53 @@ func TestV2LogicalProcessExistingModeRejectsDynamicPorts(t *testing.T) {
 	require.NoError(t, client.Delete(ctx, namespace))
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
 }
+
+// Verifies that the real API rejects every dynamic persistent process port regardless of lifecycle key,
+// while accepting fixed ports and persistent processes without endpoint registrations.
+func TestV2LogicalProcessPersistentModeRequiresFixedPorts(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	server, _, startupErr := StartTestEnvironment(t, ctx, NamespaceController, t.Name(), t.TempDir())
+	require.NoError(t, startupErr)
+	apiClient := server.Client
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-persistent-port-validation"}}
+	require.NoError(t, apiClient.Create(ctx, namespace))
+	for _, keyKind := range []string{"computed", "explicit"} {
+		for _, testCase := range []struct {
+			name         string
+			ports        []int32
+			invalidField string
+		}{
+			{name: "dynamic", ports: []int32{0}, invalidField: "spec.ports[0].port"},
+			{name: "mixed", ports: []int32{8080, 0}, invalidField: "spec.ports[1].port"},
+			{name: "fixed", ports: []int32{1, 65535}},
+			{name: "no-ports"},
+		} {
+			t.Run(keyKind+"/"+testCase.name, func(t *testing.T) {
+				spec := apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+					Process: &apiv2.LogicalProcessConfig{ExecutablePath: "persistent-port-validation"}}
+				if keyKind == "explicit" {
+					spec.LifecycleKey = "caller-key"
+				}
+				for portIndex, port := range testCase.ports {
+					spec.Ports = append(spec.Ports, apiv2.LogicalProcessPort{
+						LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: []string{"http", "metrics"}[portIndex], ServiceRef: "service"},
+						Port:                  port,
+					})
+				}
+				resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: keyKind + "-" + testCase.name, Namespace: namespace.Name}, Spec: spec}
+				createErr := apiClient.Create(ctx, resource)
+				if testCase.invalidField != "" {
+					require.True(t, apierrors.IsInvalid(createErr), "%v", createErr)
+					require.Contains(t, createErr.Error(), testCase.invalidField)
+					require.Contains(t, createErr.Error(), "an explicit serving port is required in persistent mode")
+				} else {
+					require.NoError(t, createErr)
+				}
+			})
+		}
+	}
+	require.NoError(t, apiClient.Delete(ctx, namespace))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
+}
