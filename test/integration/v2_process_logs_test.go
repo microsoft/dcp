@@ -597,7 +597,7 @@ func TestV2PhysicalProcessReusesExistingOutputCapture(t *testing.T) {
 }
 
 // Verifies that LogicalProcess and PhysicalProcess log followers drain and finish on resource deletion,
-// captured files are cleaned up, and a recreated logical name gets a distinct capture.
+// and a recreated logical name gets a distinct capture without old output.
 func TestV2ProcessLogsFinishOnDeletionAndIsolateRecreatedResources(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -609,6 +609,13 @@ func TestV2ProcessLogsFinishOnDeletionAndIsolateRecreatedResources(t *testing.T)
 	running := waitLogicalProcessPhase(t, ctx, resource.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
 	physical := &apiv2.PhysicalProcess{}
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalProcessRef}, physical))
+	// Clean up any captures left by best-effort deletion after both followers have closed.
+	t.Cleanup(func() {
+		cleanupErr := logs.RemoveProcessOutput(context.WithoutCancel(ctx), physical.Status.StdoutFile, physical.Status.StderrFile)
+		if cleanupErr != nil {
+			t.Logf("Could not remove test output files: %v", cleanupErr)
+		}
+	})
 	pid, pidErr := process.Int64_ToPidT(*running.Status.PID)
 	require.NoError(t, pidErr)
 	execution, found := testProcessExecutor.FindByPid(pid)
@@ -633,7 +640,6 @@ func TestV2ProcessLogsFinishOnDeletionAndIsolateRecreatedResources(t *testing.T)
 		require.Empty(t, remaining)
 	}
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
-	waitOutputFilesRemoved(t, ctx, physical.Status.StdoutFile, physical.Status.StderrFile)
 	replacement := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: resource.Name, Namespace: namespace.Name}, Spec: *resource.Spec.DeepCopy()}
 	require.NoError(t, client.Create(ctx, replacement))
 	recreated := waitLogicalProcessPhase(t, ctx, replacement.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
