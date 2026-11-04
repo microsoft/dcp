@@ -124,7 +124,6 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.LogicalProcessStatus{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref),
 		v2.LogicalService{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v2_LogicalService(ref),
 		v2.LogicalServiceBinding{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_LogicalServiceBinding(ref),
-		v2.LogicalServiceConfig{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalServiceConfig(ref),
 		v2.LogicalServiceList{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_LogicalServiceList(ref),
 		v2.LogicalServiceSpec{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_LogicalServiceSpec(ref),
 		v2.LogicalServiceStatus{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalServiceStatus(ref),
@@ -5829,7 +5828,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerPort(ref common.ReferenceCallba
 					},
 					"service": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Service creates a named session-mode LogicalService if absent, or references it if its configuration matches. The service has an independent lifetime and is not deleted with the workload.",
+							Description: "Service creates a named LogicalService if absent, or references it if its configuration matches. The service has an independent lifetime and is not deleted with the workload.",
 							Ref:         ref(v2.LogicalServiceTemplate{}.OpenAPIModelName()),
 						},
 					},
@@ -6355,7 +6354,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessPort(ref common.ReferenceCallback
 					},
 					"service": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Service creates a named session-mode LogicalService if absent, or references it if its configuration matches. The service has an independent lifetime and is not deleted with the workload.",
+							Description: "Service creates a named LogicalService if absent, or references it if its configuration matches. The service has an independent lifetime and is not deleted with the workload.",
 							Ref:         ref(v2.LogicalServiceTemplate{}.OpenAPIModelName()),
 						},
 					},
@@ -6583,7 +6582,7 @@ func schema_microsoft_dcp_api_v2_LogicalService(ref common.ReferenceCallback) co
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "LogicalService represents a session-scoped service or predefined addresses independent of a workload.",
+				Description: "LogicalService represents a DCP-managed service with a lifetime independent of its workloads.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -6630,7 +6629,7 @@ func schema_microsoft_dcp_api_v2_LogicalServiceBinding(ref common.ReferenceCallb
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "LogicalServiceBinding references a service or ensures that a matching session service exists. Exactly one of serviceRef or service must be set.",
+				Description: "LogicalServiceBinding references a service or ensures that a matching service exists. Exactly one of serviceRef or service must be set.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"name": {
@@ -6650,7 +6649,7 @@ func schema_microsoft_dcp_api_v2_LogicalServiceBinding(ref common.ReferenceCallb
 					},
 					"service": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Service creates a named session-mode LogicalService if absent, or references it if its configuration matches. The service has an independent lifetime and is not deleted with the workload.",
+							Description: "Service creates a named LogicalService if absent, or references it if its configuration matches. The service has an independent lifetime and is not deleted with the workload.",
 							Ref:         ref(v2.LogicalServiceTemplate{}.OpenAPIModelName()),
 						},
 					},
@@ -6660,47 +6659,6 @@ func schema_microsoft_dcp_api_v2_LogicalServiceBinding(ref common.ReferenceCallb
 		},
 		Dependencies: []string{
 			v2.LogicalServiceTemplate{}.OpenAPIModelName()},
-	}
-}
-
-func schema_microsoft_dcp_api_v2_LogicalServiceConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "LogicalServiceConfig describes listener allocation or endpoint selection for a session service.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"protocol": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Protocol is the transport protocol, defaulting to TCP.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"address": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Address is the requested IP address or hostname. If set, it overrides addressAllocationMode, except in Proxyless mode, where address and port are ignored.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"port": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Port is the requested listener port. Zero selects an available port.",
-							Type:        []string{"integer"},
-							Format:      "int32",
-						},
-					},
-					"addressAllocationMode": {
-						SchemaProps: spec.SchemaProps{
-							Description: "AddressAllocationMode selects listener addresses, defaulting to Localhost. Proxyless selects one ServiceEndpoint and publishes all of its addresses.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-				},
-			},
-		},
 	}
 }
 
@@ -6756,7 +6714,7 @@ func schema_microsoft_dcp_api_v2_LogicalServiceSpec(ref common.ReferenceCallback
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "LogicalServiceSpec describes service lifecycle policy and requested addresses.",
+				Description: "LogicalServiceSpec describes a DCP-managed service's listener allocation or endpoint selection.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"protocol": {
@@ -6787,36 +6745,9 @@ func schema_microsoft_dcp_api_v2_LogicalServiceSpec(ref common.ReferenceCallback
 							Format:      "",
 						},
 					},
-					"mode": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Mode controls address allocation and ownership. Defaults to session.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"addresses": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Addresses are the predefined addresses in existing mode; forbidden in session mode. They require no workload or endpoint resource and are published without reachability probes.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Ref: ref(v2.ServiceAddress{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
 				},
 			},
 		},
-		Dependencies: []string{
-			v2.ServiceAddress{}.OpenAPIModelName()},
 	}
 }
 
@@ -6892,7 +6823,7 @@ func schema_microsoft_dcp_api_v2_LogicalServiceTemplate(ref common.ReferenceCall
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "LogicalServiceTemplate describes a named session service to create if absent or reuse when its configuration matches.",
+				Description: "LogicalServiceTemplate describes a named service to create if absent or reuse when its configuration matches.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"protocol": {

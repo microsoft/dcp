@@ -18,7 +18,7 @@ import (
 )
 
 // Verifies that logical ports require unique names and exactly one valid same-namespace
-// service reference or named session-service template, including on existing-mode workloads.
+// service reference or named service template, including on existing-mode workloads.
 func TestLogicalPortsValidateServiceBindings(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -39,8 +39,8 @@ func TestLogicalPortsValidateServiceBindings(t *testing.T) {
 		{"duplicate port name", []LogicalServiceBinding{{Name: "http", ServiceRef: "first"}, {Name: "http", ServiceRef: "second"}}, false},
 		{"missing template name", []LogicalServiceBinding{{Name: "http", Service: &LogicalServiceTemplate{}}}, false},
 		{"duplicate template name", []LogicalServiceBinding{{Name: "http", Service: &LogicalServiceTemplate{Name: "shared"}}, {Name: "metrics", Service: &LogicalServiceTemplate{Name: "shared"}}}, false},
-		{"invalid template protocol", []LogicalServiceBinding{{Name: "http", Service: &LogicalServiceTemplate{Name: "http", LogicalServiceConfig: LogicalServiceConfig{Protocol: "HTTP"}}}}, false},
-		{"invalid template port", []LogicalServiceBinding{{Name: "http", Service: &LogicalServiceTemplate{Name: "http", LogicalServiceConfig: LogicalServiceConfig{Port: -1}}}}, false},
+		{"invalid template protocol", []LogicalServiceBinding{{Name: "http", Service: &LogicalServiceTemplate{Name: "http", LogicalServiceSpec: LogicalServiceSpec{Protocol: "HTTP"}}}}, false},
+		{"invalid template port", []LogicalServiceBinding{{Name: "http", Service: &LogicalServiceTemplate{Name: "http", LogicalServiceSpec: LogicalServiceSpec{Port: -1}}}}, false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			containerPorts := make([]LogicalContainerPort, len(testCase.bindings))
@@ -90,14 +90,14 @@ func TestLogicalPortsValidatePortConfiguration(t *testing.T) {
 	require.Empty(t, ValidateContainerPorts([]ContainerPort{{ContainerPort: 8080, RangeSize: 2}}, nil))
 }
 
-// Verifies that unified logical ports serialize at spec.ports with named session templates,
+// Verifies that unified logical ports serialize at spec.ports with named service templates,
 // without runtime protocol duplication or a ports collection in the creation configuration.
 func TestLogicalPortsJSONAndDeepCopy(t *testing.T) {
 	t.Parallel()
 	container := &LogicalContainer{Spec: LogicalContainerSpec{
 		Container: &LogicalContainerConfig{ImageRef: "image"},
 		Ports: []LogicalContainerPort{{ContainerPort: 8080, LogicalServiceBinding: LogicalServiceBinding{
-			Name: "http", Service: &LogicalServiceTemplate{Name: "management", LogicalServiceConfig: LogicalServiceConfig{Protocol: commonapi.PortProtocolUDP}},
+			Name: "http", Service: &LogicalServiceTemplate{Name: "management", LogicalServiceSpec: LogicalServiceSpec{Protocol: commonapi.PortProtocolUDP}},
 		}}},
 	}}
 	encoded, encodeErr := json.Marshal(container)
@@ -133,7 +133,7 @@ func TestLogicalProcessLifecycleKeyIgnoresServiceDeclarations(t *testing.T) {
 		{"listening port", func(changed *LogicalProcessSpec) { changed.Ports[0].Port++ }},
 		{"inline template", func(changed *LogicalProcessSpec) {
 			changed.Ports[0].ServiceRef = ""
-			changed.Ports[0].Service = &LogicalServiceTemplate{Name: "inline", LogicalServiceConfig: LogicalServiceConfig{Address: "::1", Port: 6000}}
+			changed.Ports[0].Service = &LogicalServiceTemplate{Name: "inline", LogicalServiceSpec: LogicalServiceSpec{Address: "::1", Port: 6000}}
 		}},
 		{"no ports", func(changed *LogicalProcessSpec) { changed.Ports = nil }},
 	} {

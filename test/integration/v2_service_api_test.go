@@ -54,21 +54,22 @@ func TestV2ServiceAPIStorageAndNamespaceCleanup(t *testing.T) {
 
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-service-api"}}
 	require.NoError(t, apiClient.Create(ctx, namespace))
-	session := &apiv2.LogicalService{
-		ObjectMeta: metav1.ObjectMeta{Name: "session", Namespace: namespace.Name},
+	allocated := &apiv2.LogicalService{
+		ObjectMeta: metav1.ObjectMeta{Name: "allocated", Namespace: namespace.Name},
 	}
-	require.NoError(t, apiClient.Create(ctx, session))
+	require.NoError(t, apiClient.Create(ctx, allocated))
 	addresses := []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "::1", Port: 5001}}
-	existing := &apiv2.LogicalService{
-		ObjectMeta: metav1.ObjectMeta{Name: "existing", Namespace: namespace.Name},
-		Spec:       apiv2.LogicalServiceSpec{Mode: apiv2.LogicalServiceModeExisting, Addresses: addresses},
+	proxyless := &apiv2.LogicalService{
+		ObjectMeta: metav1.ObjectMeta{Name: "proxyless", Namespace: namespace.Name},
+		Spec: apiv2.LogicalServiceSpec{
+			AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless,
+		},
 	}
-	require.NoError(t, apiClient.Create(ctx, existing))
-	require.Empty(t, existing.OwnerReferences)
-	require.Empty(t, existing.Spec.Address)
+	require.NoError(t, apiClient.Create(ctx, proxyless))
+	require.Empty(t, proxyless.OwnerReferences)
 	endpoint := &apiv2.ServiceEndpoint{
 		ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: namespace.Name},
-		Spec:       apiv2.ServiceEndpointSpec{ServiceRef: session.Name, Addresses: addresses},
+		Spec:       apiv2.ServiceEndpointSpec{ServiceRef: allocated.Name, Addresses: addresses},
 	}
 	require.NoError(t, apiClient.Create(ctx, endpoint))
 	require.Empty(t, endpoint.OwnerReferences)
@@ -80,19 +81,19 @@ func TestV2ServiceAPIStorageAndNamespaceCleanup(t *testing.T) {
 	require.NoError(t, apiClient.Get(ctx, endpoint.NamespacedName(), storedEndpoint))
 	require.Equal(t, int32(5002), storedEndpoint.Spec.Addresses[1].Port)
 
-	existing.Status = apiv2.LogicalServiceStatus{Phase: apiv2.LogicalServicePhaseReady, EffectiveAddresses: addresses}
-	require.NoError(t, apiClient.Status().Update(ctx, existing))
+	proxyless.Status = apiv2.LogicalServiceStatus{Phase: apiv2.LogicalServicePhaseReady, EffectiveAddresses: addresses}
+	require.NoError(t, apiClient.Status().Update(ctx, proxyless))
 	storedService := &apiv2.LogicalService{}
-	require.NoError(t, apiClient.Get(ctx, existing.NamespacedName(), storedService))
-	require.Equal(t, addresses, storedService.Spec.Addresses)
+	require.NoError(t, apiClient.Get(ctx, proxyless.NamespacedName(), storedService))
+	require.Equal(t, apiv2.ServiceAddressAllocationModeProxyless, storedService.Spec.AddressAllocationMode)
 	require.Equal(t, addresses, storedService.Status.EffectiveAddresses)
 	require.Equal(t, apiv2.LogicalServicePhaseReady, storedService.Status.Phase)
 	storedService.Status.EffectiveAddresses = nil
 	storedService.Annotations = map[string]string{"test": "status-isolation"}
 	require.NoError(t, apiClient.Update(ctx, storedService))
-	require.NoError(t, apiClient.Get(ctx, existing.NamespacedName(), storedService))
+	require.NoError(t, apiClient.Get(ctx, proxyless.NamespacedName(), storedService))
 	require.Equal(t, addresses, storedService.Status.EffectiveAddresses)
-	storedService.Spec.Addresses[0].Port++
+	storedService.Spec.Port++
 	immutableErr := apiClient.Update(ctx, storedService)
 	require.True(t, apierrors.IsInvalid(immutableErr), "%v", immutableErr)
 
@@ -103,13 +104,13 @@ func TestV2ServiceAPIStorageAndNamespaceCleanup(t *testing.T) {
 	require.NoError(t, apiClient.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
 	require.Len(t, endpoints.Items, 1)
 	require.NoError(t, apiClient.Delete(ctx, namespace))
-	ctrl_testutil.WaitObjectDeleted[apiv2.LogicalService](t, ctx, apiClient, session)
-	ctrl_testutil.WaitObjectDeleted[apiv2.LogicalService](t, ctx, apiClient, existing)
+	ctrl_testutil.WaitObjectDeleted[apiv2.LogicalService](t, ctx, apiClient, allocated)
+	ctrl_testutil.WaitObjectDeleted[apiv2.LogicalService](t, ctx, apiClient, proxyless)
 	ctrl_testutil.WaitObjectDeleted[apiv2.ServiceEndpoint](t, ctx, apiClient, endpoint)
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, apiClient, namespace)
 }
 
-// Verifies that the real API rejects persistent service policy, missing predefined addresses,
+// Verifies that the real API rejects invalid service protocols and listener ports,
 // cross-namespace endpoint references, and unallocated endpoint ports.
 func TestV2ServiceAPIRejectsInvalidConfiguration(t *testing.T) {
 	t.Parallel()
@@ -122,8 +123,8 @@ func TestV2ServiceAPIRejectsInvalidConfiguration(t *testing.T) {
 		name string
 		spec apiv2.LogicalServiceSpec
 	}{
-		{"persistent", apiv2.LogicalServiceSpec{Mode: "persistent"}},
-		{"existing-without-addresses", apiv2.LogicalServiceSpec{Mode: apiv2.LogicalServiceModeExisting}},
+		{"invalid-protocol", apiv2.LogicalServiceSpec{Protocol: "HTTP"}},
+		{"invalid-port", apiv2.LogicalServiceSpec{Port: -1}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			service := &apiv2.LogicalService{

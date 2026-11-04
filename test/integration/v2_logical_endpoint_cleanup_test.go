@@ -57,7 +57,7 @@ func createEndpointCleanupWorkload(
 	t.Helper()
 	name := types.NamespacedName{Name: "workload", Namespace: namespace}
 	binding := apiv2.LogicalServiceBinding{Name: "http", Service: &apiv2.LogicalServiceTemplate{
-		Name: "http", LogicalServiceConfig: apiv2.LogicalServiceConfig{Address: "127.0.0.1"},
+		Name: "http", LogicalServiceSpec: apiv2.LogicalServiceSpec{Address: "127.0.0.1"},
 	}}
 	var workload endpointCleanupWorkload
 	if kind == "process" {

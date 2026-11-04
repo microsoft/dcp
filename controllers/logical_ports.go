@@ -54,15 +54,14 @@ func prepareLogicalPorts(
 		if request.binding.Service != nil {
 			serviceName.Name = owner.GetName() + "-" + request.binding.Service.Name
 			service.ObjectMeta = metav1.ObjectMeta{Name: serviceName.Name, Namespace: owner.GetNamespace()}
-			service.Spec = apiv2.LogicalServiceSpec{Mode: apiv2.LogicalServiceModeSession, LogicalServiceConfig: request.binding.Service.LogicalServiceConfig}
+			service.Spec = request.binding.Service.LogicalServiceSpec
 			createErr := apiClient.Create(ctx, service)
 			if createErr != nil {
 				if getErr := reader.Get(ctx, serviceName, service); getErr != nil {
 					return prepared, fmt.Errorf("create port %q service and verify outcome: %w", request.binding.Name, errors.Join(createErr, getErr))
 				}
 			}
-			if service.Spec.EffectiveMode() != apiv2.LogicalServiceModeSession || len(service.Spec.Addresses) != 0 ||
-				!service.Spec.LogicalServiceConfig.Equal(request.binding.Service.LogicalServiceConfig) {
+			if !service.Spec.Equal(request.binding.Service.LogicalServiceSpec) {
 				return prepared, fmt.Errorf("service %q configuration does not match the template", serviceName)
 			}
 		} else if getErr := reader.Get(ctx, serviceName, service); getErr != nil {
