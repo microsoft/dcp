@@ -281,8 +281,19 @@ func (r *LogicalContainerReconciler) manageLogicalContainer(
 	}
 	handler := getStateInitializer(logicalContainerDataHandlers, data.state, log)
 	change := handler(ctx, r, container, data.state, data, log)
+	var endpointCleanupErr error
+	if data.state == logicalContainerStateInvalid {
+		endpointCleanupErr = syncLogicalEndpoints(ctx, r.Client, r.NoCacheClient, container, data.ports, nil)
+		if endpointCleanupErr != nil {
+			log.Error(endpointCleanupErr, "Failed to withdraw terminal logical container endpoints")
+			change |= additionalReconciliationNeeded
+		}
+	}
 	_ = r.containerData.Update(container.NamespacedName(), container.UID, data)
 	dataChange, delay, valid := data.applyTo(container)
+	if endpointCleanupErr != nil {
+		delay = LongDelay
+	}
 	if !valid {
 		log.Error(fmt.Errorf("invalid logical container state %v", data.state),
 			"LogicalContainer reached invalid reconciliation state")
@@ -1023,6 +1034,17 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 	data.reason, data.message = "", ""
 	data.reconcileErr = nil
 
+	bindings := make([]apiv2.LogicalServiceBinding, len(container.Spec.Ports))
+	for portIndex, port := range container.Spec.Ports {
+		bindings[portIndex] = port.LogicalServiceBinding
+	}
+	// Endpoint failures must not prevent requesting backing deletion.
+	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, container, bindings)
+	if portDeleteErr != nil {
+		log.Error(portDeleteErr, "Failed to delete logical container endpoints")
+		data.reconcileErr, data.message = portDeleteErr, portDeleteErr.Error()
+	}
+
 	options := []ctrl_client.ListOption{
 		ctrl_client.InNamespace(container.Namespace),
 		ctrl_client.MatchingFields{logicalContainerOwnerUIDField: string(container.UID)},
@@ -1147,17 +1169,7 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 		return r.settleLogicalContainerLease(ctx, container, data, nil, log), delay
 	}
 
-	bindings := make([]apiv2.LogicalServiceBinding, len(container.Spec.Ports))
-	for portIndex, port := range container.Spec.Ports {
-		bindings[portIndex] = port.LogicalServiceBinding
-	}
-	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, container, bindings)
-	if portDeleteErr != nil {
-		log.Error(portDeleteErr, "Failed to delete logical container endpoints")
-		data.reconcileErr, data.message = portDeleteErr, portDeleteErr.Error()
-		return additionalReconciliationNeeded, delay
-	}
-	if !portsDeleted {
+	if portDeleteErr != nil || !portsDeleted {
 		return additionalReconciliationNeeded, delay
 	}
 

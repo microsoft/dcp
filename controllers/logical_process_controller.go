@@ -181,8 +181,19 @@ func (r *LogicalProcessReconciler) manageLogicalProcess(
 	}
 	stateHandler := getStateInitializer(logicalProcessDataHandlers, data.state, log)
 	change := stateHandler(ctx, r, resource, data.state, data, log)
+	var endpointCleanupErr error
+	if data.state == logicalProcessStateMissing || data.state == logicalProcessStateInvalid {
+		endpointCleanupErr = syncLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, data.ports, nil)
+		if endpointCleanupErr != nil {
+			log.Error(endpointCleanupErr, "Failed to withdraw terminal logical process endpoints")
+			change |= additionalReconciliationNeeded
+		}
+	}
 	_ = r.processData.Update(resource.NamespacedName(), resource.UID, data)
 	projectionChange, delay, valid := data.applyTo(resource)
+	if endpointCleanupErr != nil {
+		delay = LongDelay
+	}
 	if !valid {
 		log.Error(fmt.Errorf("invalid logical process state %v", data.state), "LogicalProcess reached invalid reconciliation state")
 	}
@@ -540,6 +551,16 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 		}
 	}()
 	data.state, data.reason, data.message, data.reconcileErr = logicalProcessStateDelete, "", "", nil
+	bindings := make([]apiv2.LogicalServiceBinding, len(resource.Spec.Ports))
+	for portIndex, port := range resource.Spec.Ports {
+		bindings[portIndex] = port.LogicalServiceBinding
+	}
+	// Endpoint failures must not prevent requesting backing deletion.
+	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, bindings)
+	if portDeleteErr != nil {
+		log.Error(portDeleteErr, "Failed to delete logical process endpoints")
+		data.reconcileErr, data.message = portDeleteErr, portDeleteErr.Error()
+	}
 	var children apiv2.PhysicalProcessList
 	listErr := r.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace),
 		ctrl_client.MatchingFields{logicalProcessOwnerUIDField: string(resource.UID)})
@@ -612,17 +633,7 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 	if data.lease != nil {
 		return r.persistLogicalProcess(ctx, resource, data, nil, log), delay
 	}
-	bindings := make([]apiv2.LogicalServiceBinding, len(resource.Spec.Ports))
-	for portIndex, port := range resource.Spec.Ports {
-		bindings[portIndex] = port.LogicalServiceBinding
-	}
-	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, bindings)
-	if portDeleteErr != nil {
-		log.Error(portDeleteErr, "Failed to delete logical process endpoints")
-		data.reconcileErr, data.message = portDeleteErr, portDeleteErr.Error()
-		return additionalReconciliationNeeded, delay
-	}
-	if !portsDeleted {
+	if portDeleteErr != nil || !portsDeleted {
 		return additionalReconciliationNeeded, delay
 	}
 	discardErr := r.discardLogicalProcessData(ctx, resource.NamespacedName())
