@@ -7,14 +7,21 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/networking"
@@ -26,13 +33,21 @@ import (
 
 type recordedServiceProxy struct {
 	proxy.Proxy
-	lifetimeCtx   context.Context
-	effectivePort int32
-	lock          sync.Mutex
-	config        proxy.ProxyConfig
+	lifetimeCtx           context.Context
+	effectivePort         int32
+	lock                  sync.Mutex
+	config                proxy.ProxyConfig
+	stopProxy             context.CancelFunc
+	configurationCalls    atomic.Uint32
+	healthChecks          atomic.Uint32
+	failNextConfiguration atomic.Bool
 }
 
 func (recorded *recordedServiceProxy) Configure(config proxy.ProxyConfig) error {
+	recorded.configurationCalls.Add(1)
+	if recorded.failNextConfiguration.Swap(false) {
+		return errors.New("service proxy configuration unavailable")
+	}
 	configureErr := recorded.Proxy.Configure(config)
 	if configureErr != nil {
 		return configureErr
@@ -41,6 +56,11 @@ func (recorded *recordedServiceProxy) Configure(config proxy.ProxyConfig) error 
 	recorded.config = config.Clone()
 	recorded.lock.Unlock()
 	return nil
+}
+
+func (recorded *recordedServiceProxy) State() proxy.ProxyState {
+	recorded.healthChecks.Add(1)
+	return recorded.Proxy.State()
 }
 
 func (recorded *recordedServiceProxy) EffectivePort() int32 {
@@ -58,6 +78,7 @@ type serviceProxyRecorder struct {
 	proxies []*recordedServiceProxy
 	// Override reported ports to simulate distinct per-address allocation outcomes without sockets.
 	effectivePorts []int32
+	createProxy    proxy.ProxyFactory
 }
 
 func (recorder *serviceProxyRecorder) create(
@@ -69,8 +90,14 @@ func (recorder *serviceProxyRecorder) create(
 	if len(recorder.proxies) < len(recorder.effectivePorts) {
 		reportedPort = recorder.effectivePorts[len(recorder.proxies)]
 	}
+	factory := recorder.createProxy
+	if factory == nil {
+		factory = ctrl_testutil.NewTestProxy
+	}
+	proxyCtx, stopProxy := context.WithCancel(ctx)
 	recorded := &recordedServiceProxy{
-		Proxy: ctrl_testutil.NewTestProxy(protocol, address, port, ctx, log), lifetimeCtx: ctx, effectivePort: reportedPort,
+		Proxy: factory(protocol, address, port, proxyCtx, log), lifetimeCtx: proxyCtx,
+		effectivePort: reportedPort, stopProxy: stopProxy,
 	}
 	recorder.proxies = append(recorder.proxies, recorded)
 	return recorded
@@ -113,6 +140,7 @@ func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 				require.Len(t, listeners, 1)
 				require.Equal(t, proxy.ProxyStateRunning, listeners[0].State())
 				require.Empty(t, listeners[0].configuration().Endpoints)
+				require.Equal(t, uint32(1), listeners[0].configurationCalls.Load())
 
 				endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: namespace.Name},
 					Spec: apiv2.ServiceEndpointSpec{ServiceRef: namespace.Name + "/" + service.Name,
@@ -160,6 +188,142 @@ func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 					require.NoError(t, apiClient.Delete(ctx, namespace))
 					ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, apiClient, namespace)
 				}
+			})
+		}
+	}
+}
+
+// Verifies that periodic and metadata-only reconciliations preserve an established UDP forwarding
+// stream, while a changed endpoint configuration is applied once to the existing listener.
+func TestV2LogicalServicePreservesUDPStreamAcrossReconciliation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	recorder := &serviceProxyRecorder{createProxy: proxy.NewRuntimeProxy}
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalServiceController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{CreateLogicalServiceProxy: recorder.create})
+	require.NoError(t, startupErr)
+	apiClient := server.Client
+	backend, backendErr := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, backendErr)
+	defer func() { require.NoError(t, backend.Close()) }()
+	deadline, hasDeadline := ctx.Deadline()
+	require.True(t, hasDeadline)
+	require.NoError(t, backend.SetDeadline(deadline))
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "unchanged-udp-routes"}}
+	require.NoError(t, apiClient.Create(ctx, namespace))
+	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
+		Spec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolUDP, Address: "127.0.0.1"}}
+	require.NoError(t, apiClient.Create(ctx, service))
+	endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: namespace.Name},
+		Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{
+			Address: "127.0.0.1", Port: int32(backend.LocalAddr().(*net.UDPAddr).Port),
+		}}}}
+	require.NoError(t, apiClient.Create(ctx, endpoint))
+	ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+	})
+	listeners := recorder.snapshot()
+	require.Len(t, listeners, 1)
+	listener := listeners[0]
+	front := ready.Status.EffectiveAddresses[0]
+	connection, connectionErr := net.Dial("udp", networking.AddressAndPort(front.Address, front.Port))
+	require.NoError(t, connectionErr)
+	defer func() { require.NoError(t, connection.Close()) }()
+	require.NoError(t, connection.SetDeadline(deadline))
+	_, requestErr := connection.Write([]byte("request"))
+	require.NoError(t, requestErr)
+	buffer := make([]byte, 32)
+	received, backendClient, receiveErr := backend.ReadFrom(buffer)
+	require.NoError(t, receiveErr)
+	require.Equal(t, "request", string(buffer[:received]))
+	configurationCount, initialHealthChecks := listener.configurationCalls.Load(), listener.healthChecks.Load()
+	require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, false, func(context.Context) (bool, error) {
+		return listener.healthChecks.Load() >= initialHealthChecks+2, nil
+	}))
+	require.Equal(t, configurationCount, listener.configurationCalls.Load())
+	healthChecks := listener.healthChecks.Load()
+	require.NoError(t, apiClient.Patch(ctx, service,
+		ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"test":"metadata-only"}}}`))))
+	endpoint.Annotations = map[string]string{"test": "metadata-only"}
+	require.NoError(t, apiClient.Update(ctx, endpoint))
+	require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, false, func(context.Context) (bool, error) {
+		return listener.healthChecks.Load() > healthChecks, nil
+	}))
+	require.Equal(t, configurationCount, listener.configurationCalls.Load())
+	_, replyErr := backend.WriteTo([]byte("reply"), backendClient)
+	require.NoError(t, replyErr)
+	responseSize, responseErr := connection.Read(buffer)
+	require.NoError(t, responseErr)
+	require.Equal(t, "reply", string(buffer[:responseSize]))
+
+	nextBackend, nextBackendErr := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, nextBackendErr)
+	defer func() { require.NoError(t, nextBackend.Close()) }()
+	endpoint.Spec.Addresses[0].Port = int32(nextBackend.LocalAddr().(*net.UDPAddr).Port)
+	require.NoError(t, apiClient.Update(ctx, endpoint))
+	waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalServicePhaseReady &&
+			slices.Equal(listener.configuration().Endpoints, []proxy.Endpoint{{
+				Address: "127.0.0.1", Port: endpoint.Spec.Addresses[0].Port,
+			}}), nil
+	})
+	require.Equal(t, configurationCount+1, listener.configurationCalls.Load())
+	require.Len(t, recorder.snapshot(), 1)
+	require.NoError(t, apiClient.Delete(ctx, namespace))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
+	require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(context.Context) (bool, error) {
+		return listener.Proxy.State() == proxy.ProxyStateFinished, nil
+	}))
+}
+
+// Verifies that listener health is checked even when routes are unchanged and that replacement
+// listeners receive configuration after listener or configuration failures.
+func TestV2LogicalServiceConfiguresReplacementListeners(t *testing.T) {
+	t.Parallel()
+	for _, protocol := range []commonapi.PortProtocol{commonapi.PortProtocolTCP, commonapi.PortProtocolUDP} {
+		for _, failure := range []string{"listener", "configuration"} {
+			t.Run(string(protocol)+"/"+failure, func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+				defer cancel()
+				recorder := &serviceProxyRecorder{}
+				server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalServiceController, t.Name(), t.TempDir(),
+					TestEnvironmentOptions{CreateLogicalServiceProxy: recorder.create})
+				require.NoError(t, startupErr)
+				apiClient := server.Client
+				namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "replacement-listener"}}
+				require.NoError(t, apiClient.Create(ctx, namespace))
+				service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
+					Spec: apiv2.LogicalServiceSpec{Protocol: protocol, Address: "127.0.0.1"}}
+				require.NoError(t, apiClient.Create(ctx, service))
+				endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: namespace.Name},
+					Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}}}}
+				require.NoError(t, apiClient.Create(ctx, endpoint))
+				waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+					return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+				})
+				originals := recorder.snapshot()
+				require.Len(t, originals, 1)
+				original := originals[0]
+				if failure == "listener" {
+					original.stopProxy()
+				} else {
+					original.failNextConfiguration.Store(true)
+					endpoint.Spec.Addresses[0].Port++
+					require.NoError(t, apiClient.Update(ctx, endpoint))
+				}
+				waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+					return len(recorder.snapshot()) > 1 && current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+				})
+				replacements := recorder.snapshot()
+				require.Len(t, replacements, 2)
+				replacement := replacements[1]
+				require.Equal(t, uint32(1), replacement.configurationCalls.Load())
+				require.Equal(t, []proxy.Endpoint{{Address: "127.0.0.1", Port: endpoint.Spec.Addresses[0].Port}}, replacement.configuration().Endpoints)
+				require.ErrorIs(t, original.lifetimeCtx.Err(), context.Canceled)
+				require.NoError(t, apiClient.Delete(ctx, namespace))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
 			})
 		}
 	}
