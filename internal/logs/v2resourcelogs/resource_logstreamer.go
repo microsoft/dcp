@@ -70,8 +70,7 @@ type resourceLogStreamer struct {
 	log         logr.Logger
 }
 
-// NewLogStreamer creates shared capture with resource-scoped client sessions
-// for logical containers, physical containers, and physical images.
+// NewLogStreamer creates shared capture with resource-scoped client sessions for V2 resources.
 func NewLogStreamer(log logr.Logger) *resourceLogStreamer {
 	return &resourceLogStreamer{
 		sessions: make(map[types.UID]map[uint64]*logSession),

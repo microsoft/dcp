@@ -17,6 +17,43 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
+// EnvironmentBehavior controls inheritance from the controller process environment.
+// +kubebuilder:validation:Enum=Inherit;DoNotInherit
+type EnvironmentBehavior string
+
+const (
+	// EnvironmentBehaviorInherit includes the controller process environment.
+	EnvironmentBehaviorInherit EnvironmentBehavior = "Inherit"
+	// EnvironmentBehaviorDoNotInherit excludes the controller process environment.
+	EnvironmentBehaviorDoNotInherit EnvironmentBehavior = "DoNotInherit"
+)
+
+// AmbientEnvironment configures inheritance from the controller process environment.
+// +k8s:openapi-gen=true
+type AmbientEnvironment struct {
+	// Behavior controls environment inheritance. Defaults to Inherit.
+	// +kubebuilder:default:=Inherit
+	Behavior EnvironmentBehavior `json:"behavior,omitempty"`
+}
+
+// EffectiveBehavior returns the configured inheritance behavior, defaulting to Inherit.
+func (environment AmbientEnvironment) EffectiveBehavior() EnvironmentBehavior {
+	if environment.Behavior == "" {
+		return EnvironmentBehaviorInherit
+	}
+	return environment.Behavior
+}
+
+func (environment AmbientEnvironment) validate(environmentPath *field.Path) field.ErrorList {
+	switch environment.EffectiveBehavior() {
+	case EnvironmentBehaviorInherit, EnvironmentBehaviorDoNotInherit:
+		return nil
+	default:
+		return field.ErrorList{field.NotSupported(environmentPath.Child("behavior"), environment.Behavior,
+			[]string{string(EnvironmentBehaviorInherit), string(EnvironmentBehaviorDoNotInherit)})}
+	}
+}
+
 // ConditionType identifies a condition reported by a V2 resource.
 type ConditionType string
 

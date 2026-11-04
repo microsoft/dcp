@@ -68,7 +68,7 @@ type processCreateLostResponseClient struct {
 	injected      atomic.Bool
 }
 
-// Verifies that forcibly removing retained physical backing before startup settlement terminally fails the
+// Verifies that forcibly removing the backing PhysicalProcess before startup settlement terminally fails the
 // logical process, releases its lease, and permits namespace deletion without recreating or adopting a process.
 func TestV2LogicalProcessControllerFailsWhenPersistentBackingDisappears(t *testing.T) {
 	t.Parallel()
@@ -245,16 +245,16 @@ func TestV2LogicalProcessControllerRecoversCreatedChildBeforeForwardingStop(t *t
 }
 
 // Verifies that LogicalProcess waits for namespace readiness, delegates session launch and configuration,
-// and stops the runtime process by deleting its physical backing.
+// and stops the process by deleting its backing PhysicalProcess.
 func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	inherit := false
 	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "v2-logical-process-session"},
 		Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{
 			ExecutablePath: "v2-logical-process-session-command", Args: []string{"one"}, WorkingDirectory: "/tmp",
-			InheritEnvironment: &inherit, Env: []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}},
+			AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
+			Env:                []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}},
 		}}}
 	require.NoError(t, client.Create(ctx, resource))
 	pending := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
@@ -268,6 +268,7 @@ func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: resource.Namespace, Name: running.Status.PhysicalProcessRef}, physical))
 	require.True(t, metav1.IsControlledBy(physical, resource))
 	require.False(t, physical.Spec.Process.RetainRuntimeProcess)
+	require.Equal(t, resource.Spec.Process.AmbientEnvironment, physical.Spec.Process.AmbientEnvironment)
 	executions := testProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil)
 	require.Len(t, executions, 1)
 	require.Equal(t, []string{"v2-logical-process-session-command", "one"}, executions[0].Cmd.Args)
@@ -282,7 +283,7 @@ func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 }
 
 // Verifies that LogicalProcess deletion before namespace admission does not prepare lifecycle policy,
-// acquire a persistent lease, or create physical backing.
+// acquire a persistent lease, or create a backing PhysicalProcess.
 func TestV2LogicalProcessControllerDeletesBeforeNamespaceAdmission(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -323,7 +324,7 @@ func (reader *processBackingLookupFailureClient) List(
 	return reader.Client.List(ctx, object, options...)
 }
 
-// Verifies that LogicalProcess preserves runtime identity during a recoverable backing lookup failure,
+// Verifies that LogicalProcess preserves process identity during a recoverable backing lookup failure,
 // then forwards stop and observes completion after the reader recovers without launching another process.
 func TestV2LogicalProcessControllerRetriesBackingObservation(t *testing.T) {
 	t.Parallel()
@@ -420,8 +421,8 @@ func TestV2LogicalProcessControllerRejectsReleasedBackingHold(t *testing.T) {
 	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(handle)))
 }
 
-// Verifies that LogicalProcess records namespace ownership, retains and reuses matching persistent processes,
-// and delegates changed-lifecycle replacement to an identity-bound stopping physical resource.
+// Verifies that LogicalProcess preserves workload ownership and capture paths through unscoped persistent reuse.
+// Changed lifecycle keys replace the process without inheriting the retired process's workload association.
 func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -454,6 +455,10 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(record.ProcessHandle()))
 	require.FileExists(t, record.StdOutFile)
 	require.FileExists(t, record.StdErrFile)
+	require.NoError(t, retryOnConflict(ctx, namespace.NamespacedName(), func(updateCtx context.Context, current *apiv2.Namespace) error {
+		delete(current.Annotations, apiv2.NamespaceWorkloadIDAnnotation)
+		return client.Update(updateCtx, current)
+	}))
 	second := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name}, Spec: *spec.DeepCopy()}
 	require.NoError(t, client.Create(ctx, second))
 	reused := waitLogicalProcessPhase(t, ctx, second.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
@@ -472,8 +477,13 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	reusedRecord, reusedRecordErr := testStateStore.GetPersistentProcess(ctx, second.GetLeaseKey())
 	require.NoError(t, reusedRecordErr)
 	require.Equal(t, record.RunID, reusedRecord.RunID)
+	require.Equal(t, record.WorkloadID, reusedRecord.WorkloadID)
 	require.Equal(t, record.StdOutFile, reusedRecord.StdOutFile)
 	require.Equal(t, record.StdErrFile, reusedRecord.StdErrFile)
+	owned, ownedErr := testStateStore.ListPersistentProcessesByWorkloadID(ctx, record.WorkloadID)
+	require.NoError(t, ownedErr)
+	require.Len(t, owned, 1)
+	require.Equal(t, record.PID, owned[0].PID)
 	require.NoError(t, client.Delete(ctx, second))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, second)
 	spec.Process.Args = []string{"changed"}
@@ -481,6 +491,12 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	require.NoError(t, client.Create(ctx, third))
 	replaced := waitLogicalProcessPhase(t, ctx, third.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
 	require.NotEqual(t, *created.Status.PID, *replaced.Status.PID)
+	replacedRecord, replacedRecordErr := testStateStore.GetPersistentProcess(ctx, third.GetLeaseKey())
+	require.NoError(t, replacedRecordErr)
+	require.Empty(t, replacedRecord.WorkloadID)
+	retiredOwnerRecords, retiredOwnerErr := testStateStore.ListPersistentProcessesByWorkloadID(ctx, record.WorkloadID)
+	require.NoError(t, retiredOwnerErr)
+	require.Empty(t, retiredOwnerRecords)
 	require.NoFileExists(t, record.StdOutFile)
 	require.NoFileExists(t, record.StdErrFile)
 	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(record.ProcessHandle())))
@@ -528,7 +544,7 @@ func TestV2LogicalProcessControllerExistingIdentity(t *testing.T) {
 	require.Len(t, testProcessExecutor.FindAll([]string{"v2-logical-process-existing-command"}, "", nil), 1)
 }
 
-// Verifies that LogicalProcess suppresses launch when stop is requested before physical creation.
+// Verifies that LogicalProcess does not launch a process when created with stop requested.
 func TestV2LogicalProcessControllerDoesNotLaunchStoppedProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -655,7 +671,7 @@ func (apiClient *processBackingReleaseResponseClient) Patch(
 	return patchErr
 }
 
-// Verifies that LogicalProcess permits physical cleanup while ownership recording fails, retains its
+// Verifies that LogicalProcess permits PhysicalProcess cleanup while ownership recording fails, retains its
 // startup lease and backing hold, then completes registration and hold release despite a lost release response.
 func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndSettlesBeforeDeletion(t *testing.T) {
 	t.Parallel()
@@ -785,7 +801,7 @@ func TestV2LogicalProcessControllerReleasesLeaseForMissingAdoptedProcess(t *test
 	require.Empty(t, record.WorkloadID)
 }
 
-// Verifies that LogicalProcess namespace cleanup removes logical and physical resources,
+// Verifies that LogicalProcess namespace cleanup removes LogicalProcess and PhysicalProcess resources,
 // stops session processes, and preserves persistent processes.
 func TestV2LogicalProcessControllerNamespaceCleanup(t *testing.T) {
 	t.Parallel()
@@ -918,8 +934,8 @@ func forceRemoveLogicalProcessBacking(
 	}))
 }
 
-// Verifies that LogicalProcess projects terminal physical launch failure and releases the
-// persistent startup lease even when no runtime process was successfully launched.
+// Verifies that LogicalProcess projects terminal PhysicalProcess launch failure and releases the
+// persistent startup lease even when no process was successfully launched.
 func TestV2LogicalProcessControllerDeletesAfterLaunchFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

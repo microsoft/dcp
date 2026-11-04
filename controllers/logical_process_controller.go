@@ -269,7 +269,7 @@ func handleLogicalProcessPhysical(
 		desired := resource.Spec.Process
 		physicalSpec.Process = &apiv2.PhysicalProcessConfig{
 			ExecutablePath: desired.ExecutablePath, Args: desired.Args, WorkingDirectory: desired.WorkingDirectory,
-			InheritEnvironment: desired.InheritEnvironment, Env: desired.Env,
+			AmbientEnvironment: desired.AmbientEnvironment, Env: desired.Env,
 			RetainRuntimeProcess: resource.Spec.EffectiveMode() == apiv2.LogicalProcessModePersistent,
 			MonitorPID:           resource.Spec.MonitorPID, MonitorTimestamp: resource.Spec.MonitorTimestamp,
 		}
@@ -556,6 +556,7 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 				}
 				if physical.UID == data.physicalUID {
 					current = physical
+					change |= applyLogicalProcessPhysicalDetails(resource, physical)
 				}
 			}
 			if physical.DeletionTimestamp.IsZero() {
@@ -572,10 +573,10 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 			}
 		}
 		if waiting {
-			return additionalReconciliationNeeded, delay
+			return change | additionalReconciliationNeeded, delay
 		}
 		if data.lease != nil {
-			return r.persistLogicalProcess(ctx, resource, data, current, log), delay
+			return change | r.persistLogicalProcess(ctx, resource, data, current, log), delay
 		}
 		for i := range children.Items {
 			physical := &children.Items[i]
@@ -585,7 +586,7 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 				data.reconcileErr, data.message = releaseErr, releaseErr.Error()
 			}
 		}
-		return additionalReconciliationNeeded, delay
+		return change | additionalReconciliationNeeded, delay
 	}
 	if data.lease != nil {
 		return r.persistLogicalProcess(ctx, resource, data, nil, log), delay
@@ -735,7 +736,9 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 				}
 				record.ResourceKey, record.LifecycleKey = resource.GetLeaseKey(), data.lifecycleKey
 				record.PID, record.IdentityTime = pid, physical.Status.IdentityTimestamp.Time
-				record.WorkloadID = workloadID
+				if workloadID != "" {
+					record.WorkloadID = workloadID
+				}
 				record.StdOutFile, record.StdErrFile = physical.Status.StdoutFile, physical.Status.StderrFile
 				storeErr := r.config.StateStore.UpsertPersistentProcess(ctx, *record)
 				if storeErr != nil {

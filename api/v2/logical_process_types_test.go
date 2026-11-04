@@ -63,8 +63,7 @@ func TestLogicalProcessLifecycleKey(t *testing.T) {
 	require.NotEmpty(t, key)
 	reordered := spec.DeepCopy()
 	reordered.Process.Env[0], reordered.Process.Env[1] = reordered.Process.Env[1], reordered.Process.Env[0]
-	inherit := true
-	reordered.Process.InheritEnvironment = &inherit
+	reordered.Process.AmbientEnvironment.Behavior = EnvironmentBehaviorInherit
 	sameKey, _, sameErr := reordered.GetLifecycleKey()
 	require.NoError(t, sameErr)
 	require.Equal(t, key, sameKey)
@@ -75,7 +74,9 @@ func TestLogicalProcessLifecycleKey(t *testing.T) {
 		func(changed *LogicalProcessSpec) {
 			changed.Process.Args[0], changed.Process.Args[1] = changed.Process.Args[1], changed.Process.Args[0]
 		},
-		func(changed *LogicalProcessSpec) { noInherit := false; changed.Process.InheritEnvironment = &noInherit },
+		func(changed *LogicalProcessSpec) {
+			changed.Process.AmbientEnvironment.Behavior = EnvironmentBehaviorDoNotInherit
+		},
 		func(changed *LogicalProcessSpec) { changed.Process.Env[0].Value = "3" },
 		func(changed *LogicalProcessSpec) {
 			pid := int64(1)
@@ -181,6 +182,9 @@ func TestLogicalProcessUpdateAndLeaseKey(t *testing.T) {
 	require.NotEmpty(t, resource.ValidateUpdate(context.Background(), stopped))
 	changed := resource.DeepCopy()
 	changed.Spec.Process.Args = []string{"different"}
+	require.NotEmpty(t, changed.ValidateUpdate(context.Background(), resource))
+	changed = resource.DeepCopy()
+	changed.Spec.Process.AmbientEnvironment.Behavior = EnvironmentBehaviorDoNotInherit
 	require.NotEmpty(t, changed.ValidateUpdate(context.Background(), resource))
 }
 

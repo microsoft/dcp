@@ -922,7 +922,7 @@ func TestCleanupWorkloadResourcesTreatsMissingProcessAsSuccess(t *testing.T) {
 }
 
 // Verifies that workload cleanup preserves V1 output while removing output recorded by V2
-// processes only after the referenced runtime identity is confirmed gone.
+// processes only after the referenced process identity is confirmed gone.
 func TestCleanupPersistentProcessRecordOutputOwnership(t *testing.T) {
 	t.Parallel()
 	for _, key := range []string{"default/missing", "processes/default/missing"} {

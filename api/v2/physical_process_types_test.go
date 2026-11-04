@@ -204,6 +204,7 @@ func TestPhysicalProcessValidate(t *testing.T) {
 	}
 }
 
+// Verifies that PhysicalProcess permits monotonic stop requests while keeping process configuration immutable.
 func TestPhysicalProcessValidateUpdate(t *testing.T) {
 	oldProcess := &PhysicalProcess{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
@@ -230,5 +231,11 @@ func TestPhysicalProcessValidateUpdate(t *testing.T) {
 		newProcess := oldProcess.DeepCopy()
 		newProcess.Spec.Process.Args = []string{"changed"}
 		require.Error(t, newProcess.ValidateUpdate(context.Background(), oldProcess).ToAggregate())
+	})
+
+	t.Run("rejects ambient environment changes", func(t *testing.T) {
+		newProcess := oldProcess.DeepCopy()
+		newProcess.Spec.Process.AmbientEnvironment.Behavior = EnvironmentBehaviorDoNotInherit
+		require.NotEmpty(t, newProcess.ValidateUpdate(context.Background(), oldProcess))
 	})
 }

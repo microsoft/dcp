@@ -350,7 +350,7 @@ func handleUnknownPhysicalProcessState(
 	return noChange
 }
 
-// establishPhysicalProcessTracking claims a runtime process and updates data with the resulting
+// establishPhysicalProcessTracking claims a process and updates data with the resulting
 // tracking state.
 func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 	physicalProcess *apiv2.PhysicalProcess,
@@ -390,7 +390,7 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 		if cleanupUnconfirmed {
 			markDescendantCleanupUnconfirmed(data, descendantCleanupUnconfirmedMessage)
 		}
-		// The runtime identity was never claimed, so the state stays keyed by the resource UID.
+		// The process identity was never claimed, so the state stays keyed by the resource UID.
 		return noChange
 	}
 	if probeErr != nil {
@@ -419,7 +419,7 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 	return r.claimPhysicalProcessTracking(physicalProcess, data, probedHandle)
 }
 
-// Claims the runtime process identity for this resource, recording a retry when another
+// Claims the process identity for this resource, recording a retry when another
 // PhysicalProcess already owns it.
 func (r *PhysicalProcessReconciler) claimPhysicalProcessTracking(
 	physicalProcess *apiv2.PhysicalProcess,
@@ -964,7 +964,7 @@ func handlePIDString(handle process.ProcessHandle) string {
 
 func physicalProcessEnvironment(processConfig *apiv2.PhysicalProcessConfig) []string {
 	inheritedEnvironment := []string(nil)
-	if processConfig.InheritEnvironment == nil || *processConfig.InheritEnvironment {
+	if processConfig.AmbientEnvironment.EffectiveBehavior() == apiv2.EnvironmentBehaviorInherit {
 		inheritedEnvironment = os.Environ()
 	}
 	environment := make([]string, 0, len(inheritedEnvironment)+len(processConfig.Env))

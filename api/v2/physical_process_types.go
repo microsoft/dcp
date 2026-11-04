@@ -117,7 +117,7 @@ type PhysicalProcessConfig struct {
 	// RetainRuntimeProcess keeps a process launched by this resource running when the resource is deleted.
 	RetainRuntimeProcess bool `json:"retainRuntimeProcess,omitempty"`
 
-	// MonitorPID optionally scopes a retained runtime process to another process lifetime.
+	// MonitorPID optionally scopes a retained process to another process lifetime.
 	// When set, monitorTimestamp must also be set and retainRuntimeProcess must be true.
 	// The retained process is stopped when the monitored process exits.
 	MonitorPID *int64 `json:"monitorPID,omitempty"`
@@ -135,9 +135,8 @@ type PhysicalProcessConfig struct {
 	// WorkingDirectory is the process working directory. The controller process working directory is used when omitted.
 	WorkingDirectory string `json:"workingDirectory,omitempty"`
 
-	// InheritEnvironment controls whether the controller process environment is included. Defaults to true.
-	// +kubebuilder:default:=true
-	InheritEnvironment *bool `json:"inheritEnvironment,omitempty"`
+	// AmbientEnvironment controls inheritance from the controller process environment.
+	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 
 	// Env contains process environment variables. These values override inherited variables with the same name.
 	// +listType=map
@@ -212,12 +211,12 @@ func (pp *PhysicalProcess) GetObjectMeta() *metav1.ObjectMeta {
 	return &pp.ObjectMeta
 }
 
-// GetResourceId identifies the physical process system log stream.
+// GetResourceId identifies the PhysicalProcess system log stream.
 func (pp *PhysicalProcess) GetResourceId() string {
 	return fmt.Sprintf("physicalprocess-%s", pp.UID)
 }
 
-// GetLogSource describes output captured by this physical process.
+// GetLogSource describes output captured or referenced by this PhysicalProcess.
 func (pp *PhysicalProcess) GetLogSource() *LogSource {
 	return &LogSource{
 		Name: pp.Name, UID: pp.UID, StdoutFile: pp.Status.StdoutFile, StderrFile: pp.Status.StderrFile,
@@ -311,6 +310,7 @@ func (pp *PhysicalProcess) Validate(ctx context.Context) field.ErrorList {
 
 	processConfig := pp.Spec.Process
 	processPath := specPath.Child("process")
+	errorList = append(errorList, processConfig.AmbientEnvironment.validate(processPath.Child("ambientEnvironment"))...)
 	if !pp.Spec.IdentityTimestamp.IsZero() {
 		errorList = append(errorList, field.Forbidden(specPath.Child("identityTimestamp"), "identityTimestamp requires pid"))
 	}

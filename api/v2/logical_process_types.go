@@ -80,7 +80,7 @@ type LogicalProcessSpec struct {
 	MonitorPID *int64 `json:"monitorPID,omitempty"`
 	// MonitorTimestamp identifies the process in monitorPID and guards against PID reuse.
 	MonitorTimestamp metav1.MicroTime `json:"monitorTimestamp,omitempty"`
-	// Stop requests termination through the physical controller. Once true, it cannot be reset.
+	// Stop requests process termination through the PhysicalProcess controller. Once true, it cannot be reset.
 	Stop bool `json:"stop,omitempty"`
 }
 
@@ -94,9 +94,8 @@ type LogicalProcessConfig struct {
 	Args []string `json:"args,omitempty"`
 	// WorkingDirectory is the process working directory, defaulting to the controller working directory.
 	WorkingDirectory string `json:"workingDirectory,omitempty"`
-	// InheritEnvironment includes the controller environment. Defaults to true.
-	// +kubebuilder:default:=true
-	InheritEnvironment *bool `json:"inheritEnvironment,omitempty"`
+	// AmbientEnvironment controls inheritance from the controller process environment.
+	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 	// Env contains environment variables that override inherited values.
 	// +listType=map
 	// +listMapKey=name
@@ -122,7 +121,7 @@ func (spec *LogicalProcessSpec) GetLifecycleKey() (string, bool, error) {
 		return "", false, errors.New("process configuration is required to compute a lifecycle key")
 	}
 	desired := spec.Process
-	inherit := desired.InheritEnvironment == nil || *desired.InheritEnvironment
+	inherit := desired.AmbientEnvironment.EffectiveBehavior() == EnvironmentBehaviorInherit
 	fnvHash := fnv.New128()
 	encoder := gob.NewEncoder(fnvHash)
 	var hashErr error
@@ -152,10 +151,10 @@ func (spec *LogicalProcessSpec) GetLifecycleKey() (string, bool, error) {
 	return fmt.Sprintf("%x", fnvHash.Sum(nil)), true, hashErr
 }
 
-// LogicalProcessStatus describes the observed process and its physical backing resource.
+// LogicalProcessStatus describes the observed process and its backing PhysicalProcess.
 // +k8s:openapi-gen=true
 type LogicalProcessStatus struct {
-	// RuntimeLogs describes output from the immediate physical process backing.
+	// RuntimeLogs describes output captured or referenced by the backing PhysicalProcess.
 	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
 	// Phase summarizes process availability.
 	// +kubebuilder:validation:Enum=Pending;Running;Exited;Unknown;Failed
@@ -168,7 +167,7 @@ type LogicalProcessStatus struct {
 	PID *int64 `json:"pid,omitempty"`
 	// IdentityTimestamp is the observed process identity, not necessarily a wall-clock timestamp.
 	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
-	// FinishedAt is when the physical controller observed process exit.
+	// FinishedAt is when the PhysicalProcess controller observed process exit.
 	FinishedAt metav1.MicroTime `json:"finishedAt,omitempty"`
 	// ExitCode is the observed exit code, when available.
 	ExitCode *int32 `json:"exitCode,omitempty"`
@@ -182,7 +181,7 @@ func (status LogicalProcessStatus) CopyTo(dest apiserver_resource.ObjectWithStat
 	status.DeepCopyInto(&dest.(*LogicalProcess).Status)
 }
 
-// LogicalProcess represents process lifecycle policy independently of runtime execution.
+// LogicalProcess defines lifecycle and reuse policy for a process executed or observed by a PhysicalProcess.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +k8s:openapi-gen=true
@@ -203,7 +202,7 @@ func (resource *LogicalProcess) GetResourceId() string {
 	return fmt.Sprintf("logicalprocess-%s", resource.UID)
 }
 
-// GetLogSource returns the observed immediate physical process output source.
+// GetLogSource returns the output source published by the backing PhysicalProcess.
 func (resource *LogicalProcess) GetLogSource() *LogSource {
 	return resource.Status.RuntimeLogs
 }
@@ -267,8 +266,11 @@ func (resource *LogicalProcess) Validate(ctx context.Context) field.ErrorList {
 	case LogicalProcessModeSession, LogicalProcessModePersistent:
 		if resource.Spec.Process == nil {
 			errorList = append(errorList, field.Required(specPath.Child("process"), "process must be set for session and persistent modes"))
-		} else if strings.TrimSpace(resource.Spec.Process.ExecutablePath) == "" {
-			errorList = append(errorList, field.Required(specPath.Child("process", "executablePath"), "executablePath must be set"))
+		} else {
+			if strings.TrimSpace(resource.Spec.Process.ExecutablePath) == "" {
+				errorList = append(errorList, field.Required(specPath.Child("process", "executablePath"), "executablePath must be set"))
+			}
+			errorList = append(errorList, resource.Spec.Process.AmbientEnvironment.validate(specPath.Child("process", "ambientEnvironment"))...)
 		}
 		if resource.Spec.PID != nil {
 			errorList = append(errorList, field.Forbidden(specPath.Child("pid"), "pid is only supported in existing mode"))

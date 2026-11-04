@@ -60,7 +60,6 @@ func TestV2PhysicalProcessControllerLaunchesProcess(t *testing.T) {
 
 	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-launch")
 	executablePath := "v2-pproc-launch-command"
-	inheritEnvironment := false
 	physicalProcess := &apiv2.PhysicalProcess{
 		ObjectMeta: metav1.ObjectMeta{Name: "launched-process", Namespace: namespace.Name},
 		Spec: apiv2.PhysicalProcessSpec{
@@ -68,7 +67,7 @@ func TestV2PhysicalProcessControllerLaunchesProcess(t *testing.T) {
 				ExecutablePath:     executablePath,
 				Args:               []string{"one", "two"},
 				WorkingDirectory:   "/tmp",
-				InheritEnvironment: &inheritEnvironment,
+				AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
 				Env:                []commonapi.EnvVar{{Name: "TEST_VALUE", Value: "expected"}},
 			},
 		},
@@ -158,7 +157,7 @@ func TestV2PhysicalProcessControllerReportsMissingExistingProcess(t *testing.T) 
 	require.Equal(t, pid, *exitedProcess.Status.PID)
 	requireReadyCondition(t, exitedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessMissing)
 
-	// Deletion must not be blocked by the inability to identify the runtime process.
+	// Deletion must not be blocked by the inability to identify the process.
 	require.NoError(t, client.Delete(ctx, exitedProcess))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, exitedProcess)
 }

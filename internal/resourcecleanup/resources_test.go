@@ -41,8 +41,8 @@ func TestNamespaceResourcesIncludeAllNamespacedV2Kinds(t *testing.T) {
 	}
 }
 
-// Verifies that NamespaceResources cleans logical processes before physical processes,
-// containers before logical networks, and logical networks before physical networks.
+// Verifies that NamespaceResources cleans LogicalProcess resources before PhysicalProcess resources,
+// containers before LogicalContainerNetwork resources, and logical networks before PhysicalContainerNetwork resources.
 func TestNamespaceResourcesCleanLogicalResourcesBeforePhysicalDependencies(t *testing.T) {
 	namespaceResourcesByGVR := cleanupResourcesByGVR(NamespaceResources)
 	containerGVR := (&apiv2.LogicalContainer{}).GetGroupVersionResource()

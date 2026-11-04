@@ -17,6 +17,51 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
+// Verifies that both process APIs accept supported ambient environment behaviors, default to inheritance,
+// and reject unsupported values at the nested behavior field.
+func TestProcessAmbientEnvironmentValidation(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		behavior EnvironmentBehavior
+		valid    bool
+	}{
+		{"default", "", true},
+		{"inherit", EnvironmentBehaviorInherit, true},
+		{"do not inherit", EnvironmentBehaviorDoNotInherit, true},
+		{"unsupported", "Unknown", false},
+		{"incorrect casing", "inherit", false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			environment := AmbientEnvironment{Behavior: testCase.behavior}
+			expectedBehavior := testCase.behavior
+			if expectedBehavior == "" {
+				expectedBehavior = EnvironmentBehaviorInherit
+			}
+			require.Equal(t, expectedBehavior, environment.EffectiveBehavior())
+			metadata := metav1.ObjectMeta{Name: "process", Namespace: "test"}
+			logical := &LogicalProcess{ObjectMeta: metadata, Spec: LogicalProcessSpec{
+				Process: &LogicalProcessConfig{ExecutablePath: "program", AmbientEnvironment: environment},
+			}}
+			physical := &PhysicalProcess{ObjectMeta: metadata, Spec: PhysicalProcessSpec{
+				Process: &PhysicalProcessConfig{ExecutablePath: "program", AmbientEnvironment: environment},
+			}}
+			for _, validationErrors := range []field.ErrorList{
+				logical.Validate(t.Context()), physical.Validate(t.Context()),
+			} {
+				if testCase.valid {
+					require.Empty(t, validationErrors)
+				} else {
+					require.Len(t, validationErrors, 1)
+					require.Equal(t, "spec.process.ambientEnvironment.behavior", validationErrors[0].Field)
+					require.Equal(t, field.ErrorTypeNotSupported, validationErrors[0].Type)
+				}
+			}
+		})
+	}
+}
+
 func TestNamespacedName(t *testing.T) {
 	obj := &metav1.PartialObjectMetadata{
 		ObjectMeta: metav1.ObjectMeta{

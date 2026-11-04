@@ -14,7 +14,7 @@
 #   generate-grpc build-dcp build-dcptun-containerexe
 #   container-probe-tool-containerexe delay-tool lfwriter-tool
 #   parrot-tool parrot-tool-containerexe termchild-tool
-# followed by `go test ./... -coverprofile cover.out -count 1`.
+# followed by `go test ./... -coverprofile cover.out -count 1 -timeout 20m`.
 #
 # The Windows CI job runs with CGO_ENABLED=0, so no C toolchain (mingw/gcc) is
 # required and -race is not passed (matching the Makefile's TEST_OPTS).
@@ -187,9 +187,9 @@ function Invoke-Tests {
     # Matches TEST_OPTS in the Makefile when CGO_ENABLED=0: no -race, no -parallel override.
     Push-Location $RepoRoot
     try {
-        Write-Host 'go test ./... -coverprofile cover.out -count 1'
+        Write-Host 'go test ./... -coverprofile cover.out -count 1 -timeout 20m'
         Invoke-Native -Description 'go test' -Script {
-            & go test ./... -coverprofile cover.out -count 1
+            & go test ./... -coverprofile cover.out -count 1 -timeout 20m
         }
     } finally {
         Pop-Location

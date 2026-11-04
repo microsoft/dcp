@@ -87,6 +87,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1.TunnelConfiguration{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_TunnelConfiguration(ref),
 		v1.TunnelStatus{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_TunnelStatus(ref),
 		v1.VolumeMount{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v1_VolumeMount(ref),
+		v2.AmbientEnvironment{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_AmbientEnvironment(ref),
 		v2.ContainerBuildContext{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_ContainerBuildContext(ref),
 		v2.ContainerBuildContextArchive{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref),
 		v2.ContainerBuildSecret{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_ContainerBuildSecret(ref),
@@ -4165,6 +4166,26 @@ func schema_microsoft_dcp_api_v1_VolumeMount(ref common.ReferenceCallback) commo
 	}
 }
 
+func schema_microsoft_dcp_api_v2_AmbientEnvironment(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AmbientEnvironment configures inheritance from the controller process environment.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"behavior": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Behavior controls environment inheritance. Defaults to Inherit.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_ContainerBuildContext(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -5915,7 +5936,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcess(ref common.ReferenceCallback) co
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "LogicalProcess represents process lifecycle policy independently of runtime execution.",
+				Description: "LogicalProcess defines lifecycle and reuse policy for a process executed or observed by a PhysicalProcess.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -5999,11 +6020,11 @@ func schema_microsoft_dcp_api_v2_LogicalProcessConfig(ref common.ReferenceCallba
 							Format:      "",
 						},
 					},
-					"inheritEnvironment": {
+					"ambientEnvironment": {
 						SchemaProps: spec.SchemaProps{
-							Description: "InheritEnvironment includes the controller environment. Defaults to true.",
-							Type:        []string{"boolean"},
-							Format:      "",
+							Description: "AmbientEnvironment controls inheritance from the controller process environment.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(v2.AmbientEnvironment{}.OpenAPIModelName()),
 						},
 					},
 					"env": {
@@ -6032,7 +6053,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessConfig(ref common.ReferenceCallba
 			},
 		},
 		Dependencies: []string{
-			commonapi.EnvVar{}.OpenAPIModelName()},
+			v2.AmbientEnvironment{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName()},
 	}
 }
 
@@ -6139,7 +6160,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessSpec(ref common.ReferenceCallback
 					},
 					"stop": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Stop requests termination through the physical controller. Once true, it cannot be reset.",
+							Description: "Stop requests process termination through the PhysicalProcess controller. Once true, it cannot be reset.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -6156,12 +6177,12 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "LogicalProcessStatus describes the observed process and its physical backing resource.",
+				Description: "LogicalProcessStatus describes the observed process and its backing PhysicalProcess.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"runtimeLogs": {
 						SchemaProps: spec.SchemaProps{
-							Description: "RuntimeLogs describes output from the immediate physical process backing.",
+							Description: "RuntimeLogs describes output captured or referenced by the backing PhysicalProcess.",
 							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
 						},
 					},
@@ -6201,7 +6222,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 					},
 					"finishedAt": {
 						SchemaProps: spec.SchemaProps{
-							Description: "FinishedAt is when the physical controller observed process exit.",
+							Description: "FinishedAt is when the PhysicalProcess controller observed process exit.",
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
@@ -8127,7 +8148,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 					},
 					"monitorPID": {
 						SchemaProps: spec.SchemaProps{
-							Description: "MonitorPID optionally scopes a retained runtime process to another process lifetime. When set, monitorTimestamp must also be set and retainRuntimeProcess must be true. The retained process is stopped when the monitored process exits.",
+							Description: "MonitorPID optionally scopes a retained process to another process lifetime. When set, monitorTimestamp must also be set and retainRuntimeProcess must be true. The retained process is stopped when the monitored process exits.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},
@@ -8172,11 +8193,11 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 							Format:      "",
 						},
 					},
-					"inheritEnvironment": {
+					"ambientEnvironment": {
 						SchemaProps: spec.SchemaProps{
-							Description: "InheritEnvironment controls whether the controller process environment is included. Defaults to true.",
-							Type:        []string{"boolean"},
-							Format:      "",
+							Description: "AmbientEnvironment controls inheritance from the controller process environment.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(v2.AmbientEnvironment{}.OpenAPIModelName()),
 						},
 					},
 					"env": {
@@ -8205,7 +8226,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 			},
 		},
 		Dependencies: []string{
-			commonapi.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.AmbientEnvironment{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
