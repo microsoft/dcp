@@ -60,7 +60,6 @@ func TestV2PhysicalProcessControllerLaunchesProcess(t *testing.T) {
 
 	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-launch")
 	executablePath := "v2-pproc-launch-command"
-	inheritEnvironment := false
 	physicalProcess := &apiv2.PhysicalProcess{
 		ObjectMeta: metav1.ObjectMeta{Name: "launched-process", Namespace: namespace.Name},
 		Spec: apiv2.PhysicalProcessSpec{
@@ -68,7 +67,7 @@ func TestV2PhysicalProcessControllerLaunchesProcess(t *testing.T) {
 				ExecutablePath:     executablePath,
 				Args:               []string{"one", "two"},
 				WorkingDirectory:   "/tmp",
-				InheritEnvironment: &inheritEnvironment,
+				AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
 				Env:                []commonapi.EnvVar{{Name: "TEST_VALUE", Value: "expected"}},
 			},
 		},

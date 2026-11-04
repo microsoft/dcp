@@ -11,6 +11,11 @@
 package v2
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in AmbientEnvironment) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.AmbientEnvironment"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ContainerBuildContext) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.ContainerBuildContext"
 }

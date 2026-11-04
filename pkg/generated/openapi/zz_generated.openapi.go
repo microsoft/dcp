@@ -87,6 +87,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1.TunnelConfiguration{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_TunnelConfiguration(ref),
 		v1.TunnelStatus{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_TunnelStatus(ref),
 		v1.VolumeMount{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v1_VolumeMount(ref),
+		v2.AmbientEnvironment{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_AmbientEnvironment(ref),
 		v2.ContainerBuildContext{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_ContainerBuildContext(ref),
 		v2.ContainerBuildContextArchive{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref),
 		v2.ContainerBuildSecret{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_ContainerBuildSecret(ref),
@@ -4155,6 +4156,26 @@ func schema_microsoft_dcp_api_v1_VolumeMount(ref common.ReferenceCallback) commo
 	}
 }
 
+func schema_microsoft_dcp_api_v2_AmbientEnvironment(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "AmbientEnvironment configures inheritance from the controller process environment.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"behavior": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Behavior controls environment inheritance. Defaults to Inherit.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_ContainerBuildContext(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -5629,11 +5650,11 @@ func schema_microsoft_dcp_api_v2_LogicalProcessConfig(ref common.ReferenceCallba
 							Format:      "",
 						},
 					},
-					"inheritEnvironment": {
+					"ambientEnvironment": {
 						SchemaProps: spec.SchemaProps{
-							Description: "InheritEnvironment includes the controller environment. Defaults to true.",
-							Type:        []string{"boolean"},
-							Format:      "",
+							Description: "AmbientEnvironment controls inheritance from the controller process environment.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(v2.AmbientEnvironment{}.OpenAPIModelName()),
 						},
 					},
 					"env": {
@@ -5662,7 +5683,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessConfig(ref common.ReferenceCallba
 			},
 		},
 		Dependencies: []string{
-			commonapi.EnvVar{}.OpenAPIModelName()},
+			v2.AmbientEnvironment{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName()},
 	}
 }
 
@@ -7586,11 +7607,11 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 							Format:      "",
 						},
 					},
-					"inheritEnvironment": {
+					"ambientEnvironment": {
 						SchemaProps: spec.SchemaProps{
-							Description: "InheritEnvironment controls whether the controller process environment is included. Defaults to true.",
-							Type:        []string{"boolean"},
-							Format:      "",
+							Description: "AmbientEnvironment controls inheritance from the controller process environment.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(v2.AmbientEnvironment{}.OpenAPIModelName()),
 						},
 					},
 					"env": {
@@ -7619,7 +7640,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 			},
 		},
 		Dependencies: []string{
-			commonapi.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.AmbientEnvironment{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 

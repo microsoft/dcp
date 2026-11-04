@@ -250,11 +250,11 @@ func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	inherit := false
 	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "v2-logical-process-session"},
 		Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{
 			ExecutablePath: "v2-logical-process-session-command", Args: []string{"one"}, WorkingDirectory: "/tmp",
-			InheritEnvironment: &inherit, Env: []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}},
+			AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
+			Env:                []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}},
 		}}}
 	require.NoError(t, client.Create(ctx, resource))
 	pending := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
@@ -268,6 +268,7 @@ func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: resource.Namespace, Name: running.Status.PhysicalProcessRef}, physical))
 	require.True(t, metav1.IsControlledBy(physical, resource))
 	require.False(t, physical.Spec.Process.RetainRuntimeProcess)
+	require.Equal(t, resource.Spec.Process.AmbientEnvironment, physical.Spec.Process.AmbientEnvironment)
 	executions := testProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil)
 	require.Len(t, executions, 1)
 	require.Equal(t, []string{"v2-logical-process-session-command", "one"}, executions[0].Cmd.Args)

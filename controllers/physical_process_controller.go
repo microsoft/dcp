@@ -964,7 +964,7 @@ func handlePIDString(handle process.ProcessHandle) string {
 
 func physicalProcessEnvironment(processConfig *apiv2.PhysicalProcessConfig) []string {
 	inheritedEnvironment := []string(nil)
-	if processConfig.InheritEnvironment == nil || *processConfig.InheritEnvironment {
+	if processConfig.AmbientEnvironment.EffectiveBehavior() == apiv2.EnvironmentBehaviorInherit {
 		inheritedEnvironment = os.Environ()
 	}
 	environment := make([]string, 0, len(inheritedEnvironment)+len(processConfig.Env))

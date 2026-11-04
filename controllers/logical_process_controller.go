@@ -269,7 +269,7 @@ func handleLogicalProcessPhysical(
 		desired := resource.Spec.Process
 		physicalSpec.Process = &apiv2.PhysicalProcessConfig{
 			ExecutablePath: desired.ExecutablePath, Args: desired.Args, WorkingDirectory: desired.WorkingDirectory,
-			InheritEnvironment: desired.InheritEnvironment, Env: desired.Env,
+			AmbientEnvironment: desired.AmbientEnvironment, Env: desired.Env,
 			RetainRuntimeProcess: resource.Spec.EffectiveMode() == apiv2.LogicalProcessModePersistent,
 			MonitorPID:           resource.Spec.MonitorPID, MonitorTimestamp: resource.Spec.MonitorTimestamp,
 		}

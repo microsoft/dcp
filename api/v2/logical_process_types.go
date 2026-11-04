@@ -94,9 +94,8 @@ type LogicalProcessConfig struct {
 	Args []string `json:"args,omitempty"`
 	// WorkingDirectory is the process working directory, defaulting to the controller working directory.
 	WorkingDirectory string `json:"workingDirectory,omitempty"`
-	// InheritEnvironment includes the controller environment. Defaults to true.
-	// +kubebuilder:default:=true
-	InheritEnvironment *bool `json:"inheritEnvironment,omitempty"`
+	// AmbientEnvironment controls inheritance from the controller process environment.
+	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 	// Env contains environment variables that override inherited values.
 	// +listType=map
 	// +listMapKey=name
@@ -122,7 +121,7 @@ func (spec *LogicalProcessSpec) GetLifecycleKey() (string, bool, error) {
 		return "", false, errors.New("process configuration is required to compute a lifecycle key")
 	}
 	desired := spec.Process
-	inherit := desired.InheritEnvironment == nil || *desired.InheritEnvironment
+	inherit := desired.AmbientEnvironment.EffectiveBehavior() == EnvironmentBehaviorInherit
 	fnvHash := fnv.New128()
 	encoder := gob.NewEncoder(fnvHash)
 	var hashErr error
@@ -267,8 +266,11 @@ func (resource *LogicalProcess) Validate(ctx context.Context) field.ErrorList {
 	case LogicalProcessModeSession, LogicalProcessModePersistent:
 		if resource.Spec.Process == nil {
 			errorList = append(errorList, field.Required(specPath.Child("process"), "process must be set for session and persistent modes"))
-		} else if strings.TrimSpace(resource.Spec.Process.ExecutablePath) == "" {
-			errorList = append(errorList, field.Required(specPath.Child("process", "executablePath"), "executablePath must be set"))
+		} else {
+			if strings.TrimSpace(resource.Spec.Process.ExecutablePath) == "" {
+				errorList = append(errorList, field.Required(specPath.Child("process", "executablePath"), "executablePath must be set"))
+			}
+			errorList = append(errorList, resource.Spec.Process.AmbientEnvironment.validate(specPath.Child("process", "ambientEnvironment"))...)
 		}
 		if resource.Spec.PID != nil {
 			errorList = append(errorList, field.Forbidden(specPath.Child("pid"), "pid is only supported in existing mode"))
