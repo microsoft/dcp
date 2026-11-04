@@ -117,11 +117,14 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
 			r.discardExecution(req.NamespacedName)
+			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		}
 		log.Error(getErr, "Failed to get PhysicalContainerExec")
+		getFailedCounter.Add(ctx, 1)
 		return ctrl.Result{}, getErr
 	}
+	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resource.GetResourceId())
 	if owner := metav1.GetControllerOf(&resource); owner != nil &&
 		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainerExec" {
