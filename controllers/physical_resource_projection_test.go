@@ -33,6 +33,7 @@ func TestPhysicalResourceProjections(t *testing.T) {
 
 	containerMissing, containerMissingFound := physicalContainerProjections.project(physicalContainerStateMissing)
 	require.True(t, containerMissingFound)
+	require.Equal(t, apiv2.PhysicalContainerPhaseFailed, containerMissing.phase)
 	require.False(t, containerMissing.requeue)
 	networkMissing, networkMissingFound := physicalContainerNetworkProjections.project(physicalContainerNetworkStateMissing)
 	require.True(t, networkMissingFound)

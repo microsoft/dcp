@@ -51,7 +51,7 @@ const (
 	// PhysicalContainerPhaseUnknown indicates that the runtime container state is unavailable or indeterminate.
 	PhysicalContainerPhaseUnknown PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseUnknown)
 
-	// PhysicalContainerPhaseFailed indicates a terminal dependency or operation failure.
+	// PhysicalContainerPhaseFailed indicates confirmed runtime absence or a terminal dependency or operation failure.
 	// Replacing a failed dependency does not restart this container's startup.
 	PhysicalContainerPhaseFailed PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseFailed)
 )

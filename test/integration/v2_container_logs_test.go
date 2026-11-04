@@ -437,7 +437,7 @@ func TestV2ContainerLogFollowersEndWhenRuntimeIsRemoved(t *testing.T) {
 		Containers: []string{runtimeID}, Force: true,
 	})
 	require.NoError(t, removeErr)
-	missing := waitPhysicalContainerPhase(t, ctx, physical.NamespacedName(), apiv2.PhysicalContainerPhaseUnknown)
+	missing := waitPhysicalContainerPhase(t, ctx, physical.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
 	requireReadyCondition(t, missing.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing)
 	require.True(t, missing.GetLogSource().Complete)
 	waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
