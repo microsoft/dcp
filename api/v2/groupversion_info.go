@@ -35,6 +35,7 @@ var (
 		&LogicalContainer{},
 		&LogicalContainerNetwork{},
 		&LogicalProcess{},
+		&LogicalContainerExec{},
 		&LogicalService{},
 		&ServiceEndpoint{},
 		&PhysicalContainerImage{},
@@ -43,6 +44,7 @@ var (
 		&PhysicalContainerNetworkConnection{},
 		&PhysicalContainerVolume{},
 		&PhysicalProcess{},
+		&PhysicalContainerExec{},
 	}
 
 	// Types that must be recognizable by the API server, but are not persisted.

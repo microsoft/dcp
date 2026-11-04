@@ -342,6 +342,23 @@ func StartAdvancedTestEnvironmentWithOptions(
 		}
 	}
 
+	if inclCtrl&PhysicalContainerExecController != 0 {
+		physicalExecR := controllers.NewPhysicalContainerExecReconciler(
+			ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("PhysicalContainerExecReconciler"), serverInfo.ContainerOrchestrator,
+		)
+		if physicalExecSetupErr := physicalExecR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerExecReconciler"); physicalExecSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerExec reconciler: %w", physicalExecSetupErr)
+		}
+	}
+	if inclCtrl&LogicalContainerExecController != 0 {
+		logicalExecR := controllers.NewLogicalContainerExecReconciler(
+			ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalContainerExecReconciler"),
+		)
+		if logicalExecSetupErr := logicalExecR.SetupWithManager(mgr, instanceTag+"-LogicalContainerExecReconciler"); logicalExecSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalContainerExec reconciler: %w", logicalExecSetupErr)
+		}
+	}
+
 	if inclCtrl&ContainerExecController != 0 {
 		containerExecR := controllers.NewContainerExecReconciler(
 			ctx,

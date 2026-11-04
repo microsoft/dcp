@@ -1,0 +1,155 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+package controllers
+
+import (
+	"fmt"
+	"reflect"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+
+	apiv2 "github.com/microsoft/dcp/api/v2"
+)
+
+type logicalContainerExecState int
+
+const (
+	logicalContainerExecStatePending logicalContainerExecState = iota + 1
+	logicalContainerExecStateCreating
+	logicalContainerExecStateRunning
+	logicalContainerExecStateExited
+	logicalContainerExecStateRuntimeFailed
+	logicalContainerExecStateMissing
+	logicalContainerExecStateFailed
+	logicalContainerExecStateDelete
+	logicalContainerExecStateInvalid
+)
+
+func (state logicalContainerExecState) String() string {
+	switch state {
+	case 0:
+		return "Unset"
+	case logicalContainerExecStatePending:
+		return "Pending"
+	case logicalContainerExecStateCreating:
+		return "Creating"
+	case logicalContainerExecStateRunning:
+		return "Running"
+	case logicalContainerExecStateExited:
+		return "Exited"
+	case logicalContainerExecStateRuntimeFailed:
+		return "RuntimeFailed"
+	case logicalContainerExecStateMissing:
+		return "Missing"
+	case logicalContainerExecStateFailed:
+		return "Failed"
+	case logicalContainerExecStateDelete:
+		return "Delete"
+	case logicalContainerExecStateInvalid:
+		return "Invalid"
+	default:
+		return fmt.Sprintf("logicalContainerExecState(%d)", int(state))
+	}
+}
+
+type logicalContainerExecData struct {
+	state              logicalContainerExecState
+	reason             apiv2.ConditionReason
+	message            string
+	physicalUID        types.UID
+	pendingPhysicalRef string
+	failureTime        metav1.MicroTime
+	reconcileErr       error
+}
+
+func (data *logicalContainerExecData) Clone() *logicalContainerExecData {
+	cloned := *data
+	return &cloned
+}
+
+func (data *logicalContainerExecData) UpdateFrom(other *logicalContainerExecData) bool {
+	if other == nil || reflect.DeepEqual(data, other) {
+		return false
+	}
+	*data = *other
+	return true
+}
+
+func (data *logicalContainerExecData) applyTo(resource *apiv2.LogicalContainerExec) (objectChange, AdditionalReconciliationDelay, bool) {
+	physicalRef := ""
+	if data.physicalUID != "" {
+		physicalRef = "logical-" + string(resource.UID)
+	}
+	change := setValue(&resource.Status.PhysicalExecRef, physicalRef)
+	if !data.failureTime.IsZero() {
+		change |= setTimestamp(&resource.Status.FinishedAt, data.failureTime)
+	}
+	if data.state == logicalContainerExecStateMissing {
+		source := &apiv2.LogSource{Name: physicalRef, UID: data.physicalUID, Complete: true}
+		if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
+			resource.Status.RuntimeLogs = source
+			change |= statusChanged
+		}
+	}
+	if _, valid := logicalContainerExecProjections.project(data.state); valid && data.reconcileErr != nil {
+		reason := data.reason
+		if reason == "" {
+			switch data.state {
+			case logicalContainerExecStatePending:
+				reason = "PhysicalExecutionPreparationFailed"
+			case logicalContainerExecStateDelete:
+				reason = "PhysicalExecutionDeletionFailed"
+			default:
+				reason = "PhysicalExecutionLookupFailed"
+			}
+		}
+		change |= setValue(&resource.Status.Phase, apiv2.ContainerExecPhasePending)
+		change |= setCondition(&resource.Status.Conditions, apiv2.ConditionReady, resource.Generation,
+			metav1.ConditionFalse, reason, data.message)
+		return change | additionalReconciliationNeeded, LongDelay, true
+	}
+	projectionChange, delay, valid := logicalContainerExecProjections.applyWithReason(
+		data.state, data.reason, data.message,
+		&resource.Status.Phase, &resource.Status.Conditions, resource.Generation,
+	)
+	return change | projectionChange, delay, valid
+}
+
+var logicalContainerExecProjections = physicalResourceProjectionTable[logicalContainerExecState, apiv2.ContainerExecPhase]{
+	invalidPhase: apiv2.ContainerExecPhaseFailed,
+	projections: map[logicalContainerExecState]physicalResourceProjection[apiv2.ContainerExecPhase]{
+		logicalContainerExecStatePending: {
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerNotReady",
+		},
+		logicalContainerExecStateFailed: {
+			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionPreparationFailed",
+		},
+		logicalContainerExecStateCreating: {
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionNotReady",
+		},
+		logicalContainerExecStateRunning: {
+			phase: apiv2.ContainerExecPhaseRunning, conditionStatus: metav1.ConditionTrue, conditionReason: "ExecutionRunning",
+		},
+		logicalContainerExecStateExited: {
+			phase: apiv2.ContainerExecPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: "ExecutionExited",
+		},
+		logicalContainerExecStateRuntimeFailed: {
+			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionFailed",
+		},
+		logicalContainerExecStateMissing: {
+			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionChanged",
+		},
+		logicalContainerExecStateDelete: {
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "DeletingPhysicalExecution",
+			requeue: true,
+		},
+		logicalContainerExecStateInvalid: {
+			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
+		},
+	},
+}
