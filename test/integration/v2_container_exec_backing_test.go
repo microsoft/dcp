@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -165,8 +166,8 @@ func TestV2ContainerExecDeletionPreservesDurableDisposition(t *testing.T) {
 	require.Equal(t, 1, orchestrator.ExecContainerCallCount(logical.Spec.Execution.Command))
 }
 
-// Verifies that physical exec completes deletion after bounded best-effort capture disposal
-// fails, rather than allowing an output-file obstruction to retain the execution resource.
+// Verifies that physical exec completes deletion with an obstructed capture path,
+// rather than allowing asynchronous best-effort file removal to retain the execution resource.
 func TestV2ContainerExecDisposalFailureDoesNotBlockDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -280,4 +281,68 @@ func TestV2ContainerExecCancelsBeforeNamespaceAdmission(t *testing.T) {
 	orchestrator, simulated := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, simulated)
 	require.Zero(t, orchestrator.ExecContainerCallCount(physical.Spec.Execution.Command))
+}
+
+// Verifies that a blocked shared output cleanup queue does not block logical or physical exec
+// deletion, and queued captures are removed after the workers are released.
+func TestV2ContainerExecOutputCleanupDoesNotBlockDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	server, environment, startupErr := StartTestEnvironment(t, ctx, containerExecTestControllers, t.Name(), t.TempDir())
+	require.NoError(t, startupErr)
+	target := createV2ExecTarget(t, ctx, server.Client, "v2-exec-queued-cleanup")
+	started := make(chan struct{}, controllers.MaxConcurrentReconciles)
+	release := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	for range controllers.MaxConcurrentReconciles {
+		require.NoError(t, environment.OutputCleanupQueue.Enqueue(func(cleanupCtx context.Context) {
+			started <- struct{}{}
+			select {
+			case <-release:
+			case <-cleanupCtx.Done():
+			}
+		}))
+	}
+	for range controllers.MaxConcurrentReconciles {
+		waitContainerExecSignal(t, ctx, started)
+	}
+	logical := &apiv2.LogicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: "logical", Namespace: target.Namespace},
+		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name,
+			Execution: apiv2.ContainerExecConfig{Command: "exec-queued-logical"}}}
+	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: "physical", Namespace: target.Namespace},
+		Spec: apiv2.PhysicalContainerExecSpec{ContainerRef: target.Status.PhysicalContainerRef,
+			Execution: apiv2.ContainerExecConfig{Command: "exec-queued-physical"}}}
+	require.NoError(t, server.Client.Create(ctx, logical))
+	require.NoError(t, server.Client.Create(ctx, physical))
+	runningLogical := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
+		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
+	})
+	runningPhysical := waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
+		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
+	})
+	paths := []string{runningLogical.Status.RuntimeLogs.StdoutFile, runningLogical.Status.RuntimeLogs.StderrFile,
+		runningPhysical.Status.StdoutFile, runningPhysical.Status.StderrFile}
+	require.NoError(t, server.Client.Delete(ctx, logical))
+	require.NoError(t, server.Client.Delete(ctx, physical))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+	for _, path := range paths {
+		_, statErr := os.Stat(path)
+		require.NoError(t, statErr, "blocked cleanup must leave capture until its queue runs")
+	}
+	unblock()
+	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		for _, path := range paths {
+			_, statErr := os.Stat(path)
+			if statErr == nil {
+				return false, nil
+			}
+			if !errors.Is(statErr, os.ErrNotExist) {
+				return false, statErr
+			}
+		}
+		return true, nil
+	}))
 }

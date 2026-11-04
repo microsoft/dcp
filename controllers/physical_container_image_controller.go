@@ -142,10 +142,11 @@ func imagePullBackoff(image *apiv2.PhysicalContainerImage) backoff.BackOff {
 type PhysicalContainerImageReconciler struct {
 	*ReconcilerBase[apiv2.PhysicalContainerImage, *apiv2.PhysicalContainerImage]
 
-	orchestrator   containers.ImageOrchestrator
-	imageData      *ObjectStateMap[physicalContainerImageDataStateKey, physicalContainerImageData, *physicalContainerImageData, *apiv2.PhysicalContainerImage]
-	operationQueue *resiliency.WorkQueue
-	config         PhysicalContainerImageReconcilerConfig
+	orchestrator       containers.ImageOrchestrator
+	imageData          *ObjectStateMap[physicalContainerImageDataStateKey, physicalContainerImageData, *physicalContainerImageData, *apiv2.PhysicalContainerImage]
+	operationQueue     *resiliency.WorkQueue
+	outputCleanupQueue *resiliency.WorkQueue
+	config             PhysicalContainerImageReconcilerConfig
 }
 
 type PhysicalContainerImageReconcilerConfig struct {
@@ -159,14 +160,16 @@ func NewPhysicalContainerImageReconciler(
 	noCacheClient ctrl_client.Reader,
 	log logr.Logger,
 	orchestrator containers.ImageOrchestrator,
+	outputCleanupQueue *resiliency.WorkQueue,
 	config PhysicalContainerImageReconcilerConfig,
 ) *PhysicalContainerImageReconciler {
 	return &PhysicalContainerImageReconciler{
-		ReconcilerBase: NewReconcilerBase[apiv2.PhysicalContainerImage](client, noCacheClient, log, lifetimeCtx),
-		orchestrator:   orchestrator,
-		imageData:      NewObjectStateMap[physicalContainerImageDataStateKey, physicalContainerImageData, *physicalContainerImageData, *apiv2.PhysicalContainerImage](),
-		operationQueue: resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
-		config:         config,
+		ReconcilerBase:     NewReconcilerBase[apiv2.PhysicalContainerImage](client, noCacheClient, log, lifetimeCtx),
+		orchestrator:       orchestrator,
+		imageData:          NewObjectStateMap[physicalContainerImageDataStateKey, physicalContainerImageData, *physicalContainerImageData, *apiv2.PhysicalContainerImage](),
+		operationQueue:     resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
+		outputCleanupQueue: outputCleanupQueue,
+		config:             config,
 	}
 }
 
@@ -286,8 +289,8 @@ func (r *PhysicalContainerImageReconciler) discardPhysicalContainerImageData(
 
 	r.imageData.DeleteByNamespacedName(name)
 	if data.startupStdout != nil {
-		data.startupStdout.CloseAndLog(logs.CaptureFileDisposeOnClose, log)
-		data.startupStderr.CloseAndLog(logs.CaptureFileDisposeOnClose, log)
+		enqueueCaptureFileCleanup(r.outputCleanupQueue,
+			r.Log.WithValues("PhysicalContainerImage", name), data.startupStdout, data.startupStderr)
 	}
 }
 

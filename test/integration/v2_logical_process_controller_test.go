@@ -27,6 +27,7 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
+	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
@@ -421,7 +422,7 @@ func TestV2LogicalProcessControllerRejectsReleasedBackingHold(t *testing.T) {
 	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(handle)))
 }
 
-// Verifies that LogicalProcess preserves workload ownership and capture paths through unscoped persistent reuse.
+// Verifies that LogicalProcess uses persistent output storage and preserves ownership and captures through unscoped reuse.
 // Changed lifecycle keys replace the process without inheriting the retired process's workload association.
 func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing.T) {
 	t.Parallel()
@@ -439,6 +440,10 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	created := waitLogicalProcessPhase(t, ctx, first.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
 	record, recordErr := testStateStore.GetPersistentProcess(ctx, first.GetLeaseKey())
 	require.NoError(t, recordErr)
+	outputDirectory, directoryErr := logs.PersistentProcessOutputDirectory()
+	require.NoError(t, directoryErr)
+	require.Equal(t, outputDirectory, filepath.Dir(record.StdOutFile))
+	require.Equal(t, outputDirectory, filepath.Dir(record.StdErrFile))
 	require.Equal(t, commonapi.WorkloadID("logical-process-workload"), record.WorkloadID)
 	require.Equal(t, *created.Status.PID, int64(record.PID))
 	require.Equal(t, created.Status.LifecycleKey, record.LifecycleKey)
@@ -497,8 +502,7 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	retiredOwnerRecords, retiredOwnerErr := testStateStore.ListPersistentProcessesByWorkloadID(ctx, record.WorkloadID)
 	require.NoError(t, retiredOwnerErr)
 	require.Empty(t, retiredOwnerRecords)
-	require.NoFileExists(t, record.StdOutFile)
-	require.NoFileExists(t, record.StdErrFile)
+	waitOutputFilesRemoved(t, ctx, record.StdOutFile, record.StdErrFile)
 	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(record.ProcessHandle())))
 	previous := &apiv2.PhysicalProcess{}
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(third.UID) + "-previous"}, previous))
@@ -512,8 +516,7 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	waitLogicalProcessPhase(t, ctx, third.NamespacedName(), apiv2.LogicalProcessPhaseExited)
 	require.NoError(t, client.Delete(ctx, third))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, third)
-	require.NoFileExists(t, replaced.Status.RuntimeLogs.StdoutFile)
-	require.NoFileExists(t, replaced.Status.RuntimeLogs.StderrFile)
+	waitOutputFilesRemoved(t, ctx, replaced.Status.RuntimeLogs.StdoutFile, replaced.Status.RuntimeLogs.StderrFile)
 }
 
 // Verifies that LogicalProcess existing mode binds the supplied identity, never launches a process,
@@ -588,7 +591,7 @@ func TestV2LogicalProcessControllerRejectsReusedPersistentPIDWithBusyOutput(t *t
 	require.NoError(t, storedErr)
 	require.Equal(t, *running.Status.PID, int64(stored.PID))
 	require.FileExists(t, obstruction)
-	require.NoFileExists(t, stderrPath)
+	waitOutputFilesRemoved(t, ctx, stderrPath)
 }
 
 // Verifies that LogicalProcess stops the old process and replaces its persistent record
@@ -627,7 +630,7 @@ func TestV2LogicalProcessControllerReplacesProcessDespiteOutputRemovalFailure(t 
 	require.NoError(t, newRecordErr)
 	require.Equal(t, replaced.Status.RuntimeLogs.StdoutFile, newRecord.StdOutFile)
 	require.FileExists(t, obstruction)
-	require.NoFileExists(t, record.StdErrFile)
+	waitOutputFilesRemoved(t, ctx, record.StdErrFile)
 	require.NoError(t, retryOnConflict(ctx, replacement.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
 		current.Spec.Stop = true
 		return client.Update(updateCtx, current)

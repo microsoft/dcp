@@ -294,8 +294,10 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return logicalNetworkSetupErr
 		}
 
+		outputCleanupQueue := resiliency.NewWorkQueue(ctrlCtx, controllers.MaxConcurrentReconciles)
 		logicalProcessCtrl := controllers.NewLogicalProcessReconciler(
 			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalProcessReconciler"), processExecutor,
+			outputCleanupQueue,
 			controllers.LogicalProcessReconcilerConfig{
 				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: workloadID,
 			},
@@ -311,6 +313,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalContainerImageReconciler"),
 			containerOrchestrator,
+			outputCleanupQueue,
 			controllers.PhysicalContainerImageReconcilerConfig{StateStore: stateStore, ResourceLeaseOwner: leaseOwner},
 		)
 		if err = physicalContainerImageCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
@@ -361,6 +364,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetAPIReader(),
 			log.WithName("PhysicalProcessReconciler"),
 			processExecutor,
+			outputCleanupQueue,
 		)
 		if err = physicalProcessCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up PhysicalProcess controller")
@@ -369,6 +373,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 
 		physicalExecCtrl := controllers.NewPhysicalContainerExecReconciler(
 			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("PhysicalContainerExecReconciler"), containerOrchestrator,
+			outputCleanupQueue,
 		)
 		if physicalExecSetupErr := physicalExecCtrl.SetupWithManager(mgr, defaultControllerName); physicalExecSetupErr != nil {
 			log.Error(physicalExecSetupErr, "Unable to set up PhysicalContainerExec controller")

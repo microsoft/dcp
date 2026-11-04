@@ -16,6 +16,7 @@ import (
 	"github.com/microsoft/dcp/internal/logstream"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 func (data *physicalProcessData) ensureOutputLogs(resource *apiv2.PhysicalProcess) error {
@@ -50,4 +51,11 @@ func (data *physicalProcessData) closeOutputLogs(option logs.CaptureFileCloseOpt
 		return closeErr
 	}
 	return nil
+}
+
+func (data *physicalProcessData) enqueueOutputCleanup(queue *resiliency.WorkQueue, log logr.Logger) {
+	if data.stdout == nil || osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+		return
+	}
+	enqueueCaptureFileCleanup(queue, log, data.stdout, data.stderr)
 }
