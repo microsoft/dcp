@@ -7714,14 +7714,14 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessSpec(ref common.ReferenceCallbac
 					},
 					"stdoutFile": {
 						SchemaProps: spec.SchemaProps{
-							Description: "StdoutFile optionally supplies an existing raw stdout capture for an identity-bound PID reference. It is retained while the process runs and removed after confirmed exit when this resource is deleted.",
+							Description: "StdoutFile optionally supplies an existing raw stdout capture for an identity-bound PID reference. It is retained while that process instance is running. On resource deletion, removal is best effort after exit or confirmed absence, including PID reuse.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"stderrFile": {
 						SchemaProps: spec.SchemaProps{
-							Description: "StderrFile optionally supplies an existing raw stderr capture for an identity-bound PID reference. It is retained while the process runs and removed after confirmed exit when this resource is deleted.",
+							Description: "StderrFile optionally supplies an existing raw stderr capture for an identity-bound PID reference. It is retained while that process instance is running. On resource deletion, removal is best effort after exit or confirmed absence, including PID reuse.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -7791,7 +7791,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref common.ReferenceCallb
 					},
 					"identityTimestamp": {
 						SchemaProps: spec.SchemaProps{
-							Description: "IdentityTimestamp reports the process identity captured by the controller for PID-reuse protection. It is diagnostic and is not used to reconstruct controller state. On Linux this value represents elapsed time since boot rather than wall-clock time.",
+							Description: "IdentityTimestamp identifies the observed process instance together with PID. It is used to guard against PID reuse for subsequent persistent processes. On Linux this value represents elapsed time since boot rather than wall-clock time.",
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
