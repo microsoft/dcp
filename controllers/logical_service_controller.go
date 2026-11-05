@@ -163,18 +163,31 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			break
 		}
 		proxyErr := r.configureProxies(service, data, endpoints.Items, log)
+		for _, listener := range data.proxies {
+			if listener.proxy.State() == proxy.ProxyStateRunning {
+				status.EffectiveAddresses = append(status.EffectiveAddresses, apiv2.ServiceAddress{
+					Address: networking.ToStandaloneAddress(listener.proxy.EffectiveAddress()), Port: listener.proxy.EffectivePort(),
+				})
+			}
+		}
 		if proxyErr != nil {
 			log.Error(proxyErr, "Failed to configure logical service listeners")
 			reason, message, requeue = "ProxyConfigurationFailed", proxyErr.Error(), true
-			if data.attempts >= MaxServiceStartAttempts {
+			if len(data.proxies) > 0 {
+				status.Phase = apiv2.LogicalServicePhaseUnknown
+			}
+			if len(status.EffectiveAddresses) == 0 && (len(data.proxies) > 0 || data.attempts >= MaxServiceStartAttempts) {
 				status.Phase, requeue = apiv2.LogicalServicePhaseFailed, false
 			}
 			break
 		}
-		for _, listener := range data.proxies {
-			status.EffectiveAddresses = append(status.EffectiveAddresses, apiv2.ServiceAddress{
-				Address: networking.ToStandaloneAddress(listener.proxy.EffectiveAddress()), Port: listener.proxy.EffectivePort(),
-			})
+		if len(status.EffectiveAddresses) < len(data.proxies) {
+			status.Phase = apiv2.LogicalServicePhaseUnknown
+			if len(status.EffectiveAddresses) == 0 {
+				status.Phase = apiv2.LogicalServicePhaseFailed
+			}
+			reason, message = "ProxyListenerUnavailable", "Service listeners have stopped; recreate the service to allocate new listeners."
+			break
 		}
 		reason, message = "WaitingForEndpoints", "Listeners are allocated; the service has no available endpoints."
 		if len(endpoints.Items) > 0 {
@@ -230,22 +243,15 @@ func (r *LogicalServiceReconciler) configureProxies(
 			config.Endpoints = append(config.Endpoints, proxy.Endpoint{Address: address.Address, Port: address.Port})
 		}
 	}
-	for _, listener := range data.proxies {
-		if listener.proxy.State() != proxy.ProxyStateRunning {
-			stopProxies(data.proxies, log)
-			data.proxies = nil
-			data.appliedConfig = nil
-			return fmt.Errorf("service listener is not running")
-		}
-	}
 	if data.appliedConfig != nil && reflect.DeepEqual(*data.appliedConfig, config) {
 		return nil
 	}
+	data.appliedConfig = nil
 	for _, listener := range data.proxies {
+		if listener.proxy.State() != proxy.ProxyStateRunning {
+			continue
+		}
 		if configErr := listener.proxy.Configure(config); configErr != nil {
-			stopProxies(data.proxies, log)
-			data.proxies = nil
-			data.appliedConfig = nil
 			return fmt.Errorf("configure service listener: %w", configErr)
 		}
 	}
