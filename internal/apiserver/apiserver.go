@@ -39,6 +39,7 @@ import (
 	"github.com/microsoft/dcp/internal/logs/v2resourcelogs"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/notifications"
+	"github.com/microsoft/dcp/internal/projectdebug"
 	"github.com/microsoft/dcp/internal/telemetry/startupspans"
 	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/generated/openapi"
@@ -392,7 +393,7 @@ func addDcpHttpHandlers(
 	if storageErr := decorateV2NamespaceStorageProviders(config, namespaceLifecycleGate); storageErr != nil {
 		return storageErr
 	}
-	if debugServingErr := configureProjectDebugServing(config, ctx, log.WithName("ProjectDebug")); debugServingErr != nil {
+	if debugServingErr := projectdebug.Configure(config, ctx, log.WithName("ProjectDebug")); debugServingErr != nil {
 		return debugServingErr
 	}
 	namespaceWatchSource, namespaceWatchSourceErr := newV2NamespaceWatchSource(namespaceWatchClientConfig)

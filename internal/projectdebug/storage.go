@@ -3,7 +3,8 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package apiserver
+// Package projectdebug serves Project debug sessions and owns host adapter execution.
+package projectdebug
 
 import (
 	"bufio"
@@ -46,7 +47,8 @@ type projectDebugStorage struct {
 	destroy    sync.Once
 }
 
-func configureProjectDebugServing(config *tiltapiserver.Config, ctx context.Context, log logr.Logger) error {
+// Configure registers Project debug serving and isolates API-owned status observations.
+func Configure(config *tiltapiserver.Config, ctx context.Context, log logr.Logger) error {
 	writer := &projectDebugStatusWriter{}
 	if statusErr := configureProjectDebugStatus(config, writer); statusErr != nil {
 		return statusErr
@@ -343,7 +345,13 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 	sessionErr = dap.Bridge(ctx,
 		&debugDAPTransport{reader: bufio.NewReader(stream), writer: stream, close: connection.Close},
 		&debugDAPTransport{reader: bufio.NewReader(transport), writer: transport, close: transport.Close},
-		execution.done, apiv2.ProjectDebugShutdownGrace, func(message dap.Message) error {
+		execution.done, apiv2.ProjectDebugShutdownGrace, func(direction dap.Direction, message dap.Message) error {
+			if protocolErr := storage.runtime.observeProtocolMessage(project, session.ID, direction, message); protocolErr != nil {
+				return protocolErr
+			}
+			if direction != dap.AdapterToClient {
+				return nil
+			}
 			return storage.runtime.observeProcessMessage(project, session.ID, message)
 		})
 	if ctx.Err() != nil && !errors.Is(context.Cause(ctx), dap.ErrShutdownRequested) {

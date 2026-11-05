@@ -165,6 +165,11 @@ type ProjectDebugSessionStatus struct {
 	ID string `json:"id"`
 	// ExecutionID references an entry in debug.executions when DCP owns its adapter process.
 	ExecutionID string `json:"executionID,omitempty"`
+	// ProtocolRequests retains initialize, launch and attach outcomes independently of transport phase.
+	// Arguments, environment and adapter-specific response bodies are not retained.
+	// +listType=map
+	// +listMapKey=requestSeq
+	ProtocolRequests []ProjectDebugRequestStatus `json:"protocolRequests,omitempty"`
 	// Processes retains adapter-reported targets independently of the stream and adapter lifetimes.
 	// +listType=map
 	// +listMapKey=id
@@ -182,6 +187,33 @@ type ProjectDebugSessionStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+type ProjectDebugRequestPhase string
+
+const (
+	ProjectDebugRequestPending     ProjectDebugRequestPhase = "Pending"
+	ProjectDebugRequestSucceeded   ProjectDebugRequestPhase = "Succeeded"
+	ProjectDebugRequestFailed      ProjectDebugRequestPhase = "Failed"
+	ProjectDebugRequestInterrupted ProjectDebugRequestPhase = "Interrupted"
+)
+
+// ProjectDebugRequestStatus records an API-server-observed client request, not target health or execution.
+// +k8s:openapi-gen=true
+type ProjectDebugRequestStatus struct {
+	// RequestSeq is the originating client's DAP sequence number, scoped to this session.
+	// +kubebuilder:validation:Minimum=1
+	RequestSeq int64 `json:"requestSeq"`
+	// Command identifies the observed protocol operation.
+	// +kubebuilder:validation:Enum=initialize;launch;attach
+	Command string `json:"command"`
+	// Phase records a pending request, its response outcome, or session closure before a response.
+	// +kubebuilder:validation:Enum=Pending;Succeeded;Failed;Interrupted
+	Phase ProjectDebugRequestPhase `json:"phase"`
+	// FinishedAt records when a response or interruption was observed.
+	FinishedAt metav1.MicroTime `json:"finishedAt,omitempty"`
+	// Message contains the adapter's response message or the reason no response was observed.
+	Message string `json:"message,omitempty"`
 }
 
 // ProjectDebugProcessStatus registers one adapter-reported process instance with its originating session.

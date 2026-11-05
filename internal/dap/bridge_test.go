@@ -34,7 +34,7 @@ func (transport *testTransport) WriteMessage(message Message) error {
 	return WriteMessage(transport, message)
 }
 
-func bridgeEndpoints(t *testing.T, ctx context.Context, grace time.Duration, exitSignals ...<-chan struct{}) (*testTransport, *testTransport, <-chan error) {
+func bridgeEndpoints(t *testing.T, ctx context.Context, grace time.Duration, observe func(Direction, Message) error, exitSignals ...<-chan struct{}) (*testTransport, *testTransport, <-chan error) {
 	t.Helper()
 	client, bridgeClient := net.Pipe()
 	adapter, bridgeAdapter := net.Pipe()
@@ -52,7 +52,7 @@ func bridgeEndpoints(t *testing.T, ctx context.Context, grace time.Duration, exi
 	go func() {
 		done <- Bridge(ctx,
 			&testTransport{Conn: bridgeClient, reader: bufio.NewReader(bridgeClient)},
-			&testTransport{Conn: bridgeAdapter, reader: bufio.NewReader(bridgeAdapter)}, exited, grace, nil)
+			&testTransport{Conn: bridgeAdapter, reader: bufio.NewReader(bridgeAdapter)}, exited, grace, observe)
 	}()
 	return &testTransport{Conn: client, reader: bufio.NewReader(client)},
 		&testTransport{Conn: adapter, reader: bufio.NewReader(adapter)}, done
@@ -74,13 +74,96 @@ func testResponse(sequence, request int64, command string) Message {
 	return message
 }
 
+// Verifies that observers see original client correlation before forwarding, including out-of-order
+// replies, without consuming extension payloads or observing unrelated/private responses.
+func TestBridgeObservesCorrelatedProtocolMessages(t *testing.T) {
+	t.Parallel()
+	lifetime, cancelLifetime := testutil.GetTestContext(t, time.Minute)
+	defer cancelLifetime()
+	ctx, cancel := context.WithCancelCause(lifetime)
+	type observation struct {
+		direction Direction
+		command   string
+		sequence  int64
+		request   int64
+	}
+	observed := make(chan observation, 8)
+	client, adapter, done := bridgeEndpoints(t, ctx, time.Second, func(direction Direction, message Message) error {
+		observed <- observation{direction, message.text("command"), message.number("seq"), message.number("request_seq")}
+		return nil
+	})
+	for index, command := range []string{"initialize", "launch"} {
+		request := testRequest(int64(71+index), command)
+		request["arguments"] = json.RawMessage(`{"unknown":{"preserve":true},"noDebug":true}`)
+		require.NoError(t, client.WriteMessage(request))
+		forwarded, readErr := adapter.ReadMessage()
+		require.NoError(t, readErr)
+		require.EqualValues(t, index+1, forwarded.number("seq"))
+		require.JSONEq(t, `{"unknown":{"preserve":true},"noDebug":true}`, string(forwarded["arguments"]))
+	}
+	require.NoError(t, adapter.WriteMessage(testResponse(4, 71, "initialize")))
+	_, unmatchedErr := client.ReadMessage()
+	require.NoError(t, unmatchedErr)
+	for _, response := range []Message{testResponse(5, 2, "launch"), testResponse(6, 1, "initialize")} {
+		require.NoError(t, adapter.WriteMessage(response))
+		_, readErr := client.ReadMessage()
+		require.NoError(t, readErr)
+	}
+	cancel(ErrShutdownRequested)
+	shutdown, shutdownErr := adapter.ReadMessage()
+	require.NoError(t, shutdownErr)
+	require.NoError(t, adapter.WriteMessage(testResponse(7, shutdown.number("seq"), "disconnect")))
+	require.NoError(t, adapter.WriteMessage(Message{"seq": json.RawMessage("8"), "type": json.RawMessage(`"event"`), "event": json.RawMessage(`"terminated"`)}))
+	_, eventErr := client.ReadMessage()
+	require.NoError(t, eventErr)
+	require.NoError(t, adapter.Close())
+	require.NoError(t, <-done)
+	require.Len(t, observed, 5)
+	for index, expected := range []observation{
+		{direction: ClientToAdapter, command: "initialize", sequence: 71},
+		{direction: ClientToAdapter, command: "launch", sequence: 72},
+		{direction: AdapterToClient, command: "launch", request: 72},
+		{direction: AdapterToClient, command: "initialize", request: 71},
+		{direction: AdapterToClient},
+	} {
+		actual := <-observed
+		require.Equal(t, expected.direction, actual.direction, "observation %d", index)
+		require.Equal(t, expected.command, actual.command)
+		require.Equal(t, expected.request, actual.request)
+		if expected.direction == ClientToAdapter {
+			require.Equal(t, expected.sequence, actual.sequence)
+		}
+	}
+}
+
+// Verifies that observation failures stop forwarding explicitly and release both transport workers.
+func TestBridgeObservationFailureClosesTransports(t *testing.T) {
+	t.Parallel()
+	for _, direction := range []Direction{ClientToAdapter, AdapterToClient} {
+		ctx, cancel := testutil.GetTestContext(t, time.Minute)
+		client, adapter, done := bridgeEndpoints(t, ctx, time.Second, func(origin Direction, _ Message) error {
+			if origin == direction {
+				return errors.New("injected observation failure")
+			}
+			return nil
+		})
+		if direction == ClientToAdapter {
+			require.NoError(t, client.WriteMessage(testRequest(1, "initialize")))
+		} else {
+			require.NoError(t, adapter.WriteMessage(Message{"seq": json.RawMessage("1"), "type": json.RawMessage(`"event"`), "event": json.RawMessage(`"output"`)}))
+		}
+		require.ErrorContains(t, <-done, "injected observation failure")
+		cancel()
+	}
+}
+
 // Verifies that serialized DAP mediation preserves extension fields and response correlation in
 // both directions, including reverse requests with overlapping sequence spaces.
 func TestBridgeRemapsBidirectionalRequests(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
-	client, adapter, done := bridgeEndpoints(t, ctx, time.Second)
+	client, adapter, done := bridgeEndpoints(t, ctx, time.Second, nil)
 	request := testRequest(71, "customExtension")
 	request["extension"] = json.RawMessage(`{"nested":[1,"two"]}`)
 	require.NoError(t, client.WriteMessage(request))
@@ -116,7 +199,7 @@ func TestBridgeResourceShutdownDrainsFinalEvents(t *testing.T) {
 	lifetime, cancelLifetime := testutil.GetTestContext(t, time.Minute)
 	defer cancelLifetime()
 	ctx, cancel := context.WithCancelCause(lifetime)
-	client, adapter, done := bridgeEndpoints(t, ctx, time.Second)
+	client, adapter, done := bridgeEndpoints(t, ctx, time.Second, nil)
 	cancel(ErrShutdownRequested)
 	request, readErr := adapter.ReadMessage()
 	require.NoError(t, readErr)
@@ -141,7 +224,7 @@ func TestBridgePreservesClientShutdown(t *testing.T) {
 	lifetime, cancelLifetime := testutil.GetTestContext(t, time.Minute)
 	defer cancelLifetime()
 	ctx, cancel := context.WithCancelCause(lifetime)
-	client, adapter, done := bridgeEndpoints(t, ctx, time.Second)
+	client, adapter, done := bridgeEndpoints(t, ctx, time.Second, nil)
 	require.NoError(t, client.WriteMessage(testRequest(40, "disconnect")))
 	request, readErr := adapter.ReadMessage()
 	require.NoError(t, readErr)
@@ -159,7 +242,7 @@ func TestBridgeUnexpectedDisconnectFails(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
-	client, _, done := bridgeEndpoints(t, ctx, time.Second)
+	client, _, done := bridgeEndpoints(t, ctx, time.Second, nil)
 	require.NoError(t, client.Close())
 	require.ErrorContains(t, <-done, "client disconnected")
 }
@@ -171,7 +254,7 @@ func TestBridgeShutdownBoundsBackpressure(t *testing.T) {
 	lifetime, cancelLifetime := testutil.GetTestContext(t, time.Minute)
 	defer cancelLifetime()
 	ctx, cancel := context.WithCancelCause(lifetime)
-	_, _, done := bridgeEndpoints(t, ctx, 20*time.Millisecond)
+	_, _, done := bridgeEndpoints(t, ctx, 20*time.Millisecond, nil)
 	cancel(ErrShutdownRequested)
 	select {
 	case bridgeErr := <-done:
@@ -187,7 +270,7 @@ func TestBridgeShutdownBoundsClientBackpressure(t *testing.T) {
 	lifetime, cancelLifetime := testutil.GetTestContext(t, time.Minute)
 	defer cancelLifetime()
 	ctx, cancel := context.WithCancelCause(lifetime)
-	_, adapter, done := bridgeEndpoints(t, ctx, 20*time.Millisecond)
+	_, adapter, done := bridgeEndpoints(t, ctx, 20*time.Millisecond, nil)
 	require.NoError(t, adapter.WriteMessage(Message{
 		"seq": json.RawMessage("1"), "type": json.RawMessage(`"event"`), "event": json.RawMessage(`"output"`),
 	}))
@@ -209,7 +292,7 @@ func TestBridgeBoundsPostExitDrain(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
 	exited := make(chan struct{})
-	_, adapter, done := bridgeEndpoints(t, ctx, time.Second, exited)
+	_, adapter, done := bridgeEndpoints(t, ctx, time.Second, nil, exited)
 	require.NoError(t, adapter.WriteMessage(Message{
 		"seq": json.RawMessage("1"), "type": json.RawMessage(`"event"`), "event": json.RawMessage(`"terminated"`),
 	}))
@@ -248,7 +331,7 @@ func TestBridgeReportsRejectedShutdown(t *testing.T) {
 	lifetime, cancelLifetime := testutil.GetTestContext(t, time.Minute)
 	defer cancelLifetime()
 	ctx, cancel := context.WithCancelCause(lifetime)
-	_, adapter, done := bridgeEndpoints(t, ctx, time.Second)
+	_, adapter, done := bridgeEndpoints(t, ctx, time.Second, nil)
 	cancel(ErrShutdownRequested)
 	request, readErr := adapter.ReadMessage()
 	require.NoError(t, readErr)

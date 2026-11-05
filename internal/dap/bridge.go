@@ -26,6 +26,14 @@ type Transport interface {
 	Close() error
 }
 
+// Direction identifies a message's originating peer.
+type Direction int
+
+const (
+	ClientToAdapter Direction = iota + 1
+	AdapterToClient
+)
+
 type requestIdentity struct {
 	original int64
 	local    bool
@@ -112,9 +120,9 @@ func (writer *messageWriter) remapCancellation(message Message) error {
 	return nil
 }
 
-func (writer *messageWriter) remap(message Message) (bool, error) {
+func (writer *messageWriter) remap(message Message) (bool, bool, error) {
 	if message.text("type") != "response" {
-		return true, nil
+		return true, false, nil
 	}
 	wire := message.number("request_seq")
 	writer.mapMu.Lock()
@@ -125,21 +133,22 @@ func (writer *messageWriter) remap(message Message) (bool, error) {
 		if identity.local {
 			var success bool
 			if decodeErr := json.Unmarshal(message["success"], &success); decodeErr != nil || !success {
-				return false, fmt.Errorf("adapter rejected injected disconnect: %s", message.text("message"))
+				return false, true, fmt.Errorf("adapter rejected injected disconnect: %s", message.text("message"))
 			}
-			return false, nil
+			return false, true, nil
 		}
 		message.setNumber("request_seq", identity.original)
 	}
-	return true, nil
+	return true, found, nil
 }
 
 // Bridge forwards DAP while preserving extension payloads and request correlation in both directions.
 // On ErrShutdownRequested it injects disconnect unless shutdown was already forwarded, allowing
 // final messages to drain until adapter EOF or grace expiry. Other cancellation and client loss fail.
 // It never synthesizes application exit or terminated events.
-// Observe, when non-nil, runs before forwarding adapter messages and must be bounded and leave them unchanged.
-func Bridge(ctx context.Context, client, adapter Transport, exited <-chan struct{}, grace time.Duration, observe func(Message) error) error {
+// Observe runs before forwarding, after response correlation, and must be bounded and leave messages unchanged.
+// Private shutdown replies and uncorrelated responses are not observed.
+func Bridge(ctx context.Context, client, adapter Transport, exited <-chan struct{}, grace time.Duration, observe func(Direction, Message) error) error {
 	toAdapter, toClient := newMessageWriter(adapter), newMessageWriter(client)
 	type result struct {
 		client bool
@@ -156,12 +165,18 @@ func Bridge(ctx context.Context, client, adapter Transport, exited <-chan struct
 				results <- result{client: true, err: readErr}
 				return
 			}
-			forward, remapErr := toClient.remap(message)
+			forward, matched, remapErr := toClient.remap(message)
 			if remapErr != nil {
 				results <- result{client: true, err: remapErr}
 				return
 			}
 			if forward {
+				if observe != nil && (message.text("type") != "response" || matched) {
+					if observationErr := observe(ClientToAdapter, message); observationErr != nil {
+						results <- result{client: true, err: observationErr}
+						return
+					}
+				}
 				if writeErr := toAdapter.send(message, false); writeErr != nil {
 					results <- result{client: true, err: writeErr}
 					return
@@ -177,18 +192,18 @@ func Bridge(ctx context.Context, client, adapter Transport, exited <-chan struct
 				results <- result{err: readErr}
 				return
 			}
-			if observe != nil {
-				if observationErr := observe(message); observationErr != nil {
-					results <- result{err: observationErr}
-					return
-				}
-			}
-			forward, remapErr := toAdapter.remap(message)
+			forward, matched, remapErr := toAdapter.remap(message)
 			if remapErr != nil {
 				results <- result{err: remapErr}
 				return
 			}
 			if forward {
+				if observe != nil && (message.text("type") != "response" || matched) {
+					if observationErr := observe(AdapterToClient, message); observationErr != nil {
+						results <- result{err: observationErr}
+						return
+					}
+				}
 				if writeErr := toClient.send(message, false); writeErr != nil {
 					results <- result{err: writeErr}
 					return

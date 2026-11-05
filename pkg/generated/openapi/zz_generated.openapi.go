@@ -169,6 +169,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.ProjectDebugExecutionStatus{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_ProjectDebugExecutionStatus(ref),
 		v2.ProjectDebugProcessObservation{}.OpenAPIModelName():          schema_microsoft_dcp_api_v2_ProjectDebugProcessObservation(ref),
 		v2.ProjectDebugProcessStatus{}.OpenAPIModelName():               schema_microsoft_dcp_api_v2_ProjectDebugProcessStatus(ref),
+		v2.ProjectDebugRequestStatus{}.OpenAPIModelName():               schema_microsoft_dcp_api_v2_ProjectDebugRequestStatus(ref),
 		v2.ProjectDebugSessionStatus{}.OpenAPIModelName():               schema_microsoft_dcp_api_v2_ProjectDebugSessionStatus(ref),
 		v2.ProjectDebugStatus{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_ProjectDebugStatus(ref),
 		v2.ProjectList{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v2_ProjectList(ref),
@@ -9426,6 +9427,59 @@ func schema_microsoft_dcp_api_v2_ProjectDebugProcessStatus(ref common.ReferenceC
 	}
 }
 
+func schema_microsoft_dcp_api_v2_ProjectDebugRequestStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProjectDebugRequestStatus records an API-server-observed client request, not target health or execution.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"requestSeq": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RequestSeq is the originating client's DAP sequence number, scoped to this session.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"command": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Command identifies the observed protocol operation.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase records a pending request, its response outcome, or session closure before a response.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"finishedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FinishedAt records when a response or interruption was observed.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Message contains the adapter's response message or the reason no response was observed.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"requestSeq", "command", "phase"},
+			},
+		},
+		Dependencies: []string{
+			metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_ProjectDebugSessionStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -9446,6 +9500,27 @@ func schema_microsoft_dcp_api_v2_ProjectDebugSessionStatus(ref common.ReferenceC
 							Description: "ExecutionID references an entry in debug.executions when DCP owns its adapter process.",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"protocolRequests": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"requestSeq",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "ProtocolRequests retains initialize, launch and attach outcomes independently of transport phase. Arguments, environment and adapter-specific response bodies are not retained.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.ProjectDebugRequestStatus{}.OpenAPIModelName()),
+									},
+								},
+							},
 						},
 					},
 					"processes": {
@@ -9523,7 +9598,7 @@ func schema_microsoft_dcp_api_v2_ProjectDebugSessionStatus(ref common.ReferenceC
 			},
 		},
 		Dependencies: []string{
-			v2.ProjectDebugProcessStatus{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.ProjectDebugProcessStatus{}.OpenAPIModelName(), v2.ProjectDebugRequestStatus{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 

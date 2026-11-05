@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package apiserver
+package projectdebug
 
 import (
 	"context"
@@ -144,12 +144,17 @@ func (writer *projectDebugStatusWriter) update(
 		if sessionSnapshot != nil {
 			nextSession := sessionSnapshot.DeepCopy()
 			if sessionIndex < 0 {
+				nextSession.ProtocolRequests = nil
 				nextSession.Processes = nil
 				nextSession.ProcessTrackingUnconfirmed = false
 				nextSession.ProcessTrackingMessage = ""
 				debug.Sessions = append(debug.Sessions, *nextSession)
 			} else {
 				storedSession := &debug.Sessions[sessionIndex]
+				nextSession.ProtocolRequests = slices.Clone(storedSession.ProtocolRequests)
+				if nextSession.Phase == apiv2.ProjectDebugPhaseExited || nextSession.Phase == apiv2.ProjectDebugPhaseFailed {
+					interruptProjectDebugRequests(nextSession)
+				}
 				nextSession.Processes = storedSession.Processes
 				nextSession.ProcessTrackingUnconfirmed = storedSession.ProcessTrackingUnconfirmed
 				nextSession.ProcessTrackingMessage = storedSession.ProcessTrackingMessage

@@ -51,3 +51,29 @@ func TestDAPModeReportsProcess(t *testing.T) {
 	require.NoError(t, responseErr)
 	require.JSONEq(t, "9", string(response["request_seq"]))
 }
+
+// Verifies that the shared adapter can reject or defer requests while continuing to serve shutdown.
+func TestDAPModeRequestOutcomes(t *testing.T) {
+	t.Parallel()
+	var input, output bytes.Buffer
+	for index, arguments := range []string{`{"_testResponse":"reject"}`, `{"_testResponse":"defer"}`, `{}`} {
+		message := dap.Message{"seq": json.RawMessage("1"), "type": json.RawMessage(`"request"`),
+			"command": json.RawMessage(`"launch"`), "arguments": json.RawMessage(arguments)}
+		if index == 2 {
+			message["command"] = json.RawMessage(`"disconnect"`)
+		}
+		require.NoError(t, dap.WriteMessage(&input, message))
+	}
+	require.NoError(t, serveDAP(&input, &output))
+	reader := bufio.NewReader(&output)
+	rejected, rejectionErr := dap.ReadMessage(reader)
+	require.NoError(t, rejectionErr)
+	require.JSONEq(t, "false", string(rejected["success"]))
+	require.JSONEq(t, `"test adapter rejected request"`, string(rejected["message"]))
+	shutdown, shutdownErr := dap.ReadMessage(reader)
+	require.NoError(t, shutdownErr)
+	require.JSONEq(t, `"disconnect"`, string(shutdown["command"]))
+	event, eventErr := dap.ReadMessage(reader)
+	require.NoError(t, eventErr)
+	require.JSONEq(t, `"terminated"`, string(event["event"]))
+}

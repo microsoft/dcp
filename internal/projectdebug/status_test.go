@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package apiserver
+package projectdebug
 
 import (
 	"context"
@@ -19,12 +19,15 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
+	kubeserverfilters "k8s.io/apiserver/pkg/server/filters"
 	clientrest "k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/dcpclient"
+	"github.com/microsoft/dcp/internal/logs/v2resourcelogs"
 	"github.com/microsoft/dcp/pkg/generated/openapi"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -51,8 +54,12 @@ func startProjectDebugStatusServer(
 	options.ServingOptions.BindPort = listener.Addr().(*net.TCPAddr).Port
 	config, configErr := options.Config()
 	require.NoError(t, configErr)
-	log := testutil.NewLogForTesting(t.Name())
-	require.NoError(t, configureForLogServing(config, log))
+	config.GenericConfig.OpenAPIConfig.IgnorePrefixes = append(config.GenericConfig.OpenAPIConfig.IgnorePrefixes,
+		"/apis/"+apiv2.GroupVersion.String()+"/projects/"+apiv2.LogSubresourceName)
+	config.GenericConfig.LongRunningFunc = kubeserverfilters.BasicLongRunningRequestCheck(
+		sets.NewString("watch"), sets.NewString(apiv2.DebugSubresourceName))
+	apiv2.ResourceLogStreamers.Store((&apiv2.Project{}).GetGroupVersionResource(),
+		v2resourcelogs.NewLogStreamer(testutil.NewLogForTesting(t.Name())))
 	writer := &projectDebugStatusWriter{}
 	require.NoError(t, configureProjectDebugStatus(config, writer))
 	for _, apply := range configure {
@@ -60,9 +67,7 @@ func startProjectDebugStatusServer(
 	}
 	serverCtx, cancelServer := context.WithCancel(ctx)
 	t.Cleanup(cancelServer)
-	stopped, startErr := runServerFromCompletedConfig(config.Complete(), serverCtx, ApiServerRunConfig{
-		RequestShutdown: func(ApiServerResourceCleanup) { cancelServer() },
-	}, log)
+	stopped, startErr := options.RunTiltServerFromConfig(config.Complete(), serverCtx)
 	require.NoError(t, startErr)
 	t.Cleanup(func() {
 		cancelServer()

@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package apiserver
+package projectdebug
 
 import (
 	"encoding/json"
@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -87,9 +88,13 @@ func TestProjectDebugServingProcessEvents(t *testing.T) {
 	defer connection.Close()
 	executions := executor.FindAll([]string{"test-adapter"}, "", nil)
 	require.Len(t, executions, 1)
+	body := `{"seq":42,"type":"request","command":"launch","arguments":{}}`
+	require.NoError(t, connection.WriteMessage(websocket.BinaryMessage, []byte(fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(body), body))))
+	_, _, echoErr := connection.ReadMessage()
+	require.NoError(t, echoErr)
 	require.NoError(t, dap.WriteMessage(executions[0].Cmd.Stdout, dap.Message{
 		"seq": json.RawMessage("1"), "type": json.RawMessage(`"response"`),
-		"command": json.RawMessage(`"launch"`), "request_seq": json.RawMessage("42"), "success": json.RawMessage("true"),
+		"command": json.RawMessage(`"launch"`), "request_seq": json.RawMessage("1"), "success": json.RawMessage("true"),
 	}))
 	_, _, launchReadErr := connection.ReadMessage()
 	require.NoError(t, launchReadErr)
