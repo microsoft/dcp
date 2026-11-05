@@ -18,14 +18,17 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 type stopInspectionOrchestrator struct {
 	containers.ContainerOrchestrator
-	client ctrl_client.Client
-	key    ctrl_client.ObjectKey
-	armed  atomic.Bool
+	client             ctrl_client.Client
+	key                ctrl_client.ObjectKey
+	armed              atomic.Bool
+	inspectionFailures atomic.Int32
+	prematureStop      atomic.Bool
 }
 
 func (orchestrator *stopInspectionOrchestrator) InspectContainers(ctx context.Context, options containers.InspectContainersOptions) ([]containers.InspectedContainer, error) {
@@ -34,16 +37,21 @@ func (orchestrator *stopInspectionOrchestrator) InspectContainers(ctx context.Co
 		if getErr := orchestrator.client.Get(ctx, orchestrator.key, &container); getErr != nil {
 			return nil, getErr
 		}
-		if container.Spec.Stop && container.Status.State == apiv1.ContainerStateRunning {
-			return nil, fmt.Errorf("running-state inspection is unavailable after stop was requested")
+		if container.Spec.Stop && orchestrator.inspectionFailures.Load() < 3 {
+			if container.Status.State != apiv1.ContainerStateRunning {
+				orchestrator.prematureStop.Store(true)
+			}
+			orchestrator.inspectionFailures.Add(1)
+			// Model an exhausted inspection attempt without waiting for the inner inspection backoff.
+			return nil, resiliency.Permanent(fmt.Errorf("container runtime inspection is temporarily unavailable"))
 		}
 	}
 	return orchestrator.ContainerOrchestrator.InspectContainers(ctx, options)
 }
 
-// Verifies that a stop request reaches the stop worker even when running-state inspection is unavailable.
-// The worker must still verify the final container state and publish its exit code.
-func TestContainerStopDoesNotRequireRunningStateInspection(t *testing.T) {
+// Verifies that a stop request survives transient inspection failures and completes after runtime recovery.
+// Reconciliation must resume without runtime events and retain Running until inspection succeeds.
+func TestContainerStopRecoversAfterInspectionFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -57,8 +65,8 @@ func TestContainerStopDoesNotRequireRunningStateInspection(t *testing.T) {
 	})
 	require.NoError(t, startupErr)
 	container := &apiv1.Container{
-		ObjectMeta: metav1.ObjectMeta{Name: "stop-without-running-inspection"},
-		Spec:       apiv1.ContainerSpec{Image: "stop-without-running-inspection-image"},
+		ObjectMeta: metav1.ObjectMeta{Name: "stop-after-inspection-recovery"},
+		Spec:       apiv1.ContainerSpec{Image: "stop-after-inspection-recovery-image"},
 	}
 	require.NoError(t, serverInfo.Client.Create(ctx, container))
 	_, _ = ensureContainerRunningEx(t, ctx, serverInfo.Client, orchestrator, container)
@@ -74,6 +82,8 @@ func TestContainerStopDoesNotRequireRunningStateInspection(t *testing.T) {
 	stopped := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, orchestrator.key, func(current *apiv1.Container) (bool, error) {
 		return current.Status.State == apiv1.ContainerStateExited, nil
 	})
+	require.EqualValues(t, 3, orchestrator.inspectionFailures.Load())
+	require.False(t, orchestrator.prematureStop.Load(), "stop must wait for runtime recovery")
 	require.NotNil(t, stopped.Status.ExitCode)
 	require.False(t, stopped.Status.FinishTimestamp.IsZero())
 }
