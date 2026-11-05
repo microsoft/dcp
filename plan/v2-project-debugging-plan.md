@@ -474,6 +474,8 @@ Exact local services tip `858eb92b02f491ed034f205dace1dccde4831fc8` is integrate
 
 Published services tip `ffda5b5d4c0be63b65056aac27ab050e01310775` is integrated normally, preserving the local container-adapter work and Delve E2E plan item. It pins connected UDP backend peers, retains hostname resolution, qualifies IPv6-dependent coverage and codifies Stop's nonterminal-only contract. Project's Stop dispatch is aligned: fatal preparation, missing and invalid states remain terminal; an ambiguous successful creation still settles through its existing nonterminal path. Real-API regressions verify that Stop does not reopen a fatal Project template failure.
 
+Subsequent exact services tips `5b6117dc4efdd168cf0b8b222030edc05bb280a7`, `8b5fbbd897da37492edd636bdbbcdf0eae55d9fe` and `0a271abe557501ec0f66ae6548a2c470642ab86b` are integrated normally. They preserve started listeners without replacement, validate consumer references before lookup, and make template environment casing target-specific. Project passes the shared boolean policy explicitly: case-insensitive only for Windows host-process preparation, case-sensitive for container preparation on every host. Real-API Project regressions cover case-distinct literal/malformed values, published input snapshots and physical container environment parity.
+
 ### Direction requiring verification
 
 Verified Delve terminal topology for T8: the user's interpretation matches VS Code Go's integrated/external-terminal launch path. Inspected vscode-go `1608cb5c907bfb238967d9aceb507620b08cf2a3` and Delve `749588dac9874b39e50b4c168f9ec064a4ddfad1`, and cross-checked the relevant behavior in released vscode-go v0.58.0 and Delve v1.27.2.

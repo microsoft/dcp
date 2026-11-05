@@ -352,7 +352,7 @@ func (r *ProjectReconciler) prepareProjectValues(
 		return false
 	}
 	resolvedArgs, resolvedEnv, evaluationErr := templating.EvaluateV2Values(ctx, r.NoCacheClient, resource,
-		servingPorts(ports), arguments, environment)
+		servingPorts(ports), arguments, environment, resource.Spec.Process != nil && osutil.IsWindows())
 	if evaluationErr != nil {
 		log.Error(evaluationErr, "Failed to evaluate Project launch values")
 		data.reason, data.message = "TemplateEvaluationFailed", evaluationErr.Error()

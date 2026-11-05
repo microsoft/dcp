@@ -16,8 +16,72 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that Project preserves case-distinct container environment names on every host and
+// applies host-process casing before template evaluation, keeping published and physical inputs consistent.
+func TestV2ProjectPreparedEnvironmentCasing(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"process", "container"} {
+		for _, malformed := range []bool{false, true} {
+			name := kind + "-literal"
+			if malformed {
+				name = kind + "-malformed"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+				t.Cleanup(cancel)
+				namespace := createActiveV2Namespace(t, ctx, "v2-project-env-"+name)
+				value := `{{printf "upper"}}`
+				if malformed {
+					value = "{{"
+				}
+				environment := []commonapi.EnvVar{{Name: "VALUE", Value: value}, {Name: "value", Value: "lower"}}
+				expected := []commonapi.EnvVar{{Name: "VALUE", Value: "upper"}, {Name: "value", Value: "lower"}}
+				ignoreCase := kind == "process" && osutil.IsWindows()
+				if ignoreCase {
+					expected = expected[1:]
+				}
+				resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+					Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir()}}
+				if kind == "process" {
+					resource.Spec.Process = &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
+						ExecutablePath: "not-started", Env: environment,
+						AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
+					}}
+				} else {
+					resource.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Env: environment,
+					}}
+				}
+				require.NoError(t, client.Create(ctx, resource))
+				observed := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+					return current.Status.Phase == apiv2.ProjectPhaseReady || current.Status.Phase == apiv2.ProjectPhaseFailed, nil
+				})
+				if malformed && !ignoreCase {
+					require.Equal(t, apiv2.ProjectPhaseFailed, observed.Status.Phase)
+					requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, "TemplateEvaluationFailed")
+					require.False(t, observed.Status.LaunchInputsReady)
+					require.Empty(t, observed.Status.PhysicalContainerRef)
+				} else {
+					require.Equal(t, apiv2.ProjectPhaseReady, observed.Status.Phase)
+					require.Equal(t, expected, observed.Status.EffectiveEnv)
+					require.True(t, observed.Status.LaunchInputsReady)
+					if kind == "container" {
+						physical := &apiv2.PhysicalContainer{}
+						require.NoError(t, client.Get(ctx, types.NamespacedName{
+							Name: observed.Status.PhysicalContainerRef, Namespace: namespace.Name,
+						}, physical))
+						require.Equal(t, expected, physical.Spec.Container.Env)
+					}
+				}
+			})
+		}
+	}
+}
 
 // Verifies that Pending prepares one full effective environment, Ready publishes that snapshot
 // without launching the application, and subsequent host-environment changes cannot alter it.
