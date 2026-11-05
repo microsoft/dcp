@@ -359,13 +359,18 @@ func (runtime *projectDebugRuntime) launchContainer(
 			execution.cancel()
 		}
 		execution.statusMu.Lock()
-		execution.status.Phase = apiv2.ProjectDebugPhaseFailed
+		if !started || execution.status.Phase != apiv2.ProjectDebugPhaseExited {
+			execution.status.Phase = apiv2.ProjectDebugPhaseFailed
+		}
 		if !started {
 			execution.status.FinishedAt = metav1.NowMicro()
 		}
 		execution.status.Conditions = debugConditions("LaunchFailed", launchErr.Error(), false, project.Generation)
 		publishErr := runtime.publish(project, execution.status.DeepCopy(), nil)
 		execution.statusMu.Unlock()
+		if started {
+			return execution, nil, errors.Join(launchErr, publishErr)
+		}
 		return nil, nil, errors.Join(launchErr, publishErr)
 	}
 	orchestrator, runtimeErr := runtime.findContainerRuntime(setupCtx, project.Status.ContainerRuntime)
@@ -382,35 +387,49 @@ func (runtime *projectDebugRuntime) launchContainer(
 	if current.Status.Debug == nil || !current.Status.Debug.PrerequisitesReady {
 		return fail(fmt.Errorf("project container prerequisites changed before adapter execution"))
 	}
-	stdin, input, pipeErr := os.Pipe()
-	if pipeErr != nil {
-		return fail(fmt.Errorf("create container adapter input pipe: %w", pipeErr))
-	}
-	stdout := newProjectDebugOutput()
-	transport = &projectDebugTransport{Reader: stdout.reader, Writer: input, close: func() error {
-		closeErrors := stdout.detach()
-		for _, closer := range []io.Closer{stdin, input} {
-			closeErr := closer.Close()
-			if !errors.Is(closeErr, os.ErrClosed) && !errors.Is(closeErr, io.ErrClosedPipe) {
-				closeErrors = errors.Join(closeErrors, closeErr)
-			}
-		}
-		return closeErrors
-	}}
 	var environment []containers.EnvVar
 	for _, entry := range project.Spec.DebugAdapter.Env {
 		environment = append(environment, containers.EnvVar{Name: entry.Name, Value: entry.Value})
 	}
 	diagnostic := adapterDiagnosticWriter{log: runtime.log.WithValues(
 		logger.RESOURCE_LOG_STREAM_ID, project.GetResourceId(), "Project", project.NamespacedName(), "Execution", execution.status.ID)}
+	args := append([]string(nil), project.Spec.DebugAdapter.Args...)
+	options := containers.ExecContainerOptions{
+		Container: execution.containerID, Env: environment,
+		StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: usvc_io.NopWriteCloser(diagnostic), StdErrStream: usvc_io.NopWriteCloser(diagnostic)},
+	}
+	var stdout *projectDebugOutput
+	if project.Spec.DebugAdapter.EffectiveMode() == apiv2.DebugAdapterModeStdio {
+		stdin, input, pipeErr := os.Pipe()
+		if pipeErr != nil {
+			return fail(fmt.Errorf("create container adapter input pipe: %w", pipeErr))
+		}
+		stdout = newProjectDebugOutput()
+		options.StdInStream, options.StdOutStream = stdin, stdout
+		transport = &projectDebugTransport{Reader: stdout.reader, Writer: input, close: func() error {
+			closeErrors := stdout.detach()
+			for _, closer := range []io.Closer{stdin, input} {
+				closeErr := closer.Close()
+				if !errors.Is(closeErr, os.ErrClosed) && !errors.Is(closeErr, io.ErrClosedPipe) {
+					closeErrors = errors.Join(closeErrors, closeErr)
+				}
+			}
+			return closeErrors
+		}}
+	} else {
+		if project.Status.DebugAdapterPort <= 0 || project.Status.DebugAdapterAddress == "" {
+			return fail(fmt.Errorf("container adapter TCP endpoint is not prepared"))
+		}
+		execution.address = project.Status.DebugAdapterAddress
+		for index := range args {
+			args[index] = strings.ReplaceAll(args[index], "{{port}}", strconv.Itoa(int(project.Status.DebugAdapterPort)))
+		}
+	}
+	options.Command, options.Args = args[0], args[1:]
 	if setupErr := setupCtx.Err(); setupErr != nil {
 		return fail(setupErr)
 	}
-	exits, execErr := orchestrator.ExecContainer(executionCtx, containers.ExecContainerOptions{
-		Container: execution.containerID, Command: project.Spec.DebugAdapter.Args[0],
-		Args: append([]string(nil), project.Spec.DebugAdapter.Args[1:]...), Env: environment, StdInStream: stdin,
-		StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: stdout, StdErrStream: usvc_io.NopWriteCloser(diagnostic)},
-	})
+	exits, execErr := orchestrator.ExecContainer(executionCtx, options)
 	if execErr != nil {
 		return fail(execErr)
 	}
@@ -454,10 +473,22 @@ func (runtime *projectDebugRuntime) launchContainer(
 			runtime.log.Error(completionErr, "Failed to publish container adapter completion", "Project", project.NamespacedName())
 		}
 		execution.statusMu.Unlock()
-		_ = stdout.Close()
+		if stdout != nil {
+			_ = stdout.Close()
+		}
 	}()
 	if publishErr != nil {
 		return fail(publishErr)
+	}
+	if setupErr := setupCtx.Err(); setupErr != nil {
+		return fail(setupErr)
+	}
+	if project.Spec.DebugAdapter.EffectiveMode() == apiv2.DebugAdapterModeTCPConnect {
+		connection, connectErr := execution.connect(setupCtx)
+		if connectErr != nil {
+			return fail(connectErr)
+		}
+		transport = &projectDebugTransport{Reader: connection, Writer: connection, close: connection.Close}
 	}
 	if setupErr := setupCtx.Err(); setupErr != nil {
 		return fail(setupErr)
@@ -544,6 +575,10 @@ func (runtime *projectDebugRuntime) acquire(
 		if provider.err != nil {
 			return nil, nil, nil, errors.Join(provider.err, release())
 		}
+		if provider.execution.containerID != "" &&
+			(provider.execution.containerID != project.Status.ContainerID || provider.execution.address != project.Status.DebugAdapterAddress) {
+			return nil, nil, nil, errors.Join(fmt.Errorf("prepared container adapter endpoint changed"), release())
+		}
 		runtime.mu.Lock()
 		initial := provider.initial
 		provider.initial = nil
@@ -576,7 +611,15 @@ func (runtime *projectDebugRuntime) release(uid types.UID, provider *projectDebu
 	}
 	if provider.execution != nil {
 		stopErr = errors.Join(stopErr, provider.execution.stop())
-		if !process.IsProcessGoneErr(runtime.executor.CheckProcessRunning(provider.execution.handle)) {
+		confirmed := false
+		if provider.execution.containerID != "" {
+			provider.execution.statusMu.Lock()
+			confirmed = provider.execution.status.Phase == apiv2.ProjectDebugPhaseExited && !provider.execution.status.FinishedAt.IsZero()
+			provider.execution.statusMu.Unlock()
+		} else {
+			confirmed = process.IsProcessGoneErr(runtime.executor.CheckProcessRunning(provider.execution.handle))
+		}
+		if !confirmed {
 			// Keep the provider fenced when termination is unconfirmed; a new request must not launch a duplicate.
 			return errors.Join(stopErr, fmt.Errorf("shared adapter provider termination is unconfirmed"))
 		}

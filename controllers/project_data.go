@@ -82,6 +82,7 @@ type projectData struct {
 	processes        map[process.ProcessHandle]projectProcessData
 	processCleanup   *projectProcessCleanupOperation
 	processPoll      bool
+	adapterAddress   string
 }
 
 func (data *projectData) Clone() *projectData {
@@ -112,6 +113,12 @@ func (data *projectData) UpdateFrom(other *projectData) bool {
 
 func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, AdditionalReconciliationDelay, bool) {
 	change := projectLogicalPorts(data.ports, &resource.Status.Ports)
+	adapterPort := int32(0)
+	if resource.Spec.DebugAdapter != nil {
+		adapterPort = resource.Spec.DebugAdapter.GetContainerTCPPort()
+	}
+	change |= setValue(&resource.Status.DebugAdapterPort, adapterPort)
+	change |= setValue(&resource.Status.DebugAdapterAddress, data.adapterAddress)
 	change |= projectProcessObservations(resource, data)
 	inputsReady := data.processConfig != nil || data.containerConfig != nil
 	var arguments []string
@@ -132,6 +139,7 @@ func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, Additio
 	change |= setValue(&resource.Status.LaunchInputsReady, inputsReady)
 	prerequisitesReady := inputsReady && data.reconcileErr == nil &&
 		(data.state == projectStateReady || data.state == projectStateActive)
+	prerequisitesReady = prerequisitesReady && (adapterPort == 0 || data.adapterAddress != "")
 	if resource.Spec.DebugAdapter != nil || resource.Status.Debug != nil {
 		if resource.Status.Debug == nil {
 			resource.Status.Debug = &apiv2.ProjectDebugStatus{}

@@ -357,6 +357,16 @@ func (r *ProjectReconciler) prepareProjectValues(
 		}
 		return false
 	}
+	if resource.Spec.Container != nil && resource.Spec.DebugAdapter != nil {
+		adapterPort := resource.Spec.DebugAdapter.GetContainerTCPPort()
+		for index, selected := range ports {
+			if adapterPort != 0 && selected.protocol == commonapi.PortProtocolTCP && resource.Spec.Container.Ports[index].ContainerPort == adapterPort {
+				data.state, data.reason, data.message = projectStateFailed, "AdapterPortConflict", "The adapter port conflicts with a declared TCP application port."
+				log.Error(fmt.Errorf("%s", data.message), "Failed to prepare Project adapter port")
+				return false
+			}
+		}
+	}
 	resolvedArgs, resolvedEnv, evaluationErr := templating.EvaluateV2Values(ctx, r.NoCacheClient, resource,
 		servingPorts(ports), arguments, environment, resource.Spec.Process != nil && osutil.IsWindows())
 	if evaluationErr != nil {

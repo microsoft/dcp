@@ -29,7 +29,13 @@ func TestProjectDebugAdapterValidation(t *testing.T) {
 		{name: "explicit host", config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementHost}},
 		{name: "container stdio", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer}},
 		{name: "container requires context", config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer}, field: "spec.debugAdapter.placement"},
-		{name: "container tcp deferred", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect}, field: "spec.debugAdapter.mode"},
+		{name: "container tcp default", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect}},
+		{name: "container tcp explicit", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{Port: 5678}}},
+		{name: "container callback deferred", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPCallback}, field: "spec.debugAdapter.mode"},
+		{name: "negative tcp port", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{Port: -1}}, field: "spec.debugAdapter.tcp.port"},
+		{name: "excessive tcp port", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{Port: 65536}}, field: "spec.debugAdapter.tcp.port"},
+		{name: "host tcp options unsupported", config: DebugAdapterConfig{Args: []string{"adapter"}, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{}}, field: "spec.debugAdapter.tcp"},
+		{name: "stdio tcp options unsupported", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, TCP: &DebugAdapterTCPConfig{}}, field: "spec.debugAdapter.tcp"},
 		{name: "unknown placement", config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: "unknown"}, field: "spec.debugAdapter.placement"},
 		{name: "default stdio", config: DebugAdapterConfig{Args: []string{"adapter"}}},
 		{name: "explicit stdio", config: DebugAdapterConfig{Args: []string{"adapter"}, Mode: DebugAdapterModeStdio}},
@@ -72,6 +78,13 @@ func TestDebugAdapterConfigurationDefaults(t *testing.T) {
 	require.Empty(t, config.Mode)
 	require.Equal(t, DebugAdapterPlacementHost, config.EffectivePlacement())
 	require.Empty(t, config.Placement)
+	require.Zero(t, config.GetContainerTCPPort())
+	containerTCP := DebugAdapterConfig{Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect}
+	require.Equal(t, int32(4711), containerTCP.GetContainerTCPPort())
+	containerTCP.TCP = &DebugAdapterTCPConfig{}
+	require.Equal(t, int32(4711), containerTCP.GetContainerTCPPort())
+	containerTCP.TCP.Port = 5678
+	require.Equal(t, int32(5678), containerTCP.GetContainerTCPPort())
 	require.Nil(t, config.ConnectionTimeout)
 	config.ConnectionTimeout = &metav1.Duration{}
 	require.Equal(t, 10*time.Second, config.GetConnectionTimeout())
@@ -102,6 +115,7 @@ func TestProjectDebugAdapterCopyAndImmutability(t *testing.T) {
 		change(changed)
 		require.NotEmpty(t, changed.ValidateUpdate(context.Background(), project))
 	}
+
 	require.Equal(t, "adapter", project.Spec.DebugAdapter.Args[0])
 	require.Equal(t, DebugAdapterModeTCPConnect, project.Spec.DebugAdapter.Mode)
 	require.Equal(t, "original", project.Spec.DebugAdapter.Env[0].Value)
@@ -112,4 +126,19 @@ func TestProjectDebugAdapterCopyAndImmutability(t *testing.T) {
 	unconfigured := project.DeepCopy()
 	unconfigured.Spec.DebugAdapter = nil
 	require.NotEmpty(t, project.ValidateUpdate(context.Background(), unconfigured))
+}
+
+// Verifies that container TCP options are deep-copied and immutable after Project creation.
+func TestProjectDebugAdapterTCPImmutability(t *testing.T) {
+	t.Parallel()
+	project := &Project{Spec: ProjectSpec{DebugAdapter: &DebugAdapterConfig{
+		Args: []string{"adapter", "{{port}}"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect,
+		TCP: &DebugAdapterTCPConfig{Port: 5678},
+	}}}
+	copied := project.DeepCopy()
+	copied.Spec.DebugAdapter.TCP.Port = 6789
+	require.Equal(t, int32(5678), project.Spec.DebugAdapter.TCP.Port)
+	require.NotEmpty(t, copied.ValidateUpdate(context.Background(), project))
+	copied.Spec.DebugAdapter.TCP = nil
+	require.NotEmpty(t, copied.ValidateUpdate(context.Background(), project))
 }

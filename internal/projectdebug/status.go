@@ -72,7 +72,7 @@ func (storage *projectControllerStatusStorage) Update(
 		prerequisitesReady := next.Status.Debug != nil && next.Status.Debug.PrerequisitesReady
 		proposedDebug := next.Status.Debug
 		next.Status.Debug = current.(*apiv2.Project).Status.Debug.DeepCopy()
-		if next.Status.Debug == nil && prerequisitesReady {
+		if next.Status.Debug == nil && proposedDebug != nil {
 			next.Status.Debug = &apiv2.ProjectDebugStatus{}
 		}
 		if next.Status.Debug != nil {

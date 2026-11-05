@@ -97,6 +97,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.ContainerPort{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v2_ContainerPort(ref),
 		v2.CreateFileSystem{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v2_CreateFileSystem(ref),
 		v2.DebugAdapterConfig{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref),
+		v2.DebugAdapterTCPConfig{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_DebugAdapterTCPConfig(ref),
 		v2.FileSystemEntry{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v2_FileSystemEntry(ref),
 		v2.LogSource{}.OpenAPIModelName():                               schema_microsoft_dcp_api_v2_LogSource(ref),
 		v2.LogicalContainer{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v2_LogicalContainer(ref),
@@ -4755,7 +4756,7 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 				Properties: map[string]spec.Schema{
 					"placement": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Placement selects host execution or execution in the prepared Project container. Defaults to host. Container placement currently supports only stdio.",
+							Description: "Placement selects host execution or execution in the prepared Project container. Defaults to host. Container placement supports stdio and tcp-connect.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -4767,7 +4768,7 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Args contains the executable name or path followed by its arguments. TCP modes replace {{port}} in these values with a DCP-allocated loopback port.",
+							Description: "Args contains the executable name or path followed by its arguments. TCP modes replace {{port}} with the host-allocated port or the prepared container's internal port.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -4784,6 +4785,12 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 							Description: "Mode selects the adapter DAP transport. Defaults to stdio.",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"tcp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TCP configures the internal listener for container tcp-connect adapters.",
+							Ref:         ref(v2.DebugAdapterTCPConfig{}.OpenAPIModelName()),
 						},
 					},
 					"env": {
@@ -4818,7 +4825,27 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 			},
 		},
 		Dependencies: []string{
-			commonapi.EnvVar{}.OpenAPIModelName(), metav1.Duration{}.OpenAPIModelName()},
+			v2.DebugAdapterTCPConfig{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Duration{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_DebugAdapterTCPConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "DebugAdapterTCPConfig declares the internal container listener, not its runtime-assigned host binding.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port is the internal listening port. Omitted or zero uses 4711.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -9971,6 +9998,20 @@ func schema_microsoft_dcp_api_v2_ProjectStatus(ref common.ReferenceCallback) com
 					"containerRuntime": {
 						SchemaProps: spec.SchemaProps{
 							Description: "ContainerRuntime identifies the controller-selected runtime for the prepared container.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"debugAdapterPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DebugAdapterPort is the prepared internal TCP listening port, absent for other adapter transports.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"debugAdapterAddress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DebugAdapterAddress is the runtime-published host TCP endpoint for the prepared adapter listener.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

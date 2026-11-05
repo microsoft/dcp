@@ -61,6 +61,11 @@ func (in DebugAdapterConfig) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in DebugAdapterTCPConfig) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.DebugAdapterTCPConfig"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in FileSystemEntry) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.FileSystemEntry"
 }

@@ -9,8 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -477,6 +479,7 @@ func (reconciler *ProjectReconciler) observeProjectContainerContext(
 	backing := observation.backing
 	change := observation.change
 	data.state, data.reason, data.message, data.retryAfter = projectStateCreating, "", "", time.Time{}
+	data.adapterAddress = observation.adapterAddress
 	if !reflect.DeepEqual(resource.Status.RuntimeLogs, observation.logs) {
 		resource.Status.RuntimeLogs = observation.logs
 		change |= statusChanged
@@ -490,6 +493,9 @@ func (reconciler *ProjectReconciler) observeProjectContainerContext(
 		case apiv2.PhysicalResourcePhaseRunning:
 			if condition.Status == metav1.ConditionTrue {
 				data.state = projectStateReady
+				if resource.Spec.DebugAdapter != nil && resource.Spec.DebugAdapter.GetContainerTCPPort() != 0 && data.adapterAddress == "" {
+					data.state, data.reason, data.message = projectStateCreating, "AdapterPortPending", "Waiting for the container adapter port binding."
+				}
 			}
 		case apiv2.PhysicalResourcePhaseExited, apiv2.PhysicalResourcePhaseFailed:
 			data.state = projectStateFailed
@@ -580,11 +586,12 @@ var errProjectBackingChanged = errors.New("project physical backing identity or 
 
 // projectRuntimeObservation is a per-reconcile view of the selected physical execution.
 type projectRuntimeObservation struct {
-	backing    ctrl_client.Object
-	phase      apiv2.PhysicalResourcePhase
-	conditions []metav1.Condition
-	logs       *apiv2.LogSource
-	change     objectChange
+	adapterAddress string
+	backing        ctrl_client.Object
+	phase          apiv2.PhysicalResourcePhase
+	conditions     []metav1.Condition
+	logs           *apiv2.LogSource
+	change         objectChange
 }
 
 func (r *ProjectReconciler) getProjectPhysicalExecution(
@@ -671,8 +678,20 @@ func (r *ProjectReconciler) observeProjectContainer(
 		resource.Status.PortMappings = slices.Clone(physical.Status.PortMappings)
 		change |= statusChanged
 	}
+	adapterAddress := ""
+	if resource.Spec.DebugAdapter != nil {
+		port := resource.Spec.DebugAdapter.GetContainerTCPPort()
+		for _, mapping := range physical.Status.PortMappings {
+			if port != 0 && mapping.ContainerPort == port && mapping.Protocol == commonapi.PortProtocolTCP &&
+				mapping.HostIP == "127.0.0.1" && mapping.HostPort > 0 {
+				adapterAddress = net.JoinHostPort(mapping.HostIP, strconv.Itoa(int(mapping.HostPort)))
+				break
+			}
+		}
+	}
 	return &projectRuntimeObservation{
-		backing: physical, phase: apiv2.PhysicalResourcePhase(physical.Status.Phase),
+		adapterAddress: adapterAddress,
+		backing:        physical, phase: apiv2.PhysicalResourcePhase(physical.Status.Phase),
 		conditions: physical.Status.Conditions, logs: physical.GetLogSource(), change: change,
 	}, nil
 }
@@ -889,6 +908,13 @@ func projectContainerSpec(resource *apiv2.Project, data *projectData) apiv2.Phys
 	var physicalPorts []apiv2.ContainerPort
 	for portIndex, port := range resource.Spec.Container.Ports {
 		physicalPorts = append(physicalPorts, port.ToContainerPort(data.ports[portIndex].protocol))
+	}
+	if resource.Spec.DebugAdapter != nil {
+		if port := resource.Spec.DebugAdapter.GetContainerTCPPort(); port != 0 {
+			physicalPorts = append(physicalPorts, apiv2.ContainerPort{
+				ContainerPort: port, HostIP: "127.0.0.1", Protocol: commonapi.PortProtocolTCP,
+			})
+		}
 	}
 	imageRef := projectImageRef(resource)
 	if desired.Image != nil && data.imageName != "" {

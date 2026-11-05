@@ -170,10 +170,20 @@ func (storage *projectDebugStorage) currentProject(ctx context.Context, selected
 	}
 	if selected.Spec.Container != nil && selected.Status.ContainerID != "" &&
 		(current.Status.ContainerID != selected.Status.ContainerID ||
-			current.Status.ContainerRuntime != selected.Status.ContainerRuntime) {
+			current.Status.ContainerRuntime != selected.Status.ContainerRuntime ||
+			(selected.Status.DebugAdapterAddress != "" &&
+				(current.Status.DebugAdapterAddress != selected.Status.DebugAdapterAddress ||
+					current.Status.DebugAdapterPort != selected.Status.DebugAdapterPort))) {
 		return nil, apierrors.NewConflict(current.GetGroupVersionResource().GroupResource(), current.Name, fmt.Errorf("prepared container identity changed"))
 	}
 	if current.Spec.Container != nil && (current.Status.ContainerID == "" || current.Status.ContainerRuntime == "") {
+		current = current.DeepCopy()
+		if current.Status.Debug != nil {
+			current.Status.Debug.PrerequisitesReady = false
+		}
+	}
+	if current.Spec.DebugAdapter.GetContainerTCPPort() != 0 &&
+		(current.Status.DebugAdapterPort == 0 || current.Status.DebugAdapterAddress == "") {
 		current = current.DeepCopy()
 		if current.Status.Debug != nil {
 			current.Status.Debug.PrerequisitesReady = false

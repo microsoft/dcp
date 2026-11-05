@@ -725,11 +725,177 @@ func TestProjectDebugServingLaunchFailure(t *testing.T) {
 	}))
 }
 
+// Verifies that an outstanding upgrade waits for Project to publish its TCP binding without
+// consuming setup timeout or mistaking initial endpoint publication for a replacement.
+func TestProjectDebugServingWaitsForContainerTCPEndpoint(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, time.Minute)
+	defer cancel()
+	listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, listenErr)
+	defer listener.Close()
+	completion := make(chan int32, 1)
+	containerExec := &containerAdapterExecutor{tcpListener: listener, tcpComplete: completion}
+	apiClient, config, _ := startDebugServingTest(t, ctx,
+		func(context.Context, string) (containers.ExecContainers, error) { return containerExec, nil })
+	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen", apiv2.DebugAdapterPlacementContainer)
+	type result struct {
+		connection *websocket.Conn
+		err        error
+	}
+	connected := make(chan result, 1)
+	selected := project.DeepCopy()
+	go func() {
+		connection, connectErr := connectDebugServing(ctx, config, selected)
+		connected <- result{connection, connectErr}
+	}()
+	require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+		current := &apiv2.Project{}
+		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
+			return false, getErr
+		}
+		return current.Status.Debug != nil && len(current.Status.Debug.Sessions) == 1, nil
+	}))
+	containerExec.mu.Lock()
+	count := len(containerExec.options)
+	containerExec.mu.Unlock()
+	require.Zero(t, count, "endpoint preparation must precede adapter launch")
+	require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
+		[]byte(fmt.Sprintf(`{"status":{"debugAdapterPort":4711,"debugAdapterAddress":%q}}`, listener.Addr().String())))))
+	select {
+	case ready := <-connected:
+		require.NoError(t, ready.err)
+		require.NotNil(t, ready.connection)
+		defer ready.connection.Close()
+		exchangeDebugBytes(t, ctx, ready.connection)
+		completion <- 0
+	case <-ctx.Done():
+		t.Fatal("Project endpoint publication did not unblock adapter setup")
+	}
+}
+
 type containerAdapterExecutor struct {
 	mu           sync.Mutex
 	options      []containers.ExecContainerOptions
 	fail         bool
 	noCompletion bool
+	tcpListener  net.Listener
+	tcpComplete  <-chan int32
+}
+
+// Verifies that container TCP streams share one provider, keep sibling connections independent,
+// use the prepared host endpoint and internal port, and fence uncertain final cleanup or failed setup.
+func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
+	for _, scenario := range []string{"shared", "confirmed-exit", "failed-connect", "changed-endpoint"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, time.Minute)
+			defer cancel()
+			listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, listenErr)
+			defer listener.Close()
+			completion := make(chan int32, 1)
+			containerExec := &containerAdapterExecutor{tcpListener: listener, tcpComplete: completion}
+			apiClient, config, hostExecutor := startDebugServingTest(t, ctx,
+				func(context.Context, string) (containers.ExecContainers, error) { return containerExec, nil })
+			project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen", apiv2.DebugAdapterPlacementContainer)
+			require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
+				[]byte(fmt.Sprintf(`{"status":{"debugAdapterPort":4711,"debugAdapterAddress":%q}}`, listener.Addr().String())))))
+			if scenario == "failed-connect" {
+				completion <- process.UnknownExitCode
+				require.NoError(t, listener.Close())
+				connection, connectErr := connectDebugServing(ctx, config, project)
+				if connection != nil {
+					_ = connection.Close()
+				}
+				require.Error(t, connectErr)
+			} else {
+				var connections []*websocket.Conn
+				results := make(chan *websocket.Conn, 2)
+				errorsCh := make(chan error, 2)
+				for range 2 {
+					go func() {
+						connection, connectErr := connectDebugServing(ctx, config, project)
+						results <- connection
+						errorsCh <- connectErr
+					}()
+				}
+				for range 2 {
+					connection := <-results
+					require.NoError(t, <-errorsCh)
+					require.NotNil(t, connection)
+					defer connection.Close()
+					connections = append(connections, connection)
+					exchangeDebugBytes(t, ctx, connection)
+				}
+				closeDebugServing(t, connections[0])
+				exchangeDebugBytes(t, ctx, connections[1])
+				if scenario == "confirmed-exit" {
+					completion <- 0
+					require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+						if getErr := apiClient.Get(pollCtx, project.NamespacedName(), project); getErr != nil {
+							return false, getErr
+						}
+						return project.Status.Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseExited, nil
+					}))
+				} else if scenario == "changed-endpoint" {
+					require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
+						[]byte(`{"status":{"debugAdapterAddress":"127.0.0.1:1"}}`))))
+				}
+				_ = connections[1].Close()
+			}
+			require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+				if getErr := apiClient.Get(pollCtx, project.NamespacedName(), project); getErr != nil {
+					return false, getErr
+				}
+				if len(project.Status.Debug.Sessions) == 0 {
+					return false, nil
+				}
+				for _, session := range project.Status.Debug.Sessions {
+					if session.Phase == apiv2.ProjectDebugPhasePending || session.Phase == apiv2.ProjectDebugPhaseRunning {
+						return false, nil
+					}
+				}
+				return true, nil
+			}))
+			containerExec.mu.Lock()
+			invocations := append([]containers.ExecContainerOptions(nil), containerExec.options...)
+			containerExec.mu.Unlock()
+			require.Len(t, invocations, 1)
+			require.Equal(t, "container-id", invocations[0].Container)
+			require.Equal(t, []string{"listen", "4711"}, invocations[0].Args)
+			require.Nil(t, invocations[0].StdInStream)
+			require.Empty(t, hostExecutor.FindAll([]string{"test-adapter"}, "", nil))
+			require.Len(t, project.Status.Debug.Executions, 1)
+			if scenario == "confirmed-exit" {
+				restartedListener, restartErr := net.Listen("tcp", listener.Addr().String())
+				require.NoError(t, restartErr)
+				defer restartedListener.Close()
+				nextCompletion := make(chan int32, 1)
+				containerExec.tcpListener, containerExec.tcpComplete = restartedListener, nextCompletion
+				restarted, reconnectErr := connectDebugServing(ctx, config, project)
+				require.NoError(t, reconnectErr)
+				defer restarted.Close()
+				exchangeDebugBytes(t, ctx, restarted)
+				containerExec.mu.Lock()
+				restartedCount := len(containerExec.options)
+				containerExec.mu.Unlock()
+				require.Equal(t, 2, restartedCount, "confirmed provider exit permits a new launch")
+				nextCompletion <- 0
+			} else {
+				require.Equal(t, apiv2.ProjectDebugPhaseFailed, project.Status.Debug.Executions[0].Phase)
+				retryCtx, retryCancel := context.WithTimeout(ctx, 100*time.Millisecond)
+				defer retryCancel()
+				retried, retryErr := connectDebugServing(retryCtx, config, project)
+				if retried != nil {
+					_ = retried.Close()
+				}
+				require.Error(t, retryErr)
+				containerExec.mu.Lock()
+				count := len(containerExec.options)
+				containerExec.mu.Unlock()
+				require.Equal(t, 1, count, "uncertain provider cleanup must fence new launches")
+			}
+		})
+	}
 }
 
 func (executor *containerAdapterExecutor) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
@@ -743,6 +909,48 @@ func (executor *containerAdapterExecutor) ExecContainer(ctx context.Context, opt
 		return nil, nil
 	}
 	exits := make(chan int32, 1)
+	if executor.tcpListener != nil {
+		listener := executor.tcpListener
+		var connectionsMu sync.Mutex
+		var connections []net.Conn
+		stop := func() {
+			_ = listener.Close()
+			connectionsMu.Lock()
+			defer connectionsMu.Unlock()
+			for _, connection := range connections {
+				_ = connection.Close()
+			}
+		}
+		go func() {
+			for {
+				connection, acceptErr := listener.Accept()
+				if acceptErr != nil {
+					return
+				}
+				connectionsMu.Lock()
+				if ctx.Err() != nil {
+					_ = connection.Close()
+				} else {
+					connections = append(connections, connection)
+					go serveTestDebugAdapter(connection, connection, func() { _ = connection.Close() })
+				}
+				connectionsMu.Unlock()
+			}
+		}()
+		go func() {
+			defer stop()
+			select {
+			case code, open := <-executor.tcpComplete:
+				if open {
+					exits <- code
+				}
+			case <-ctx.Done():
+				exits <- process.UnknownExitCode
+			}
+			close(exits)
+		}()
+		return exits, nil
+	}
 	go func() {
 		code := int32(process.UnknownExitCode)
 		serveTestDebugAdapter(options.StdInStream, options.StdOutStream, func() { code = 0 })

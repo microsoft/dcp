@@ -29,6 +29,9 @@ import (
 // DefaultDebugAdapterConnectionTimeout bounds adapter transport setup when no timeout is supplied.
 const DefaultDebugAdapterConnectionTimeout = 10 * time.Second
 
+// DefaultContainerDebugAdapterPort is the internal listening port when no container TCP port is supplied.
+const DefaultContainerDebugAdapterPort int32 = 4711
+
 // ProjectDebugShutdownGrace bounds protocol shutdown before forced session and backing cleanup.
 const ProjectDebugShutdownGrace = 5 * time.Second
 
@@ -61,17 +64,19 @@ const (
 // +k8s:openapi-gen=true
 type DebugAdapterConfig struct {
 	// Placement selects host execution or execution in the prepared Project container. Defaults to host.
-	// Container placement currently supports only stdio.
+	// Container placement supports stdio and tcp-connect.
 	// +kubebuilder:validation:Enum=host;container
 	// +kubebuilder:default:=host
 	Placement DebugAdapterPlacement `json:"placement,omitempty"`
 	// Args contains the executable name or path followed by its arguments.
-	// TCP modes replace {{port}} in these values with a DCP-allocated loopback port.
+	// TCP modes replace {{port}} with the host-allocated port or the prepared container's internal port.
 	// +listType=atomic
 	Args []string `json:"args"`
 	// Mode selects the adapter DAP transport. Defaults to stdio.
 	// +kubebuilder:default:=stdio
 	Mode DebugAdapterMode `json:"mode,omitempty"`
+	// TCP configures the internal listener for container tcp-connect adapters.
+	TCP *DebugAdapterTCPConfig `json:"tcp,omitempty"`
 	// Env contains explicit adapter environment variables that override inherited values.
 	// +listType=map
 	// +listMapKey=name
@@ -79,6 +84,26 @@ type DebugAdapterConfig struct {
 	// ConnectionTimeout bounds pre-upgrade adapter transport setup, including shared-provider availability.
 	// Omitted or zero uses 10 seconds. It does not limit the established debug stream or DAP initialization.
 	ConnectionTimeout *metav1.Duration `json:"connectionTimeout,omitempty"`
+}
+
+// DebugAdapterTCPConfig declares the internal container listener, not its runtime-assigned host binding.
+// +k8s:openapi-gen=true
+type DebugAdapterTCPConfig struct {
+	// Port is the internal listening port. Omitted or zero uses 4711.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port,omitempty"`
+}
+
+// GetContainerTCPPort returns the selected container TCP port, or zero when no listener is required.
+func (config DebugAdapterConfig) GetContainerTCPPort() int32 {
+	if config.EffectivePlacement() != DebugAdapterPlacementContainer || config.EffectiveMode() != DebugAdapterModeTCPConnect {
+		return 0
+	}
+	if config.TCP != nil && config.TCP.Port != 0 {
+		return config.TCP.Port
+	}
+	return DefaultContainerDebugAdapterPort
 }
 
 // EffectivePlacement defaults omitted adapter placement to host.
@@ -110,11 +135,19 @@ func (config *DebugAdapterConfig) validate(configPath *field.Path) field.ErrorLi
 	switch config.EffectivePlacement() {
 	case DebugAdapterPlacementHost:
 	case DebugAdapterPlacementContainer:
-		if config.EffectiveMode() != DebugAdapterModeStdio {
-			errorList = append(errorList, field.Forbidden(configPath.Child("mode"), "container adapter placement currently supports only stdio"))
+		if config.EffectiveMode() == DebugAdapterModeTCPCallback {
+			errorList = append(errorList, field.Forbidden(configPath.Child("mode"), "container adapter placement does not support tcp-callback"))
 		}
 	default:
 		errorList = append(errorList, field.NotSupported(configPath.Child("placement"), config.Placement, []string{"host", "container"}))
+	}
+	if config.TCP != nil {
+		if config.EffectivePlacement() != DebugAdapterPlacementContainer || config.EffectiveMode() != DebugAdapterModeTCPConnect {
+			errorList = append(errorList, field.Forbidden(configPath.Child("tcp"), "TCP options require container tcp-connect placement"))
+		}
+		if config.TCP.Port < 0 || config.TCP.Port > 65535 {
+			errorList = append(errorList, field.Invalid(configPath.Child("tcp", "port"), config.TCP.Port, "port must be between 0 and 65535"))
+		}
 	}
 	if len(config.Args) == 0 {
 		errorList = append(errorList, field.Required(configPath.Child("args"), "args must contain the adapter executable"))
@@ -372,6 +405,10 @@ type ProjectStatus struct {
 	PhysicalContainerRef string `json:"physicalContainerRef,omitempty"`
 	// ContainerRuntime identifies the controller-selected runtime for the prepared container.
 	ContainerRuntime string `json:"containerRuntime,omitempty"`
+	// DebugAdapterPort is the prepared internal TCP listening port, absent for other adapter transports.
+	DebugAdapterPort int32 `json:"debugAdapterPort,omitempty"`
+	// DebugAdapterAddress is the runtime-published host TCP endpoint for the prepared adapter listener.
+	DebugAdapterAddress string `json:"debugAdapterAddress,omitempty"`
 	// ImageRef identifies the supplied or owned PhysicalContainerImage.
 	// Cross-namespace references are not supported.
 	ImageRef string `json:"imageRef,omitempty"`

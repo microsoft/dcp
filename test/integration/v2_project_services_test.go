@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,6 +25,106 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that container TCP adapter ports are declared before creation with runtime-assigned
+// loopback bindings, published through Project and rejected on TCP application-port conflicts.
+func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"default", "zero", "explicit", "tcp-conflict", "udp-coexist", "pending-binding"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			var mappingClient *projectAdapterMappingClient
+			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers|LogicalServiceController, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+					mappingClient = &projectAdapterMappingClient{Client: client}
+					mappingClient.hide.Store(scenario == "pending-binding")
+					return mappingClient
+				}})
+			require.NoError(t, startupErr)
+			namespace := createV2ExecNamespace(t, ctx, server.Client, "project-tcp-port-"+scenario)
+			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
+					Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
+					}},
+					DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{"adapter", "--port={{port}}"},
+						Placement: apiv2.DebugAdapterPlacementContainer, Mode: apiv2.DebugAdapterModeTCPConnect},
+				}}
+			expectedPort := int32(4711)
+			if scenario == "zero" {
+				project.Spec.DebugAdapter.TCP = &apiv2.DebugAdapterTCPConfig{}
+			} else if scenario == "explicit" {
+				expectedPort = 5678
+				project.Spec.DebugAdapter.TCP = &apiv2.DebugAdapterTCPConfig{Port: expectedPort}
+			}
+			if scenario == "tcp-conflict" || scenario == "udp-coexist" {
+				protocol := commonapi.PortProtocolTCP
+				if scenario == "udp-coexist" {
+					protocol = commonapi.PortProtocolUDP
+				}
+				project.Spec.Container.Ports = []apiv2.LogicalContainerPort{{ContainerPort: expectedPort,
+					LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "application", Service: &apiv2.LogicalServiceTemplate{
+						Name: "application", LogicalServiceSpec: apiv2.LogicalServiceSpec{Protocol: protocol},
+					}}}}
+			}
+			require.NoError(t, server.Client.Create(ctx, project))
+			if scenario == "pending-binding" {
+				pending := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+					return current.Status.ContainerID != "" && len(current.Status.Conditions) != 0 && current.Status.Conditions[0].Reason == "AdapterPortPending", nil
+				})
+				require.Equal(t, apiv2.ProjectPhasePending, pending.Status.Phase)
+				require.False(t, pending.Status.Debug.PrerequisitesReady)
+				require.Empty(t, pending.Status.DebugAdapterAddress)
+				mappingClient.hide.Store(false)
+				require.NoError(t, server.Client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType,
+					[]byte(`{"metadata":{"annotations":{"binding-visible":"true"}}}`))))
+			}
+			if scenario == "tcp-conflict" {
+				failed := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseFailed)
+				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "AdapterPortConflict")
+				require.Empty(t, failed.Status.PhysicalContainerRef)
+			} else {
+				prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
+				require.Equal(t, expectedPort, prepared.Status.DebugAdapterPort)
+				host, port, addressErr := net.SplitHostPort(prepared.Status.DebugAdapterAddress)
+				require.NoError(t, addressErr)
+				require.Equal(t, "127.0.0.1", host)
+				hostPort, portErr := strconv.Atoi(port)
+				require.NoError(t, portErr)
+				require.Positive(t, hostPort)
+				physical := &apiv2.PhysicalContainer{}
+				require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
+				listener := physical.Spec.Container.Ports[len(physical.Spec.Container.Ports)-1]
+				require.Equal(t, expectedPort, listener.ContainerPort)
+				require.Zero(t, listener.HostPort)
+				require.Equal(t, "127.0.0.1", listener.HostIP)
+				require.Equal(t, commonapi.PortProtocolTCP, listener.Protocol)
+				require.Empty(t, prepared.Status.Debug.Executions, "container preparation must not launch an adapter")
+			}
+			require.NoError(t, server.Client.Delete(ctx, project))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
+		})
+	}
+}
+
+type projectAdapterMappingClient struct {
+	ctrl_client.Client
+	hide atomic.Bool
+}
+
+func (client *projectAdapterMappingClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+	if listErr := client.Client.List(ctx, list, options...); listErr != nil {
+		return listErr
+	}
+	if physicals, valid := list.(*apiv2.PhysicalContainerList); valid && client.hide.Load() {
+		for index := range physicals.Items {
+			physicals.Items[index].Status.PortMappings = nil
+		}
+	}
+	return nil
+}
 
 func serviceProject(name, namespace, root, kind string, arguments []string, environment []commonapi.EnvVar) *apiv2.Project {
 	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: apiv2.ProjectSpec{RootDirectory: root}}
@@ -239,8 +341,12 @@ func TestV2ProjectPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("Project did not declare evaluated execution")
 			}
-			producer.Spec.Addresses[0].Port = 54321
-			require.NoError(t, server.Client.Update(ctx, producer))
+			require.NoError(t, server.Client.Delete(ctx, producer))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, producer)
+			replacement := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: producer.Name, Namespace: producer.Namespace},
+				Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 54321}}}}
+			require.NoError(t, server.Client.Create(ctx, replacement))
+			require.NotEqual(t, producer.UID, replacement.UID)
 			waitObjectAssumesStateEx(t, ctx, server.Client, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 				return current.Status.Phase == apiv2.LogicalServicePhaseReady && len(current.Status.EffectiveAddresses) == 1 &&
 					current.Status.EffectiveAddresses[0].Port == 54321, nil
