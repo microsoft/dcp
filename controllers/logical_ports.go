@@ -410,20 +410,6 @@ func (r *ProjectReconciler) prepareProjectValues(
 	return true
 }
 
-func projectPortBindings(resource *apiv2.Project) []apiv2.LogicalServiceBinding {
-	var bindings []apiv2.LogicalServiceBinding
-	if resource.Spec.Process != nil {
-		for _, port := range resource.Spec.Process.Ports {
-			bindings = append(bindings, port.LogicalServiceBinding)
-		}
-	} else if resource.Spec.Container != nil {
-		for _, port := range resource.Spec.Container.Ports {
-			bindings = append(bindings, port.LogicalServiceBinding)
-		}
-	}
-	return bindings
-}
-
 func (r *ProjectReconciler) withdrawProjectEndpoints(
 	ctx context.Context, resource *apiv2.Project, data *projectData, log logr.Logger,
 ) objectChange {

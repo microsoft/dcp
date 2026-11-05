@@ -832,7 +832,7 @@ func (r *ProjectReconciler) cleanupProjectBackings(
 		}
 		return false, cleanupErr
 	}
-	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, projectPortBindings(resource))
+	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource)
 	if portDeleteErr != nil {
 		log.Error(portDeleteErr, "Failed to clean Project service endpoints")
 		return false, portDeleteErr
