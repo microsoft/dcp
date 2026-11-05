@@ -474,7 +474,7 @@ func TestPhysicalProcessCleanupUncertaintyIsScopedToProcessIdentity(t *testing.T
 }
 
 // Verifies that observing a missing process records its terminal state and clears stale inspection diagnostics.
-func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testing.T) {
+func TestHandlePhysicalProcessInspectFailedClearsFailureWhenProcessIsMissing(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
 	defer cancel()
@@ -510,7 +510,7 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 		data.Clone(),
 	)
 
-	change := handlePhysicalProcessRuntime(
+	change := handlePhysicalProcessInspectFailed(
 		ctx,
 		reconciler,
 		physicalProcess,
@@ -519,7 +519,7 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 		logr.Discard(),
 	)
 
-	require.Equal(t, noChange, change)
+	require.Equal(t, additionalReconciliationNeeded, change)
 	require.Equal(t, physicalProcessStateMissing, data.state)
 	require.Empty(t, data.failureReason)
 	require.Empty(t, data.failureMessage)
@@ -527,7 +527,7 @@ func TestHandlePhysicalProcessRuntimeClearsFailureWhenProcessIsMissing(t *testin
 
 // Verifies that runtime inspection failures replace any stale condition reason
 // with RuntimeProcessInspectFailed.
-func TestHandlePhysicalProcessRuntimeSetsInspectionFailureReason(t *testing.T) {
+func TestHandlePhysicalProcessInspectFailedSetsInspectionFailureReason(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
 	defer cancel()
@@ -557,7 +557,7 @@ func TestHandlePhysicalProcessRuntimeSetsInspectionFailureReason(t *testing.T) {
 		resiliency.NewWorkQueue(ctx, 1),
 	)
 
-	change := handlePhysicalProcessRuntime(
+	change := handlePhysicalProcessInspectFailed(
 		ctx,
 		reconciler,
 		physicalProcess,

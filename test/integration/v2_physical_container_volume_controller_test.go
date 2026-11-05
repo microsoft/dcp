@@ -334,6 +334,8 @@ func TestV2PhysicalContainerVolumeControllerWaitsForCreateBeforeDeletion(t *test
 	require.Equal(t, 1, containerOrchestrator.RemoveVolumeCallCount(volumeName))
 }
 
+// Verifies that a volume create error is reported before inspection and that reconciliation
+// subsequently verifies the owned volume without issuing another create.
 func TestV2PhysicalContainerVolumeControllerAdoptsVolumeAfterUncertainCreateFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -350,6 +352,13 @@ func TestV2PhysicalContainerVolumeControllerAdoptsVolumeAfterUncertainCreateFail
 	}
 	require.NoError(t, client.Create(ctx, volume))
 
+	failedAttempt := waitObjectAssumesState(t, ctx, volume.NamespacedName(), func(current *apiv2.PhysicalContainerVolume) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerVolumePhasePending &&
+			ready != nil && ready.Reason == string(apiv2.PhysicalContainerVolumeReasonCreateFailed), nil
+	})
+	require.Contains(t, failedAttempt.Status.Conditions[0].Message, "simulated lost create response")
+	require.Zero(t, containerOrchestrator.InspectVolumeCallCount(volumeName))
 	waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
 	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
 }

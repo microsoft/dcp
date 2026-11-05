@@ -47,10 +47,10 @@ var (
 		physicalProcessStateLaunchRetry:   handlePhysicalProcessLaunchState,
 		physicalProcessStateLaunchFailed:  handlePhysicalProcessTerminal,
 		physicalProcessStateLaunchSkipped: handlePhysicalProcessTerminal,
-		physicalProcessStateRunning:       handlePhysicalProcessRuntime,
-		physicalProcessStateMissing:       handlePhysicalProcessRuntime,
-		physicalProcessStateExited:        handlePhysicalProcessRuntime,
-		physicalProcessStateInspectFailed: handlePhysicalProcessRuntime,
+		physicalProcessStateRunning:       handlePhysicalProcessRunning,
+		physicalProcessStateMissing:       handlePhysicalProcessTerminal,
+		physicalProcessStateExited:        handlePhysicalProcessTerminal,
+		physicalProcessStateInspectFailed: handlePhysicalProcessInspectFailed,
 		physicalProcessStateStop:          handlePhysicalProcessStopState,
 		physicalProcessStateStopRetry:     handlePhysicalProcessStopState,
 		physicalProcessStateInvalid:       handlePhysicalProcessTerminal,
@@ -258,7 +258,7 @@ func handlePhysicalProcessLaunchState(
 	return change
 }
 
-func handlePhysicalProcessRuntime(
+func handlePhysicalProcessRunning(
 	ctx context.Context,
 	reconciler *PhysicalProcessReconciler,
 	physicalProcess *apiv2.PhysicalProcess,
@@ -266,16 +266,6 @@ func handlePhysicalProcessRuntime(
 	data *physicalProcessData,
 	log logr.Logger,
 ) objectChange {
-	if data.state == physicalProcessStateExited ||
-		data.state == physicalProcessStateMissing {
-		return noChange
-	}
-	if data.state == physicalProcessStateInspectFailed {
-		if time.Now().Before(data.retryAfter) {
-			return additionalReconciliationNeeded
-		}
-	}
-
 	runningErr := reconciler.processExecutor.CheckProcessRunning(data.handle)
 	if process.IsProcessGoneErr(runningErr) {
 		data.state = physicalProcessStateMissing
@@ -298,16 +288,50 @@ func handlePhysicalProcessRuntime(
 	}
 
 	if physicalProcess.Spec.Stop {
-		change, _ := reconciler.schedulePhysicalProcessStop(physicalProcess, data, log)
-		return change
+		data.state = physicalProcessStateStop
+		return additionalReconciliationNeeded
 	}
-
 	data.state = physicalProcessStateRunning
 	if !data.cleanupUnconfirmed {
 		data.failureReason = ""
 		data.failureMessage = ""
 	}
 	return noChange
+}
+
+func handlePhysicalProcessInspectFailed(
+	ctx context.Context,
+	reconciler *PhysicalProcessReconciler,
+	_ *apiv2.PhysicalProcess,
+	_ physicalProcessState,
+	data *physicalProcessData,
+	log logr.Logger,
+) objectChange {
+	if time.Now().Before(data.retryAfter) {
+		return additionalReconciliationNeeded
+	}
+	runningErr := reconciler.processExecutor.CheckProcessRunning(data.handle)
+	if process.IsProcessGoneErr(runningErr) {
+		data.state, data.finishedAt = physicalProcessStateMissing, time.Now()
+		if data.cleanupUnconfirmed {
+			markDescendantCleanupUnconfirmed(data, descendantCleanupUnconfirmedMessage)
+		} else {
+			data.failureReason, data.failureMessage = "", ""
+		}
+		return additionalReconciliationNeeded
+	}
+	if runningErr != nil {
+		log.Error(runningErr, "Failed to inspect runtime process", "PID", data.handle.Pid)
+		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed
+		data.failureMessage = fmt.Sprintf("Failed to inspect runtime process: %v", runningErr)
+		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		return noChange
+	}
+	data.state, data.retryAfter = physicalProcessStateRunning, time.Time{}
+	if !data.cleanupUnconfirmed {
+		data.failureReason, data.failureMessage = "", ""
+	}
+	return additionalReconciliationNeeded
 }
 
 func handlePhysicalProcessStopState(
@@ -318,13 +342,14 @@ func handlePhysicalProcessStopState(
 	data *physicalProcessData,
 	log logr.Logger,
 ) objectChange {
-	if data.state == physicalProcessStateStop {
+	if data.workInProgress {
 		return noChange
 	}
-	if data.state != physicalProcessStateStopRetry {
+	if data.state != physicalProcessStateStop && data.state != physicalProcessStateStopRetry {
 		return handleUnknownPhysicalProcessState(ctx, reconciler, physicalProcess, state, data, log)
 	}
-	return handlePhysicalProcessRuntime(ctx, reconciler, physicalProcess, state, data, log)
+	change, _ := reconciler.schedulePhysicalProcessStop(physicalProcess, data, log)
+	return change
 }
 
 func handlePhysicalProcessTerminal(

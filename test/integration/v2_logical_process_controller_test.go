@@ -419,7 +419,7 @@ func TestV2LogicalProcessControllerRetriesBackingObservation(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
-// Verifies that losing the logical backing hold terminally fails LogicalProcess without forwarding
+// Verifies that losing the logical backing hold makes LogicalProcess Unknown without forwarding
 // a later stop request, while deleting the logical resource still cleans up its owned session process.
 func TestV2LogicalProcessControllerRejectsReleasedBackingHold(t *testing.T) {
 	t.Parallel()
@@ -438,12 +438,12 @@ func TestV2LogicalProcessControllerRejectsReleasedBackingHold(t *testing.T) {
 		})
 		return client.Patch(updateCtx, current, patch)
 	}))
-	failed := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+	unknown := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return current.Status.Phase == apiv2.LogicalProcessPhaseFailed && ready != nil && ready.Reason == "PhysicalProcessChanged", nil
+		return current.Status.Phase == apiv2.LogicalProcessPhaseUnknown && ready != nil && ready.Reason == "PhysicalProcessChanged", nil
 	})
-	require.True(t, failed.Status.RuntimeLogs.Complete)
-	require.False(t, failed.Status.RuntimeLogs.Available)
+	require.True(t, unknown.Status.RuntimeLogs.Complete)
+	require.False(t, unknown.Status.RuntimeLogs.Available)
 	require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
 		current.Spec.Stop = true
 		return client.Update(updateCtx, current)

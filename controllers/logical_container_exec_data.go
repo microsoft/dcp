@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -16,6 +17,38 @@ import (
 )
 
 type logicalContainerExecState int
+
+func applyLogicalContainerExecBackingStatus(
+	resource *apiv2.LogicalContainerExec, physical *apiv2.PhysicalContainerExec,
+) (objectChange, logicalContainerExecState) {
+	change := setValue(&resource.Status.ContainerID, physical.Status.ContainerID)
+	change |= setTimestamp(&resource.Status.StartedAt, physical.Status.StartedAt)
+	change |= setTimestamp(&resource.Status.FinishedAt, physical.Status.FinishedAt)
+	change |= setExitCode(&resource.Status.ExitCode, physical.Status.ExitCode)
+	source := physical.GetLogSource()
+	if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
+		resource.Status.RuntimeLogs = source
+		change |= statusChanged
+	}
+	if !physical.DeletionTimestamp.IsZero() && hasFinalizer(physical, physicalContainerExecFinalizer) {
+		return change, logicalContainerExecStateCreating
+	}
+	condition := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
+	switch physical.Status.Phase {
+	case apiv2.ContainerExecPhaseRunning:
+		if condition != nil && condition.Status == metav1.ConditionTrue {
+			return change, logicalContainerExecStateRunning
+		}
+	case apiv2.ContainerExecPhaseExited:
+		return change, logicalContainerExecStateExited
+	case apiv2.ContainerExecPhaseFailed:
+		return change, logicalContainerExecStateRuntimeFailed
+	case apiv2.ContainerExecPhasePending, "":
+	default:
+		return change, logicalContainerExecStateInvalid
+	}
+	return change, logicalContainerExecStateCreating
+}
 
 const (
 	logicalContainerExecStatePending logicalContainerExecState = iota + 1
