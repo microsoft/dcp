@@ -7,6 +7,7 @@ package v2
 
 import (
 	"context"
+	"reflect"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,6 +36,7 @@ type ServiceAddress struct {
 }
 
 // ServiceEndpointSpec describes the resolved addresses for one producer binding.
+// The spec is immutable; changed bindings require a new endpoint.
 // +k8s:openapi-gen=true
 type ServiceEndpointSpec struct {
 	// ServiceRef identifies the LogicalService using <name> or <namespace>/<name>.
@@ -104,6 +106,14 @@ func (endpoint *ServiceEndpoint) Validate(ctx context.Context) field.ErrorList {
 	return errorList
 }
 
+// ValidateUpdate freezes endpoint configuration while permitting metadata changes.
+func (endpoint *ServiceEndpoint) ValidateUpdate(_ context.Context, old runtime.Object) field.ErrorList {
+	if !reflect.DeepEqual(endpoint.Spec, old.(*ServiceEndpoint).Spec) {
+		return field.ErrorList{field.Forbidden(field.NewPath("spec"), "spec is immutable")}
+	}
+	return nil
+}
+
 func validateServiceAddresses(addresses []ServiceAddress, addressesPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 	if len(addresses) == 0 {
@@ -160,3 +170,4 @@ var _ apiserver_resource.ObjectList = (*ServiceEndpointList)(nil)
 var _ commonapi.ListWithObjectItems[ServiceEndpoint, *ServiceEndpoint] = (*ServiceEndpointList)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*ServiceEndpoint)(nil)
 var _ apiserver_resourcestrategy.Validater = (*ServiceEndpoint)(nil)
+var _ apiserver_resourcestrategy.ValidateUpdater = (*ServiceEndpoint)(nil)

@@ -9193,7 +9193,7 @@ func schema_microsoft_dcp_api_v2_ServiceEndpointSpec(ref common.ReferenceCallbac
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ServiceEndpointSpec describes the resolved addresses for one producer binding.",
+				Description: "ServiceEndpointSpec describes the resolved addresses for one producer binding. The spec is immutable; changed bindings require a new endpoint.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"serviceRef": {

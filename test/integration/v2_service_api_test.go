@@ -6,20 +6,151 @@
 package integration_test
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+func recreateServiceEndpoint(t *testing.T, ctx context.Context, apiClient ctrl_client.Client, desired *apiv2.ServiceEndpoint) *apiv2.ServiceEndpoint {
+	t.Helper()
+	previousUID := desired.UID
+	require.NoError(t, apiClient.Delete(ctx, desired))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, desired)
+	recreated := &apiv2.ServiceEndpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: desired.Namespace, Annotations: desired.Annotations},
+		Spec:       desired.DeepCopy().Spec,
+	}
+	require.NoError(t, apiClient.Create(ctx, recreated))
+	require.NotEqual(t, previousUID, recreated.UID)
+	return recreated
+}
+
+// Verifies that endpoint creation rejects invalid references and address pairs, updates and patches
+// reject all spec changes, and routing changes require replacing endpoints with new identities.
+func TestV2ServiceEndpointAPIValidatesUpdates(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	server, _, startupErr := StartTestEnvironment(t, ctx, NamespaceController|LogicalServiceController, t.Name(), t.TempDir())
+	require.NoError(t, startupErr)
+	apiClient := server.Client
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-endpoint-update-validation"}}
+	require.NoError(t, apiClient.Create(ctx, namespace))
+	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
+		Spec: apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}}
+	require.NoError(t, apiClient.Create(ctx, service))
+	endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: namespace.Name},
+		Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5000}}}}
+	require.NoError(t, apiClient.Create(ctx, endpoint))
+	waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+	})
+	for _, testCase := range []struct {
+		name  string
+		field string
+		spec  apiv2.ServiceEndpointSpec
+	}{
+		{"missing-reference", "spec.serviceRef", apiv2.ServiceEndpointSpec{Addresses: endpoint.Spec.Addresses}},
+		{"cross-namespace", "spec.serviceRef", apiv2.ServiceEndpointSpec{ServiceRef: "other/service", Addresses: endpoint.Spec.Addresses}},
+		{"invalid-reference", "spec.serviceRef", apiv2.ServiceEndpointSpec{ServiceRef: "INVALID", Addresses: endpoint.Spec.Addresses}},
+		{"empty-addresses", "spec.addresses", apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{}}},
+		{"missing-addresses", "spec.addresses", apiv2.ServiceEndpointSpec{ServiceRef: service.Name}},
+		{"blank-address", "spec.addresses[0].address", apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: " \t", Port: 5000}}}},
+		{"zero-port", "spec.addresses[0].port", apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1"}}}},
+		{"negative-port", "spec.addresses[0].port", apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: -1}}}},
+		{"excessive-port", "spec.addresses[0].port", apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 65536}}}},
+		{"duplicate-address", "spec.addresses[1]", apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{
+			{Address: "127.0.0.1", Port: 5000}, {Address: "127.0.0.1", Port: 5000},
+		}}},
+		{"valid-new-service", "", apiv2.ServiceEndpointSpec{ServiceRef: "different-service", Addresses: endpoint.Spec.Addresses}},
+		{"valid-new-address", "", apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "::1", Port: 5000}}}},
+		{"valid-new-port", "", apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5001}}}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			invalid := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: testCase.name, Namespace: namespace.Name}, Spec: testCase.spec}
+			createErr := apiClient.Create(ctx, invalid)
+			if testCase.field != "" {
+				require.True(t, apierrors.IsInvalid(createErr), "%v", createErr)
+				require.Contains(t, createErr.Error(), testCase.field)
+			} else {
+				require.NoError(t, createErr)
+				require.NoError(t, apiClient.Delete(ctx, invalid))
+			}
+			for _, operation := range []string{"update", "patch"} {
+				t.Run(operation, func(t *testing.T) {
+					current := &apiv2.ServiceEndpoint{}
+					require.NoError(t, apiClient.Get(ctx, endpoint.NamespacedName(), current))
+					stored := current.DeepCopy()
+					current.Spec = testCase.spec
+					var updateErr error
+					if operation == "update" {
+						updateErr = apiClient.Update(ctx, current)
+					} else {
+						payload, marshalErr := json.Marshal(map[string]any{"spec": testCase.spec})
+						require.NoError(t, marshalErr)
+						updateErr = apiClient.Patch(ctx, current, ctrl_client.RawPatch(types.MergePatchType, payload))
+					}
+					require.True(t, apierrors.IsInvalid(updateErr), "%v", updateErr)
+					require.Contains(t, updateErr.Error(), "spec is immutable")
+					unchanged := &apiv2.ServiceEndpoint{}
+					require.NoError(t, apiClient.Get(ctx, endpoint.NamespacedName(), unchanged))
+					require.Equal(t, stored.Spec, unchanged.Spec)
+					require.Equal(t, stored.ResourceVersion, unchanged.ResourceVersion)
+				})
+			}
+		})
+	}
+
+	endpoint.Spec.ServiceRef = namespace.Name + "/" + service.Name
+	endpoint.Spec.Addresses = []apiv2.ServiceAddress{{Address: "::1", Port: 5001}, {Address: "127.0.0.1", Port: 5002}}
+	endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
+	waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalServicePhaseReady &&
+			len(current.Status.EffectiveAddresses) == 2 && current.Status.EffectiveAddresses[0].Port == 5001, nil
+	})
+	require.NoError(t, apiClient.Patch(ctx, endpoint, ctrl_client.RawPatch(types.MergePatchType,
+		[]byte(`{"metadata":{"annotations":{"test":"updated"}}}`))))
+	endpoint.Spec.Addresses = []apiv2.ServiceAddress{{Address: "localhost", Port: 65535}}
+	endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
+	waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalServicePhaseReady && len(current.Status.EffectiveAddresses) == 1 &&
+			current.Status.EffectiveAddresses[0] == (apiv2.ServiceAddress{Address: "localhost", Port: 65535}), nil
+	})
+
+	// Generic metadata validation also protects immutable-spec resources during updates.
+	serviceUpdate := &apiv2.LogicalService{}
+	require.NoError(t, apiClient.Get(ctx, service.NamespacedName(), serviceUpdate))
+	serviceUpdate.Annotations = map[string]string{"oversized": strings.Repeat("x", commonapi.MaxAnnotationsTotalSize)}
+	metadataErr := apiClient.Update(ctx, serviceUpdate)
+	require.True(t, apierrors.IsInvalid(metadataErr), "%v", metadataErr)
+	require.Contains(t, metadataErr.Error(), "metadata.annotations")
+
+	require.NoError(t, apiClient.Get(ctx, endpoint.NamespacedName(), endpoint))
+	endpoint.Finalizers = []string{"tests.dcp.microsoft.com/hold"}
+	require.NoError(t, apiClient.Update(ctx, endpoint))
+	require.NoError(t, apiClient.Delete(ctx, endpoint))
+	require.NoError(t, apiClient.Get(ctx, endpoint.NamespacedName(), endpoint))
+	require.False(t, endpoint.DeletionTimestamp.IsZero())
+	endpoint.Finalizers = nil
+	require.NoError(t, apiClient.Update(ctx, endpoint))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, endpoint)
+	require.NoError(t, apiClient.Delete(ctx, namespace))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
+}
 
 // Verifies that LogicalService and ServiceEndpoint are discoverable alongside V1 kinds,
 // support address/port pairs and status isolation, and are removed by namespace cleanup.
@@ -77,7 +208,7 @@ func TestV2ServiceAPIStorageAndNamespaceCleanup(t *testing.T) {
 	require.NoError(t, apiClient.Get(ctx, endpoint.NamespacedName(), storedEndpoint))
 	require.Equal(t, addresses, storedEndpoint.Spec.Addresses)
 	storedEndpoint.Spec.Addresses[1].Port = 5002
-	require.NoError(t, apiClient.Update(ctx, storedEndpoint))
+	storedEndpoint = recreateServiceEndpoint(t, ctx, apiClient, storedEndpoint)
 	require.NoError(t, apiClient.Get(ctx, endpoint.NamespacedName(), storedEndpoint))
 	require.Equal(t, int32(5002), storedEndpoint.Spec.Addresses[1].Port)
 

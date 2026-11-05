@@ -10,12 +10,25 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
+
+// Verifies that every persisted V2 resource provides both creation and update validation hooks.
+func TestPersistentResourcesValidateCreationAndUpdates(t *testing.T) {
+	t.Parallel()
+	for _, resource := range PersistentTypes {
+		t.Run(resource.GetGroupVersionResource().Resource, func(t *testing.T) {
+			t.Parallel()
+			require.Implements(t, (*apiserver_resourcestrategy.Validater)(nil), resource)
+			require.Implements(t, (*apiserver_resourcestrategy.ValidateUpdater)(nil), resource)
+		})
+	}
+}
 
 // Verifies that both process APIs accept supported ambient environment behaviors, default to inheritance,
 // and reject unsupported values at the nested behavior field.
