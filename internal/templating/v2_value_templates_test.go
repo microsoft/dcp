@@ -22,7 +22,6 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/commonapi"
-	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 type countedServiceReader struct {
@@ -59,7 +58,7 @@ func TestEvaluateV2ValuesServiceAddresses(t *testing.T) {
 	expectedArguments = append(expectedArguments, "127.0.0.1:5000")
 	environment := []commonapi.EnvVar{{Name: "PORT", Value: `{{portForServing "http"}}`}, {Name: "EMPTY", Value: ""}}
 	resolvedArgs, resolvedEnv, evaluationErr := EvaluateV2Values(context.Background(), reader, owner,
-		[]ServingPort{{Name: "http", Address: "0.0.0.0", Port: 8080}}, arguments, environment)
+		[]ServingPort{{Name: "http", Address: "0.0.0.0", Port: 8080}}, arguments, environment, false)
 	require.NoError(t, evaluationErr)
 	require.Equal(t, expectedArguments, resolvedArgs)
 	require.Equal(t, []commonapi.EnvVar{{Name: "PORT", Value: "8080"}, {Name: "EMPTY", Value: ""}}, resolvedEnv)
@@ -93,7 +92,7 @@ func TestEvaluateV2ValuesErrors(t *testing.T) {
 		{"unavailable family", `{{portFor "service" "IPv6"}}`, true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, _, evaluationErr := EvaluateV2Values(context.Background(), reader, owner, nil, []string{testCase.value}, nil)
+			_, _, evaluationErr := EvaluateV2Values(context.Background(), reader, owner, nil, []string{testCase.value}, nil, false)
 			require.Error(t, evaluationErr)
 			require.Equal(t, testCase.transient, IsTransientTemplateError(evaluationErr))
 		})
@@ -142,7 +141,8 @@ func TestEvaluateV2ValuesValidatesConsumerReferences(t *testing.T) {
 					} else {
 						environment = []commonapi.EnvVar{{Name: "VALUE", Value: expression}}
 					}
-					resolvedArgs, resolvedEnv, evaluationErr := EvaluateV2Values(context.Background(), reader, owner, nil, arguments, environment)
+					resolvedArgs, resolvedEnv, evaluationErr := EvaluateV2Values(
+						context.Background(), reader, owner, nil, arguments, environment, false)
 					if testCase.invalid {
 						require.ErrorContains(t, evaluationErr, "invalid service reference")
 						require.False(t, IsTransientTemplateError(evaluationErr))
@@ -176,7 +176,6 @@ func TestEvaluateV2ValuesIgnoresOverriddenEnvironment(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
 	require.NoError(t, apiv2.AddToScheme(scheme))
-	reader := &countedServiceReader{Reader: fake.NewClientBuilder().WithScheme(scheme).Build()}
 	owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test-namespace"}}
 	environment := []commonapi.EnvVar{
 		{Name: "PORT", Value: `{{portFor "missing"}}`},
@@ -184,28 +183,61 @@ func TestEvaluateV2ValuesIgnoresOverriddenEnvironment(t *testing.T) {
 		{Name: "PORT", Value: "8080"},
 		{Name: "OTHER", Value: ""},
 	}
-	_, resolvedEnv, evaluationErr := EvaluateV2Values(context.Background(), reader, owner, nil, nil, environment)
-	require.NoError(t, evaluationErr)
-	require.Equal(t, []commonapi.EnvVar{{Name: "PORT", Value: "8080"}, {Name: "OTHER", Value: ""}}, resolvedEnv)
-	require.Zero(t, reader.reads)
-	require.Equal(t, `{{portFor "missing"}}`, environment[0].Value)
+	for _, ignoreEnvironmentCase := range []bool{false, true} {
+		t.Run(fmt.Sprint(ignoreEnvironmentCase), func(t *testing.T) {
+			t.Parallel()
+			reader := &countedServiceReader{Reader: fake.NewClientBuilder().WithScheme(scheme).Build()}
+			_, resolvedEnv, evaluationErr := EvaluateV2Values(context.Background(), reader, owner, nil, nil, environment, ignoreEnvironmentCase)
+			require.NoError(t, evaluationErr)
+			require.Equal(t, []commonapi.EnvVar{{Name: "PORT", Value: "8080"}, {Name: "OTHER", Value: ""}}, resolvedEnv)
+			require.Zero(t, reader.reads)
+			require.Equal(t, `{{portFor "missing"}}`, environment[0].Value)
+		})
+	}
 }
 
-// Verifies that EvaluateV2Values applies Windows case-insensitive environment overrides
-// without treating differently cased Unix variable names as equivalent.
+// Verifies that EvaluateV2Values uses the supplied environment comparison mode independently
+// of the host OS, preserving distinct names or ignoring overwritten templates as appropriate.
 func TestEvaluateV2ValuesEnvironmentCasing(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
 	require.NoError(t, apiv2.AddToScheme(scheme))
-	reader := fake.NewClientBuilder().WithScheme(scheme).Build()
 	owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test-namespace"}}
-	environment := []commonapi.EnvVar{{Name: "VALUE", Value: "{{"}, {Name: "value", Value: "effective"}}
-	_, resolvedEnv, evaluationErr := EvaluateV2Values(context.Background(), reader, owner, nil, nil, environment)
-	if osutil.IsWindows() {
-		require.NoError(t, evaluationErr)
-		require.Equal(t, []commonapi.EnvVar{{Name: "value", Value: "effective"}}, resolvedEnv)
-	} else {
-		require.Error(t, evaluationErr)
+	for _, ignoreEnvironmentCase := range []bool{false, true} {
+		for _, testCase := range []struct {
+			name      string
+			value     string
+			failure   bool
+			transient bool
+		}{
+			{name: "literal", value: "distinct"},
+			{name: "malformed", value: "{{", failure: true},
+			{name: "missing service", value: `{{portFor "missing"}}`, failure: true, transient: true},
+		} {
+			t.Run(fmt.Sprint(ignoreEnvironmentCase)+"/"+testCase.name, func(t *testing.T) {
+				t.Parallel()
+				reader := &countedServiceReader{Reader: fake.NewClientBuilder().WithScheme(scheme).Build()}
+				environment := []commonapi.EnvVar{{Name: "VALUE", Value: testCase.value}, {Name: "value", Value: "effective"}}
+				_, resolvedEnv, evaluationErr := EvaluateV2Values(context.Background(), reader, owner, nil, nil, environment, ignoreEnvironmentCase)
+				if ignoreEnvironmentCase {
+					require.NoError(t, evaluationErr)
+					require.Equal(t, []commonapi.EnvVar{{Name: "value", Value: "effective"}}, resolvedEnv)
+					require.Zero(t, reader.reads)
+				} else if testCase.failure {
+					require.Error(t, evaluationErr)
+					require.Equal(t, testCase.transient, IsTransientTemplateError(evaluationErr))
+					if testCase.transient {
+						require.Equal(t, 1, reader.reads)
+					} else {
+						require.Zero(t, reader.reads)
+					}
+				} else {
+					require.NoError(t, evaluationErr)
+					require.Equal(t, environment, resolvedEnv)
+				}
+				require.Equal(t, testCase.value, environment[0].Value)
+			})
+		}
 	}
 }
 
@@ -224,7 +256,7 @@ func TestEvaluateV2ValuesIPv6Authorities(t *testing.T) {
 		`http://{{addressForServing "http"}}:{{portForServing "http"}}`,
 	}
 	resolvedArgs, _, evaluationErr := EvaluateV2Values(context.Background(), reader, owner,
-		[]ServingPort{{Name: "http", Address: "::", Port: 8080}}, arguments, nil)
+		[]ServingPort{{Name: "http", Address: "::", Port: 8080}}, arguments, nil, false)
 	require.NoError(t, evaluationErr)
 	require.Equal(t, []string{"http://[::1]:5001", "http://[::]:8080"}, resolvedArgs)
 	for _, argument := range resolvedArgs {

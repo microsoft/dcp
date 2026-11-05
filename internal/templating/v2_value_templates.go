@@ -21,7 +21,6 @@ import (
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/maps"
-	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 type errV2ServiceLookup struct {
@@ -46,10 +45,12 @@ type ServingPort struct {
 // EvaluateV2Values evaluates declared arguments and environment against one service-address snapshot.
 // Serving helpers use logical port names; consumer helpers accept same-namespace service references
 // and an optional "IPv4" or "IPv6" selector. Address helpers bracket IPv6 literals for URL/authority
-// interpolation. Inputs are never modified.
+// interpolation. ignoreEnvironmentCase controls case folding of environment names before evaluation.
+// Inputs are never modified.
 func EvaluateV2Values(
 	ctx context.Context, reader ctrl_client.Reader, owner commonapi.DcpModelObject,
 	ports []ServingPort, arguments []string, environment []commonapi.EnvVar,
+	ignoreEnvironmentCase bool,
 ) ([]string, []commonapi.EnvVar, error) {
 	selectedAddresses := make(map[string]apiv2.ServiceAddress)
 	serviceSnapshots := make(map[types.NamespacedName]*apiv2.LogicalService)
@@ -141,7 +142,7 @@ func EvaluateV2Values(
 		return output.String(), nil
 	}
 	environmentMode := maps.StringMapModeCaseSensitive
-	if osutil.IsWindows() {
+	if ignoreEnvironmentCase {
 		environmentMode = maps.StringMapModeCaseInsensitive
 	}
 	lastDeclarations := maps.NewStringKeyMap[int](environmentMode)
