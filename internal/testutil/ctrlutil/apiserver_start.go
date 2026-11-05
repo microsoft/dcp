@@ -128,6 +128,10 @@ func StartApiServerWithOptions(
 		ApiServerDisposalComplete: concurrency.NewAutoResetEvent(false),
 	}
 
+	// Disposal owns process cancellation so controller teardown can finish before
+	// the graceful shutdown request, even after the test context is cancelled.
+	processCtx, cancelProcess := context.WithCancel(context.WithoutCancel(testRunCtx))
+
 	cleanup := func() {
 		info.lock.Lock()
 		defer info.lock.Unlock()
@@ -159,6 +163,11 @@ func StartApiServerWithOptions(
 					<-info.ApiServerExited.Wait()
 				}
 			}
+		}
+
+		cancelProcess()
+		if info.ApiServerPID != 0 {
+			<-info.ApiServerExited.Wait()
 		}
 
 		logger.ReleaseResourceLogsInFolder(sessionFolder)
@@ -262,7 +271,7 @@ func StartApiServerWithOptions(
 		info.ApiServerExited.SetAndFreeze()
 	})
 
-	apiServerHandle, startWaitForProcessExit, dcpStartErr := pe.StartProcess(testRunCtx, cmd, apiserverExitHandler, process.CreationFlagsNone, nil)
+	apiServerHandle, startWaitForProcessExit, dcpStartErr := pe.StartProcess(processCtx, cmd, apiserverExitHandler, process.CreationFlagsNone, nil)
 	if dcpStartErr != nil {
 		info.ApiServerExited.SetAndFreeze()
 		cleanup()
