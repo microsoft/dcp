@@ -168,7 +168,7 @@ func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 					listeners[0].configuration().Endpoints)
 
 				endpoint.Spec.Addresses = []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 62000}}
-				require.NoError(t, apiClient.Update(ctx, endpoint))
+				endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
 				waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalServicePhaseReady &&
 						slices.Equal(listeners[0].configuration().Endpoints, []proxy.Endpoint{{Address: "127.0.0.1", Port: 62000}}), nil
@@ -274,14 +274,14 @@ func TestV2LogicalServicePreservesUDPStreamAcrossReconciliation(t *testing.T) {
 	require.NoError(t, nextBackendErr)
 	defer func() { require.NoError(t, nextBackend.Close()) }()
 	endpoint.Spec.Addresses[0].Port = int32(nextBackend.LocalAddr().(*net.UDPAddr).Port)
-	require.NoError(t, apiClient.Update(ctx, endpoint))
+	endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
 	waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalServicePhaseReady &&
 			slices.Equal(listener.configuration().Endpoints, []proxy.Endpoint{{
 				Address: "127.0.0.1", Port: endpoint.Spec.Addresses[0].Port,
 			}}), nil
 	})
-	require.Equal(t, configurationCount+1, listener.configurationCalls.Load())
+	require.GreaterOrEqual(t, listener.configurationCalls.Load(), configurationCount+1)
 	require.Len(t, recorder.snapshot(), 1)
 	require.NoError(t, apiClient.Delete(ctx, namespace))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
@@ -350,7 +350,7 @@ func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 				}
 
 				endpoint.Spec.Addresses[0].Port++
-				require.NoError(t, apiClient.Update(ctx, endpoint))
+				endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
 				previousChecks := original.healthChecks.Load()
 				waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 					for _, healthy := range originals[1:] {
@@ -426,7 +426,7 @@ func TestV2LogicalServiceRetriesConfigurationWithoutReplacingListener(t *testing
 			configurationCount := listener.configurationCalls.Load()
 			listener.failConfiguration.Store(true)
 			endpoint.Spec.Addresses[0].Port++
-			require.NoError(t, apiClient.Update(ctx, endpoint))
+			endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
 			unavailable := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 				return current.Status.Phase == apiv2.LogicalServicePhaseUnknown &&
 					slices.Equal(current.Status.EffectiveAddresses, ready.Status.EffectiveAddresses), nil
@@ -544,7 +544,7 @@ func TestV2LogicalServicePublishesAllListenerAddresses(t *testing.T) {
 }
 
 // Verifies that proxyless LogicalService retains its producer when another endpoint sorts earlier,
-// projects changes to all selected addresses, and fails over only when that producer is deleted.
+// publishes all selected addresses, and fails over only when that producer is deleted.
 func TestV2LogicalServiceProxylessKeepsSelectedProducer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -578,7 +578,6 @@ func TestV2LogicalServiceProxylessKeepsSelectedProducer(t *testing.T) {
 		Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name,
 			Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 65000}, {Address: "::1", Port: 65001}}}}
 	require.NoError(t, apiClient.Create(ctx, earlier))
-	selected.Spec.Addresses = []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 64002}, {Address: "::1", Port: 64003}}
 	selected.Finalizers = []string{"tests.dcp.microsoft.com/hold"}
 	require.NoError(t, apiClient.Update(ctx, selected))
 	updated := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {

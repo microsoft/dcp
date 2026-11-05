@@ -28,6 +28,97 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+type staleEndpointCreateClient struct {
+	ctrl_client.Client
+	created atomic.Bool
+	stale   atomic.Pointer[apiv2.ServiceEndpoint]
+}
+
+func (apiClient *staleEndpointCreateClient) Create(ctx context.Context, object ctrl_client.Object, options ...ctrl_client.CreateOption) error {
+	endpoint, isEndpoint := object.(*apiv2.ServiceEndpoint)
+	if !isEndpoint || !apiClient.created.CompareAndSwap(false, true) {
+		return apiClient.Client.Create(ctx, object, options...)
+	}
+	stale := endpoint.DeepCopy()
+	stale.Spec.Addresses[0].Port++
+	stale.Finalizers = append(stale.Finalizers, "tests.dcp.microsoft.com/hold")
+	createErr := apiClient.Client.Create(ctx, stale, options...)
+	if createErr == nil {
+		apiClient.stale.Store(stale.DeepCopy())
+	}
+	return createErr
+}
+
+// Verifies that logical workload endpoint synchronization replaces stale immutable bindings,
+// waits for deletion finalizers, and publishes the desired bindings under a new endpoint UID.
+func TestV2LogicalEndpointReplacesChangedBindings(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"process", "container"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			var decorated *staleEndpointCreateClient
+			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, logicalServicePreparationControllers, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+					decorated = &staleEndpointCreateClient{Client: apiClient}
+					return decorated
+				}})
+			require.NoError(t, startupErr)
+			apiClient := server.Client
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-replace-binding-" + kind}}
+			require.NoError(t, apiClient.Create(ctx, namespace))
+			service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
+				Spec: apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}}
+			require.NoError(t, apiClient.Create(ctx, service))
+			binding := apiv2.LogicalServiceBinding{Name: "http", ServiceRef: service.Name}
+			if kind == "process" {
+				resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "workload", Namespace: namespace.Name},
+					Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name},
+						Ports: []apiv2.LogicalProcessPort{{LogicalServiceBinding: binding, Address: "127.0.0.1", Port: 8080}}}}
+				require.NoError(t, apiClient.Create(ctx, resource))
+			} else {
+				resource := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: "workload", Namespace: namespace.Name},
+					Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
+						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name},
+					}, Ports: []apiv2.LogicalContainerPort{{LogicalServiceBinding: binding, ContainerPort: 8080, HostPort: 18080}}}}
+				require.NoError(t, apiClient.Create(ctx, resource))
+			}
+			var stale *apiv2.ServiceEndpoint
+			waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(_ *apiv2.LogicalService) (bool, error) {
+				stale = decorated.stale.Load()
+				if stale == nil {
+					return false, nil
+				}
+				current := &apiv2.ServiceEndpoint{}
+				if getErr := apiClient.Get(ctx, stale.NamespacedName(), current); getErr != nil {
+					return false, getErr
+				}
+				return !current.DeletionTimestamp.IsZero(), nil
+			})
+			current := &apiv2.ServiceEndpoint{}
+			require.NoError(t, apiClient.Get(ctx, stale.NamespacedName(), current))
+			require.Equal(t, stale.UID, current.UID)
+			require.Equal(t, stale.Spec, current.Spec)
+			current.Finalizers = nil
+			require.NoError(t, apiClient.Update(ctx, current))
+			ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(currentService *apiv2.LogicalService) (bool, error) {
+				return currentService.Status.Phase == apiv2.LogicalServicePhaseReady && len(currentService.Status.EffectiveAddresses) == 1 &&
+					currentService.Status.EffectiveAddresses[0].Port == stale.Spec.Addresses[0].Port-1, nil
+			})
+			replacement := &apiv2.ServiceEndpoint{}
+			require.NoError(t, apiClient.Get(ctx, stale.NamespacedName(), replacement))
+			require.NotEqual(t, stale.UID, replacement.UID)
+			require.Equal(t, stale.OwnerReferences, replacement.OwnerReferences)
+			require.Equal(t, stale.Spec.ServiceRef, replacement.Spec.ServiceRef)
+			require.Equal(t, ready.Status.EffectiveAddresses, replacement.Spec.Addresses)
+			require.Empty(t, replacement.Finalizers)
+			require.NoError(t, apiClient.Delete(ctx, namespace))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
+		})
+	}
+}
+
 const logicalServicePreparationControllers = LogicalServiceController | LogicalProcessController |
 	PhysicalProcessController | LogicalContainerController | PhysicalContainerController | PhysicalContainerImageController
 

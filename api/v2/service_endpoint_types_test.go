@@ -14,6 +14,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 // Verifies that ServiceEndpoint.Validate requires same-namespace service references and distinct, allocated address/port pairs.
@@ -54,6 +56,58 @@ func TestServiceEndpointValidate(t *testing.T) {
 			require.ElementsMatch(t, testCase.expectedFields, actualFields, "%v", errorList)
 		})
 	}
+}
+
+// Verifies that ServiceEndpoint metadata and finalizer updates remain valid during shutdown,
+// while creation is prohibited and configuration changes remain forbidden.
+func TestServiceEndpointValidateUpdateDuringShutdown(t *testing.T) {
+	commonapi.ResourceCreationProhibited.Store(true)
+	defer commonapi.ResourceCreationProhibited.Store(false)
+	original := &ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: "test-namespace", Finalizers: []string{"test/cleanup"}},
+		Spec: ServiceEndpointSpec{ServiceRef: "service", Addresses: []ServiceAddress{{Address: "127.0.0.1", Port: 5000}}}}
+	require.NotEmpty(t, original.Validate(context.Background()))
+	updated := original.DeepCopy()
+	updated.Annotations = map[string]string{"test": "updated"}
+	require.Empty(t, updated.ValidateUpdate(context.Background(), original))
+	deletionTime := metav1.Now()
+	updated.DeletionTimestamp = &deletionTime
+	updated.Finalizers = nil
+	require.Empty(t, updated.ValidateUpdate(context.Background(), original))
+	updated.Spec.Addresses[0].Port = 0
+	require.NotEmpty(t, updated.ValidateUpdate(context.Background(), original))
+}
+
+// Verifies that ServiceEndpoint.ValidateUpdate rejects changes to either spec field, including
+// otherwise valid routing changes, while allowing metadata updates and an unchanged spec.
+func TestServiceEndpointValidateUpdate(t *testing.T) {
+	t.Parallel()
+	original := &ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: "test-namespace"},
+		Spec: ServiceEndpointSpec{ServiceRef: "service", Addresses: []ServiceAddress{{Address: "127.0.0.1", Port: 5000}}}}
+	for _, testCase := range []struct {
+		name   string
+		change func(*ServiceEndpoint)
+	}{
+		{"service", func(endpoint *ServiceEndpoint) { endpoint.Spec.ServiceRef = "other" }},
+		{"address", func(endpoint *ServiceEndpoint) { endpoint.Spec.Addresses[0].Address = "::1" }},
+		{"port", func(endpoint *ServiceEndpoint) { endpoint.Spec.Addresses[0].Port++ }},
+		{"add address", func(endpoint *ServiceEndpoint) {
+			endpoint.Spec.Addresses = append(endpoint.Spec.Addresses, ServiceAddress{Address: "::1", Port: 5000})
+		}},
+		{"remove addresses", func(endpoint *ServiceEndpoint) { endpoint.Spec.Addresses = nil }},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			updated := original.DeepCopy()
+			testCase.change(updated)
+			updateErrors := updated.ValidateUpdate(context.Background(), original)
+			require.Len(t, updateErrors, 1)
+			require.Equal(t, "spec", updateErrors[0].Field)
+			require.Contains(t, updateErrors[0].Error(), "spec is immutable")
+		})
+	}
+	updated := original.DeepCopy()
+	updated.Annotations = map[string]string{"test": "updated"}
+	updated.Finalizers = []string{"test/cleanup"}
+	require.Empty(t, updated.ValidateUpdate(context.Background(), original))
 }
 
 // Verifies that ServiceEndpoint registers with namespaced storage and standard list interfaces.

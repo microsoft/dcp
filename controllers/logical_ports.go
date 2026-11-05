@@ -139,19 +139,25 @@ func syncLogicalEndpoints(
 			continue
 		}
 		desired := apiv2.ServiceEndpointSpec{ServiceRef: port.serviceRef, Addresses: addresses[portIndex]}
-		if apierrors.IsNotFound(getErr) {
-			endpoint.Spec = desired
-			if ownerErr := ctrl.SetControllerReference(owner, endpoint, apiClient.Scheme()); ownerErr != nil {
-				return fmt.Errorf("set port %q endpoint owner: %w", port.Name, ownerErr)
+		if getErr == nil {
+			if !endpoint.DeletionTimestamp.IsZero() {
+				return fmt.Errorf("port %q endpoint is terminating", port.Name)
 			}
-			if createErr := apiClient.Create(ctx, endpoint); createErr != nil {
-				return fmt.Errorf("create port %q endpoint: %w", port.Name, createErr)
+			if reflect.DeepEqual(endpoint.Spec, desired) {
+				continue
 			}
-		} else if !reflect.DeepEqual(endpoint.Spec, desired) {
-			endpoint.Spec = desired
-			if updateErr := apiClient.Update(ctx, endpoint); updateErr != nil {
-				return fmt.Errorf("update port %q endpoint: %w", port.Name, updateErr)
+			uid := endpoint.UID
+			deleteErr := apiClient.Delete(ctx, endpoint, ctrl_client.Preconditions{UID: &uid})
+			if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+				return fmt.Errorf("delete port %q endpoint for replacement: %w", port.Name, deleteErr)
 			}
+		}
+		endpoint = &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: endpoint.Name, Namespace: endpoint.Namespace}, Spec: desired}
+		if ownerErr := ctrl.SetControllerReference(owner, endpoint, apiClient.Scheme()); ownerErr != nil {
+			return fmt.Errorf("set port %q endpoint owner: %w", port.Name, ownerErr)
+		}
+		if createErr := apiClient.Create(ctx, endpoint); createErr != nil {
+			return fmt.Errorf("create port %q endpoint: %w", port.Name, createErr)
 		}
 	}
 	return nil
