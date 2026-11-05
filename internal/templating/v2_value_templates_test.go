@@ -7,8 +7,10 @@ package templating
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -95,6 +97,76 @@ func TestEvaluateV2ValuesErrors(t *testing.T) {
 			require.Error(t, evaluationErr)
 			require.Equal(t, testCase.transient, IsTransientTemplateError(evaluationErr))
 		})
+	}
+}
+
+// Verifies that EvaluateV2Values rejects invalid consumer references before lookup in arguments
+// and environment, while valid unqualified and same-namespace references retain normal lookup behavior.
+func TestEvaluateV2ValuesValidatesConsumerReferences(t *testing.T) {
+	t.Parallel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service.name", Namespace: "test-namespace"},
+		Status: apiv2.LogicalServiceStatus{EffectiveAddresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5000}}}}
+	owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test-namespace"}}
+	for _, testCase := range []struct {
+		name      string
+		reference string
+		invalid   bool
+		missing   bool
+	}{
+		{name: "empty", invalid: true},
+		{name: "uppercase name", reference: "INVALID", invalid: true},
+		{name: "whitespace", reference: " service", invalid: true},
+		{name: "missing explicit name", reference: "test-namespace/", invalid: true},
+		{name: "missing explicit namespace", reference: "/service", invalid: true},
+		{name: "uppercase namespace", reference: "INVALID/service", invalid: true},
+		{name: "additional separator", reference: "test-namespace/service/extra", invalid: true},
+		{name: "cross namespace", reference: "other/service", invalid: true},
+		{name: "overlong name", reference: strings.Repeat("a", 254), invalid: true},
+		{name: "unqualified", reference: service.Name},
+		{name: "qualified", reference: service.Namespace + "/" + service.Name},
+		{name: "missing unqualified service", reference: "missing", missing: true},
+		{name: "missing qualified service", reference: service.Namespace + "/missing", missing: true},
+	} {
+		for _, helper := range []string{"portFor", "addressFor"} {
+			for _, fieldName := range []string{"arguments", "environment"} {
+				t.Run(testCase.name+"/"+helper+"/"+fieldName, func(t *testing.T) {
+					t.Parallel()
+					reader := &countedServiceReader{Reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(service.DeepCopy()).Build()}
+					expression := fmt.Sprintf("{{%s %q}}", helper, testCase.reference)
+					var arguments []string
+					var environment []commonapi.EnvVar
+					if fieldName == "arguments" {
+						arguments = []string{expression}
+					} else {
+						environment = []commonapi.EnvVar{{Name: "VALUE", Value: expression}}
+					}
+					resolvedArgs, resolvedEnv, evaluationErr := EvaluateV2Values(context.Background(), reader, owner, nil, arguments, environment)
+					if testCase.invalid {
+						require.ErrorContains(t, evaluationErr, "invalid service reference")
+						require.False(t, IsTransientTemplateError(evaluationErr))
+						require.Zero(t, reader.reads)
+					} else if testCase.missing {
+						require.Error(t, evaluationErr)
+						require.True(t, IsTransientTemplateError(evaluationErr))
+						require.Equal(t, 1, reader.reads)
+					} else {
+						require.NoError(t, evaluationErr)
+						require.Equal(t, 1, reader.reads)
+						expected := "5000"
+						if helper == "addressFor" {
+							expected = "127.0.0.1"
+						}
+						if fieldName == "arguments" {
+							require.Equal(t, []string{expected}, resolvedArgs)
+						} else {
+							require.Equal(t, []commonapi.EnvVar{{Name: "VALUE", Value: expected}}, resolvedEnv)
+						}
+					}
+				})
+			}
+		}
 	}
 }
 

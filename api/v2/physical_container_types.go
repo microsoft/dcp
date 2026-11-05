@@ -405,7 +405,7 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 			containerPath,
 		)...,
 	)
-	errorList = append(errorList, validateSameNamespaceResourceReference(container.ImageRef, pc.Namespace, containerPath.Child("imageRef"))...)
+	errorList = append(errorList, ValidateSameNamespaceResourceReference(container.ImageRef, pc.Namespace, containerPath.Child("imageRef"))...)
 	if container.ContainerName != "" && !validContainerNameRegexp.MatchString(container.ContainerName) {
 		errorList = append(errorList, field.Invalid(containerPath.Child("containerName"), container.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
 	}

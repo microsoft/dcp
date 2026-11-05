@@ -166,7 +166,8 @@ func validateRetainedResourceMonitor(
 	return errorList
 }
 
-func validateSameNamespaceResourceReference(
+// ValidateSameNamespaceResourceReference validates a required name or namespace/name reference within the given namespace.
+func ValidateSameNamespaceResourceReference(
 	reference string,
 	namespace string,
 	referencePath *field.Path,

@@ -463,13 +463,13 @@ func (ct *LogicalContainerConfig) Validate(namespace string, containerPath *fiel
 		errorList = append(errorList, field.Forbidden(containerPath.Child("image"), "image cannot be set when imageRef is set"))
 	}
 	if ct.ImageRef != "" {
-		errorList = append(errorList, validateSameNamespaceResourceReference(ct.ImageRef, namespace, containerPath.Child("imageRef"))...)
+		errorList = append(errorList, ValidateSameNamespaceResourceReference(ct.ImageRef, namespace, containerPath.Child("imageRef"))...)
 	}
 	if ct.Image != nil {
 		errorList = append(errorList, ct.Image.Validate(containerPath.Child("image"))...)
 	}
 	for i, network := range ct.Networks {
-		errorList = append(errorList, validateSameNamespaceResourceReference(network.NetworkRef, namespace, containerPath.Child("networks").Index(i).Child("networkRef"))...)
+		errorList = append(errorList, ValidateSameNamespaceResourceReference(network.NetworkRef, namespace, containerPath.Child("networks").Index(i).Child("networkRef"))...)
 	}
 	errorList = append(errorList, ValidateVolumeMounts(ct.VolumeMounts, namespace, containerPath.Child("volumeMounts"))...)
 	errorList = append(errorList, validateLabels(ct.Labels, containerPath.Child("labels"))...)

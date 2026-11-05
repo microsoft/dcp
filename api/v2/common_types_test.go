@@ -114,6 +114,8 @@ func TestValidateNamespacedResourceMetadata(t *testing.T) {
 	}
 }
 
+// Verifies that ValidateSameNamespaceResourceReference rejects invalid names and namespaces
+// while accepting unqualified names and explicitly qualified same-namespace references.
 func TestValidateSameNamespaceResourceReference(t *testing.T) {
 	testCases := []struct {
 		name          string
@@ -166,7 +168,7 @@ func TestValidateSameNamespaceResourceReference(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			errorList := validateSameNamespaceResourceReference(
+			errorList := ValidateSameNamespaceResourceReference(
 				tc.reference,
 				"test-namespace",
 				field.NewPath("spec", "reference"),

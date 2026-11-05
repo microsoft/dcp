@@ -14,6 +14,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -56,10 +57,11 @@ func EvaluateV2Values(
 		if len(family) > 1 || (len(family) == 1 && family[0] != "IPv4" && family[0] != "IPv6") {
 			return apiv2.ServiceAddress{}, fmt.Errorf("service address selector must be IPv4 or IPv6")
 		}
-		serviceName := commonapi.AsNamespacedName(reference, owner.GetNamespace())
-		if serviceName.Namespace != owner.GetNamespace() {
-			return apiv2.ServiceAddress{}, fmt.Errorf("cross-namespace service references are not supported")
+		referenceErrors := apiv2.ValidateSameNamespaceResourceReference(reference, owner.GetNamespace(), field.NewPath("serviceRef"))
+		if len(referenceErrors) > 0 {
+			return apiv2.ServiceAddress{}, fmt.Errorf("invalid service reference %q: %w", reference, referenceErrors.ToAggregate())
 		}
+		serviceName := commonapi.AsNamespacedName(reference, owner.GetNamespace())
 		selector := ""
 		if len(family) == 1 {
 			selector = family[0]
