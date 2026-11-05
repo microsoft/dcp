@@ -478,6 +478,10 @@ type ExecContainerOptions struct {
 	// The arguments to pass to the command
 	Args []string
 
+	// StdInStream supplies input and enables interactive exec without allocating a terminal.
+	// The caller owns the stream. Use an OS pipe for long-lived input to avoid waiting for a blocked reader on command exit.
+	StdInStream io.Reader
+
 	StreamCommandOptions
 }
 

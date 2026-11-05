@@ -644,6 +644,9 @@ func (wco *WslcCliOrchestrator) ExecContainer(ctx context.Context, options conta
 	}
 
 	args := []string{"container", "exec"}
+	if options.StdInStream != nil {
+		args = append(args, "--interactive")
+	}
 	if options.WorkingDirectory != "" {
 		args = append(args, "--workdir", options.WorkingDirectory)
 	}
@@ -663,6 +666,7 @@ func (wco *WslcCliOrchestrator) ExecContainer(ctx context.Context, options conta
 	args = append(args, options.Args...)
 
 	cmd := makeWslcCommand(args...)
+	cmd.Stdin = options.StdInStream
 	cmd.Stdout = usvc_io.NopWriteCloser(options.StdOutStream)
 	cmd.Stderr = usvc_io.NopWriteCloser(options.StdErrStream)
 	cmd.WaitDelay = 2 * time.Second

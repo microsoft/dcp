@@ -620,6 +620,9 @@ func (pco *PodmanCliOrchestrator) RunContainer(ctx context.Context, options cont
 
 func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
 	args := []string{"exec"}
+	if options.StdInStream != nil {
+		args = append(args, "--interactive")
+	}
 
 	if options.WorkingDirectory != "" {
 		args = append(args, "--workdir", options.WorkingDirectory)
@@ -642,6 +645,7 @@ func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options con
 
 	cmd := makePodmanCommand(args...)
 
+	cmd.Stdin = options.StdInStream
 	cmd.Stdout = options.StdOutStream
 	cmd.Stderr = options.StdErrStream
 	cmd.WaitDelay = 2 * time.Second
