@@ -99,7 +99,7 @@ func (resource *PhysicalContainerExec) Validate(context.Context) field.ErrorList
 		errorList = append(errorList, field.Forbidden(nil, commonapi.ErrResourceCreationProhibited.Error()))
 	}
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(resource.Annotations, field.NewPath("metadata", "annotations"))...)
-	errorList = append(errorList, validateSameNamespaceResourceReference(resource.Spec.ContainerRef, resource.Namespace, field.NewPath("spec", "containerRef"))...)
+	errorList = append(errorList, ValidateSameNamespaceResourceReference(resource.Spec.ContainerRef, resource.Namespace, field.NewPath("spec", "containerRef"))...)
 	return append(errorList, resource.Spec.Execution.validate(field.NewPath("spec", "execution"))...)
 }
 func (resource *PhysicalContainerExec) ValidateUpdate(_ context.Context, old runtime.Object) field.ErrorList {

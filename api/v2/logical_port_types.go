@@ -49,7 +49,7 @@ func (binding LogicalServiceBinding) validate(namespace string, parentName strin
 		errorList = append(errorList, field.Forbidden(bindingPath.Child("service"), "service cannot be set when serviceRef is set"))
 	}
 	if binding.ServiceRef != "" {
-		errorList = append(errorList, validateSameNamespaceResourceReference(binding.ServiceRef, namespace, bindingPath.Child("serviceRef"))...)
+		errorList = append(errorList, ValidateSameNamespaceResourceReference(binding.ServiceRef, namespace, bindingPath.Child("serviceRef"))...)
 	}
 	if binding.Service != nil {
 		for _, validationMessage := range validation.IsDNS1123Label(binding.Service.Name) {

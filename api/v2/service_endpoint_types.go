@@ -99,7 +99,7 @@ func (endpoint *ServiceEndpoint) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Forbidden(nil, commonapi.ErrResourceCreationProhibited.Error()))
 	}
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(endpoint.Annotations, field.NewPath("metadata", "annotations"))...)
-	errorList = append(errorList, validateSameNamespaceResourceReference(endpoint.Spec.ServiceRef, endpoint.Namespace, specPath.Child("serviceRef"))...)
+	errorList = append(errorList, ValidateSameNamespaceResourceReference(endpoint.Spec.ServiceRef, endpoint.Namespace, specPath.Child("serviceRef"))...)
 	errorList = append(errorList, validateServiceAddresses(endpoint.Spec.Addresses, specPath.Child("addresses"))...)
 	return errorList
 }

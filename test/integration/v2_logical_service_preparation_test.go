@@ -364,6 +364,73 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 	}
 }
 
+// Verifies that logical argument and environment templates with invalid service references fail
+// preparation terminally without creating workload backings or image dependencies.
+func TestV2LogicalValuesRejectInvalidServiceReferences(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"process", "container"} {
+		for _, fieldName := range []string{"arguments", "environment"} {
+			for _, reference := range []string{"", "INVALID"} {
+				t.Run(kind+"/"+fieldName+"/"+reference, func(t *testing.T) {
+					t.Parallel()
+					ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+					defer cancel()
+					referenceName := "empty"
+					if reference != "" {
+						referenceName = strings.ToLower(reference)
+					}
+					namespace := createActiveV2Namespace(t, ctx, "v2-invalid-reference-"+kind+"-"+fieldName+"-"+referenceName)
+					name := types.NamespacedName{Namespace: namespace.Name, Name: "workload"}
+					var arguments []string
+					var environment []commonapi.EnvVar
+					if fieldName == "arguments" {
+						arguments = []string{fmt.Sprintf(`{{portFor %q}}`, reference)}
+					} else {
+						environment = []commonapi.EnvVar{{Name: "HOST", Value: fmt.Sprintf(`{{addressFor %q}}`, reference)}}
+					}
+					if kind == "process" {
+						resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: name.Name, Namespace: name.Namespace},
+							Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{
+								ExecutablePath: namespace.Name, Args: arguments, Env: environment,
+							}}}
+						require.NoError(t, client.Create(ctx, resource))
+						failed := waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalProcess) (bool, error) {
+							return current.Status.Phase == apiv2.LogicalProcessPhaseFailed && len(current.Status.Conditions) > 0 &&
+								current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+						})
+						require.Contains(t, failed.Status.Conditions[0].Message, "invalid service reference")
+						require.Empty(t, failed.Status.PhysicalProcessRef)
+						require.Empty(t, testProcessExecutor.FindAll([]string{namespace.Name}, "", nil))
+					} else {
+						resource := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: name.Name, Namespace: name.Namespace},
+							Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
+								Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name}, Command: arguments, Env: environment,
+							}}}
+						require.NoError(t, client.Create(ctx, resource))
+						failed := waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalContainer) (bool, error) {
+							return current.Status.Phase == apiv2.LogicalContainerPhaseFailed && len(current.Status.Conditions) > 0 &&
+								current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+						})
+						require.Contains(t, failed.Status.Conditions[0].Message, "invalid service reference")
+						require.Empty(t, failed.Status.PhysicalContainerRef)
+					}
+					var processes apiv2.PhysicalProcessList
+					require.NoError(t, client.List(ctx, &processes, ctrl_client.InNamespace(namespace.Name)))
+					require.Empty(t, processes.Items)
+					var containersList apiv2.PhysicalContainerList
+					require.NoError(t, client.List(ctx, &containersList, ctrl_client.InNamespace(namespace.Name)))
+					require.Empty(t, containersList.Items)
+					var images apiv2.PhysicalContainerImageList
+					require.NoError(t, client.List(ctx, &images, ctrl_client.InNamespace(namespace.Name)))
+					require.Empty(t, images.Items)
+					require.NoError(t, client.Delete(ctx, namespace))
+					ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
+				})
+			}
+		}
+	}
+}
+
 // Verifies that LogicalProcess retries pending template dependencies and honors stop before handoff,
 // while fatal preparation remains terminal without taking control of a retained process.
 func TestV2LogicalProcessTemplatePreparationLifecycle(t *testing.T) {
