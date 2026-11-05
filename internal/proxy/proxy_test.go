@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -217,9 +218,97 @@ func TestUDPModeProxy(t *testing.T) {
 	require.NoError(t, serverConn.Close())
 }
 
-// Verifies that UDP proxies forward requests and replies across all frontend/backend address-family
+// Verifies that TCP and UDP proxies forward requests and replies across all frontend/backend address-family
 // combinations, including hostname backends, without changing the client-facing listener identity.
-func TestUDPProxyFrontendAndBackendAddressFamilies(t *testing.T) {
+func TestProxyFrontendAndBackendAddressFamilies(t *testing.T) {
+	t.Parallel()
+	for _, protocol := range []commonapi.PortProtocol{commonapi.PortProtocolTCP, commonapi.PortProtocolUDP} {
+		for _, testCase := range []struct {
+			name           string
+			listenAddress  string
+			backendAddress string
+		}{
+			{"IPv4-to-IPv4", networking.IPv4LocalhostDefaultAddress, networking.IPv4LocalhostDefaultAddress},
+			{"IPv4-to-IPv6", networking.IPv4LocalhostDefaultAddress, "::1"},
+			{"IPv6-to-IPv4", networking.IPv6LocalhostDefaultAddress, networking.IPv4LocalhostDefaultAddress},
+			{"IPv6-to-IPv6", networking.IPv6LocalhostDefaultAddress, "::1"},
+			{"IPv4-to-hostname", networking.IPv4LocalhostDefaultAddress, networking.Localhost},
+			{"IPv6-to-hostname", networking.IPv6LocalhostDefaultAddress, networking.Localhost},
+		} {
+			t.Run(string(protocol)+"/"+testCase.name, func(t *testing.T) {
+				t.Parallel()
+				if (testCase.listenAddress == networking.IPv6LocalhostDefaultAddress || testCase.backendAddress == "::1") &&
+					!networking.IsIPv6(networking.IPv6LocalhostDefaultAddress) {
+					t.Skip("IPv6 is unavailable")
+				}
+				ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+				defer cancel()
+				deadline, hasDeadline := ctx.Deadline()
+				require.True(t, hasDeadline)
+				if protocol == commonapi.PortProtocolTCP {
+					serverAddress, resolveErr := net.ResolveTCPAddr("tcp", networking.AddressAndPort(testCase.backendAddress, 0))
+					require.NoError(t, resolveErr)
+					listener, listenErr := net.ListenTCP("tcp", serverAddress)
+					require.NoError(t, listenErr)
+					defer func() { require.NoError(t, listener.Close()) }()
+					require.NoError(t, listener.SetDeadline(deadline))
+					runtimeProxy := newNetProxy(protocol, testCase.listenAddress, 0, ctx, logr.Discard())
+					require.NoError(t, runtimeProxy.Start())
+					require.NoError(t, runtimeProxy.Configure(ProxyConfig{Endpoints: []Endpoint{{
+						Address: testCase.backendAddress, Port: int32(listener.Addr().(*net.TCPAddr).Port),
+					}}}))
+					dialer := net.Dialer{}
+					clientConn, clientErr := dialer.DialContext(ctx, "tcp", networking.AddressAndPort(runtimeProxy.EffectiveAddress(), runtimeProxy.EffectivePort()))
+					require.NoError(t, clientErr)
+					defer func() { require.NoError(t, clientConn.Close()) }()
+					require.NoError(t, clientConn.SetDeadline(deadline))
+					backendConn, acceptErr := listener.Accept()
+					require.NoError(t, acceptErr)
+					defer func() { require.NoError(t, backendConn.Close()) }()
+					require.NoError(t, backendConn.SetDeadline(deadline))
+					require.Equal(t, networking.AddressAndPort(runtimeProxy.EffectiveAddress(), runtimeProxy.EffectivePort()), clientConn.RemoteAddr().String())
+					require.True(t, backendConn.RemoteAddr().(*net.TCPAddr).IP.IsLoopback())
+					for range 2 {
+						_, writeErr := clientConn.Write([]byte("request"))
+						require.NoError(t, writeErr)
+						request := make([]byte, len("request"))
+						_, readErr := io.ReadFull(backendConn, request)
+						require.NoError(t, readErr)
+						require.Equal(t, "request", string(request))
+						_, replyErr := backendConn.Write([]byte("reply"))
+						require.NoError(t, replyErr)
+						response := make([]byte, len("reply"))
+						_, responseErr := io.ReadFull(clientConn, response)
+						require.NoError(t, responseErr)
+						require.Equal(t, "reply", string(response))
+					}
+					return
+				}
+				serverAddress, resolveErr := net.ResolveUDPAddr("udp", networking.AddressAndPort(testCase.backendAddress, 0))
+				require.NoError(t, resolveErr)
+				serverConn, listenErr := net.ListenUDP("udp", serverAddress)
+				require.NoError(t, listenErr)
+				defer func() { require.NoError(t, serverConn.Close()) }()
+				runtimeProxy := newNetProxy(commonapi.PortProtocolUDP, testCase.listenAddress, 0, ctx, logr.Discard())
+				require.NoError(t, runtimeProxy.Start())
+				require.NoError(t, runtimeProxy.Configure(ProxyConfig{Endpoints: []Endpoint{{
+					Address: testCase.backendAddress, Port: int32(serverConn.LocalAddr().(*net.UDPAddr).Port),
+				}}}))
+				clientConn, clientErr := net.ListenPacket("udp", networking.AddressAndPort(testCase.listenAddress, 0))
+				require.NoError(t, clientErr)
+				defer func() { require.NoError(t, clientConn.Close()) }()
+				require.NoError(t, serverConn.SetDeadline(deadline))
+				require.NoError(t, clientConn.SetDeadline(deadline))
+				verifyUDPPacketFlow(t, runtimeProxy, serverConn, clientConn)
+				verifyUDPPacketFlow(t, runtimeProxy, serverConn, clientConn)
+			})
+		}
+	}
+}
+
+// Verifies that UDP backend connections reject replies from an unrelated sender while preserving
+// replies from the selected backend across all frontend/backend address-family combinations.
+func TestUDPProxyRejectsUnrelatedBackendReplies(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		name           string
@@ -230,8 +319,6 @@ func TestUDPProxyFrontendAndBackendAddressFamilies(t *testing.T) {
 		{"IPv4-to-IPv6", networking.IPv4LocalhostDefaultAddress, "::1"},
 		{"IPv6-to-IPv4", networking.IPv6LocalhostDefaultAddress, networking.IPv4LocalhostDefaultAddress},
 		{"IPv6-to-IPv6", networking.IPv6LocalhostDefaultAddress, "::1"},
-		{"IPv4-to-hostname", networking.IPv4LocalhostDefaultAddress, networking.Localhost},
-		{"IPv6-to-hostname", networking.IPv6LocalhostDefaultAddress, networking.Localhost},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
@@ -241,25 +328,44 @@ func TestUDPProxyFrontendAndBackendAddressFamilies(t *testing.T) {
 			}
 			ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 			defer cancel()
-			serverAddress, resolveErr := net.ResolveUDPAddr("udp", networking.AddressAndPort(testCase.backendAddress, 0))
-			require.NoError(t, resolveErr)
-			serverConn, listenErr := net.ListenUDP("udp", serverAddress)
-			require.NoError(t, listenErr)
-			defer func() { require.NoError(t, serverConn.Close()) }()
+			deadline, hasDeadline := ctx.Deadline()
+			require.True(t, hasDeadline)
+			backend, backendErr := net.ListenPacket("udp", networking.AddressAndPort(testCase.backendAddress, 0))
+			require.NoError(t, backendErr)
+			defer func() { require.NoError(t, backend.Close()) }()
+			require.NoError(t, backend.SetDeadline(deadline))
 			runtimeProxy := newNetProxy(commonapi.PortProtocolUDP, testCase.listenAddress, 0, ctx, logr.Discard())
 			require.NoError(t, runtimeProxy.Start())
 			require.NoError(t, runtimeProxy.Configure(ProxyConfig{Endpoints: []Endpoint{{
-				Address: testCase.backendAddress, Port: int32(serverConn.LocalAddr().(*net.UDPAddr).Port),
+				Address: testCase.backendAddress, Port: int32(backend.LocalAddr().(*net.UDPAddr).Port),
 			}}}))
-			clientConn, clientErr := net.ListenPacket("udp", networking.AddressAndPort(testCase.listenAddress, 0))
-			require.NoError(t, clientErr)
-			defer func() { require.NoError(t, clientConn.Close()) }()
-			deadline, hasDeadline := ctx.Deadline()
-			require.True(t, hasDeadline)
-			require.NoError(t, serverConn.SetDeadline(deadline))
-			require.NoError(t, clientConn.SetDeadline(deadline))
-			verifyUDPPacketFlow(t, runtimeProxy, serverConn, clientConn)
-			verifyUDPPacketFlow(t, runtimeProxy, serverConn, clientConn)
+			connection, connectionErr := net.Dial("udp", networking.AddressAndPort(runtimeProxy.EffectiveAddress(), runtimeProxy.EffectivePort()))
+			require.NoError(t, connectionErr)
+			defer func() { require.NoError(t, connection.Close()) }()
+			require.NoError(t, connection.SetDeadline(deadline))
+			_, requestErr := connection.Write([]byte("request"))
+			require.NoError(t, requestErr)
+			buffer := make([]byte, 32)
+			requestSize, streamAddress, requestReadErr := backend.ReadFrom(buffer)
+			require.NoError(t, requestReadErr)
+			require.Equal(t, "request", string(buffer[:requestSize]))
+			require.True(t, streamAddress.(*net.UDPAddr).IP.IsLoopback())
+			unrelated, unrelatedErr := net.ListenPacket("udp", networking.AddressAndPort(testCase.backendAddress, 0))
+			require.NoError(t, unrelatedErr)
+			defer func() { require.NoError(t, unrelated.Close()) }()
+			require.NotEqual(t, backend.LocalAddr().(*net.UDPAddr).Port, unrelated.LocalAddr().(*net.UDPAddr).Port)
+			_, unrelatedWriteErr := unrelated.WriteTo([]byte("unrelated-reply"), streamAddress)
+			require.NoError(t, unrelatedWriteErr)
+			// Bound the no-reply assertion, then restore the test deadline for valid traffic.
+			require.NoError(t, connection.SetReadDeadline(time.Now().Add(networking.NetworkOpTimeout)))
+			_, unrelatedReadErr := connection.Read(buffer)
+			require.True(t, isTimeoutError(unrelatedReadErr), "unexpected reply or read error: %v", unrelatedReadErr)
+			require.NoError(t, connection.SetReadDeadline(deadline))
+			_, replyErr := backend.WriteTo([]byte("selected-backend"), streamAddress)
+			require.NoError(t, replyErr)
+			replySize, replyReadErr := connection.Read(buffer)
+			require.NoError(t, replyReadErr)
+			require.Equal(t, "selected-backend", string(buffer[:replySize]))
 		})
 	}
 }

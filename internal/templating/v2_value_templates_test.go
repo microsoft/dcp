@@ -43,17 +43,23 @@ func TestEvaluateV2ValuesServiceAddresses(t *testing.T) {
 		Status: apiv2.LogicalServiceStatus{EffectiveAddresses: []apiv2.ServiceAddress{{Address: "::1", Port: 5001}, {Address: "127.0.0.1", Port: 5000}}}}
 	reader := &countedServiceReader{Reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(service).Build()}
 	owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test-namespace"}}
-	arguments := []string{`{{portForServing "http"}}`, `{{addressForServing "http"}}`, `{{addressFor "service"}}:{{portFor "service"}}`,
-		`{{addressFor "service" "IPv6"}}:{{portFor "service" "IPv6"}}`, `{{addressFor "service" "IPv4"}}:{{portFor "service" "IPv4"}}`}
+	expectedDefault := "127.0.0.1:5000"
+	if networking.GetIpVersionPreference() == networking.IpVersionPreference6 && networking.IsIPv6("::1") {
+		expectedDefault = "[::1]:5001"
+	}
+	arguments := []string{`{{portForServing "http"}}`, `{{addressForServing "http"}}`, `{{addressFor "service"}}:{{portFor "service"}}`}
+	expectedArguments := []string{"8080", "0.0.0.0", expectedDefault}
+	if networking.IsIPv6("::1") {
+		arguments = append(arguments, `{{addressFor "service" "IPv6"}}:{{portFor "service" "IPv6"}}`)
+		expectedArguments = append(expectedArguments, "[::1]:5001")
+	}
+	arguments = append(arguments, `{{addressFor "service" "IPv4"}}:{{portFor "service" "IPv4"}}`)
+	expectedArguments = append(expectedArguments, "127.0.0.1:5000")
 	environment := []commonapi.EnvVar{{Name: "PORT", Value: `{{portForServing "http"}}`}, {Name: "EMPTY", Value: ""}}
 	resolvedArgs, resolvedEnv, evaluationErr := EvaluateV2Values(context.Background(), reader, owner,
 		[]ServingPort{{Name: "http", Address: "0.0.0.0", Port: 8080}}, arguments, environment)
 	require.NoError(t, evaluationErr)
-	expectedDefault := "127.0.0.1:5000"
-	if networking.GetIpVersionPreference() == networking.IpVersionPreference6 {
-		expectedDefault = "[::1]:5001"
-	}
-	require.Equal(t, []string{"8080", "0.0.0.0", expectedDefault, "[::1]:5001", "127.0.0.1:5000"}, resolvedArgs)
+	require.Equal(t, expectedArguments, resolvedArgs)
 	require.Equal(t, []commonapi.EnvVar{{Name: "PORT", Value: "8080"}, {Name: "EMPTY", Value: ""}}, resolvedEnv)
 	require.Equal(t, 1, reader.reads)
 	require.Equal(t, `{{portForServing "http"}}`, arguments[0])

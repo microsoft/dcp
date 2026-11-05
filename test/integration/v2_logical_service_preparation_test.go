@@ -20,8 +20,11 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/logs"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -307,8 +310,8 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 			defer cancel()
 			namespace := createActiveV2Namespace(t, ctx, "v2-template-reference-"+kind)
 			name := types.NamespacedName{Namespace: namespace.Name, Name: "workload"}
-			arguments := []string{`{{portFor "dependency" "IPv6"}}`}
-			environment := []commonapi.EnvVar{{Name: "HOST", Value: `{{addressFor "dependency" "IPv6"}}`}}
+			arguments := []string{`{{portFor "dependency" "IPv4"}}`}
+			environment := []commonapi.EnvVar{{Name: "HOST", Value: `{{addressFor "dependency" "IPv4"}}`}}
 			if kind == "process" {
 				resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: name.Name, Namespace: name.Namespace},
 					Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: "template-reference-process", Args: arguments, Env: environment}}}
@@ -328,6 +331,7 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 						current.Status.Conditions[0].Reason == "TemplateEvaluationFailed" && current.Status.PhysicalContainerRef == "", nil
 				})
 			}
+
 			service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "dependency", Namespace: namespace.Name},
 				Spec: apiv2.LogicalServiceSpec{
 					AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless,
@@ -343,19 +347,198 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 				})
 				physical := &apiv2.PhysicalProcess{}
 				require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: name.Namespace, Name: running.Status.PhysicalProcessRef}, physical))
-				require.Equal(t, []string{strconv.Itoa(5001)}, physical.Spec.Process.Args)
-				require.Equal(t, []commonapi.EnvVar{{Name: "HOST", Value: "[::1]"}}, physical.Spec.Process.Env)
+				require.Equal(t, []string{strconv.Itoa(5000)}, physical.Spec.Process.Args)
+				require.Equal(t, []commonapi.EnvVar{{Name: "HOST", Value: "127.0.0.1"}}, physical.Spec.Process.Env)
 			} else {
 				running := waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalContainer) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
 				})
 				physical := &apiv2.PhysicalContainer{}
 				require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: name.Namespace, Name: running.Status.PhysicalContainerRef}, physical))
-				require.Equal(t, []string{strconv.Itoa(5001)}, physical.Spec.Container.Command)
-				require.Equal(t, []commonapi.EnvVar{{Name: "HOST", Value: "[::1]"}}, physical.Spec.Container.Env)
+				require.Equal(t, []string{strconv.Itoa(5000)}, physical.Spec.Container.Command)
+				require.Equal(t, []commonapi.EnvVar{{Name: "HOST", Value: "127.0.0.1"}}, physical.Spec.Container.Env)
 			}
 			require.NoError(t, client.Delete(ctx, namespace))
 			ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
 		})
+	}
+}
+
+// Verifies that LogicalProcess retries pending template dependencies and honors stop before handoff,
+// while fatal preparation remains terminal without taking control of a retained process.
+func TestV2LogicalProcessTemplatePreparationLifecycle(t *testing.T) {
+	t.Parallel()
+	for _, fieldName := range []string{"arguments", "environment"} {
+		for _, keyKind := range []string{"computed", "explicit"} {
+			for _, outcome := range []string{"waiting", "fatal"} {
+				t.Run(fieldName+"/"+keyKind+"/"+outcome, func(t *testing.T) {
+					t.Parallel()
+					ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+					defer cancel()
+					namespace := createActiveV2Namespace(t, ctx, "v2-process-template-"+fieldName+"-"+keyKind+"-"+outcome)
+					command := namespace.Name
+					spec := apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+						Process: &apiv2.LogicalProcessConfig{ExecutablePath: command, Args: []string{"original"}}}
+					if keyKind == "explicit" {
+						spec.LifecycleKey = "retained-key"
+					}
+					first := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "workload", Namespace: namespace.Name}, Spec: spec}
+					require.NoError(t, client.Create(ctx, first))
+					running := waitLogicalProcessPhase(t, ctx, first.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+					pid, pidErr := process.Int64_ToPidT(*running.Status.PID)
+					require.NoError(t, pidErr)
+					handle := process.NewHandle(pid, running.Status.IdentityTimestamp.Time)
+					record, recordErr := testStateStore.GetPersistentProcess(ctx, first.GetLeaseKey())
+					require.NoError(t, recordErr)
+					t.Cleanup(func() {
+						cleanupCtx := context.WithoutCancel(ctx)
+						stopErr := testProcessExecutor.StopProcess(cleanupCtx, handle)
+						require.True(t, stopErr == nil || process.IsProcessGoneErr(stopErr), "%v", stopErr)
+						require.NoError(t, logs.RemoveOutputFiles(cleanupCtx, record.StdOutFile, record.StdErrFile))
+						require.NoError(t, testStateStore.DeletePersistentProcess(cleanupCtx, record.ResourceKey))
+					})
+					require.NoError(t, client.Delete(ctx, first))
+					ctrl_testutil.WaitObjectDeleted(t, ctx, client, first)
+					require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
+					replacementSpec := spec.DeepCopy()
+					value := "{{"
+					expectedPhase := apiv2.LogicalProcessPhaseFailed
+					if outcome == "waiting" {
+						value = `{{portFor "missing"}}`
+						expectedPhase = apiv2.LogicalProcessPhasePending
+					}
+					if fieldName == "arguments" {
+						replacementSpec.Process.Args = []string{value}
+					} else {
+						replacementSpec.Process.Env = []commonapi.EnvVar{{Name: "VALUE", Value: value}}
+					}
+					replacement := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: first.Name, Namespace: namespace.Name}, Spec: *replacementSpec}
+					require.NoError(t, client.Create(ctx, replacement))
+					prepared := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+						return current.Status.Phase == expectedPhase && len(current.Status.Conditions) > 0 &&
+							current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+					})
+					require.Empty(t, prepared.Status.PhysicalProcessRef)
+					require.NoError(t, client.Patch(ctx, replacement,
+						ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+					if outcome == "waiting" {
+						waitLogicalProcessPhase(t, ctx, replacement.NamespacedName(), apiv2.LogicalProcessPhaseExited)
+						require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(handle)))
+					} else {
+						// Force status reprojection to observe reconciliation after Stop rather than a stale failure snapshot.
+						require.NoError(t, retryOnConflict(ctx, replacement.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
+							current.Status.Phase = apiv2.LogicalProcessPhaseUnknown
+							current.Status.Conditions = nil
+							return client.Status().Update(updateCtx, current)
+						}))
+						terminal := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+							return current.Status.Phase == apiv2.LogicalProcessPhaseFailed && current.Spec.Stop &&
+								len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+						})
+						require.Empty(t, terminal.Status.PhysicalProcessRef)
+						var backings apiv2.PhysicalProcessList
+						require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+						require.Empty(t, backings.Items)
+						require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
+					}
+					require.Len(t, testProcessExecutor.FindAll([]string{command}, "", nil), 1)
+					require.NoError(t, client.Delete(ctx, namespace))
+					ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
+				})
+			}
+		}
+	}
+}
+
+// Verifies that LogicalContainer retries pending template dependencies and honors stop before handoff,
+// while fatal preparation remains terminal without taking control of a retained container.
+func TestV2LogicalContainerTemplatePreparationLifecycle(t *testing.T) {
+	t.Parallel()
+	for _, fieldName := range []string{"arguments", "environment"} {
+		for _, keyKind := range []string{"computed", "explicit"} {
+			for _, outcome := range []string{"waiting", "fatal"} {
+				t.Run(fieldName+"/"+keyKind+"/"+outcome, func(t *testing.T) {
+					t.Parallel()
+					ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+					defer cancel()
+					namespace := createActiveV2Namespace(t, ctx, "v2-container-template-"+fieldName+"-"+keyKind+"-"+outcome)
+					runtimeName := namespace.Name + "-runtime"
+					spec := apiv2.LogicalContainerSpec{Mode: apiv2.LogicalContainerModePersistent, ContainerName: runtimeName,
+						Container: &apiv2.LogicalContainerConfig{
+							Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name}, Command: []string{"original"},
+						}}
+					if keyKind == "explicit" {
+						spec.LifecycleKey = "retained-key"
+					}
+					first := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: "workload", Namespace: namespace.Name}, Spec: spec}
+					require.NoError(t, client.Create(ctx, first))
+					running := waitObjectAssumesState(t, ctx, first.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+						return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+					})
+					removeRuntimeContainerOnCleanup(t, running.Status.ContainerID)
+					require.NoError(t, client.Delete(ctx, first))
+					ctrl_testutil.WaitObjectDeleted(t, ctx, client, first)
+					retained, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{running.Status.ContainerID}})
+					require.NoError(t, inspectErr)
+					require.Len(t, retained, 1)
+					require.Equal(t, containers.ContainerStatusRunning, retained[0].Status)
+					replacementSpec := spec.DeepCopy()
+					value := "{{"
+					expectedPhase := apiv2.LogicalContainerPhaseFailed
+					if outcome == "waiting" {
+						value = `{{portFor "missing"}}`
+						expectedPhase = apiv2.LogicalContainerPhasePending
+					}
+					if fieldName == "arguments" {
+						replacementSpec.Container.Command = []string{value}
+					} else {
+						replacementSpec.Container.Env = []commonapi.EnvVar{{Name: "VALUE", Value: value}}
+					}
+					replacement := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: first.Name, Namespace: namespace.Name}, Spec: *replacementSpec}
+					require.NoError(t, client.Create(ctx, replacement))
+					prepared := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+						return current.Status.Phase == expectedPhase && len(current.Status.Conditions) > 0 &&
+							current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+					})
+					require.Empty(t, prepared.Status.PhysicalContainerRef)
+					require.NoError(t, client.Patch(ctx, replacement,
+						ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+					expectedRuntimeState := containers.ContainerStatusRunning
+					if outcome == "waiting" {
+						stopped := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+							return current.Status.Phase == apiv2.LogicalContainerPhaseExited, nil
+						})
+						require.Equal(t, running.Status.ContainerID, stopped.Status.ContainerID)
+						expectedRuntimeState = containers.ContainerStatusExited
+					} else {
+						// Force status reprojection to observe reconciliation after Stop rather than a stale failure snapshot.
+						require.NoError(t, retryOnConflict(ctx, replacement.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
+							current.Status.Phase = apiv2.LogicalContainerPhaseUnknown
+							current.Status.Conditions = nil
+							return client.Status().Update(updateCtx, current)
+						}))
+						terminal := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+							return current.Status.Phase == apiv2.LogicalContainerPhaseFailed && current.Spec.Stop &&
+								len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+						})
+						require.Empty(t, terminal.Status.PhysicalContainerRef)
+						var backings apiv2.PhysicalContainerList
+						require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+						require.Empty(t, backings.Items)
+						var images apiv2.PhysicalContainerImageList
+						require.NoError(t, client.List(ctx, &images, ctrl_client.InNamespace(namespace.Name)))
+						require.Empty(t, images.Items)
+					}
+					require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(runtimeName))
+					require.Zero(t, containerOrchestrator.RemoveContainerCallCount(runtimeName))
+					observed, observeErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{running.Status.ContainerID}})
+					require.NoError(t, observeErr)
+					require.Len(t, observed, 1)
+					require.Equal(t, expectedRuntimeState, observed[0].Status)
+					require.NoError(t, client.Delete(ctx, namespace))
+					ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
+				})
+			}
+		}
 	}
 }
