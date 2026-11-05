@@ -165,15 +165,15 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 		if reason == "" {
 			switch data.state {
 			case logicalContainerStatePending:
-				reason = "PhysicalResourcePreparationFailed"
+				reason = apiv2.LogicalContainerReasonPhysicalResourcePreparationFailed
 			case logicalContainerStateDelete:
-				reason = "PhysicalResourceDeletionFailed"
+				reason = apiv2.LogicalContainerReasonPhysicalResourceDeletionFailed
 			default:
-				reason = "PhysicalContainerLookupFailed"
+				reason = apiv2.LogicalContainerReasonPhysicalContainerLookupFailed
 			}
 		}
 		if data.leaseFailureMessage != "" {
-			reason, message = "PersistenceFailed", data.leaseFailureMessage
+			reason, message = apiv2.LogicalResourceReasonPersistenceFailed, data.leaseFailureMessage
 		}
 		change |= setValue(&container.Status.Phase, phase)
 		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation,
@@ -196,51 +196,51 @@ var logicalContainerProjections = physicalResourceProjectionTable[logicalContain
 	projections: map[logicalContainerState]physicalResourceProjection[apiv2.LogicalContainerPhase]{
 		logicalContainerStatePending: {
 			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: logicalContainerPreparationPendingReason,
+			conditionReason: apiv2.LogicalContainerReasonPhysicalResourcePreparationPending,
 		},
 		logicalContainerStatePreparationFailed: {
 			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalResourcePreparationFailed",
+			conditionReason: apiv2.LogicalContainerReasonPhysicalResourcePreparationFailed,
 		},
 		logicalContainerStateCreating: {
 			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalContainerNotReady",
+			conditionReason: apiv2.LogicalContainerReasonPhysicalContainerNotReady,
 		},
 		logicalContainerStateRunning: {
 			phase: apiv2.LogicalContainerPhaseRunning, conditionStatus: metav1.ConditionTrue,
-			conditionReason: "ContainerRunning", message: "The logical container is running.",
+			conditionReason: apiv2.LogicalContainerReasonRunning, message: "The logical container is running.",
 		},
 		logicalContainerStatePaused: {
 			phase: apiv2.LogicalContainerPhasePaused, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "ContainerPaused", message: "The logical container is paused.",
+			conditionReason: apiv2.LogicalContainerReasonPaused, message: "The logical container is paused.",
 		},
 		logicalContainerStateExited: {
 			phase: apiv2.LogicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "ContainerExited", message: "The logical container has exited.",
+			conditionReason: apiv2.LogicalContainerReasonExited, message: "The logical container has exited.",
 		},
 		logicalContainerStateFailed: {
 			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalContainerFailed",
+			conditionReason: apiv2.LogicalContainerReasonPhysicalContainerFailed,
 		},
 		logicalContainerStateUnknown: {
 			phase: apiv2.LogicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalContainerStateUnknown",
+			conditionReason: apiv2.LogicalContainerReasonPhysicalContainerStateUnknown,
 		},
 		logicalContainerStateStopping: {
 			phase: apiv2.LogicalContainerPhaseStopping, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "ContainerStopping", message: "Waiting for the physical controller to stop the runtime container.",
+			conditionReason: apiv2.LogicalContainerReasonStopping, message: "Waiting for the physical controller to stop the runtime container.",
 		},
 		logicalContainerStateStopped: {
 			phase: apiv2.LogicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "ContainerStopped", message: "The logical container has stopped.",
+			conditionReason: apiv2.LogicalContainerReasonStopped, message: "The logical container has stopped.",
 		},
 		logicalContainerStateStopFailed: {
 			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalContainerFailed",
+			conditionReason: apiv2.LogicalContainerReasonPhysicalContainerFailed,
 		},
 		logicalContainerStateDelete: {
 			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "DeletingPhysicalResources", requeue: true,
+			conditionReason: apiv2.LogicalContainerReasonDeletingPhysicalResources, requeue: true,
 		},
 	},
 }

@@ -146,33 +146,33 @@ var physicalContainerExecProjections = physicalResourceProjectionTable[physicalC
 	invalidPhase: apiv2.ContainerExecPhaseFailed,
 	projections: map[physicalContainerExecState]physicalResourceProjection[apiv2.ContainerExecPhase]{
 		physicalContainerExecStateTargetNotFound: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerNotFound",
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ContainerExecReasonContainerNotFound,
 		},
 		physicalContainerExecStateTarget: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerNotReady",
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ContainerExecReasonContainerNotReady,
 		},
 		physicalContainerExecStateTargetRetry: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerLookupFailed",
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ContainerExecReasonContainerLookupFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
 		physicalContainerExecStateLaunch: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "Launching",
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ContainerExecReasonLaunching,
 		},
 		physicalContainerExecStateLaunchRetry: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "LaunchQueueFailed",
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ContainerExecReasonLaunchQueueFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
 		physicalContainerExecStateFailed: {
-			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "LaunchFailed",
+			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ContainerExecReasonLaunchFailed,
 		},
 		physicalContainerExecStateRunning: {
-			phase: apiv2.ContainerExecPhaseRunning, conditionStatus: metav1.ConditionTrue, conditionReason: "ExecutionRunning",
+			phase: apiv2.ContainerExecPhaseRunning, conditionStatus: metav1.ConditionTrue, conditionReason: apiv2.ContainerExecReasonRunning,
 		},
 		physicalContainerExecStateExited: {
-			phase: apiv2.ContainerExecPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: "ExecutionExited",
+			phase: apiv2.ContainerExecPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ContainerExecReasonExited,
 		},
 		physicalContainerExecStateStop: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "Stopping",
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ContainerExecReasonStopping,
 		},
 		physicalContainerExecStateInvalid: {
 			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse,

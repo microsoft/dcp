@@ -189,7 +189,7 @@ func TestV2LogicalContainerDeletionWaitsForInFlightCreation(t *testing.T) {
 	require.NoError(t, client.Delete(ctx, logical))
 	waitObjectAssumesState(t, ctx, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == "DeletingPhysicalResources", nil
+		return ready != nil && ready.Reason == string(apiv2.LogicalContainerReasonDeletingPhysicalResources), nil
 	})
 	name := types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(logical.UID)}
 	physical := waitObjectAssumesState(t, ctx, name, func(current *apiv2.PhysicalContainer) (bool, error) {
@@ -337,15 +337,15 @@ func TestV2LogicalContainerDiscoversAndDeletesOwnedBackings(t *testing.T) {
 			if !testCase.deleteBeforeObserve {
 				expected := apiv2.LogicalContainerPhaseRunning
 				if testCase.count > 1 {
-					expected = apiv2.LogicalContainerPhaseFailed
+					expected = apiv2.LogicalContainerPhaseUnknown
 				}
 				observed := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 					return current.Status.Phase == expected, nil
 				})
 				if testCase.count > 1 {
-					var reason apiv2.ConditionReason = "MultiplePhysicalContainers"
+					var reason apiv2.ConditionReason = apiv2.LogicalContainerReasonMultiplePhysicalContainers
 					if testCase.images {
-						reason = "MultiplePhysicalImages"
+						reason = apiv2.LogicalContainerReasonMultiplePhysicalImages
 					}
 					requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, reason)
 				} else if testCase.images {
@@ -519,9 +519,9 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 			}
 			allowObservation()
 			expectedPhase := apiv2.LogicalContainerPhaseUnknown
-			var expectedReason apiv2.ConditionReason = "PhysicalResourcePreparationFailed"
+			var expectedReason apiv2.ConditionReason = apiv2.LogicalContainerReasonPhysicalResourcePreparationFailed
 			if testCase.existingContainer {
-				expectedPhase, expectedReason = apiv2.LogicalContainerPhasePending, "PhysicalResourcePreparationPending"
+				expectedPhase, expectedReason = apiv2.LogicalContainerPhasePending, apiv2.LogicalContainerReasonPhysicalResourcePreparationPending
 			}
 			waiting := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
@@ -605,9 +605,9 @@ func TestV2LogicalContainerRetriesBackingLookup(t *testing.T) {
 			})
 			gate.containerLookupBlocked.Store(true)
 			expectedPhase := apiv2.LogicalContainerPhaseUnknown
-			var expectedReason apiv2.ConditionReason = "PhysicalContainerLookupFailed"
+			var expectedReason apiv2.ConditionReason = apiv2.LogicalContainerReasonPhysicalContainerLookupFailed
 			if action == "deleting" {
-				expectedReason = "PhysicalResourceDeletionFailed"
+				expectedReason = apiv2.LogicalContainerReasonPhysicalResourceDeletionFailed
 				require.NoError(t, server.Client.Delete(ctx, logical))
 			} else {
 				require.NoError(t, retryOnConflictEx(ctx, server.Client, logical.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
@@ -822,8 +822,8 @@ func (client *backingStatusConflicts) Patch(ctx context.Context, obj ctrl_client
 	return nil
 }
 
-// Verifies that removing either owned backing's logical hold is a terminal protocol failure,
-// including after backing deletion and a later logical metadata wake, without recreating the backing.
+// Verifies that removing either owned backing's logical hold reports Unknown,
+// including after backing deletion and a later metadata wake, without recreating the backing.
 func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
 	t.Parallel()
 	for _, backingKind := range []string{"container", "image"} {
@@ -861,10 +861,10 @@ func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
 			require.NoError(t, historyErr)
 			name := types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(logical.UID)}
 			var backing ctrl_client.Object = &apiv2.PhysicalContainer{}
-			reason := "PhysicalContainerChanged"
+			reason := apiv2.LogicalContainerReasonPhysicalContainerChanged
 			if backingKind == "image" {
 				backing = &apiv2.PhysicalContainerImage{}
-				reason = "PhysicalImageChanged"
+				reason = apiv2.LogicalContainerReasonPhysicalImageChanged
 			}
 			require.NoError(t, server.Client.Get(ctx, name, backing))
 			switch backing.(type) {
@@ -883,9 +883,9 @@ func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
 					return server.Client.Update(updateCtx, current)
 				}))
 			}
-			failed := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+			unknown := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-				return current.Status.Phase == apiv2.LogicalContainerPhaseFailed && ready != nil && ready.Reason == reason, nil
+				return current.Status.Phase == apiv2.LogicalContainerPhaseUnknown && ready != nil && ready.Reason == string(reason), nil
 			})
 			remaining, readErr := io.ReadAll(follower)
 			require.NoError(t, readErr)
@@ -901,9 +901,9 @@ func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
 				current.Annotations = map[string]string{"test.dcp.microsoft.com/wake": "after-deletion"}
 				return server.Client.Update(updateCtx, current)
 			}))
-			require.NoError(t, server.Client.Get(ctx, failed.NamespacedName(), failed))
-			require.Equal(t, apiv2.LogicalContainerPhaseFailed, failed.Status.Phase)
-			require.Equal(t, reason, apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady)).Reason)
+			require.NoError(t, server.Client.Get(ctx, unknown.NamespacedName(), unknown))
+			require.Equal(t, apiv2.LogicalContainerPhaseUnknown, unknown.Status.Phase)
+			require.Equal(t, string(reason), apimeta.FindStatusCondition(unknown.Status.Conditions, string(apiv2.ConditionReady)).Reason)
 			require.True(t, apierrors.IsNotFound(server.Client.Get(ctx, name, backing)))
 			require.Equal(t, 1, orchestrator.PullImageCallCount("held-image"))
 		})

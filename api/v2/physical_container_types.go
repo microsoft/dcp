@@ -57,6 +57,9 @@ const (
 )
 
 const (
+	// PhysicalContainerReasonResolvingRuntimeContainer indicates that the runtime container identity is being resolved.
+	PhysicalContainerReasonResolvingRuntimeContainer ConditionReason = "ResolvingRuntimeContainer"
+
 	// PhysicalContainerReasonDependenciesNotReady indicates that a referenced dependency is missing, terminating, or not ready.
 	PhysicalContainerReasonDependenciesNotReady ConditionReason = "DependenciesNotReady"
 

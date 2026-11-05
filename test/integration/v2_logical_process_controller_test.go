@@ -129,7 +129,7 @@ func TestV2LogicalProcessControllerFailsWhenPersistentBackingDisappears(t *testi
 				unblock()
 				waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 					ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-					return ready != nil && ready.Reason == "PersistenceFailed", nil
+					return ready != nil && ready.Reason == string(apiv2.LogicalResourceReasonPersistenceFailed), nil
 				})
 			}
 			require.NoError(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner))
@@ -139,7 +139,7 @@ func TestV2LogicalProcessControllerFailsWhenPersistentBackingDisappears(t *testi
 			failed := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 				return current.Status.Phase == apiv2.LogicalProcessPhaseFailed &&
-					ready != nil && ready.Reason == "PhysicalProcessMissing", nil
+					ready != nil && ready.Reason == string(apiv2.LogicalProcessReasonPhysicalProcessMissing), nil
 			})
 			require.NotNil(t, failed.Status.RuntimeLogs)
 			require.Equal(t, physical.UID, failed.Status.RuntimeLogs.UID)
@@ -403,7 +403,7 @@ func TestV2LogicalProcessControllerRetriesBackingObservation(t *testing.T) {
 	unavailable := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return ready != nil && ready.ObservedGeneration == current.Generation &&
-			ready.Reason == "PhysicalProcessLookupFailed", nil
+			ready.Reason == string(apiv2.LogicalProcessReasonPhysicalProcessLookupFailed), nil
 	})
 	require.Equal(t, apiv2.LogicalProcessPhaseUnknown, unavailable.Status.Phase)
 	require.Equal(t, running.Status.PID, unavailable.Status.PID)
@@ -440,7 +440,7 @@ func TestV2LogicalProcessControllerRejectsReleasedBackingHold(t *testing.T) {
 	}))
 	unknown := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return current.Status.Phase == apiv2.LogicalProcessPhaseUnknown && ready != nil && ready.Reason == "PhysicalProcessChanged", nil
+		return current.Status.Phase == apiv2.LogicalProcessPhaseUnknown && ready != nil && ready.Reason == string(apiv2.LogicalProcessReasonPhysicalProcessChanged), nil
 	})
 	require.True(t, unknown.Status.RuntimeLogs.Complete)
 	require.False(t, unknown.Status.RuntimeLogs.Available)
@@ -451,7 +451,7 @@ func TestV2LogicalProcessControllerRejectsReleasedBackingHold(t *testing.T) {
 	waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return ready != nil && ready.ObservedGeneration == current.Generation &&
-			ready.Reason == "PhysicalProcessChanged", nil
+			ready.Reason == string(apiv2.LogicalProcessReasonPhysicalProcessChanged), nil
 	})
 	physical := &apiv2.PhysicalProcess{}
 	require.NoError(t, client.Get(ctx, physicalName, physical))
@@ -746,7 +746,7 @@ func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndSettlesBefore
 	require.NoError(t, serverInfo.Client.Create(ctx, resource))
 	failed := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == "PersistenceFailed" && current.Status.PID != nil, nil
+		return ready != nil && ready.Reason == string(apiv2.LogicalResourceReasonPersistenceFailed) && current.Status.PID != nil, nil
 	})
 	require.NoError(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, resource, environmentInfo.ResourceLeaseOwner))
 	_, recordErr := environmentInfo.StateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
@@ -822,7 +822,7 @@ func TestV2LogicalProcessControllerReleasesLeaseForMissingAdoptedProcess(t *test
 	require.NoError(t, server.Client.Create(ctx, resource))
 	failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == "PersistenceFailed", nil
+		return ready != nil && ready.Reason == string(apiv2.LogicalResourceReasonPersistenceFailed), nil
 	})
 	require.NoError(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, resource, environment.ResourceLeaseOwner))
 	require.NoError(t, environment.TestProcessExecutor.StopProcess(ctx, handle))

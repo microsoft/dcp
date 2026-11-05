@@ -161,7 +161,7 @@ func TestV2PhysicalContainerExecWithRealOrchestrator(t *testing.T) {
 			require.True(t, exited.Status.LogsComplete)
 			lateExecution := createExecution(t, "exited-target", apiv2.ContainerExecConfig{Command: probePath, Args: []string{"exit"}})
 			failed := waitPhase(t, lateExecution, apiv2.ContainerExecPhaseFailed)
-			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "ContainerUnavailable")
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ContainerExecReasonContainerUnavailable)
 			require.Nil(t, failed.Status.ExitCode)
 		})
 		require.NoError(t, server.Client.Delete(ctx, namespace))

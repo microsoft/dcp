@@ -26,6 +26,21 @@ import (
 type LogicalServicePhase string
 
 const (
+	// LogicalServiceReasonEndpointLookupFailed indicates that service endpoints could not be listed.
+	LogicalServiceReasonEndpointLookupFailed ConditionReason = "EndpointLookupFailed"
+	// LogicalServiceReasonEndpointSelected indicates that a proxyless endpoint has been selected.
+	LogicalServiceReasonEndpointSelected ConditionReason = "EndpointSelected"
+	// LogicalServiceReasonWaitingForEndpoints indicates that the service has no available endpoints.
+	LogicalServiceReasonWaitingForEndpoints ConditionReason = "WaitingForEndpoints"
+	// LogicalServiceReasonProxyConfigurationFailed indicates that listener startup or route configuration failed.
+	LogicalServiceReasonProxyConfigurationFailed ConditionReason = "ProxyConfigurationFailed"
+	// LogicalServiceReasonProxyListenerUnavailable indicates that service listeners have stopped.
+	LogicalServiceReasonProxyListenerUnavailable ConditionReason = "ProxyListenerUnavailable"
+	// LogicalServiceReasonReady indicates that listeners and endpoints are available.
+	LogicalServiceReasonReady ConditionReason = "ServiceReady"
+)
+
+const (
 	// LogicalServicePhasePending indicates that the service is waiting for allocation or endpoints.
 	LogicalServicePhasePending LogicalServicePhase = "Pending"
 

@@ -48,6 +48,39 @@ const (
 type LogicalContainerNetworkPhase string
 
 const (
+	// LogicalContainerNetworkReasonPhysicalNetworkPreparationPending indicates that the physical network declaration is not prepared.
+	LogicalContainerNetworkReasonPhysicalNetworkPreparationPending ConditionReason = "PhysicalNetworkPreparationPending"
+	// LogicalContainerNetworkReasonPhysicalNetworkPreparationFailed indicates that physical network preparation failed.
+	LogicalContainerNetworkReasonPhysicalNetworkPreparationFailed ConditionReason = "PhysicalNetworkPreparationFailed"
+	// LogicalContainerNetworkReasonPhysicalNetworkDeletionFailed indicates that physical network cleanup failed.
+	LogicalContainerNetworkReasonPhysicalNetworkDeletionFailed ConditionReason = "PhysicalNetworkDeletionFailed"
+	// LogicalContainerNetworkReasonPhysicalNetworkLookupFailed indicates that the physical network could not be read.
+	LogicalContainerNetworkReasonPhysicalNetworkLookupFailed ConditionReason = "PhysicalNetworkLookupFailed"
+	// LogicalContainerNetworkReasonPhysicalNetworkNotReady indicates that the physical network has not become ready.
+	LogicalContainerNetworkReasonPhysicalNetworkNotReady ConditionReason = "PhysicalNetworkNotReady"
+	// LogicalContainerNetworkReasonNetworkAvailable indicates that the backing network is available.
+	LogicalContainerNetworkReasonNetworkAvailable ConditionReason = "NetworkAvailable"
+	// LogicalContainerNetworkReasonPhysicalNetworkFailed indicates that the physical network failed.
+	LogicalContainerNetworkReasonPhysicalNetworkFailed ConditionReason = "PhysicalNetworkFailed"
+	// LogicalContainerNetworkReasonPhysicalNetworkStateUnknown indicates that the physical network state is unknown.
+	LogicalContainerNetworkReasonPhysicalNetworkStateUnknown ConditionReason = "PhysicalNetworkStateUnknown"
+	// LogicalContainerNetworkReasonPhysicalNetworkChanged indicates that the physical network identity or hold changed.
+	LogicalContainerNetworkReasonPhysicalNetworkChanged ConditionReason = "PhysicalNetworkChanged"
+	// LogicalContainerNetworkReasonPhysicalNetworkMissing indicates that a previously observed physical network is absent.
+	LogicalContainerNetworkReasonPhysicalNetworkMissing ConditionReason = "PhysicalNetworkMissing"
+	// LogicalContainerNetworkReasonMultiplePhysicalNetworks indicates that more than one owned physical network was found.
+	LogicalContainerNetworkReasonMultiplePhysicalNetworks ConditionReason = "MultiplePhysicalNetworks"
+	// LogicalContainerNetworkReasonRuntimeLookupFailed indicates that runtime network inspection failed.
+	LogicalContainerNetworkReasonRuntimeLookupFailed ConditionReason = "NetworkLookupFailed"
+	// LogicalContainerNetworkReasonHarvestingInProgress indicates that resource harvesting must settle before reuse.
+	LogicalContainerNetworkReasonHarvestingInProgress ConditionReason = "NetworkHarvestingInProgress"
+	// LogicalContainerNetworkReasonExistingNetworkNotFound indicates that an existing-mode target is absent.
+	LogicalContainerNetworkReasonExistingNetworkNotFound ConditionReason = "ExistingNetworkNotFound"
+	// LogicalContainerNetworkReasonDeletingPhysicalNetwork indicates that owned physical networks are being removed.
+	LogicalContainerNetworkReasonDeletingPhysicalNetwork ConditionReason = "DeletingPhysicalNetwork"
+)
+
+const (
 	// LogicalContainerNetworkPhasePending indicates that the network is waiting for prerequisites or creation.
 	LogicalContainerNetworkPhasePending LogicalContainerNetworkPhase = "Pending"
 

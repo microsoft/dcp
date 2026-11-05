@@ -186,17 +186,17 @@ func (data *logicalProcessData) applyTo(resource *apiv2.LogicalProcess) (objectC
 		if reason == "" {
 			switch data.state {
 			case logicalProcessStatePrepare:
-				phase, reason = apiv2.LogicalProcessPhasePending, "LifecyclePreparationFailed"
+				phase, reason = apiv2.LogicalProcessPhasePending, apiv2.LogicalResourceReasonLifecyclePreparationFailed
 			case logicalProcessStatePhysical:
-				reason = "PhysicalProcessPreparationFailed"
+				reason = apiv2.LogicalProcessReasonPhysicalProcessPreparationFailed
 			case logicalProcessStateDelete:
-				reason = "PhysicalProcessDeletionFailed"
+				reason = apiv2.LogicalProcessReasonPhysicalProcessDeletionFailed
 			default:
-				reason = "PhysicalProcessLookupFailed"
+				reason = apiv2.LogicalProcessReasonPhysicalProcessLookupFailed
 			}
 		}
 		if data.leaseFailureMessage != "" {
-			phase, reason, message = apiv2.LogicalProcessPhaseUnknown, "PersistenceFailed", data.leaseFailureMessage
+			phase, reason, message = apiv2.LogicalProcessPhaseUnknown, apiv2.LogicalResourceReasonPersistenceFailed, data.leaseFailureMessage
 		}
 		change |= setValue(&resource.Status.Phase, phase)
 		change |= setCondition(&resource.Status.Conditions, apiv2.ConditionReady, resource.Generation,
@@ -227,51 +227,51 @@ var logicalProcessProjections = physicalResourceProjectionTable[logicalProcessSt
 	projections: map[logicalProcessState]physicalResourceProjection[apiv2.LogicalProcessPhase]{
 		logicalProcessStatePrepare: {
 			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PreparingLifecycle",
+			conditionReason: apiv2.LogicalProcessReasonPreparingLifecycle,
 		},
 		logicalProcessStatePrepareFailed: {
 			phase: apiv2.LogicalProcessPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "LifecyclePreparationFailed",
+			conditionReason: apiv2.LogicalResourceReasonLifecyclePreparationFailed,
 		},
 		logicalProcessStatePhysical: {
 			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalProcessPreparationPending", requeue: true,
+			conditionReason: apiv2.LogicalProcessReasonPhysicalProcessPreparationPending, requeue: true,
 		},
 		logicalProcessStatePhysicalFailed: {
 			phase: apiv2.LogicalProcessPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalProcessPreparationFailed",
+			conditionReason: apiv2.LogicalProcessReasonPhysicalProcessPreparationFailed,
 		},
 		logicalProcessStateCreating: {
 			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalProcessNotReady",
+			conditionReason: apiv2.LogicalProcessReasonPhysicalProcessNotReady,
 		},
 		logicalProcessStateRunning: {
 			phase: apiv2.LogicalProcessPhaseRunning, conditionStatus: metav1.ConditionTrue,
-			conditionReason: "ProcessRunning",
+			conditionReason: apiv2.LogicalProcessReasonRunning,
 		},
 		logicalProcessStateExited: {
 			phase: apiv2.LogicalProcessPhaseExited, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "ProcessExited",
+			conditionReason: apiv2.LogicalProcessReasonExited,
 		},
 		logicalProcessStateRuntimeFailed: {
 			phase: apiv2.LogicalProcessPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalProcessFailed",
+			conditionReason: apiv2.LogicalProcessReasonPhysicalProcessFailed,
 		},
 		logicalProcessStateUnknown: {
 			phase: apiv2.LogicalProcessPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalProcessStateUnknown",
+			conditionReason: apiv2.LogicalProcessReasonPhysicalProcessStateUnknown,
 		},
 		logicalProcessStateMissing: {
 			phase: apiv2.LogicalProcessPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalProcessMissing",
+			conditionReason: apiv2.LogicalProcessReasonPhysicalProcessMissing,
 		},
 		logicalProcessStateDelete: {
 			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "DeletingPhysicalProcess", requeue: true,
+			conditionReason: apiv2.LogicalProcessReasonDeletingPhysicalProcess, requeue: true,
 		},
 		logicalProcessStateStopping: {
 			phase: apiv2.LogicalProcessPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "ProcessStopping", message: "Waiting for the physical controller to stop the process.", requeue: true,
+			conditionReason: apiv2.LogicalProcessReasonStopping, message: "Waiting for the physical controller to stop the process.", requeue: true,
 		},
 	},
 }

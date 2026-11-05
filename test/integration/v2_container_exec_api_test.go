@@ -143,7 +143,7 @@ func TestV2ContainerExecMissingBackingProjectionSurvivesStatusConflict(t *testin
 		return current.Status.Phase == apiv2.ContainerExecPhaseFailed, nil
 	})
 	require.True(t, conflictClient.conflicted.Load())
-	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "PhysicalExecutionChanged")
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonPhysicalExecutionChanged)
 	require.Equal(t, &apiv2.LogSource{Name: running.Status.PhysicalExecRef, UID: running.Status.RuntimeLogs.UID, Complete: true}, failed.Status.RuntimeLogs)
 }
 
@@ -177,7 +177,7 @@ func TestV2PhysicalContainerExecRetriesReadinessLossBeforeLaunch(t *testing.T) {
 	close(launchReader.release)
 	waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
 		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return current.Status.Phase == apiv2.ContainerExecPhasePending && condition != nil && condition.Reason == "ContainerNotReady", nil
+		return current.Status.Phase == apiv2.ContainerExecPhasePending && condition != nil && condition.Reason == string(apiv2.ContainerExecReasonContainerNotReady), nil
 	})
 	require.Zero(t, orchestrator.ExecContainerCallCount(resource.Spec.Execution.Command))
 	require.NoError(t, orchestrator.SimulateContainerStatus(ctx, target.Status.ContainerID, containers.ContainerStatusRunning))

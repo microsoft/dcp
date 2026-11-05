@@ -52,6 +52,39 @@ const (
 type LogicalProcessPhase string
 
 const (
+	// LogicalProcessReasonPreparingLifecycle indicates that process lifecycle inputs are being prepared.
+	LogicalProcessReasonPreparingLifecycle ConditionReason = "PreparingLifecycle"
+	// LogicalProcessReasonRunning indicates that the backing process is running.
+	LogicalProcessReasonRunning ConditionReason = "ProcessRunning"
+	// LogicalProcessReasonExited indicates that the backing process has exited.
+	LogicalProcessReasonExited ConditionReason = "ProcessExited"
+	// LogicalProcessReasonStopping indicates that process termination has been requested.
+	LogicalProcessReasonStopping ConditionReason = "ProcessStopping"
+	// LogicalProcessReasonPhysicalProcessPreparationPending indicates that the physical process declaration is not prepared.
+	LogicalProcessReasonPhysicalProcessPreparationPending ConditionReason = "PhysicalProcessPreparationPending"
+	// LogicalProcessReasonPhysicalProcessPreparationFailed indicates that physical process preparation failed.
+	LogicalProcessReasonPhysicalProcessPreparationFailed ConditionReason = "PhysicalProcessPreparationFailed"
+	// LogicalProcessReasonPhysicalProcessDeletionFailed indicates that physical process cleanup failed.
+	LogicalProcessReasonPhysicalProcessDeletionFailed ConditionReason = "PhysicalProcessDeletionFailed"
+	// LogicalProcessReasonPhysicalProcessLookupFailed indicates that the physical process could not be read.
+	LogicalProcessReasonPhysicalProcessLookupFailed ConditionReason = "PhysicalProcessLookupFailed"
+	// LogicalProcessReasonPhysicalProcessNotReady indicates that the physical process has not become ready.
+	LogicalProcessReasonPhysicalProcessNotReady ConditionReason = "PhysicalProcessNotReady"
+	// LogicalProcessReasonPhysicalProcessFailed indicates that the physical process failed.
+	LogicalProcessReasonPhysicalProcessFailed ConditionReason = "PhysicalProcessFailed"
+	// LogicalProcessReasonPhysicalProcessStateUnknown indicates that the physical process state is unknown.
+	LogicalProcessReasonPhysicalProcessStateUnknown ConditionReason = "PhysicalProcessStateUnknown"
+	// LogicalProcessReasonPhysicalProcessMissing indicates that a previously observed physical process is absent.
+	LogicalProcessReasonPhysicalProcessMissing ConditionReason = "PhysicalProcessMissing"
+	// LogicalProcessReasonPhysicalProcessChanged indicates that the physical process identity, owner, or hold changed.
+	LogicalProcessReasonPhysicalProcessChanged ConditionReason = "PhysicalProcessChanged"
+	// LogicalProcessReasonPhysicalProcessTerminating indicates that the physical process is being deleted.
+	LogicalProcessReasonPhysicalProcessTerminating ConditionReason = "PhysicalProcessTerminating"
+	// LogicalProcessReasonDeletingPhysicalProcess indicates that owned physical processes are being removed.
+	LogicalProcessReasonDeletingPhysicalProcess ConditionReason = "DeletingPhysicalProcess"
+)
+
+const (
 	// LogicalProcessPhasePending indicates that the process is waiting for prerequisites or launch.
 	LogicalProcessPhasePending LogicalProcessPhase = "Pending"
 	// LogicalProcessPhaseRunning indicates that the process is running.

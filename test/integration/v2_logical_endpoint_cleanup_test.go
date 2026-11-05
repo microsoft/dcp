@@ -37,8 +37,21 @@ type endpointDeletionFailureClient struct {
 
 type endpointStopFailureClient struct {
 	*endpointDeletionFailureClient
-	failStop     atomic.Bool
-	stopAttempts atomic.Int32
+	failStop       atomic.Bool
+	stopAttempts   atomic.Int32
+	failLookup     atomic.Bool
+	lookupAttempts atomic.Int32
+}
+
+func (apiClient *endpointStopFailureClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+	switch list.(type) {
+	case *apiv2.PhysicalProcessList, *apiv2.PhysicalContainerList:
+		if apiClient.failLookup.Load() {
+			apiClient.lookupAttempts.Add(1)
+			return errors.New("physical backing lookup unavailable")
+		}
+	}
+	return apiClient.Client.List(ctx, list, options...)
 }
 
 func (apiClient *endpointStopFailureClient) Patch(
@@ -60,12 +73,12 @@ func (apiClient *endpointStopFailureClient) Patch(
 	return apiClient.Client.Patch(ctx, object, patch, options...)
 }
 
-// Verifies that Stop withdraws logical endpoints even when forwarding Stop fails, while endpoint
-// deletion failures do not block physical Stop and withdrawal retries without deleting the service.
+// Verifies that Stop withdraws logical endpoints despite backing lookup or stop-patch failures,
+// while endpoint deletion failures do not block physical Stop and withdrawal retries preserve the service.
 func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
-		for _, failure := range []string{"stop", "endpoint"} {
+		for _, failure := range []string{"stop", "endpoint", "lookup"} {
 			t.Run(kind+"/"+failure, func(t *testing.T) {
 				t.Parallel()
 				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -79,12 +92,14 @@ func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 				require.NoError(t, startupErr)
 				defer decorated.failStop.Store(false)
 				defer decorated.fail.Store(false)
+				defer decorated.failLookup.Store(false)
 				apiClient := server.Client
 				namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "endpoint-stop"}}
 				require.NoError(t, apiClient.Create(ctx, namespace))
 				workload := createEndpointCleanupWorkload(t, ctx, apiClient, namespace.Name, kind)
 				decorated.failStop.Store(failure == "stop")
 				decorated.fail.Store(failure == "endpoint")
+				decorated.failLookup.Store(failure == "lookup")
 				require.NoError(t, apiClient.Patch(ctx, workload.logical,
 					ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 				if failure == "endpoint" {
@@ -106,12 +121,15 @@ func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 				require.Equal(t, workload.service.UID, service.UID)
 				require.Equal(t, workload.service.Status.EffectiveAddresses, service.Status.EffectiveAddresses)
 				require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(context.Context) (bool, error) {
+					if failure == "lookup" {
+						return decorated.lookupAttempts.Load() > 0, nil
+					}
 					return decorated.stopAttempts.Load() > 0, nil
 				}))
 				var endpoints apiv2.ServiceEndpointList
 				require.NoError(t, apiClient.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
 				require.Empty(t, endpoints.Items)
-				if failure == "stop" {
+				if failure == "stop" || failure == "lookup" {
 					require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing))
 					if physical, isProcess := workload.backing.(*apiv2.PhysicalProcess); isProcess {
 						require.False(t, physical.Spec.Stop)
@@ -123,6 +141,7 @@ func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 					}
 				}
 				decorated.failStop.Store(false)
+				decorated.failLookup.Store(false)
 				require.NoError(t, apiClient.Delete(ctx, namespace))
 				ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
 			})
@@ -233,7 +252,7 @@ func TestV2LogicalContainerTerminalHandlerIgnoresLaterStop(t *testing.T) {
 				return current.Spec.Stop && current.Status.Phase == expectedPhase && len(current.Status.Conditions) > 0 &&
 					current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
 			})
-			require.NotEqual(t, "ContainerStopped", observed.Status.Conditions[0].Reason)
+			require.NotEqual(t, string(apiv2.LogicalContainerReasonStopped), observed.Status.Conditions[0].Reason)
 			require.Zero(t, decorated.stopAttempts.Load())
 			require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing))
 			require.False(t, workload.backing.(*apiv2.PhysicalContainer).Spec.Stop)
