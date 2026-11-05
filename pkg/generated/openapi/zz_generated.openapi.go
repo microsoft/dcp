@@ -4750,9 +4750,16 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "DebugAdapterConfig declares a host adapter to launch only on an explicit debug-subresource request. DAP initialize, launch, and attach configuration is supplied over the debug stream, not through this spec.",
+				Description: "DebugAdapterConfig declares an adapter to launch only on an explicit debug-subresource request. DAP initialize, launch, and attach configuration is supplied over the debug stream, not through this spec.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"placement": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Placement selects host execution or execution in the prepared Project container. Defaults to host. Container placement currently supports only stdio.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"args": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -9252,7 +9259,7 @@ func schema_microsoft_dcp_api_v2_ProjectDebugExecutionStatus(ref common.Referenc
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ProjectDebugExecutionStatus reports one adapter launch attempt and its observed process lifetime.",
+				Description: "ProjectDebugExecutionStatus reports a host adapter process or attached container execution. Attached execution completion alone does not establish in-container process termination.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"id": {
@@ -9273,7 +9280,7 @@ func schema_microsoft_dcp_api_v2_ProjectDebugExecutionStatus(ref common.Referenc
 					},
 					"pid": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PID is the adapter process ID, absent if no process was launched.",
+							Description: "PID is the host adapter process ID, absent for container executions and failed host launches.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},
@@ -9286,7 +9293,7 @@ func schema_microsoft_dcp_api_v2_ProjectDebugExecutionStatus(ref common.Referenc
 					},
 					"finishedAt": {
 						SchemaProps: spec.SchemaProps{
-							Description: "FinishedAt is when launch failure or process completion was observed.",
+							Description: "FinishedAt is when launch failure, host process completion or attached execution completion was observed.",
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
@@ -9396,6 +9403,13 @@ func schema_microsoft_dcp_api_v2_ProjectDebugProcessStatus(ref common.ReferenceC
 							Description: "PID is the reported operating system process ID, if provided.",
 							Type:        []string{"integer"},
 							Format:      "int64",
+						},
+					},
+					"containerID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerID scopes a reported PID to the prepared container, never the DCP host.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"identityTimestamp": {
@@ -9611,7 +9625,7 @@ func schema_microsoft_dcp_api_v2_ProjectDebugStatus(ref common.ReferenceCallback
 				Properties: map[string]spec.Schema{
 					"prerequisitesReady": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PrerequisitesReady reports controller-observed execution prerequisites, not adapter or application readiness. Process prerequisites do not require the application to be running; container debugging is not yet supported.",
+							Description: "PrerequisitesReady reports controller-observed execution prerequisites, not adapter or application readiness. Process prerequisites do not require the application to be running; container prerequisites require a prepared context.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -9839,7 +9853,7 @@ func schema_microsoft_dcp_api_v2_ProjectSpec(ref common.ReferenceCallback) commo
 					},
 					"debugAdapter": {
 						SchemaProps: spec.SchemaProps{
-							Description: "DebugAdapter declares a host-side adapter; configuration alone does not launch it. It is independent of whether the application runs as a process or container.",
+							Description: "DebugAdapter declares an adapter; configuration alone does not launch it. Host placement is valid with either application template; container placement requires a container template.",
 							Ref:         ref(v2.DebugAdapterConfig{}.OpenAPIModelName()),
 						},
 					},
@@ -9950,6 +9964,13 @@ func schema_microsoft_dcp_api_v2_ProjectStatus(ref common.ReferenceCallback) com
 					"physicalContainerRef": {
 						SchemaProps: spec.SchemaProps{
 							Description: "PhysicalContainerRef identifies the same-namespace backing PhysicalContainer. Cross-namespace references are not supported.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerRuntime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerRuntime identifies the controller-selected runtime for the prepared container.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

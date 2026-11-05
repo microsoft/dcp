@@ -27,6 +27,7 @@ import (
 	tiltapiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/registry/generic"
 	"k8s.io/apiserver/pkg/registry/rest"
@@ -35,6 +36,7 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dap"
 	internaltest "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -281,10 +283,10 @@ func TestProjectDebugServingCancelsPendingSession(t *testing.T) {
 	require.Empty(t, executor.FindAll([]string{"test-adapter"}, "", nil))
 }
 
-// Verifies that unsupported container Projects, unconfigured Projects, stopping Projects,
+// Verifies that unconfigured Projects, stopping Projects,
 // and non-upgrade requests fail explicitly without creating adapter executions.
 func TestProjectDebugServingAdmission(t *testing.T) {
-	for _, scenario := range []string{"container", "unconfigured", "stopping", "not-websocket"} {
+	for _, scenario := range []string{"unconfigured", "stopping", "not-websocket"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, time.Minute)
 			defer cancel()
@@ -294,9 +296,6 @@ func TestProjectDebugServingAdmission(t *testing.T) {
 			project.ResourceVersion, project.UID = "", ""
 			project.Status = apiv2.ProjectStatus{}
 			switch scenario {
-			case "container":
-				project.Spec.Process = nil
-				project.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "unused"}}
 			case "unconfigured":
 				project.Spec.DebugAdapter = nil
 			case "stopping":
@@ -470,7 +469,7 @@ func (executor *adapterServingExecutor) CheckProcessRunning(handle process.Proce
 	return executor.TestProcessExecutor.CheckProcessRunning(handle)
 }
 
-func startDebugServingTest(t *testing.T, ctx context.Context) (ctrlclient.WithWatch, *clientrest.Config, *adapterServingExecutor) {
+func startDebugServingTest(t *testing.T, ctx context.Context, containerRuntime ...func(context.Context, string) (containers.ExecContainers, error)) (ctrlclient.WithWatch, *clientrest.Config, *adapterServingExecutor) {
 	t.Helper()
 	// Exit callbacks must remain deliverable while the server is performing shutdown cleanup.
 	executor := &adapterServingExecutor{TestProcessExecutor: internaltest.NewTestProcessExecutor(context.WithoutCancel(ctx)), stops: make(map[process.Pid_t]func())}
@@ -490,13 +489,17 @@ func startDebugServingTest(t *testing.T, ctx context.Context) (ctrlclient.WithWa
 			if namespaceErr != nil {
 				return nil, namespaceErr
 			}
-			return newProjectDebugStorage(ctx, parent.(rest.StandardStorage), namespaces.(rest.Getter), writer, executor, logr.Discard()), nil
+			storage := newProjectDebugStorage(ctx, parent.(rest.StandardStorage), namespaces.(rest.Getter), writer, executor, logr.Discard())
+			if len(containerRuntime) != 0 {
+				storage.runtime.findContainerRuntime = containerRuntime[0]
+			}
+			return storage, nil
 		}
 	})
 	return apiClient, clientConfig, executor
 }
 
-func createDebugServingProject(t *testing.T, ctx context.Context, apiClient ctrlclient.Client, mode apiv2.DebugAdapterMode, command string) *apiv2.Project {
+func createDebugServingProject(t *testing.T, ctx context.Context, apiClient ctrlclient.Client, mode apiv2.DebugAdapterMode, command string, placement ...apiv2.DebugAdapterPlacement) *apiv2.Project {
 	t.Helper()
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "debug"}}
 	require.NoError(t, apiClient.Create(ctx, namespace))
@@ -505,9 +508,17 @@ func createDebugServingProject(t *testing.T, ctx context.Context, apiClient ctrl
 	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "application"}},
 			DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{"test-adapter", command, "{{port}}"}, Mode: mode}}}
+	if len(placement) != 0 {
+		project.Spec.Process = nil
+		project.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "image"}}
+		project.Spec.DebugAdapter.Placement = placement[0]
+	}
 	require.NoError(t, apiClient.Create(ctx, project))
 	project.Status.Phase = apiv2.ProjectPhaseReady
 	project.Status.Debug = &apiv2.ProjectDebugStatus{PrerequisitesReady: true}
+	if project.Spec.Container != nil {
+		project.Status.ContainerID, project.Status.ContainerRuntime = "container-id", "test-runtime"
+	}
 	require.NoError(t, apiClient.Status().Update(ctx, project))
 	return project
 }
@@ -700,6 +711,7 @@ func TestProjectDebugServingLaunchFailure(t *testing.T) {
 		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 			return false, getErr
 		}
+
 		if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 1 || len(current.Status.Debug.Executions) != 1 {
 			return false, nil
 		}
@@ -711,4 +723,154 @@ func TestProjectDebugServingLaunchFailure(t *testing.T) {
 		require.Equal(t, apiv2.ProjectPhaseReady, current.Status.Phase)
 		return true, nil
 	}))
+}
+
+type containerAdapterExecutor struct {
+	mu           sync.Mutex
+	options      []containers.ExecContainerOptions
+	fail         bool
+	noCompletion bool
+}
+
+func (executor *containerAdapterExecutor) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
+	executor.mu.Lock()
+	executor.options = append(executor.options, options)
+	executor.mu.Unlock()
+	if executor.fail {
+		return nil, errors.New("injected container adapter launch failure")
+	}
+	if executor.noCompletion {
+		return nil, nil
+	}
+	exits := make(chan int32, 1)
+	go func() {
+		code := int32(process.UnknownExitCode)
+		serveTestDebugAdapter(options.StdInStream, options.StdOutStream, func() { code = 0 })
+		exits <- code
+		close(exits)
+	}()
+	return exits, nil
+}
+
+// Verifies that container adapters execute through the selected runtime against a pinned container,
+// keep host handles separate, preserve host placement and report uncertain cancellation explicitly.
+func TestProjectDebugServingContainerAdapters(t *testing.T) {
+	for _, scenario := range []string{"stdio", "host", "disconnect", "replace-live", "replace-before-exec", "lookup-failure", "setup-timeout", "start-failure", "no-completion"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, time.Minute)
+			defer cancel()
+			containerExec := &containerAdapterExecutor{fail: scenario == "start-failure", noCompletion: scenario == "no-completion"}
+			var apiClient ctrlclient.WithWatch
+			var project *apiv2.Project
+			lookup := func(lookupCtx context.Context, name string) (containers.ExecContainers, error) {
+				if name != "test-runtime" {
+					return nil, fmt.Errorf("wrong selected runtime %q", name)
+				}
+				if scenario == "lookup-failure" {
+					return nil, errors.New("injected runtime lookup failure")
+				}
+				if scenario == "setup-timeout" {
+					<-lookupCtx.Done()
+					return nil, lookupCtx.Err()
+				}
+				if scenario == "replace-before-exec" {
+					if patchErr := apiClient.Status().Patch(lookupCtx, project, ctrlclient.RawPatch(types.MergePatchType,
+						[]byte(`{"status":{"containerID":"replacement"}}`))); patchErr != nil {
+						return nil, patchErr
+					}
+				}
+				return containerExec, nil
+			}
+			var config *clientrest.Config
+			var hostExecutor *adapterServingExecutor
+			apiClient, config, hostExecutor = startDebugServingTest(t, ctx, lookup)
+			placement := apiv2.DebugAdapterPlacementContainer
+			if scenario == "host" {
+				placement = apiv2.DebugAdapterPlacementHost
+			}
+			project = createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio", placement)
+			connection, connectErr := connectDebugServing(ctx, config, project)
+			if scenario == "lookup-failure" || scenario == "setup-timeout" || scenario == "replace-before-exec" || scenario == "start-failure" || scenario == "no-completion" {
+				if connection != nil {
+					_ = connection.Close()
+				}
+				require.Error(t, connectErr)
+				require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
+				require.Nil(t, project.Status.Debug.Executions[0].PID)
+				require.Equal(t, apiv2.ProjectDebugPhaseFailed, project.Status.Debug.Executions[0].Phase)
+				if scenario == "replace-before-exec" || scenario == "lookup-failure" {
+					require.Empty(t, containerExec.options)
+				}
+				return
+			}
+			require.NoError(t, connectErr)
+			defer connection.Close()
+			exchangeDebugBytes(t, ctx, connection)
+			require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
+			execution := project.Status.Debug.Executions[0]
+			if scenario == "host" {
+				require.NotNil(t, execution.PID)
+				require.Empty(t, containerExec.options)
+				closeDebugServing(t, connection)
+				return
+			}
+			require.Nil(t, execution.PID)
+			require.True(t, execution.IdentityTimestamp.IsZero())
+			encodedExecution, encodeErr := json.Marshal(execution)
+			require.NoError(t, encodeErr)
+			require.NotContains(t, string(encodedExecution), "containerID")
+			require.NotContains(t, string(encodedExecution), "containerRuntime")
+			require.Equal(t, "container-id", project.Status.ContainerID)
+			require.Equal(t, "test-runtime", project.Status.ContainerRuntime)
+			require.Empty(t, hostExecutor.FindAll([]string{"test-adapter"}, "", nil))
+			containerExec.mu.Lock()
+			options := containerExec.options[0]
+			containerExec.mu.Unlock()
+			require.Equal(t, "container-id", options.Container)
+			require.Equal(t, "test-adapter", options.Command)
+			require.Equal(t, []string{"stdio", "{{port}}"}, options.Args)
+			require.Empty(t, options.Env, "container adapters must not inherit host environment")
+			require.NoError(t, dap.WriteMessage(options.StdOutStream, dap.Message{
+				"seq": json.RawMessage("50"), "type": json.RawMessage(`"event"`), "event": json.RawMessage(`"process"`),
+				"body": json.RawMessage(`{"name":"container-target","systemProcessId":1,"isLocalProcess":true}`),
+			}))
+			_, _, eventErr := connection.ReadMessage()
+			require.NoError(t, eventErr)
+			require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
+			target := project.Status.Debug.Sessions[0].Processes[0]
+			require.Equal(t, "container-id", target.ContainerID)
+			require.True(t, target.IdentityTimestamp.IsZero())
+			require.NotEmpty(t, target.TrackingError)
+			if scenario == "stdio" {
+				project.Spec.Stop = true
+				require.NoError(t, apiClient.Update(ctx, project))
+			} else if scenario == "replace-live" {
+				require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
+					[]byte(`{"status":{"containerID":"replacement"}}`))))
+			} else {
+				closeDebugServing(t, connection)
+			}
+			require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+				if getErr := apiClient.Get(pollCtx, project.NamespacedName(), project); getErr != nil {
+					return false, getErr
+				}
+				phase := project.Status.Debug.Sessions[0].Phase
+				return phase == apiv2.ProjectDebugPhaseExited || phase == apiv2.ProjectDebugPhaseFailed, nil
+			}))
+			completed := project.Status.Debug.Executions[0]
+			if scenario == "stdio" {
+				require.Equal(t, apiv2.ProjectDebugPhaseExited, completed.Phase)
+				require.NotNil(t, completed.ExitCode)
+			} else {
+				require.Equal(t, apiv2.ProjectDebugPhaseFailed, completed.Phase)
+				require.True(t, completed.FinishedAt.IsZero())
+				require.Equal(t, "ContainerAdapterCleanupUnconfirmed", completed.Conditions[0].Reason)
+			}
+			containerExec.mu.Lock()
+			invocations := append([]containers.ExecContainerOptions(nil), containerExec.options...)
+			containerExec.mu.Unlock()
+			require.Len(t, invocations, 1)
+			require.Equal(t, "container-id", invocations[0].Container, "an execution must never retarget the replacement")
+		})
+	}
 }

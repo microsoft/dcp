@@ -122,7 +122,7 @@ func TestV2ProjectServicePortsAndEvaluatedValues(t *testing.T) {
 }
 
 // Verifies that a missing service template dependency retries without launching a backing,
-// malformed templates fail terminally, and deletion can clean either preparation outcome.
+// malformed templates remain terminal after Stop, and deletion can clean either preparation outcome.
 func TestV2ProjectTemplatePreparationFailures(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
@@ -153,7 +153,13 @@ func TestV2ProjectTemplatePreparationFailures(t *testing.T) {
 					return current.Status.Phase == expected && len(current.Status.Conditions) != 0 &&
 						current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
 				})
-				if !malformed {
+				if malformed {
+					require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+					waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+						return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Spec.Stop &&
+							current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
+					})
+				} else {
 					service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "absent", Namespace: namespace.Name},
 						Spec: apiv2.LogicalServiceSpec{Address: "127.0.0.1"}}
 					require.NoError(t, server.Client.Create(ctx, service))

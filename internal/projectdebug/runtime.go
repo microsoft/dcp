@@ -24,9 +24,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/containers"
+	container_runtimes "github.com/microsoft/dcp/internal/containers/runtimes"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/randdata"
@@ -35,13 +38,15 @@ import (
 
 // projectDebugRuntime owns adapter processes across requests; TCP-connect providers are shared by Project UID.
 type projectDebugRuntime struct {
-	ctx       context.Context
-	executor  process.Executor
-	writer    *projectDebugStatusWriter
-	log       logr.Logger
-	launches  chan struct{}
-	mu        sync.Mutex
-	providers map[types.UID]*projectDebugProvider
+	ctx                  context.Context
+	executor             process.Executor
+	writer               *projectDebugStatusWriter
+	log                  logr.Logger
+	launches             chan struct{}
+	mu                   sync.Mutex
+	providers            map[types.UID]*projectDebugProvider
+	findContainerRuntime func(context.Context, string) (containers.ExecContainers, error)
+	currentProject       func(context.Context, *apiv2.Project) (*apiv2.Project, error)
 }
 
 type projectDebugProvider struct {
@@ -66,6 +71,7 @@ type projectDebugExecution struct {
 	done        chan struct{}
 	statusMu    sync.Mutex
 	status      apiv2.ProjectDebugExecutionStatus
+	containerID string
 }
 
 type projectDebugTransport struct {
@@ -97,6 +103,9 @@ func newProjectDebugRuntime(ctx context.Context, executor process.Executor, writ
 	return &projectDebugRuntime{
 		ctx: ctx, executor: executor, writer: writer, log: log,
 		launches: make(chan struct{}, 8), providers: make(map[types.UID]*projectDebugProvider),
+		findContainerRuntime: func(lookupCtx context.Context, name string) (containers.ExecContainers, error) {
+			return container_runtimes.FindContainerRuntime(lookupCtx, name, log, executor)
+		},
 	}
 }
 
@@ -115,6 +124,9 @@ func (runtime *projectDebugRuntime) publish(
 }
 
 func (execution *projectDebugExecution) stop() error {
+	if execution.containerID != "" {
+		return execution.stopContainer()
+	}
 	cleanupCtx, cancel := process.WithDetachedStopTimeout(execution.runtime.ctx)
 	defer cancel()
 	stopErr := execution.runtime.executor.StopProcess(cleanupCtx, execution.handle)
@@ -173,12 +185,18 @@ func (runtime *projectDebugRuntime) launch(
 		projectName: project.NamespacedName(), projectUID: project.UID, generation: project.Generation,
 		status: apiv2.ProjectDebugExecutionStatus{ID: string(id), Phase: apiv2.ProjectDebugPhasePending},
 	}
+	if project.Spec.DebugAdapter.EffectivePlacement() == apiv2.DebugAdapterPlacementContainer {
+		execution.containerID = project.Status.ContainerID
+	}
 	if _, publishErr := runtime.writer.update(setupCtx, project.NamespacedName(), project.UID, execution.status.DeepCopy(), nil); publishErr != nil {
 		cancel()
 		return nil, nil, publishErr
 	}
 	stopSetup := context.AfterFunc(setupCtx, cancel)
 	defer stopSetup()
+	if project.Spec.DebugAdapter.EffectivePlacement() == apiv2.DebugAdapterPlacementContainer {
+		return runtime.launchContainer(setupCtx, executionCtx, project, execution)
+	}
 	var listener net.Listener
 	var transport *projectDebugTransport
 	var cmd *exec.Cmd
@@ -324,6 +342,147 @@ func (runtime *projectDebugRuntime) launch(
 		return fail(setupErr)
 	}
 	return execution, transport, nil
+}
+
+func (runtime *projectDebugRuntime) launchContainer(
+	setupCtx, executionCtx context.Context, project *apiv2.Project, execution *projectDebugExecution,
+) (*projectDebugExecution, *projectDebugTransport, error) {
+	var transport *projectDebugTransport
+	started := false
+	fail := func(launchErr error) (*projectDebugExecution, *projectDebugTransport, error) {
+		if transport != nil {
+			launchErr = errors.Join(launchErr, transport.Close())
+		}
+		if started {
+			launchErr = errors.Join(launchErr, execution.stop())
+		} else {
+			execution.cancel()
+		}
+		execution.statusMu.Lock()
+		execution.status.Phase = apiv2.ProjectDebugPhaseFailed
+		if !started {
+			execution.status.FinishedAt = metav1.NowMicro()
+		}
+		execution.status.Conditions = debugConditions("LaunchFailed", launchErr.Error(), false, project.Generation)
+		publishErr := runtime.publish(project, execution.status.DeepCopy(), nil)
+		execution.statusMu.Unlock()
+		return nil, nil, errors.Join(launchErr, publishErr)
+	}
+	orchestrator, runtimeErr := runtime.findContainerRuntime(setupCtx, project.Status.ContainerRuntime)
+	if runtimeErr != nil {
+		return fail(fmt.Errorf("resolve prepared container runtime: %w", runtimeErr))
+	}
+	if orchestrator == nil {
+		return fail(fmt.Errorf("selected container runtime returned no exec implementation"))
+	}
+	current, currentErr := runtime.currentProject(setupCtx, project)
+	if currentErr != nil {
+		return fail(currentErr)
+	}
+	if current.Status.Debug == nil || !current.Status.Debug.PrerequisitesReady {
+		return fail(fmt.Errorf("project container prerequisites changed before adapter execution"))
+	}
+	stdin, input, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		return fail(fmt.Errorf("create container adapter input pipe: %w", pipeErr))
+	}
+	stdout := newProjectDebugOutput()
+	transport = &projectDebugTransport{Reader: stdout.reader, Writer: input, close: func() error {
+		closeErrors := stdout.detach()
+		for _, closer := range []io.Closer{stdin, input} {
+			closeErr := closer.Close()
+			if !errors.Is(closeErr, os.ErrClosed) && !errors.Is(closeErr, io.ErrClosedPipe) {
+				closeErrors = errors.Join(closeErrors, closeErr)
+			}
+		}
+		return closeErrors
+	}}
+	var environment []containers.EnvVar
+	for _, entry := range project.Spec.DebugAdapter.Env {
+		environment = append(environment, containers.EnvVar{Name: entry.Name, Value: entry.Value})
+	}
+	diagnostic := adapterDiagnosticWriter{log: runtime.log.WithValues(
+		logger.RESOURCE_LOG_STREAM_ID, project.GetResourceId(), "Project", project.NamespacedName(), "Execution", execution.status.ID)}
+	if setupErr := setupCtx.Err(); setupErr != nil {
+		return fail(setupErr)
+	}
+	exits, execErr := orchestrator.ExecContainer(executionCtx, containers.ExecContainerOptions{
+		Container: execution.containerID, Command: project.Spec.DebugAdapter.Args[0],
+		Args: append([]string(nil), project.Spec.DebugAdapter.Args[1:]...), Env: environment, StdInStream: stdin,
+		StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: stdout, StdErrStream: usvc_io.NopWriteCloser(diagnostic)},
+	})
+	if execErr != nil {
+		return fail(execErr)
+	}
+	started = true
+	if exits == nil {
+		close(execution.done)
+		return fail(fmt.Errorf("container adapter execution returned no completion channel"))
+	}
+	execution.statusMu.Lock()
+	execution.status.Phase = apiv2.ProjectDebugPhaseRunning
+	execution.status.Conditions = debugConditions("AdapterExecRunning", "The container adapter's attached execution was started.", true, project.Generation)
+	_, publishErr := runtime.writer.update(setupCtx, project.NamespacedName(), project.UID, execution.status.DeepCopy(), nil)
+	execution.statusMu.Unlock()
+	go func() {
+		defer close(execution.done)
+		defer execution.cancel()
+		var code int32
+		var open bool
+		select {
+		case code, open = <-exits:
+		case <-executionCtx.Done():
+			settlementCtx, settlementCancel := process.WithDetachedStopTimeout(executionCtx)
+			select {
+			case code, open = <-exits:
+			case <-settlementCtx.Done():
+			}
+			settlementCancel()
+		}
+		execution.statusMu.Lock()
+		if !open || code == process.UnknownExitCode || executionCtx.Err() != nil {
+			execution.status.Phase, execution.status.FinishedAt = apiv2.ProjectDebugPhaseFailed, metav1.MicroTime{}
+			execution.status.Conditions = debugConditions("ContainerAdapterCleanupUnconfirmed",
+				"The attached execution ended without confirming in-container adapter termination.", false, project.Generation)
+		} else {
+			execution.status.Phase, execution.status.FinishedAt = apiv2.ProjectDebugPhaseExited, metav1.NowMicro()
+			execution.status.ExitCode = &code
+			execution.status.Conditions = debugConditions("AdapterExecExited",
+				"The runtime reported completion of the container adapter command.", false, project.Generation)
+		}
+		if completionErr := runtime.publish(project, execution.status.DeepCopy(), nil); completionErr != nil {
+			runtime.log.Error(completionErr, "Failed to publish container adapter completion", "Project", project.NamespacedName())
+		}
+		execution.statusMu.Unlock()
+		_ = stdout.Close()
+	}()
+	if publishErr != nil {
+		return fail(publishErr)
+	}
+	if setupErr := setupCtx.Err(); setupErr != nil {
+		return fail(setupErr)
+	}
+	return execution, transport, nil
+}
+
+func (execution *projectDebugExecution) stopContainer() error {
+	execution.cancel()
+	cleanupCtx, cancel := process.WithDetachedStopTimeout(execution.runtime.ctx)
+	defer cancel()
+	select {
+	case <-execution.done:
+	case <-cleanupCtx.Done():
+	}
+	execution.statusMu.Lock()
+	defer execution.statusMu.Unlock()
+	if execution.status.Phase == apiv2.ProjectDebugPhaseExited && !execution.status.FinishedAt.IsZero() {
+		return nil
+	}
+	stopErr := errors.Join(cleanupCtx.Err(), fmt.Errorf("in-container adapter termination is unconfirmed"))
+	execution.status.Phase, execution.status.FinishedAt = apiv2.ProjectDebugPhaseFailed, metav1.MicroTime{}
+	execution.status.Conditions = debugConditions("ContainerAdapterCleanupUnconfirmed", stopErr.Error(), false, execution.generation)
+	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: execution.projectName.Name, Namespace: execution.projectName.Namespace, UID: execution.projectUID}}
+	return errors.Join(stopErr, execution.runtime.publish(project, execution.status.DeepCopy(), nil))
 }
 
 func (execution *projectDebugExecution) connect(ctx context.Context) (net.Conn, error) {

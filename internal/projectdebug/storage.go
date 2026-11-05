@@ -89,6 +89,7 @@ func newProjectDebugStorage(
 		parent: parent, namespaces: namespaces, ctx: lifetime, cancel: cancel,
 		runtime: newProjectDebugRuntime(lifetime, executor, writer, log),
 	}
+	storage.runtime.currentProject = storage.currentProject
 	context.AfterFunc(ctx, storage.Destroy)
 	return storage
 }
@@ -126,9 +127,6 @@ func (storage *projectDebugStorage) Connect(
 
 func debugProjectAdmission(project *apiv2.Project) error {
 	resource := project.GetGroupVersionResource().GroupResource()
-	if project.Spec.Process == nil {
-		return apierrors.NewBadRequest("container Project debugging is not supported")
-	}
 	if project.Spec.DebugAdapter == nil {
 		return apierrors.NewBadRequest("project has no debugAdapter configuration")
 	}
@@ -167,6 +165,20 @@ func (storage *projectDebugStorage) currentProject(ctx context.Context, selected
 	if admissionErr := debugProjectAdmission(current); admissionErr != nil {
 		return nil, admissionErr
 	}
+	if current.Status.Phase == apiv2.ProjectPhaseFailed {
+		return nil, apierrors.NewConflict(current.GetGroupVersionResource().GroupResource(), current.Name, fmt.Errorf("project execution context failed"))
+	}
+	if selected.Spec.Container != nil && selected.Status.ContainerID != "" &&
+		(current.Status.ContainerID != selected.Status.ContainerID ||
+			current.Status.ContainerRuntime != selected.Status.ContainerRuntime) {
+		return nil, apierrors.NewConflict(current.GetGroupVersionResource().GroupResource(), current.Name, fmt.Errorf("prepared container identity changed"))
+	}
+	if current.Spec.Container != nil && (current.Status.ContainerID == "" || current.Status.ContainerRuntime == "") {
+		current = current.DeepCopy()
+		if current.Status.Debug != nil {
+			current.Status.Debug.PrerequisitesReady = false
+		}
+	}
 	namespaceObject, namespaceErr := storage.namespaces.Get(ctx, selected.Namespace, &metav1.GetOptions{})
 	if apierrors.IsNotFound(namespaceErr) {
 		current = current.DeepCopy()
@@ -193,7 +205,7 @@ func (storage *projectDebugStorage) currentProject(ctx context.Context, selected
 
 // monitor watches the parent for prerequisite changes and cancellation for the entire debug request.
 func (storage *projectDebugStorage) monitor(
-	ctx context.Context, selected *apiv2.Project, ready chan<- struct{}, cancel context.CancelCauseFunc,
+	ctx context.Context, selected *apiv2.Project, ready chan<- *apiv2.Project, cancel context.CancelCauseFunc,
 ) {
 	parentWatch, watchErr := storage.parent.Watch(requestinfo.WithNamespace(ctx, selected.Namespace), &metainternal.ListOptions{
 		FieldSelector: fields.OneTermEqualSelector("metadata.name", selected.Name),
@@ -217,7 +229,8 @@ func (storage *projectDebugStorage) monitor(
 		isReady := current.Status.Debug != nil && current.Status.Debug.PrerequisitesReady
 		if isReady && !prepared {
 			prepared = true
-			close(ready)
+			selected = current.DeepCopy()
+			ready <- selected
 		} else if prepared && !isReady {
 			cancel(fmt.Errorf("project debug prerequisites are no longer available"))
 			return
@@ -278,26 +291,28 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 			storage.runtime.log.Error(publishErr, "Failed to publish debug session completion")
 		}
 	}()
-	ready := make(chan struct{})
+	ready := make(chan *apiv2.Project, 1)
 	monitorDone := make(chan struct{})
 	go func() {
 		defer close(monitorDone)
 		storage.monitor(ctx, project, ready, cancel)
 	}()
 	defer func() { cancel(nil); <-monitorDone }()
+	var prepared *apiv2.Project
 	select {
-	case <-ready:
+	case prepared = <-ready:
 	case <-ctx.Done():
 		sessionErr = context.Cause(ctx)
 		responder.Error(sessionErr)
 		return
 	}
-	prepared, prerequisiteErr := storage.currentProject(ctx, project)
-	if prerequisiteErr != nil || prepared.Status.Debug == nil || !prepared.Status.Debug.PrerequisitesReady {
+	confirmed, prerequisiteErr := storage.currentProject(ctx, prepared)
+	if prerequisiteErr != nil || confirmed.Status.Debug == nil || !confirmed.Status.Debug.PrerequisitesReady {
 		sessionErr = errors.Join(prerequisiteErr, fmt.Errorf("project debug prerequisites changed before adapter setup"))
 		responder.Error(apierrors.NewConflict(project.GetGroupVersionResource().GroupResource(), project.Name, sessionErr))
 		return
 	}
+	project = confirmed
 	setupCtx, setupCancel := context.WithTimeout(ctx, project.Spec.DebugAdapter.GetConnectionTimeout())
 	execution, transport, release, acquireErr := storage.runtime.acquire(setupCtx, project)
 	setupCancel()

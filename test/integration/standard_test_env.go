@@ -381,7 +381,7 @@ func StartTestEnvironmentWithOptions(
 				return nil, nil, fmt.Errorf("Project process executor decorator returned nil")
 			}
 		}
-		projectR := controllers.NewProjectReconciler(ctx, mgr.GetClient(), controllerAPIReader, log.WithName("ProjectReconciler"), projectExecutor)
+		projectR := controllers.NewProjectReconciler(ctx, mgr.GetClient(), controllerAPIReader, log.WithName("ProjectReconciler"), projectExecutor, serverInfo.ContainerOrchestrator.Name())
 		if projectSetupErr := projectR.SetupWithManager(mgr, instanceTag+"-ProjectReconciler"); projectSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Project reconciler: %w", projectSetupErr)
 		}

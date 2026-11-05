@@ -41,7 +41,7 @@ func (writer *projectDebugStatusWriter) registerProcess(
 		session := &project.Status.Debug.Sessions[index]
 		if snapshot != nil {
 			for _, existing := range session.Processes {
-				if existing.ID == snapshot.ID || (existing.PID != nil && snapshot.PID != nil &&
+				if existing.ID == snapshot.ID || (existing.PID != nil && snapshot.PID != nil && existing.ContainerID == snapshot.ContainerID &&
 					!existing.IdentityTimestamp.IsZero() && existing.IdentityTimestamp.Equal(&snapshot.IdentityTimestamp) &&
 					*existing.PID == *snapshot.PID) {
 					return nil
@@ -112,6 +112,9 @@ func (runtime *projectDebugRuntime) observeProcessMessage(project *apiv2.Project
 	entry := &apiv2.ProjectDebugProcessStatus{ID: string(id), Name: body.Name, PID: body.PID}
 	var handle process.ProcessHandle
 	switch {
+	case project.Spec.Container != nil:
+		entry.ContainerID = project.Status.ContainerID
+		entry.TrackingError = "Container-scoped target identity and individual cleanup are unconfirmed; the Project owns final container cleanup."
 	case body.Local != nil && !*body.Local:
 		entry.TrackingError = "The adapter reported a non-local target; host process tracking and cleanup are unconfirmed."
 	case body.PID == nil:

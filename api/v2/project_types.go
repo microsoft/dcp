@@ -35,7 +35,7 @@ const ProjectDebugShutdownGrace = 5 * time.Second
 // DebugSubresourceName identifies the bidirectional Project DAP endpoint.
 const DebugSubresourceName = "debug"
 
-// DebugAdapterMode selects the host adapter's DAP transport.
+// DebugAdapterMode selects the adapter's DAP transport.
 // +kubebuilder:validation:Enum=stdio;tcp-connect;tcp-callback
 type DebugAdapterMode string
 
@@ -48,10 +48,23 @@ const (
 	DebugAdapterModeTCPCallback DebugAdapterMode = "tcp-callback"
 )
 
-// DebugAdapterConfig declares a host adapter to launch only on an explicit debug-subresource request.
+// DebugAdapterPlacement selects the adapter's execution context.
+type DebugAdapterPlacement string
+
+const (
+	DebugAdapterPlacementHost      DebugAdapterPlacement = "host"
+	DebugAdapterPlacementContainer DebugAdapterPlacement = "container"
+)
+
+// DebugAdapterConfig declares an adapter to launch only on an explicit debug-subresource request.
 // DAP initialize, launch, and attach configuration is supplied over the debug stream, not through this spec.
 // +k8s:openapi-gen=true
 type DebugAdapterConfig struct {
+	// Placement selects host execution or execution in the prepared Project container. Defaults to host.
+	// Container placement currently supports only stdio.
+	// +kubebuilder:validation:Enum=host;container
+	// +kubebuilder:default:=host
+	Placement DebugAdapterPlacement `json:"placement,omitempty"`
 	// Args contains the executable name or path followed by its arguments.
 	// TCP modes replace {{port}} in these values with a DCP-allocated loopback port.
 	// +listType=atomic
@@ -66,6 +79,14 @@ type DebugAdapterConfig struct {
 	// ConnectionTimeout bounds pre-upgrade adapter transport setup, including shared-provider availability.
 	// Omitted or zero uses 10 seconds. It does not limit the established debug stream or DAP initialization.
 	ConnectionTimeout *metav1.Duration `json:"connectionTimeout,omitempty"`
+}
+
+// EffectivePlacement defaults omitted adapter placement to host.
+func (config DebugAdapterConfig) EffectivePlacement() DebugAdapterPlacement {
+	if config.Placement == "" {
+		return DebugAdapterPlacementHost
+	}
+	return config.Placement
 }
 
 // EffectiveMode returns the declared transport, defaulting to stdio when omitted.
@@ -86,6 +107,15 @@ func (config DebugAdapterConfig) GetConnectionTimeout() time.Duration {
 
 func (config *DebugAdapterConfig) validate(configPath *field.Path) field.ErrorList {
 	var errorList field.ErrorList
+	switch config.EffectivePlacement() {
+	case DebugAdapterPlacementHost:
+	case DebugAdapterPlacementContainer:
+		if config.EffectiveMode() != DebugAdapterModeStdio {
+			errorList = append(errorList, field.Forbidden(configPath.Child("mode"), "container adapter placement currently supports only stdio"))
+		}
+	default:
+		errorList = append(errorList, field.NotSupported(configPath.Child("placement"), config.Placement, []string{"host", "container"}))
+	}
 	if len(config.Args) == 0 {
 		errorList = append(errorList, field.Required(configPath.Child("args"), "args must contain the adapter executable"))
 	} else if strings.TrimSpace(config.Args[0]) == "" {
@@ -124,7 +154,7 @@ const (
 // +k8s:openapi-gen=true
 type ProjectDebugStatus struct {
 	// PrerequisitesReady reports controller-observed execution prerequisites, not adapter or application readiness.
-	// Process prerequisites do not require the application to be running; container debugging is not yet supported.
+	// Process prerequisites do not require the application to be running; container prerequisites require a prepared context.
 	PrerequisitesReady bool `json:"prerequisitesReady,omitempty"`
 	// Executions contains DCP-owned adapter process and shared provider observations.
 	// +listType=map
@@ -136,7 +166,8 @@ type ProjectDebugStatus struct {
 	Sessions []ProjectDebugSessionStatus `json:"sessions,omitempty"`
 }
 
-// ProjectDebugExecutionStatus reports one adapter launch attempt and its observed process lifetime.
+// ProjectDebugExecutionStatus reports a host adapter process or attached container execution.
+// Attached execution completion alone does not establish in-container process termination.
 // +k8s:openapi-gen=true
 type ProjectDebugExecutionStatus struct {
 	// ID identifies this execution independently of its reusable operating system PID.
@@ -144,11 +175,11 @@ type ProjectDebugExecutionStatus struct {
 	// Phase summarizes adapter launch and process availability.
 	// +kubebuilder:validation:Enum=Pending;Running;Exited;Failed
 	Phase ProjectDebugPhase `json:"phase"`
-	// PID is the adapter process ID, absent if no process was launched.
+	// PID is the host adapter process ID, absent for container executions and failed host launches.
 	PID *int64 `json:"pid,omitempty"`
 	// IdentityTimestamp identifies the process in pid for PID-reuse protection.
 	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
-	// FinishedAt is when launch failure or process completion was observed.
+	// FinishedAt is when launch failure, host process completion or attached execution completion was observed.
 	FinishedAt metav1.MicroTime `json:"finishedAt,omitempty"`
 	// ExitCode is the observed adapter process exit code, when known.
 	ExitCode *int32 `json:"exitCode,omitempty"`
@@ -226,6 +257,8 @@ type ProjectDebugProcessStatus struct {
 	Name string `json:"name,omitempty"`
 	// PID is the reported operating system process ID, if provided.
 	PID *int64 `json:"pid,omitempty"`
+	// ContainerID scopes a reported PID to the prepared container, never the DCP host.
+	ContainerID string `json:"containerID,omitempty"`
 	// IdentityTimestamp captures local PID-reuse identity; absent when identity could not be resolved.
 	// On Linux this represents elapsed time since boot, not a wall-clock start time.
 	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
@@ -306,8 +339,8 @@ type ProjectSpec struct {
 	Process *ProjectProcessTemplate `json:"process,omitempty"`
 	// Container describes how to run the code as a container. Exactly one of process or container must be set.
 	Container *ProjectContainerTemplate `json:"container,omitempty"`
-	// DebugAdapter declares a host-side adapter; configuration alone does not launch it.
-	// It is independent of whether the application runs as a process or container.
+	// DebugAdapter declares an adapter; configuration alone does not launch it.
+	// Host placement is valid with either application template; container placement requires a container template.
 	DebugAdapter *DebugAdapterConfig `json:"debugAdapter,omitempty"`
 	// Stop requests termination or prevents launch. Once true, it cannot be reset.
 	Stop bool `json:"stop,omitempty"`
@@ -337,6 +370,8 @@ type ProjectStatus struct {
 	// PhysicalContainerRef identifies the same-namespace backing PhysicalContainer.
 	// Cross-namespace references are not supported.
 	PhysicalContainerRef string `json:"physicalContainerRef,omitempty"`
+	// ContainerRuntime identifies the controller-selected runtime for the prepared container.
+	ContainerRuntime string `json:"containerRuntime,omitempty"`
 	// ImageRef identifies the supplied or owned PhysicalContainerImage.
 	// Cross-namespace references are not supported.
 	ImageRef string `json:"imageRef,omitempty"`
@@ -452,6 +487,9 @@ func (resource *Project) Validate(context.Context) field.ErrorList {
 	}
 	if resource.Spec.DebugAdapter != nil {
 		errorList = append(errorList, resource.Spec.DebugAdapter.validate(specPath.Child("debugAdapter"))...)
+		if resource.Spec.DebugAdapter.EffectivePlacement() == DebugAdapterPlacementContainer && resource.Spec.Container == nil {
+			errorList = append(errorList, field.Forbidden(specPath.Child("debugAdapter", "placement"), "container adapter placement requires a container Project"))
+		}
 	}
 	return errorList
 }

@@ -62,17 +62,19 @@ var projectDataHandlers = map[projectState]projectDataHandlerFunc{
 // ProjectReconciler prepares launch inputs and reusable context for AppHost-controlled debugging.
 type ProjectReconciler struct {
 	*ReconcilerBase[apiv2.Project, *apiv2.Project]
-	projects            *ObjectStateMap[types.UID, projectData, *projectData, *apiv2.Project]
-	processExecutor     process.Executor
-	processCleanupQueue *resiliency.WorkQueue
+	projects             *ObjectStateMap[types.UID, projectData, *projectData, *apiv2.Project]
+	processExecutor      process.Executor
+	processCleanupQueue  *resiliency.WorkQueue
+	containerRuntimeName string
 }
 
-func NewProjectReconciler(ctx context.Context, client ctrl_client.Client, reader ctrl_client.Reader, log logr.Logger, executor process.Executor) *ProjectReconciler {
+func NewProjectReconciler(ctx context.Context, client ctrl_client.Client, reader ctrl_client.Reader, log logr.Logger, executor process.Executor, containerRuntimeName string) *ProjectReconciler {
 	return &ProjectReconciler{
-		ReconcilerBase:      NewReconcilerBase[apiv2.Project](client, reader, log, ctx),
-		projects:            NewObjectStateMap[types.UID, projectData, *projectData, *apiv2.Project](),
-		processExecutor:     executor,
-		processCleanupQueue: resiliency.NewWorkQueue(ctx, MaxConcurrentReconciles),
+		ReconcilerBase:       NewReconcilerBase[apiv2.Project](client, reader, log, ctx),
+		projects:             NewObjectStateMap[types.UID, projectData, *projectData, *apiv2.Project](),
+		processExecutor:      executor,
+		processCleanupQueue:  resiliency.NewWorkQueue(ctx, MaxConcurrentReconciles),
+		containerRuntimeName: containerRuntimeName,
 	}
 }
 
@@ -206,10 +208,13 @@ func (r *ProjectReconciler) manageProject(
 		r.projects.Store(resource.NamespacedName(), resource.UID, data.Clone())
 	}
 
-	if resource.Spec.Stop && data.state != projectStateStopped {
-		data.state = projectStateStopping
-		if data.stoppingAt.IsZero() {
-			data.stoppingAt = time.Now()
+	if resource.Spec.Stop {
+		switch data.state {
+		case projectStatePending, projectStateCreating, projectStateReady, projectStateActive, projectStateStopping:
+			data.state = projectStateStopping
+			if data.stoppingAt.IsZero() {
+				data.stoppingAt = time.Now()
+			}
 		}
 	}
 	stateHandler := getStateInitializer(projectDataHandlers, data.state, log)
@@ -657,6 +662,7 @@ func (r *ProjectReconciler) observeProjectContainer(
 		return nil, getErr
 	}
 	change := setValue(&resource.Status.ContainerID, physical.Status.ContainerID)
+	change |= setValue(&resource.Status.ContainerRuntime, r.containerRuntimeName)
 	change |= setValue(&resource.Status.ContainerName, physical.Status.ContainerName)
 	change |= setValue(&resource.Status.Image, physical.Status.Image)
 	change |= setTimestamp(&resource.Status.CreatedAt, physical.Status.CreatedAt)

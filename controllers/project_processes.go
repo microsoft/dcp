@@ -39,7 +39,7 @@ func logUnconfirmedProjectTargets(resource *apiv2.Project, log logr.Logger) {
 }
 
 func registeredProjectProcess(entry apiv2.ProjectDebugProcessStatus) (process.ProcessHandle, error) {
-	if entry.TrackingError != "" || entry.PID == nil || entry.IdentityTimestamp.IsZero() {
+	if entry.ContainerID != "" || entry.TrackingError != "" || entry.PID == nil || entry.IdentityTimestamp.IsZero() {
 		return process.ProcessHandle{}, fmt.Errorf("local process identity is unconfirmed")
 	}
 	pid, pidErr := process.Int64_ToPidT(*entry.PID)

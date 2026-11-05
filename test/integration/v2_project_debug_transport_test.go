@@ -25,7 +25,9 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/dap"
 	internaltest "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/containertest"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -143,4 +145,114 @@ func readProjectDebugMessage(t *testing.T, connection *websocket.Conn) dap.Messa
 	message, decodeErr := dap.ReadMessage(bufio.NewReader(bytes.NewReader(payload)))
 	require.NoError(t, decodeErr)
 	return message
+}
+
+// Verifies that a host adapter can debug a prepared container Project without resolving reported
+// container PIDs as host identities, and that session closure retains the container until Project deletion.
+func TestV2ProjectHostAdapterWithContainerContext(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	server, _, startupErr := StartTestEnvironment(t, ctx, projectTestControllers, t.Name(), t.TempDir())
+	require.NoError(t, startupErr)
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-container-host-adapter")
+	tool, toolErr := internaltest.GetTestToolPath("delay")
+	require.NoError(t, toolErr)
+	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
+			Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Command: []string{"application"},
+			}},
+			DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{tool, "--dap-stdio"}},
+		}}
+	require.NoError(t, server.Client.Create(ctx, project))
+	prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
+	require.Equal(t, server.ContainerOrchestrator.Name(), prepared.Status.ContainerRuntime)
+	owner := process.NewOSExecutor(logr.Discard())
+	t.Cleanup(owner.Dispose)
+	target := startProjectTarget(t, ctx, owner, tool)
+	connection, connectionErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
+	require.NoError(t, connectionErr)
+	defer connection.Close()
+	reportProjectTarget(t, connection, target.Pid)
+	require.NoError(t, server.Client.Get(ctx, project.NamespacedName(), project))
+	registration := project.Status.Debug.Sessions[0].Processes[0]
+	require.Equal(t, prepared.Status.ContainerID, registration.ContainerID)
+	require.True(t, registration.IdentityTimestamp.IsZero())
+	require.NotEmpty(t, registration.TrackingError)
+	sendProjectProtocolRequest(t, connection, `{"seq":40,"type":"request","command":"disconnect","arguments":{}}`)
+	response := readProjectDebugMessage(t, connection)
+	require.JSONEq(t, "40", string(response["request_seq"]))
+	event := readProjectDebugMessage(t, connection)
+	require.JSONEq(t, `"terminated"`, string(event["event"]))
+	ready := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
+	require.Equal(t, prepared.Status.ContainerID, ready.Status.ContainerID)
+	require.NoError(t, server.Client.Delete(ctx, project))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
+	require.NoError(t, owner.CheckProcessRunning(target), "container PID reports must never select host cleanup handles")
+}
+
+// Verifies through each enabled real runtime that container stdio adapter sessions use the
+// prepared context without host PIDs and retain that context across connections until Project deletion.
+func TestV2ProjectContainerAdapterWithRealOrchestrator(t *testing.T) {
+	t.Parallel()
+	testCtx, testCancel := testutil.GetTestContext(t, 3*time.Minute)
+	t.Cleanup(testCancel)
+	containertest.ForEachHealthyRuntime(t, testCtx, func(t *testing.T, runtimeCtx context.Context, runtime containertest.Runtime) {
+		ctx, cancel := context.WithCancel(runtimeCtx)
+		defer cancel()
+		tracker := containertest.NewResourceTracker(t, runtime)
+		server, environment, startupErr := StartAdvancedTestEnvironmentWithOptions(ctx,
+			projectTestControllers, containertest.UniqueName(t, "project-adapter-environment"), t.TempDir(),
+			AdvancedTestEnvironmentOptions{ApiServerFlags: ctrl_testutil.ApiServerUseTrueContainerOrchestrator, ContainerOrchestrator: runtime.Orchestrator})
+		require.NoError(t, startupErr)
+		defer environment.ProcessExecutor.Dispose()
+		defer shutdownAdvancedTestEnvironment(t, ctx, cancel, server)
+		namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: containertest.UniqueName(t, "project-adapter-namespace")}}
+		require.NoError(t, server.Client.Create(ctx, namespace))
+		var labels []commonapi.Label
+		for name, value := range tracker.MapLabels() {
+			labels = append(labels, commonapi.Label{Key: name, Value: value})
+		}
+		project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+			Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
+				Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+					Image: &apiv2.PhysicalContainerImageConfig{Image: "busybox:latest"}, Labels: labels,
+				}},
+				DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{"cat"}, Placement: apiv2.DebugAdapterPlacementContainer},
+			}}
+		require.NoError(t, server.Client.Create(ctx, project))
+		prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
+		require.NoError(t, tracker.TrackContainer(prepared.Status.ContainerName))
+		require.Equal(t, runtime.Orchestrator.Name(), prepared.Status.ContainerRuntime)
+		for range 2 {
+			connection, connectErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
+			require.NoError(t, connectErr)
+			sendProjectProtocolRequest(t, connection, `{"seq":41,"type":"request","command":"initialize","arguments":{"extension":"unchanged"}}`)
+			echo := readProjectDebugMessage(t, connection)
+			require.JSONEq(t, `"initialize"`, string(echo["command"]))
+			require.JSONEq(t, `{"extension":"unchanged"}`, string(echo["arguments"]))
+			require.NoError(t, connection.Close())
+			ready := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				if current.Status.Phase != apiv2.ProjectPhaseReady {
+					return false, nil
+				}
+				for _, session := range current.Status.Debug.Sessions {
+					if session.Phase == apiv2.ProjectDebugPhasePending || session.Phase == apiv2.ProjectDebugPhaseRunning {
+						return false, nil
+					}
+				}
+				return true, nil
+			})
+			require.Equal(t, prepared.Status.ContainerID, ready.Status.ContainerID)
+			for _, execution := range ready.Status.Debug.Executions {
+				require.Nil(t, execution.PID)
+			}
+			require.Equal(t, prepared.Status.ContainerRuntime, ready.Status.ContainerRuntime)
+		}
+		require.NoError(t, server.Client.Delete(ctx, project))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
+		require.NoError(t, server.Client.Delete(ctx, namespace))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, namespace)
+	})
 }

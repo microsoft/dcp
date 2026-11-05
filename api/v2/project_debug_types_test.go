@@ -21,10 +21,16 @@ import (
 func TestProjectDebugAdapterValidation(t *testing.T) {
 	root := t.TempDir()
 	for _, testCase := range []struct {
-		name   string
-		config DebugAdapterConfig
-		field  string
+		name      string
+		config    DebugAdapterConfig
+		field     string
+		container bool
 	}{
+		{name: "explicit host", config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementHost}},
+		{name: "container stdio", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer}},
+		{name: "container requires context", config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer}, field: "spec.debugAdapter.placement"},
+		{name: "container tcp deferred", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect}, field: "spec.debugAdapter.mode"},
+		{name: "unknown placement", config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: "unknown"}, field: "spec.debugAdapter.placement"},
 		{name: "default stdio", config: DebugAdapterConfig{Args: []string{"adapter"}}},
 		{name: "explicit stdio", config: DebugAdapterConfig{Args: []string{"adapter"}, Mode: DebugAdapterModeStdio}},
 		{name: "tcp connect", config: DebugAdapterConfig{Args: []string{"adapter", "--port={{port}}"}, Mode: DebugAdapterModeTCPConnect}},
@@ -42,6 +48,10 @@ func TestProjectDebugAdapterValidation(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			project := &Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "test"},
 				Spec: ProjectSpec{RootDirectory: root, Process: &ProjectProcessTemplate{LogicalProcessConfig: LogicalProcessConfig{ExecutablePath: "application"}}, DebugAdapter: &testCase.config}}
+			if testCase.container {
+				project.Spec.Process = nil
+				project.Spec.Container = &ProjectContainerTemplate{LogicalContainerConfig: LogicalContainerConfig{ImageRef: "image"}}
+			}
 			validationErrors := project.Validate(context.Background())
 			if testCase.field == "" {
 				require.Empty(t, validationErrors)
@@ -60,6 +70,8 @@ func TestDebugAdapterConfigurationDefaults(t *testing.T) {
 	require.Equal(t, DebugAdapterModeStdio, config.EffectiveMode())
 	require.Equal(t, 10*time.Second, config.GetConnectionTimeout())
 	require.Empty(t, config.Mode)
+	require.Equal(t, DebugAdapterPlacementHost, config.EffectivePlacement())
+	require.Empty(t, config.Placement)
 	require.Nil(t, config.ConnectionTimeout)
 	config.ConnectionTimeout = &metav1.Duration{}
 	require.Equal(t, 10*time.Second, config.GetConnectionTimeout())
@@ -79,6 +91,7 @@ func TestProjectDebugAdapterCopyAndImmutability(t *testing.T) {
 			DebugAdapter: &DebugAdapterConfig{Args: []string{"adapter", "--port={{port}}"}, Mode: DebugAdapterModeTCPConnect,
 				Env: []commonapi.EnvVar{{Name: "VALUE", Value: "original"}}, ConnectionTimeout: &metav1.Duration{Duration: 20 * time.Second}}}}
 	for _, change := range []func(*Project){
+		func(changed *Project) { changed.Spec.DebugAdapter.Placement = DebugAdapterPlacementContainer },
 		func(changed *Project) { changed.Spec.DebugAdapter.Args[0] = "other" },
 		func(changed *Project) { changed.Spec.DebugAdapter.Mode = DebugAdapterModeStdio },
 		func(changed *Project) { changed.Spec.DebugAdapter.Env[0].Value = "other" },
