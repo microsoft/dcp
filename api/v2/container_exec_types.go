@@ -18,6 +18,35 @@ import (
 type ContainerExecPhase string
 
 const (
+	// ContainerExecReasonContainerNotFound indicates that the execution target has not been found.
+	ContainerExecReasonContainerNotFound ConditionReason = "ContainerNotFound"
+	// ContainerExecReasonContainerNotReady indicates that the execution target is not running and ready.
+	ContainerExecReasonContainerNotReady ConditionReason = "ContainerNotReady"
+	// ContainerExecReasonContainerLookupFailed indicates that the execution target could not be read.
+	ContainerExecReasonContainerLookupFailed ConditionReason = "ContainerLookupFailed"
+	// ContainerExecReasonContainerUnavailable indicates that the selected target cannot be used for execution.
+	ContainerExecReasonContainerUnavailable ConditionReason = "ContainerUnavailable"
+	// ContainerExecReasonLaunching indicates that attached command launch is in progress.
+	ContainerExecReasonLaunching ConditionReason = "Launching"
+	// ContainerExecReasonLaunchQueueFailed indicates that attached command launch could not be queued.
+	ContainerExecReasonLaunchQueueFailed ConditionReason = "LaunchQueueFailed"
+	// ContainerExecReasonLaunchFailed indicates that attached command launch failed.
+	ContainerExecReasonLaunchFailed ConditionReason = "LaunchFailed"
+	// ContainerExecReasonCaptureFailed indicates that execution output capture could not be prepared.
+	ContainerExecReasonCaptureFailed ConditionReason = "CaptureFailed"
+	// ContainerExecReasonRunning indicates that the attached command is running.
+	ContainerExecReasonRunning ConditionReason = "ExecutionRunning"
+	// ContainerExecReasonExited indicates that the attached command has completed.
+	ContainerExecReasonExited ConditionReason = "ExecutionExited"
+	// ContainerExecReasonStopping indicates that execution cancellation is in progress.
+	ContainerExecReasonStopping ConditionReason = "Stopping"
+	// ContainerExecReasonCancelled indicates that execution was cancelled before launch.
+	ContainerExecReasonCancelled ConditionReason = "ExecutionCancelled"
+	// ContainerExecReasonCompletionUnknown indicates that execution completion was not reported.
+	ContainerExecReasonCompletionUnknown ConditionReason = "CompletionUnknown"
+)
+
+const (
 	ContainerExecPhasePending ContainerExecPhase = "Pending"
 	ContainerExecPhaseRunning ContainerExecPhase = "Running"
 	ContainerExecPhaseExited  ContainerExecPhase = "Exited"

@@ -133,11 +133,11 @@ func (data *logicalContainerExecData) applyTo(resource *apiv2.LogicalContainerEx
 		if reason == "" {
 			switch data.state {
 			case logicalContainerExecStatePending:
-				reason = "PhysicalExecutionPreparationFailed"
+				reason = apiv2.LogicalContainerExecReasonPhysicalExecutionPreparationFailed
 			case logicalContainerExecStateDelete:
-				reason = "PhysicalExecutionDeletionFailed"
+				reason = apiv2.LogicalContainerExecReasonPhysicalExecutionDeletionFailed
 			default:
-				reason = "PhysicalExecutionLookupFailed"
+				reason = apiv2.LogicalContainerExecReasonPhysicalExecutionLookupFailed
 			}
 		}
 		change |= setValue(&resource.Status.Phase, apiv2.ContainerExecPhasePending)
@@ -156,28 +156,28 @@ var logicalContainerExecProjections = physicalResourceProjectionTable[logicalCon
 	invalidPhase: apiv2.ContainerExecPhaseFailed,
 	projections: map[logicalContainerExecState]physicalResourceProjection[apiv2.ContainerExecPhase]{
 		logicalContainerExecStatePending: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerNotReady",
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ContainerExecReasonContainerNotReady,
 		},
 		logicalContainerExecStateFailed: {
-			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionPreparationFailed",
+			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonPhysicalExecutionPreparationFailed,
 		},
 		logicalContainerExecStateCreating: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionNotReady",
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonPhysicalExecutionNotReady,
 		},
 		logicalContainerExecStateRunning: {
-			phase: apiv2.ContainerExecPhaseRunning, conditionStatus: metav1.ConditionTrue, conditionReason: "ExecutionRunning",
+			phase: apiv2.ContainerExecPhaseRunning, conditionStatus: metav1.ConditionTrue, conditionReason: apiv2.ContainerExecReasonRunning,
 		},
 		logicalContainerExecStateExited: {
-			phase: apiv2.ContainerExecPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: "ExecutionExited",
+			phase: apiv2.ContainerExecPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ContainerExecReasonExited,
 		},
 		logicalContainerExecStateRuntimeFailed: {
-			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionFailed",
+			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonPhysicalExecutionFailed,
 		},
 		logicalContainerExecStateMissing: {
-			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionChanged",
+			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonPhysicalExecutionChanged,
 		},
 		logicalContainerExecStateDelete: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "DeletingPhysicalExecution",
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonDeletingPhysicalExecution,
 			requeue: true,
 		},
 		logicalContainerExecStateInvalid: {

@@ -81,6 +81,10 @@ func TestPhysicalResourceProjections(t *testing.T) {
 	assertPhysicalResourceProjections(t, logicalProcessProjections)
 	assertPhysicalResourceProjections(t, physicalContainerExecProjections)
 	assertPhysicalResourceProjections(t, logicalContainerExecProjections)
+	resolveProjection, valid := physicalContainerProjections.project(physicalContainerStateResolve)
+	require.True(t, valid)
+	require.Equal(t, apiv2.PhysicalContainerPhasePending, resolveProjection.phase)
+	require.Equal(t, apiv2.PhysicalContainerReasonResolvingRuntimeContainer, resolveProjection.conditionReason)
 
 	containerMissing, containerMissingFound := physicalContainerProjections.project(physicalContainerStateMissing)
 	require.True(t, containerMissingFound)

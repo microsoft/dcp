@@ -249,7 +249,7 @@ func (r *LogicalContainerReconciler) prepareLogicalContainerValues(
 	data.ports = ports
 	if prepareErr != nil {
 		log.Error(prepareErr, "Failed to prepare logical container ports")
-		data.reason, data.message = "PortPreparationPending", prepareErr.Error()
+		data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, prepareErr.Error()
 		if !apierrors.IsNotFound(prepareErr) {
 			data.reconcileErr = prepareErr
 		}
@@ -261,7 +261,7 @@ func (r *LogicalContainerReconciler) prepareLogicalContainerValues(
 			ctx, r.NoCacheClient, container, servingPorts(ports), config.Command, config.Env, false)
 		if evaluationErr != nil {
 			log.Error(evaluationErr, "Failed to evaluate logical container values")
-			data.reason, data.message = "TemplateEvaluationFailed", evaluationErr.Error()
+			data.reason, data.message = apiv2.LogicalResourceReasonTemplateEvaluationFailed, evaluationErr.Error()
 			if !templating.IsTransientTemplateError(evaluationErr) {
 				data.state = logicalContainerStatePreparationFailed
 			}
@@ -287,7 +287,7 @@ func (r *LogicalProcessReconciler) prepareLogicalProcessValues(
 	data.ports = ports
 	if prepareErr != nil {
 		log.Error(prepareErr, "Failed to prepare logical process ports")
-		data.reason, data.message = "PortPreparationPending", prepareErr.Error()
+		data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, prepareErr.Error()
 		if !apierrors.IsNotFound(prepareErr) {
 			data.reconcileErr = prepareErr
 		}
@@ -299,7 +299,7 @@ func (r *LogicalProcessReconciler) prepareLogicalProcessValues(
 			ctx, r.NoCacheClient, resource, servingPorts(ports), config.Args, config.Env, osutil.IsWindows())
 		if evaluationErr != nil {
 			log.Error(evaluationErr, "Failed to evaluate logical process values")
-			data.reason, data.message = "TemplateEvaluationFailed", evaluationErr.Error()
+			data.reason, data.message = apiv2.LogicalResourceReasonTemplateEvaluationFailed, evaluationErr.Error()
 			if !templating.IsTransientTemplateError(evaluationErr) {
 				data.state = logicalProcessStatePrepareFailed
 			}

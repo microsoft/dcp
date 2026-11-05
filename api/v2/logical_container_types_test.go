@@ -679,7 +679,7 @@ func TestLogicalContainerJSONShape(t *testing.T) {
 			ContainerID: "runtime-id", ContainerName: "runtime-container", LifecycleKey: "desired-key",
 			ExitCode: &exitCode,
 			Conditions: []metav1.Condition{{
-				Type: string(ConditionReady), Status: metav1.ConditionTrue, Reason: "ContainerRunning",
+				Type: string(ConditionReady), Status: metav1.ConditionTrue, Reason: string(LogicalContainerReasonRunning),
 				LastTransitionTime: metav1.Now(),
 			}},
 		},

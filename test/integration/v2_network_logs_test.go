@@ -68,7 +68,7 @@ func TestV2NetworkSystemLogsFollowPhysicalOwnership(t *testing.T) {
 		for {
 			line, readErr := reader.ReadString('\n')
 			require.NoError(t, readErr)
-			if !strings.Contains(line, "Failed to create container network") {
+			if !strings.Contains(line, "Container network create returned an error; reconciliation will verify the outcome") {
 				continue
 			}
 			require.Contains(t, line, networkName)
@@ -112,7 +112,7 @@ func TestV2NetworkLogEndpointsAreSystemOnlyAndNamespaced(t *testing.T) {
 		output, readErr := readV2ContainerLog(ctx, physical, apiv2.ResourceLogOptions{Source: "system"})
 		require.NoError(t, readErr)
 		require.Contains(t, output, networkName)
-		require.Contains(t, output, "Failed to create container network")
+		require.Contains(t, output, "Container network create returned an error; reconciliation will verify the outcome")
 		if namespaceName == "v2-network-log-second" {
 			require.NotContains(t, output, "v2-network-log-first-runtime")
 		}

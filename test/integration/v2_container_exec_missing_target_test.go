@@ -50,8 +50,8 @@ func TestV2ContainerExecRejectsConfirmedMissingRuntime(t *testing.T) {
 	failedPhysical := waitObjectAssumesState(t, ctx, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
 		return current.Status.Phase == apiv2.ContainerExecPhaseFailed, nil
 	})
-	requireReadyCondition(t, failedLogical.Status.Conditions, metav1.ConditionFalse, "ContainerUnavailable")
-	requireReadyCondition(t, failedPhysical.Status.Conditions, metav1.ConditionFalse, "ContainerUnavailable")
+	requireReadyCondition(t, failedLogical.Status.Conditions, metav1.ConditionFalse, apiv2.ContainerExecReasonContainerUnavailable)
+	requireReadyCondition(t, failedPhysical.Status.Conditions, metav1.ConditionFalse, apiv2.ContainerExecReasonContainerUnavailable)
 	require.Zero(t, containerOrchestrator.ExecContainerCallCount(logical.Spec.Execution.Command))
 	require.Zero(t, containerOrchestrator.ExecContainerCallCount(physical.Spec.Execution.Command))
 	_, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{target.Status.ContainerID}})
@@ -92,7 +92,7 @@ func TestV2ContainerExecRejectsRuntimeLossDuringPreflight(t *testing.T) {
 	failed := waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
 		return current.Status.Phase == apiv2.ContainerExecPhaseFailed, nil
 	})
-	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "ContainerUnavailable")
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ContainerExecReasonContainerUnavailable)
 	condition := apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady))
 	require.Equal(t, "target PhysicalContainer has exited or failed before execution launch", condition.Message)
 	require.NotContains(t, condition.Message, "<nil>")
@@ -121,10 +121,10 @@ func TestV2ContainerExecWaitsForTransientUnknownTarget(t *testing.T) {
 	require.NoError(t, client.Create(ctx, logical))
 	require.NoError(t, client.Create(ctx, physical))
 	waitObjectAssumesState(t, ctx, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return len(current.Status.Conditions) != 0 && current.Status.Conditions[0].Reason == "ContainerNotReady", nil
+		return len(current.Status.Conditions) != 0 && current.Status.Conditions[0].Reason == string(apiv2.ContainerExecReasonContainerNotReady), nil
 	})
 	waitObjectAssumesState(t, ctx, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
-		return len(current.Status.Conditions) != 0 && current.Status.Conditions[0].Reason == "ContainerNotReady", nil
+		return len(current.Status.Conditions) != 0 && current.Status.Conditions[0].Reason == string(apiv2.ContainerExecReasonContainerNotReady), nil
 	})
 	require.Zero(t, containerOrchestrator.ExecContainerCallCount(logical.Spec.Execution.Command))
 	require.Zero(t, containerOrchestrator.ExecContainerCallCount(physical.Spec.Execution.Command))

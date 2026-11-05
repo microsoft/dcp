@@ -302,6 +302,11 @@ func (data *physicalContainerData) applyTo(
 var physicalContainerProjections = physicalResourceProjectionTable[physicalContainerState, apiv2.PhysicalContainerPhase]{
 	invalidPhase: apiv2.PhysicalContainerPhaseUnknown,
 	projections: map[physicalContainerState]physicalResourceProjection[apiv2.PhysicalContainerPhase]{
+		physicalContainerStateResolve: {
+			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerReasonResolvingRuntimeContainer, message: "Resolving the runtime container identity.",
+			requeue: true,
+		},
 		physicalContainerStateDependencies: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonDependenciesNotReady,
 		},

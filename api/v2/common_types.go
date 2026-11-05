@@ -60,6 +60,27 @@ type ConditionType string
 // ConditionReason identifies the reason for a V2 condition's current status.
 type ConditionReason string
 
+const (
+	// LogicalResourceReasonPortPreparationPending indicates that service-backed ports are not prepared.
+	LogicalResourceReasonPortPreparationPending ConditionReason = "PortPreparationPending"
+	// LogicalResourceReasonTemplateEvaluationFailed indicates that argument or environment template evaluation failed.
+	LogicalResourceReasonTemplateEvaluationFailed ConditionReason = "TemplateEvaluationFailed"
+	// LogicalResourceReasonPersistenceFailed indicates that lifecycle bookkeeping could not be saved.
+	LogicalResourceReasonPersistenceFailed ConditionReason = "PersistenceFailed"
+	// LogicalResourceReasonStateStoreNotConfigured indicates that persistent resource storage is unavailable.
+	LogicalResourceReasonStateStoreNotConfigured ConditionReason = "StateStoreNotConfigured"
+	// LogicalResourceReasonLeaseAcquisitionFailed indicates that a creation lease could not be acquired.
+	LogicalResourceReasonLeaseAcquisitionFailed ConditionReason = "ResourceLeaseAcquisitionFailed"
+	// LogicalResourceReasonLeaseHeld indicates that another owner holds the creation lease.
+	LogicalResourceReasonLeaseHeld ConditionReason = "ResourceLeaseHeld"
+	// LogicalResourceReasonLeaseLost indicates that the creation lease is no longer held.
+	LogicalResourceReasonLeaseLost ConditionReason = "ResourceLeaseLost"
+	// LogicalResourceReasonLifecycleKeyCalculationFailed indicates that lifecycle identity could not be calculated.
+	LogicalResourceReasonLifecycleKeyCalculationFailed ConditionReason = "LifecycleKeyCalculationFailed"
+	// LogicalResourceReasonLifecyclePreparationFailed indicates that lifecycle preparation could not complete.
+	LogicalResourceReasonLifecyclePreparationFailed ConditionReason = "LifecyclePreparationFailed"
+)
+
 // PhysicalResourcePhase summarizes the high-level state of a V2 physical resource.
 type PhysicalResourcePhase string
 

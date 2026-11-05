@@ -98,7 +98,7 @@ func TestV2LogicalValuesEnvironmentCasing(t *testing.T) {
 					})
 					if expectedFailure {
 						require.Equal(t, apiv2.LogicalProcessPhaseFailed, observed.Status.Phase)
-						requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, "TemplateEvaluationFailed")
+						requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalResourceReasonTemplateEvaluationFailed)
 						require.Empty(t, observed.Status.PhysicalProcessRef)
 					} else {
 						require.Equal(t, apiv2.LogicalProcessPhaseRunning, observed.Status.Phase, "%+v", observed.Status.Conditions)
@@ -122,7 +122,7 @@ func TestV2LogicalValuesEnvironmentCasing(t *testing.T) {
 					})
 					if expectedFailure {
 						require.Equal(t, apiv2.LogicalContainerPhaseFailed, observed.Status.Phase)
-						requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, "TemplateEvaluationFailed")
+						requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalResourceReasonTemplateEvaluationFailed)
 						require.Empty(t, observed.Status.PhysicalContainerRef)
 					} else {
 						require.Equal(t, apiv2.LogicalContainerPhaseRunning, observed.Status.Phase, "%+v", observed.Status.Conditions)

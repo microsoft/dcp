@@ -220,7 +220,7 @@ func TestV2ContainerStartupLogsCompleteAfterPreparationFailure(t *testing.T) {
 			failed := waitObjectAssumesState(t, ctx, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				return current.Status.Phase == apiv2.LogicalContainerPhaseFailed, nil
 			})
-			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "LogicalNetworkFailed")
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonLogicalNetworkFailed)
 			require.Empty(t, failed.Status.PhysicalContainerRef)
 			waitPullImageCallCount(t, ctx, source, 1)
 			require.ErrorIs(t, testStateStore.VerifyResourceLeaseHeld(ctx, logical, testResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
@@ -245,7 +245,7 @@ func TestV2ContainerStartupLogsCompleteAfterPreparationFailure(t *testing.T) {
 			}
 			require.NoError(t, client.Get(ctx, logical.NamespacedName(), failed))
 			require.Equal(t, apiv2.LogicalContainerPhaseFailed, failed.Status.Phase)
-			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "LogicalNetworkFailed")
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonLogicalNetworkFailed)
 			require.Equal(t, image.GetLogSource(), failed.Status.StartupLogs)
 			require.Zero(t, containerOrchestrator.CreateContainerCallCount(logical.Spec.ContainerName))
 			require.NoError(t, client.Delete(ctx, logical))

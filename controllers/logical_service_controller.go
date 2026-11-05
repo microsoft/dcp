@@ -132,7 +132,7 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		})
 		if listErr != nil {
 			log.Error(listErr, "Failed to list service endpoints")
-			reason, message, requeue = "EndpointLookupFailed", listErr.Error(), true
+			reason, message, requeue = apiv2.LogicalServiceReasonEndpointLookupFailed, listErr.Error(), true
 			break
 		}
 		endpoints.Items = slices.DeleteFunc(endpoints.Items, func(endpoint apiv2.ServiceEndpoint) bool { return !endpoint.DeletionTimestamp.IsZero() })
@@ -155,10 +155,10 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 				data.selectedName, data.selectedUID = endpoint.Name, endpoint.UID
 				status.EffectiveAddresses = slices.Clone(endpoint.Spec.Addresses)
 				status.ProxylessEndpointRef, status.Phase = endpoint.Name, apiv2.LogicalServicePhaseReady
-				reason, message = "EndpointSelected", "The selected endpoint's addresses are available."
+				reason, message = apiv2.LogicalServiceReasonEndpointSelected, "The selected endpoint's addresses are available."
 			} else {
 				data.selectedName, data.selectedUID = "", ""
-				reason, message = "WaitingForEndpoints", "The service has no available endpoints."
+				reason, message = apiv2.LogicalServiceReasonWaitingForEndpoints, "The service has no available endpoints."
 			}
 			break
 		}
@@ -172,7 +172,7 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		}
 		if proxyErr != nil {
 			log.Error(proxyErr, "Failed to configure logical service listeners")
-			reason, message, requeue = "ProxyConfigurationFailed", proxyErr.Error(), true
+			reason, message, requeue = apiv2.LogicalServiceReasonProxyConfigurationFailed, proxyErr.Error(), true
 			if len(data.proxies) > 0 {
 				status.Phase = apiv2.LogicalServicePhaseUnknown
 			}
@@ -186,12 +186,12 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			if len(status.EffectiveAddresses) == 0 {
 				status.Phase = apiv2.LogicalServicePhaseFailed
 			}
-			reason, message = "ProxyListenerUnavailable", "Service listeners have stopped; recreate the service to allocate new listeners."
+			reason, message = apiv2.LogicalServiceReasonProxyListenerUnavailable, "Service listeners have stopped; recreate the service to allocate new listeners."
 			break
 		}
-		reason, message = "WaitingForEndpoints", "Listeners are allocated; the service has no available endpoints."
+		reason, message = apiv2.LogicalServiceReasonWaitingForEndpoints, "Listeners are allocated; the service has no available endpoints."
 		if len(endpoints.Items) > 0 {
-			status.Phase, reason, message = apiv2.LogicalServicePhaseReady, "ServiceReady", "Listeners and endpoints are available."
+			status.Phase, reason, message = apiv2.LogicalServicePhaseReady, apiv2.LogicalServiceReasonReady, "Listeners and endpoints are available."
 		}
 	}
 	conditionStatus := metav1.ConditionFalse

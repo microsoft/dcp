@@ -30,6 +30,30 @@ func TestPersistentResourcesValidateCreationAndUpdates(t *testing.T) {
 	}
 }
 
+// Verifies that typed condition reasons preserve the status strings consumed by API clients.
+func TestConditionReasonsPreserveStatusValues(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		reason ConditionReason
+		value  string
+	}{
+		{LogicalContainerReasonStopping, "ContainerStopping"},
+		{LogicalProcessReasonStopping, "ProcessStopping"},
+		{LogicalContainerNetworkReasonNetworkAvailable, "NetworkAvailable"},
+		{LogicalServiceReasonReady, "ServiceReady"},
+		{ContainerExecReasonContainerUnavailable, "ContainerUnavailable"},
+		{ContainerExecReasonStopping, "Stopping"},
+		{LogicalContainerExecReasonPhysicalExecutionChanged, "PhysicalExecutionChanged"},
+		{LogicalResourceReasonTemplateEvaluationFailed, "TemplateEvaluationFailed"},
+		{PhysicalContainerReasonResolvingRuntimeContainer, "ResolvingRuntimeContainer"},
+	} {
+		t.Run(testCase.value, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, testCase.value, string(testCase.reason))
+		})
+	}
+}
+
 // Verifies that both process APIs accept supported ambient environment behaviors, default to inheritance,
 // and reject unsupported values at the nested behavior field.
 func TestProcessAmbientEnvironmentValidation(t *testing.T) {

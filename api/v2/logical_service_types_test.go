@@ -235,7 +235,7 @@ func TestLogicalServiceJSONAndDeepCopy(t *testing.T) {
 		Spec:       LogicalServiceSpec{Address: "localhost", Port: 5000},
 		Status: LogicalServiceStatus{
 			Phase: LogicalServicePhaseReady, EffectiveAddresses: addresses,
-			Conditions: []metav1.Condition{{Type: string(ConditionReady), Status: metav1.ConditionTrue, Reason: "ServiceReady"}},
+			Conditions: []metav1.Condition{{Type: string(ConditionReady), Status: metav1.ConditionTrue, Reason: string(LogicalServiceReasonReady)}},
 		},
 	}
 	encoded, encodeErr := json.Marshal(service)
@@ -262,7 +262,7 @@ func TestLogicalServiceJSONAndDeepCopy(t *testing.T) {
 	copied.Status.Conditions[0].Reason = "Changed"
 	require.Equal(t, int32(5000), service.Spec.Port)
 	require.Equal(t, "::1", service.Status.EffectiveAddresses[1].Address)
-	require.Equal(t, "ServiceReady", service.Status.Conditions[0].Reason)
+	require.Equal(t, string(LogicalServiceReasonReady), service.Status.Conditions[0].Reason)
 	projected := &LogicalService{}
 	service.Status.CopyTo(projected)
 	projected.Status.EffectiveAddresses[0].Port++

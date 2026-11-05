@@ -198,7 +198,7 @@ func TestV2LogicalServicePreparationRecoversOnLaterReconciliation(t *testing.T) 
 				require.NoError(t, apiClient.Create(ctx, process))
 				waitObjectAssumesStateEx(t, ctx, apiClient, name, func(current *apiv2.LogicalProcess) (bool, error) {
 					return confirmationReader.failures.Load() > 0 && current.Status.PhysicalProcessRef == "" &&
-						len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == "PortPreparationPending", nil
+						len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonPortPreparationPending), nil
 				})
 			} else {
 				container := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: name.Name, Namespace: name.Namespace},
@@ -211,7 +211,7 @@ func TestV2LogicalServicePreparationRecoversOnLaterReconciliation(t *testing.T) 
 				require.NoError(t, apiClient.Create(ctx, container))
 				waitObjectAssumesStateEx(t, ctx, apiClient, name, func(current *apiv2.LogicalContainer) (bool, error) {
 					return confirmationReader.failures.Load() > 0 && current.Status.PhysicalContainerRef == "" &&
-						len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == "PortPreparationPending", nil
+						len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonPortPreparationPending), nil
 				})
 			}
 			var services apiv2.LogicalServiceList
@@ -409,7 +409,7 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 				require.NoError(t, client.Create(ctx, resource))
 				waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalProcess) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalProcessPhasePending && len(current.Status.Conditions) > 0 &&
-						current.Status.Conditions[0].Reason == "TemplateEvaluationFailed" && current.Status.PhysicalProcessRef == "", nil
+						current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed) && current.Status.PhysicalProcessRef == "", nil
 				})
 			} else {
 				resource := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: name.Name, Namespace: name.Namespace},
@@ -419,7 +419,7 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 				require.NoError(t, client.Create(ctx, resource))
 				waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalContainer) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalContainerPhasePending && len(current.Status.Conditions) > 0 &&
-						current.Status.Conditions[0].Reason == "TemplateEvaluationFailed" && current.Status.PhysicalContainerRef == "", nil
+						current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed) && current.Status.PhysicalContainerRef == "", nil
 				})
 			}
 
@@ -487,7 +487,7 @@ func TestV2LogicalValuesRejectInvalidServiceReferences(t *testing.T) {
 						require.NoError(t, client.Create(ctx, resource))
 						failed := waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalProcess) (bool, error) {
 							return current.Status.Phase == apiv2.LogicalProcessPhaseFailed && len(current.Status.Conditions) > 0 &&
-								current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+								current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
 						})
 						require.Contains(t, failed.Status.Conditions[0].Message, "invalid service reference")
 						require.Empty(t, failed.Status.PhysicalProcessRef)
@@ -500,7 +500,7 @@ func TestV2LogicalValuesRejectInvalidServiceReferences(t *testing.T) {
 						require.NoError(t, client.Create(ctx, resource))
 						failed := waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalContainer) (bool, error) {
 							return current.Status.Phase == apiv2.LogicalContainerPhaseFailed && len(current.Status.Conditions) > 0 &&
-								current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+								current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
 						})
 						require.Contains(t, failed.Status.Conditions[0].Message, "invalid service reference")
 						require.Empty(t, failed.Status.PhysicalContainerRef)
@@ -574,7 +574,7 @@ func TestV2LogicalProcessTemplatePreparationLifecycle(t *testing.T) {
 					require.NoError(t, client.Create(ctx, replacement))
 					prepared := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 						return current.Status.Phase == expectedPhase && len(current.Status.Conditions) > 0 &&
-							current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+							current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
 					})
 					require.Empty(t, prepared.Status.PhysicalProcessRef)
 					require.NoError(t, client.Patch(ctx, replacement,
@@ -591,7 +591,7 @@ func TestV2LogicalProcessTemplatePreparationLifecycle(t *testing.T) {
 						}))
 						terminal := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 							return current.Status.Phase == apiv2.LogicalProcessPhaseFailed && current.Spec.Stop &&
-								len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+								len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
 						})
 						require.Empty(t, terminal.Status.PhysicalProcessRef)
 						var backings apiv2.PhysicalProcessList
@@ -656,7 +656,7 @@ func TestV2LogicalContainerTemplatePreparationLifecycle(t *testing.T) {
 					require.NoError(t, client.Create(ctx, replacement))
 					prepared := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 						return current.Status.Phase == expectedPhase && len(current.Status.Conditions) > 0 &&
-							current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+							current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
 					})
 					require.Empty(t, prepared.Status.PhysicalContainerRef)
 					require.NoError(t, client.Patch(ctx, replacement,
@@ -677,7 +677,7 @@ func TestV2LogicalContainerTemplatePreparationLifecycle(t *testing.T) {
 						}))
 						terminal := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 							return current.Status.Phase == apiv2.LogicalContainerPhaseFailed && current.Spec.Stop &&
-								len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+								len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
 						})
 						require.Empty(t, terminal.Status.PhysicalContainerRef)
 						var backings apiv2.PhysicalContainerList
