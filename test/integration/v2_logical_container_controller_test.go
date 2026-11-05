@@ -318,10 +318,14 @@ func TestV2LogicalContainerControllerFailsStartupWhenImageAcquisitionFails(t *te
 				current.Spec.Stop = true
 				return client.Update(updateCtx, current)
 			}))
-			updatedPhysical := waitObjectAssumesState(t, ctx, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+			waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-				return current.Spec.Stop && ready != nil && ready.ObservedGeneration == current.Generation, nil
+				return current.Spec.Stop && current.Status.Phase == apiv2.LogicalContainerPhaseFailed &&
+					ready != nil && ready.ObservedGeneration == current.Generation, nil
 			})
+			updatedPhysical := &apiv2.PhysicalContainer{}
+			require.NoError(t, client.Get(ctx, physical.NamespacedName(), updatedPhysical))
+			require.False(t, updatedPhysical.Spec.Stop)
 			require.Equal(t, apiv2.PhysicalContainerPhaseFailed, updatedPhysical.Status.Phase)
 			requireReadyCondition(t, updatedPhysical.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependencyFailed)
 			require.Empty(t, updatedPhysical.Status.ContainerID)

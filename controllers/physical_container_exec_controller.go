@@ -48,7 +48,7 @@ var physicalContainerExecDataHandlers = map[physicalContainerExecState]physicalC
 	physicalContainerExecStateTargetRetry:    handlePhysicalContainerExecTarget,
 	physicalContainerExecStateLaunch:         handlePhysicalContainerExecLaunch,
 	physicalContainerExecStateLaunchRetry:    handlePhysicalContainerExecLaunch,
-	physicalContainerExecStateRunning:        handlePhysicalContainerExecRuntime,
+	physicalContainerExecStateRunning:        handlePhysicalContainerExecRunning,
 	physicalContainerExecStateExited:         handlePhysicalContainerExecTerminal,
 	physicalContainerExecStateFailed:         handlePhysicalContainerExecTerminal,
 	physicalContainerExecStateStop:           handlePhysicalContainerExecStop,
@@ -229,15 +229,18 @@ func handlePhysicalContainerExecTarget(
 		data.fail("ContainerUnavailable", "The target PhysicalContainer is being deleted.")
 		return noChange
 	}
+	if container.Spec.Stop {
+		data.fail("ContainerUnavailable", "The target PhysicalContainer is stopping.")
+		return noChange
+	}
 	condition := apimeta.FindStatusCondition(container.Status.Conditions, string(apiv2.ConditionReady))
-	if condition != nil && condition.ObservedGeneration == container.Generation {
-		if container.Status.Phase == apiv2.PhysicalContainerPhaseExited || container.Status.Phase == apiv2.PhysicalContainerPhaseFailed {
-			data.fail("ContainerUnavailable", "The target PhysicalContainer has exited or failed.")
-			return noChange
-		}
-		if condition.Status == metav1.ConditionTrue && container.Status.Phase == apiv2.PhysicalContainerPhaseRunning && container.Status.ContainerID != "" {
-			return reconciler.scheduleExecution(resource, &container, data, log)
-		}
+	if container.Status.Phase == apiv2.PhysicalContainerPhaseExited || container.Status.Phase == apiv2.PhysicalContainerPhaseFailed {
+		data.fail("ContainerUnavailable", "The target PhysicalContainer has exited or failed.")
+		return noChange
+	}
+	if condition != nil && condition.Status == metav1.ConditionTrue &&
+		container.Status.Phase == apiv2.PhysicalContainerPhaseRunning && container.Status.ContainerID != "" {
+		return reconciler.scheduleExecution(resource, &container, data, log)
 	}
 	data.reason, data.message = "ContainerNotReady", "Waiting for the target PhysicalContainer to be running."
 	return noChange
@@ -252,13 +255,13 @@ func handlePhysicalContainerExecLaunch(
 		return noChange
 	case physicalContainerExecStateLaunchRetry:
 		data.state = physicalContainerExecStateTarget
-		return handlePhysicalContainerExecTarget(ctx, reconciler, resource, data.state, data, log)
+		return additionalReconciliationNeeded
 	default:
 		return handleInvalidPhysicalContainerExecState(ctx, reconciler, resource, state, data, log)
 	}
 }
 
-func handlePhysicalContainerExecRuntime(
+func handlePhysicalContainerExecRunning(
 	ctx context.Context, reconciler *PhysicalContainerExecReconciler, resource *apiv2.PhysicalContainerExec,
 	state physicalContainerExecState, data *physicalContainerExecData, log logr.Logger,
 ) objectChange {
@@ -409,12 +412,15 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 	case !current.DeletionTimestamp.IsZero():
 		fail("ContainerUnavailable", fmt.Errorf("target PhysicalContainer is being deleted before execution launch"))
 		return
+	case current.Spec.Stop:
+		fail("ContainerUnavailable", fmt.Errorf("target PhysicalContainer is stopping before execution launch"))
+		return
 	case current.Status.Phase == apiv2.PhysicalContainerPhaseExited || current.Status.Phase == apiv2.PhysicalContainerPhaseFailed:
 		fail("ContainerUnavailable", fmt.Errorf("target PhysicalContainer has exited or failed before execution launch"))
 		return
 	}
 	if current.Status.ContainerID == "" || current.Status.Phase != apiv2.PhysicalContainerPhaseRunning ||
-		condition == nil || condition.Status != metav1.ConditionTrue || condition.ObservedGeneration != current.Generation {
+		condition == nil || condition.Status != metav1.ConditionTrue {
 		r.retryExecution(resource, data, physicalContainerExecStateTargetRetry, "ContainerNotReady", fmt.Errorf("target container is not ready for execution"), log)
 		return
 	}

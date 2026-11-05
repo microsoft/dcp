@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -27,7 +28,6 @@ const (
 	logicalContainerNetworkStateFailed
 	logicalContainerNetworkStateUnknown
 	logicalContainerNetworkStateDelete
-	logicalContainerNetworkStateInvalid
 )
 
 func (state logicalContainerNetworkState) String() string {
@@ -48,11 +48,24 @@ func (state logicalContainerNetworkState) String() string {
 		return "Unknown"
 	case logicalContainerNetworkStateDelete:
 		return "Delete"
-	case logicalContainerNetworkStateInvalid:
-		return "Invalid"
 	default:
 		return fmt.Sprintf("logicalContainerNetworkState(%d)", int(state))
 	}
+}
+
+func logicalContainerNetworkBackingState(physical *apiv2.PhysicalContainerNetwork) logicalContainerNetworkState {
+	switch physical.Status.Phase {
+	case apiv2.PhysicalContainerNetworkPhaseReady:
+		ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
+		if ready != nil && ready.Status == metav1.ConditionTrue {
+			return logicalContainerNetworkStateReady
+		}
+	case apiv2.PhysicalContainerNetworkPhaseFailed:
+		return logicalContainerNetworkStateFailed
+	case apiv2.PhysicalContainerNetworkPhaseUnknown:
+		return logicalContainerNetworkStateUnknown
+	}
+	return logicalContainerNetworkStateCreating
 }
 
 type logicalContainerNetworkData struct {
@@ -151,10 +164,6 @@ var logicalContainerNetworkProjections = physicalResourceProjectionTable[logical
 		logicalContainerNetworkStateDelete: {
 			phase: apiv2.LogicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "DeletingPhysicalNetwork", requeue: true,
-		},
-		logicalContainerNetworkStateInvalid: {
-			phase: apiv2.LogicalContainerNetworkPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},
 	},
 }

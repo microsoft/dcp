@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -20,13 +21,34 @@ import (
 
 type logicalContainerState int
 
+func logicalContainerBackingState(physical *apiv2.PhysicalContainer) logicalContainerState {
+	if !physical.DeletionTimestamp.IsZero() {
+		return logicalContainerStateUnknown
+	}
+	switch physical.Status.Phase {
+	case apiv2.PhysicalContainerPhaseRunning:
+		ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
+		if ready != nil && ready.Status == metav1.ConditionTrue {
+			return logicalContainerStateRunning
+		}
+	case apiv2.PhysicalContainerPhasePaused:
+		return logicalContainerStatePaused
+	case apiv2.PhysicalContainerPhaseExited:
+		return logicalContainerStateExited
+	case apiv2.PhysicalContainerPhaseFailed:
+		return logicalContainerStateFailed
+	case apiv2.PhysicalContainerPhaseUnknown:
+		return logicalContainerStateUnknown
+	}
+	return logicalContainerStateCreating
+}
+
 const (
 	logicalContainerStatePending logicalContainerState = iota + 1
 	logicalContainerStatePreparationFailed
 	logicalContainerStateDelete
 	logicalContainerStateExited
 	logicalContainerStateFailed
-	logicalContainerStateInvalid
 	logicalContainerStatePaused
 	logicalContainerStateRunning
 	logicalContainerStateStopFailed
@@ -50,8 +72,6 @@ func (state logicalContainerState) String() string {
 		return "Exited"
 	case logicalContainerStateFailed:
 		return "Failed"
-	case logicalContainerStateInvalid:
-		return "Invalid"
 	case logicalContainerStatePaused:
 		return "Paused"
 	case logicalContainerStateRunning:
@@ -125,9 +145,9 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 	}
 	change |= setValue(&container.Status.LifecycleKey, data.lifecycleKey)
 	if data.physicalContainerUID == "" {
-		change |= applyLogicalContainerBackingStatus(container, &apiv2.PhysicalContainer{}, nil, false)
+		change |= applyLogicalContainerBackingStatus(container, &apiv2.PhysicalContainer{})
 	}
-	if data.state == logicalContainerStateInvalid {
+	if data.state == logicalContainerStateUnknown {
 		for _, source := range []*apiv2.LogSource{container.Status.RuntimeLogs, container.Status.StartupLogs} {
 			if source != nil {
 				change |= setValue(&source.Complete, true)
@@ -221,10 +241,6 @@ var logicalContainerProjections = physicalResourceProjectionTable[logicalContain
 		logicalContainerStateDelete: {
 			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: "DeletingPhysicalResources", requeue: true,
-		},
-		logicalContainerStateInvalid: {
-			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
 		},
 	},
 }

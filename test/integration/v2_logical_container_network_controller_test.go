@@ -451,10 +451,10 @@ func TestV2LogicalContainerNetworkControllerDiscoversOwnedBackings(t *testing.T)
 	}
 	controllers.InitializeLogicalBackingFinalizers(duplicate, apiv2.GroupName+"/physicalcontainernetwork-reconciler")
 	require.NoError(t, serverInfo.Client.Create(ctx, duplicate))
-	failed := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed, nil
+	unknown := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseUnknown, nil
 	})
-	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "MultiplePhysicalNetworks")
+	requireReadyCondition(t, unknown.Status.Conditions, metav1.ConditionFalse, "MultiplePhysicalNetworks")
 	unrelated := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: namespace.Name},
 		Spec:       apiv2.PhysicalContainerNetworkSpec{NetworkID: ready.Status.NetworkID},
@@ -620,9 +620,9 @@ func TestV2LogicalContainerNetworkControllerHoldsBackingUntilAuthorizedDeletion(
 	require.True(t, statusClient.logicalFinalizerConflict.Load())
 }
 
-// Verifies that LogicalContainerNetwork treats forced removal of its backing finalizer as
-// a terminal protocol failure and never recreates the missing PhysicalContainerNetwork or container network.
-func TestV2LogicalContainerNetworkControllerFailsWhenBackingHoldIsRemoved(t *testing.T) {
+// Verifies that LogicalContainerNetwork reports Unknown when its backing finalizer is removed
+// and never recreates the missing PhysicalContainerNetwork or container network.
+func TestV2LogicalContainerNetworkControllerReportsUnknownWhenBackingHoldIsRemoved(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -654,10 +654,10 @@ func TestV2LogicalContainerNetworkControllerFailsWhenBackingHoldIsRemoved(t *tes
 		})
 		return serverInfo.Client.Update(updateCtx, current)
 	}))
-	failed := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed, nil
+	unknown := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseUnknown, nil
 	})
-	failure := apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady))
+	failure := apimeta.FindStatusCondition(unknown.Status.Conditions, string(apiv2.ConditionReady))
 	require.NotNil(t, failure)
 	require.Equal(t, "PhysicalNetworkChanged", failure.Reason)
 	require.NoError(t, serverInfo.Client.Delete(ctx, physical))
@@ -666,8 +666,8 @@ func TestV2LogicalContainerNetworkControllerFailsWhenBackingHoldIsRemoved(t *tes
 		current.Annotations = map[string]string{"test-probe": "after-violation"}
 		return serverInfo.Client.Update(updateCtx, current)
 	}))
-	require.NoError(t, serverInfo.Client.Get(ctx, network.NamespacedName(), failed))
-	require.Equal(t, apiv2.LogicalContainerNetworkPhaseFailed, failed.Status.Phase)
+	require.NoError(t, serverInfo.Client.Get(ctx, network.NamespacedName(), unknown))
+	require.Equal(t, apiv2.LogicalContainerNetworkPhaseUnknown, unknown.Status.Phase)
 	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
 	_, inspectErr := serverInfo.ContainerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{ready.Status.NetworkID}})
 	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
@@ -1158,10 +1158,14 @@ func TestV2LogicalContainerControllerFailsStartupWhenReferencedResourceFails(t *
 				current.Spec.Stop = true
 				return client.Update(updateCtx, current)
 			}))
-			stillFailed := waitObjectAssumesState(t, ctx, physicalName, func(current *apiv2.PhysicalContainer) (bool, error) {
+			waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-				return current.Spec.Stop && ready != nil && ready.ObservedGeneration == current.Generation, nil
+				return current.Spec.Stop && current.Status.Phase == apiv2.LogicalContainerPhaseFailed &&
+					ready != nil && ready.ObservedGeneration == current.Generation, nil
 			})
+			stillFailed := &apiv2.PhysicalContainer{}
+			require.NoError(t, client.Get(ctx, physicalName, stillFailed))
+			require.False(t, stillFailed.Spec.Stop)
 			require.Equal(t, apiv2.PhysicalContainerPhaseFailed, stillFailed.Status.Phase)
 			requireReadyCondition(t, stillFailed.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependencyFailed)
 			require.Empty(t, stillFailed.Status.ContainerID)

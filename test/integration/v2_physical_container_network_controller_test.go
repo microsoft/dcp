@@ -645,6 +645,8 @@ func TestV2PhysicalContainerNetworkControllerReportsTerminalCreateFailure(t *tes
 	require.Len(t, inspectedNetworks, 1)
 }
 
+// Verifies that an ambiguous network create error is reported before inspection, then subsequent
+// reconciliation verifies the owned network and adopts it without issuing another create.
 func TestV2PhysicalContainerNetworkControllerAdoptsNetworkAfterUncertainCreateFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -666,6 +668,15 @@ func TestV2PhysicalContainerNetworkControllerAdoptsNetworkAfterUncertainCreateFa
 	}
 	require.NoError(t, client.Create(ctx, network))
 
+	failedAttempt := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerNetworkPhasePending &&
+			ready != nil && ready.Reason == string(apiv2.PhysicalContainerNetworkReasonCreateFailed), nil
+	})
+	require.Contains(t, failedAttempt.Status.Conditions[0].Message, "simulated lost create response")
+	require.Empty(t, failedAttempt.Status.NetworkID)
+	require.Zero(t, containerOrchestrator.InspectNetworkCallCount(networkName))
+	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
 	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	require.NotEmpty(t, readyNetwork.Status.NetworkID)
 	require.Equal(t, networkName, readyNetwork.Status.NetworkName)

@@ -515,8 +515,8 @@ func TestV2PhysicalContainerImageControllerReportsMissingExistingImage(t *testin
 	requireReadyCondition(t, updatedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound)
 }
 
-// Verifies that repeated runtime inspection failures become terminal after the bounded retry
-// budget is exhausted, retaining the previously verified image identity.
+// Verifies that inspection failures first report Unknown and exhaust their retry budget across
+// reconciliations before becoming terminal, retaining the previously verified image identity.
 func TestV2PhysicalContainerImageControllerFailsWhenInspectionRetriesExhausted(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -536,6 +536,9 @@ func TestV2PhysicalContainerImageControllerFailsWhenInspectionRetriesExhausted(t
 		return client.Update(ctx, currentImage)
 	}))
 
+	unknownImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
+	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed)
+	require.Equal(t, image.Status.ImageID, unknownImage.Status.ImageID)
 	failedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
 	requireReadyCondition(t, failedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed)
 	require.Equal(t, image.Status.ImageID, failedImage.Status.ImageID)
