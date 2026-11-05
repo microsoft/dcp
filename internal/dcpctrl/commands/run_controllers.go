@@ -366,6 +366,22 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return err
 		}
 
+		physicalExecCtrl := controllers.NewPhysicalContainerExecReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("PhysicalContainerExecReconciler"), containerOrchestrator,
+			outputCleanupQueue,
+		)
+		if physicalExecSetupErr := physicalExecCtrl.SetupWithManager(mgr, defaultControllerName); physicalExecSetupErr != nil {
+			log.Error(physicalExecSetupErr, "Unable to set up PhysicalContainerExec controller")
+			return physicalExecSetupErr
+		}
+		logicalExecCtrl := controllers.NewLogicalContainerExecReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalContainerExecReconciler"),
+		)
+		if logicalExecSetupErr := logicalExecCtrl.SetupWithManager(mgr, defaultControllerName); logicalExecSetupErr != nil {
+			log.Error(logicalExecSetupErr, "Unable to set up LogicalContainerExec controller")
+			return logicalExecSetupErr
+		}
+
 		containerExecCtrl := controllers.NewContainerExecReconciler(
 			ctrlCtx,
 			mgr.GetClient(),

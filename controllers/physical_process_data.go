@@ -163,7 +163,7 @@ func (data *physicalProcessData) applyTo(
 	if !data.finishedAt.IsZero() {
 		change |= setTimestamp(&physicalProcess.Status.FinishedAt, metav1.NewMicroTime(data.finishedAt))
 	}
-	change |= setPhysicalProcessExitCode(&physicalProcess.Status.ExitCode, data.exitCode)
+	change |= setExitCode(&physicalProcess.Status.ExitCode, data.exitCode)
 
 	stateChange, delay, valid := physicalProcessProjections.applyWithReason(
 		data.state,
@@ -277,13 +277,5 @@ func setPhysicalProcessPID(target **int64, value int64) objectChange {
 		return noChange
 	}
 	*target = &value
-	return statusChanged
-}
-
-func setPhysicalProcessExitCode(target **int32, value *int32) objectChange {
-	if int32PointersEqual(*target, value) {
-		return noChange
-	}
-	*target = cloneInt32Pointer(value)
 	return statusChanged
 }

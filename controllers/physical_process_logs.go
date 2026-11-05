@@ -14,8 +14,6 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/logstream"
-	usvc_io "github.com/microsoft/dcp/pkg/io"
-	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -40,9 +38,6 @@ func (data *physicalProcessData) ensureOutputLogs(resource *apiv2.PhysicalProces
 }
 
 func (data *physicalProcessData) closeOutputLogs(option logs.CaptureFileCloseOption, log logr.Logger) error {
-	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
-		option &^= logs.CaptureFileDisposeOnClose
-	}
 	if data.stdout != nil {
 		closeErr := errors.Join(data.stdout.Close(option), data.stderr.Close(option))
 		if closeErr != nil {
@@ -54,7 +49,7 @@ func (data *physicalProcessData) closeOutputLogs(option logs.CaptureFileCloseOpt
 }
 
 func (data *physicalProcessData) enqueueOutputCleanup(queue *resiliency.WorkQueue, log logr.Logger) {
-	if data.stdout == nil || osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+	if data.stdout == nil {
 		return
 	}
 	enqueueCaptureFileCleanup(queue, log, data.stdout, data.stderr)

@@ -28,9 +28,12 @@ func TestPhysicalResourceProjections(t *testing.T) {
 	assertPhysicalResourceProjections(t, logicalContainerProjections)
 	assertPhysicalResourceProjections(t, logicalContainerNetworkProjections)
 	assertPhysicalResourceProjections(t, logicalProcessProjections)
+	assertPhysicalResourceProjections(t, physicalContainerExecProjections)
+	assertPhysicalResourceProjections(t, logicalContainerExecProjections)
 
 	containerMissing, containerMissingFound := physicalContainerProjections.project(physicalContainerStateMissing)
 	require.True(t, containerMissingFound)
+	require.Equal(t, apiv2.PhysicalContainerPhaseFailed, containerMissing.phase)
 	require.False(t, containerMissing.requeue)
 	networkMissing, networkMissingFound := physicalContainerNetworkProjections.project(physicalContainerNetworkStateMissing)
 	require.True(t, networkMissingFound)
@@ -54,6 +57,12 @@ func TestV2ProjectedStatesHaveHandlers(t *testing.T) {
 	assertProjectedStateHandlers(t, physicalContainerNetworkProjections, physicalContainerNetworkDataInitializers)
 	assertProjectedStateHandlers(t, physicalContainerVolumeProjections, physicalContainerVolumeDataInitializers)
 	assertProjectedStateHandlers(t, physicalProcessProjections, physicalProcessDataHandlers)
+	assertProjectedStateHandlers(t, physicalContainerExecProjections, physicalContainerExecDataHandlers)
+	for state := range logicalContainerExecProjections.projections {
+		if state != logicalContainerExecStateDelete {
+			require.Contains(t, logicalContainerExecDataHandlers, state)
+		}
+	}
 	for state := range logicalContainerProjections.projections {
 		if state == logicalContainerStateDelete {
 			continue
@@ -93,6 +102,8 @@ func TestV2OutstandingWorkTracking(t *testing.T) {
 			&physicalContainerVolumeData{state: physicalContainerVolumeStateRemove, workInProgress: true}},
 		{"process", &physicalProcessData{state: physicalProcessStateStop},
 			&physicalProcessData{state: physicalProcessStateStop, workInProgress: true}},
+		{"container-exec", &physicalContainerExecData{state: physicalContainerExecStateLaunch},
+			&physicalContainerExecData{state: physicalContainerExecStateLaunch, workInProgress: true}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			require.False(t, testCase.idle.operationInProgress())

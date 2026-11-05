@@ -1653,6 +1653,7 @@ func TestV2PhysicalContainerControllerRejectsDuplicateRuntimeContainerOwnership(
 	requireReadyCondition(t, runningContainer.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerReasonRuntimeContainerRunning)
 }
 
+// Verifies that PhysicalContainer reports a confirmed absent runtime as Failed rather than Unknown.
 func TestV2PhysicalContainerControllerReportsMissingExistingContainer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -1670,7 +1671,7 @@ func TestV2PhysicalContainerControllerReportsMissingExistingContainer(t *testing
 	}
 	require.NoError(t, client.Create(ctx, container))
 
-	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseUnknown)
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
 	require.Equal(t, "missing-v2-container-id", updatedContainer.Status.ContainerID)
 	requireReadyCondition(t, updatedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing)
 }
@@ -1753,6 +1754,7 @@ func TestV2PhysicalContainerControllerDeletesCreatedContainer(t *testing.T) {
 		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
 	})
 	requireReadyCondition(t, cleaned.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing)
+	require.Equal(t, apiv2.PhysicalContainerPhaseFailed, cleaned.Status.Phase)
 	require.Equal(t, containerID, cleaned.Status.ContainerID)
 	waitContainerMissing(t, ctx, containerID)
 	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
