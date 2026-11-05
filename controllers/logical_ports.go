@@ -243,7 +243,8 @@ func (r *LogicalContainerReconciler) prepareLogicalContainerValues(
 	}
 	config := container.Spec.Container.DeepCopy()
 	if config != nil {
-		arguments, environment, evaluationErr := templating.EvaluateV2Values(ctx, r.NoCacheClient, container, servingPorts(ports), config.Command, config.Env)
+		arguments, environment, evaluationErr := templating.EvaluateV2Values(
+			ctx, r.NoCacheClient, container, servingPorts(ports), config.Command, config.Env, false)
 		if evaluationErr != nil {
 			log.Error(evaluationErr, "Failed to evaluate logical container values")
 			data.reason, data.message = "TemplateEvaluationFailed", evaluationErr.Error()
@@ -280,7 +281,8 @@ func (r *LogicalProcessReconciler) prepareLogicalProcessValues(
 	}
 	config := resource.Spec.Process.DeepCopy()
 	if config != nil {
-		arguments, environment, evaluationErr := templating.EvaluateV2Values(ctx, r.NoCacheClient, resource, servingPorts(ports), config.Args, config.Env)
+		arguments, environment, evaluationErr := templating.EvaluateV2Values(
+			ctx, r.NoCacheClient, resource, servingPorts(ports), config.Args, config.Env, osutil.IsWindows())
 		if evaluationErr != nil {
 			log.Error(evaluationErr, "Failed to evaluate logical process values")
 			data.reason, data.message = "TemplateEvaluationFailed", evaluationErr.Error()
