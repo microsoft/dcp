@@ -32,6 +32,7 @@ import (
 type undecodedBackingClient struct {
 	ctrl_client.Client
 	kind                string
+	committedCreates    atomic.Uint32
 	processVisibleLists atomic.Uint32
 }
 
@@ -46,6 +47,7 @@ func (apiClient *undecodedBackingClient) Create(
 	if createErr != nil {
 		return createErr
 	}
+	apiClient.committedCreates.Add(1)
 	return errors.New("physical backing Create committed without decoding its response")
 }
 
@@ -103,11 +105,10 @@ func (apiClient *undecodedBackingClient) List(
 
 type undecodedBackingReader struct {
 	ctrl_client.Reader
-	kind                 string
-	logicalName          types.NamespacedName
-	failDeletion         atomic.Bool
-	confirmationFailures atomic.Uint32
-	deletionFailures     atomic.Uint32
+	kind             string
+	logicalName      types.NamespacedName
+	failDeletion     atomic.Bool
+	deletionFailures atomic.Uint32
 }
 
 func (reader *undecodedBackingReader) Get(
@@ -123,7 +124,6 @@ func (reader *undecodedBackingReader) Get(
 		return logicalErr
 	}
 	if logical.DeletionTimestamp.IsZero() {
-		reader.confirmationFailures.Add(1)
 		return errors.New("uncached Create confirmation unavailable")
 	}
 	return nil
@@ -155,7 +155,6 @@ func (reader *undecodedBackingReader) List(
 			return getErr
 		}
 		if logical.GetDeletionTimestamp().IsZero() {
-			reader.confirmationFailures.Add(1)
 			return errors.New("uncached Create confirmation unavailable")
 		}
 		if reader.failDeletion.Load() {
@@ -167,7 +166,7 @@ func (reader *undecodedBackingReader) List(
 }
 
 // Verifies that logical deletion discovers owned containers, images, networks, and processes without decoded
-// Create UIDs, retains the owner and lease while uncached confirmation fails, and cleans backings before finalizing.
+// Create UIDs, retains the owner and lease while deletion discovery fails, and cleans backings before finalizing.
 func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"container", "image", "network", "process"} {
@@ -259,7 +258,7 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 			require.NoError(t, server.Client.Create(ctx, unrelated))
 			require.NoError(t, server.Client.Create(ctx, logical))
 			require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(context.Context) (bool, error) {
-				return reader.confirmationFailures.Load() > 0, nil
+				return backingClient.committedCreates.Load() > 0, nil
 			}))
 			backingName := types.NamespacedName{Namespace: logicalName.Namespace, Name: "logical-" + string(logical.GetUID())}
 			var backing ctrl_client.Object

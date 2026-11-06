@@ -1112,16 +1112,11 @@ func (r *PhysicalContainerNetworkReconciler) ensurePhysicalContainerNetworkConne
 		}
 	}
 
-	countsChanged := data.expected != len(desiredConnections) || data.connected != connected
-	data.expected = len(desiredConnections)
-	data.connected = connected
-	if countsChanged {
-		if data.connected < data.expected {
-			log.V(1).Info("Not all expected physical containers are connected to the network, retrying...", "Expected", data.expected, "Found", data.connected)
-			change |= additionalReconciliationNeeded
-		} else {
-			log.Info("All expected physical containers are connected to the network", "Expected", data.expected, "Found", data.connected)
-		}
+	if connected < len(desiredConnections) {
+		log.V(1).Info("Not all expected physical containers are connected to the network, retrying...", "Expected", len(desiredConnections), "Found", connected)
+		change |= additionalReconciliationNeeded
+	} else if membershipOperationAttempted {
+		log.Info("All expected physical containers are connected to the network", "Expected", len(desiredConnections), "Found", connected)
 	}
 
 	return change

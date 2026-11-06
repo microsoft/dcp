@@ -82,7 +82,6 @@ type physicalContainerImageOperation struct {
 type physicalContainerImageData struct {
 	state                   physicalContainerImageState
 	workInProgress          bool
-	image                   string
 	imageID                 string
 	imageIDVerified         bool
 	digest                  string
@@ -102,7 +101,6 @@ func (data *physicalContainerImageData) Clone() *physicalContainerImageData {
 	return &physicalContainerImageData{
 		state:                   data.state,
 		workInProgress:          data.workInProgress,
-		image:                   data.image,
 		imageID:                 data.imageID,
 		imageIDVerified:         data.imageIDVerified,
 		digest:                  data.digest,
@@ -153,10 +151,6 @@ func (data *physicalContainerImageData) UpdateFrom(other *physicalContainerImage
 	}
 	if !slices.Equal(data.tags, other.tags) {
 		data.tags = slices.Clone(other.tags)
-		updated = true
-	}
-	if data.image != other.image {
-		data.image = other.image
 		updated = true
 	}
 	if data.failureMessage != other.failureMessage {
@@ -215,8 +209,12 @@ func (data *physicalContainerImageData) applyTo(
 		change |= setValue(&image.Status.Digest, "")
 		change |= setPhysicalContainerImageTags(image, nil)
 	}
-	if data.image != "" {
-		change |= setValue(&image.Status.Image, data.image)
+	if data.imageID != "" || data.startupStdout != nil {
+		imageReference := image.Spec.ImageID
+		if image.Spec.Image != nil {
+			imageReference = physicalContainerImageOutputTag(image)
+		}
+		change |= setValue(&image.Status.Image, imageReference)
 	}
 
 	reason := apiv2.ConditionReason("")

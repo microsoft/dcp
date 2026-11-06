@@ -40,7 +40,6 @@ type logicalServiceData struct {
 	attempts              uint32
 	startupFailureMessage string
 	selectedUID           types.UID
-	selectedName          string
 }
 
 // LogicalServiceReconciler owns proxy listeners and projects listener or endpoint-selected addresses.
@@ -161,12 +160,12 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			}
 			if selected >= 0 {
 				endpoint := &endpoints.Items[selected]
-				data.selectedName, data.selectedUID = endpoint.Name, endpoint.UID
+				data.selectedUID = endpoint.UID
 				status.EffectiveAddresses = slices.Clone(endpoint.Spec.Addresses)
 				status.ProxylessEndpointRef, status.Phase = endpoint.Name, apiv2.LogicalServicePhaseReady
 				reason, message = apiv2.LogicalServiceReasonEndpointSelected, "The selected endpoint's addresses are available."
 			} else {
-				data.selectedName, data.selectedUID = "", ""
+				data.selectedUID = ""
 				reason, message = apiv2.LogicalServiceReasonWaitingForEndpoints, "The service has no available endpoints."
 			}
 			break

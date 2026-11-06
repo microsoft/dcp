@@ -13,6 +13,7 @@ import (
 	"text/template"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -84,7 +85,13 @@ func EvaluateV2Values(
 			serviceSnapshots[serviceName] = service
 		}
 		if !service.DeletionTimestamp.IsZero() {
-			return apiv2.ServiceAddress{}, errServiceNotAssignedAddress{Service: serviceName}
+			return apiv2.ServiceAddress{}, fmt.Errorf("service %q is terminating", serviceName)
+		}
+		if service.Status.Phase == apiv2.LogicalServicePhaseFailed {
+			if condition := apimeta.FindStatusCondition(service.Status.Conditions, string(apiv2.ConditionReady)); condition != nil {
+				return apiv2.ServiceAddress{}, fmt.Errorf("service %q failed: %s: %s", serviceName, condition.Reason, condition.Message)
+			}
+			return apiv2.ServiceAddress{}, fmt.Errorf("service %q failed", serviceName)
 		}
 		selected, addressFound, selectionErr := networking.SelectServiceAddress(
 			service.Status.EffectiveAddresses, networking.IpVersionPreference(selector), networking.GetIpVersionPreference())

@@ -30,6 +30,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/internal/templating"
 	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
@@ -287,6 +288,46 @@ func (r *LogicalContainerReconciler) manageLogicalContainer(
 	return change | dataChange, delay
 }
 
+func (r *LogicalContainerReconciler) prepareLogicalContainerValues(
+	ctx context.Context, container *apiv2.LogicalContainer, data *logicalContainerData, log logr.Logger,
+) error {
+	if container.Spec.Stop {
+		return nil
+	}
+	requests := make([]logicalPortRequest, len(container.Spec.Ports))
+	for portIndex, port := range container.Spec.Ports {
+		requests[portIndex] = logicalPortRequest{binding: port.LogicalServiceBinding, address: port.Address, port: port.ContainerPort}
+	}
+	ports, prepareErr := prepareLogicalPorts(ctx, r.Client, r.NoCacheClient, container, requests, log)
+	if prepareErr != nil {
+		log.Error(prepareErr, "Failed to prepare logical container ports")
+		data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, prepareErr.Error()
+		if errors.Is(prepareErr, errLogicalServiceDependencyFailed) {
+			data.reason = apiv2.LogicalResourceReasonPortPreparationFailed
+			return fmt.Errorf("%w: %w", errLogicalValuePreparationFailed, prepareErr)
+		} else if !apierrors.IsNotFound(prepareErr) {
+			data.reconcileErr = prepareErr
+		}
+		return prepareErr
+	}
+	config := container.Spec.Container
+	if config != nil {
+		arguments, environment, evaluationErr := templating.EvaluateV2Values(
+			ctx, r.NoCacheClient, container, servingPorts(ports), config.Command, config.Env, false)
+		if evaluationErr != nil {
+			log.Error(evaluationErr, "Failed to evaluate logical container values")
+			data.reason, data.message = apiv2.LogicalResourceReasonTemplateEvaluationFailed, evaluationErr.Error()
+			if !templating.IsTransientTemplateError(evaluationErr) {
+				return fmt.Errorf("%w: %w", errLogicalValuePreparationFailed, evaluationErr)
+			}
+			return evaluationErr
+		}
+		data.effectiveCommand, data.effectiveEnv = arguments, environment
+	}
+	data.ports = logicalPortSelections(ports, requests)
+	return nil
+}
+
 func handleLogicalContainerPending(
 	ctx context.Context, reconciler *LogicalContainerReconciler, container *apiv2.LogicalContainer,
 	_ logicalContainerState, data *logicalContainerData, log logr.Logger,
@@ -298,13 +339,6 @@ func handleLogicalContainerPending(
 	data.reason, data.message = "", ""
 	data.retryAfter = time.Time{}
 
-	if !reconciler.prepareLogicalContainerValues(ctx, container, data, log) {
-		if data.state == logicalContainerStatePreparationFailed {
-			return noChange
-		}
-		return additionalReconciliationNeeded
-	}
-
 	physical, lookupErr := reconciler.findPhysicalContainer(ctx, container, data, reconciler.Client, container.UID)
 	if lookupErr != nil {
 		log.Error(lookupErr, "Failed to list physical containers backing the current logical container")
@@ -312,6 +346,8 @@ func handleLogicalContainerPending(
 	}
 	if physical != nil {
 		if physical.Spec.Container != nil {
+			data.effectiveCommand = std_slices.Clone(physical.Spec.Container.Command)
+			data.effectiveEnv = std_slices.Clone(physical.Spec.Container.Env)
 			for _, label := range physical.Spec.Container.Labels {
 				if label.Key == lifecycleKeyLabel {
 					data.lifecycleKey = label.Value
@@ -331,6 +367,13 @@ func handleLogicalContainerPending(
 	if physical != nil {
 		spec = physical.Spec
 	} else {
+		if preparationErr := reconciler.prepareLogicalContainerValues(ctx, container, data, log); preparationErr != nil {
+			if errors.Is(preparationErr, errLogicalValuePreparationFailed) {
+				data.state = logicalContainerStatePreparationFailed
+				return noChange
+			}
+			return additionalReconciliationNeeded
+		}
 		mode := container.Spec.EffectiveMode()
 		if mode == apiv2.LogicalContainerModePersistent && data.lease == nil {
 			if reconciler.config.StateStore == nil {
@@ -403,9 +446,12 @@ func handleLogicalContainerPending(
 			}
 		}
 		replaceExisting := false
+		lifecycleSpec := container.Spec.DeepCopy()
+		if lifecycleSpec.Container != nil {
+			lifecycleSpec.Container.Command = std_slices.Clone(data.effectiveCommand)
+			lifecycleSpec.Container.Env = std_slices.Clone(data.effectiveEnv)
+		}
 		if mode.ShouldCreateIfMissing() && !container.Spec.Stop && (inspected == nil || managed) {
-			lifecycleSpec := container.Spec.DeepCopy()
-			lifecycleSpec.Container = data.runConfig.DeepCopy()
 			desiredKey, _, keyErr := lifecycleSpec.GetLifecycleKey(physicalPorts)
 			if keyErr != nil {
 				log.Error(keyErr, "Failed to calculate logical container lifecycle key")
@@ -433,21 +479,16 @@ func handleLogicalContainerPending(
 				}
 				containerName = generatedName
 			}
-			imageRef := commonapi.AsNamespacedName(container.Spec.Container.ImageRef, container.Namespace).Name
-			desired := data.runConfig.DeepCopy()
-			labels := append(desired.Labels,
+			desired := physicalContainerConfigFromLogicalSpec(lifecycleSpec, physicalPorts)
+			desired.ContainerName, desired.ReplaceExisting = containerName, replaceExisting
+			desired.ImageRef = commonapi.AsNamespacedName(desired.ImageRef, container.Namespace).Name
+			desired.Labels = append(desired.Labels,
 				commonapi.Label{Key: dcpBuildLabel, Value: version.ProductVersion},
 				commonapi.Label{Key: groupVersionLabel, Value: apiv2.GroupVersion.String()},
 				commonapi.Label{Key: nameLabel, Value: container.Name},
 				commonapi.Label{Key: lifecycleKeyLabel, Value: lifecycleKey},
 			)
-			spec.Container = &apiv2.PhysicalContainerConfig{
-				RetainRuntimeContainer: mode == apiv2.LogicalContainerModePersistent,
-				MonitorPID:             container.Spec.MonitorPID, MonitorTimestamp: container.Spec.MonitorTimestamp,
-				ImageRef: imageRef, ContainerName: containerName, ReplaceExisting: replaceExisting,
-				Entrypoint: desired.Entrypoint, Command: desired.Command, Env: desired.Env,
-				Ports: physicalPorts, VolumeMounts: desired.VolumeMounts, CreateFiles: desired.CreateFiles, Labels: labels,
-			}
+			spec.Container = desired
 		}
 	}
 	data.lifecycleKey = lifecycleKey
@@ -540,6 +581,18 @@ func handleLogicalContainerPending(
 		data.state = logicalContainerStateStopping
 	}
 	return change
+}
+
+func physicalContainerConfigFromLogicalSpec(spec *apiv2.LogicalContainerSpec, ports []apiv2.ContainerPort) *apiv2.PhysicalContainerConfig {
+	source := spec.Container
+	config := &apiv2.PhysicalContainerConfig{
+		RetainRuntimeContainer: spec.EffectiveMode() == apiv2.LogicalContainerModePersistent,
+		MonitorPID:             spec.MonitorPID, MonitorTimestamp: spec.MonitorTimestamp,
+		ImageRef: source.ImageRef, ContainerName: spec.ContainerName,
+		Entrypoint: source.Entrypoint, Command: source.Command, Env: source.Env,
+		Ports: ports, VolumeMounts: source.VolumeMounts, CreateFiles: source.CreateFiles, Labels: source.Labels,
+	}
+	return config.DeepCopy()
 }
 
 func (r *LogicalContainerReconciler) resolveLogicalContainerNetworks(
@@ -770,10 +823,11 @@ func handleLogicalContainerRunning(
 	}
 	data.reason, data.message = "", ""
 	var addresses [][]apiv2.ServiceAddress
+	ports := data.portData(container)
 	if state == logicalContainerStateRunning && physical.DeletionTimestamp.IsZero() {
-		addresses = containerEndpointAddresses(container.Spec.Ports, data.ports, physical.Status.PortMappings)
+		addresses = containerEndpointAddresses(container.Spec.Ports, ports, physical.Status.PortMappings)
 	}
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data.ports, addresses); endpointErr != nil {
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, ports, addresses); endpointErr != nil {
 		log.Error(endpointErr, "Failed to synchronize logical container endpoints")
 		data.reconcileErr, data.message = endpointErr, endpointErr.Error()
 		change |= additionalReconciliationNeeded
@@ -825,7 +879,7 @@ func handleLogicalContainerUnknown(
 	state logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data.ports, nil); endpointErr != nil {
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data.portData(container), nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw unknown logical container endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -887,7 +941,7 @@ func handleLogicalContainerStopping(
 	_ logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data.ports, nil); endpointErr != nil {
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data.portData(container), nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw stopping logical container endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -937,7 +991,7 @@ func handleLogicalContainerTerminal(
 	_ logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data.ports, nil); endpointErr != nil {
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data.portData(container), nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw terminal logical container endpoints")
 		change |= additionalReconciliationNeeded
 	}

@@ -45,6 +45,7 @@ func TestConditionReasonsPreserveStatusValues(t *testing.T) {
 		{ContainerExecReasonStopping, "Stopping"},
 		{LogicalContainerExecReasonPhysicalExecutionChanged, "PhysicalExecutionChanged"},
 		{LogicalResourceReasonTemplateEvaluationFailed, "TemplateEvaluationFailed"},
+		{LogicalResourceReasonPortPreparationFailed, "PortPreparationFailed"},
 		{PhysicalContainerReasonResolvingRuntimeContainer, "ResolvingRuntimeContainer"},
 	} {
 		t.Run(testCase.value, func(t *testing.T) {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,7 +25,11 @@ import (
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/templating"
 	"github.com/microsoft/dcp/pkg/commonapi"
-	"github.com/microsoft/dcp/pkg/osutil"
+)
+
+var (
+	errLogicalServiceDependencyFailed = errors.New("service dependency failed")
+	errLogicalValuePreparationFailed  = errors.New("logical value preparation cannot complete")
 )
 
 type logicalPortRequest struct {
@@ -39,20 +44,76 @@ type logicalPortData struct {
 	protocol   commonapi.PortProtocol
 }
 
+type logicalPortSelection struct {
+	allocatedPort int32
+	protocol      commonapi.PortProtocol
+}
+
+func logicalPortForSelection(owner ctrl_client.Object, request logicalPortRequest, selection logicalPortSelection) logicalPortData {
+	serviceRef := commonapi.AsNamespacedName(request.binding.ServiceRef, owner.GetNamespace()).Name
+	if request.binding.Service != nil {
+		serviceRef = owner.GetName() + "-" + request.binding.Service.Name
+	}
+	address := request.address
+	if address == "" {
+		address = networking.Localhost
+	}
+	port := request.port
+	if port == 0 {
+		port = selection.allocatedPort
+	}
+	return logicalPortData{ServingPort: templating.ServingPort{Name: request.binding.Name, Address: address, Port: port},
+		serviceRef: serviceRef, protocol: selection.protocol}
+}
+
+func logicalPortSelections(ports []logicalPortData, requests []logicalPortRequest) []logicalPortSelection {
+	var selected []logicalPortSelection
+	for portIndex, port := range ports {
+		selection := logicalPortSelection{protocol: port.protocol}
+		if requests[portIndex].port == 0 {
+			selection.allocatedPort = port.Port
+		}
+		selected = append(selected, selection)
+	}
+	return selected
+}
+
+func (data *logicalContainerData) portData(container *apiv2.LogicalContainer) []logicalPortData {
+	var ports []logicalPortData
+	for portIndex, selected := range data.ports {
+		declared := container.Spec.Ports[portIndex]
+		ports = append(ports, logicalPortForSelection(container, logicalPortRequest{
+			binding: declared.LogicalServiceBinding, address: declared.Address, port: declared.ContainerPort,
+		}, selected))
+	}
+	return ports
+}
+
+func (data *logicalProcessData) portData(resource *apiv2.LogicalProcess) []logicalPortData {
+	var ports []logicalPortData
+	for portIndex, selected := range data.ports {
+		declared := resource.Spec.Ports[portIndex]
+		ports = append(ports, logicalPortForSelection(resource, logicalPortRequest{
+			binding: declared.LogicalServiceBinding, address: declared.Address, port: declared.Port,
+		}, selected))
+	}
+	return ports
+}
+
 func logicalPortResourceName(owner ctrl_client.Object, name string) string {
 	return "logical-" + string(owner.GetUID()) + "-" + name
 }
 
 func prepareLogicalPorts(
 	ctx context.Context, apiClient ctrl_client.Client, reader ctrl_client.Reader, owner commonapi.DcpModelObject,
-	requested []logicalPortRequest, previous []logicalPortData, log logr.Logger,
+	requested []logicalPortRequest, log logr.Logger,
 ) ([]logicalPortData, error) {
 	prepared := make([]logicalPortData, 0, len(requested))
 	for _, request := range requested {
+		port := logicalPortForSelection(owner, request, logicalPortSelection{})
 		service := &apiv2.LogicalService{}
-		serviceName := commonapi.AsNamespacedName(request.binding.ServiceRef, owner.GetNamespace())
+		serviceName := commonapi.AsNamespacedName(port.serviceRef, owner.GetNamespace())
 		if request.binding.Service != nil {
-			serviceName.Name = owner.GetName() + "-" + request.binding.Service.Name
 			service.ObjectMeta = metav1.ObjectMeta{Name: serviceName.Name, Namespace: owner.GetNamespace()}
 			service.Spec = request.binding.Service.LogicalServiceSpec
 			createErr := apiClient.Create(ctx, service)
@@ -61,34 +122,29 @@ func prepareLogicalPorts(
 					return prepared, fmt.Errorf("create port %q service and verify outcome: %w", request.binding.Name, errors.Join(createErr, getErr))
 				}
 			}
-			if !service.Spec.Equal(request.binding.Service.LogicalServiceSpec) {
-				return prepared, fmt.Errorf("service %q configuration does not match the template", serviceName)
-			}
 		} else if getErr := reader.Get(ctx, serviceName, service); getErr != nil {
 			return prepared, fmt.Errorf("get port %q service: %w", request.binding.Name, getErr)
 		}
 		if !service.DeletionTimestamp.IsZero() {
-			return prepared, fmt.Errorf("port %q service is terminating", request.binding.Name)
+			return prepared, fmt.Errorf("%w: port %q service %q is terminating", errLogicalServiceDependencyFailed, request.binding.Name, serviceName)
 		}
-		port := logicalPortData{ServingPort: templating.ServingPort{Name: request.binding.Name, Address: request.address, Port: request.port},
-			serviceRef: serviceName.Name, protocol: service.Spec.EffectiveProtocol()}
-		if port.Address == "" {
-			port.Address = networking.Localhost
+		if service.Status.Phase == apiv2.LogicalServicePhaseFailed {
+			message := fmt.Sprintf("port %q service %q failed", request.binding.Name, serviceName)
+			if condition := apimeta.FindStatusCondition(service.Status.Conditions, string(apiv2.ConditionReady)); condition != nil {
+				message += fmt.Sprintf(": %s: %s", condition.Reason, condition.Message)
+			}
+			return prepared, fmt.Errorf("%w: %s", errLogicalServiceDependencyFailed, message)
 		}
+		if request.binding.Service != nil && !service.Spec.Equal(request.binding.Service.LogicalServiceSpec) {
+			return prepared, fmt.Errorf("service %q configuration does not match the template", serviceName)
+		}
+		port.protocol = service.Spec.EffectiveProtocol()
 		if port.Port == 0 {
-			for _, allocated := range previous {
-				if allocated.Name == port.Name {
-					port.Port = allocated.Port
-					break
-				}
+			allocatedPort, allocationErr := networking.GetFreePort(port.protocol, port.Address, log)
+			if allocationErr != nil {
+				return prepared, fmt.Errorf("allocate logical port %q: %w", port.Name, allocationErr)
 			}
-			if port.Port == 0 {
-				allocatedPort, allocationErr := networking.GetFreePort(port.protocol, port.Address, log)
-				if allocationErr != nil {
-					return prepared, fmt.Errorf("allocate logical port %q: %w", port.Name, allocationErr)
-				}
-				port.Port = allocatedPort
-			}
+			port.Port = allocatedPort
 		}
 		prepared = append(prepared, port)
 	}
@@ -235,82 +291,6 @@ func containerEndpointAddresses(
 		addresses[portIndex] = slices.Compact(addresses[portIndex])
 	}
 	return addresses
-}
-
-func (r *LogicalContainerReconciler) prepareLogicalContainerValues(
-	ctx context.Context, container *apiv2.LogicalContainer, data *logicalContainerData, log logr.Logger,
-) bool {
-	if data.runConfig != nil || container.Spec.Stop {
-		return true
-	}
-	requests := make([]logicalPortRequest, len(container.Spec.Ports))
-	for portIndex, port := range container.Spec.Ports {
-		requests[portIndex] = logicalPortRequest{binding: port.LogicalServiceBinding, address: port.Address, port: port.ContainerPort}
-	}
-	ports, prepareErr := prepareLogicalPorts(ctx, r.Client, r.NoCacheClient, container, requests, data.ports, log)
-	data.ports = ports
-	if prepareErr != nil {
-		log.Error(prepareErr, "Failed to prepare logical container ports")
-		data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, prepareErr.Error()
-		if !apierrors.IsNotFound(prepareErr) {
-			data.reconcileErr = prepareErr
-		}
-		return false
-	}
-	config := container.Spec.Container.DeepCopy()
-	if config != nil {
-		arguments, environment, evaluationErr := templating.EvaluateV2Values(
-			ctx, r.NoCacheClient, container, servingPorts(ports), config.Command, config.Env, false)
-		if evaluationErr != nil {
-			log.Error(evaluationErr, "Failed to evaluate logical container values")
-			data.reason, data.message = apiv2.LogicalResourceReasonTemplateEvaluationFailed, evaluationErr.Error()
-			if !templating.IsTransientTemplateError(evaluationErr) {
-				data.state = logicalContainerStatePreparationFailed
-			}
-			return false
-		}
-		config.Command, config.Env = arguments, environment
-	}
-	data.runConfig = config
-	return true
-}
-
-func (r *LogicalProcessReconciler) prepareLogicalProcessValues(
-	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, log logr.Logger,
-) bool {
-	if data.runConfig != nil || resource.Spec.Stop {
-		return true
-	}
-	requests := make([]logicalPortRequest, len(resource.Spec.Ports))
-	for portIndex, port := range resource.Spec.Ports {
-		requests[portIndex] = logicalPortRequest{binding: port.LogicalServiceBinding, address: port.Address, port: port.Port}
-	}
-	ports, prepareErr := prepareLogicalPorts(ctx, r.Client, r.NoCacheClient, resource, requests, data.ports, log)
-	data.ports = ports
-	if prepareErr != nil {
-		log.Error(prepareErr, "Failed to prepare logical process ports")
-		data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, prepareErr.Error()
-		if !apierrors.IsNotFound(prepareErr) {
-			data.reconcileErr = prepareErr
-		}
-		return false
-	}
-	config := resource.Spec.Process.DeepCopy()
-	if config != nil {
-		arguments, environment, evaluationErr := templating.EvaluateV2Values(
-			ctx, r.NoCacheClient, resource, servingPorts(ports), config.Args, config.Env, osutil.IsWindows())
-		if evaluationErr != nil {
-			log.Error(evaluationErr, "Failed to evaluate logical process values")
-			data.reason, data.message = apiv2.LogicalResourceReasonTemplateEvaluationFailed, evaluationErr.Error()
-			if !templating.IsTransientTemplateError(evaluationErr) {
-				data.state = logicalProcessStatePrepareFailed
-			}
-			return false
-		}
-		config.Args, config.Env = arguments, environment
-	}
-	data.runConfig = config
-	return true
 }
 
 func processEndpointAddresses(ports []logicalPortData) [][]apiv2.ServiceAddress {

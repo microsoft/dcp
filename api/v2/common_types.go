@@ -63,6 +63,8 @@ type ConditionReason string
 const (
 	// LogicalResourceReasonPortPreparationPending indicates that service-backed ports are not prepared.
 	LogicalResourceReasonPortPreparationPending ConditionReason = "PortPreparationPending"
+	// LogicalResourceReasonPortPreparationFailed indicates that a service dependency cannot support startup.
+	LogicalResourceReasonPortPreparationFailed ConditionReason = "PortPreparationFailed"
 	// LogicalResourceReasonTemplateEvaluationFailed indicates that argument or environment template evaluation failed.
 	LogicalResourceReasonTemplateEvaluationFailed ConditionReason = "TemplateEvaluationFailed"
 	// LogicalResourceReasonPersistenceFailed indicates that lifecycle bookkeeping could not be saved.
