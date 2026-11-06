@@ -23,16 +23,16 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that fork-process honors tree/root cleanup on owner exit and cancellation,
-// and escalates an uncooperative root without stopping independently grouped descendants.
-func TestForkProcessCleanupTreePolicy(t *testing.T) {
+// Verifies that fork-process cleanup stops only the launched root after owner exit or
+// cancellation, leaves independently grouped descendants running, and escalates the root.
+func TestForkProcessCleanupRootOnlyPolicy(t *testing.T) {
 	for _, cancellation := range []bool{false, true} {
-		for _, cleanupMode := range []string{"disabled", "tree", "root"} {
+		for _, cleanupEnabled := range []bool{false, true} {
 			for _, escalation := range []bool{false, true} {
-				if escalation && (cancellation || cleanupMode != "root") {
+				if escalation && (cancellation || !cleanupEnabled) {
 					continue
 				}
-				t.Run(fmt.Sprintf("%s,cancel=%t,escalate=%t", cleanupMode, cancellation, escalation), func(t *testing.T) {
+				t.Run(fmt.Sprintf("cleanup=%t,cancel=%t,escalate=%t", cleanupEnabled, cancellation, escalation), func(t *testing.T) {
 					t.Parallel()
 					testCtx, testCancel := testutil.GetTestContext(t, 0)
 					defer testCancel()
@@ -42,7 +42,7 @@ func TestForkProcessCleanupTreePolicy(t *testing.T) {
 					if escalation {
 						childArgs = append(childArgs, "--ignore-sigterm")
 					}
-					fork := startCleanupFork(t, testCtx, owner, cleanupMode, childArgs...)
+					fork := startCleanupFork(t, testCtx, owner, "1", cleanupEnabled, childArgs...)
 					child := waitCleanupForkChild(t, testCtx, fork)
 					waitCleanupFile(t, testCtx, readyPath)
 					tree, treeErr := process.GetProcessTree(testCtx, child)
@@ -72,16 +72,12 @@ func TestForkProcessCleanupTreePolicy(t *testing.T) {
 					}
 					executor := process.NewOSExecutor(logr.Discard())
 					defer executor.Dispose()
-					if cleanupMode == "disabled" {
-						require.NoError(t, executor.CheckProcessRunning(child))
-					} else {
+					if cleanupEnabled {
 						require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(child)))
-					}
-					if cleanupMode == "tree" {
-						require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(tree[1])))
 					} else {
-						require.NoError(t, executor.CheckProcessRunning(tree[1]))
+						require.NoError(t, executor.CheckProcessRunning(child))
 					}
+					require.NoError(t, executor.CheckProcessRunning(tree[1]))
 					if cancellation {
 						require.NoError(t, executor.CheckProcessRunning(owner))
 					}

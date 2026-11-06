@@ -62,12 +62,12 @@ func (writer failedForkPidWriter) Write([]byte) (int, error) {
 	return 0, writer.err
 }
 
-// Verifies that runForkedProcess applies opt-in tree or root cleanup when owner exit
-// or command cancellation occurs during real process creation, without changing default fork behavior.
+// Verifies that runForkedProcess applies opt-in root cleanup when owner exit or command
+// cancellation occurs during real process creation, without changing default fork behavior.
 func TestForkProcessCleanupDuringStartup(t *testing.T) {
 	for _, cancellation := range []bool{false, true} {
-		for _, cleanupMode := range []string{"disabled", "tree", "root"} {
-			t.Run(strconv.FormatBool(cancellation)+"/"+cleanupMode, func(t *testing.T) {
+		for _, cleanupEnabled := range []bool{false, true} {
+			t.Run(strconv.FormatBool(cancellation)+"/cleanup="+strconv.FormatBool(cleanupEnabled), func(t *testing.T) {
 				testCtx, testCancel := testutil.GetTestContext(t, 0)
 				defer testCancel()
 				commandCtx, commandCancel := context.WithCancel(testCtx)
@@ -109,7 +109,7 @@ func TestForkProcessCleanupDuringStartup(t *testing.T) {
 					}
 					<-ownerCtx.Done()
 				}}
-				options := &forkProcessOptions{enableChildCleanup: cleanupMode != "disabled", skipDescendants: cleanupMode == "root"}
+				options := &forkProcessOptions{enableChildCleanup: cleanupEnabled}
 				runErr := runForkedProcess(command, childCmd, ownerCtx, options, startExecutor, logr.Discard())
 				if cancellation {
 					require.ErrorIs(t, runErr, context.Canceled)
@@ -125,11 +125,7 @@ func TestForkProcessCleanupDuringStartup(t *testing.T) {
 				}
 				if !osutil.IsWindows() {
 					require.Len(t, tree, 2)
-					if cleanupMode == "tree" {
-						require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(tree[1])))
-					} else {
-						require.NoError(t, executor.CheckProcessRunning(tree[1]))
-					}
+					require.NoError(t, executor.CheckProcessRunning(tree[1]))
 				}
 			})
 		}
@@ -137,9 +133,9 @@ func TestForkProcessCleanupDuringStartup(t *testing.T) {
 }
 
 // Verifies that runForkedProcess rolls back a failed PID handoff only when cleanup is enabled,
-// preserves root-only descendants, and surfaces both output and cleanup failures.
+// leaves descendants alone, and surfaces both output and cleanup failures.
 func TestForkProcessFailedPidHandoffCleanup(t *testing.T) {
-	for _, cleanupMode := range []string{"disabled", "tree", "root", "stop-failed"} {
+	for _, cleanupMode := range []string{"disabled", "enabled", "stop-failed"} {
 		t.Run(cleanupMode, func(t *testing.T) {
 			testCtx, testCancel := testutil.GetTestContext(t, 0)
 			defer testCancel()
@@ -170,7 +166,7 @@ func TestForkProcessFailedPidHandoffCleanup(t *testing.T) {
 			if cleanupMode == "stop-failed" {
 				startExecutor.stopFailure = stopErr
 			}
-			options := &forkProcessOptions{enableChildCleanup: cleanupMode != "disabled", skipDescendants: cleanupMode == "root"}
+			options := &forkProcessOptions{enableChildCleanup: cleanupMode != "disabled"}
 			runErr := runForkedProcess(command, childCmd, testCtx, options, startExecutor, logr.Discard())
 			require.ErrorIs(t, runErr, writeErr)
 			if cleanupMode == "stop-failed" {
@@ -183,11 +179,7 @@ func TestForkProcessFailedPidHandoffCleanup(t *testing.T) {
 			}
 			if !osutil.IsWindows() {
 				require.Len(t, tree, 2)
-				if cleanupMode == "tree" {
-					require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(tree[1])))
-				} else {
-					require.NoError(t, executor.CheckProcessRunning(tree[1]))
-				}
+				require.NoError(t, executor.CheckProcessRunning(tree[1]))
 			}
 		})
 	}
@@ -212,20 +204,19 @@ func TestForkProcessCleanupPreservesChildIdentity(t *testing.T) {
 		afterStart: func(handle process.ProcessHandle) { actualChild = handle },
 	}
 	runErr := runForkedProcess(command, forkTestDelayCommand(t, "--delay=2m"), testCtx,
-		&forkProcessOptions{enableChildCleanup: true, skipDescendants: true}, startExecutor, logr.Discard())
+		&forkProcessOptions{enableChildCleanup: true}, startExecutor, logr.Discard())
 	require.ErrorIs(t, runErr, writeErr)
 	require.NoError(t, executor.CheckProcessRunning(actualChild), "cleanup must not recapture identity from a bare PID")
 }
 
-// Verifies that fork-process accepts only the two cleanup flags with valid dependencies
-// and that the rejected watch/status/supervisor flags and monitor-process expansion are absent.
+// Verifies that fork-process accepts cleanup only with a monitor and that rejected watch,
+// status, and supervisor flags remain absent.
 func TestForkProcessCleanupFlagValidation(t *testing.T) {
 	for _, testCase := range []struct {
 		args []string
 		err  string
 	}{
 		{args: []string{"--enable-child-cleanup"}, err: "--enable-child-cleanup requires --monitor"},
-		{args: []string{"--skip-descendants"}, err: "--skip-descendants requires --enable-child-cleanup"},
 		{args: []string{"--monitor=0", "--enable-child-cleanup"}, err: "invalid process handle"},
 	} {
 		command, commandErr := NewForkProcessCommand(logr.Discard())
@@ -239,9 +230,6 @@ func TestForkProcessCleanupFlagValidation(t *testing.T) {
 			require.Nil(t, command.Flags().Lookup(removedFlag))
 		}
 	}
-	monitorCommand, monitorErr := NewProcessCommand(logr.Discard())
-	require.NoError(t, monitorErr)
-	require.Nil(t, monitorCommand.Flags().Lookup("skip-descendants"))
 }
 
 func forkTestDelayCommand(t *testing.T, args ...string) *exec.Cmd {
