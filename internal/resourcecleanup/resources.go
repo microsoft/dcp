@@ -76,6 +76,10 @@ var NamespaceResources = []*CleanupResource{
 	},
 	{
 		GVR: (&apiv2.ServiceEndpoint{}).GetGroupVersionResource(),
+		CleanUpAfter: []schema.GroupVersionResource{
+			(&apiv2.LogicalProcess{}).GetGroupVersionResource(),
+			(&apiv2.LogicalContainer{}).GetGroupVersionResource(),
+		},
 	},
 	{
 		GVR: (&apiv2.LogicalContainerExec{}).GetGroupVersionResource(),
