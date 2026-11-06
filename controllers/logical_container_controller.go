@@ -497,10 +497,16 @@ func handleLogicalContainerPending(
 	if spec.Container != nil && container.Spec.Container != nil && container.Spec.Container.Image != nil {
 		image, imageErr := reconciler.findPhysicalContainerImage(ctx, container, data, reconciler.Client, container.UID)
 		if imageErr == nil && image == nil && physical == nil && data.physicalImageUID == "" {
-			image, imageErr = reconciler.createLogicalContainerImage(ctx, container, data, "logical-"+string(container.UID))
+			image, imageErr = reconciler.createPhysicalContainerImage(ctx, container, data, "logical-"+string(container.UID))
 		}
 		if imageErr != nil {
 			log.Error(imageErr, "Failed to prepare logical container image")
+			// AlreadyExists here means an invalid existing physical image; valid ones are returned without an error.
+			if apierrors.IsAlreadyExists(imageErr) {
+				data.state, data.reason, data.message = logicalContainerStatePreparationFailed, apiv2.LogicalContainerReasonPhysicalResourcePreparationFailed, imageErr.Error()
+				data.reconcileErr = nil
+				return noChange
+			}
 			if data.state != logicalContainerStateUnknown && data.reconcileErr == nil {
 				data.reason, data.message, data.reconcileErr = apiv2.LogicalContainerReasonPhysicalResourcePreparationFailed, imageErr.Error(), imageErr
 			}
@@ -547,9 +553,15 @@ func handleLogicalContainerPending(
 				return change
 			}
 		}
-		created, createErr := reconciler.createLogicalContainerBacking(ctx, container, data, spec)
+		created, createErr := reconciler.createPhysicalContainer(ctx, container, data, spec)
 		if createErr != nil {
-			log.Error(createErr, "Failed to prepare backing physical container")
+			log.Error(createErr, "Failed to prepare PhysicalContainer")
+			// AlreadyExists here means an invalid existing physical container; valid ones are returned without an error.
+			if apierrors.IsAlreadyExists(createErr) {
+				data.state, data.reason, data.message = logicalContainerStatePreparationFailed, apiv2.LogicalContainerReasonPhysicalResourcePreparationFailed, createErr.Error()
+				data.reconcileErr = nil
+				return change
+			}
 			if data.state != logicalContainerStateUnknown {
 				data.reconcileErr = createErr
 				data.message = createErr.Error()
@@ -648,8 +660,8 @@ func (r *LogicalContainerReconciler) resolveLogicalContainerNetworks(
 	return true, resolved, "", nil
 }
 
-// createLogicalContainerImage creates or observes the owned image declaration.
-func (r *LogicalContainerReconciler) createLogicalContainerImage(
+// createPhysicalContainerImage declares an owned image and validates AlreadyExists collisions.
+func (r *LogicalContainerReconciler) createPhysicalContainerImage(
 	ctx context.Context, container *apiv2.LogicalContainer, data *logicalContainerData, physicalName string,
 ) (*apiv2.PhysicalContainerImage, error) {
 	image := &apiv2.PhysicalContainerImage{
@@ -666,20 +678,27 @@ func (r *LogicalContainerReconciler) createLogicalContainerImage(
 		data.physicalImageUID = image.UID
 	}
 	if createErr != nil {
-		existing, lookupErr := r.findPhysicalContainerImage(ctx, container, data, r.Client, container.UID)
-		if lookupErr != nil {
-			return image, fmt.Errorf("create physical image and verify owned resources: %w", errors.Join(createErr, lookupErr))
-		}
-		if existing == nil {
+		if !apierrors.IsAlreadyExists(createErr) {
 			return image, createErr
 		}
+		existing := &apiv2.PhysicalContainerImage{}
+		if lookupErr := r.NoCacheClient.Get(ctx, image.NamespacedName(), existing); lookupErr != nil {
+			return image, fmt.Errorf("get existing physical image: %w", lookupErr)
+		}
+		if identityErr := validatePhysicalResourceIdentity(container, existing, data.physicalImageUID); identityErr != nil {
+			return nil, fmt.Errorf("%v: %w", identityErr, createErr)
+		}
+		if !reflect.DeepEqual(existing.Spec, image.Spec) {
+			return nil, fmt.Errorf("physical image %q has a different spec: %w", existing.NamespacedName(), createErr)
+		}
+		data.physicalImageUID = existing.UID
 		return existing, nil
 	}
 	return image, nil
 }
 
-// createLogicalContainerBacking declares the physical backing and confirms ambiguous responses.
-func (r *LogicalContainerReconciler) createLogicalContainerBacking(
+// createPhysicalContainer declares the physical resource and validates AlreadyExists collisions.
+func (r *LogicalContainerReconciler) createPhysicalContainer(
 	ctx context.Context, container *apiv2.LogicalContainer, data *logicalContainerData, spec apiv2.PhysicalContainerSpec,
 ) (*apiv2.PhysicalContainer, error) {
 	physical := &apiv2.PhysicalContainer{
@@ -696,13 +715,36 @@ func (r *LogicalContainerReconciler) createLogicalContainerBacking(
 		data.physicalContainerUID = physical.UID
 	}
 	if createErr != nil {
-		existing, lookupErr := r.findPhysicalContainer(ctx, container, data, r.Client, container.UID)
-		if lookupErr != nil {
-			return physical, fmt.Errorf("create physical container and verify owned resources: %w", errors.Join(createErr, lookupErr))
-		}
-		if existing == nil {
+		if !apierrors.IsAlreadyExists(createErr) {
 			return physical, createErr
 		}
+		existing := &apiv2.PhysicalContainer{}
+		if lookupErr := r.NoCacheClient.Get(ctx, physical.NamespacedName(), existing); lookupErr != nil {
+			return physical, fmt.Errorf("get existing physical container: %w", lookupErr)
+		}
+		if identityErr := validatePhysicalResourceIdentity(container, existing, data.physicalContainerUID); identityErr != nil {
+			return nil, fmt.Errorf("%v: %w", identityErr, createErr)
+		}
+		if existing.Spec.Container != nil {
+			data.effectiveCommand = std_slices.Clone(existing.Spec.Container.Command)
+			data.effectiveEnv = std_slices.Clone(existing.Spec.Container.Env)
+			for _, label := range existing.Spec.Container.Labels {
+				if label.Key == lifecycleKeyLabel {
+					data.lifecycleKey = label.Value
+				}
+			}
+			if len(existing.Spec.Container.Ports) == len(container.Spec.Ports) {
+				data.ports = nil
+				for _, port := range existing.Spec.Container.Ports {
+					protocol := port.Protocol
+					if protocol == "" {
+						protocol = commonapi.PortProtocolTCP
+					}
+					data.ports = append(data.ports, logicalPortSelection{protocol: protocol})
+				}
+			}
+		}
+		data.physicalContainerUID = existing.UID
 		return existing, nil
 	}
 	return physical, nil

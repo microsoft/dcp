@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,12 +48,13 @@ func (apiClient *staleEndpointCreateClient) Create(ctx context.Context, object c
 	createErr := apiClient.Client.Create(ctx, stale, options...)
 	if createErr == nil {
 		apiClient.stale.Store(stale.DeepCopy())
+		return apierrors.NewAlreadyExists(apiv2.GroupVersion.WithResource("serviceendpoints").GroupResource(), stale.Name)
 	}
 	return createErr
 }
 
-// Verifies that logical workload endpoint synchronization replaces stale immutable bindings,
-// waits for deletion finalizers, and publishes the desired bindings under a new endpoint UID.
+// Verifies that logical workload endpoint synchronization validates AlreadyExists results, replaces
+// stale immutable bindings through deletion, and waits for finalizers before publishing a new UID.
 func TestV2LogicalEndpointReplacesChangedBindings(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
@@ -137,25 +139,25 @@ func (client *uncertainServiceCreateClient) Create(ctx context.Context, object c
 	return createErr
 }
 
-type gatedServiceConfirmationReader struct {
+type gatedServiceLookupReader struct {
 	ctrl_client.Reader
 	createClient *uncertainServiceCreateClient
 	allow        atomic.Bool
 	failures     atomic.Int32
 }
 
-func (reader *gatedServiceConfirmationReader) Get(
+func (reader *gatedServiceLookupReader) Get(
 	ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption,
 ) error {
 	if _, service := object.(*apiv2.LogicalService); service && reader.createClient.created.Load() && !reader.allow.Load() {
 		reader.failures.Add(1)
-		return errors.New("service confirmation unavailable")
+		return errors.New("service lookup unavailable")
 	}
 	return reader.Reader.Get(ctx, key, object, options...)
 }
 
-// Verifies that logical workload preparation waits after an ambiguous templated-service create
-// and failed uncached confirmation, then resumes through the existing lifecycle using evaluated values.
+// Verifies that logical workload preparation retries a lost templated-service Create response
+// and an unavailable later lookup, then resumes using the committed service and evaluated values.
 func TestV2LogicalServicePreparationRecoversOnLaterReconciliation(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
@@ -164,7 +166,7 @@ func TestV2LogicalServicePreparationRecoversOnLaterReconciliation(t *testing.T) 
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
 			var createClient *uncertainServiceCreateClient
-			var confirmationReader *gatedServiceConfirmationReader
+			var lookupReader *gatedServiceLookupReader
 			serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, logicalServicePreparationControllers, t.Name(), t.TempDir(),
 				TestEnvironmentOptions{
 					DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
@@ -172,8 +174,8 @@ func TestV2LogicalServicePreparationRecoversOnLaterReconciliation(t *testing.T) 
 						return createClient
 					},
 					DecorateAPIReader: func(reader ctrl_client.Reader) ctrl_client.Reader {
-						confirmationReader = &gatedServiceConfirmationReader{Reader: reader, createClient: createClient}
-						return confirmationReader
+						lookupReader = &gatedServiceLookupReader{Reader: reader, createClient: createClient}
+						return lookupReader
 					},
 				})
 			require.NoError(t, startupErr)
@@ -199,7 +201,7 @@ func TestV2LogicalServicePreparationRecoversOnLaterReconciliation(t *testing.T) 
 					}}
 				require.NoError(t, apiClient.Create(ctx, process))
 				waitObjectAssumesStateEx(t, ctx, apiClient, name, func(current *apiv2.LogicalProcess) (bool, error) {
-					return confirmationReader.failures.Load() > 0 && current.Status.PhysicalProcessRef == "" &&
+					return lookupReader.failures.Load() > 0 && current.Status.PhysicalProcessRef == "" &&
 						len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonPortPreparationPending), nil
 				})
 			} else {
@@ -212,7 +214,7 @@ func TestV2LogicalServicePreparationRecoversOnLaterReconciliation(t *testing.T) 
 					}}
 				require.NoError(t, apiClient.Create(ctx, container))
 				waitObjectAssumesStateEx(t, ctx, apiClient, name, func(current *apiv2.LogicalContainer) (bool, error) {
-					return confirmationReader.failures.Load() > 0 && current.Status.PhysicalContainerRef == "" &&
+					return lookupReader.failures.Load() > 0 && current.Status.PhysicalContainerRef == "" &&
 						len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonPortPreparationPending), nil
 				})
 			}
@@ -221,7 +223,7 @@ func TestV2LogicalServicePreparationRecoversOnLaterReconciliation(t *testing.T) 
 			require.Len(t, services.Items, 1)
 			require.Equal(t, "workload-management", services.Items[0].Name)
 			require.Empty(t, services.Items[0].OwnerReferences)
-			confirmationReader.allow.Store(true)
+			lookupReader.allow.Store(true)
 			service := waitObjectAssumesStateEx(t, ctx, apiClient, services.Items[0].NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 				return len(current.Status.EffectiveAddresses) == 1, nil
 			})
@@ -549,8 +551,8 @@ func TestV2LogicalProcessPreparationLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, fieldName := range []string{"arguments", "environment"} {
 		for _, keyKind := range []string{"computed", "explicit"} {
-			for _, outcome := range []string{"waiting", "fatal", "terminating", "terminating-port"} {
-				if outcome == "terminating-port" && fieldName != "arguments" {
+			for _, outcome := range []string{"waiting", "fatal", "terminating", "terminating-port", "mismatch"} {
+				if (outcome == "terminating-port" || outcome == "mismatch") && fieldName != "arguments" {
 					continue
 				}
 				t.Run(fieldName+"/"+keyKind+"/"+outcome, func(t *testing.T) {
@@ -591,6 +593,7 @@ func TestV2LogicalProcessPreparationLifecycle(t *testing.T) {
 					expectedReason := apiv2.LogicalResourceReasonTemplateEvaluationFailed
 					var dependency *apiv2.LogicalService
 					var releaseDependency func()
+					var incompatibleService *apiv2.LogicalService
 					if outcome == "waiting" {
 						value = `{{portFor "missing"}}`
 						expectedPhase = apiv2.LogicalProcessPhasePending
@@ -604,6 +607,17 @@ func TestV2LogicalProcessPreparationLifecycle(t *testing.T) {
 								Name: "http", ServiceRef: dependency.Name,
 							}, Port: 8080}}
 						}
+					} else if outcome == "mismatch" {
+						value, expectedReason = "literal", apiv2.LogicalResourceReasonPortPreparationFailed
+						incompatibleService = &apiv2.LogicalService{
+							ObjectMeta: metav1.ObjectMeta{Name: first.Name + "-management", Namespace: namespace.Name},
+							Spec:       apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless, Protocol: commonapi.PortProtocolUDP},
+						}
+						require.NoError(t, client.Create(ctx, incompatibleService))
+						replacementSpec.Ports = []apiv2.LogicalProcessPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{
+							Name: "http", Service: &apiv2.LogicalServiceTemplate{Name: "management",
+								LogicalServiceSpec: apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
+						}, Port: 8080}}
 					}
 					if fieldName == "arguments" {
 						replacementSpec.Process.Args = []string{value}
@@ -665,6 +679,12 @@ func TestV2LogicalProcessPreparationLifecycle(t *testing.T) {
 						require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
 					}
 					require.Len(t, testProcessExecutor.FindAll([]string{command}, "", nil), 1)
+					if incompatibleService != nil {
+						unchanged := &apiv2.LogicalService{}
+						require.NoError(t, client.Get(ctx, incompatibleService.NamespacedName(), unchanged))
+						require.Equal(t, incompatibleService.Spec, unchanged.Spec)
+						require.Empty(t, unchanged.OwnerReferences)
+					}
 					require.NoError(t, client.Delete(ctx, namespace))
 					ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
 				})
@@ -679,8 +699,8 @@ func TestV2LogicalContainerPreparationLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, fieldName := range []string{"arguments", "environment"} {
 		for _, keyKind := range []string{"computed", "explicit"} {
-			for _, outcome := range []string{"waiting", "fatal", "terminating", "terminating-port"} {
-				if outcome == "terminating-port" && fieldName != "arguments" {
+			for _, outcome := range []string{"waiting", "fatal", "terminating", "terminating-port", "mismatch"} {
+				if (outcome == "terminating-port" || outcome == "mismatch") && fieldName != "arguments" {
 					continue
 				}
 				t.Run(fieldName+"/"+keyKind+"/"+outcome, func(t *testing.T) {
@@ -717,6 +737,7 @@ func TestV2LogicalContainerPreparationLifecycle(t *testing.T) {
 					expectedReason := apiv2.LogicalResourceReasonTemplateEvaluationFailed
 					var dependency *apiv2.LogicalService
 					var releaseDependency func()
+					var incompatibleService *apiv2.LogicalService
 					if outcome == "waiting" {
 						value = `{{portFor "missing"}}`
 						expectedPhase = apiv2.LogicalContainerPhasePending
@@ -730,6 +751,17 @@ func TestV2LogicalContainerPreparationLifecycle(t *testing.T) {
 								Name: "http", ServiceRef: dependency.Name,
 							}, ContainerPort: 8080}}
 						}
+					} else if outcome == "mismatch" {
+						value, expectedReason = "literal", apiv2.LogicalResourceReasonPortPreparationFailed
+						incompatibleService = &apiv2.LogicalService{
+							ObjectMeta: metav1.ObjectMeta{Name: first.Name + "-management", Namespace: namespace.Name},
+							Spec:       apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless, Protocol: commonapi.PortProtocolUDP},
+						}
+						require.NoError(t, client.Create(ctx, incompatibleService))
+						replacementSpec.Ports = []apiv2.LogicalContainerPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{
+							Name: "http", Service: &apiv2.LogicalServiceTemplate{Name: "management",
+								LogicalServiceSpec: apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
+						}, ContainerPort: 8080}}
 					}
 					if fieldName == "arguments" {
 						replacementSpec.Container.Command = []string{value}
@@ -785,6 +817,12 @@ func TestV2LogicalContainerPreparationLifecycle(t *testing.T) {
 					require.NoError(t, observeErr)
 					require.Len(t, observed, 1)
 					require.Equal(t, expectedRuntimeState, observed[0].Status)
+					if incompatibleService != nil {
+						unchanged := &apiv2.LogicalService{}
+						require.NoError(t, client.Get(ctx, incompatibleService.NamespacedName(), unchanged))
+						require.Equal(t, incompatibleService.Spec, unchanged.Spec)
+						require.Empty(t, unchanged.OwnerReferences)
+					}
 					require.NoError(t, client.Delete(ctx, namespace))
 					ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
 				})

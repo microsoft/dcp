@@ -7,7 +7,6 @@ package controllers
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 
@@ -265,10 +264,19 @@ func (reconciler *LogicalContainerExecReconciler) ensureLogicalPhysicalContainer
 		}
 		InitializeLogicalBackingFinalizers(physical, physicalContainerExecFinalizer)
 		createErr := reconciler.Create(ctx, physical)
+		if physical.UID != "" {
+			data.physicalUID = physical.UID
+		}
 		if createErr != nil {
+			if !apierrors.IsAlreadyExists(createErr) {
+				data.reconcileErr = fmt.Errorf("create physical execution: %w", createErr)
+				data.message = data.reconcileErr.Error()
+				log.Error(data.reconcileErr, "Failed to prepare physical container execution")
+				return noChange
+			}
 			confirmErr := reconciler.NoCacheClient.Get(ctx, physical.NamespacedName(), physical)
 			if confirmErr != nil {
-				data.reconcileErr = fmt.Errorf("create physical execution and verify backing: %w", errors.Join(createErr, confirmErr))
+				data.reconcileErr = fmt.Errorf("get existing physical execution: %w", confirmErr)
 				data.message = data.reconcileErr.Error()
 				log.Error(data.reconcileErr, "Failed to prepare physical container execution")
 				return noChange
@@ -281,9 +289,12 @@ func (reconciler *LogicalContainerExecReconciler) ensureLogicalPhysicalContainer
 	} else {
 		physical = observed
 	}
-	if !metav1.IsControlledBy(physical, resource) || !reflect.DeepEqual(physical.Spec, desiredSpec) ||
-		!hasFinalizer(physical, LogicalBackingFinalizer) {
-		data.fail(apiv2.LogicalContainerExecReasonPhysicalExecutionChanged, "The backing physical execution has a different owner or configuration.")
+	if identityErr := validatePhysicalResourceIdentity(resource, physical, data.physicalUID); identityErr != nil {
+		data.fail(apiv2.LogicalContainerExecReasonPhysicalExecutionChanged, identityErr.Error())
+		return noChange
+	}
+	if !reflect.DeepEqual(physical.Spec, desiredSpec) {
+		data.fail(apiv2.LogicalContainerExecReasonPhysicalExecutionChanged, "The backing physical execution has a different configuration.")
 		return noChange
 	}
 	data.physicalUID, data.pendingPhysicalRef = physical.UID, ""

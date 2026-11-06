@@ -309,15 +309,28 @@ func handleLogicalContainerNetworkPending(
 				return noChange
 			}
 		}
-		created, createErr := reconciler.createLogicalNetworkBacking(ctx, network, data, spec)
+		created, createErr := reconciler.createPhysicalContainerNetwork(ctx, network, data, spec)
 		if created != nil {
+			if created.Spec.Network != nil {
+				for _, label := range created.Spec.Network.Labels {
+					if label.Key == lifecycleKeyLabel {
+						lifecycleKey = label.Value
+					}
+				}
+			}
 			data.lifecycleKey = lifecycleKey
 			if created.UID != "" {
 				data.physicalNetworkUID = created.UID
 			}
 		}
 		if createErr != nil {
-			log.Error(createErr, "Failed to prepare backing physical network")
+			log.Error(createErr, "Failed to prepare PhysicalContainerNetwork")
+			// AlreadyExists here means an invalid existing physical network; valid ones are returned without an error.
+			if apierrors.IsAlreadyExists(createErr) {
+				data.state, data.reason, data.message = logicalContainerNetworkStatePreparationFailed, apiv2.LogicalContainerNetworkReasonPhysicalNetworkPreparationFailed, createErr.Error()
+				data.reconcileErr = nil
+				return noChange
+			}
 			if data.state != logicalContainerNetworkStateUnknown {
 				data.reconcileErr, data.message = createErr, createErr.Error()
 			}
@@ -337,7 +350,7 @@ func handleLogicalContainerNetworkPending(
 	return change
 }
 
-func (r *LogicalContainerNetworkReconciler) createLogicalNetworkBacking(
+func (r *LogicalContainerNetworkReconciler) createPhysicalContainerNetwork(
 	ctx context.Context, network *apiv2.LogicalContainerNetwork, data *logicalContainerNetworkData, spec apiv2.PhysicalContainerNetworkSpec,
 ) (*apiv2.PhysicalContainerNetwork, error) {
 	physical := &apiv2.PhysicalContainerNetwork{
@@ -349,14 +362,21 @@ func (r *LogicalContainerNetworkReconciler) createLogicalNetworkBacking(
 		return nil, fmt.Errorf("set physical network owner: %w", ownerErr)
 	}
 	createErr := r.Create(ctx, physical)
+	if physical.UID != "" {
+		data.physicalNetworkUID = physical.UID
+	}
 	if createErr != nil {
-		existing, lookupErr := r.findLogicalNetworkBacking(ctx, network, data, r.NoCacheClient)
-		if lookupErr != nil {
-			return physical, fmt.Errorf("create physical network and verify owned resources: %w", errors.Join(createErr, lookupErr))
-		}
-		if existing == nil {
+		if !apierrors.IsAlreadyExists(createErr) {
 			return physical, createErr
 		}
+		existing := &apiv2.PhysicalContainerNetwork{}
+		if lookupErr := r.NoCacheClient.Get(ctx, physical.NamespacedName(), existing); lookupErr != nil {
+			return physical, fmt.Errorf("get existing physical network: %w", lookupErr)
+		}
+		if identityErr := validatePhysicalResourceIdentity(network, existing, data.physicalNetworkUID); identityErr != nil {
+			return nil, fmt.Errorf("%v: %w", identityErr, createErr)
+		}
+		data.physicalNetworkUID = existing.UID
 		return existing, nil
 	}
 	return physical, nil

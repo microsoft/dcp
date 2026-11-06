@@ -335,30 +335,13 @@ func (apiClient *networkOwnerDiscoveryClient) List(
 	return nil
 }
 
-type networkConfirmationFailureReader struct {
-	ctrl_client.Reader
-	fail     atomic.Bool
-	failures atomic.Uint32
-}
-
-func (reader *networkConfirmationFailureReader) List(
-	ctx context.Context, objects ctrl_client.ObjectList, options ...ctrl_client.ListOption,
-) error {
-	if _, physical := objects.(*apiv2.PhysicalContainerNetworkList); physical && reader.fail.Load() {
-		reader.failures.Add(1)
-		return errors.New("physical network confirmation unavailable")
-	}
-	return reader.Reader.List(ctx, objects, options...)
-}
-
 // Verifies that LogicalContainerNetwork preserves an adopted container network's lifecycle key
-// when the PhysicalContainerNetwork Create response leaves its UID unknown and confirmation fails,
+// when the PhysicalContainerNetwork Create response leaves its UID unknown,
 // without registering the container network for workload cleanup.
 func TestV2LogicalContainerNetworkControllerPreservesAdoptedKeyAfterUndecodedCreate(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	var reader *networkConfirmationFailureReader
 	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 		LogicalContainerNetworkController|PhysicalContainerNetworkController, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{
@@ -366,14 +349,8 @@ func TestV2LogicalContainerNetworkControllerPreservesAdoptedKeyAfterUndecodedCre
 			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
 				return &networkOwnerDiscoveryClient{Client: apiClient}
 			},
-			DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
-				reader = &networkConfirmationFailureReader{Reader: apiReader}
-				reader.fail.Store(true)
-				return reader
-			},
 		})
 	require.NoError(t, startupErr)
-	defer reader.fail.Store(false)
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-adopted-network-key"}}
 	require.NoError(t, server.Client.Create(ctx, namespace))
 	const lifecycleKey = "adopted-key"
@@ -396,7 +373,6 @@ func TestV2LogicalContainerNetworkControllerPreservesAdoptedKeyAfterUndecodedCre
 	ready := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
 	})
-	require.Positive(t, reader.failures.Load())
 	require.Equal(t, networkID, ready.Status.NetworkID)
 	require.Equal(t, lifecycleKey, ready.Status.LifecycleKey)
 	physical := &apiv2.PhysicalContainerNetwork{}
@@ -408,7 +384,6 @@ func TestV2LogicalContainerNetworkControllerPreservesAdoptedKeyAfterUndecodedCre
 	require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 	_, recordErr := environment.StateStore.GetPersistentNetwork(ctx, logical.GetLeaseKey())
 	require.ErrorIs(t, recordErr, statestore.ErrPersistentNetworkNotFound)
-	reader.fail.Store(false)
 	require.NoError(t, server.Client.Delete(ctx, logical))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
