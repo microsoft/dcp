@@ -35,6 +35,35 @@ const DefaultContainerDebugAdapterPort int32 = 4711
 // ProjectDebugShutdownGrace bounds protocol shutdown before forced session and backing cleanup.
 const ProjectDebugShutdownGrace = 5 * time.Second
 
+// Project reconciliation condition reasons.
+const (
+	ProjectReasonPreparingLaunchInputs       ConditionReason = "PreparingLaunchInputs"
+	ProjectReasonContainerPreparationPending ConditionReason = "ContainerPreparationPending"
+	ProjectReasonPrepared                    ConditionReason = "ProjectPrepared"
+	ProjectReasonDebugSessionsActive         ConditionReason = "DebugSessionsActive"
+	ProjectReasonStopping                    ConditionReason = "ProjectStopping"
+	ProjectReasonStopped                     ConditionReason = "ProjectStopped"
+	ProjectReasonPreparationFailed           ConditionReason = "PreparationFailed"
+	ProjectReasonContainerContextMissing     ConditionReason = "ContainerContextMissing"
+	ProjectReasonDeleting                    ConditionReason = "DeletingProject"
+	ProjectReasonPhysicalPreparationFailed   ConditionReason = "PhysicalPreparationFailed"
+	ProjectReasonPhysicalExecutionChanged    ConditionReason = "PhysicalExecutionChanged"
+	ProjectReasonImagePreparationFailed      ConditionReason = "ImagePreparationFailed"
+	ProjectReasonNetworkFailed               ConditionReason = "NetworkFailed"
+	ProjectReasonNetworkLookupFailed         ConditionReason = "NetworkLookupFailed"
+	ProjectReasonNetworkNotReady             ConditionReason = "NetworkNotReady"
+	ProjectReasonNetworkChanged              ConditionReason = "NetworkChanged"
+	ProjectReasonContainerLookupFailed       ConditionReason = "ContainerLookupFailed"
+	ProjectReasonContainerContextTerminating ConditionReason = "ContainerContextTerminating"
+	ProjectReasonAdapterPortPending          ConditionReason = "AdapterPortPending"
+	ProjectReasonDebugShutdownPending        ConditionReason = "DebugShutdownPending"
+	ProjectReasonDebugShutdownGraceExpired   ConditionReason = "DebugShutdownGraceExpired"
+	ProjectReasonPhysicalDeletionFailed      ConditionReason = "PhysicalDeletionFailed"
+	ProjectReasonProcessCleanupQueueFailed   ConditionReason = "ProcessCleanupQueueFailed"
+	ProjectReasonAdapterPortConflict         ConditionReason = "AdapterPortConflict"
+	ProjectReasonEndpointUpdateFailed        ConditionReason = "EndpointUpdateFailed"
+)
+
 // DebugSubresourceName identifies the bidirectional Project DAP endpoint.
 const DebugSubresourceName = "debug"
 

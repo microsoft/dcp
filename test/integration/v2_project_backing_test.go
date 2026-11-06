@@ -23,22 +23,29 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
+	"github.com/microsoft/dcp/internal/containers"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 type projectBackingClient struct {
 	ctrl_client.Client
-	kind             string
-	blockFinalStatus atomic.Bool
-	finalStatus      chan ctrl_client.Object
-	finalStatusOnce  sync.Once
-	loseHoldResponse atomic.Bool
-	holdResponseLost atomic.Bool
-	hideBackings     atomic.Bool
-	undecodedCreates atomic.Int32
-	failNetwork      atomic.Bool
-	networkLookups   atomic.Int32
+	kind                    string
+	blockFinalStatus        atomic.Bool
+	finalStatus             chan ctrl_client.Object
+	finalStatusOnce         sync.Once
+	loseHoldResponse        atomic.Bool
+	holdResponseLost        atomic.Bool
+	hideBackings            atomic.Bool
+	undecodedCreates        atomic.Int32
+	failNetwork             atomic.Bool
+	networkLookups          atomic.Int32
+	failContainerLists      atomic.Bool
+	containerListFailures   atomic.Int32
+	failEndpointLists       atomic.Bool
+	staleContainerCondition atomic.Bool
+	reportContainerRunning  atomic.Bool
+	confirmationReader      *projectBackingReader
 }
 
 func (apiClient *projectBackingClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
@@ -51,12 +58,37 @@ func (apiClient *projectBackingClient) Create(ctx context.Context, obj ctrl_clie
 		return createErr
 	}
 	apiClient.undecodedCreates.Add(1)
+	if _, container := obj.(*apiv2.PhysicalContainer); container && apiClient.confirmationReader != nil {
+		apiClient.confirmationReader.failLists.Store(true)
+	}
 	return errors.New("Project backing create committed without a decoded response")
 }
 
 func (apiClient *projectBackingClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+	if _, containers := list.(*apiv2.PhysicalContainerList); containers && apiClient.failContainerLists.Load() {
+		apiClient.containerListFailures.Add(1)
+		return errors.New("injected Project container lookup failure")
+	}
 	if listErr := apiClient.Client.List(ctx, list, options...); listErr != nil {
 		return listErr
+	}
+	if containers, valid := list.(*apiv2.PhysicalContainerList); valid {
+		for index := range containers.Items {
+			if apiClient.reportContainerRunning.Load() {
+				containers.Items[index].Status.Phase = apiv2.PhysicalContainerPhaseRunning
+			}
+			if apiClient.staleContainerCondition.Load() {
+				containers.Items[index].Generation++
+			}
+			for conditionIndex := range containers.Items[index].Status.Conditions {
+				if apiClient.staleContainerCondition.Load() {
+					containers.Items[index].Status.Conditions[conditionIndex].ObservedGeneration = containers.Items[index].Generation - 1
+				}
+				if apiClient.reportContainerRunning.Load() {
+					containers.Items[index].Status.Conditions[conditionIndex].Status = metav1.ConditionTrue
+				}
+			}
+		}
 	}
 	listOptions := (&ctrl_client.ListOptions{}).ApplyOptions(options)
 	if !apiClient.hideBackings.Load() || listOptions.FieldSelector == nil ||
@@ -72,6 +104,100 @@ func (apiClient *projectBackingClient) List(ctx context.Context, list ctrl_clien
 		children.Items = nil
 	}
 	return nil
+}
+
+// Verifies that Stop selects the Project Stopping handler before backing lookup and remains
+// Stopping while lookup fails, then finishes cleanup after reconciliation can observe the backing.
+func TestV2ProjectStopPrecedesBackingLookup(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	var decorated *projectBackingClient
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+			decorated = &projectBackingClient{Client: client}
+			return decorated
+		}})
+	require.NoError(t, startupErr)
+	t.Cleanup(func() { decorated.failContainerLists.Store(false) })
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-stop-lookup")
+	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+			LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
+		}}}
+	require.NoError(t, server.Client.Create(ctx, resource))
+	waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+	decorated.failContainerLists.Store(true)
+	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	stopping := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		return current.Status.Phase == apiv2.ProjectPhaseStopping && len(current.Status.Conditions) != 0 &&
+			current.Status.Conditions[0].Reason == string(apiv2.ProjectReasonPhysicalDeletionFailed), nil
+	})
+	requireReadyCondition(t, stopping.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPhysicalDeletionFailed)
+	decorated.failContainerLists.Store(false)
+	waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseStopped)
+	require.NoError(t, server.Client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+}
+
+// Verifies that Project observes container lifecycle state without gating it on the physical
+// condition's generation, and that Failed survives later Running observations, Stop and retried endpoint errors.
+func TestV2ProjectObservesContainerWithoutGenerationGate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	var decorated *projectBackingClient
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{
+			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+				decorated = &projectBackingClient{Client: client}
+				decorated.staleContainerCondition.Store(true)
+				return decorated
+			},
+			DecorateAPIReader: func(reader ctrl_client.Reader) ctrl_client.Reader {
+				return &projectBackingReader{Reader: reader, endpointFailure: &decorated.failEndpointLists}
+			},
+		})
+	require.NoError(t, startupErr)
+	t.Cleanup(func() {
+		decorated.failEndpointLists.Store(false)
+		decorated.failContainerLists.Store(false)
+		decorated.reportContainerRunning.Store(false)
+	})
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-observed-generation")
+	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+			LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
+		}}}
+	require.NoError(t, server.Client.Create(ctx, resource))
+	prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+	orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.NoError(t, orchestrator.SimulateContainerStatus(ctx, prepared.Status.ContainerID, containers.ContainerStatusDead))
+	failed := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
+	decorated.reportContainerRunning.Store(true)
+	decorated.failEndpointLists.Store(true)
+	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		return current.Status.Phase == apiv2.ProjectPhaseUnknown && len(current.Status.Conditions) != 0 &&
+			current.Status.Conditions[0].Reason == string(apiv2.ProjectReasonEndpointUpdateFailed), nil
+	})
+	decorated.failEndpointLists.Store(false)
+	stillFailed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
+	})
+	require.Equal(t, failed.Status.Conditions[0].Message, stillFailed.Status.Conditions[0].Message)
+	decorated.failContainerLists.Store(true)
+	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
+		[]byte(`{"metadata":{"annotations":{"project-terminal-lookup":"failed"}}}`))))
+	lookupFailed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		return decorated.containerListFailures.Load() != 0 && current.Status.Phase == apiv2.ProjectPhaseFailed, nil
+	})
+	require.Equal(t, failed.Status.Conditions[0].Reason, lookupFailed.Status.Conditions[0].Reason)
+	require.Equal(t, failed.Status.Conditions[0].Message, lookupFailed.Status.Conditions[0].Message)
+	decorated.failContainerLists.Store(false)
+	decorated.reportContainerRunning.Store(false)
+	require.NoError(t, server.Client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
 func (apiClient *projectBackingClient) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
@@ -106,14 +232,63 @@ type projectBackingStatusWriter struct {
 
 type projectBackingReader struct {
 	ctrl_client.Reader
-	failLists atomic.Bool
+	failLists       atomic.Bool
+	endpointFailure *atomic.Bool
 }
 
 func (reader *projectBackingReader) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+	if _, endpoints := list.(*apiv2.ServiceEndpointList); endpoints && reader.endpointFailure != nil && reader.endpointFailure.Load() {
+		return errors.New("injected Project endpoint lookup failure")
+	}
 	if _, containers := list.(*apiv2.PhysicalContainerList); containers && reader.failLists.Load() {
 		return errors.New("uncached Project backing confirmation unavailable")
 	}
 	return reader.Reader.List(ctx, list, options...)
+}
+
+// Verifies that an ambiguous container create with unavailable confirmation reports the error
+// and lets later reconciliation adopt the committed backing without repeating creation.
+func TestV2ProjectRetriesAmbiguousCreateConfirmation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	var decorated *projectBackingClient
+	var reader *projectBackingReader
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{
+			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+				decorated = &projectBackingClient{Client: client}
+				decorated.hideBackings.Store(true)
+				return decorated
+			},
+			DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
+				reader = &projectBackingReader{Reader: apiReader}
+				decorated.confirmationReader = reader
+				return reader
+			},
+		})
+	require.NoError(t, startupErr)
+	t.Cleanup(func() { reader.failLists.Store(false) })
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-create-confirmation")
+	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+			LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
+		}}}
+	require.NoError(t, server.Client.Create(ctx, resource))
+	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		return current.Status.Phase == apiv2.ProjectPhaseUnknown && len(current.Status.Conditions) != 0 &&
+			current.Status.Conditions[0].Reason == string(apiv2.ProjectReasonPhysicalPreparationFailed), nil
+	})
+	require.Equal(t, int32(2), decorated.undecodedCreates.Load())
+	var backings apiv2.PhysicalContainerList
+	require.NoError(t, server.Client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, backings.Items, 1)
+	reader.failLists.Store(false)
+	prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+	require.Equal(t, int32(2), decorated.undecodedCreates.Load())
+	require.Equal(t, backings.Items[0].UID, prepared.Status.RuntimeLogs.UID)
+	require.NoError(t, server.Client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
 func (writer *projectBackingStatusWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
@@ -242,7 +417,14 @@ func TestV2ProjectDiscoversAndDeletesBackingsByOwner(t *testing.T) {
 			duplicate.SetManagedFields(nil)
 			require.NoError(t, server.Client.Create(ctx, duplicate))
 			// A second owned resource invalidates normal observation, but must not block cleanup.
-			waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
+			unknown := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseUnknown)
+			requireReadyCondition(t, unknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPhysicalExecutionChanged)
+			require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+			stillUnknown := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				return current.Status.Phase == apiv2.ProjectPhaseUnknown && current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
+			})
+			requireReadyCondition(t, stillUnknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPhysicalExecutionChanged)
+			require.Equal(t, running.Status.RuntimeLogs.UID, stillUnknown.Status.RuntimeLogs.UID)
 			require.NoError(t, server.Client.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 			waitProjectBackingDeleted(t, ctx, server.Client, original)

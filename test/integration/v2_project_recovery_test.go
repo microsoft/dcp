@@ -122,7 +122,7 @@ type projectStatusConflictWriter struct {
 }
 
 func (writer *projectStatusConflictWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
-	if resource, project := obj.(*apiv2.Project); project && resource.Status.Phase == apiv2.ProjectPhaseFailed &&
+	if resource, project := obj.(*apiv2.Project); project && resource.Status.Phase == apiv2.ProjectPhaseUnknown &&
 		resource.Status.RuntimeLogs != nil && resource.Status.RuntimeLogs.Complete && !resource.Status.RuntimeLogs.Available &&
 		writer.client.conflicted.CompareAndSwap(false, true) {
 		return apierrors.NewConflict(schema.GroupResource{Group: apiv2.GroupName, Resource: "projects"}, resource.Name, errors.New("injected Project status conflict"))
@@ -130,7 +130,7 @@ func (writer *projectStatusConflictWriter) Patch(ctx context.Context, obj ctrl_c
 	return writer.SubResourceWriter.Patch(ctx, obj, patch, options...)
 }
 
-// Verifies that forced disappearance of a prepared container fails the context without recreation,
+// Verifies that forced disappearance of a prepared container makes the context Unknown without recreation,
 // preserves its capture identity through status conflicts and completes Project-only followers.
 func TestV2ProjectMissingBackingCompletesFollowerThroughConflict(t *testing.T) {
 	t.Parallel()
@@ -165,7 +165,7 @@ func TestV2ProjectMissingBackingCompletesFollowerThroughConflict(t *testing.T) {
 	removeProjectBackingHold(t, ctx, server.Client, physical)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
 	failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
-		return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Status.RuntimeLogs != nil &&
+		return current.Status.Phase == apiv2.ProjectPhaseUnknown && current.Status.RuntimeLogs != nil &&
 			current.Status.RuntimeLogs.Complete && !current.Status.RuntimeLogs.Available, nil
 	})
 	require.True(t, decorated.conflicted.Load())

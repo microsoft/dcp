@@ -11,6 +11,7 @@ import (
 	"slices"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -21,6 +22,43 @@ import (
 
 type projectState int
 
+func projectContainerBackingState(resource *apiv2.Project, physical *apiv2.PhysicalContainer, adapterAddress string) (projectState, apiv2.ConditionReason, string) {
+	if !physical.DeletionTimestamp.IsZero() {
+		return projectStateFailed, apiv2.ProjectReasonContainerContextTerminating, "The prepared container is being deleted."
+	}
+	condition := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
+	message := ""
+	if condition != nil {
+		message = fmt.Sprintf("Container preparation reports %s: %s", condition.Reason, condition.Message)
+	}
+	switch physical.Status.Phase {
+	case apiv2.PhysicalContainerPhaseRunning:
+		if condition != nil && condition.Status == metav1.ConditionTrue {
+			if resource.Spec.DebugAdapter != nil && resource.Spec.DebugAdapter.GetContainerTCPPort() != 0 && adapterAddress == "" {
+				return projectStateCreating, apiv2.ProjectReasonAdapterPortPending, "Waiting for the container adapter port binding."
+			}
+			return projectStateReady, "", ""
+		}
+	case apiv2.PhysicalContainerPhaseExited, apiv2.PhysicalContainerPhaseFailed:
+		return projectStateFailed, apiv2.ProjectReasonPreparationFailed, message
+	case apiv2.PhysicalContainerPhaseUnknown, apiv2.PhysicalContainerPhasePaused, apiv2.PhysicalContainerPhasePending, "":
+	default:
+		return projectStateUnknown, apiv2.PhysicalResourceReasonOperationStateInvalid, fmt.Sprintf("Unrecognized physical container phase %q.", physical.Status.Phase)
+	}
+	return projectStateCreating, apiv2.ProjectReasonContainerPreparationPending, message
+}
+
+func (data *projectData) requestStop() bool {
+	switch data.state {
+	case projectStatePending, projectStateCreating, projectStateReady, projectStateActive:
+		data.state, data.reason, data.message, data.reconcileErr = projectStateStopping, apiv2.ProjectReasonStopping, "", nil
+		data.stoppingAt = time.Now()
+		return true
+	default:
+		return false
+	}
+}
+
 const (
 	projectStatePending projectState = iota + 1
 	projectStateCreating
@@ -29,9 +67,8 @@ const (
 	projectStateStopping
 	projectStateStopped
 	projectStateFailed
-	projectStateMissing
+	projectStateUnknown
 	projectStateDelete
-	projectStateInvalid
 )
 
 func (state projectState) String() string {
@@ -52,12 +89,10 @@ func (state projectState) String() string {
 		return "Stopped"
 	case projectStateFailed:
 		return "Failed"
-	case projectStateMissing:
-		return "Missing"
+	case projectStateUnknown:
+		return "Unknown"
 	case projectStateDelete:
 		return "Delete"
-	case projectStateInvalid:
-		return "Invalid"
 	default:
 		return fmt.Sprintf("projectState(%d)", int(state))
 	}
@@ -68,6 +103,7 @@ type projectData struct {
 	reason           apiv2.ConditionReason
 	message          string
 	reconcileErr     error
+	reconcileReason  apiv2.ConditionReason
 	retryAfter       time.Time
 	stoppingAt       time.Time
 	physicalUID      types.UID
@@ -109,6 +145,11 @@ func (data *projectData) UpdateFrom(other *projectData) bool {
 	}
 	*data = *other.Clone()
 	return true
+}
+
+func (data *projectData) retry(reason apiv2.ConditionReason, operationErr error) {
+	data.reconcileErr, data.reconcileReason = operationErr, reason
+	data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 }
 
 func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, AdditionalReconciliationDelay, bool) {
@@ -161,7 +202,7 @@ func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, Additio
 		}
 	}
 	change |= setValue(&resource.Status.ImageRef, imageRef)
-	if data.state == projectStateMissing || data.state == projectStateStopped {
+	if data.state == projectStateUnknown || data.state == projectStateStopped {
 		source := &apiv2.LogSource{Name: physicalRef, UID: data.physicalUID, Complete: true}
 		if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
 			resource.Status.RuntimeLogs = source
@@ -176,9 +217,13 @@ func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, Additio
 		}
 	}
 	if _, valid := projectProjections.project(data.state); valid && data.reconcileErr != nil {
-		change |= setValue(&resource.Status.Phase, apiv2.ProjectPhaseUnknown)
+		phase := apiv2.ProjectPhaseUnknown
+		if data.state == projectStateStopping || data.state == projectStateStopped {
+			phase = apiv2.ProjectPhaseStopping
+		}
+		change |= setValue(&resource.Status.Phase, phase)
 		change |= setCondition(&resource.Status.Conditions, apiv2.ConditionReady, resource.Generation,
-			metav1.ConditionFalse, data.reason, data.message)
+			metav1.ConditionFalse, data.reconcileReason, data.reconcileErr.Error())
 		return change | additionalReconciliationNeeded, LongDelay, true
 	}
 	projectionChange, delay, valid := projectProjections.applyWithReason(
@@ -191,37 +236,34 @@ func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, Additio
 }
 
 var projectProjections = physicalResourceProjectionTable[projectState, apiv2.ProjectPhase]{
-	invalidPhase: apiv2.ProjectPhaseFailed,
+	invalidPhase: apiv2.ProjectPhaseUnknown,
 	projections: map[projectState]physicalResourceProjection[apiv2.ProjectPhase]{
 		projectStatePending: {
-			phase: apiv2.ProjectPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "PreparingLaunchInputs",
+			phase: apiv2.ProjectPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonPreparingLaunchInputs,
 		},
 		projectStateCreating: {
-			phase: apiv2.ProjectPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerPreparationPending",
+			phase: apiv2.ProjectPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonContainerPreparationPending,
 		},
 		projectStateReady: {
-			phase: apiv2.ProjectPhaseReady, conditionStatus: metav1.ConditionTrue, conditionReason: "ProjectPrepared",
+			phase: apiv2.ProjectPhaseReady, conditionStatus: metav1.ConditionTrue, conditionReason: apiv2.ProjectReasonPrepared,
 		},
 		projectStateActive: {
-			phase: apiv2.ProjectPhaseActive, conditionStatus: metav1.ConditionTrue, conditionReason: "DebugSessionsActive",
+			phase: apiv2.ProjectPhaseActive, conditionStatus: metav1.ConditionTrue, conditionReason: apiv2.ProjectReasonDebugSessionsActive,
 		},
 		projectStateStopping: {
-			phase: apiv2.ProjectPhaseStopping, conditionStatus: metav1.ConditionFalse, conditionReason: "ProjectStopping", requeue: true,
+			phase: apiv2.ProjectPhaseStopping, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonStopping, requeue: true,
 		},
 		projectStateStopped: {
-			phase: apiv2.ProjectPhaseStopped, conditionStatus: metav1.ConditionFalse, conditionReason: "ProjectStopped",
+			phase: apiv2.ProjectPhaseStopped, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonStopped,
 		},
 		projectStateFailed: {
-			phase: apiv2.ProjectPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PreparationFailed",
+			phase: apiv2.ProjectPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonPreparationFailed,
 		},
-		projectStateMissing: {
-			phase: apiv2.ProjectPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerContextMissing",
+		projectStateUnknown: {
+			phase: apiv2.ProjectPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonContainerContextMissing,
 		},
 		projectStateDelete: {
-			phase: apiv2.ProjectPhaseStopping, conditionStatus: metav1.ConditionFalse, conditionReason: "DeletingProject", requeue: true,
-		},
-		projectStateInvalid: {
-			phase: apiv2.ProjectPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
+			phase: apiv2.ProjectPhaseStopping, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonDeleting,
 		},
 	},
 }

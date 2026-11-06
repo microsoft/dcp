@@ -361,9 +361,9 @@ func (r *ProjectReconciler) prepareProjectValues(
 	data.ports = ports
 	if prepareErr != nil {
 		log.Error(prepareErr, "Failed to prepare Project ports")
-		data.reason, data.message = "PortPreparationPending", prepareErr.Error()
+		data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, prepareErr.Error()
 		if !apierrors.IsNotFound(prepareErr) {
-			data.reconcileErr = prepareErr
+			data.retry(apiv2.LogicalResourceReasonPortPreparationPending, prepareErr)
 		}
 		return false
 	}
@@ -371,7 +371,7 @@ func (r *ProjectReconciler) prepareProjectValues(
 		adapterPort := resource.Spec.DebugAdapter.GetContainerTCPPort()
 		for index, selected := range ports {
 			if adapterPort != 0 && selected.protocol == commonapi.PortProtocolTCP && resource.Spec.Container.Ports[index].ContainerPort == adapterPort {
-				data.state, data.reason, data.message = projectStateFailed, "AdapterPortConflict", "The adapter port conflicts with a declared TCP application port."
+				data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonAdapterPortConflict, "The adapter port conflicts with a declared TCP application port."
 				log.Error(fmt.Errorf("%s", data.message), "Failed to prepare Project adapter port")
 				return false
 			}
@@ -381,7 +381,7 @@ func (r *ProjectReconciler) prepareProjectValues(
 		servingPorts(ports), arguments, environment, resource.Spec.Process != nil && osutil.IsWindows())
 	if evaluationErr != nil {
 		log.Error(evaluationErr, "Failed to evaluate Project launch values")
-		data.reason, data.message = "TemplateEvaluationFailed", evaluationErr.Error()
+		data.reason, data.message = apiv2.LogicalResourceReasonTemplateEvaluationFailed, evaluationErr.Error()
 		if !templating.IsTransientTemplateError(evaluationErr) {
 			data.state = projectStateFailed
 		}
@@ -417,7 +417,7 @@ func (r *ProjectReconciler) withdrawProjectEndpoints(
 	endpointErr := syncLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, data.ports, nil)
 	if endpointErr != nil {
 		log.Error(endpointErr, "Failed to synchronize Project service endpoints")
-		data.retry("EndpointUpdateFailed", endpointErr)
+		data.retry(apiv2.ProjectReasonEndpointUpdateFailed, endpointErr)
 		return additionalReconciliationNeeded
 	}
 	return noChange

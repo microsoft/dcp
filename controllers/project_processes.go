@@ -191,7 +191,7 @@ func (r *ProjectReconciler) settleProjectProcesses(resource *apiv2.Project, data
 	if enqueueErr != nil {
 		data.processCleanup = nil
 		log.Error(enqueueErr, "Failed to queue Project target cleanup")
-		data.retry("ProcessCleanupQueueFailed", enqueueErr)
+		data.retry(apiv2.ProjectReasonProcessCleanupQueueFailed, enqueueErr)
 	}
 	return false
 }

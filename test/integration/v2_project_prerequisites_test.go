@@ -175,11 +175,15 @@ func TestV2ProjectRevalidatesPrerequisitesAfterRejectedCreate(t *testing.T) {
 				})
 			}
 			releaseCreate()
-			failed := waitProjectPhase(t, ctx, apiClient, resource, apiv2.ProjectPhaseFailed)
-			expectedReason := apiv2.ConditionReason("ImagePreparationFailed")
+			expectedPhase := apiv2.ProjectPhaseUnknown
+			expectedReason := apiv2.ProjectReasonImagePreparationFailed
 			if dependency == "network" {
-				expectedReason = "NetworkChanged"
+				expectedPhase, expectedReason = apiv2.ProjectPhaseFailed, apiv2.ProjectReasonNetworkChanged
 			}
+			failed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				return current.Status.Phase == expectedPhase && len(current.Status.Conditions) != 0 &&
+					current.Status.Conditions[0].Reason == string(expectedReason), nil
+			})
 			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, expectedReason)
 			require.Equal(t, int32(1), rejectedCreate.attempts.Load())
 			require.Empty(t, failed.Status.PhysicalContainerRef)
@@ -213,8 +217,8 @@ func (apiClient *projectImageObservationClient) List(ctx context.Context, object
 	return apiClient.reader.List(ctx, objects, options...)
 }
 
-// Verifies that retrying startup-log observation does not replace Ready or terminal preparation
-// failure with Unknown and preserves the previously observed image capture.
+// Verifies that startup-log lookup errors preserve Ready or terminal preparation failure
+// and the previously observed image capture, without requiring terminal observation to poll.
 func TestV2ProjectImageLogFailurePreservesExecutionState(t *testing.T) {
 	t.Parallel()
 	for _, phase := range []apiv2.ProjectPhase{apiv2.ProjectPhaseReady, apiv2.ProjectPhaseFailed} {
@@ -247,7 +251,7 @@ func TestV2ProjectImageLogFailurePreservesExecutionState(t *testing.T) {
 			imageReader.enabled.Store(true)
 			require.NoError(t, apiClient.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"project-log-probe":"enabled"}}}`))))
 			observed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
-				return imageReader.failures.Load() >= 2 && current.Status.Phase == phase, nil
+				return imageReader.failures.Load() >= 1 && current.Status.Phase == phase, nil
 			})
 			require.Equal(t, initial.Status.StartupLogs, observed.Status.StartupLogs)
 			imageReader.enabled.Store(false)
@@ -276,7 +280,7 @@ func TestV2ProjectOwnedImageDeletionPreservesLateStartupLogs(t *testing.T) {
 		return !current.DeletionTimestamp.IsZero() &&
 			!slices.Contains(current.Finalizers, apiv2.GroupName+"/physicalcontainerimage-reconciler"), nil
 	})
-	failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
+	failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseUnknown)
 	require.Equal(t, prepared.Status.StartupLogs.UID, failed.Status.StartupLogs.UID)
 	output, outputErr := readV2ContainerLog(ctx, resource, apiv2.ResourceLogOptions{Source: "startup_stdout", Follow: true})
 	require.NoError(t, outputErr)
