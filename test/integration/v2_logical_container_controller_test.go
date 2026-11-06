@@ -761,7 +761,7 @@ func TestV2LogicalContainerControllerCalculatesLifecycleKey(t *testing.T) {
 }
 
 // Verifies that the LogicalContainer controller never creates a missing existing-mode container
-// and publishes owned endpoints from its observed port mappings rather than logical status.
+// and attributes mixed explicit/dynamic endpoint bindings from physical observations rather than logical status.
 // Deletion withdraws endpoints while retaining the adopted container and independent services.
 func TestV2LogicalContainerControllerObservesExistingContainer(t *testing.T) {
 	t.Parallel()
@@ -773,6 +773,10 @@ func TestV2LogicalContainerControllerObservesExistingContainer(t *testing.T) {
 			Spec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP, AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
 		{ObjectMeta: metav1.ObjectMeta{Name: "udp", Namespace: namespace.Name},
 			Spec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolUDP, AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "tcp-fixed", Namespace: namespace.Name},
+			Spec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP, AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "tcp-second", Namespace: namespace.Name},
+			Spec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP, AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
 	}
 	for _, service := range services {
 		require.NoError(t, client.Create(ctx, service))
@@ -782,7 +786,9 @@ func TestV2LogicalContainerControllerObservesExistingContainer(t *testing.T) {
 		Spec: apiv2.LogicalContainerSpec{Mode: apiv2.LogicalContainerModeExisting, ContainerName: "v2-logical-existing-runtime",
 			Ports: []apiv2.LogicalContainerPort{
 				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http", ServiceRef: services[0].Name}, ContainerPort: 8080},
+				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http-fixed", ServiceRef: services[2].Name}, ContainerPort: 8080, HostPort: 9000},
 				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "udp", ServiceRef: services[1].Name}, ContainerPort: 9090},
+				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http-second", ServiceRef: services[3].Name}, ContainerPort: 8080},
 			}},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -795,9 +801,11 @@ func TestV2LogicalContainerControllerObservesExistingContainer(t *testing.T) {
 	createCalls := containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName)
 	require.NoError(t, containerOrchestrator.SimulateContainerPortMappings(ctx, runtimeID, containers.InspectedContainerPortMapping{
 		"8080/tcp": {
+			{HostIp: networking.IPv4LocalhostDefaultAddress, HostPort: "28080"},
 			{HostPort: "18080"},
 			{HostIp: networking.IPv4AllInterfaceAddress, HostPort: "18080"},
-			{HostIp: networking.ToStandaloneAddress(networking.IPv6AllInterfaceAddress), HostPort: "28080"},
+			{HostIp: networking.ToStandaloneAddress(networking.IPv6AllInterfaceAddress), HostPort: "18080"},
+			{HostIp: networking.IPv4LocalhostDefaultAddress, HostPort: "9000"},
 		},
 		"8080/udp": {{HostIp: networking.IPv4LocalhostDefaultAddress, HostPort: "18081"}},
 		"8081/tcp": {{HostIp: networking.IPv4LocalhostDefaultAddress, HostPort: "8080"}},
@@ -819,9 +827,11 @@ func TestV2LogicalContainerControllerObservesExistingContainer(t *testing.T) {
 	require.ElementsMatch(t, []apiv2.ServiceEndpointSpec{
 		{ServiceRef: services[0].Name, Addresses: []apiv2.ServiceAddress{
 			{Address: networking.IPv4LocalhostDefaultAddress, Port: 18080},
-			{Address: networking.IPv6LocalhostDefaultAddress, Port: 28080},
+			{Address: networking.IPv6LocalhostDefaultAddress, Port: 18080},
 		}},
 		{ServiceRef: services[1].Name, Addresses: []apiv2.ServiceAddress{{Address: networking.IPv4LocalhostDefaultAddress, Port: 19090}}},
+		{ServiceRef: services[2].Name, Addresses: []apiv2.ServiceAddress{{Address: networking.IPv4LocalhostDefaultAddress, Port: 9000}}},
+		{ServiceRef: services[3].Name, Addresses: []apiv2.ServiceAddress{{Address: networking.IPv4LocalhostDefaultAddress, Port: 28080}}},
 	}, endpointSpecs)
 	tamperErr := retryOnConflict(ctx, container.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
 		current.Status.PhysicalContainerRef = "not-the-physical-container"

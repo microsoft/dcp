@@ -250,17 +250,16 @@ func TestLogicalEndpointAddressDerivation(t *testing.T) {
 			{ContainerPort: 8080, Protocol: commonapi.PortProtocolUDP, HostPort: 18081},
 			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv4LocalhostDefaultAddress, HostPort: 18080},
 		}, expected: []apiv2.ServiceAddress{{Address: networking.IPv4LocalhostDefaultAddress, Port: 18080}}},
-		{name: "sorted unique addresses and ports", mappings: []apiv2.PhysicalContainerPortMapping{
+		{name: "sorted unique addresses", mappings: []apiv2.PhysicalContainerPortMapping{
 			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv6LocalhostDefaultAddress, HostPort: 18080},
-			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: "127.0.0.2", HostPort: 19000},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: "127.0.0.2", HostPort: 18080},
 			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv4LocalhostDefaultAddress, HostPort: 19000},
 			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv4LocalhostDefaultAddress, HostPort: 18080},
 			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv4AllInterfaceAddress, HostPort: 18080},
 			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: net.IPv6loopback.String(), HostPort: 18080},
 		}, expected: []apiv2.ServiceAddress{
 			{Address: networking.IPv4LocalhostDefaultAddress, Port: 18080},
-			{Address: networking.IPv4LocalhostDefaultAddress, Port: 19000},
-			{Address: "127.0.0.2", Port: 19000},
+			{Address: "127.0.0.2", Port: 18080},
 			{Address: networking.IPv6LocalhostDefaultAddress, Port: 18080},
 		}},
 	} {
@@ -272,6 +271,106 @@ func TestLogicalEndpointAddressDerivation(t *testing.T) {
 			require.Equal(t, [][]apiv2.ServiceAddress{testCase.expected},
 				containerEndpointAddresses([]apiv2.LogicalContainerPort{{ContainerPort: 8080}}, []logicalPortData{port}, testCase.mappings))
 			require.Equal(t, original, testCase.mappings)
+		})
+	}
+}
+
+// Verifies that containerEndpointAddresses maps explicit host ports directly and attributes
+// remaining host ports numerically to dynamic declarations, preserving address groups and aliases independently of inspection order.
+func TestContainerEndpointHostPortAttribution(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name      string
+		ports     []apiv2.LogicalContainerPort
+		protocols []commonapi.PortProtocol
+		mappings  []apiv2.PhysicalContainerPortMapping
+		expected  [][]apiv2.ServiceAddress
+	}{
+		{name: "explicit ports", ports: []apiv2.LogicalContainerPort{
+			{ContainerPort: 8080, HostPort: 9001}, {ContainerPort: 8080, HostPort: 9000},
+		}, mappings: []apiv2.PhysicalContainerPortMapping{
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 9000},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv6LocalhostDefaultAddress, HostPort: 9000},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 9001},
+		}, expected: [][]apiv2.ServiceAddress{
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 9001}},
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 9000}, {Address: networking.IPv6LocalhostDefaultAddress, Port: 9000}},
+		}},
+		{name: "dynamic ports use numeric order and group addresses", ports: []apiv2.LogicalContainerPort{
+			{ContainerPort: 8080}, {ContainerPort: 8080},
+		}, mappings: []apiv2.PhysicalContainerPortMapping{
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 10000},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv6LocalhostDefaultAddress, HostPort: 900},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 900},
+		}, expected: [][]apiv2.ServiceAddress{
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 900}, {Address: networking.IPv6LocalhostDefaultAddress, Port: 900}},
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 10000}},
+		}},
+		{name: "dynamic ports exclude explicit assignments", ports: []apiv2.LogicalContainerPort{
+			{ContainerPort: 8080}, {ContainerPort: 8080, HostPort: 900}, {ContainerPort: 8080},
+		}, mappings: []apiv2.PhysicalContainerPortMapping{
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 10000},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 900},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 1000},
+		}, expected: [][]apiv2.ServiceAddress{
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 1000}},
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 900}},
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 10000}},
+		}},
+		{name: "explicit aliases share a binding", ports: []apiv2.LogicalContainerPort{
+			{ContainerPort: 8080, HostPort: 9000}, {ContainerPort: 8080, HostPort: 9000},
+		}, mappings: []apiv2.PhysicalContainerPortMapping{
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 9000},
+		}, expected: [][]apiv2.ServiceAddress{
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 9000}},
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 9000}},
+		}},
+		{name: "attribution is scoped to container port and protocol", ports: []apiv2.LogicalContainerPort{
+			{ContainerPort: 8080}, {ContainerPort: 8080}, {ContainerPort: 8080}, {ContainerPort: 9090},
+		}, protocols: []commonapi.PortProtocol{
+			commonapi.PortProtocolTCP, commonapi.PortProtocolUDP, commonapi.PortProtocolTCP, commonapi.PortProtocolTCP,
+		}, mappings: []apiv2.PhysicalContainerPortMapping{
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 10000},
+			{ContainerPort: 9090, Protocol: commonapi.PortProtocolTCP, HostPort: 2000},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolUDP, HostPort: 900},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 9000},
+		}, expected: [][]apiv2.ServiceAddress{
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 9000}},
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 900}},
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 10000}},
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 2000}},
+		}},
+		{name: "missing explicit binding does not fall back", ports: []apiv2.LogicalContainerPort{
+			{ContainerPort: 8080, HostPort: 9000},
+		}, mappings: []apiv2.PhysicalContainerPortMapping{
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 9001},
+		}, expected: [][]apiv2.ServiceAddress{nil}},
+		{name: "missing dynamic binding is not assigned another address of the same port", ports: []apiv2.LogicalContainerPort{
+			{ContainerPort: 8080}, {ContainerPort: 8080},
+		}, mappings: []apiv2.PhysicalContainerPortMapping{
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv6LocalhostDefaultAddress, HostPort: 9000},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 9000},
+		}, expected: [][]apiv2.ServiceAddress{
+			{{Address: networking.IPv4LocalhostDefaultAddress, Port: 9000}, {Address: networking.IPv6LocalhostDefaultAddress, Port: 9000}},
+			nil,
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			originalPorts, originalMappings := slices.Clone(testCase.ports), slices.Clone(testCase.mappings)
+			resolved := make([]logicalPortData, len(testCase.ports))
+			for portIndex, port := range testCase.ports {
+				resolved[portIndex].Port, resolved[portIndex].protocol = port.ContainerPort, commonapi.PortProtocolTCP
+				if len(testCase.protocols) > 0 {
+					resolved[portIndex].protocol = testCase.protocols[portIndex]
+				}
+			}
+			require.Equal(t, testCase.expected, containerEndpointAddresses(testCase.ports, resolved, testCase.mappings))
+			require.Equal(t, originalPorts, testCase.ports)
+			require.Equal(t, originalMappings, testCase.mappings)
+			reversed := slices.Clone(testCase.mappings)
+			slices.Reverse(reversed)
+			require.Equal(t, testCase.expected, containerEndpointAddresses(testCase.ports, resolved, reversed))
 		})
 	}
 }
