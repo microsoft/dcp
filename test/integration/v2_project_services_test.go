@@ -26,6 +26,71 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+// Verifies that Project rejects terminating service dependencies during port or template preparation
+// and preserves that terminal failure after the dependency is replaced and Stop is requested.
+func TestV2ProjectTerminalServicePreparation(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"process", "container"} {
+		for _, source := range []string{"port", "template"} {
+			t.Run(kind+"/"+source, func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+				defer cancel()
+				namespace := createActiveV2Namespace(t, ctx, "v2-project-terminal-service-"+kind+"-"+source)
+				service, releaseService := createTerminatingPreparationService(t, ctx, namespace.Name)
+				resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+					Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir()}}
+				arguments := []string{`{{portFor "dependency"}}`}
+				expectedReason := apiv2.LogicalResourceReasonTemplateEvaluationFailed
+				binding := apiv2.LogicalServiceBinding{Name: "application", ServiceRef: service.Name}
+				if source == "port" {
+					arguments = []string{"literal"}
+					expectedReason = apiv2.LogicalResourceReasonPortPreparationFailed
+				}
+				if kind == "process" {
+					resource.Spec.Process = &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
+						ExecutablePath: "application", Args: arguments,
+						AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
+					}}
+					if source == "port" {
+						resource.Spec.Process.Ports = []apiv2.LogicalProcessPort{{LogicalServiceBinding: binding, Port: 8080}}
+					}
+				} else {
+					resource.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Command: arguments,
+					}}
+					if source == "port" {
+						resource.Spec.Container.Ports = []apiv2.LogicalContainerPort{{LogicalServiceBinding: binding, ContainerPort: 8080}}
+					}
+				}
+				require.NoError(t, client.Create(ctx, resource))
+				failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
+				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, expectedReason)
+				require.False(t, failed.Status.LaunchInputsReady)
+				require.Empty(t, failed.Status.PhysicalContainerRef)
+				releaseService()
+				replacement := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: service.Name, Namespace: namespace.Name}, Spec: service.Spec}
+				require.NoError(t, client.Create(ctx, replacement))
+				require.NotEqual(t, service.UID, replacement.UID)
+				require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+				require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.Project) error {
+					current.Status.Phase, current.Status.Conditions = apiv2.ProjectPhaseUnknown, nil
+					return client.Status().Update(updateCtx, current)
+				}))
+				terminal := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
+				requireReadyCondition(t, terminal.Status.Conditions, metav1.ConditionFalse, expectedReason)
+				require.Equal(t, failed.Status.Conditions[0].Message, terminal.Status.Conditions[0].Message)
+				require.False(t, terminal.Status.LaunchInputsReady)
+				var backings apiv2.PhysicalContainerList
+				require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+				require.Empty(t, backings.Items)
+				require.NoError(t, client.Delete(ctx, namespace))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
+			})
+		}
+	}
+}
+
 // Verifies that container TCP adapter ports are declared before creation with runtime-assigned
 // loopback bindings, published through Project and rejected on TCP application-port conflicts.
 func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {

@@ -79,6 +79,7 @@ var NamespaceResources = []*CleanupResource{
 		CleanUpAfter: []schema.GroupVersionResource{
 			(&apiv2.LogicalProcess{}).GetGroupVersionResource(),
 			(&apiv2.LogicalContainer{}).GetGroupVersionResource(),
+			(&apiv2.Project{}).GetGroupVersionResource(),
 		},
 	},
 	{

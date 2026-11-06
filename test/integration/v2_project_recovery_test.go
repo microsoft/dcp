@@ -30,6 +30,99 @@ import (
 
 const projectTestControllers = ProjectController | PhysicalProcessController | PhysicalContainerController | PhysicalContainerImageController
 
+type projectCreateCollisionClient struct {
+	ctrl_client.Client
+	kind     string
+	scenario string
+	injected atomic.Bool
+}
+
+func (apiClient *projectCreateCollisionClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
+	owner := metav1.GetControllerOf(obj)
+	_, image := obj.(*apiv2.PhysicalContainerImage)
+	_, container := obj.(*apiv2.PhysicalContainer)
+	if owner == nil || owner.Kind != "Project" || (apiClient.kind == "image" && !image) ||
+		(apiClient.kind == "container" && !container) || !apiClient.injected.CompareAndSwap(false, true) {
+		return apiClient.Client.Create(ctx, obj, options...)
+	}
+	existing := obj.DeepCopyObject().(ctrl_client.Object)
+	switch apiClient.scenario {
+	case "owner":
+		existing.SetOwnerReferences(nil)
+	case "hold":
+		existing.SetFinalizers([]string{"tests.dcp.microsoft.com/collision"})
+	case "spec":
+		switch physical := existing.(type) {
+		case *apiv2.PhysicalContainer:
+			physical.Spec.Container.Command = []string{"different"}
+		case *apiv2.PhysicalContainerImage:
+			physical.Spec.Image.Image += "-different"
+		}
+	}
+	if createErr := apiClient.Client.Create(ctx, existing, options...); createErr != nil {
+		return createErr
+	}
+	resource := "physicalcontainers"
+	if image {
+		resource = "physicalcontainerimages"
+	}
+	return apierrors.NewAlreadyExists(schema.GroupResource{Group: apiv2.GroupName, Resource: resource}, obj.GetName())
+}
+
+// Verifies that Project validates exact-name AlreadyExists collisions for physical containers
+// and images, adopting compatible declarations and failing incompatible identities or specs.
+func TestV2ProjectValidatesPhysicalCreateCollisions(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"image", "container"} {
+		for _, scenario := range []string{"compatible", "owner", "hold", "spec"} {
+			t.Run(kind+"/"+scenario, func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+				t.Cleanup(cancel)
+				server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
+					TestEnvironmentOptions{DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+						return &projectCreateCollisionClient{Client: client, kind: kind, scenario: scenario}
+					}})
+				require.NoError(t, startupErr)
+				namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-collision-"+kind+"-"+scenario)
+				resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+					Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+						LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
+					}}}
+				require.NoError(t, server.Client.Create(ctx, resource))
+				expected := apiv2.ProjectPhaseFailed
+				if scenario == "compatible" {
+					expected = apiv2.ProjectPhaseReady
+				}
+				observed := waitProjectPhase(t, ctx, server.Client, resource, expected)
+				if scenario != "compatible" {
+					reason := apiv2.ProjectReasonPhysicalPreparationFailed
+					if kind == "image" {
+						reason = apiv2.ProjectReasonImagePreparationFailed
+					}
+					requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, reason)
+				}
+				if scenario == "hold" || scenario == "owner" {
+					var collision ctrl_client.Object = &apiv2.PhysicalContainer{}
+					if kind == "image" {
+						collision = &apiv2.PhysicalContainerImage{}
+					}
+					require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: "project-" + string(resource.UID)}, collision))
+					if scenario == "hold" {
+						collision.SetFinalizers(nil)
+						require.NoError(t, server.Client.Update(ctx, collision))
+					} else {
+						removeProjectBackingHold(t, ctx, server.Client, collision)
+					}
+					require.NoError(t, server.Client.Delete(ctx, collision))
+				}
+				require.NoError(t, server.Client.Delete(ctx, resource))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+			})
+		}
+	}
+}
+
 type projectLostCreateClient struct {
 	ctrl_client.Client
 	responseLost atomic.Bool

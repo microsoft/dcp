@@ -112,9 +112,10 @@ type projectData struct {
 	imageName        string
 	networks         []apiv2.ContainerNetworkConnectionConfig
 	networksSelected bool
-	ports            []logicalPortData
-	processConfig    *apiv2.LogicalProcessConfig
-	containerConfig  *apiv2.LogicalContainerConfig
+	ports            []logicalPortSelection
+	effectiveArgs    []string
+	effectiveEnv     []commonapi.EnvVar
+	inputsPrepared   bool
 	processes        map[process.ProcessHandle]projectProcessData
 	processCleanup   *projectProcessCleanupOperation
 	processPoll      bool
@@ -130,8 +131,8 @@ func (data *projectData) Clone() *projectData {
 		}
 	}
 	cloned.ports = slices.Clone(data.ports)
-	cloned.processConfig = data.processConfig.DeepCopy()
-	cloned.containerConfig = data.containerConfig.DeepCopy()
+	cloned.effectiveArgs = slices.Clone(data.effectiveArgs)
+	cloned.effectiveEnv = slices.Clone(data.effectiveEnv)
 	cloned.networks = slices.Clone(data.networks)
 	for i := range data.networks {
 		data.networks[i].DeepCopyInto(&cloned.networks[i])
@@ -152,8 +153,17 @@ func (data *projectData) retry(reason apiv2.ConditionReason, operationErr error)
 	data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 }
 
+func (data *projectData) portData(resource *apiv2.Project) []logicalPortData {
+	requests := projectPortRequests(resource)
+	var ports []logicalPortData
+	for portIndex, selected := range data.ports {
+		ports = append(ports, logicalPortForSelection(resource, requests[portIndex], selected))
+	}
+	return ports
+}
+
 func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, AdditionalReconciliationDelay, bool) {
-	change := projectLogicalPorts(data.ports, &resource.Status.Ports)
+	change := projectLogicalPorts(data.portData(resource), &resource.Status.Ports)
 	adapterPort := int32(0)
 	if resource.Spec.DebugAdapter != nil {
 		adapterPort = resource.Spec.DebugAdapter.GetContainerTCPPort()
@@ -161,14 +171,8 @@ func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, Additio
 	change |= setValue(&resource.Status.DebugAdapterPort, adapterPort)
 	change |= setValue(&resource.Status.DebugAdapterAddress, data.adapterAddress)
 	change |= projectProcessObservations(resource, data)
-	inputsReady := data.processConfig != nil || data.containerConfig != nil
-	var arguments []string
-	var environment []commonapi.EnvVar
-	if data.processConfig != nil {
-		arguments, environment = data.processConfig.Args, data.processConfig.Env
-	} else if data.containerConfig != nil {
-		arguments, environment = data.containerConfig.Command, data.containerConfig.Env
-	}
+	inputsReady := data.inputsPrepared
+	arguments, environment := data.effectiveArgs, data.effectiveEnv
 	if !reflect.DeepEqual(resource.Status.EffectiveArgs, arguments) {
 		resource.Status.EffectiveArgs = slices.Clone(arguments)
 		change |= statusChanged

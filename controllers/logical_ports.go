@@ -10,10 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"reflect"
 	"slices"
-	"strings"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -378,96 +376,13 @@ func processEndpointAddresses(ports []logicalPortData) [][]apiv2.ServiceAddress 
 	return addresses
 }
 
-func (r *ProjectReconciler) prepareProjectValues(
-	ctx context.Context, resource *apiv2.Project, data *projectData, log logr.Logger,
-) bool {
-	if data.processConfig != nil || data.containerConfig != nil || resource.Spec.Stop {
-		return true
-	}
-	var requests []logicalPortRequest
-	var arguments []string
-	var environment []commonapi.EnvVar
-	if resource.Spec.Process != nil {
-		for _, port := range resource.Spec.Process.Ports {
-			requests = append(requests, logicalPortRequest{binding: port.LogicalServiceBinding, address: port.Address, port: port.Port})
-		}
-		arguments = resource.Spec.Process.Args
-		if resource.Spec.Process.AmbientEnvironment.EffectiveBehavior() == apiv2.EnvironmentBehaviorInherit {
-			for _, entry := range os.Environ() {
-				name, value, found := strings.Cut(entry, "=")
-				if found {
-					environment = append(environment, commonapi.EnvVar{Name: name, Value: value})
-				}
-			}
-		}
-		environment = append(environment, resource.Spec.Process.Env...)
-	} else {
-		for _, port := range resource.Spec.Container.Ports {
-			requests = append(requests, logicalPortRequest{binding: port.LogicalServiceBinding, address: port.Address, port: port.ContainerPort})
-		}
-		arguments, environment = resource.Spec.Container.Command, resource.Spec.Container.Env
-	}
-	ports, prepareErr := prepareLogicalPorts(ctx, r.Client, r.NoCacheClient, resource, requests, data.ports, log)
-	data.ports = ports
-	if prepareErr != nil {
-		log.Error(prepareErr, "Failed to prepare Project ports")
-		data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, prepareErr.Error()
-		if !apierrors.IsNotFound(prepareErr) {
-			data.retry(apiv2.LogicalResourceReasonPortPreparationPending, prepareErr)
-		}
-		return false
-	}
-	if resource.Spec.Container != nil && resource.Spec.DebugAdapter != nil {
-		adapterPort := resource.Spec.DebugAdapter.GetContainerTCPPort()
-		for index, selected := range ports {
-			if adapterPort != 0 && selected.protocol == commonapi.PortProtocolTCP && resource.Spec.Container.Ports[index].ContainerPort == adapterPort {
-				data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonAdapterPortConflict, "The adapter port conflicts with a declared TCP application port."
-				log.Error(fmt.Errorf("%s", data.message), "Failed to prepare Project adapter port")
-				return false
-			}
-		}
-	}
-	resolvedArgs, resolvedEnv, evaluationErr := templating.EvaluateV2Values(ctx, r.NoCacheClient, resource,
-		servingPorts(ports), arguments, environment, resource.Spec.Process != nil && osutil.IsWindows())
-	if evaluationErr != nil {
-		log.Error(evaluationErr, "Failed to evaluate Project launch values")
-		data.reason, data.message = apiv2.LogicalResourceReasonTemplateEvaluationFailed, evaluationErr.Error()
-		if !templating.IsTransientTemplateError(evaluationErr) {
-			data.state = projectStateFailed
-		}
-		return false
-	}
-	resolvedEnv = slices.DeleteFunc(resolvedEnv, func(variable commonapi.EnvVar) bool {
-		name := variable.Name
-		if osutil.IsWindows() {
-			name = strings.ToUpper(name)
-		}
-		for _, prefix := range suppressVarPrefixes {
-			if strings.HasPrefix(name, prefix) {
-				return true
-			}
-		}
-		return false
-	})
-	if resource.Spec.Process != nil {
-		data.processConfig = resource.Spec.Process.LogicalProcessConfig.DeepCopy()
-		data.processConfig.Args, data.processConfig.Env = resolvedArgs, resolvedEnv
-		data.processConfig.AmbientEnvironment.Behavior = apiv2.EnvironmentBehaviorDoNotInherit
-	} else {
-		data.containerConfig = resource.Spec.Container.LogicalContainerConfig.DeepCopy()
-		data.containerConfig.Command, data.containerConfig.Env = resolvedArgs, resolvedEnv
-	}
-	return true
-}
-
 func (r *ProjectReconciler) withdrawProjectEndpoints(
 	ctx context.Context, resource *apiv2.Project, data *projectData, log logr.Logger,
 ) objectChange {
 	// A prepared context is not an application endpoint; target publication follows DAP launch.
-	endpointErr := syncLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, data.ports, nil)
+	endpointErr := syncLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, data.portData(resource), nil)
 	if endpointErr != nil {
 		log.Error(endpointErr, "Failed to synchronize Project service endpoints")
-		data.retry(apiv2.ProjectReasonEndpointUpdateFailed, endpointErr)
 		return additionalReconciliationNeeded
 	}
 	return noChange

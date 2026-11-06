@@ -80,6 +80,7 @@ func TestNamespaceResourcesCleanLogicalResourcesBeforePhysicalDependencies(t *te
 	require.Contains(t, namespaceResourcesByGVR[containerGVR].CleanUpAfter, physicalExecGVR)
 	require.Contains(t, namespaceResourcesByGVR[physicalExecGVR].CleanUpAfter, logicalExecGVR)
 	projectGVR := (&apiv2.Project{}).GetGroupVersionResource()
+	require.Contains(t, namespaceResourcesByGVR[serviceEndpointGVR].CleanUpAfter, projectGVR)
 	require.Contains(t, namespaceResourcesByGVR[projectGVR].CleanUpAfter, logicalExecGVR)
 	require.Contains(t, namespaceResourcesByGVR[projectGVR].CleanUpAfter, physicalExecGVR)
 	require.Contains(t, namespaceResourcesByGVR[physicalProcessGVR].CleanUpAfter, projectGVR)

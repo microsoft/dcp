@@ -61,7 +61,6 @@ const (
 	ProjectReasonPhysicalDeletionFailed      ConditionReason = "PhysicalDeletionFailed"
 	ProjectReasonProcessCleanupQueueFailed   ConditionReason = "ProcessCleanupQueueFailed"
 	ProjectReasonAdapterPortConflict         ConditionReason = "AdapterPortConflict"
-	ProjectReasonEndpointUpdateFailed        ConditionReason = "EndpointUpdateFailed"
 )
 
 // DebugSubresourceName identifies the bidirectional Project DAP endpoint.
