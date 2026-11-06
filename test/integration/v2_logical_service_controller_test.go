@@ -179,14 +179,14 @@ func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 
 				endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: namespace.Name},
 					Spec: apiv2.ServiceEndpointSpec{ServiceRef: namespace.Name + "/" + service.Name,
-						Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}, {Address: "::1", Port: 61001}}}}
+						Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}, {Address: "[::1]", Port: 61001}}}}
 				require.NoError(t, apiClient.Create(ctx, endpoint))
 				ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
 				})
 				requireReadyCondition(t, ready.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalServiceReasonReady)
 				require.Equal(t, addresses, ready.Status.EffectiveAddresses)
-				require.Equal(t, []proxy.Endpoint{{Address: "127.0.0.1", Port: 61000}, {Address: "::1", Port: 61001}},
+				require.Equal(t, []proxy.Endpoint{{Address: "127.0.0.1", Port: 61000}, {Address: "[::1]", Port: 61001}},
 					listeners[0].configuration().Endpoints)
 
 				endpoint.Spec.Addresses = []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 62000}}
@@ -597,7 +597,7 @@ func TestV2LogicalServicePublishesAllListenerAddresses(t *testing.T) {
 	var expected []apiv2.ServiceAddress
 	for _, listener := range listeners {
 		expected = append(expected, apiv2.ServiceAddress{
-			Address: networking.ToStandaloneAddress(listener.EffectiveAddress()), Port: listener.EffectivePort(),
+			Address: listener.EffectiveAddress(), Port: listener.EffectivePort(),
 		})
 	}
 	require.ElementsMatch(t, expected, pending.Status.EffectiveAddresses)
@@ -646,7 +646,7 @@ func TestV2LogicalServiceProxylessKeepsSelectedProducer(t *testing.T) {
 	require.Empty(t, pending.Status.ProxylessEndpointRef)
 	selected := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "middle", Namespace: namespace.Name},
 		Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name,
-			Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 64000}, {Address: "::1", Port: 64001}}}}
+			Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 64000}, {Address: "[::1]", Port: 64001}}}}
 	require.NoError(t, apiClient.Create(ctx, selected))
 	first := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 		return current.Status.ProxylessEndpointRef == selected.Name && current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
@@ -654,7 +654,7 @@ func TestV2LogicalServiceProxylessKeepsSelectedProducer(t *testing.T) {
 	require.Equal(t, selected.Spec.Addresses, first.Status.EffectiveAddresses)
 	earlier := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "aaa", Namespace: namespace.Name},
 		Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name,
-			Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 65000}, {Address: "::1", Port: 65001}}}}
+			Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 65000}, {Address: "[::1]", Port: 65001}}}}
 	require.NoError(t, apiClient.Create(ctx, earlier))
 	selected.Finalizers = []string{"tests.dcp.microsoft.com/hold"}
 	require.NoError(t, apiClient.Update(ctx, selected))

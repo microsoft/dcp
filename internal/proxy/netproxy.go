@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -702,6 +703,9 @@ func (p *netProxy) streamClientPackets(
 				if err != nil {
 					// Handle write deadline exceeded like any other (unexpected) error for UDP connections
 					p.log.V(1).Info("Error writing to UDP endpoint connection", "Error", err.Error(), "EndpointAddress", backendConn.RemoteAddr().String())
+					if errors.Is(err, syscall.ECONNREFUSED) {
+						continue
+					}
 					p.shutdownUDPStream(stream.clientAddr)
 					return
 				}
@@ -738,6 +742,9 @@ func (p *netProxy) streamEndpointPackets(
 
 		bytesRead, readErr := backendConn.Read(buffer)
 		if errors.Is(readErr, os.ErrDeadlineExceeded) {
+			continue
+		} else if errors.Is(readErr, syscall.ECONNREFUSED) {
+			p.log.V(1).Info("UDP endpoint refused a datagram", "Error", readErr.Error(), "EndpointConnectionAddress", backendConn.LocalAddr().String())
 			continue
 		} else if readErr != nil {
 			p.log.Info("Error reading UDP packet from proxy UDP connection", "Error", readErr.Error(), "EndpointConnectionAddress", backendConn.LocalAddr().String())

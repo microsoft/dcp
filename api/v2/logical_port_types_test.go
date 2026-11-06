@@ -129,11 +129,11 @@ func TestLogicalProcessLifecycleKeyIgnoresServiceDeclarations(t *testing.T) {
 	}{
 		{"port name", func(changed *LogicalProcessSpec) { changed.Ports[0].Name = "renamed" }},
 		{"service reference", func(changed *LogicalProcessSpec) { changed.Ports[0].ServiceRef = "other-service" }},
-		{"listening address", func(changed *LogicalProcessSpec) { changed.Ports[0].Address = "::1" }},
+		{"listening address", func(changed *LogicalProcessSpec) { changed.Ports[0].Address = "[::1]" }},
 		{"listening port", func(changed *LogicalProcessSpec) { changed.Ports[0].Port++ }},
 		{"inline template", func(changed *LogicalProcessSpec) {
 			changed.Ports[0].ServiceRef = ""
-			changed.Ports[0].Service = &LogicalServiceTemplate{Name: "inline", LogicalServiceSpec: LogicalServiceSpec{Address: "::1", Port: 6000}}
+			changed.Ports[0].Service = &LogicalServiceTemplate{Name: "inline", LogicalServiceSpec: LogicalServiceSpec{Address: "[::1]", Port: 6000}}
 		}},
 		{"no ports", func(changed *LogicalProcessSpec) { changed.Ports = nil }},
 	} {
@@ -187,7 +187,7 @@ func TestLogicalContainerLifecycleKeyUsesRuntimePorts(t *testing.T) {
 			changed.Ports[0].Service = nil
 			changed.Ports[0].ServiceRef = "other-service"
 		}},
-		{"proxy address", func(changed *LogicalContainerSpec) { changed.Ports[0].Service.Address = "::1" }},
+		{"proxy address", func(changed *LogicalContainerSpec) { changed.Ports[0].Service.Address = "[::1]" }},
 		{"proxy port", func(changed *LogicalContainerSpec) { changed.Ports[0].Service.Port = 6000 }},
 		{"proxy allocation mode", func(changed *LogicalContainerSpec) {
 			changed.Ports[0].Service.AddressAllocationMode = ServiceAddressAllocationModeProxyless

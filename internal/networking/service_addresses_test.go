@@ -19,7 +19,7 @@ import (
 func TestSelectServiceAddress(t *testing.T) {
 	t.Parallel()
 	ipv4 := apiv2.ServiceAddress{Address: "127.0.0.1", Port: 5000}
-	ipv6 := apiv2.ServiceAddress{Address: "::1", Port: 5001}
+	ipv6 := apiv2.ServiceAddress{Address: "[::1]", Port: 5001}
 	hostname := apiv2.ServiceAddress{Address: "localhost", Port: 5002}
 	for _, testCase := range []struct {
 		name      string
@@ -43,8 +43,8 @@ func TestSelectServiceAddress(t *testing.T) {
 		{name: "address tie break", addresses: []apiv2.ServiceAddress{{Address: "127.0.0.2", Port: 1}, ipv4}, expected: ipv4, found: true},
 		{name: "port tie break", addresses: []apiv2.ServiceAddress{{Address: ipv4.Address, Port: 5003}, ipv4}, expected: ipv4, found: true},
 		{name: "duplicates", addresses: []apiv2.ServiceAddress{ipv4, ipv4}, expected: ipv4, found: true},
-		{name: "invalid pairs ignored", addresses: []apiv2.ServiceAddress{{Port: 5000}, {Address: "::1"}, {Address: "localhost", Port: -1}, {Address: "127.0.0.1", Port: 65536}, ipv4}, expected: ipv4, found: true},
-		{name: "all pairs invalid", addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1"}, {Address: "::1", Port: 65536}}},
+		{name: "invalid pairs ignored", addresses: []apiv2.ServiceAddress{{Port: 5000}, {Address: "[::1]"}, {Address: "localhost", Port: -1}, {Address: "127.0.0.1", Port: 65536}, ipv4}, expected: ipv4, found: true},
+		{name: "all pairs invalid", addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1"}, {Address: "[::1]", Port: 65536}}},
 		{name: "empty", addresses: []apiv2.ServiceAddress{}},
 		{name: "nil"},
 	} {

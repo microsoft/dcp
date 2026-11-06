@@ -42,7 +42,7 @@ func TestEvaluateV2ValuesServiceAddresses(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, apiv2.AddToScheme(scheme))
 	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: "test-namespace"},
-		Status: apiv2.LogicalServiceStatus{EffectiveAddresses: []apiv2.ServiceAddress{{Address: "::1", Port: 5001}, {Address: "127.0.0.1", Port: 5000}}}}
+		Status: apiv2.LogicalServiceStatus{EffectiveAddresses: []apiv2.ServiceAddress{{Address: "[::1]", Port: 5001}, {Address: "127.0.0.1", Port: 5000}}}}
 	reader := &countedServiceReader{Reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(service).Build()}
 	owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test-namespace"}}
 	expectedDefault := "127.0.0.1:5000"
@@ -250,14 +250,14 @@ func TestEvaluateV2ValuesEnvironmentCasing(t *testing.T) {
 	}
 }
 
-// Verifies that consumer and serving IPv6 address templates produce valid URL authorities,
-// while the API's effective address snapshot remains an unmodified standalone IP literal.
+// Verifies that consumer and serving templates preserve bracketed IPv6 addresses
+// and produce valid URL authorities without modifying the API's effective address snapshot.
 func TestEvaluateV2ValuesIPv6Authorities(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
 	require.NoError(t, apiv2.AddToScheme(scheme))
 	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: "test-namespace"},
-		Status: apiv2.LogicalServiceStatus{EffectiveAddresses: []apiv2.ServiceAddress{{Address: "::1", Port: 5001}}}}
+		Status: apiv2.LogicalServiceStatus{EffectiveAddresses: []apiv2.ServiceAddress{{Address: "[::1]", Port: 5001}}}}
 	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(service).Build()
 	owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test-namespace"}}
 	arguments := []string{
@@ -265,7 +265,7 @@ func TestEvaluateV2ValuesIPv6Authorities(t *testing.T) {
 		`http://{{addressForServing "http"}}:{{portForServing "http"}}`,
 	}
 	resolvedArgs, _, evaluationErr := EvaluateV2Values(context.Background(), reader, owner,
-		[]ServingPort{{Name: "http", Address: "::", Port: 8080}}, arguments, nil, false)
+		[]ServingPort{{Name: "http", Address: "[::]", Port: 8080}}, arguments, nil, false)
 	require.NoError(t, evaluationErr)
 	require.Equal(t, []string{"http://[::1]:5001", "http://[::]:8080"}, resolvedArgs)
 	for _, argument := range resolvedArgs {
@@ -274,5 +274,5 @@ func TestEvaluateV2ValuesIPv6Authorities(t *testing.T) {
 		_, _, splitErr := net.SplitHostPort(parsed.Host)
 		require.NoError(t, splitErr)
 	}
-	require.Equal(t, "::1", service.Status.EffectiveAddresses[0].Address)
+	require.Equal(t, "[::1]", service.Status.EffectiveAddresses[0].Address)
 }

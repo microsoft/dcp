@@ -142,8 +142,29 @@ func TestCheckPortAvailable(t *testing.T) {
 	}
 }
 
-// Verifies that AddressAndPort preserves IPv4/hostname authorities and accepts bare, bracketed,
-// mapped, and zoned IPv6 literals without producing malformed or double-bracketed addresses.
+// Verifies that IpToString brackets native IPv6 addresses without depending on host network
+// capabilities and preserves IPv4 formatting, including IPv4-mapped addresses.
+func TestIpToString(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		address  string
+		expected string
+	}{
+		{IPv4LocalhostDefaultAddress, IPv4LocalhostDefaultAddress},
+		{net.IPv6loopback.String(), IPv6LocalhostDefaultAddress},
+		{net.IPv6zero.String(), IPv6AllInterfaceAddress},
+		{"2001:db8::1", "[2001:db8::1]"},
+		{"::ffff:127.0.0.1", IPv4LocalhostDefaultAddress},
+	} {
+		t.Run(testCase.address, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, testCase.expected, IpToString(net.ParseIP(testCase.address)))
+		})
+	}
+}
+
+// Verifies that AddressAndPort preserves IPv4/hostname authorities and the bracketed
+// representation of IPv6 literals, including mapped and zoned addresses.
 func TestAddressAndPortIPv6Formatting(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -151,14 +172,13 @@ func TestAddressAndPortIPv6Formatting(t *testing.T) {
 		expected string
 		host     string
 	}{
-		{"127.0.0.1", "127.0.0.1:5001", "127.0.0.1"},
-		{"localhost", "localhost:5001", "localhost"},
+		{IPv4LocalhostDefaultAddress, IPv4LocalhostDefaultAddress + ":5001", IPv4LocalhostDefaultAddress},
+		{Localhost, Localhost + ":5001", Localhost},
 		{"service.example", "service.example:5001", "service.example"},
-		{"::1", "[::1]:5001", "::1"},
-		{"[::1]", "[::1]:5001", "::1"},
-		{"2001:db8::1", "[2001:db8::1]:5001", "2001:db8::1"},
-		{"::ffff:127.0.0.1", "[::ffff:127.0.0.1]:5001", "::ffff:127.0.0.1"},
-		{"fe80::1%lo0", "[fe80::1%lo0]:5001", "fe80::1%lo0"},
+		{IPv6LocalhostDefaultAddress, IPv6LocalhostDefaultAddress + ":5001", net.IPv6loopback.String()},
+		{"[2001:db8::1]", "[2001:db8::1]:5001", "2001:db8::1"},
+		{"[::ffff:127.0.0.1]", "[::ffff:127.0.0.1]:5001", "::ffff:127.0.0.1"},
+		{"[fe80::1%lo0]", "[fe80::1%lo0]:5001", "fe80::1%lo0"},
 	} {
 		t.Run(testCase.address, func(t *testing.T) {
 			t.Parallel()
@@ -172,21 +192,21 @@ func TestAddressAndPortIPv6Formatting(t *testing.T) {
 	}
 }
 
-// Verifies that TCP and UDP address parsers accept authorities built from bare IPv6 endpoints,
+// Verifies that TCP and UDP address parsers accept authorities built from bracketed IPv6 endpoints,
 // matching the formatting boundary used by the runtime proxy without opening network connections.
 func TestAddressAndPortParsesIPv6ProxyEndpoint(t *testing.T) {
 	t.Parallel()
-	for _, address := range []string{"::1", "[::1]"} {
+	for _, address := range []string{IPv6LocalhostDefaultAddress, "[2001:db8::1]"} {
 		t.Run(address, func(t *testing.T) {
 			t.Parallel()
 			authority := AddressAndPort(address, 5001)
 			tcpAddress, tcpErr := net.ResolveTCPAddr("tcp", authority)
 			require.NoError(t, tcpErr)
-			require.True(t, net.ParseIP("::1").Equal(tcpAddress.IP))
+			require.True(t, net.ParseIP(ToStandaloneAddress(address)).Equal(tcpAddress.IP))
 			require.Equal(t, 5001, tcpAddress.Port)
 			udpAddress, udpErr := net.ResolveUDPAddr("udp", authority)
 			require.NoError(t, udpErr)
-			require.True(t, net.ParseIP("::1").Equal(udpAddress.IP))
+			require.True(t, net.ParseIP(ToStandaloneAddress(address)).Equal(udpAddress.IP))
 			require.Equal(t, 5001, udpAddress.Port)
 		})
 	}

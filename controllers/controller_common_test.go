@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -184,6 +185,41 @@ func TestPrepareLogicalPortsRejectsTerminalServices(t *testing.T) {
 				[]logicalPortRequest{{binding: apiv2.LogicalServiceBinding{Name: "http", ServiceRef: service.Name}}}, logr.Discard())
 			require.ErrorIs(t, prepareErr, errLogicalServiceDependencyFailed)
 			require.Empty(t, ports)
+		})
+	}
+}
+
+// Verifies that logical endpoint derivation preserves bracketed IPv6 addresses and maps wildcard
+// bindings to loopback, including raw IPv6 addresses reported by container inspection.
+func TestLogicalEndpointAddressRepresentation(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		address  string
+		expected string
+	}{
+		{"127.0.0.1", "127.0.0.1"},
+		{"0.0.0.0", "127.0.0.1"},
+		{"[::1]", "[::1]"},
+		{"[::]", "[::1]"},
+		{"[2001:db8::1]", "[2001:db8::1]"},
+		{"localhost", "localhost"},
+	} {
+		t.Run(testCase.address, func(t *testing.T) {
+			t.Parallel()
+			port := logicalPortData{protocol: commonapi.PortProtocolTCP}
+			port.Address, port.Port = testCase.address, 8080
+			require.Equal(t, [][]apiv2.ServiceAddress{{{Address: testCase.expected, Port: 8080}}},
+				processEndpointAddresses([]logicalPortData{port}))
+			mappings := []apiv2.PhysicalContainerPortMapping{{
+				ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: testCase.address, HostPort: 18080,
+			}}
+			if strings.HasPrefix(testCase.address, "[") {
+				raw := mappings[0]
+				raw.HostIP = strings.Trim(testCase.address, "[]")
+				mappings = append(mappings, raw)
+			}
+			require.Equal(t, [][]apiv2.ServiceAddress{{{Address: testCase.expected, Port: 18080}}},
+				containerEndpointAddresses([]apiv2.LogicalContainerPort{{ContainerPort: 8080}}, []logicalPortData{port}, mappings))
 		})
 	}
 }

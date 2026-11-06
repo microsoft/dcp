@@ -24,7 +24,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
-	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/proxy"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/syncmap"
@@ -182,7 +181,7 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		for _, listener := range data.proxies {
 			if listener.proxy.State() == proxy.ProxyStateRunning {
 				status.EffectiveAddresses = append(status.EffectiveAddresses, apiv2.ServiceAddress{
-					Address: networking.ToStandaloneAddress(listener.proxy.EffectiveAddress()), Port: listener.proxy.EffectivePort(),
+					Address: listener.proxy.EffectiveAddress(), Port: listener.proxy.EffectivePort(),
 				})
 			}
 		}

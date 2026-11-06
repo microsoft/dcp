@@ -434,7 +434,7 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 			require.NoError(t, client.Create(ctx, service))
 			endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "dependency", Namespace: namespace.Name},
 				Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name,
-					Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "::1", Port: 5001}}}}
+					Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "[::1]", Port: 5001}}}}
 			require.NoError(t, client.Create(ctx, endpoint))
 			if kind == "process" {
 				running := waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalProcess) (bool, error) {

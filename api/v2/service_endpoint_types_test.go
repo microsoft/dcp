@@ -27,21 +27,21 @@ func TestServiceEndpointValidate(t *testing.T) {
 		addresses      []ServiceAddress
 		expectedFields []string
 	}{
-		{"unowned dual stack", "service", []ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "::1", Port: 5001}}, nil},
+		{"unowned dual stack", "service", []ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "[::1]", Port: 5001}}, nil},
 		{"explicit namespace", "test-namespace/service", []ServiceAddress{{Address: "localhost", Port: 1}}, nil},
-		{"highest port", "service", []ServiceAddress{{Address: "::1", Port: 65535}}, nil},
-		{"same address different ports", "service", []ServiceAddress{{Address: "::1", Port: 5000}, {Address: "::1", Port: 5001}}, nil},
-		{"missing reference", "", []ServiceAddress{{Address: "::1", Port: 5000}}, []string{"spec.serviceRef"}},
-		{"cross namespace", "other/service", []ServiceAddress{{Address: "::1", Port: 5000}}, []string{"spec.serviceRef"}},
-		{"invalid reference", "INVALID", []ServiceAddress{{Address: "::1", Port: 5000}}, []string{"spec.serviceRef"}},
+		{"highest port", "service", []ServiceAddress{{Address: "[::1]", Port: 65535}}, nil},
+		{"same address different ports", "service", []ServiceAddress{{Address: "[::1]", Port: 5000}, {Address: "[::1]", Port: 5001}}, nil},
+		{"missing reference", "", []ServiceAddress{{Address: "[::1]", Port: 5000}}, []string{"spec.serviceRef"}},
+		{"cross namespace", "other/service", []ServiceAddress{{Address: "[::1]", Port: 5000}}, []string{"spec.serviceRef"}},
+		{"invalid reference", "INVALID", []ServiceAddress{{Address: "[::1]", Port: 5000}}, []string{"spec.serviceRef"}},
 		{"missing addresses", "service", nil, []string{"spec.addresses"}},
 		{"empty addresses", "service", []ServiceAddress{}, []string{"spec.addresses"}},
 		{"missing address", "service", []ServiceAddress{{Port: 5000}}, []string{"spec.addresses[0].address"}},
 		{"blank address", "service", []ServiceAddress{{Address: " \t", Port: 5000}}, []string{"spec.addresses[0].address"}},
-		{"unallocated port", "service", []ServiceAddress{{Address: "::1"}}, []string{"spec.addresses[0].port"}},
-		{"negative port", "service", []ServiceAddress{{Address: "::1", Port: -1}}, []string{"spec.addresses[0].port"}},
-		{"excessive port", "service", []ServiceAddress{{Address: "::1", Port: 65536}}, []string{"spec.addresses[0].port"}},
-		{"duplicate address", "service", []ServiceAddress{{Address: "::1", Port: 5000}, {Address: "::1", Port: 5000}}, []string{"spec.addresses[1]"}},
+		{"unallocated port", "service", []ServiceAddress{{Address: "[::1]"}}, []string{"spec.addresses[0].port"}},
+		{"negative port", "service", []ServiceAddress{{Address: "[::1]", Port: -1}}, []string{"spec.addresses[0].port"}},
+		{"excessive port", "service", []ServiceAddress{{Address: "[::1]", Port: 65536}}, []string{"spec.addresses[0].port"}},
+		{"duplicate address", "service", []ServiceAddress{{Address: "[::1]", Port: 5000}, {Address: "[::1]", Port: 5000}}, []string{"spec.addresses[1]"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			endpoint := &ServiceEndpoint{
@@ -88,10 +88,10 @@ func TestServiceEndpointValidateUpdate(t *testing.T) {
 		change func(*ServiceEndpoint)
 	}{
 		{"service", func(endpoint *ServiceEndpoint) { endpoint.Spec.ServiceRef = "other" }},
-		{"address", func(endpoint *ServiceEndpoint) { endpoint.Spec.Addresses[0].Address = "::1" }},
+		{"address", func(endpoint *ServiceEndpoint) { endpoint.Spec.Addresses[0].Address = "[::1]" }},
 		{"port", func(endpoint *ServiceEndpoint) { endpoint.Spec.Addresses[0].Port++ }},
 		{"add address", func(endpoint *ServiceEndpoint) {
-			endpoint.Spec.Addresses = append(endpoint.Spec.Addresses, ServiceAddress{Address: "::1", Port: 5000})
+			endpoint.Spec.Addresses = append(endpoint.Spec.Addresses, ServiceAddress{Address: "[::1]", Port: 5000})
 		}},
 		{"remove addresses", func(endpoint *ServiceEndpoint) { endpoint.Spec.Addresses = nil }},
 	} {
@@ -145,7 +145,7 @@ func TestServiceEndpointJSONAndDeepCopy(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: "test-namespace"},
 		Spec: ServiceEndpointSpec{
 			ServiceRef: "service",
-			Addresses:  []ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "::1", Port: 5001}},
+			Addresses:  []ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "[::1]", Port: 5001}},
 		},
 	}
 	encoded, encodeErr := json.Marshal(endpoint)
