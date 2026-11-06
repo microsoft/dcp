@@ -50,14 +50,11 @@ const (
 	// PhysicalContainerVolumeReasonCreating indicates that runtime volume creation is in progress.
 	PhysicalContainerVolumeReasonCreating ConditionReason = "Creating"
 
-	// PhysicalContainerVolumeReasonCreated indicates that runtime volume creation completed.
+	// PhysicalContainerVolumeReasonCreated indicates that a runtime volume was created or selected for reuse.
 	PhysicalContainerVolumeReasonCreated ConditionReason = "Created"
 
 	// PhysicalContainerVolumeReasonCreateFailed indicates that runtime volume creation failed.
 	PhysicalContainerVolumeReasonCreateFailed ConditionReason = "CreateFailed"
-
-	// PhysicalContainerVolumeReasonExistingVolumeReplacementFailed indicates that an existing runtime volume could not be replaced.
-	PhysicalContainerVolumeReasonExistingVolumeReplacementFailed ConditionReason = "ExistingVolumeReplacementFailed"
 
 	// PhysicalContainerVolumeReasonVolumeAvailable indicates that the runtime volume is available.
 	PhysicalContainerVolumeReasonVolumeAvailable ConditionReason = "VolumeAvailable"
@@ -81,30 +78,15 @@ const (
 	PhysicalContainerVolumeReasonRuntimeVolumeRemovalAbandoned ConditionReason = "RuntimeVolumeRemovalAbandoned"
 )
 
-// PhysicalContainerVolumeSpec describes either an existing runtime volume or how to create one.
+// PhysicalContainerVolumeSpec describes a named runtime volume to create or reuse.
 // +k8s:openapi-gen=true
 type PhysicalContainerVolumeSpec struct {
-	// VolumeID identifies an existing runtime volume to track. Exactly one of volumeID or volume must be set.
-	// Container runtimes commonly use the volume name as its identifier.
-	VolumeID string `json:"volumeID,omitempty"`
+	// VolumeName is the runtime volume name to create or reuse.
+	VolumeName string `json:"volumeName"`
 
-	// Volume describes a runtime volume to create. Exactly one of volumeID or volume must be set.
-	Volume *PhysicalContainerVolumeConfig `json:"volume,omitempty"`
-}
-
-// PhysicalContainerVolumeConfig describes a runtime volume to create.
-// +k8s:openapi-gen=true
-type PhysicalContainerVolumeConfig struct {
-	// VolumeName is the runtime name to use when creating a new volume.
-	VolumeName string `json:"volumeName,omitempty"`
-
-	// RemoveRuntimeVolumeOnDelete removes the created runtime volume when this resource is deleted.
-	// Created runtime volumes are retained by default.
+	// RemoveRuntimeVolumeOnDelete removes the created or reused runtime volume when this resource is deleted.
+	// Runtime volumes are retained by default.
 	RemoveRuntimeVolumeOnDelete bool `json:"removeRuntimeVolumeOnDelete,omitempty"`
-
-	// ReplaceExisting removes an existing runtime volume with volumeName before creating a new one.
-	// Replacement retries non-forced removal while the existing volume is in use and never removes attached containers.
-	ReplaceExisting bool `json:"replaceExisting,omitempty"`
 
 	// Labels contains labels to apply to a newly-created runtime volume.
 	// DCP harvesting and physical resource UID labels are reserved and set by the controller.
@@ -210,27 +192,14 @@ func (pv *PhysicalContainerVolume) Validate(ctx context.Context) field.ErrorList
 
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(pv.Annotations, field.NewPath("metadata", "annotations"))...)
 
-	if pv.Spec.VolumeID == "" && pv.Spec.Volume == nil {
-		errorList = append(errorList, field.Required(specPath, "exactly one of volumeID or volume must be set"))
-		return errorList
-	}
-	if pv.Spec.VolumeID != "" && pv.Spec.Volume != nil {
-		errorList = append(errorList, field.Forbidden(specPath.Child("volume"), "volume cannot be set when volumeID is set"))
-		return errorList
-	}
-	if pv.Spec.Volume == nil {
-		return errorList
-	}
-
-	volume := pv.Spec.Volume
-	volumePath := specPath.Child("volume")
+	volume := &pv.Spec
 	if volume.VolumeName == "" {
-		errorList = append(errorList, field.Required(volumePath.Child("volumeName"), "volumeName must be set"))
+		errorList = append(errorList, field.Required(specPath.Child("volumeName"), "volumeName must be set"))
 	} else if !validVolumeNameRegexp.MatchString(volume.VolumeName) {
-		errorList = append(errorList, field.Invalid(volumePath.Child("volumeName"), volume.VolumeName, fmt.Sprintf("volumeName must match regex '%s'", validVolumeName)))
+		errorList = append(errorList, field.Invalid(specPath.Child("volumeName"), volume.VolumeName, fmt.Sprintf("volumeName must match regex '%s'", validVolumeName)))
 	}
 
-	errorList = append(errorList, validateLabels(volume.Labels, volumePath.Child("labels"))...)
+	errorList = append(errorList, validateLabels(volume.Labels, specPath.Child("labels"))...)
 	return errorList
 }
 

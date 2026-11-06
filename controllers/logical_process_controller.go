@@ -807,7 +807,7 @@ func handleLogicalProcessUnknown(
 	ctx context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
 	state logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
-	change := data.applyMissingLogSource(resource)
+	change := noChange
 	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data.portData(resource), nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw unknown process endpoints")
 		change |= additionalReconciliationNeeded
@@ -821,6 +821,9 @@ func handleLogicalProcessUnknown(
 	physical, getErr := reconciler.findPhysicalProcess(ctx, resource, data, "")
 	if getErr != nil {
 		log.Error(getErr, "Failed to get unknown process backing")
+		if data.state == logicalProcessStateMissing {
+			change |= data.applyMissingLogSource(resource)
+		}
 		if data.lease != nil && data.reconcileErr == nil {
 			change |= reconciler.persistLogicalProcess(ctx, resource, data, nil, log)
 		}

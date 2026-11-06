@@ -400,7 +400,7 @@ func TestV2LogicalProcessControllerRetriesBackingObservation(t *testing.T) {
 }
 
 // Verifies that losing the logical backing hold makes LogicalProcess Unknown without forwarding
-// a later stop request, while deleting the logical resource still cleans up its owned session process.
+// a later stop request or completing its physical log source, while logical deletion still cleans up the process.
 func TestV2LogicalProcessControllerRejectsReleasedBackingHold(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -422,17 +422,17 @@ func TestV2LogicalProcessControllerRejectsReleasedBackingHold(t *testing.T) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return current.Status.Phase == apiv2.LogicalProcessPhaseUnknown && ready != nil && ready.Reason == string(apiv2.LogicalProcessReasonPhysicalProcessChanged), nil
 	})
-	require.True(t, unknown.Status.RuntimeLogs.Complete)
-	require.False(t, unknown.Status.RuntimeLogs.Available)
+	require.Equal(t, running.Status.RuntimeLogs, unknown.Status.RuntimeLogs)
 	require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalProcess) error {
 		current.Spec.Stop = true
 		return client.Update(updateCtx, current)
 	}))
-	waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+	stopRequested := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return ready != nil && ready.ObservedGeneration == current.Generation &&
 			ready.Reason == string(apiv2.LogicalProcessReasonPhysicalProcessChanged), nil
 	})
+	require.Equal(t, running.Status.RuntimeLogs, stopRequested.Status.RuntimeLogs)
 	physical := &apiv2.PhysicalProcess{}
 	require.NoError(t, client.Get(ctx, physicalName, physical))
 	require.False(t, physical.Spec.Stop)

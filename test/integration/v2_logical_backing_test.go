@@ -832,7 +832,8 @@ func (client *backingStatusConflicts) Patch(ctx context.Context, obj ctrl_client
 }
 
 // Verifies that removing either owned backing's logical hold reports Unknown,
-// including after backing deletion and a later metadata wake, without recreating the backing.
+// including after backing deletion and a later metadata wake, without recreating the backing
+// or falsely completing its last observed log source.
 func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
 	t.Parallel()
 	for _, backingKind := range []string{"container", "image"} {
@@ -896,9 +897,14 @@ func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 				return current.Status.Phase == apiv2.LogicalContainerPhaseUnknown && ready != nil && ready.Reason == string(reason), nil
 			})
-			remaining, readErr := io.ReadAll(follower)
-			require.NoError(t, readErr)
-			require.Empty(t, remaining)
+			require.Equal(t, running.Status.RuntimeLogs, unknown.Status.RuntimeLogs)
+			require.Equal(t, running.Status.StartupLogs, unknown.Status.StartupLogs)
+			require.NoError(t, orchestrator.SimulateContainerLogging(running.Status.ContainerID,
+				apiv1.LogStreamSourceStdout, []byte("after-release\n")))
+			continued := make([]byte, len("after-release\n"))
+			_, continuedErr := io.ReadFull(follower, continued)
+			require.NoError(t, continuedErr)
+			require.Equal(t, "after-release\n", string(continued))
 			require.NoError(t, server.Client.Delete(ctx, backing))
 			switch currentBacking := backing.(type) {
 			case *apiv2.PhysicalContainer:
@@ -915,6 +921,11 @@ func TestV2LogicalContainerRejectsUnauthorizedBackingRelease(t *testing.T) {
 			require.Equal(t, string(reason), apimeta.FindStatusCondition(unknown.Status.Conditions, string(apiv2.ConditionReady)).Reason)
 			require.True(t, apierrors.IsNotFound(server.Client.Get(ctx, name, backing)))
 			require.Equal(t, 1, orchestrator.PullImageCallCount("held-image"))
+			require.NoError(t, server.Client.Delete(ctx, logical))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
+			remaining, readErr := io.ReadAll(follower)
+			require.NoError(t, readErr)
+			require.Empty(t, remaining)
 		})
 	}
 }

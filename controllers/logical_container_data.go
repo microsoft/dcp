@@ -157,13 +157,6 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 	if data.physicalContainerUID == "" {
 		change |= applyLogicalContainerBackingStatus(container, &apiv2.PhysicalContainer{})
 	}
-	if data.state == logicalContainerStateUnknown {
-		for _, source := range []*apiv2.LogSource{container.Status.RuntimeLogs, container.Status.StartupLogs} {
-			if source != nil {
-				change |= setValue(&source.Complete, true)
-			}
-		}
-	}
 	if _, valid := logicalContainerProjections.project(data.state); valid &&
 		(data.reconcileErr != nil || data.leaseFailureMessage != "") {
 		phase := apiv2.LogicalContainerPhaseUnknown
