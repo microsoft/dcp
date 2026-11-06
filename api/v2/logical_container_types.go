@@ -350,7 +350,7 @@ type LogicalContainerStatus struct {
 	// Image is the resolved runtime image reference.
 	Image string `json:"image,omitempty"`
 
-	// LifecycleKey is the supplied or calculated key applied to the runtime container.
+	// LifecycleKey is the supplied or calculated key for the desired container configuration.
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
 
 	// CreatedAt is the runtime container creation timestamp.

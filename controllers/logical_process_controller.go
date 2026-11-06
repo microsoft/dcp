@@ -226,6 +226,9 @@ func handleLogicalProcessPhysical(
 			return noChange
 		}
 	}
+	if resource.Spec.Stop && data.pendingRecord != nil {
+		data.replaceExisting = false
+	}
 	if data.replaceExisting {
 		record := data.pendingRecord
 		pid := int64(record.PID)
@@ -721,17 +724,20 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 		data.lifecycleKey, data.state = resource.Spec.LifecycleKey, logicalProcessStatePhysical
 		return
 	}
-	lifecycleSpec := resource.Spec.DeepCopy()
+	if data.lifecycleKey == "" {
+		data.lifecycleKey = resource.Spec.LifecycleKey
+	}
 	if !resource.Spec.Stop {
+		lifecycleSpec := resource.Spec.DeepCopy()
 		lifecycleSpec.Process = data.runConfig.DeepCopy()
+		key, _, keyErr := lifecycleSpec.GetLifecycleKey()
+		if keyErr != nil {
+			log.Error(keyErr, "Failed to calculate logical process lifecycle key")
+			data.state, data.message = logicalProcessStatePrepareFailed, keyErr.Error()
+			return
+		}
+		data.lifecycleKey = key
 	}
-	key, _, keyErr := lifecycleSpec.GetLifecycleKey()
-	if keyErr != nil {
-		log.Error(keyErr, "Failed to calculate logical process lifecycle key")
-		data.state, data.message = logicalProcessStatePrepareFailed, keyErr.Error()
-		return
-	}
-	data.lifecycleKey = key
 	if resource.Spec.EffectiveMode() != apiv2.LogicalProcessModePersistent {
 		data.state = logicalProcessStatePhysical
 		return
@@ -765,7 +771,8 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 		if runningErr != nil {
 			return runningErr
 		}
-		data.pendingRecord, data.replaceExisting = record, record.LifecycleKey != key
+		data.pendingRecord = record
+		data.replaceExisting = !resource.Spec.Stop && record.LifecycleKey != data.lifecycleKey
 		return nil
 	}()
 	if preparationErr != nil {
@@ -831,7 +838,10 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 					}
 					record = &statestore.PersistentProcessRecord{RunID: string(physical.UID)}
 				}
-				record.ResourceKey, record.LifecycleKey = resource.GetLeaseKey(), data.lifecycleKey
+				record.ResourceKey = resource.GetLeaseKey()
+				if physical.Spec.Process != nil {
+					record.LifecycleKey = data.lifecycleKey
+				}
 				record.PID, record.IdentityTime = pid, physical.Status.IdentityTimestamp.Time
 				if workloadID != "" {
 					record.WorkloadID = workloadID

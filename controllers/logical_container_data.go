@@ -101,7 +101,7 @@ type logicalContainerData struct {
 	// Evaluated launch configuration and service-backed port allocations.
 	runConfig *apiv2.LogicalContainerConfig
 	ports     []logicalPortData
-	// Lifecycle key selected for creation or adopted from the inspected container.
+	// Supplied or calculated lifecycle key for the desired container configuration.
 	lifecycleKey         string
 	physicalContainerUID types.UID
 	physicalImageUID     types.UID

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -464,6 +465,95 @@ func TestV2LogicalProcessControllerRejectsReleasedBackingHold(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
 	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(handle)))
+}
+
+type processReplacementCreateFailureClient struct {
+	ctrl_client.Client
+	intercepted atomic.Bool
+	entered     chan struct{}
+	release     chan struct{}
+}
+
+func (apiClient *processReplacementCreateFailureClient) Create(ctx context.Context, object ctrl_client.Object, options ...ctrl_client.CreateOption) error {
+	physical, isProcess := object.(*apiv2.PhysicalProcess)
+	if isProcess && strings.HasSuffix(physical.Name, "-previous") && apiClient.intercepted.CompareAndSwap(false, true) {
+		close(apiClient.entered)
+		select {
+		case <-apiClient.release:
+			return errors.New("replacement create failed before reaching the API")
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return apiClient.Client.Create(ctx, object, options...)
+}
+
+// Verifies that Stop supersedes a prepared persistent replacement before physical handoff,
+// preserving the desired key while adopting the retained identity without retiring its record or relaunching.
+func TestV2LogicalProcessControllerStopSupersedesPreparedReplacement(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	var boundary *processReplacementCreateFailureClient
+	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+			boundary = &processReplacementCreateFailureClient{Client: apiClient, entered: make(chan struct{}), release: make(chan struct{})}
+			return boundary
+		}})
+	require.NoError(t, startupErr)
+	unblock := sync.OnceFunc(func() { close(boundary.release) })
+	defer unblock()
+	apiClient := server.Client
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-stop-prepared-replacement"}}
+	require.NoError(t, apiClient.Create(ctx, namespace))
+	first := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, LifecycleKey: "original-key",
+			Process: &apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name, Args: []string{"original"}}}}
+	require.NoError(t, apiClient.Create(ctx, first))
+	waitObjectAssumesStateEx(t, ctx, apiClient, first.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+	})
+	record, recordErr := environment.StateStore.GetPersistentProcess(ctx, first.GetLeaseKey())
+	require.NoError(t, recordErr)
+	t.Cleanup(func() {
+		cleanupCtx := context.WithoutCancel(ctx)
+		stopErr := environment.TestProcessExecutor.StopProcess(cleanupCtx, record.ProcessHandle())
+		require.True(t, stopErr == nil || process.IsProcessGoneErr(stopErr), "%v", stopErr)
+		require.NoError(t, logs.RemoveOutputFiles(cleanupCtx, record.StdOutFile, record.StdErrFile))
+		require.NoError(t, environment.StateStore.DeletePersistentProcess(cleanupCtx, record.ResourceKey))
+	})
+	require.NoError(t, apiClient.Delete(ctx, first))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, first)
+	replacement := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: first.Name, Namespace: namespace.Name}, Spec: *first.Spec.DeepCopy()}
+	replacement.Spec.LifecycleKey = "different-key"
+	replacement.Spec.Process.Args = []string{"replacement"}
+	require.NoError(t, apiClient.Create(ctx, replacement))
+	select {
+	case <-boundary.entered:
+	case <-ctx.Done():
+		t.Fatal("replacement creation did not reach the API boundary")
+	}
+	require.NoError(t, apiClient.Patch(ctx, replacement, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	unblock()
+	stopped := waitObjectAssumesStateEx(t, ctx, apiClient, replacement.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
+	})
+	require.Equal(t, replacement.Spec.LifecycleKey, stopped.Status.LifecycleKey)
+	require.Equal(t, int64(record.PID), *stopped.Status.PID)
+	var backings apiv2.PhysicalProcessList
+	require.NoError(t, apiClient.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, backings.Items, 1)
+	require.Nil(t, backings.Items[0].Spec.Process)
+	require.Equal(t, stopped.Status.PID, backings.Items[0].Spec.PID)
+	require.True(t, backings.Items[0].Spec.Stop)
+	retained, retainedErr := environment.StateStore.GetPersistentProcess(ctx, replacement.GetLeaseKey())
+	require.NoError(t, retainedErr)
+	require.Equal(t, record.RunID, retained.RunID)
+	require.Equal(t, record.LifecycleKey, retained.LifecycleKey)
+	require.Len(t, environment.TestProcessExecutor.FindAll([]string{namespace.Name}, "", nil), 1)
+	require.True(t, process.IsProcessGoneErr(environment.TestProcessExecutor.CheckProcessRunning(record.ProcessHandle())))
+	require.NoError(t, apiClient.Delete(ctx, namespace))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
 }
 
 // Verifies that LogicalProcess uses persistent output storage and preserves ownership and captures through unscoped reuse.
