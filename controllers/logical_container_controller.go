@@ -857,6 +857,9 @@ func handleLogicalContainerRunning(
 	change |= reconciler.settleLogicalContainerObservedLease(ctx, container, data, physical, log)
 	observedState := logicalContainerBackingState(physical)
 	if observedState != state {
+		if observedState == logicalContainerStateRunning && len(container.Spec.Ports) > 0 {
+			observedState = logicalContainerStateCreating
+		}
 		data.state, data.reason, data.message = observedState, "", ""
 		if ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
 			data.message = fmt.Sprintf("PhysicalContainer reports %s: %s", ready.Reason, ready.Message)
@@ -871,7 +874,6 @@ func handleLogicalContainerRunning(
 	}
 	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, ports, addresses); endpointErr != nil {
 		log.Error(endpointErr, "Failed to synchronize logical container endpoints")
-		data.reconcileErr, data.message = endpointErr, endpointErr.Error()
 		change |= additionalReconciliationNeeded
 	}
 	return change
@@ -904,12 +906,27 @@ func handleLogicalContainerCreating(
 	} else if startupImage != nil {
 		change |= applyLogicalContainerStartupImageStatus(container, startupImage)
 	}
-	data.state, data.reason, data.message = logicalContainerBackingState(physical), "", ""
+	observedState := logicalContainerBackingState(physical)
+	data.reason, data.message = "", ""
 	ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
-	if data.state != logicalContainerStateRunning && ready != nil {
+	if observedState != logicalContainerStateRunning && ready != nil {
 		data.message = fmt.Sprintf("PhysicalContainer reports %s: %s", ready.Reason, ready.Message)
 	}
 	change |= reconciler.settleLogicalContainerObservedLease(ctx, container, data, physical, log)
+	if observedState == logicalContainerStateRunning && len(container.Spec.Ports) > 0 {
+		ports := data.portData(container)
+		addresses := containerEndpointAddresses(container.Spec.Ports, ports, physical.Status.PortMappings)
+		if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, ports, addresses); endpointErr != nil {
+			log.Error(endpointErr, "Failed to publish starting container endpoints")
+			data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, "Waiting to publish service endpoints."
+			return change | additionalReconciliationNeeded
+		}
+		if std_slices.ContainsFunc(addresses, func(portAddresses []apiv2.ServiceAddress) bool { return len(portAddresses) == 0 }) {
+			data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, "Waiting for container port mappings."
+			return change | additionalReconciliationNeeded
+		}
+	}
+	data.state = observedState
 	if data.state != logicalContainerStateCreating {
 		change |= additionalReconciliationNeeded
 	}
@@ -968,6 +985,9 @@ func handleLogicalContainerUnknown(
 	change |= reconciler.settleLogicalContainerObservedLease(ctx, container, data, physical, log)
 	observedState := logicalContainerBackingState(physical)
 	if observedState != logicalContainerStateUnknown {
+		if observedState == logicalContainerStateRunning && len(container.Spec.Ports) > 0 {
+			observedState = logicalContainerStateCreating
+		}
 		data.state, data.reason, data.message = observedState, "", ""
 		return change | additionalReconciliationNeeded
 	}
@@ -1175,7 +1195,6 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, container)
 	if portDeleteErr != nil {
 		log.Error(portDeleteErr, "Failed to delete logical container endpoints")
-		data.reconcileErr, data.message = portDeleteErr, portDeleteErr.Error()
 	}
 
 	options := []ctrl_client.ListOption{

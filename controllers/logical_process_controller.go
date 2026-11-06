@@ -481,13 +481,26 @@ func handleLogicalProcessCreating(
 		return additionalReconciliationNeeded
 	}
 	change, observedState := applyLogicalProcessBackingStatus(resource, physical)
-	data.state, data.reason, data.message = observedState, "", ""
+	data.reason, data.message = "", ""
 	if ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
 		data.message = ready.Message
 	}
 	if data.lease != nil && logicalPhysicalProcessStartupSettled(physical) {
 		change |= reconciler.persistLogicalProcess(ctx, resource, data, physical, log)
 	}
+	if observedState == logicalProcessStateRunning && len(resource.Spec.Ports) > 0 {
+		if resource.Spec.Stop {
+			data.state, data.reason, data.message = logicalProcessStateStopping, apiv2.LogicalProcessReasonStopping, ""
+			return change | additionalReconciliationNeeded
+		}
+		ports := data.portData(resource)
+		if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, ports, processEndpointAddresses(ports)); endpointErr != nil {
+			log.Error(endpointErr, "Failed to publish starting process endpoints")
+			data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, "Waiting to publish service endpoints."
+			return change | additionalReconciliationNeeded
+		}
+	}
+	data.state = observedState
 	if data.state != logicalProcessStateCreating {
 		return change | additionalReconciliationNeeded
 	}
@@ -524,7 +537,6 @@ func handleLogicalProcessRunning(
 	ports := data.portData(resource)
 	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, ports, processEndpointAddresses(ports)); endpointErr != nil {
 		log.Error(endpointErr, "Failed to synchronize running process endpoints")
-		data.reconcileErr, data.message = endpointErr, endpointErr.Error()
 		change |= additionalReconciliationNeeded
 	}
 	if data.lease != nil {
@@ -704,7 +716,6 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource)
 	if portDeleteErr != nil {
 		log.Error(portDeleteErr, "Failed to delete logical process endpoints")
-		data.reconcileErr, data.message = portDeleteErr, portDeleteErr.Error()
 	}
 	var children apiv2.PhysicalProcessList
 	listErr := r.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace),
@@ -824,6 +835,9 @@ func handleLogicalProcessUnknown(
 		change |= reconciler.persistLogicalProcess(ctx, resource, data, physical, log)
 	}
 	if observedState != logicalProcessStateUnknown {
+		if observedState == logicalProcessStateRunning && len(resource.Spec.Ports) > 0 {
+			observedState = logicalProcessStateCreating
+		}
 		data.state, data.reason, data.message = observedState, "", ""
 		return change | additionalReconciliationNeeded
 	}
