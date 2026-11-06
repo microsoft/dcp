@@ -599,7 +599,7 @@ func (p *netProxy) shutdownUDPStream(clientAddr net.Addr) {
 
 	if stream.ctx != nil {
 		stream.cancel()
-		// Endpoint streaming goroutine will close the stream listener.
+		// The endpoint streaming goroutine will close the backend connection.
 	}
 }
 
