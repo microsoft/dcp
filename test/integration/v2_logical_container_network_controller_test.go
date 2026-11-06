@@ -1577,7 +1577,7 @@ func TestV2LogicalContainerNetworkControllerSerializesV1Startup(t *testing.T) {
 func TestV2LogicalContainerNetworkControllerReportsPhysicalCreationFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
+	t.Cleanup(cancel)
 	var decorated *endpointStopFailureClient
 	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalContainerNetworkController|PhysicalContainerNetworkController, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
