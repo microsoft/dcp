@@ -74,6 +74,92 @@ func TestPrepareLogicalPortsReevaluatesDynamicPortsOnRetry(t *testing.T) {
 	require.Equal(t, prepared, data.portData(owner))
 }
 
+type portServiceCreateClient struct {
+	ctrl_client.Client
+	createErr error
+	commit    bool
+	mismatch  bool
+	reads     int
+	creates   int
+}
+
+func (apiClient *portServiceCreateClient) Get(ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption) error {
+	apiClient.reads++
+	return apiClient.Client.Get(ctx, key, object, options...)
+}
+
+func (apiClient *portServiceCreateClient) Create(ctx context.Context, object ctrl_client.Object, options ...ctrl_client.CreateOption) error {
+	apiClient.creates++
+	if apiClient.commit {
+		service := object.(*apiv2.LogicalService).DeepCopy()
+		service.OwnerReferences = []metav1.OwnerReference{{APIVersion: apiv2.GroupVersion.String(), Kind: "LogicalProcess", Name: "another-owner", UID: "another-uid"}}
+		if apiClient.mismatch {
+			service.Spec.Protocol = commonapi.PortProtocolUDP
+		}
+		if commitErr := apiClient.Client.Create(ctx, service, options...); commitErr != nil {
+			return commitErr
+		}
+	}
+	return apiClient.createErr
+}
+
+// Verifies that prepareLogicalPorts returns ordinary Create errors without confirmation, recovers
+// a committed service on retry, and confirms AlreadyExists races through template compatibility.
+func TestPrepareLogicalPortsClassifiesCreateOutcomes(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name      string
+		commit    bool
+		mismatch  bool
+		exists    bool
+		readCount int
+	}{
+		{name: "write-failure", readCount: 1},
+		{name: "lost-response", commit: true, readCount: 1},
+		{name: "matching-race", commit: true, exists: true, readCount: 2},
+		{name: "incompatible-race", commit: true, mismatch: true, exists: true, readCount: 2},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			defer cancel()
+			scheme := runtime.NewScheme()
+			require.NoError(t, apiv2.AddToScheme(scheme))
+			createErr := errors.New("service Create response unavailable")
+			var injectedErr error = createErr
+			if testCase.exists {
+				injectedErr = apierrors.NewAlreadyExists(apiv2.GroupVersion.WithResource("logicalservices").GroupResource(), "workload-management")
+			}
+			apiClient := &portServiceCreateClient{Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+				createErr: injectedErr, commit: testCase.commit, mismatch: testCase.mismatch}
+			owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "workload", Namespace: "namespace"}}
+			requested := []logicalPortRequest{{binding: apiv2.LogicalServiceBinding{Name: "http",
+				Service: &apiv2.LogicalServiceTemplate{Name: "management"}}, port: 8080}}
+			ports, prepareErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner, requested, logr.Discard())
+			require.Equal(t, testCase.readCount, apiClient.reads)
+			require.Equal(t, 1, apiClient.creates)
+			switch {
+			case testCase.mismatch:
+				require.ErrorIs(t, prepareErr, errLogicalServiceDependencyFailed)
+				require.Empty(t, ports)
+			case testCase.exists:
+				require.NoError(t, prepareErr)
+				require.Len(t, ports, 1)
+			default:
+				require.ErrorIs(t, prepareErr, createErr)
+				require.False(t, apierrors.IsNotFound(prepareErr))
+				require.Empty(t, ports)
+			}
+			if testCase.commit && !testCase.exists {
+				recovered, retryErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner, requested, logr.Discard())
+				require.NoError(t, retryErr)
+				require.Len(t, recovered, 1)
+				require.Equal(t, 1, apiClient.creates)
+				require.Equal(t, 2, apiClient.reads)
+			}
+		})
+	}
+}
+
 // Verifies that prepareLogicalPorts rejects terminating and failed service dependencies before
 // allocating a port, including failed services that still advertise an address.
 func TestPrepareLogicalPortsRejectsTerminalServices(t *testing.T) {

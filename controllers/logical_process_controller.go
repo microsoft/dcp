@@ -317,6 +317,12 @@ func handleLogicalProcessPhysical(
 				StdoutFile: record.StdOutFile, StderrFile: record.StdErrFile})
 		if previousErr != nil {
 			log.Error(previousErr, "Failed to prepare persistent process replacement")
+			// AlreadyExists here means an invalid existing physical process; valid ones are returned without an error.
+			if apierrors.IsAlreadyExists(previousErr) {
+				data.state, data.reason, data.message = logicalProcessStatePhysicalFailed, apiv2.LogicalProcessReasonPhysicalProcessPreparationFailed, previousErr.Error()
+				data.reconcileErr = nil
+				return noChange
+			}
 			if data.state == logicalProcessStatePhysical {
 				data.reconcileErr, data.message = previousErr, previousErr.Error()
 			}
@@ -345,7 +351,13 @@ func handleLogicalProcessPhysical(
 	physicalSpec := logicalProcessPhysicalSpec(resource, data)
 	physical, physicalErr := reconciler.ensureLogicalPhysicalProcess(ctx, resource, data, "", physicalSpec)
 	if physicalErr != nil {
-		log.Error(physicalErr, "Failed to prepare backing physical process")
+		log.Error(physicalErr, "Failed to prepare PhysicalProcess")
+		// AlreadyExists here means an invalid existing physical process; valid ones are returned without an error.
+		if apierrors.IsAlreadyExists(physicalErr) {
+			data.state, data.reason, data.message = logicalProcessStatePhysicalFailed, apiv2.LogicalProcessReasonPhysicalProcessPreparationFailed, physicalErr.Error()
+			data.reconcileErr = nil
+			return noChange
+		}
 		if data.state == logicalProcessStatePhysical {
 			data.reconcileErr, data.message = physicalErr, physicalErr.Error()
 		}
@@ -389,6 +401,7 @@ func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
 		expectedUID = data.replacementUID
 	}
 	observed, getErr := r.findPhysicalProcess(ctx, resource, data, suffix)
+	var creationCollision error
 	if apierrors.IsNotFound(getErr) {
 		if expectedUID != "" {
 			return nil, fmt.Errorf("%w: physical process %q no longer exists", errLogicalProcessBackingChanged, physical.NamespacedName())
@@ -406,10 +419,24 @@ func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
 		}
 		InitializeLogicalBackingFinalizers(physical, physicalProcessFinalizer)
 		createErr := r.Create(ctx, physical)
+		if physical.UID != "" {
+			if suffix == "" {
+				data.physicalUID = physical.UID
+			} else {
+				data.replacementUID = physical.UID
+			}
+		}
 		if createErr != nil {
+			if !apierrors.IsAlreadyExists(createErr) {
+				return nil, fmt.Errorf("create physical process: %w", createErr)
+			}
+			creationCollision = createErr
 			getErr = r.NoCacheClient.Get(ctx, physical.NamespacedName(), physical)
 			if getErr != nil {
-				return nil, fmt.Errorf("create physical process and verify backing: %w", errors.Join(createErr, getErr))
+				return nil, fmt.Errorf("get existing physical process: %w", getErr)
+			}
+			if identityErr := validatePhysicalResourceIdentity(resource, physical, expectedUID); identityErr != nil {
+				return nil, fmt.Errorf("%v: %w", identityErr, createErr)
 			}
 		}
 	} else if getErr != nil {
@@ -429,6 +456,9 @@ func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
 	if !metav1.IsControlledBy(physical, resource) || (expectedUID != "" && physical.UID != expectedUID) ||
 		!reflect.DeepEqual(actualSpec, expectedSpec) || !monitorMatches ||
 		!osutil.MicroEqual(physical.Spec.IdentityTimestamp, spec.IdentityTimestamp) {
+		if creationCollision != nil {
+			return nil, fmt.Errorf("physical process %q has a different identity, owner, or spec: %w", physical.NamespacedName(), creationCollision)
+		}
 		return nil, fmt.Errorf("physical process %q has a different identity, owner, or spec", physical.NamespacedName())
 	}
 	if !hasFinalizer(physical, LogicalBackingFinalizer) {

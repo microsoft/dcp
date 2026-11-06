@@ -1451,8 +1451,18 @@ func (r *PhysicalContainerReconciler) ensurePhysicalContainerNetworkConnections(
 	existingNames := make(map[string]struct{}, len(connections.Items))
 	for i := range connections.Items {
 		connection := &connections.Items[i]
-		if _, expected := desiredConnections[connection.Name]; expected {
+		desired, expected := desiredConnections[connection.Name]
+		if !metav1.IsControlledBy(connection, container) {
+			if expected {
+				resultErr = errors.Join(resultErr, fmt.Errorf("physical container network connection %q has a different owner", connection.NamespacedName()))
+			}
+			continue
+		}
+		if expected {
 			existingNames[connection.Name] = struct{}{}
+			if !connection.Spec.Equal(desired) || !connection.DeletionTimestamp.IsZero() {
+				resultErr = errors.Join(resultErr, fmt.Errorf("physical container network connection %q has a different spec or is terminating", connection.NamespacedName()))
+			}
 			continue
 		}
 
@@ -1492,7 +1502,7 @@ func (r *PhysicalContainerReconciler) ensurePhysicalContainerNetworkConnections(
 				continue
 			}
 			if !metav1.IsControlledBy(&existingConnection, container) ||
-				!existingConnection.Spec.Equal(connection.Spec) {
+				!existingConnection.Spec.Equal(connection.Spec) || !existingConnection.DeletionTimestamp.IsZero() {
 				resultErr = errors.Join(resultErr, fmt.Errorf("physical container network connection %q already exists with a different owner or spec", connection.NamespacedName()))
 			}
 			continue

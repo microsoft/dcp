@@ -184,23 +184,8 @@ func (boundary *processCreateLostResponseClient) Create(
 	}
 }
 
-type processCreateConfirmationFailureReader struct {
-	ctrl_client.Reader
-	failed atomic.Bool
-}
-
-func (reader *processCreateConfirmationFailureReader) Get(
-	ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption,
-) error {
-	getErr := reader.Reader.Get(ctx, key, object, options...)
-	if _, physical := object.(*apiv2.PhysicalProcess); physical && getErr == nil && reader.failed.CompareAndSwap(false, true) {
-		return errors.New("physical process create confirmation unavailable")
-	}
-	return getErr
-}
-
 // Verifies that LogicalProcess recovers an owned child after a lost successful create response and
-// failed confirmation, preserving evaluated arguments/environment while forwarding stop without relaunching.
+// preserves evaluated arguments/environment while forwarding stop without relaunching.
 func TestV2LogicalProcessControllerRecoversCreatedChildBeforeForwardingStop(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []apiv2.LogicalProcessMode{apiv2.LogicalProcessModeSession, apiv2.LogicalProcessModePersistent} {
@@ -220,17 +205,12 @@ func TestV2LogicalProcessControllerRecoversCreatedChildBeforeForwardingStop(t *t
 				created, release := make(chan *apiv2.PhysicalProcess, 1), make(chan struct{})
 				unblock := sync.OnceFunc(func() { close(release) })
 				defer unblock()
-				var confirmationReader *processCreateConfirmationFailureReader
 				server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 					LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
 					TestEnvironmentOptions{
 						DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
 							return &processCreateLostResponseClient{Client: apiClient, created: created, release: release,
 								responseError: errors.New("applied physical process create response lost")}
-						},
-						DecorateAPIReader: func(reader ctrl_client.Reader) ctrl_client.Reader {
-							confirmationReader = &processCreateConfirmationFailureReader{Reader: reader}
-							return confirmationReader
 						},
 					})
 				require.NoError(t, startupErr)
@@ -271,7 +251,6 @@ func TestV2LogicalProcessControllerRecoversCreatedChildBeforeForwardingStop(t *t
 					return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
 				})
 				require.Equal(t, physical.Name, stopped.Status.PhysicalProcessRef)
-				require.True(t, confirmationReader.failed.Load())
 				require.Equal(t, running.Status.PID, stopped.Status.PID)
 				require.NotNil(t, stopped.Status.RuntimeLogs)
 				require.Equal(t, physical.UID, stopped.Status.RuntimeLogs.UID)

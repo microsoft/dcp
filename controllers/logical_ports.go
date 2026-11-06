@@ -113,17 +113,22 @@ func prepareLogicalPorts(
 		port := logicalPortForSelection(owner, request, logicalPortSelection{})
 		service := &apiv2.LogicalService{}
 		serviceName := commonapi.AsNamespacedName(port.serviceRef, owner.GetNamespace())
-		if request.binding.Service != nil {
+		getErr := reader.Get(ctx, serviceName, service)
+		if getErr != nil {
+			if request.binding.Service == nil || !apierrors.IsNotFound(getErr) {
+				return prepared, fmt.Errorf("get port %q service: %w", request.binding.Name, getErr)
+			}
 			service.ObjectMeta = metav1.ObjectMeta{Name: serviceName.Name, Namespace: owner.GetNamespace()}
 			service.Spec = request.binding.Service.LogicalServiceSpec
 			createErr := apiClient.Create(ctx, service)
 			if createErr != nil {
-				if getErr := reader.Get(ctx, serviceName, service); getErr != nil {
-					return prepared, fmt.Errorf("create port %q service and verify outcome: %w", request.binding.Name, errors.Join(createErr, getErr))
+				if !apierrors.IsAlreadyExists(createErr) {
+					return prepared, fmt.Errorf("create port %q service: %w", request.binding.Name, createErr)
+				}
+				if confirmationErr := reader.Get(ctx, serviceName, service); confirmationErr != nil {
+					return prepared, fmt.Errorf("confirm port %q service after AlreadyExists: %w", request.binding.Name, confirmationErr)
 				}
 			}
-		} else if getErr := reader.Get(ctx, serviceName, service); getErr != nil {
-			return prepared, fmt.Errorf("get port %q service: %w", request.binding.Name, getErr)
 		}
 		if !service.DeletionTimestamp.IsZero() {
 			return prepared, fmt.Errorf("%w: port %q service %q is terminating", errLogicalServiceDependencyFailed, request.binding.Name, serviceName)
@@ -136,7 +141,7 @@ func prepareLogicalPorts(
 			return prepared, fmt.Errorf("%w: %s", errLogicalServiceDependencyFailed, message)
 		}
 		if request.binding.Service != nil && !service.Spec.Equal(request.binding.Service.LogicalServiceSpec) {
-			return prepared, fmt.Errorf("service %q configuration does not match the template", serviceName)
+			return prepared, fmt.Errorf("%w: service %q configuration does not match the template", errLogicalServiceDependencyFailed, serviceName)
 		}
 		port.protocol = service.Spec.EffectiveProtocol()
 		if port.Port == 0 {
@@ -226,7 +231,17 @@ func syncLogicalEndpoints(
 			syncErr = errors.Join(syncErr, fmt.Errorf("set port %q endpoint owner: %w", port.Name, ownerErr))
 			continue
 		}
-		if createErr := apiClient.Create(ctx, endpoint); createErr != nil {
+		createErr := apiClient.Create(ctx, endpoint)
+		if apierrors.IsAlreadyExists(createErr) {
+			existing := &apiv2.ServiceEndpoint{}
+			if lookupErr := reader.Get(ctx, endpoint.NamespacedName(), existing); lookupErr != nil {
+				syncErr = errors.Join(syncErr, fmt.Errorf("get existing port %q endpoint: %w", port.Name, lookupErr))
+			} else if !metav1.IsControlledBy(existing, owner) {
+				syncErr = errors.Join(syncErr, fmt.Errorf("endpoint %q has a different owner", existing.NamespacedName()))
+			} else if !existing.DeletionTimestamp.IsZero() || !reflect.DeepEqual(existing.Spec, spec) {
+				syncErr = errors.Join(syncErr, fmt.Errorf("endpoint %q is awaiting replacement after deletion", existing.NamespacedName()))
+			}
+		} else if createErr != nil {
 			syncErr = errors.Join(syncErr, fmt.Errorf("create port %q endpoint: %w", port.Name, createErr))
 		}
 	}

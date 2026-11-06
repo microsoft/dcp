@@ -30,6 +30,39 @@ func TestInitializeLogicalBackingFinalizers(t *testing.T) {
 	require.Equal(t, []string{existing[0], "", ""}, existing[:cap(existing)])
 }
 
+// Verifies that validatePhysicalResourceIdentity accepts only the pinned logical owner's live physical resource,
+// retaining its logical hold and rejecting foreign owners, changed UIDs, or terminating resources.
+func TestValidatePhysicalResourceIdentity(t *testing.T) {
+	t.Parallel()
+	owner := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "test", UID: "owner-uid"}}
+	for _, testCase := range []struct {
+		name    string
+		change  func(*apiv2.PhysicalContainerImage)
+		invalid bool
+	}{
+		{name: "matching"},
+		{name: "foreign", invalid: true, change: func(image *apiv2.PhysicalContainerImage) { image.OwnerReferences[0].UID = "another-owner" }},
+		{name: "changed-uid", invalid: true, change: func(image *apiv2.PhysicalContainerImage) { image.UID = "another-image" }},
+		{name: "released-hold", invalid: true, change: func(image *apiv2.PhysicalContainerImage) { image.Finalizers = nil }},
+		{name: "terminating", invalid: true, change: func(image *apiv2.PhysicalContainerImage) { now := metav1.Now(); image.DeletionTimestamp = &now }},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: "image", Namespace: owner.Namespace, UID: "image-uid",
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(owner, apiv2.GroupVersion.WithKind("LogicalContainer"))},
+				Finalizers:      []string{LogicalBackingFinalizer}}}
+			if testCase.change != nil {
+				testCase.change(image)
+			}
+			identityErr := validatePhysicalResourceIdentity(owner, image, "image-uid")
+			if testCase.invalid {
+				require.Error(t, identityErr)
+			} else {
+				require.NoError(t, identityErr)
+			}
+		})
+	}
+}
+
 // Verifies that ReleaseLogicalBackingFinalizer removes only the logical hold, preserves physical
 // and independent cleanup finalizers, and safely repeats after a successful release.
 func TestReleaseLogicalBackingFinalizer(t *testing.T) {
