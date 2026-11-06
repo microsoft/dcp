@@ -22,6 +22,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -760,15 +761,35 @@ func TestV2LogicalContainerControllerCalculatesLifecycleKey(t *testing.T) {
 }
 
 // Verifies that the LogicalContainer controller never creates a missing existing-mode container
-// and uses physical observations, rather than logical status, for readiness and runtime details.
+// and attributes mixed explicit/dynamic endpoint bindings from physical observations rather than logical status.
+// Deletion withdraws endpoints while retaining the adopted container and independent services.
 func TestV2LogicalContainerControllerObservesExistingContainer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	namespace := createActiveV2Namespace(t, ctx, "v2-logical-existing")
+	services := []*apiv2.LogicalService{
+		{ObjectMeta: metav1.ObjectMeta{Name: "tcp", Namespace: namespace.Name},
+			Spec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP, AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "udp", Namespace: namespace.Name},
+			Spec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolUDP, AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "tcp-fixed", Namespace: namespace.Name},
+			Spec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP, AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "tcp-second", Namespace: namespace.Name},
+			Spec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP, AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
+	}
+	for _, service := range services {
+		require.NoError(t, client.Create(ctx, service))
+	}
 	container := &apiv2.LogicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "existing", Namespace: namespace.Name},
-		Spec:       apiv2.LogicalContainerSpec{Mode: apiv2.LogicalContainerModeExisting, ContainerName: "v2-logical-existing-runtime"},
+		Spec: apiv2.LogicalContainerSpec{Mode: apiv2.LogicalContainerModeExisting, ContainerName: "v2-logical-existing-runtime",
+			Ports: []apiv2.LogicalContainerPort{
+				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http", ServiceRef: services[0].Name}, ContainerPort: 8080},
+				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http-fixed", ServiceRef: services[2].Name}, ContainerPort: 8080, HostPort: 9000},
+				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "udp", ServiceRef: services[1].Name}, ContainerPort: 9090},
+				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http-second", ServiceRef: services[3].Name}, ContainerPort: 8080},
+			}},
 	}
 	require.NoError(t, client.Create(ctx, container))
 	waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
@@ -777,10 +798,41 @@ func TestV2LogicalContainerControllerObservesExistingContainer(t *testing.T) {
 	})
 	require.Zero(t, containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName))
 	runtimeID := runExistingTestContainer(t, ctx, container.Spec.ContainerName, "existing-image")
+	createCalls := containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName)
+	require.NoError(t, containerOrchestrator.SimulateContainerPortMappings(ctx, runtimeID, containers.InspectedContainerPortMapping{
+		"8080/tcp": {
+			{HostIp: networking.IPv4LocalhostDefaultAddress, HostPort: "28080"},
+			{HostPort: "18080"},
+			{HostIp: networking.IPv4AllInterfaceAddress, HostPort: "18080"},
+			{HostIp: networking.ToStandaloneAddress(networking.IPv6AllInterfaceAddress), HostPort: "18080"},
+			{HostIp: networking.IPv4LocalhostDefaultAddress, HostPort: "9000"},
+		},
+		"8080/udp": {{HostIp: networking.IPv4LocalhostDefaultAddress, HostPort: "18081"}},
+		"8081/tcp": {{HostIp: networking.IPv4LocalhostDefaultAddress, HostPort: "8080"}},
+		"9090/udp": {{HostIp: networking.IPv4LocalhostDefaultAddress, HostPort: "19090"}},
+	}))
 	running := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
 	})
 	require.Equal(t, runtimeID, running.Status.ContainerID)
+	require.Equal(t, createCalls, containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName))
+	var endpoints apiv2.ServiceEndpointList
+	require.NoError(t, client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
+	var endpointSpecs []apiv2.ServiceEndpointSpec
+	for i := range endpoints.Items {
+		endpoint := &endpoints.Items[i]
+		require.True(t, metav1.IsControlledBy(endpoint, running))
+		endpointSpecs = append(endpointSpecs, endpoint.Spec)
+	}
+	require.ElementsMatch(t, []apiv2.ServiceEndpointSpec{
+		{ServiceRef: services[0].Name, Addresses: []apiv2.ServiceAddress{
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: 18080},
+			{Address: networking.IPv6LocalhostDefaultAddress, Port: 18080},
+		}},
+		{ServiceRef: services[1].Name, Addresses: []apiv2.ServiceAddress{{Address: networking.IPv4LocalhostDefaultAddress, Port: 19090}}},
+		{ServiceRef: services[2].Name, Addresses: []apiv2.ServiceAddress{{Address: networking.IPv4LocalhostDefaultAddress, Port: 9000}}},
+		{ServiceRef: services[3].Name, Addresses: []apiv2.ServiceAddress{{Address: networking.IPv4LocalhostDefaultAddress, Port: 28080}}},
+	}, endpointSpecs)
 	tamperErr := retryOnConflict(ctx, container.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
 		current.Status.PhysicalContainerRef = "not-the-physical-container"
 		current.Status.ContainerID = "not-the-runtime-container"
@@ -799,6 +851,15 @@ func TestV2LogicalContainerControllerObservesExistingContainer(t *testing.T) {
 	requireReadyCondition(t, paused.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonPaused)
 	require.NoError(t, client.Delete(ctx, container))
 	ctrl_testutil.WaitObjectDeleted[apiv2.LogicalContainer](t, ctx, client, container)
+	for i := range endpoints.Items {
+		ctrl_testutil.WaitObjectDeleted(t, ctx, client, &endpoints.Items[i])
+	}
+	for _, service := range services {
+		retained := waitObjectAssumesState(t, ctx, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+			return current.Status.Phase == apiv2.LogicalServicePhasePending, nil
+		})
+		require.Equal(t, service.UID, retained.UID)
+	}
 	remaining, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{runtimeID}})
 	require.NoError(t, inspectErr)
 	require.Len(t, remaining, 1)

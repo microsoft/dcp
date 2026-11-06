@@ -5879,7 +5879,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerPort(ref common.ReferenceCallba
 					},
 					"hostPort": {
 						SchemaProps: spec.SchemaProps{
-							Description: "HostPort is the backend's host port. Zero selects an available port.",
+							Description: "HostPort is the backend's host port. Zero selects an available port. Explicit ports select their matching bindings. Within each container-port/protocol group, zero-port declarations are matched in declaration order to ascending host ports, excluding explicitly requested ports.",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},

@@ -28,6 +28,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/logs"
+	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
@@ -631,21 +632,57 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	waitOutputFilesRemoved(t, ctx, replaced.Status.RuntimeLogs.StdoutFile, replaced.Status.RuntimeLogs.StderrFile)
 }
 
-// Verifies that LogicalProcess existing mode binds the supplied identity, never launches a process,
-// retains it on deletion, and rejects stale PID identities without stopping the current process.
+// Verifies that LogicalProcess existing mode binds the supplied identity and publishes owned
+// endpoints without launching a process. Deletion retains the process and services, withdraws
+// endpoints, and stale PID identities never stop the current process.
 func TestV2LogicalProcessControllerExistingIdentity(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	namespace := createActiveV2Namespace(t, ctx, "v2-logical-process-existing")
+	services := []*apiv2.LogicalService{
+		{ObjectMeta: metav1.ObjectMeta{Name: "tcp", Namespace: namespace.Name},
+			Spec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP, AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "udp", Namespace: namespace.Name},
+			Spec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolUDP, AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
+	}
+	for _, service := range services {
+		require.NoError(t, client.Create(ctx, service))
+	}
 	handle := seedAdoptablePhysicalProcess(t, ctx, "v2-logical-process-existing-command")
 	pid := int64(handle.Pid)
 	existing := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "existing", Namespace: namespace.Name},
-		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModeExisting, PID: &pid, IdentityTimestamp: metav1.NewMicroTime(handle.IdentityTime)}}
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModeExisting, PID: &pid, IdentityTimestamp: metav1.NewMicroTime(handle.IdentityTime),
+			Ports: []apiv2.LogicalProcessPort{
+				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http", ServiceRef: services[0].Name}, Address: networking.IPv4LocalhostDefaultAddress, Port: 8080},
+				{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "udp", ServiceRef: services[1].Name}, Address: networking.IPv6LocalhostDefaultAddress, Port: 9090},
+			}}}
 	require.NoError(t, client.Create(ctx, existing))
-	waitLogicalProcessPhase(t, ctx, existing.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+	running := waitLogicalProcessPhase(t, ctx, existing.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+	require.Equal(t, pid, *running.Status.PID)
+	var endpoints apiv2.ServiceEndpointList
+	require.NoError(t, client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
+	var endpointSpecs []apiv2.ServiceEndpointSpec
+	for i := range endpoints.Items {
+		endpoint := &endpoints.Items[i]
+		require.True(t, metav1.IsControlledBy(endpoint, running))
+		endpointSpecs = append(endpointSpecs, endpoint.Spec)
+	}
+	require.ElementsMatch(t, []apiv2.ServiceEndpointSpec{
+		{ServiceRef: services[0].Name, Addresses: []apiv2.ServiceAddress{{Address: networking.IPv4LocalhostDefaultAddress, Port: 8080}}},
+		{ServiceRef: services[1].Name, Addresses: []apiv2.ServiceAddress{{Address: networking.IPv6LocalhostDefaultAddress, Port: 9090}}},
+	}, endpointSpecs)
 	require.NoError(t, client.Delete(ctx, existing))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, existing)
+	for i := range endpoints.Items {
+		ctrl_testutil.WaitObjectDeleted(t, ctx, client, &endpoints.Items[i])
+	}
+	for _, service := range services {
+		retained := waitObjectAssumesState(t, ctx, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+			return current.Status.Phase == apiv2.LogicalServicePhasePending, nil
+		})
+		require.Equal(t, service.UID, retained.UID)
+	}
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
 	stale := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "stale", Namespace: namespace.Name}, Spec: *existing.Spec.DeepCopy()}
 	stale.Spec.IdentityTimestamp = metav1.NewMicroTime(handle.IdentityTime.Add(-time.Hour))
@@ -657,6 +694,9 @@ func TestV2LogicalProcessControllerExistingIdentity(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, stale)
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
 	require.Len(t, testProcessExecutor.FindAll([]string{"v2-logical-process-existing-command"}, "", nil), 1)
+	var remainingEndpoints apiv2.ServiceEndpointList
+	require.NoError(t, client.List(ctx, &remainingEndpoints, ctrl_client.InNamespace(namespace.Name)))
+	require.Empty(t, remainingEndpoints.Items)
 }
 
 // Verifies that LogicalProcess does not launch a process when created with stop requested.

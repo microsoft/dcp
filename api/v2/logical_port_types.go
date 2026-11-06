@@ -75,6 +75,9 @@ type LogicalContainerPort struct {
 	ContainerPort int32 `json:"containerPort"`
 
 	// HostPort is the backend's host port. Zero selects an available port.
+	// Explicit ports select their matching bindings. Within each container-port/protocol group,
+	// zero-port declarations are matched in declaration order to ascending host ports,
+	// excluding explicitly requested ports.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=65535
 	HostPort int32 `json:"hostPort,omitempty"`

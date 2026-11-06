@@ -275,13 +275,63 @@ func cleanupLogicalEndpoints(
 	return complete, cleanupErr
 }
 
+// containerEndpointAddresses attributes published container bindings to logical ports,
+// retaining all reachable addresses for each selected host port.
 func containerEndpointAddresses(
 	ports []apiv2.LogicalContainerPort, resolved []logicalPortData, mappings []apiv2.PhysicalContainerPortMapping,
 ) [][]apiv2.ServiceAddress {
+	type containerPortProtocol struct {
+		port     int32
+		protocol commonapi.PortProtocol
+	}
+	// Reserve explicit host ports before assigning dynamic ports, regardless of declaration order.
+	explicitHostPorts := make(map[containerPortProtocol]map[int32]struct{})
+	availableHostPorts := make(map[containerPortProtocol][]int32)
+	for portIndex, port := range resolved {
+		key := containerPortProtocol{port: ports[portIndex].ContainerPort, protocol: port.protocol}
+		if ports[portIndex].HostPort == 0 {
+			availableHostPorts[key] = nil
+			continue
+		}
+		if explicitHostPorts[key] == nil {
+			explicitHostPorts[key] = make(map[int32]struct{})
+		}
+		explicitHostPorts[key][ports[portIndex].HostPort] = struct{}{}
+	}
+	// Build distinct, numerically ordered candidates so attribution is independent of inspection
+	// order and multiple addresses for the same host port do not consume additional positions.
+	for _, mapping := range mappings {
+		if !networking.IsValidPort(int(mapping.HostPort)) {
+			continue
+		}
+		key := containerPortProtocol{port: mapping.ContainerPort, protocol: mapping.Protocol}
+		if _, dynamic := availableHostPorts[key]; !dynamic {
+			continue
+		}
+		if _, explicit := explicitHostPorts[key][mapping.HostPort]; !explicit {
+			availableHostPorts[key] = append(availableHostPorts[key], mapping.HostPort)
+		}
+	}
+	for key, candidates := range availableHostPorts {
+		slices.Sort(candidates)
+		availableHostPorts[key] = slices.Compact(candidates)
+	}
+	// Assign dynamic declarations in spec order, preserving every address for the selected port
+	// and translating wildcard bindings to reachable loopback addresses.
 	addresses := make([][]apiv2.ServiceAddress, len(resolved))
 	for portIndex, port := range resolved {
+		hostPort := ports[portIndex].HostPort
+		if hostPort == 0 {
+			key := containerPortProtocol{port: ports[portIndex].ContainerPort, protocol: port.protocol}
+			candidates := availableHostPorts[key]
+			if len(candidates) == 0 {
+				continue
+			}
+			hostPort = candidates[0]
+			availableHostPorts[key] = candidates[1:]
+		}
 		for _, mapping := range mappings {
-			if mapping.ContainerPort == ports[portIndex].ContainerPort && mapping.Protocol == port.protocol {
+			if mapping.ContainerPort == ports[portIndex].ContainerPort && mapping.Protocol == port.protocol && mapping.HostPort == hostPort {
 				address := mapping.HostIP
 				switch address {
 				case "", networking.IPv4AllInterfaceAddress:
@@ -298,6 +348,7 @@ func containerEndpointAddresses(
 
 			}
 		}
+		// Keep immutable endpoint bindings stable across reordered or duplicate inspection results.
 		slices.SortFunc(addresses[portIndex], func(left, right apiv2.ServiceAddress) int {
 			if left.Address < right.Address {
 				return -1
