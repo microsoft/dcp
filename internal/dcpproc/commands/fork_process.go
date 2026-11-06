@@ -24,23 +24,21 @@ import (
 
 type forkProcessOptions struct {
 	enableChildCleanup bool
-	skipDescendants    bool
 }
 
 func NewForkProcessCommand(log logr.Logger) (*cobra.Command, error) {
 	options := &forkProcessOptions{}
 	forkProcessCmd := &cobra.Command{
-		Use:          "fork-process [--monitor pid] [--monitor-identity-time time] [--enable-child-cleanup [--skip-descendants]] -- command [args...]",
+		Use:          "fork-process [--monitor pid] [--monitor-identity-time time] [--enable-child-cleanup] -- command [args...]",
 		Short:        "Starts a detached child process.",
-		Long:         "Starts a child process outside of the parent process tree or process group and writes the child PID to stdout. If a monitor process is provided, waits for either the child or monitor process to exit and exits with the child process exit code if the child exits first. If the monitor process exits first, fork-process exits and leaves the child process running unless --enable-child-cleanup is specified. Enabled cleanup also stops the child when fork-process receives a shutdown signal or PID output fails. Child stdout and stderr are not forwarded.",
+		Long:         "Starts a child process outside of the parent process tree or process group and writes the child PID to stdout. If a monitor process is provided, waits for either the child or monitor process to exit and exits with the child process exit code if the child exits first. If the monitor process exits first, fork-process exits and leaves the child process running unless --enable-child-cleanup is specified. Enabled cleanup stops only the launched process when the monitored owner exits, fork-process receives a shutdown signal, or PID output fails; descendants are not enumerated or stopped, although shared-console signals may still reach them. Child stdout and stderr are not forwarded.",
 		RunE:         forkProcess(log, options),
 		Args:         validateForkProcessArgs,
 		SilenceUsage: true,
 	}
 
 	cmds.AddMonitorFlags(forkProcessCmd)
-	forkProcessCmd.Flags().BoolVar(&options.enableChildCleanup, "enable-child-cleanup", false, "Stops the child process tree when the monitored owner exits, fork-process receives a shutdown signal, or PID output fails. Requires --monitor.")
-	forkProcessCmd.Flags().BoolVar(&options.skipDescendants, "skip-descendants", false, "Only applies when --enable-child-cleanup is used. Cleans up only the process started by this command, not its children. Shared-console signals may still reach its children.")
+	forkProcessCmd.Flags().BoolVar(&options.enableChildCleanup, "enable-child-cleanup", false, "Stops only the launched process when the monitored owner exits, fork-process receives a shutdown signal, or PID output fails. Descendants are not enumerated or stopped. Requires --monitor.")
 
 	return forkProcessCmd, nil
 }
@@ -53,13 +51,6 @@ func validateForkProcessArgs(cmd *cobra.Command, args []string) error {
 	cleanupEnabled, cleanupFlagErr := cmd.Flags().GetBool("enable-child-cleanup")
 	if cleanupFlagErr != nil {
 		return cleanupFlagErr
-	}
-	skipDescendants, skipFlagErr := cmd.Flags().GetBool("skip-descendants")
-	if skipFlagErr != nil {
-		return skipFlagErr
-	}
-	if skipDescendants && !cleanupEnabled {
-		return fmt.Errorf("--skip-descendants requires --enable-child-cleanup")
 	}
 	if cleanupEnabled && !cmd.Flags().Changed("monitor") {
 		return fmt.Errorf("--enable-child-cleanup requires --monitor")
@@ -81,6 +72,11 @@ func forkProcess(log logr.Logger, options *forkProcessOptions) func(cmd *cobra.C
 		childCmd.Env = os.Environ()
 		logger.WithSessionId(childCmd)
 		process.ForkFromParent(childCmd)
+
+		if options.enableChildCleanup {
+			stopSIGPIPEProtection := enableForkProcessSIGPIPEErrors()
+			defer stopSIGPIPEProtection()
+		}
 
 		monitorEnabled := cmd.Flags().Changed("monitor")
 		var monitorCtx context.Context
@@ -163,12 +159,8 @@ func runForkedProcess(
 		if !cleanupChild {
 			return
 		}
-		var stopOptions []process.ProcessStopOption
-		if options.skipDescendants {
-			stopOptions = append(stopOptions, process.StopRootOnly())
-		}
 		stopErr := runDetachedProcessCleanup(cmd.Context(), func(stopCtx context.Context) error {
-			return process.StopViaConsole(stopCtx, log, executor, handle, stopOptions...)
+			return process.StopViaConsole(stopCtx, log, executor, handle, process.StopRootOnly())
 		})
 		if process.IsProcessGoneErr(stopErr) {
 			log.V(1).Info("Forked process already exited before cleanup", "PID", handle.Pid)
@@ -178,7 +170,7 @@ func runForkedProcess(
 		}
 	}()
 
-	if options.enableChildCleanup && monitorCtx.Err() != nil {
+	if options.enableChildCleanup && monitorCtx != nil && monitorCtx.Err() != nil {
 		log.Info("Monitored process exited during startup; stopping forked process", "PID", handle.Pid)
 		return cmd.Context().Err()
 	}

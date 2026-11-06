@@ -35,26 +35,26 @@ type forkProcessRun struct {
 }
 
 // Verifies that fork-process cleans up its real child after owner exit only when enabled,
-// while both cleanup policies retain the existing PID-only stdout contract.
+// while retaining the existing PID-only stdout contract.
 func TestForkProcessChildCleanupWhenOwnerExits(t *testing.T) {
-	for _, cleanupMode := range []string{"disabled", "tree", "root"} {
-		t.Run(cleanupMode, func(t *testing.T) {
+	for _, cleanupEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cleanup=%t", cleanupEnabled), func(t *testing.T) {
 			t.Parallel()
 			testCtx, testCancel := testutil.GetTestContext(t, 0)
 			defer testCancel()
 			ownerCmd, owner := startCleanupOwner(t, testCtx)
 			readyPath := filepath.Join(t.TempDir(), "child-ready")
-			fork := startCleanupFork(t, testCtx, owner, cleanupMode, "--delay=2m", "--ready-file="+readyPath)
+			fork := startCleanupFork(t, testCtx, owner, "1", cleanupEnabled, "--delay=2m", "--ready-file="+readyPath)
 			child := waitCleanupForkChild(t, testCtx, fork)
 			waitCleanupFile(t, testCtx, readyPath)
 			require.NoError(t, ownerCmd.Process.Kill())
 			require.NoError(t, waitCleanupForkExit(t, testCtx, fork), fork.output.Stderr())
 			executor := process.NewOSExecutor(logr.Discard())
 			defer executor.Dispose()
-			if cleanupMode == "disabled" {
-				require.NoError(t, executor.CheckProcessRunning(child))
-			} else {
+			if cleanupEnabled {
 				require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(child)))
+			} else {
+				require.NoError(t, executor.CheckProcessRunning(child))
 			}
 			require.Equal(t, strconv.FormatInt(int64(child.Pid), 10)+"\n", fork.stdout())
 		})
@@ -64,9 +64,9 @@ func TestForkProcessChildCleanupWhenOwnerExits(t *testing.T) {
 // Verifies that fork-process never starts a child for an already-gone or reused owner,
 // with or without cleanup, and does not interfere with the unrelated live owner PID.
 func TestForkProcessCleanupRejectsGoneOrReusedOwner(t *testing.T) {
-	for _, cleanupMode := range []string{"disabled", "root"} {
+	for _, cleanupEnabled := range []bool{false, true} {
 		for _, reused := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s,reused=%t", cleanupMode, reused), func(t *testing.T) {
+			t.Run(fmt.Sprintf("cleanup=%t,reused=%t", cleanupEnabled, reused), func(t *testing.T) {
 				t.Parallel()
 				testCtx, testCancel := testutil.GetTestContext(t, 0)
 				defer testCancel()
@@ -79,7 +79,7 @@ func TestForkProcessCleanupRejectsGoneOrReusedOwner(t *testing.T) {
 					waitCleanupProcessGone(t, testCtx, owner)
 				}
 				readyPath := filepath.Join(t.TempDir(), "must-not-start")
-				fork := startCleanupFork(t, testCtx, owner, cleanupMode, "--delay=2m", "--ready-file="+readyPath)
+				fork := startCleanupFork(t, testCtx, owner, "1", cleanupEnabled, "--delay=2m", "--ready-file="+readyPath)
 				require.NoError(t, waitCleanupForkExit(t, testCtx, fork), fork.output.Stderr())
 				require.Empty(t, fork.stdout())
 				_, readyErr := os.Stat(readyPath)
@@ -140,7 +140,14 @@ func startCleanupOwner(t *testing.T, ctx context.Context) (*exec.Cmd, process.Pr
 	return command, handle
 }
 
-func startCleanupFork(t *testing.T, ctx context.Context, owner process.ProcessHandle, cleanupMode string, childArgs ...string) *forkProcessRun {
+func startCleanupFork(
+	t *testing.T,
+	ctx context.Context,
+	owner process.ProcessHandle,
+	monitorInterval string,
+	cleanupEnabled bool,
+	childArgs ...string,
+) *forkProcessRun {
 	t.Helper()
 	dcpPath, dcpPathErr := getDcpProcExecutablePath()
 	require.NoError(t, dcpPathErr)
@@ -148,12 +155,9 @@ func startCleanupFork(t *testing.T, ctx context.Context, owner process.ProcessHa
 	require.NoError(t, delayErr)
 	commandArgs := []string{"fork-process", "--monitor", strconv.FormatInt(int64(owner.Pid), 10),
 		"--monitor-identity-time", owner.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-		"--monitor-interval", "1"}
-	if cleanupMode != "disabled" {
+		"--monitor-interval", monitorInterval}
+	if cleanupEnabled {
 		commandArgs = append(commandArgs, "--enable-child-cleanup")
-	}
-	if cleanupMode == "root" {
-		commandArgs = append(commandArgs, "--skip-descendants")
 	}
 	commandArgs = append(commandArgs, "--", delayPath)
 	commandArgs = append(commandArgs, childArgs...)
