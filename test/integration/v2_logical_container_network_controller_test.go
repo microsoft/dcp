@@ -1587,33 +1587,51 @@ func TestV2LogicalContainerNetworkControllerSerializesV1Startup(t *testing.T) {
 	require.Equal(t, record, retainedRecord)
 }
 
-// Verifies that LogicalContainerNetwork exposes physical creation failure conditions
-// and preserves the unrelated container network that caused the name collision.
+// Verifies that LogicalContainerNetwork preserves physical creation failure and the unrelated
+// network causing it, and does not poll after terminal backing observation failures.
 func TestV2LogicalContainerNetworkControllerReportsPhysicalCreationFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	namespace := createActiveV2Namespace(t, ctx, "v2-logical-network-failure")
+	var decorated *endpointStopFailureClient
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalContainerNetworkController|PhysicalContainerNetworkController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+			decorated = &endpointStopFailureClient{endpointDeletionFailureClient: &endpointDeletionFailureClient{Client: apiClient}}
+			return decorated
+		}})
+	require.NoError(t, startupErr)
+	apiClient := server.Client
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-logical-network-failure"}}
+	createV2ExecNamespace(t, ctx, apiClient, namespace.Name)
 	networkName := namespace.Name + "-runtime"
-	removeRuntimeNetworkOnCleanup(t, networkName)
 	network := &apiv2.LogicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
 		Spec:       apiv2.LogicalContainerNetworkSpec{NetworkName: networkName, Network: &apiv2.LogicalContainerNetworkConfig{}},
 	}
-	existingID, collisionErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
+	existingID, collisionErr := server.ContainerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
 	require.NoError(t, collisionErr)
-	require.NoError(t, client.Create(ctx, network))
-	failed := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+	require.NoError(t, apiClient.Create(ctx, network))
+	failed := waitObjectAssumesStateEx(t, ctx, apiClient, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed, nil
 	})
 	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerNetworkReasonPhysicalNetworkFailed)
 	require.Contains(t, apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady)).Message, "CreateFailed")
-	require.NoError(t, client.Delete(ctx, network))
-	ctrl_testutil.WaitObjectDeleted(t, ctx, client, network)
-	foreign, foreignErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkName}})
+	expectedStatus := failed.DeepCopy().Status
+	decorated.failLookup.Store(true)
+	defer decorated.failLookup.Store(false)
+	reconcileTerminalObservationAndWaitForIdle(t, ctx, apiClient, decorated, failed)
+	require.Equal(t, expectedStatus, failed.Status)
+	decorated.failLookup.Store(false)
+	require.NoError(t, apiClient.Delete(ctx, network))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, network)
+	foreign, foreignErr := server.ContainerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkName}})
 	require.NoError(t, foreignErr)
 	require.Len(t, foreign, 1)
 	require.Equal(t, existingID, foreign[0].Id)
+	_, removeErr := server.ContainerOrchestrator.RemoveNetworks(ctx, containers.RemoveNetworksOptions{Networks: []string{existingID}})
+	require.NoError(t, removeErr)
+	require.NoError(t, apiClient.Delete(ctx, namespace))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
 }
 
 // Verifies that namespace cleanup waits for the logical and physical network finalizers

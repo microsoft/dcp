@@ -34,12 +34,13 @@ const (
 )
 
 type logicalServiceData struct {
-	uid           types.UID
-	proxies       []proxyInstanceData
-	appliedConfig *proxy.ProxyConfig
-	attempts      uint32
-	selectedUID   types.UID
-	selectedName  string
+	uid                   types.UID
+	proxies               []proxyInstanceData
+	appliedConfig         *proxy.ProxyConfig
+	attempts              uint32
+	startupFailureMessage string
+	selectedUID           types.UID
+	selectedName          string
 }
 
 // LogicalServiceReconciler owns proxy listeners and projects listener or endpoint-selected addresses.
@@ -120,6 +121,14 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 	message := namespaceReadinessMessage(service.Namespace, reason)
 	requeue := false
 	switch {
+	case len(data.proxies) == 0 && data.attempts >= MaxServiceStartAttempts:
+		status.Phase = apiv2.LogicalServicePhaseFailed
+		reason, message = apiv2.LogicalServiceReasonProxyConfigurationFailed, data.startupFailureMessage
+	case len(data.proxies) > 0 && !slices.ContainsFunc(data.proxies, func(listener proxyInstanceData) bool {
+		return listener.proxy.State() == proxy.ProxyStateRunning
+	}):
+		status.Phase = apiv2.LogicalServicePhaseFailed
+		reason, message = apiv2.LogicalServiceReasonProxyListenerUnavailable, "Service listeners have stopped; recreate the service to allocate new listeners."
 	case !ready:
 		if namespaceErr != nil {
 			log.Error(namespaceErr, "Failed to check service namespace")
@@ -172,6 +181,9 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		}
 		if proxyErr != nil {
 			log.Error(proxyErr, "Failed to configure logical service listeners")
+			if len(data.proxies) == 0 {
+				data.startupFailureMessage = proxyErr.Error()
+			}
 			reason, message, requeue = apiv2.LogicalServiceReasonProxyConfigurationFailed, proxyErr.Error(), true
 			if len(data.proxies) > 0 {
 				status.Phase = apiv2.LogicalServicePhaseUnknown
@@ -207,7 +219,11 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 	if requeue {
 		change |= additionalReconciliationNeeded
 	}
-	return r.SaveChangesWithDelay(ctx, service, patch, change, LongDelay, nil, log)
+	delay := StandardDelay
+	if requeue || (len(data.proxies) > 0 && len(status.EffectiveAddresses) > 0) {
+		delay = LongDelay
+	}
+	return r.SaveChangesWithDelay(ctx, service, patch, change, delay, nil, log)
 }
 
 func (r *LogicalServiceReconciler) configureProxies(

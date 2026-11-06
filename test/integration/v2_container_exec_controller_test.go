@@ -170,15 +170,17 @@ func TestV2LogicalContainerExecWaitsForPrerequisites(t *testing.T) {
 }
 
 // Verifies that terminal container execution launch failure remains terminal across updates,
-// completes output, and forwards the physical diagnostic to the logical system stream.
+// completes output, forwards its diagnostic, and does not poll after logical backing read failures.
 func TestV2ContainerExecLaunchFailureIsTerminal(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
 	var observer *containerExecReconcileObserver
+	var decorated *endpointStopFailureClient
 	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, containerExecTestControllers, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-			observer = &containerExecReconcileObserver{Client: apiClient, first: make(chan struct{}), second: make(chan struct{})}
+			decorated = &endpointStopFailureClient{endpointDeletionFailureClient: &endpointDeletionFailureClient{Client: apiClient}}
+			observer = &containerExecReconcileObserver{Client: decorated, first: make(chan struct{}), second: make(chan struct{})}
 			return observer
 		}})
 	require.NoError(t, startupErr)
@@ -226,6 +228,12 @@ func TestV2ContainerExecLaunchFailureIsTerminal(t *testing.T) {
 	require.NoError(t, apiClient.Get(ctx, physicalName, physical))
 	require.Equal(t, apiv2.ContainerExecPhaseFailed, physical.Status.Phase)
 	require.Equal(t, 1, orchestrator.ExecContainerCallCount(command))
+	require.NoError(t, apiClient.Get(ctx, failed.NamespacedName(), failed))
+	expectedStatus := failed.DeepCopy().Status
+	decorated.failLookup.Store(true)
+	defer decorated.failLookup.Store(false)
+	reconcileTerminalObservationAndWaitForIdle(t, ctx, apiClient, decorated, failed)
+	require.Equal(t, expectedStatus, failed.Status)
 }
 
 // Verifies that deleting a running or in-flight LogicalContainerExec cancels its attached

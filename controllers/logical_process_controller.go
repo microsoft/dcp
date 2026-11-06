@@ -476,23 +476,26 @@ func handleLogicalProcessTerminal(
 		log.Error(endpointErr, "Failed to withdraw terminal process endpoints")
 		change |= additionalReconciliationNeeded
 	}
+	if data.lease != nil {
+		data.leaseFailureMessage = ""
+		change |= reconciler.persistLogicalProcess(ctx, resource, data, nil, log)
+	}
 	data.reconcileErr = nil
 	if data.physicalUID == "" {
-		if data.lease != nil {
-			change |= reconciler.persistLogicalProcess(ctx, resource, data, nil, log)
+		return change
+	}
+	lookupData := *data
+	physical, getErr := reconciler.findPhysicalProcess(ctx, resource, &lookupData, "")
+	if getErr != nil {
+		log.Error(getErr, "Failed to get terminal process backing")
+		if lookupData.state == logicalProcessStateMissing {
+			data.state, data.reason, data.message = lookupData.state, lookupData.reason, lookupData.message
+			change |= data.applyMissingLogSource(resource)
 		}
 		return change
 	}
-	physical, getErr := reconciler.findPhysicalProcess(ctx, resource, data, "")
-	if getErr != nil {
-		log.Error(getErr, "Failed to get terminal process backing")
-		return change | additionalReconciliationNeeded
-	}
 	statusChange, _ := applyLogicalProcessBackingStatus(resource, physical)
 	change |= statusChange
-	if data.lease != nil && logicalPhysicalProcessStartupSettled(physical) {
-		change |= reconciler.persistLogicalProcess(ctx, resource, data, physical, log)
-	}
 	return change
 }
 
@@ -506,6 +509,7 @@ func handleLogicalProcessMissing(
 		change |= additionalReconciliationNeeded
 	}
 	if data.lease != nil {
+		data.leaseFailureMessage = ""
 		return change | reconciler.persistLogicalProcess(ctx, resource, data, nil, log)
 	}
 	return change
@@ -872,7 +876,7 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 		return additionalReconciliationNeeded
 	}
 	data.retryAfter = time.Time{}
-	return additionalReconciliationNeeded
+	return noChange
 }
 
 func (r *LogicalProcessReconciler) discardLogicalProcessData(ctx context.Context, name types.NamespacedName) error {

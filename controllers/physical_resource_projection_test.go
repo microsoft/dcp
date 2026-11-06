@@ -290,6 +290,11 @@ func assertPhysicalResourceProjections[State comparable, Phase ~string](
 		)
 
 		require.True(t, valid, "state %v", key)
+		if (string(expected.phase) == "Failed" || string(expected.phase) == "Exited") &&
+			expected.conditionReason != apiv2.PhysicalContainerReasonPartialContainerCleanupFailed {
+			require.False(t, expected.requeue, "terminal state %v", key)
+			require.Equal(t, StandardDelay, delay, "terminal state %v", key)
+		}
 		require.Equal(t, expected.phase, phase, "state %v", key)
 		require.Equal(t, expected.requeueDelay, delay, "state %v", key)
 		require.Len(t, conditions, 1, "state %v", key)
