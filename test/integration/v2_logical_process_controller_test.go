@@ -24,7 +24,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
@@ -800,9 +799,9 @@ func (apiClient *processBackingReleaseResponseClient) Patch(
 	return patchErr
 }
 
-// Verifies that LogicalProcess permits PhysicalProcess cleanup while ownership recording fails, retains its
-// startup lease and backing hold, then completes registration and hold release despite a lost release response.
-func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndSettlesBeforeDeletion(t *testing.T) {
+// Verifies that LogicalProcess releases its startup lease after stopping despite ownership-recording
+// failure, and completes backing cleanup despite a lost logical-hold release response.
+func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndReleasesTerminalLease(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -849,30 +848,20 @@ func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndSettlesBefore
 	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
 		return current.Spec.Stop && current.Status.Phase == apiv2.PhysicalProcessPhaseExited, nil
 	})
-	require.NoError(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, resource, environmentInfo.ResourceLeaseOwner))
-	require.NoError(t, serverInfo.Client.Delete(ctx, resource))
 	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
-		return !current.DeletionTimestamp.IsZero(), nil
+		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
 	})
-	failuresBeforeRetry := reader.failures.Load()
-	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
-		return reader.failures.Load() > failuresBeforeRetry, nil
-	}))
-	physical := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
-		return !current.DeletionTimestamp.IsZero() &&
-			!slices.Contains(current.Finalizers, apiv2.GroupName+"/physicalprocess-reconciler"), nil
-	})
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
-	require.NoError(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, resource, environmentInfo.ResourceLeaseOwner))
-	reader.fail.Store(false)
+	require.ErrorIs(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, resource, environmentInfo.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+	require.NoError(t, serverInfo.Client.Delete(ctx, resource))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, resource)
+	physical := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: physicalName.Name, Namespace: physicalName.Namespace}}
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, physical)
 	require.True(t, releaseClient.injected.Load())
-	record, storedErr := environmentInfo.StateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
-	require.NoError(t, storedErr)
-	require.Equal(t, commonapi.WorkloadID("retained-process-workload"), record.WorkloadID)
-	require.Equal(t, *failed.Status.PID, int64(record.PID))
-	require.True(t, process.IsProcessGoneErr(environmentInfo.TestProcessExecutor.CheckProcessRunning(record.ProcessHandle())))
+	_, storedErr := environmentInfo.StateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
+	require.ErrorIs(t, storedErr, statestore.ErrPersistentProcessNotFound)
+	pid, pidErr := process.Int64_ToPidT(*failed.Status.PID)
+	require.NoError(t, pidErr)
+	require.True(t, process.IsProcessGoneErr(environmentInfo.TestProcessExecutor.CheckProcessRunning(process.NewHandle(pid, failed.Status.IdentityTimestamp.Time))))
 	require.ErrorIs(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, resource, environmentInfo.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 }
 

@@ -24,6 +24,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -37,19 +38,27 @@ type endpointDeletionFailureClient struct {
 
 type endpointStopFailureClient struct {
 	*endpointDeletionFailureClient
-	failStop       atomic.Bool
-	stopAttempts   atomic.Int32
-	failLookup     atomic.Bool
-	lookupAttempts atomic.Int32
+	failStop        atomic.Bool
+	stopAttempts    atomic.Int32
+	failLookup      atomic.Bool
+	failImageLookup atomic.Bool
+	lookupAttempts  atomic.Int32
+	lastObservation atomic.Int64
 }
 
 func (apiClient *endpointStopFailureClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+	fail := false
 	switch list.(type) {
-	case *apiv2.PhysicalProcessList, *apiv2.PhysicalContainerList:
-		if apiClient.failLookup.Load() {
-			apiClient.lookupAttempts.Add(1)
-			return errors.New("physical backing lookup unavailable")
-		}
+	case *apiv2.PhysicalProcessList, *apiv2.PhysicalContainerList, *apiv2.PhysicalContainerNetworkList, *apiv2.PhysicalContainerExecList:
+		apiClient.lastObservation.Store(time.Now().UnixNano())
+		fail = apiClient.failLookup.Load()
+	case *apiv2.PhysicalContainerImageList:
+		apiClient.lastObservation.Store(time.Now().UnixNano())
+		fail = apiClient.failImageLookup.Load()
+	}
+	if fail {
+		apiClient.lookupAttempts.Add(1)
+		return errors.New("physical backing lookup unavailable")
 	}
 	return apiClient.Client.List(ctx, list, options...)
 }
@@ -165,8 +174,8 @@ type endpointCleanupWorkload struct {
 	service *apiv2.LogicalService
 }
 
-// Verifies that an exited logical process withdraws its endpoints and refreshes final observations
-// without forwarding a later Stop request or reopening process stopping.
+// Verifies that an exited logical process withdraws endpoints without forwarding a later Stop,
+// reopening its lifecycle, or polling after terminal observation failures.
 func TestV2LogicalProcessTerminalHandlerIgnoresLaterStop(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -203,63 +212,140 @@ func TestV2LogicalProcessTerminalHandlerIgnoresLaterStop(t *testing.T) {
 	require.Zero(t, decorated.stopAttempts.Load())
 	require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing))
 	require.False(t, workload.backing.(*apiv2.PhysicalProcess).Spec.Stop)
+	expectedStatus := observed.DeepCopy().Status
+	decorated.failLookup.Store(true)
+	defer decorated.failLookup.Store(false)
+	reconcileTerminalObservationAndWaitForIdle(t, ctx, apiClient, decorated, observed)
+	require.Equal(t, expectedStatus, observed.Status)
+	decorated.failLookup.Store(false)
 	require.NoError(t, apiClient.Delete(ctx, namespace))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
 }
 
-// Verifies that terminal logical containers withdraw endpoints and refresh observations without
-// forwarding a later Stop request or reopening their lifecycle as Stopping.
+// Verifies that terminal logical containers preserve their lifecycle after later Stop requests,
+// failed backing/image reads, or image identity changes, without polling except for cleanup.
 func TestV2LogicalContainerTerminalHandlerIgnoresLaterStop(t *testing.T) {
 	t.Parallel()
-	for _, terminal := range []string{"exit", "failed"} {
+	for _, terminal := range []string{"exit", "failed", "image-read", "image-identity", "preparation", "startup-lease"} {
 		t.Run(terminal, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
 			var decorated *endpointStopFailureClient
-			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, logicalServicePreparationControllers, t.Name(), t.TempDir(),
-				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-					decorated = &endpointStopFailureClient{endpointDeletionFailureClient: &endpointDeletionFailureClient{Client: apiClient}}
-					return decorated
-				}})
+			var ownershipReader *namespaceWorkloadFailureReader
+			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx, logicalServicePreparationControllers, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{
+					DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+						decorated = &endpointStopFailureClient{endpointDeletionFailureClient: &endpointDeletionFailureClient{Client: apiClient}}
+						return decorated
+					},
+					DecorateAPIReader: func(reader ctrl_client.Reader) ctrl_client.Reader {
+						ownershipReader = &namespaceWorkloadFailureReader{Reader: reader, namespaceName: "terminal-handler-" + terminal}
+						return ownershipReader
+					},
+				})
 			require.NoError(t, startupErr)
 			apiClient := server.Client
 			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "terminal-handler-" + terminal}}
 			require.NoError(t, apiClient.Create(ctx, namespace))
-			workload := createEndpointCleanupWorkload(t, ctx, apiClient, namespace.Name, "container")
-			logical := workload.logical.(*apiv2.LogicalContainer)
+			var workload endpointCleanupWorkload
+			var logical *apiv2.LogicalContainer
 			expectedPhase := apiv2.LogicalContainerPhaseExited
-			if terminal == "exit" {
-				orchestrator, simulated := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
-				require.True(t, simulated)
-				require.NoError(t, orchestrator.SimulateContainerStatus(ctx, logical.Status.ContainerID, containers.ContainerStatusExited))
+			if terminal == "preparation" {
+				expectedPhase = apiv2.LogicalContainerPhaseFailed
+				logical = &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: "workload", Namespace: namespace.Name},
+					Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
+						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name}, Command: []string{"{{"},
+					}}}
+				require.NoError(t, apiClient.Create(ctx, logical))
+			} else if terminal == "startup-lease" {
+				ownershipReader.fail.Store(true)
+				defer ownershipReader.fail.Store(false)
+				logical = &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: "workload", Namespace: namespace.Name},
+					Spec: apiv2.LogicalContainerSpec{Mode: apiv2.LogicalContainerModePersistent, ContainerName: namespace.Name,
+						Container: &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name}}}}
+				require.NoError(t, apiClient.Create(ctx, logical))
+				logical = waitObjectAssumesStateEx(t, ctx, apiClient, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+					return current.Status.ContainerID != "" && len(current.Status.Conditions) > 0 &&
+						current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonPersistenceFailed), nil
+				})
+				require.NoError(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner))
 			} else {
+				workload = createEndpointCleanupWorkload(t, ctx, apiClient, namespace.Name, "container")
+				logical = workload.logical.(*apiv2.LogicalContainer)
+			}
+			if terminal == "failed" {
 				expectedPhase = apiv2.LogicalContainerPhaseFailed
 				_, removeErr := server.ContainerOrchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
 					Containers: []string{logical.Status.ContainerID}, Force: true,
 				})
 				require.NoError(t, removeErr)
+			} else if terminal != "preparation" {
+				orchestrator, simulated := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+				require.True(t, simulated)
+				require.NoError(t, orchestrator.SimulateContainerStatus(ctx, logical.Status.ContainerID, containers.ContainerStatusExited))
 			}
 			waitObjectAssumesStateEx(t, ctx, apiClient, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				return current.Status.Phase == expectedPhase, nil
 			})
-			waitObjectAssumesStateEx(t, ctx, apiClient, workload.service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalServicePhasePending, nil
-			})
+			if workload.service != nil {
+				waitObjectAssumesStateEx(t, ctx, apiClient, workload.service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+					return current.Status.Phase == apiv2.LogicalServicePhasePending, nil
+				})
+			}
 			require.NoError(t, apiClient.Patch(ctx, logical,
 				ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 			observed := waitObjectAssumesStateEx(t, ctx, apiClient, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				return current.Spec.Stop && current.Status.Phase == expectedPhase && len(current.Status.Conditions) > 0 &&
 					current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
 			})
+			if terminal == "startup-lease" {
+				require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
+			}
 			require.NotEqual(t, string(apiv2.LogicalContainerReasonStopped), observed.Status.Conditions[0].Reason)
 			require.Zero(t, decorated.stopAttempts.Load())
-			require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing))
-			require.False(t, workload.backing.(*apiv2.PhysicalContainer).Spec.Stop)
+			if workload.backing != nil {
+				require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing))
+				require.False(t, workload.backing.(*apiv2.PhysicalContainer).Spec.Stop)
+			}
+			expectedStatus := observed.DeepCopy().Status
+			switch terminal {
+			case "image-read", "preparation":
+				decorated.failImageLookup.Store(true)
+			case "image-identity":
+				image := &apiv2.PhysicalContainerImage{}
+				require.NoError(t, apiClient.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: observed.Status.ImageRef}, image))
+				image.Finalizers = slices.DeleteFunc(image.Finalizers, func(finalizer string) bool { return finalizer == controllers.LogicalBackingFinalizer })
+				require.NoError(t, apiClient.Update(ctx, image))
+			default:
+				decorated.failLookup.Store(true)
+			}
+			defer decorated.failLookup.Store(false)
+			defer decorated.failImageLookup.Store(false)
+			reconcileTerminalObservationAndWaitForIdle(t, ctx, apiClient, decorated, observed)
+			require.Equal(t, expectedStatus, observed.Status)
+			decorated.failLookup.Store(false)
+			decorated.failImageLookup.Store(false)
 			require.NoError(t, apiClient.Delete(ctx, namespace))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
 		})
 	}
+}
+
+func reconcileTerminalObservationAndWaitForIdle(
+	t *testing.T, ctx context.Context, apiClient ctrl_client.Client, decorated *endpointStopFailureClient, logical ctrl_client.Object,
+) {
+	t.Helper()
+	previousRead, previousAttempts := decorated.lastObservation.Load(), decorated.lookupAttempts.Load()
+	require.NoError(t, apiClient.Patch(ctx, logical, ctrl_client.RawPatch(types.MergePatchType,
+		[]byte(`{"metadata":{"annotations":{"terminal-check":"true"}}}`))))
+	require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, false, func(context.Context) (bool, error) {
+		failureObserved := !decorated.failLookup.Load() && !decorated.failImageLookup.Load() ||
+			decorated.lookupAttempts.Load() > previousAttempts
+		return decorated.lastObservation.Load() > previousRead && failureObserved, nil
+	}))
+	waitControllerIdle(t, ctx, &decorated.lastObservation)
+	require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(logical), logical))
 }
 
 func createEndpointCleanupWorkload(

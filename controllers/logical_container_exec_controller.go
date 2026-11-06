@@ -466,10 +466,14 @@ func handleLogicalContainerExecTerminal(
 		return noChange
 	}
 	data.reconcileErr = nil
-	physical, getErr := reconciler.findPhysicalContainerExec(ctx, resource, data)
+	lookupData := *data
+	physical, getErr := reconciler.findPhysicalContainerExec(ctx, resource, &lookupData)
 	if getErr != nil {
 		log.Error(getErr, "Failed to refresh terminal execution backing")
-		return additionalReconciliationNeeded
+		if lookupData.state == logicalContainerExecStateMissing {
+			data.state, data.reason, data.message = lookupData.state, lookupData.reason, lookupData.message
+		}
+		return noChange
 	}
 	change, _ := applyLogicalContainerExecBackingStatus(resource, physical)
 	return change

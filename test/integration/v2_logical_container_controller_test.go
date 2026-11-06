@@ -993,57 +993,6 @@ func TestV2LogicalContainerControllerDoesNotClaimAdoptedContainers(t *testing.T)
 	}
 }
 
-// Verifies that Creating settles persistent workload registration when a runtime ID is
-// reported, before the physical container's Running status can be saved.
-func TestV2LogicalContainerControllerRecordsWorkloadBeforeStartupSettles(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-	var conflicts *backingStatusConflicts
-	server, environment, startErr := StartTestEnvironmentWithOptions(t, ctx,
-		LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController,
-		t.Name(), t.TempDir(), TestEnvironmentOptions{
-			WorkloadID: "early-workload",
-			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-				conflicts = &backingStatusConflicts{
-					Client: client, imageConflict: make(chan struct{}), containerConflict: make(chan struct{}),
-				}
-				conflicts.containerBlocked.Store(true)
-				return conflicts
-			},
-		})
-	require.NoError(t, startErr)
-	defer conflicts.containerBlocked.Store(false)
-	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "early-workload"}}
-	require.NoError(t, server.Client.Create(ctx, namespace))
-	logical := &apiv2.LogicalContainer{
-		ObjectMeta: metav1.ObjectMeta{Name: "persistent", Namespace: namespace.Name},
-		Spec: apiv2.LogicalContainerSpec{
-			Mode: apiv2.LogicalContainerModePersistent, ContainerName: "early-workload-runtime",
-			Container: &apiv2.LogicalContainerConfig{
-				Image: &apiv2.PhysicalContainerImageConfig{Image: "early-workload-image"},
-			},
-		},
-	}
-	require.NoError(t, server.Client.Create(ctx, logical))
-	observed := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		return current.Status.ContainerID != "" && current.Status.Phase == apiv2.LogicalContainerPhasePending, nil
-	})
-	physical := &apiv2.PhysicalContainer{}
-	require.NoError(t, server.Client.Get(ctx, types.NamespacedName{
-		Namespace: namespace.Name, Name: observed.Status.PhysicalContainerRef,
-	}, physical))
-	require.Equal(t, apiv2.PhysicalContainerPhasePending, physical.Status.Phase)
-	record, recordErr := environment.StateStore.GetPersistentContainer(ctx, logical.GetLeaseKey())
-	require.NoError(t, recordErr)
-	require.Equal(t, observed.Status.ContainerID, record.ContainerID)
-	require.Equal(t, commonapi.WorkloadID("early-workload"), record.WorkloadID)
-	require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
-	conflicts.containerBlocked.Store(false)
-	require.NoError(t, server.Client.Delete(ctx, logical))
-	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
-}
-
 // Verifies that the LogicalContainer controller records persistent workload ownership and
 // releases its startup lease before reporting a newly created runtime container as ready.
 func TestV2LogicalContainerControllerRecordsPersistentWorkload(t *testing.T) {

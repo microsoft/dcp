@@ -459,27 +459,26 @@ func handleLogicalContainerNetworkTerminal(
 	ctx context.Context, reconciler *LogicalContainerNetworkReconciler, network *apiv2.LogicalContainerNetwork,
 	_ logicalContainerNetworkState, data *logicalContainerNetworkData, log logr.Logger,
 ) objectChange {
+	change := noChange
+	if data.lease != nil {
+		data.leaseFailureMessage = ""
+		change |= reconciler.settleLogicalNetworkLease(ctx, network, data, nil, log)
+	}
 	if data.physicalNetworkUID == "" {
-		if data.lease != nil {
-			return reconciler.settleLogicalNetworkLease(ctx, network, data, nil, log)
-		}
-		return noChange
+		return change
 	}
 	data.reconcileErr = nil
-	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, data, reconciler.Client,
+	lookupData := *data
+	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, &lookupData, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
 	if lookupErr != nil {
 		log.Error(lookupErr, "Failed to get terminal network backing")
-		return additionalReconciliationNeeded
+		return change
 	}
 	if physical == nil {
-		if data.lease != nil {
-			return reconciler.settleLogicalNetworkLease(ctx, network, data, nil, log)
-		}
-		return noChange
+		return change
 	}
-	change := applyLogicalContainerNetworkPhysicalDetails(network, &physical.Status)
-	return change | reconciler.settleLogicalNetworkObservedLease(ctx, network, data, physical, log)
+	return change | applyLogicalContainerNetworkPhysicalDetails(network, &physical.Status)
 }
 
 func (reconciler *LogicalContainerNetworkReconciler) settleLogicalNetworkObservedLease(
@@ -726,5 +725,5 @@ func (r *LogicalContainerNetworkReconciler) settleLogicalNetworkLease(
 		return additionalReconciliationNeeded
 	}
 	data.lease, data.retryAfter = nil, time.Time{}
-	return additionalReconciliationNeeded
+	return noChange
 }

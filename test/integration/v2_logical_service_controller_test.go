@@ -24,6 +24,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/proxy"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
@@ -120,6 +121,27 @@ func (recorder *serviceProxyRecorder) snapshot() []*recordedServiceProxy {
 	recorder.lock.Lock()
 	defer recorder.lock.Unlock()
 	return slices.Clone(recorder.proxies)
+}
+
+type serviceReconciliationObserver struct {
+	ctrl_client.Client
+	lastServiceRead atomic.Int64
+}
+
+func (observer *serviceReconciliationObserver) Get(ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption) error {
+	if _, isService := object.(*apiv2.LogicalService); isService {
+		observer.lastServiceRead.Store(time.Now().UnixNano())
+	}
+	return observer.Client.Get(ctx, key, object, options...)
+}
+
+func waitControllerIdle(t *testing.T, ctx context.Context, lastRead *atomic.Int64) {
+	t.Helper()
+	require.NotZero(t, lastRead.Load())
+	// Allow queued retries to drain, then require silence beyond the 5-7 second retry interval.
+	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, false, func(context.Context) (bool, error) {
+		return time.Since(time.Unix(0, lastRead.Load())) >= 10*time.Second, nil
+	}))
 }
 
 // Verifies that LogicalService allocates listeners before readiness, updates routes as endpoints
@@ -291,7 +313,7 @@ func TestV2LogicalServicePreservesUDPStreamAcrossReconciliation(t *testing.T) {
 }
 
 // Verifies that LogicalService excludes stopped listeners without replacing them, preserves healthy
-// listeners and their routes, and allocates new listeners only after explicit service recreation.
+// listeners and their routes, stops polling after complete loss, and allocates only after service recreation.
 func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 	t.Parallel()
 	for _, protocol := range []commonapi.PortProtocol{commonapi.PortProtocolTCP, commonapi.PortProtocolUDP} {
@@ -308,8 +330,15 @@ func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 				defer cancel()
 				recorder := &serviceProxyRecorder{}
+				var observer *serviceReconciliationObserver
 				server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalServiceController, t.Name(), t.TempDir(),
-					TestEnvironmentOptions{CreateLogicalServiceProxy: recorder.create})
+					TestEnvironmentOptions{
+						CreateLogicalServiceProxy: recorder.create,
+						DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+							observer = &serviceReconciliationObserver{Client: apiClient}
+							return observer
+						},
+					})
 				require.NoError(t, startupErr)
 				apiClient := server.Client
 				namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "replacement-listener"}}
@@ -349,9 +378,9 @@ func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 					require.Equal(t, configurationCounts[healthyIndex+1], healthy.configurationCalls.Load())
 				}
 
+				previousChecks := original.healthChecks.Load()
 				endpoint.Spec.Addresses[0].Port++
 				endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
-				previousChecks := original.healthChecks.Load()
 				waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 					for _, healthy := range originals[1:] {
 						if !slices.Equal(healthy.configuration().Endpoints,
@@ -372,10 +401,7 @@ func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 					return current.Status.Phase == apiv2.LogicalServicePhaseFailed && len(current.Status.EffectiveAddresses) == 0, nil
 				})
 				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonProxyListenerUnavailable)
-				healthChecks := original.healthChecks.Load()
-				require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, false, func(context.Context) (bool, error) {
-					return original.healthChecks.Load() >= healthChecks+2, nil
-				}))
+				waitControllerIdle(t, ctx, &observer.lastServiceRead)
 				require.Len(t, recorder.snapshot(), len(originals))
 
 				require.NoError(t, apiClient.Delete(ctx, service))
@@ -479,6 +505,58 @@ func TestV2LogicalServiceRetriesInitialListenerStartup(t *testing.T) {
 		return listeners[1].healthChecks.Load() >= healthChecks+2, nil
 	}))
 	require.Len(t, recorder.snapshot(), 2)
+	require.NoError(t, apiClient.Delete(ctx, namespace))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
+}
+
+// Verifies that LogicalService stops polling after exhausting listener startup, retains the final
+// startup error across endpoint watch events, and makes no further allocation attempts.
+func TestV2LogicalServiceStopsRetryingExhaustedListenerStartup(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	recorder := &serviceProxyRecorder{startFailures: controllers.MaxServiceStartAttempts}
+	var observer *serviceReconciliationObserver
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalServiceController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{
+			CreateLogicalServiceProxy: recorder.create,
+			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+				observer = &serviceReconciliationObserver{Client: apiClient}
+				return observer
+			},
+		})
+	require.NoError(t, startupErr)
+	apiClient := server.Client
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "exhausted-listener-startup"}}
+	require.NoError(t, apiClient.Create(ctx, namespace))
+	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
+		Spec: apiv2.LogicalServiceSpec{Address: "127.0.0.1"}}
+	require.NoError(t, apiClient.Create(ctx, service))
+	for attempt := 1; attempt <= controllers.MaxServiceStartAttempts; attempt++ {
+		require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, false, func(context.Context) (bool, error) {
+			return len(recorder.snapshot()) >= attempt, nil
+		}))
+		if attempt < controllers.MaxServiceStartAttempts {
+			require.NoError(t, apiClient.Patch(ctx, service, ctrl_client.RawPatch(types.MergePatchType,
+				fmt.Appendf(nil, `{"metadata":{"annotations":{"retry-check":"%d"}}}`, attempt))))
+		}
+	}
+	failed := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalServicePhaseFailed, nil
+	})
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonProxyConfigurationFailed)
+	failureMessage := "start service listener: service proxy startup unavailable"
+	require.Equal(t, failureMessage, failed.Status.Conditions[0].Message)
+	previousRead := observer.lastServiceRead.Load()
+	endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: namespace.Name},
+		Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}}}}
+	require.NoError(t, apiClient.Create(ctx, endpoint))
+	waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+		return observer.lastServiceRead.Load() > previousRead && current.Status.Phase == apiv2.LogicalServicePhaseFailed &&
+			len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Message == failureMessage, nil
+	})
+	waitControllerIdle(t, ctx, &observer.lastServiceRead)
+	require.Len(t, recorder.snapshot(), controllers.MaxServiceStartAttempts)
 	require.NoError(t, apiClient.Delete(ctx, namespace))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
 }
