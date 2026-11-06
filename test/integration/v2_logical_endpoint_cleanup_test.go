@@ -390,8 +390,8 @@ func createEndpointCleanupWorkload(
 	return workload
 }
 
-// Verifies that endpoint synchronization removes obsolete owned bindings but preserves unrelated
-// endpoints, and logical deletion withdraws endpoints independently of backing cleanup or endpoint errors.
+// Verifies that endpoint deletion errors preserve Running readiness or normal deletion progress,
+// while cleanup removes obsolete owned bindings, preserves unrelated endpoints, and retries independently of physical cleanup.
 func TestV2LogicalEndpointDeletionDoesNotWaitForBackingCleanup(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
@@ -420,12 +420,27 @@ func TestV2LogicalEndpointDeletionDoesNotWaitForBackingCleanup(t *testing.T) {
 				require.NoError(t, apiClient.List(ctx, &initialEndpoints, ctrl_client.InNamespace(namespace.Name)))
 				require.Len(t, initialEndpoints.Items, 1)
 				if !failEndpoints {
+					priorAttempts := deletionClient.attempts.Load()
+					deletionClient.fail.Store(true)
 					obsolete := &apiv2.ServiceEndpoint{
 						ObjectMeta: metav1.ObjectMeta{Name: "obsolete", Namespace: namespace.Name,
 							OwnerReferences: initialEndpoints.Items[0].OwnerReferences},
 						Spec: initialEndpoints.Items[0].Spec,
 					}
 					require.NoError(t, apiClient.Create(ctx, obsolete))
+					require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(context.Context) (bool, error) {
+						return deletionClient.attempts.Load() >= priorAttempts+2, nil
+					}))
+					require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.logical), workload.logical))
+					if logicalProcess, isProcess := workload.logical.(*apiv2.LogicalProcess); isProcess {
+						require.Equal(t, apiv2.LogicalProcessPhaseRunning, logicalProcess.Status.Phase)
+						requireReadyCondition(t, logicalProcess.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalProcessReasonRunning)
+					} else {
+						logicalContainer := workload.logical.(*apiv2.LogicalContainer)
+						require.Equal(t, apiv2.LogicalContainerPhaseRunning, logicalContainer.Status.Phase)
+						requireReadyCondition(t, logicalContainer.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerReasonRunning)
+					}
+					deletionClient.fail.Store(false)
 					ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, obsolete)
 				}
 				unrelated := &apiv2.ServiceEndpoint{
@@ -446,6 +461,18 @@ func TestV2LogicalEndpointDeletionDoesNotWaitForBackingCleanup(t *testing.T) {
 				}))
 				if failEndpoints {
 					require.Positive(t, deletionClient.attempts.Load())
+					logicalName := ctrl_client.ObjectKeyFromObject(workload.logical)
+					if _, isProcess := workload.logical.(*apiv2.LogicalProcess); isProcess {
+						pending := waitObjectAssumesStateEx(t, ctx, apiClient, logicalName, func(current *apiv2.LogicalProcess) (bool, error) {
+							return current.Status.Phase == apiv2.LogicalProcessPhasePending, nil
+						})
+						requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonDeletingPhysicalProcess)
+					} else {
+						pending := waitObjectAssumesStateEx(t, ctx, apiClient, logicalName, func(current *apiv2.LogicalContainer) (bool, error) {
+							return current.Status.Phase == apiv2.LogicalContainerPhasePending, nil
+						})
+						requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonDeletingPhysicalResources)
+					}
 					var pending apiv2.ServiceEndpointList
 					require.NoError(t, apiClient.List(ctx, &pending, ctrl_client.InNamespace(namespace.Name)))
 					pending.Items = slices.DeleteFunc(pending.Items, func(endpoint apiv2.ServiceEndpoint) bool {

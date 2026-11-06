@@ -15,11 +15,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -31,14 +34,34 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-type staleEndpointCreateClient struct {
+type endpointPublicationClient struct {
 	ctrl_client.Client
-	created atomic.Bool
-	stale   atomic.Pointer[apiv2.ServiceEndpoint]
+	failCreate       atomic.Bool
+	hidePortMappings atomic.Bool
+	createFailures   atomic.Int32
+	created          atomic.Bool
+	stale            atomic.Pointer[apiv2.ServiceEndpoint]
 }
 
-func (apiClient *staleEndpointCreateClient) Create(ctx context.Context, object ctrl_client.Object, options ...ctrl_client.CreateOption) error {
+func (apiClient *endpointPublicationClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+	listErr := apiClient.Client.List(ctx, list, options...)
+	if listErr != nil {
+		return listErr
+	}
+	if physicals, isContainerList := list.(*apiv2.PhysicalContainerList); isContainerList && apiClient.hidePortMappings.Load() {
+		for i := range physicals.Items {
+			physicals.Items[i].Status.PortMappings = nil
+		}
+	}
+	return nil
+}
+
+func (apiClient *endpointPublicationClient) Create(ctx context.Context, object ctrl_client.Object, options ...ctrl_client.CreateOption) error {
 	endpoint, isEndpoint := object.(*apiv2.ServiceEndpoint)
+	if isEndpoint && apiClient.failCreate.Load() {
+		apiClient.createFailures.Add(1)
+		return errors.New("endpoint creation unavailable")
+	}
 	if !isEndpoint || !apiClient.created.CompareAndSwap(false, true) {
 		return apiClient.Client.Create(ctx, object, options...)
 	}
@@ -53,22 +76,26 @@ func (apiClient *staleEndpointCreateClient) Create(ctx context.Context, object c
 	return createErr
 }
 
-// Verifies that logical workload endpoint synchronization validates AlreadyExists results, replaces
-// stale immutable bindings through deletion, and waits for finalizers before publishing a new UID.
-func TestV2LogicalEndpointReplacesChangedBindings(t *testing.T) {
+// Verifies that logical workloads wait for initial endpoint publication and immutable binding
+// replacement before Running, while later publication retries preserve Running and readiness.
+func TestV2LogicalEndpointPublicationLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
-			var decorated *staleEndpointCreateClient
+			var decorated *endpointPublicationClient
 			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, logicalServicePreparationControllers, t.Name(), t.TempDir(),
 				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-					decorated = &staleEndpointCreateClient{Client: apiClient}
+					decorated = &endpointPublicationClient{Client: apiClient}
+					decorated.failCreate.Store(true)
+					decorated.hidePortMappings.Store(kind == "container")
 					return decorated
 				}})
 			require.NoError(t, startupErr)
+			defer decorated.failCreate.Store(false)
+			defer decorated.hidePortMappings.Store(false)
 			apiClient := server.Client
 			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-replace-binding-" + kind}}
 			require.NoError(t, apiClient.Create(ctx, namespace))
@@ -76,18 +103,48 @@ func TestV2LogicalEndpointReplacesChangedBindings(t *testing.T) {
 				Spec: apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}}
 			require.NoError(t, apiClient.Create(ctx, service))
 			binding := apiv2.LogicalServiceBinding{Name: "http", ServiceRef: service.Name}
+			workloadName := types.NamespacedName{Name: "workload", Namespace: namespace.Name}
+			var logical ctrl_client.Object
 			if kind == "process" {
 				resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "workload", Namespace: namespace.Name},
 					Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name},
 						Ports: []apiv2.LogicalProcessPort{{LogicalServiceBinding: binding, Address: "127.0.0.1", Port: 8080}}}}
 				require.NoError(t, apiClient.Create(ctx, resource))
+				pending := waitObjectAssumesStateEx(t, ctx, apiClient, workloadName, func(current *apiv2.LogicalProcess) (bool, error) {
+					condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+					return current.Status.Phase == apiv2.LogicalProcessPhasePending && current.Status.PID != nil &&
+						condition != nil && condition.Reason == string(apiv2.LogicalResourceReasonPortPreparationPending), nil
+				})
+				requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalResourceReasonPortPreparationPending)
+				physical := &apiv2.PhysicalProcess{}
+				require.NoError(t, apiClient.Get(ctx, types.NamespacedName{Name: pending.Status.PhysicalProcessRef, Namespace: namespace.Name}, physical))
+				require.Equal(t, apiv2.PhysicalProcessPhaseRunning, physical.Status.Phase)
+				logical = pending
 			} else {
 				resource := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: "workload", Namespace: namespace.Name},
 					Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
 						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name},
 					}, Ports: []apiv2.LogicalContainerPort{{LogicalServiceBinding: binding, ContainerPort: 8080, HostPort: 18080}}}}
 				require.NoError(t, apiClient.Create(ctx, resource))
+				pending := waitObjectAssumesStateEx(t, ctx, apiClient, workloadName, func(current *apiv2.LogicalContainer) (bool, error) {
+					condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+					return current.Status.Phase == apiv2.LogicalContainerPhasePending && current.Status.ContainerID != "" &&
+						condition != nil && condition.Reason == string(apiv2.LogicalResourceReasonPortPreparationPending), nil
+				})
+				requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalResourceReasonPortPreparationPending)
+				physical := &apiv2.PhysicalContainer{}
+				require.NoError(t, apiClient.Get(ctx, types.NamespacedName{Name: pending.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
+				require.Equal(t, apiv2.PhysicalContainerPhaseRunning, physical.Status.Phase)
+				require.NotEmpty(t, physical.Status.PortMappings)
+				require.Zero(t, decorated.createFailures.Load())
+				decorated.hidePortMappings.Store(false)
+				require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(context.Context) (bool, error) {
+					return decorated.createFailures.Load() > 0, nil
+				}))
+				logical = pending
 			}
+			require.Positive(t, decorated.createFailures.Load())
+			decorated.failCreate.Store(false)
 			var stale *apiv2.ServiceEndpoint
 			waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(_ *apiv2.LogicalService) (bool, error) {
 				stale = decorated.stale.Load()
@@ -104,6 +161,15 @@ func TestV2LogicalEndpointReplacesChangedBindings(t *testing.T) {
 			require.NoError(t, apiClient.Get(ctx, stale.NamespacedName(), current))
 			require.Equal(t, stale.UID, current.UID)
 			require.Equal(t, stale.Spec, current.Spec)
+			require.NoError(t, apiClient.Get(ctx, workloadName, logical))
+			if process, isProcess := logical.(*apiv2.LogicalProcess); isProcess {
+				require.Equal(t, apiv2.LogicalProcessPhasePending, process.Status.Phase)
+				requireReadyCondition(t, process.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalResourceReasonPortPreparationPending)
+			} else {
+				container := logical.(*apiv2.LogicalContainer)
+				require.Equal(t, apiv2.LogicalContainerPhasePending, container.Status.Phase)
+				requireReadyCondition(t, container.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalResourceReasonPortPreparationPending)
+			}
 			current.Finalizers = nil
 			require.NoError(t, apiClient.Update(ctx, current))
 			ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(currentService *apiv2.LogicalService) (bool, error) {
@@ -117,6 +183,37 @@ func TestV2LogicalEndpointReplacesChangedBindings(t *testing.T) {
 			require.Equal(t, stale.Spec.ServiceRef, replacement.Spec.ServiceRef)
 			require.Equal(t, ready.Status.EffectiveAddresses, replacement.Spec.Addresses)
 			require.Empty(t, replacement.Finalizers)
+			require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+				if getErr := apiClient.Get(pollCtx, workloadName, logical); getErr != nil {
+					return false, getErr
+				}
+				if process, isProcess := logical.(*apiv2.LogicalProcess); isProcess {
+					return process.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+				}
+				return logical.(*apiv2.LogicalContainer).Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+			}))
+			priorFailures := decorated.createFailures.Load()
+			decorated.failCreate.Store(true)
+			require.NoError(t, apiClient.Delete(ctx, replacement))
+			// A second attempt proves the first failed reconciliation has finished projecting status.
+			require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(context.Context) (bool, error) {
+				return decorated.createFailures.Load() >= priorFailures+2, nil
+			}))
+			require.NoError(t, apiClient.Get(ctx, workloadName, logical))
+			if process, isProcess := logical.(*apiv2.LogicalProcess); isProcess {
+				require.Equal(t, apiv2.LogicalProcessPhaseRunning, process.Status.Phase)
+				requireReadyCondition(t, process.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalProcessReasonRunning)
+			} else {
+				container := logical.(*apiv2.LogicalContainer)
+				require.Equal(t, apiv2.LogicalContainerPhaseRunning, container.Status.Phase)
+				requireReadyCondition(t, container.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerReasonRunning)
+			}
+			decorated.failCreate.Store(false)
+			recovered := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(currentService *apiv2.LogicalService) (bool, error) {
+				return currentService.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+			})
+			require.Equal(t, ready.UID, recovered.UID)
+			require.Equal(t, ready.Status.EffectiveAddresses, recovered.Status.EffectiveAddresses)
 			require.NoError(t, apiClient.Delete(ctx, namespace))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
 		})
