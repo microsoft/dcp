@@ -5893,7 +5893,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerPort(ref common.ReferenceCallba
 					},
 					"address": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Address is the listening address inside the container, defaulting to localhost.",
+							Description: "Address is the listening address inside the container, defaulting to localhost. IPv6 literals are enclosed in brackets.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -6397,7 +6397,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessPort(ref common.ReferenceCallback
 					},
 					"address": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Address is the process's listening IP address or hostname, defaulting to localhost.",
+							Description: "Address is the process's listening IP address or hostname, defaulting to localhost. IPv6 literals are enclosed in brackets.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -6763,7 +6763,7 @@ func schema_microsoft_dcp_api_v2_LogicalServiceSpec(ref common.ReferenceCallback
 					},
 					"address": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Address is the requested IP address or hostname. If set, it overrides addressAllocationMode, except in Proxyless mode, where address and port are ignored.",
+							Description: "Address is the requested IP address or hostname. If set, it overrides addressAllocationMode, except in Proxyless mode, where address and port are ignored. IPv6 literals are enclosed in brackets.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -6872,7 +6872,7 @@ func schema_microsoft_dcp_api_v2_LogicalServiceTemplate(ref common.ReferenceCall
 					},
 					"address": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Address is the requested IP address or hostname. If set, it overrides addressAllocationMode, except in Proxyless mode, where address and port are ignored.",
+							Description: "Address is the requested IP address or hostname. If set, it overrides addressAllocationMode, except in Proxyless mode, where address and port are ignored. IPv6 literals are enclosed in brackets.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -10243,7 +10243,7 @@ func schema_microsoft_dcp_api_v2_ServiceAddress(ref common.ReferenceCallback) co
 				Properties: map[string]spec.Schema{
 					"address": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Address is an IP address or hostname without a port.",
+							Description: "Address is an IP address or hostname without a port. IPv6 literals are enclosed in brackets.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",

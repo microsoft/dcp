@@ -95,7 +95,7 @@ func TestLogicalServiceSpecEqual(t *testing.T) {
 		{"both defaults", LogicalServiceSpec{Address: "localhost", Port: 5000},
 			LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP, Address: "localhost", Port: 5000, AddressAllocationMode: ServiceAddressAllocationModeLocalhost}, true},
 		{"protocol mismatch", LogicalServiceSpec{}, LogicalServiceSpec{Protocol: commonapi.PortProtocolUDP}, false},
-		{"address mismatch", LogicalServiceSpec{Address: "127.0.0.1"}, LogicalServiceSpec{Address: "::1"}, false},
+		{"address mismatch", LogicalServiceSpec{Address: "127.0.0.1"}, LogicalServiceSpec{Address: "[::1]"}, false},
 		{"port mismatch", LogicalServiceSpec{Port: 5000}, LogicalServiceSpec{Port: 5001}, false},
 		{"allocation mismatch", LogicalServiceSpec{}, LogicalServiceSpec{AddressAllocationMode: ServiceAddressAllocationModeProxyless}, false},
 	} {
@@ -124,7 +124,7 @@ func TestLogicalServiceValidateUpdate(t *testing.T) {
 	}{
 		{"unchanged", func(*LogicalService) {}, true},
 		{"status", func(service *LogicalService) {
-			service.Status.EffectiveAddresses = []ServiceAddress{{Address: "::1", Port: 5000}}
+			service.Status.EffectiveAddresses = []ServiceAddress{{Address: "[::1]", Port: 5000}}
 		}, true},
 		{"metadata", func(service *LogicalService) { service.Annotations = map[string]string{"key": "value"} }, true},
 		{"protocol", func(service *LogicalService) { service.Spec.Protocol = commonapi.PortProtocolUDP }, false},
@@ -168,7 +168,7 @@ func TestServiceResourcesValidateMetadata(t *testing.T) {
 			require.NotEmpty(t, serviceErrors)
 			require.Equal(t, testCase.expectedField, serviceErrors[0].Field)
 			endpoint := &ServiceEndpoint{ObjectMeta: metadata, Spec: ServiceEndpointSpec{
-				ServiceRef: "service", Addresses: []ServiceAddress{{Address: "::1", Port: 5000}},
+				ServiceRef: "service", Addresses: []ServiceAddress{{Address: "[::1]", Port: 5000}},
 			}}
 			endpointErrors := endpoint.Validate(context.Background())
 			require.NotEmpty(t, endpointErrors)
@@ -185,7 +185,7 @@ func TestServiceResourcesValidateDuringShutdown(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: "test-namespace"},
 	}
 	endpoint := &ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "endpoint", Namespace: "test-namespace"},
-		Spec: ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []ServiceAddress{{Address: "::1", Port: 5000}}}}
+		Spec: ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []ServiceAddress{{Address: "[::1]", Port: 5000}}}}
 	require.Contains(t, service.Validate(context.Background()).ToAggregate().Error(), commonapi.ErrResourceCreationProhibited.Error())
 	require.Contains(t, endpoint.Validate(context.Background()).ToAggregate().Error(), commonapi.ErrResourceCreationProhibited.Error())
 	updated := service.DeepCopy()
@@ -228,7 +228,7 @@ func TestLogicalServiceRegistration(t *testing.T) {
 // Verifies that LogicalService JSON retains multiple effective address/port pairs and deep copies isolate configuration and status.
 func TestLogicalServiceJSONAndDeepCopy(t *testing.T) {
 	t.Parallel()
-	addresses := []ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "::1", Port: 5001}}
+	addresses := []ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "[::1]", Port: 5001}}
 	service := &LogicalService{
 		TypeMeta:   metav1.TypeMeta{Kind: "LogicalService", APIVersion: GroupVersion.String()},
 		ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: "test-namespace"},
@@ -261,7 +261,7 @@ func TestLogicalServiceJSONAndDeepCopy(t *testing.T) {
 	copied.Status.EffectiveAddresses[1].Address = "localhost"
 	copied.Status.Conditions[0].Reason = "Changed"
 	require.Equal(t, int32(5000), service.Spec.Port)
-	require.Equal(t, "::1", service.Status.EffectiveAddresses[1].Address)
+	require.Equal(t, "[::1]", service.Status.EffectiveAddresses[1].Address)
 	require.Equal(t, string(LogicalServiceReasonReady), service.Status.Conditions[0].Reason)
 	projected := &LogicalService{}
 	service.Status.CopyTo(projected)

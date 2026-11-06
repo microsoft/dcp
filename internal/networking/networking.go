@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/netip"
 	"os"
 	"path/filepath"
 	std_slices "slices"
@@ -361,7 +360,7 @@ func CheckPortAvailable(protocol commonapi.PortProtocol, address string, port in
 
 func IpToString(ip net.IP) string {
 	var address string
-	if IsValidIPv6(ip) {
+	if len(ip.To16()) == net.IPv6len && len(ip.To4()) == 0 {
 		address = fmt.Sprintf("[%s]", ip.String())
 	} else {
 		address = ip.String()
@@ -388,16 +387,6 @@ func ToStandaloneAddress(address string) string {
 	} else {
 		return address
 	}
-}
-
-// ToHostAddress brackets an IPv6 literal for use in URLs and host:port strings.
-// IPv4 addresses, hostnames, and already bracketed addresses are returned unchanged.
-func ToHostAddress(address string) string {
-	parsed, parseErr := netip.ParseAddr(address)
-	if parseErr == nil && parsed.Is6() {
-		return "[" + address + "]"
-	}
-	return address
 }
 
 func IsValidPort(port int) bool {
@@ -509,7 +498,7 @@ func doGetFreePort(protocol commonapi.PortProtocol, address string) (int32, erro
 }
 
 func AddressAndPort(address string, port int32) string {
-	return fmt.Sprintf("%s:%d", ToHostAddress(address), port)
+	return fmt.Sprintf("%s:%d", address, port)
 }
 
 func Hostname() (string, error) {

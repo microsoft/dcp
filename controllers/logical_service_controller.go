@@ -16,13 +16,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
-	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/proxy"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/syncmap"
@@ -75,8 +76,8 @@ func (r *LogicalServiceReconciler) SetupWithManager(mgr ctrl.Manager, name strin
 		Watches(&apiv2.ServiceEndpoint{}, handler.EnqueueRequestsFromMapFunc(func(_ context.Context, object ctrl_client.Object) []reconcile.Request {
 			endpoint := object.(*apiv2.ServiceEndpoint)
 			return []reconcile.Request{{NamespacedName: commonapi.AsNamespacedName(endpoint.Spec.ServiceRef, endpoint.Namespace)}}
-		})).
-		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.LogicalServiceList{}))).
+		}), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.LogicalServiceList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Named(name).Complete(r)
 }
 
@@ -88,16 +89,22 @@ func (r *LogicalServiceReconciler) stop(name types.NamespacedName, log logr.Logg
 
 func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
 	reader, log := r.StartReconciliation(request)
+	if ctx.Err() != nil {
+		return ctrl.Result{}, nil
+	}
 	service := &apiv2.LogicalService{}
 	getErr := reader.Get(ctx, request.NamespacedName, service)
 	if apierrors.IsNotFound(getErr) {
 		r.stop(request.NamespacedName, log)
+		getNotFoundCounter.Add(ctx, 1)
 		return ctrl.Result{}, nil
 	}
 	if getErr != nil {
 		log.Error(getErr, "Failed to get LogicalService")
+		getFailedCounter.Add(ctx, 1)
 		return ctrl.Result{}, getErr
 	}
+	getSucceededCounter.Add(ctx, 1)
 	patch := ctrl_client.MergeFromWithOptions(service.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 	if !service.DeletionTimestamp.IsZero() {
 		r.stop(service.NamespacedName(), log)
@@ -174,7 +181,7 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		for _, listener := range data.proxies {
 			if listener.proxy.State() == proxy.ProxyStateRunning {
 				status.EffectiveAddresses = append(status.EffectiveAddresses, apiv2.ServiceAddress{
-					Address: networking.ToStandaloneAddress(listener.proxy.EffectiveAddress()), Port: listener.proxy.EffectivePort(),
+					Address: listener.proxy.EffectiveAddress(), Port: listener.proxy.EffectivePort(),
 				})
 			}
 		}

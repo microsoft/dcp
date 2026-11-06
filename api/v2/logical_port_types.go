@@ -83,6 +83,7 @@ type LogicalContainerPort struct {
 	HostIP string `json:"hostIP,omitempty"`
 
 	// Address is the listening address inside the container, defaulting to localhost.
+	// IPv6 literals are enclosed in brackets.
 	Address string `json:"address,omitempty"`
 }
 
@@ -122,6 +123,7 @@ type LogicalProcessPort struct {
 	LogicalServiceBinding `json:",inline"`
 
 	// Address is the process's listening IP address or hostname, defaulting to localhost.
+	// IPv6 literals are enclosed in brackets.
 	Address string `json:"address,omitempty"`
 
 	// Port is the port on which the process listens. Zero allocates a port for portForServing templates

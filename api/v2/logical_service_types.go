@@ -95,6 +95,7 @@ type LogicalServiceSpec struct {
 
 	// Address is the requested IP address or hostname. If set, it overrides addressAllocationMode,
 	// except in Proxyless mode, where address and port are ignored.
+	// IPv6 literals are enclosed in brackets.
 	Address string `json:"address,omitempty"`
 
 	// Port is the requested listener port. Zero selects an available port.

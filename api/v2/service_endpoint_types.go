@@ -27,6 +27,7 @@ import (
 // +k8s:openapi-gen=true
 type ServiceAddress struct {
 	// Address is an IP address or hostname without a port.
+	// IPv6 literals are enclosed in brackets.
 	Address string `json:"address"`
 
 	// Port is the port reachable at this address.

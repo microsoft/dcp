@@ -37,6 +37,7 @@ func (failure errV2ServiceLookup) Unwrap() error {
 }
 
 // ServingPort describes a named workload listening address after port allocation.
+// IPv6 addresses use bracketed literals.
 type ServingPort struct {
 	Name    string
 	Address string
@@ -45,8 +46,8 @@ type ServingPort struct {
 
 // EvaluateV2Values evaluates declared arguments and environment against one service-address snapshot.
 // Serving helpers use logical port names; consumer helpers accept same-namespace service references
-// and an optional "IPv4" or "IPv6" selector. Address helpers bracket IPv6 literals for URL/authority
-// interpolation. ignoreEnvironmentCase controls case folding of environment names before evaluation.
+// and an optional "IPv4" or "IPv6" selector. Address helpers preserve the stored bracketed IPv6
+// representation. ignoreEnvironmentCase controls case folding of environment names before evaluation.
 // Inputs are never modified.
 func EvaluateV2Values(
 	ctx context.Context, reader ctrl_client.Reader, owner commonapi.DcpModelObject,
@@ -119,7 +120,7 @@ func EvaluateV2Values(
 		},
 		"addressForServing": func(name string) (string, error) {
 			port, findErr := findPort(name)
-			return networking.ToHostAddress(port.Address), findErr
+			return port.Address, findErr
 		},
 		"portFor": func(reference string, family ...string) (int32, error) {
 			address, selectErr := selectAddress(reference, family)
@@ -127,7 +128,7 @@ func EvaluateV2Values(
 		},
 		"addressFor": func(reference string, family ...string) (string, error) {
 			address, selectErr := selectAddress(reference, family)
-			return networking.ToHostAddress(address.Address), selectErr
+			return address.Address, selectErr
 		},
 	})
 	evaluate := func(value string) (string, error) {

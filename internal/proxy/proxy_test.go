@@ -15,20 +15,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/queue"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -229,15 +235,15 @@ func TestProxyFrontendAndBackendAddressFamilies(t *testing.T) {
 			backendAddress string
 		}{
 			{"IPv4-to-IPv4", networking.IPv4LocalhostDefaultAddress, networking.IPv4LocalhostDefaultAddress},
-			{"IPv4-to-IPv6", networking.IPv4LocalhostDefaultAddress, "::1"},
+			{"IPv4-to-IPv6", networking.IPv4LocalhostDefaultAddress, networking.IPv6LocalhostDefaultAddress},
 			{"IPv6-to-IPv4", networking.IPv6LocalhostDefaultAddress, networking.IPv4LocalhostDefaultAddress},
-			{"IPv6-to-IPv6", networking.IPv6LocalhostDefaultAddress, "::1"},
+			{"IPv6-to-IPv6", networking.IPv6LocalhostDefaultAddress, networking.IPv6LocalhostDefaultAddress},
 			{"IPv4-to-hostname", networking.IPv4LocalhostDefaultAddress, networking.Localhost},
 			{"IPv6-to-hostname", networking.IPv6LocalhostDefaultAddress, networking.Localhost},
 		} {
 			t.Run(string(protocol)+"/"+testCase.name, func(t *testing.T) {
 				t.Parallel()
-				if (testCase.listenAddress == networking.IPv6LocalhostDefaultAddress || testCase.backendAddress == "::1") &&
+				if (testCase.listenAddress == networking.IPv6LocalhostDefaultAddress || testCase.backendAddress == networking.IPv6LocalhostDefaultAddress) &&
 					!networking.IsIPv6(networking.IPv6LocalhostDefaultAddress) {
 					t.Skip("IPv6 is unavailable")
 				}
@@ -316,13 +322,13 @@ func TestUDPProxyRejectsUnrelatedBackendReplies(t *testing.T) {
 		backendAddress string
 	}{
 		{"IPv4-to-IPv4", networking.IPv4LocalhostDefaultAddress, networking.IPv4LocalhostDefaultAddress},
-		{"IPv4-to-IPv6", networking.IPv4LocalhostDefaultAddress, "::1"},
+		{"IPv4-to-IPv6", networking.IPv4LocalhostDefaultAddress, networking.IPv6LocalhostDefaultAddress},
 		{"IPv6-to-IPv4", networking.IPv6LocalhostDefaultAddress, networking.IPv4LocalhostDefaultAddress},
-		{"IPv6-to-IPv6", networking.IPv6LocalhostDefaultAddress, "::1"},
+		{"IPv6-to-IPv6", networking.IPv6LocalhostDefaultAddress, networking.IPv6LocalhostDefaultAddress},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			if (testCase.listenAddress == networking.IPv6LocalhostDefaultAddress || testCase.backendAddress == "::1") &&
+			if (testCase.listenAddress == networking.IPv6LocalhostDefaultAddress || testCase.backendAddress == networking.IPv6LocalhostDefaultAddress) &&
 				!networking.IsIPv6(networking.IPv6LocalhostDefaultAddress) {
 				t.Skip("IPv6 is unavailable")
 			}
@@ -368,6 +374,143 @@ func TestUDPProxyRejectsUnrelatedBackendReplies(t *testing.T) {
 			require.Equal(t, "selected-backend", string(buffer[:replySize]))
 		})
 	}
+}
+
+// Verifies that a closed UDP backend port produces only verbose diagnostics without retiring
+// the client flow, and that the same flow forwards traffic once the backend starts listening.
+func TestUDPProxyRetainsFlowWhenBackendStartsLater(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("requires connected UDP port-unreachable errors")
+	}
+	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+	defer cancel()
+	deadline, hasDeadline := ctx.Deadline()
+	require.True(t, hasDeadline)
+	reserved, reserveErr := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, reserveErr)
+	backendAddress := reserved.LocalAddr().(*net.UDPAddr)
+	require.NoError(t, reserved.Close())
+	client, clientErr := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, clientErr)
+	defer func() { require.NoError(t, client.Close()) }()
+	require.NoError(t, client.SetDeadline(deadline))
+
+	type refusalObservation struct {
+		level  int
+		stream udpStream
+	}
+	refusals := make(chan refusalObservation, 1)
+	var runtimeProxy *netProxy
+	logSink := &testutil.MockLoggerSink{}
+	logSink.On("Init", mock.Anything).Return()
+	logSink.On("Enabled", mock.Anything).Return(true)
+	logSink.On("Info", mock.Anything, mock.Anything, mock.Anything).Run(func(arguments mock.Arguments) {
+		if !strings.Contains(fmt.Sprint(arguments.Get(2)), syscall.ECONNREFUSED.Error()) {
+			return
+		}
+		stream, found := runtimeProxy.udpStreams.Load(client.LocalAddr().String())
+		if !found {
+			return
+		}
+		select {
+		case refusals <- refusalObservation{level: arguments.Int(0), stream: stream}:
+		default:
+		}
+	}).Return()
+	runtimeProxy = newNetProxy(commonapi.PortProtocolUDP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.New(logSink))
+	require.NoError(t, runtimeProxy.Start())
+	require.NoError(t, runtimeProxy.Configure(ProxyConfig{Endpoints: []Endpoint{{
+		Address: networking.IPv4LocalhostDefaultAddress, Port: int32(backendAddress.Port),
+	}}}))
+	_, requestErr := client.WriteTo([]byte("unavailable"), &net.UDPAddr{
+		IP: net.ParseIP(networking.IPv4LocalhostDefaultAddress), Port: int(runtimeProxy.EffectivePort()),
+	})
+	require.NoError(t, requestErr)
+	var original udpStream
+	select {
+	case observation, open := <-refusals:
+		require.True(t, open)
+		require.Equal(t, 1, observation.level)
+		original = observation.stream
+	case <-ctx.Done():
+		t.Fatal("proxy did not observe the closed backend port")
+	}
+	require.NoError(t, original.ctx.Err())
+	backend, backendErr := net.ListenPacket("udp", backendAddress.String())
+	require.NoError(t, backendErr)
+	defer func() { require.NoError(t, backend.Close()) }()
+	require.NoError(t, backend.SetDeadline(deadline))
+	verifyUDPPacketFlow(t, runtimeProxy, backend, client)
+	retained, found := runtimeProxy.udpStreams.Load(client.LocalAddr().String())
+	require.True(t, found)
+	require.Equal(t, original.ctx, retained.ctx)
+	require.NoError(t, original.ctx.Err())
+}
+
+type udpWriteRefusalConn struct {
+	net.Conn
+	refused   atomic.Bool
+	forwarded atomic.Bool
+}
+
+func (connection *udpWriteRefusalConn) Write(packet []byte) (int, error) {
+	if connection.refused.CompareAndSwap(false, true) {
+		return 0, &net.OpError{Op: "write", Net: "udp", Err: &os.SyscallError{Syscall: "write", Err: syscall.ECONNREFUSED}}
+	}
+	written, writeErr := connection.Conn.Write(packet)
+	if writeErr == nil {
+		connection.forwarded.Store(true)
+	}
+	return written, writeErr
+}
+
+// Verifies that a wrapped connection-refused write drops only that datagram and preserves
+// the UDP flow so the next queued datagram reaches the selected backend.
+func TestUDPStreamDropsRefusedWriteWithoutRetiringFlow(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+	defer cancel()
+	deadline, hasDeadline := ctx.Deadline()
+	require.True(t, hasDeadline)
+	backend, backendErr := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, backendErr)
+	defer func() { require.NoError(t, backend.Close()) }()
+	require.NoError(t, backend.SetDeadline(deadline))
+	dialer := net.Dialer{}
+	outgoing, outgoingErr := dialer.DialContext(ctx, "udp", backend.LocalAddr().String())
+	require.NoError(t, outgoingErr)
+	defer func() { require.NoError(t, outgoing.Close()) }()
+	connection := &udpWriteRefusalConn{Conn: outgoing}
+	runtimeProxy := newNetProxy(commonapi.PortProtocolUDP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
+	streamCtx, stopStream := context.WithCancel(ctx)
+	stream := udpStream{
+		clientAddr: &net.UDPAddr{IP: net.ParseIP(networking.IPv4LocalhostDefaultAddress), Port: 5000},
+		packets:    queue.NewConcurrentBoundedQueue[[]byte](MaxCachedUdpPackets),
+		lastUsed:   concurrency.AtomicTimeNow(), ctx: streamCtx, cancel: stopStream,
+	}
+	runtimeProxy.udpStreams.Store(stream.clientAddr.String(), stream)
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		runtimeProxy.streamClientPackets(stream, connection)
+	}()
+	defer func() {
+		stopStream()
+		<-stopped
+	}()
+	stream.packets.Enqueue([]byte("dropped"))
+	stream.packets.Enqueue([]byte("forwarded"))
+	require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(context.Context) (bool, error) {
+		return connection.forwarded.Load(), streamCtx.Err()
+	}))
+	buffer := make([]byte, 32)
+	packetSize, _, packetErr := backend.ReadFrom(buffer)
+	require.NoError(t, packetErr)
+	require.Equal(t, "forwarded", string(buffer[:packetSize]))
+	_, retained := runtimeProxy.udpStreams.Load(stream.clientAddr.String())
+	require.True(t, retained)
+	require.NoError(t, streamCtx.Err())
 }
 
 func TestUDPTwoEndpoints(t *testing.T) {

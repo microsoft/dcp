@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"reflect"
 	"slices"
@@ -288,8 +289,11 @@ func containerEndpointAddresses(
 				case networking.IPv6AllInterfaceAddress, "::":
 					address = networking.IPv6LocalhostDefaultAddress
 				}
+				if ip := net.ParseIP(address); ip != nil {
+					address = networking.IpToString(ip)
+				}
 				if networking.IsValidPort(int(mapping.HostPort)) {
-					addresses[portIndex] = append(addresses[portIndex], apiv2.ServiceAddress{Address: networking.ToStandaloneAddress(address), Port: mapping.HostPort})
+					addresses[portIndex] = append(addresses[portIndex], apiv2.ServiceAddress{Address: address, Port: mapping.HostPort})
 				}
 
 			}
@@ -318,7 +322,7 @@ func processEndpointAddresses(ports []logicalPortData) [][]apiv2.ServiceAddress 
 		case networking.IPv6AllInterfaceAddress, "::":
 			address = networking.IPv6LocalhostDefaultAddress
 		}
-		addresses[portIndex] = []apiv2.ServiceAddress{{Address: networking.ToStandaloneAddress(address), Port: port.Port}}
+		addresses[portIndex] = []apiv2.ServiceAddress{{Address: address, Port: port.Port}}
 	}
 	return addresses
 }

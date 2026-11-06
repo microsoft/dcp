@@ -77,7 +77,7 @@ func TestV2ServiceEndpointAPIValidatesUpdates(t *testing.T) {
 			{Address: "127.0.0.1", Port: 5000}, {Address: "127.0.0.1", Port: 5000},
 		}}},
 		{"valid-new-service", "", apiv2.ServiceEndpointSpec{ServiceRef: "different-service", Addresses: endpoint.Spec.Addresses}},
-		{"valid-new-address", "", apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "::1", Port: 5000}}}},
+		{"valid-new-address", "", apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "[::1]", Port: 5000}}}},
 		{"valid-new-port", "", apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5001}}}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -116,7 +116,7 @@ func TestV2ServiceEndpointAPIValidatesUpdates(t *testing.T) {
 	}
 
 	endpoint.Spec.ServiceRef = namespace.Name + "/" + service.Name
-	endpoint.Spec.Addresses = []apiv2.ServiceAddress{{Address: "::1", Port: 5001}, {Address: "127.0.0.1", Port: 5002}}
+	endpoint.Spec.Addresses = []apiv2.ServiceAddress{{Address: "[::1]", Port: 5001}, {Address: "127.0.0.1", Port: 5002}}
 	endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
 	waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalServicePhaseReady &&
@@ -189,7 +189,7 @@ func TestV2ServiceAPIStorageAndNamespaceCleanup(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "allocated", Namespace: namespace.Name},
 	}
 	require.NoError(t, apiClient.Create(ctx, allocated))
-	addresses := []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "::1", Port: 5001}}
+	addresses := []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5000}, {Address: "[::1]", Port: 5001}}
 	proxyless := &apiv2.LogicalService{
 		ObjectMeta: metav1.ObjectMeta{Name: "proxyless", Namespace: namespace.Name},
 		Spec: apiv2.LogicalServiceSpec{
@@ -270,8 +270,8 @@ func TestV2ServiceAPIRejectsInvalidConfiguration(t *testing.T) {
 		name string
 		spec apiv2.ServiceEndpointSpec
 	}{
-		{"cross-namespace", apiv2.ServiceEndpointSpec{ServiceRef: "other/service", Addresses: []apiv2.ServiceAddress{{Address: "::1", Port: 5000}}}},
-		{"unallocated-port", apiv2.ServiceEndpointSpec{ServiceRef: "service", Addresses: []apiv2.ServiceAddress{{Address: "::1"}}}},
+		{"cross-namespace", apiv2.ServiceEndpointSpec{ServiceRef: "other/service", Addresses: []apiv2.ServiceAddress{{Address: "[::1]", Port: 5000}}}},
+		{"unallocated-port", apiv2.ServiceEndpointSpec{ServiceRef: "service", Addresses: []apiv2.ServiceAddress{{Address: "[::1]"}}}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			endpoint := &apiv2.ServiceEndpoint{
