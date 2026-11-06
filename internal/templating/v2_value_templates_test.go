@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -68,14 +69,20 @@ func TestEvaluateV2ValuesServiceAddresses(t *testing.T) {
 }
 
 // Verifies that EvaluateV2Values reports malformed or invalid templates instead of launching
-// literal expressions, while missing services and unavailable address families remain retryable.
+// literal expressions or using terminal services, while missing services and unavailable address families remain retryable.
 func TestEvaluateV2ValuesErrors(t *testing.T) {
 	t.Parallel()
 	scheme := runtime.NewScheme()
 	require.NoError(t, apiv2.AddToScheme(scheme))
 	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: "test-namespace"},
 		Status: apiv2.LogicalServiceStatus{EffectiveAddresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5000}}}}
-	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(service).Build()
+	terminating := service.DeepCopy()
+	terminating.Name = "terminating"
+	terminating.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	terminating.Finalizers = []string{"tests.dcp.microsoft.com/hold"}
+	failed := service.DeepCopy()
+	failed.Name, failed.Status.Phase = "failed", apiv2.LogicalServicePhaseFailed
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(service, terminating, failed).Build()
 	owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test-namespace"}}
 	for _, testCase := range []struct {
 		name      string
@@ -90,6 +97,8 @@ func TestEvaluateV2ValuesErrors(t *testing.T) {
 		{"extra selectors", `{{portFor "service" "IPv4" "IPv6"}}`, false},
 		{"missing service", `{{portFor "missing"}}`, true},
 		{"unavailable family", `{{portFor "service" "IPv6"}}`, true},
+		{"terminating service", `{{portFor "terminating"}}`, false},
+		{"failed service", `{{portFor "failed"}}`, false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			_, _, evaluationErr := EvaluateV2Values(context.Background(), reader, owner, nil, []string{testCase.value}, nil, false)

@@ -98,9 +98,10 @@ type logicalContainerData struct {
 	retryAfter time.Time
 	// Most recent coordination error, retained until the next attempt.
 	reconcileErr error
-	// Evaluated launch configuration and service-backed port allocations.
-	runConfig *apiv2.LogicalContainerConfig
-	ports     []logicalPortData
+	// Effective launch values and handed-off port selections.
+	effectiveCommand []string
+	effectiveEnv     []commonapi.EnvVar
+	ports            []logicalPortSelection
 	// Supplied or calculated lifecycle key for the desired container configuration.
 	lifecycleKey         string
 	physicalContainerUID types.UID
@@ -112,8 +113,9 @@ type logicalContainerData struct {
 
 func (data *logicalContainerData) Clone() *logicalContainerData {
 	cloned := *data
-	cloned.runConfig = data.runConfig.DeepCopy()
-	cloned.ports = append([]logicalPortData(nil), data.ports...)
+	cloned.effectiveCommand = append([]string(nil), data.effectiveCommand...)
+	cloned.effectiveEnv = append([]commonapi.EnvVar(nil), data.effectiveEnv...)
+	cloned.ports = append([]logicalPortSelection(nil), data.ports...)
 	return &cloned
 }
 
@@ -131,7 +133,11 @@ func (data *logicalContainerData) UpdateFrom(other *logicalContainerData) bool {
 }
 
 func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (objectChange, AdditionalReconciliationDelay, bool) {
-	change := projectLogicalPorts(data.ports, &container.Status.Ports)
+	var ports []logicalPortData
+	if data.physicalContainerUID != "" {
+		ports = data.portData(container)
+	}
+	change := projectLogicalPorts(ports, &container.Status.Ports)
 	if data.physicalContainerUID == "" {
 		change |= setValue(&container.Status.PhysicalContainerRef, "")
 	}
@@ -143,7 +149,11 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 		}
 		change |= setValue(&container.Status.ImageRef, imageRef)
 	}
-	change |= setValue(&container.Status.LifecycleKey, data.lifecycleKey)
+	lifecycleKey := container.Spec.LifecycleKey
+	if data.physicalContainerUID != "" {
+		lifecycleKey = data.lifecycleKey
+	}
+	change |= setValue(&container.Status.LifecycleKey, lifecycleKey)
 	if data.physicalContainerUID == "" {
 		change |= applyLogicalContainerBackingStatus(container, &apiv2.PhysicalContainer{})
 	}

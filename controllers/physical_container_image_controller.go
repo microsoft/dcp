@@ -518,7 +518,6 @@ func (r *PhysicalContainerImageReconciler) ensurePulledImage(
 	}
 	if inspectErr == nil {
 		data.state = physicalContainerImageStateReady
-		data.image = imageConfig.Image
 		data.imageID = inspectedImage.Id
 		data.imageIDVerified = true
 		data.digest = inspectedImage.Digest
@@ -581,7 +580,6 @@ func (r *PhysicalContainerImageReconciler) ensureExistingImage(
 	}
 	if inspectErr == nil {
 		data.state = physicalContainerImageStateReady
-		data.image = image.Spec.ImageID
 		data.imageID = inspectedImage.Id
 		data.imageIDVerified = true
 		data.digest = inspectedImage.Digest
@@ -742,7 +740,6 @@ func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImagePull(
 	data := &physicalContainerImageData{
 		state: physicalContainerImageStatePull,
 
-		image:         outputImage,
 		operation:     &physicalContainerImageOperation{cancel: cancelOperation},
 		startupStdout: currentData.startupStdout, startupStderr: currentData.startupStderr, workInProgress: true,
 	}
@@ -794,7 +791,6 @@ func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImageBuild(
 	data := &physicalContainerImageData{
 		state: physicalContainerImageStateBuild,
 
-		image:         outputImage,
 		operation:     &physicalContainerImageOperation{cancel: cancelOperation},
 		startupStdout: currentData.startupStdout, startupStderr: currentData.startupStderr, workInProgress: true,
 	}

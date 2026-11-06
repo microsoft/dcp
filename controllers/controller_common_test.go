@@ -9,12 +9,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -29,6 +31,116 @@ import (
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that prepareLogicalPorts allocates a fresh available dynamic port after a failed
+// preparation attempt even if its earlier choice becomes busy, while preserving explicit ports.
+func TestPrepareLogicalPortsReevaluatesDynamicPortsOnRetry(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	firstService := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "first", Namespace: "namespace"}}
+	apiClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(firstService).Build()
+	owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "namespace"}}
+	requested := []logicalPortRequest{
+		{binding: apiv2.LogicalServiceBinding{Name: "dynamic", ServiceRef: firstService.Name}, address: "127.0.0.1"},
+		{binding: apiv2.LogicalServiceBinding{Name: "explicit", ServiceRef: "second"}, address: "127.0.0.1", port: 8080},
+	}
+	partial, preparationErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner, requested, logr.Discard())
+	require.True(t, apierrors.IsNotFound(preparationErr))
+	require.Len(t, partial, 1)
+	require.Positive(t, partial[0].Port)
+	var listenConfig net.ListenConfig
+	occupied, listenErr := listenConfig.Listen(ctx, "tcp4", fmt.Sprintf("127.0.0.1:%d", partial[0].Port))
+	require.NoError(t, listenErr)
+	defer func() { require.NoError(t, occupied.Close()) }()
+	secondService := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "second", Namespace: owner.Namespace}}
+	require.NoError(t, apiClient.Create(ctx, secondService))
+	prepared, retryErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner, requested, logr.Discard())
+	require.NoError(t, retryErr)
+	require.Len(t, prepared, 2)
+	require.Positive(t, prepared[0].Port)
+	require.NotEqual(t, partial[0].Port, prepared[0].Port)
+	require.EqualValues(t, 8080, prepared[1].Port)
+	for _, request := range requested {
+		owner.Spec.Ports = append(owner.Spec.Ports, apiv2.LogicalProcessPort{
+			LogicalServiceBinding: request.binding, Address: request.address, Port: request.port,
+		})
+	}
+	data := &logicalProcessData{ports: logicalPortSelections(prepared, requested)}
+	require.Equal(t, prepared[0].Port, data.ports[0].allocatedPort)
+	require.Zero(t, data.ports[1].allocatedPort)
+	require.Equal(t, prepared, data.portData(owner))
+}
+
+// Verifies that prepareLogicalPorts rejects terminating and failed service dependencies before
+// allocating a port, including failed services that still advertise an address.
+func TestPrepareLogicalPortsRejectsTerminalServices(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	for _, terminating := range []bool{false, true} {
+		t.Run(fmt.Sprint(terminating), func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			require.NoError(t, apiv2.AddToScheme(scheme))
+			service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: "namespace"},
+				Status: apiv2.LogicalServiceStatus{Phase: apiv2.LogicalServicePhaseFailed,
+					EffectiveAddresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 8080}}}}
+			if terminating {
+				service.Status.Phase = apiv2.LogicalServicePhasePending
+				service.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+				service.Finalizers = []string{"tests.dcp.microsoft.com/hold"}
+			}
+			apiClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(service).Build()
+			owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: service.Namespace}}
+			ports, prepareErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner,
+				[]logicalPortRequest{{binding: apiv2.LogicalServiceBinding{Name: "http", ServiceRef: service.Name}}}, logr.Discard())
+			require.ErrorIs(t, prepareErr, errLogicalServiceDependencyFailed)
+			require.Empty(t, ports)
+		})
+	}
+}
+
+// Verifies that physicalContainerConfigFromLogicalSpec maps evaluated configuration and resolved
+// ports without aliasing the logical spec or treating logical network references as physical references.
+func TestPhysicalContainerConfigFromLogicalSpec(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []apiv2.LogicalContainerMode{apiv2.LogicalContainerModeSession, apiv2.LogicalContainerModePersistent} {
+		t.Run(string(mode), func(t *testing.T) {
+			monitorPID := int64(42)
+			spec := &apiv2.LogicalContainerSpec{Mode: mode, ContainerName: "container", MonitorPID: &monitorPID,
+				MonitorTimestamp: metav1.NowMicro(), Container: &apiv2.LogicalContainerConfig{
+					ImageRef: "image", Entrypoint: "entrypoint", Command: []string{"evaluated"},
+					Env:          []commonapi.EnvVar{{Name: "VALUE", Value: "evaluated"}},
+					VolumeMounts: []apiv2.VolumeMount{{Type: apiv2.NamedVolumeMount, VolumeRef: "volume", Target: "/data"}},
+					Networks:     []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "logical-network"}},
+					Labels:       []commonapi.Label{{Key: "app", Value: "value"}},
+				}}
+			original := spec.DeepCopy()
+			ports := []apiv2.ContainerPort{{ContainerPort: 8080, HostPort: 18080, Protocol: commonapi.PortProtocolTCP}}
+			config := physicalContainerConfigFromLogicalSpec(spec, ports)
+			require.Equal(t, mode == apiv2.LogicalContainerModePersistent, config.RetainRuntimeContainer)
+			require.Equal(t, spec.ContainerName, config.ContainerName)
+			require.Equal(t, spec.Container.ImageRef, config.ImageRef)
+			require.Equal(t, spec.Container.Entrypoint, config.Entrypoint)
+			require.Equal(t, spec.Container.Command, config.Command)
+			require.Equal(t, spec.Container.Env, config.Env)
+			require.Equal(t, spec.Container.VolumeMounts, config.VolumeMounts)
+			require.Equal(t, spec.Container.Labels, config.Labels)
+			require.Equal(t, ports, config.Ports)
+			require.Equal(t, spec.MonitorPID, config.MonitorPID)
+			require.Equal(t, spec.MonitorTimestamp, config.MonitorTimestamp)
+			require.Empty(t, config.Networks)
+			config.Command[0], config.Env[0].Value = "changed", "changed"
+			config.VolumeMounts[0].Target, config.Labels[0].Value = "/changed", "changed"
+			*config.MonitorPID = 99
+			config.Ports[0].HostPort = 28080
+			require.Equal(t, original, spec)
+			require.EqualValues(t, 18080, ports[0].HostPort)
+		})
+	}
+}
 
 // Verifies that physicalResourceCreationLabels overrides duplicate caller values for each
 // DCP ownership label without modifying the input or unrelated user-label precedence.

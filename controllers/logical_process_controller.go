@@ -28,6 +28,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/internal/templating"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -197,8 +198,21 @@ func handleLogicalProcessPreparation(
 		return additionalReconciliationNeeded
 	}
 	data.reconcileErr, data.reason, data.message, data.retryAfter = nil, "", "", time.Time{}
-	if !reconciler.prepareLogicalProcessValues(ctx, resource, data, log) {
-		if data.state == logicalProcessStatePrepareFailed {
+	physical, lookupErr := reconciler.findPhysicalProcess(ctx, resource, data, "")
+	if lookupErr != nil && !apierrors.IsNotFound(lookupErr) {
+		log.Error(lookupErr, "Failed to discover prepared physical process")
+		return additionalReconciliationNeeded
+	}
+	if physical != nil {
+		data.state = logicalProcessStatePhysical
+		return additionalReconciliationNeeded
+	}
+	if data.state != logicalProcessStatePrepare {
+		return additionalReconciliationNeeded
+	}
+	if preparationErr := reconciler.prepareLogicalProcessValues(ctx, resource, data, log); preparationErr != nil {
+		if errors.Is(preparationErr, errLogicalValuePreparationFailed) {
+			data.state = logicalProcessStatePrepareFailed
 			return noChange
 		}
 		return additionalReconciliationNeeded
@@ -218,6 +232,49 @@ func handleLogicalProcessPhysical(
 		return additionalReconciliationNeeded
 	}
 	data.reconcileErr, data.reason, data.message, data.retryAfter = nil, "", "", time.Time{}
+	existing, lookupErr := reconciler.findPhysicalProcess(ctx, resource, data, "")
+	if lookupErr != nil && (!apierrors.IsNotFound(lookupErr) || data.physicalUID != "") {
+		log.Error(lookupErr, "Failed to discover physical process before handoff")
+		return additionalReconciliationNeeded
+	}
+	if existing != nil {
+		if existing.Spec.Process != nil {
+			data.effectiveArgs = append([]string(nil), existing.Spec.Process.Args...)
+			data.effectiveEnv = append([]commonapi.EnvVar(nil), existing.Spec.Process.Env...)
+		} else if resource.Spec.EffectiveMode() == apiv2.LogicalProcessModePersistent && existing.Spec.PID != nil {
+			pid, pidErr := process.Int64_ToPidT(*existing.Spec.PID)
+			if pidErr != nil {
+				log.Error(pidErr, "Invalid physical process adoption identity")
+				data.state, data.message = logicalProcessStatePhysicalFailed, pidErr.Error()
+				return noChange
+			}
+			data.pendingRecord = &statestore.PersistentProcessRecord{
+				PID: pid, IdentityTime: existing.Spec.IdentityTimestamp.Time,
+				StdOutFile: existing.Spec.StdoutFile, StdErrFile: existing.Spec.StderrFile,
+			}
+		}
+		if data.lifecycleKey == "" {
+			data.lifecycleKey = resource.Spec.LifecycleKey
+			if !resource.Spec.Stop && existing.Spec.Process != nil {
+				key, _, keyErr := data.effectiveSpec(resource).GetLifecycleKey()
+				if keyErr != nil {
+					log.Error(keyErr, "Failed to recover physical process lifecycle key")
+					data.state, data.message = logicalProcessStatePhysicalFailed, keyErr.Error()
+					return noChange
+				}
+				data.lifecycleKey = key
+			}
+		}
+		physical, physicalErr := reconciler.ensureLogicalPhysicalProcess(ctx, resource, data, "", logicalProcessPhysicalSpec(resource, data))
+		if physicalErr != nil {
+			log.Error(physicalErr, "Failed to recover physical process handoff")
+			data.reconcileErr, data.message = physicalErr, physicalErr.Error()
+			return noChange
+		}
+		data.physicalUID, data.pendingRecord = physical.UID, nil
+		data.state = logicalProcessStateCreating
+		return additionalReconciliationNeeded
+	}
 	if data.lease != nil {
 		verifyErr := reconciler.config.StateStore.VerifyResourceLeaseHeld(ctx, resource, reconciler.config.ResourceLeaseOwner)
 		if verifyErr != nil {
@@ -226,10 +283,33 @@ func handleLogicalProcessPhysical(
 			return noChange
 		}
 	}
-	if resource.Spec.Stop && data.pendingRecord != nil {
-		data.replaceExisting = false
+	if preparationErr := reconciler.prepareLogicalProcessValues(ctx, resource, data, log); preparationErr != nil {
+		if errors.Is(preparationErr, errLogicalValuePreparationFailed) {
+			data.state = logicalProcessStatePrepareFailed
+			return noChange
+		}
+		return additionalReconciliationNeeded
 	}
-	if data.replaceExisting {
+	if !resource.Spec.Stop && resource.Spec.EffectiveMode() != apiv2.LogicalProcessModeExisting {
+		key, _, keyErr := data.effectiveSpec(resource).GetLifecycleKey()
+		if keyErr != nil {
+			log.Error(keyErr, "Failed to calculate process handoff lifecycle key")
+			data.state, data.message = logicalProcessStatePhysicalFailed, keyErr.Error()
+			return noChange
+		}
+		data.lifecycleKey = key
+	}
+	replaceExisting := false
+	if data.pendingRecord != nil && !resource.Spec.Stop {
+		previous, previousErr := reconciler.findPhysicalProcess(ctx, resource, data, "-previous")
+		if previousErr != nil && (!apierrors.IsNotFound(previousErr) || data.replacementUID != "") {
+			log.Error(previousErr, "Failed to observe process replacement progress")
+			data.reconcileErr, data.message = previousErr, previousErr.Error()
+			return noChange
+		}
+		replaceExisting = previous != nil || data.pendingRecord.LifecycleKey != data.lifecycleKey
+	}
+	if replaceExisting {
 		record := data.pendingRecord
 		pid := int64(record.PID)
 		previous, previousErr := reconciler.ensureLogicalPhysicalProcess(ctx, resource, data, "-previous",
@@ -260,28 +340,9 @@ func handleLogicalProcessPhysical(
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 			return noChange
 		}
-		data.pendingRecord, data.replaceExisting = nil, false
+		data.pendingRecord = nil
 	}
-	physicalSpec := apiv2.PhysicalProcessSpec{Stop: resource.Spec.Stop}
-	switch {
-	case resource.Spec.EffectiveMode() == apiv2.LogicalProcessModeExisting:
-		physicalSpec.PID, physicalSpec.IdentityTimestamp = resource.Spec.PID, resource.Spec.IdentityTimestamp
-	case data.pendingRecord != nil:
-		pid := int64(data.pendingRecord.PID)
-		physicalSpec.PID, physicalSpec.IdentityTimestamp = &pid, metav1.NewMicroTime(data.pendingRecord.IdentityTime)
-		physicalSpec.StdoutFile, physicalSpec.StderrFile = data.pendingRecord.StdOutFile, data.pendingRecord.StdErrFile
-	default:
-		desired := data.runConfig
-		if desired == nil && resource.Spec.Stop {
-			desired = resource.Spec.Process
-		}
-		physicalSpec.Process = &apiv2.PhysicalProcessConfig{
-			ExecutablePath: desired.ExecutablePath, Args: desired.Args, WorkingDirectory: desired.WorkingDirectory,
-			AmbientEnvironment: desired.AmbientEnvironment, Env: desired.Env,
-			RetainRuntimeProcess: resource.Spec.EffectiveMode() == apiv2.LogicalProcessModePersistent,
-			MonitorPID:           resource.Spec.MonitorPID, MonitorTimestamp: resource.Spec.MonitorTimestamp,
-		}
-	}
+	physicalSpec := logicalProcessPhysicalSpec(resource, data)
 	physical, physicalErr := reconciler.ensureLogicalPhysicalProcess(ctx, resource, data, "", physicalSpec)
 	if physicalErr != nil {
 		log.Error(physicalErr, "Failed to prepare backing physical process")
@@ -293,6 +354,27 @@ func handleLogicalProcessPhysical(
 	data.physicalUID, data.pendingRecord = physical.UID, nil
 	data.state = logicalProcessStateCreating
 	return additionalReconciliationNeeded
+}
+
+func logicalProcessPhysicalSpec(resource *apiv2.LogicalProcess, data *logicalProcessData) apiv2.PhysicalProcessSpec {
+	spec := apiv2.PhysicalProcessSpec{Stop: resource.Spec.Stop}
+	switch {
+	case resource.Spec.EffectiveMode() == apiv2.LogicalProcessModeExisting:
+		spec.PID, spec.IdentityTimestamp = resource.Spec.PID, resource.Spec.IdentityTimestamp
+	case data.pendingRecord != nil:
+		pid := int64(data.pendingRecord.PID)
+		spec.PID, spec.IdentityTimestamp = &pid, metav1.NewMicroTime(data.pendingRecord.IdentityTime)
+		spec.StdoutFile, spec.StderrFile = data.pendingRecord.StdOutFile, data.pendingRecord.StdErrFile
+	default:
+		desired := data.effectiveSpec(resource).Process
+		spec.Process = &apiv2.PhysicalProcessConfig{
+			ExecutablePath: desired.ExecutablePath, Args: desired.Args, WorkingDirectory: desired.WorkingDirectory,
+			AmbientEnvironment: desired.AmbientEnvironment, Env: desired.Env,
+			RetainRuntimeProcess: resource.Spec.EffectiveMode() == apiv2.LogicalProcessModePersistent,
+			MonitorPID:           resource.Spec.MonitorPID, MonitorTimestamp: resource.Spec.MonitorTimestamp,
+		}
+	}
+	return spec
 }
 
 func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
@@ -409,7 +491,8 @@ func handleLogicalProcessRunning(
 		return change | additionalReconciliationNeeded
 	}
 	data.reason, data.message = "", ""
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data.ports, processEndpointAddresses(data.ports)); endpointErr != nil {
+	ports := data.portData(resource)
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, ports, processEndpointAddresses(ports)); endpointErr != nil {
 		log.Error(endpointErr, "Failed to synchronize running process endpoints")
 		data.reconcileErr, data.message = endpointErr, endpointErr.Error()
 		change |= additionalReconciliationNeeded
@@ -425,7 +508,7 @@ func handleLogicalProcessStopping(
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data.ports, nil); endpointErr != nil {
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data.portData(resource), nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw stopping process endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -472,7 +555,7 @@ func handleLogicalProcessTerminal(
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data.ports, nil); endpointErr != nil {
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data.portData(resource), nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw terminal process endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -504,7 +587,7 @@ func handleLogicalProcessMissing(
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
 	change := data.applyMissingLogSource(resource)
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data.ports, nil); endpointErr != nil {
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data.portData(resource), nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw missing process endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -608,7 +691,7 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 	hasPrevious := slices.ContainsFunc(children.Items, func(child apiv2.PhysicalProcess) bool {
 		return child.Name == currentName+"-previous"
 	})
-	if !hasCurrent || ((data.replaceExisting || data.replacementUID != "") && !hasPrevious) {
+	if !hasCurrent || (data.replacementUID != "" && !hasPrevious) {
 		verifyErr := r.NoCacheClient.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace))
 		if verifyErr != nil {
 			log.Error(verifyErr, "Failed to verify physical process absence before deletion")
@@ -684,7 +767,7 @@ func handleLogicalProcessUnknown(
 	state logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
 	change := data.applyMissingLogSource(resource)
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data.ports, nil); endpointErr != nil {
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data.portData(resource), nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw unknown process endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -721,6 +804,46 @@ func handleLogicalProcessUnknown(
 	return change
 }
 
+func (r *LogicalProcessReconciler) prepareLogicalProcessValues(
+	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, log logr.Logger,
+) error {
+	if resource.Spec.Stop {
+		return nil
+	}
+	requests := make([]logicalPortRequest, len(resource.Spec.Ports))
+	for portIndex, port := range resource.Spec.Ports {
+		requests[portIndex] = logicalPortRequest{binding: port.LogicalServiceBinding, address: port.Address, port: port.Port}
+	}
+	ports, prepareErr := prepareLogicalPorts(ctx, r.Client, r.NoCacheClient, resource, requests, log)
+	if prepareErr != nil {
+		log.Error(prepareErr, "Failed to prepare logical process ports")
+		data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, prepareErr.Error()
+		if errors.Is(prepareErr, errLogicalServiceDependencyFailed) {
+			data.reason = apiv2.LogicalResourceReasonPortPreparationFailed
+			return fmt.Errorf("%w: %w", errLogicalValuePreparationFailed, prepareErr)
+		} else if !apierrors.IsNotFound(prepareErr) {
+			data.reconcileErr = prepareErr
+		}
+		return prepareErr
+	}
+	config := resource.Spec.Process
+	if config != nil {
+		arguments, environment, evaluationErr := templating.EvaluateV2Values(
+			ctx, r.NoCacheClient, resource, servingPorts(ports), config.Args, config.Env, osutil.IsWindows())
+		if evaluationErr != nil {
+			log.Error(evaluationErr, "Failed to evaluate logical process values")
+			data.reason, data.message = apiv2.LogicalResourceReasonTemplateEvaluationFailed, evaluationErr.Error()
+			if !templating.IsTransientTemplateError(evaluationErr) {
+				return fmt.Errorf("%w: %w", errLogicalValuePreparationFailed, evaluationErr)
+			}
+			return evaluationErr
+		}
+		data.effectiveArgs, data.effectiveEnv = arguments, environment
+	}
+	data.ports = logicalPortSelections(ports, requests)
+	return nil
+}
+
 func (r *LogicalProcessReconciler) prepareLogicalProcess(
 	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, log logr.Logger,
 ) {
@@ -732,8 +855,7 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 		data.lifecycleKey = resource.Spec.LifecycleKey
 	}
 	if !resource.Spec.Stop {
-		lifecycleSpec := resource.Spec.DeepCopy()
-		lifecycleSpec.Process = data.runConfig.DeepCopy()
+		lifecycleSpec := data.effectiveSpec(resource)
 		key, _, keyErr := lifecycleSpec.GetLifecycleKey()
 		if keyErr != nil {
 			log.Error(keyErr, "Failed to calculate logical process lifecycle key")
@@ -759,7 +881,7 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 		}
 		record, recordErr := r.config.StateStore.GetPersistentProcess(ctx, resource.GetLeaseKey())
 		if errors.Is(recordErr, statestore.ErrPersistentProcessNotFound) {
-			data.pendingRecord, data.replaceExisting = nil, false
+			data.pendingRecord = nil
 			return nil
 		}
 		if recordErr != nil {
@@ -776,7 +898,6 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 			return runningErr
 		}
 		data.pendingRecord = record
-		data.replaceExisting = !resource.Spec.Stop && record.LifecycleKey != data.lifecycleKey
 		return nil
 	}()
 	if preparationErr != nil {

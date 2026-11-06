@@ -9,8 +9,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -522,19 +524,41 @@ func TestV2LogicalValuesRejectInvalidServiceReferences(t *testing.T) {
 	}
 }
 
-// Verifies that LogicalProcess stops a retained identity without enforcing the desired lifecycle key
-// during pending template preparation, while fatal preparation remains terminal without controlling that process.
-func TestV2LogicalProcessTemplatePreparationLifecycle(t *testing.T) {
+func createTerminatingPreparationService(t *testing.T, ctx context.Context, namespace string) (*apiv2.LogicalService, func()) {
+	t.Helper()
+	const hold = "tests.dcp.microsoft.com/preparation-hold"
+	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "dependency", Namespace: namespace, Finalizers: []string{hold}},
+		Spec: apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}}
+	require.NoError(t, client.Create(ctx, service))
+	require.NoError(t, client.Delete(ctx, service))
+	release := sync.OnceFunc(func() {
+		cleanupCtx := context.WithoutCancel(ctx)
+		require.NoError(t, retryOnConflict(cleanupCtx, service.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalService) error {
+			current.Finalizers = slices.DeleteFunc(current.Finalizers, func(finalizer string) bool { return finalizer == hold })
+			return client.Update(updateCtx, current)
+		}))
+		ctrl_testutil.WaitObjectDeleted(t, cleanupCtx, client, service)
+	})
+	t.Cleanup(release)
+	return service, release
+}
+
+// Verifies that LogicalProcess stops retained identities only during nonterminal preparation,
+// while invalid templates and terminating service dependencies remain terminal after service replacement.
+func TestV2LogicalProcessPreparationLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, fieldName := range []string{"arguments", "environment"} {
 		for _, keyKind := range []string{"computed", "explicit"} {
-			for _, outcome := range []string{"waiting", "fatal"} {
+			for _, outcome := range []string{"waiting", "fatal", "terminating", "terminating-port"} {
+				if outcome == "terminating-port" && fieldName != "arguments" {
+					continue
+				}
 				t.Run(fieldName+"/"+keyKind+"/"+outcome, func(t *testing.T) {
 					t.Parallel()
 					ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 					defer cancel()
 					namespace := createActiveV2Namespace(t, ctx, "v2-process-template-"+fieldName+"-"+keyKind+"-"+outcome)
-					command := namespace.Name
+					command := namespace.Name + "-command"
 					spec := apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
 						Process: &apiv2.LogicalProcessConfig{ExecutablePath: command, Args: []string{"original"}}}
 					if keyKind == "explicit" {
@@ -564,9 +588,22 @@ func TestV2LogicalProcessTemplatePreparationLifecycle(t *testing.T) {
 					}
 					value := "{{"
 					expectedPhase := apiv2.LogicalProcessPhaseFailed
+					expectedReason := apiv2.LogicalResourceReasonTemplateEvaluationFailed
+					var dependency *apiv2.LogicalService
+					var releaseDependency func()
 					if outcome == "waiting" {
 						value = `{{portFor "missing"}}`
 						expectedPhase = apiv2.LogicalProcessPhasePending
+					} else if strings.HasPrefix(outcome, "terminating") {
+						dependency, releaseDependency = createTerminatingPreparationService(t, ctx, namespace.Name)
+						value = `{{portFor "dependency"}}`
+						if outcome == "terminating-port" {
+							value = "literal"
+							expectedReason = apiv2.LogicalResourceReasonPortPreparationFailed
+							replacementSpec.Ports = []apiv2.LogicalProcessPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{
+								Name: "http", ServiceRef: dependency.Name,
+							}, Port: 8080}}
+						}
 					}
 					if fieldName == "arguments" {
 						replacementSpec.Process.Args = []string{value}
@@ -577,9 +614,16 @@ func TestV2LogicalProcessTemplatePreparationLifecycle(t *testing.T) {
 					require.NoError(t, client.Create(ctx, replacement))
 					prepared := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 						return current.Status.Phase == expectedPhase && len(current.Status.Conditions) > 0 &&
-							current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
+							current.Status.Conditions[0].Reason == string(expectedReason), nil
 					})
 					require.Empty(t, prepared.Status.PhysicalProcessRef)
+					if dependency != nil {
+						require.Contains(t, prepared.Status.Conditions[0].Message, "terminating")
+						releaseDependency()
+						require.NoError(t, client.Create(ctx, &apiv2.LogicalService{
+							ObjectMeta: metav1.ObjectMeta{Name: dependency.Name, Namespace: dependency.Namespace}, Spec: dependency.Spec,
+						}))
+					}
 					require.NoError(t, client.Patch(ctx, replacement,
 						ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 					if outcome == "waiting" {
@@ -612,7 +656,7 @@ func TestV2LogicalProcessTemplatePreparationLifecycle(t *testing.T) {
 						}))
 						terminal := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 							return current.Status.Phase == apiv2.LogicalProcessPhaseFailed && current.Spec.Stop &&
-								len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
+								len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(expectedReason), nil
 						})
 						require.Empty(t, terminal.Status.PhysicalProcessRef)
 						var backings apiv2.PhysicalProcessList
@@ -629,13 +673,16 @@ func TestV2LogicalProcessTemplatePreparationLifecycle(t *testing.T) {
 	}
 }
 
-// Verifies that LogicalContainer retries pending template dependencies and honors stop before handoff,
-// while fatal preparation remains terminal without taking control of a retained container.
-func TestV2LogicalContainerTemplatePreparationLifecycle(t *testing.T) {
+// Verifies that LogicalContainer honors stop during nonterminal preparation, while invalid
+// templates and terminating service dependencies remain terminal after service replacement.
+func TestV2LogicalContainerPreparationLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, fieldName := range []string{"arguments", "environment"} {
 		for _, keyKind := range []string{"computed", "explicit"} {
-			for _, outcome := range []string{"waiting", "fatal"} {
+			for _, outcome := range []string{"waiting", "fatal", "terminating", "terminating-port"} {
+				if outcome == "terminating-port" && fieldName != "arguments" {
+					continue
+				}
 				t.Run(fieldName+"/"+keyKind+"/"+outcome, func(t *testing.T) {
 					t.Parallel()
 					ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -667,9 +714,22 @@ func TestV2LogicalContainerTemplatePreparationLifecycle(t *testing.T) {
 					}
 					value := "{{"
 					expectedPhase := apiv2.LogicalContainerPhaseFailed
+					expectedReason := apiv2.LogicalResourceReasonTemplateEvaluationFailed
+					var dependency *apiv2.LogicalService
+					var releaseDependency func()
 					if outcome == "waiting" {
 						value = `{{portFor "missing"}}`
 						expectedPhase = apiv2.LogicalContainerPhasePending
+					} else if strings.HasPrefix(outcome, "terminating") {
+						dependency, releaseDependency = createTerminatingPreparationService(t, ctx, namespace.Name)
+						value = `{{portFor "dependency"}}`
+						if outcome == "terminating-port" {
+							value = "literal"
+							expectedReason = apiv2.LogicalResourceReasonPortPreparationFailed
+							replacementSpec.Ports = []apiv2.LogicalContainerPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{
+								Name: "http", ServiceRef: dependency.Name,
+							}, ContainerPort: 8080}}
+						}
 					}
 					if fieldName == "arguments" {
 						replacementSpec.Container.Command = []string{value}
@@ -680,9 +740,16 @@ func TestV2LogicalContainerTemplatePreparationLifecycle(t *testing.T) {
 					require.NoError(t, client.Create(ctx, replacement))
 					prepared := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 						return current.Status.Phase == expectedPhase && len(current.Status.Conditions) > 0 &&
-							current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
+							current.Status.Conditions[0].Reason == string(expectedReason), nil
 					})
 					require.Empty(t, prepared.Status.PhysicalContainerRef)
+					if dependency != nil {
+						require.Contains(t, prepared.Status.Conditions[0].Message, "terminating")
+						releaseDependency()
+						require.NoError(t, client.Create(ctx, &apiv2.LogicalService{
+							ObjectMeta: metav1.ObjectMeta{Name: dependency.Name, Namespace: dependency.Namespace}, Spec: dependency.Spec,
+						}))
+					}
 					require.NoError(t, client.Patch(ctx, replacement,
 						ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 					expectedRuntimeState := containers.ContainerStatusRunning
@@ -702,7 +769,7 @@ func TestV2LogicalContainerTemplatePreparationLifecycle(t *testing.T) {
 						}))
 						terminal := waitObjectAssumesState(t, ctx, replacement.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 							return current.Status.Phase == apiv2.LogicalContainerPhaseFailed && current.Spec.Stop &&
-								len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
+								len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(expectedReason), nil
 						})
 						require.Empty(t, terminal.Status.PhysicalContainerRef)
 						var backings apiv2.PhysicalContainerList

@@ -16,6 +16,7 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 type logicalProcessState int
@@ -135,27 +136,37 @@ type logicalProcessData struct {
 	retryAfter time.Time
 	// Most recent coordination error, retained until the next attempt.
 	reconcileErr        error
-	runConfig           *apiv2.LogicalProcessConfig
-	ports               []logicalPortData
+	effectiveArgs       []string
+	effectiveEnv        []commonapi.EnvVar
+	ports               []logicalPortSelection
 	lifecycleKey        string
 	physicalUID         types.UID
 	replacementUID      types.UID
 	lease               *statestore.ResourceLease
 	leaseFailureMessage string
-	// Stored process identity is a handoff input, cleared after the backing PhysicalProcess is established.
-	pendingRecord   *statestore.PersistentProcessRecord
-	replaceExisting bool
+	// Selected process identity and captures, cleared after physical handoff.
+	pendingRecord *statestore.PersistentProcessRecord
 }
 
 func (data *logicalProcessData) Clone() *logicalProcessData {
 	cloned := *data
-	cloned.runConfig = data.runConfig.DeepCopy()
-	cloned.ports = append([]logicalPortData(nil), data.ports...)
+	cloned.effectiveArgs = append([]string(nil), data.effectiveArgs...)
+	cloned.effectiveEnv = append([]commonapi.EnvVar(nil), data.effectiveEnv...)
+	cloned.ports = append([]logicalPortSelection(nil), data.ports...)
 	if data.pendingRecord != nil {
 		record := *data.pendingRecord
 		cloned.pendingRecord = &record
 	}
 	return &cloned
+}
+
+func (data *logicalProcessData) effectiveSpec(resource *apiv2.LogicalProcess) *apiv2.LogicalProcessSpec {
+	spec := resource.Spec.DeepCopy()
+	if spec.Process != nil {
+		spec.Process.Args = append([]string(nil), data.effectiveArgs...)
+		spec.Process.Env = append([]commonapi.EnvVar(nil), data.effectiveEnv...)
+	}
+	return spec
 }
 
 func (data *logicalProcessData) UpdateFrom(other *logicalProcessData) bool {
@@ -177,8 +188,14 @@ func (data *logicalProcessData) applyTo(resource *apiv2.LogicalProcess) (objectC
 		physicalRef = "logical-" + string(resource.UID)
 	}
 	change := setValue(&resource.Status.PhysicalProcessRef, physicalRef)
-	change |= projectLogicalPorts(data.ports, &resource.Status.Ports)
-	change |= setValue(&resource.Status.LifecycleKey, data.lifecycleKey)
+	var ports []logicalPortData
+	lifecycleKey := resource.Spec.LifecycleKey
+	if data.physicalUID != "" {
+		ports = data.portData(resource)
+		lifecycleKey = data.lifecycleKey
+	}
+	change |= projectLogicalPorts(ports, &resource.Status.Ports)
+	change |= setValue(&resource.Status.LifecycleKey, lifecycleKey)
 	if _, valid := logicalProcessProjections.project(data.state); valid &&
 		(data.reconcileErr != nil || data.leaseFailureMessage != "") {
 		phase := apiv2.LogicalProcessPhaseUnknown
