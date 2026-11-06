@@ -6071,7 +6071,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 					},
 					"lifecycleKey": {
 						SchemaProps: spec.SchemaProps{
-							Description: "LifecycleKey is the supplied or calculated key applied to the runtime container.",
+							Description: "LifecycleKey is the supplied or calculated key for the desired container configuration.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -6555,7 +6555,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 					},
 					"lifecycleKey": {
 						SchemaProps: spec.SchemaProps{
-							Description: "LifecycleKey is the supplied or calculated lifecycle key.",
+							Description: "LifecycleKey is the supplied or calculated key for the desired process configuration.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

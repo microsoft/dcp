@@ -1198,7 +1198,7 @@ func TestV2LogicalContainerControllerStopsWithoutReplacingPersistentContainer(t 
 	})
 	requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonStopped)
 	require.Equal(t, runtimeID, stopped.Status.ContainerID)
-	require.Equal(t, "old-key", stopped.Status.LifecycleKey)
+	require.Equal(t, container.Spec.LifecycleKey, stopped.Status.LifecycleKey)
 	require.Zero(t, containerOrchestrator.CreateContainerCallCount(runtimeName))
 	require.Zero(t, containerOrchestrator.RemoveContainerCallCount(runtimeName))
 	waitResourceLeaseReleased(t, ctx, container)
@@ -1257,6 +1257,7 @@ func TestV2LogicalContainerControllerStopsExistingRuntimeDuringReplacement(t *te
 		return current.Status.Phase == apiv2.LogicalContainerPhaseExited, nil
 	})
 	require.Equal(t, runtimeID, stopped.Status.ContainerID)
+	require.Equal(t, logical.Spec.LifecycleKey, stopped.Status.LifecycleKey)
 	requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonStopped)
 	inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{runtimeID}})
 	require.NoError(t, inspectErr)

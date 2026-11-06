@@ -522,8 +522,8 @@ func TestV2LogicalValuesRejectInvalidServiceReferences(t *testing.T) {
 	}
 }
 
-// Verifies that LogicalProcess retries pending template dependencies and honors stop before handoff,
-// while fatal preparation remains terminal without taking control of a retained process.
+// Verifies that LogicalProcess stops a retained identity without enforcing the desired lifecycle key
+// during pending template preparation, while fatal preparation remains terminal without controlling that process.
 func TestV2LogicalProcessTemplatePreparationLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, fieldName := range []string{"arguments", "environment"} {
@@ -559,6 +559,9 @@ func TestV2LogicalProcessTemplatePreparationLifecycle(t *testing.T) {
 					ctrl_testutil.WaitObjectDeleted(t, ctx, client, first)
 					require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
 					replacementSpec := spec.DeepCopy()
+					if keyKind == "explicit" {
+						replacementSpec.LifecycleKey = "different-requested-key"
+					}
 					value := "{{"
 					expectedPhase := apiv2.LogicalProcessPhaseFailed
 					if outcome == "waiting" {
@@ -580,7 +583,25 @@ func TestV2LogicalProcessTemplatePreparationLifecycle(t *testing.T) {
 					require.NoError(t, client.Patch(ctx, replacement,
 						ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 					if outcome == "waiting" {
-						waitLogicalProcessPhase(t, ctx, replacement.NamespacedName(), apiv2.LogicalProcessPhaseExited)
+						stopped := waitLogicalProcessPhase(t, ctx, replacement.NamespacedName(), apiv2.LogicalProcessPhaseExited)
+						require.Equal(t, replacement.Spec.LifecycleKey, stopped.Status.LifecycleKey)
+						require.Equal(t, int64(record.PID), *stopped.Status.PID)
+						var backings apiv2.PhysicalProcessList
+						require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+						require.Len(t, backings.Items, 1)
+						physical := &backings.Items[0]
+						require.Equal(t, stopped.Status.PhysicalProcessRef, physical.Name)
+						require.True(t, physical.Spec.Stop)
+						require.Equal(t, stopped.Status.PID, physical.Spec.PID)
+						require.True(t, record.IdentityTime.Equal(physical.Spec.IdentityTimestamp.Time))
+						require.Nil(t, physical.Spec.Process)
+						require.Equal(t, record.StdOutFile, physical.Spec.StdoutFile)
+						require.Equal(t, record.StdErrFile, physical.Spec.StderrFile)
+						retainedRecord, retainedErr := testStateStore.GetPersistentProcess(ctx, replacement.GetLeaseKey())
+						require.NoError(t, retainedErr)
+						expectedRecord := *record
+						expectedRecord.UpdatedAt = retainedRecord.UpdatedAt
+						require.Equal(t, &expectedRecord, retainedRecord)
 						require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(handle)))
 					} else {
 						// Force status reprojection to observe reconciliation after Stop rather than a stale failure snapshot.
@@ -641,6 +662,9 @@ func TestV2LogicalContainerTemplatePreparationLifecycle(t *testing.T) {
 					require.Len(t, retained, 1)
 					require.Equal(t, containers.ContainerStatusRunning, retained[0].Status)
 					replacementSpec := spec.DeepCopy()
+					if keyKind == "explicit" {
+						replacementSpec.LifecycleKey = "different-requested-key"
+					}
 					value := "{{"
 					expectedPhase := apiv2.LogicalContainerPhaseFailed
 					if outcome == "waiting" {
@@ -667,6 +691,7 @@ func TestV2LogicalContainerTemplatePreparationLifecycle(t *testing.T) {
 							return current.Status.Phase == apiv2.LogicalContainerPhaseExited, nil
 						})
 						require.Equal(t, running.Status.ContainerID, stopped.Status.ContainerID)
+						require.Equal(t, replacement.Spec.LifecycleKey, stopped.Status.LifecycleKey)
 						expectedRuntimeState = containers.ContainerStatusExited
 					} else {
 						// Force status reprojection to observe reconciliation after Stop rather than a stale failure snapshot.

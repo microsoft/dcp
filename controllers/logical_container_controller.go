@@ -340,6 +340,9 @@ func handleLogicalContainerPending(
 
 	var spec apiv2.PhysicalContainerSpec
 	lifecycleKey := data.lifecycleKey
+	if lifecycleKey == "" {
+		lifecycleKey = container.Spec.LifecycleKey
+	}
 	if physical != nil {
 		spec = physical.Spec
 	} else {
@@ -402,10 +405,10 @@ func handleLogicalContainerPending(
 		}
 
 		containerID := ""
-		lifecycleKey = ""
+		existingKey := ""
 		managed := false
 		if inspected != nil {
-			containerID, lifecycleKey = inspected.Id, inspected.Labels[lifecycleKeyLabel]
+			containerID, existingKey = inspected.Id, inspected.Labels[lifecycleKeyLabel]
 			_, managed = inspected.Labels[dcpBuildLabel]
 		}
 		var physicalPorts []apiv2.ContainerPort
@@ -425,7 +428,7 @@ func handleLogicalContainerPending(
 				data.message = keyErr.Error()
 				return noChange
 			}
-			replaceExisting = inspected != nil && (desiredKey != lifecycleKey || inspected.Status != containers.ContainerStatusRunning)
+			replaceExisting = inspected != nil && (desiredKey != existingKey || inspected.Status != containers.ContainerStatusRunning)
 			lifecycleKey = desiredKey
 			if replaceExisting {
 				containerID = ""
@@ -462,6 +465,7 @@ func handleLogicalContainerPending(
 			}
 		}
 	}
+	data.lifecycleKey = lifecycleKey
 
 	change := noChange
 	if spec.Container != nil && container.Spec.Container != nil && container.Spec.Container.Image != nil {
@@ -540,7 +544,6 @@ func handleLogicalContainerPending(
 				data.message = createErr.Error()
 			}
 			if created != nil {
-				data.lifecycleKey = lifecycleKey
 				if created.UID != "" {
 					data.physicalContainerUID = created.UID
 				}
@@ -549,7 +552,6 @@ func handleLogicalContainerPending(
 		}
 		physical = created
 		data.physicalContainerUID = physical.UID
-		data.lifecycleKey = lifecycleKey
 	}
 	if physical.Spec.Container != nil && container.Spec.Container != nil &&
 		container.Spec.Container.Image != nil && data.physicalImageUID == "" {

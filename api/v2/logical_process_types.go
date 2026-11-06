@@ -205,7 +205,7 @@ type LogicalProcessStatus struct {
 	Phase LogicalProcessPhase `json:"phase,omitempty"`
 	// PhysicalProcessRef identifies the same-namespace backing PhysicalProcess.
 	PhysicalProcessRef string `json:"physicalProcessRef,omitempty"`
-	// LifecycleKey is the supplied or calculated lifecycle key.
+	// LifecycleKey is the supplied or calculated key for the desired process configuration.
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
 	// PID is the observed operating system process ID.
 	PID *int64 `json:"pid,omitempty"`
