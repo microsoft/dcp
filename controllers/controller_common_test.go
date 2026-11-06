@@ -26,6 +26,7 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -189,20 +190,20 @@ func TestPrepareLogicalPortsRejectsTerminalServices(t *testing.T) {
 	}
 }
 
-// Verifies that logical endpoint derivation preserves bracketed IPv6 addresses and maps wildcard
-// bindings to loopback, including raw IPv6 addresses reported by container inspection.
-func TestLogicalEndpointAddressRepresentation(t *testing.T) {
+// Verifies that logical endpoint derivation normalizes wildcard and IPv6 addresses, matches
+// container ports and protocols, excludes unpublished mappings, and sorts and deduplicates results.
+func TestLogicalEndpointAddressDerivation(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		address  string
 		expected string
 	}{
-		{"127.0.0.1", "127.0.0.1"},
-		{"0.0.0.0", "127.0.0.1"},
-		{"[::1]", "[::1]"},
-		{"[::]", "[::1]"},
+		{networking.IPv4LocalhostDefaultAddress, networking.IPv4LocalhostDefaultAddress},
+		{networking.IPv4AllInterfaceAddress, networking.IPv4LocalhostDefaultAddress},
+		{networking.IPv6LocalhostDefaultAddress, networking.IPv6LocalhostDefaultAddress},
+		{networking.IPv6AllInterfaceAddress, networking.IPv6LocalhostDefaultAddress},
 		{"[2001:db8::1]", "[2001:db8::1]"},
-		{"localhost", "localhost"},
+		{networking.Localhost, networking.Localhost},
 	} {
 		t.Run(testCase.address, func(t *testing.T) {
 			t.Parallel()
@@ -215,11 +216,62 @@ func TestLogicalEndpointAddressRepresentation(t *testing.T) {
 			}}
 			if strings.HasPrefix(testCase.address, "[") {
 				raw := mappings[0]
-				raw.HostIP = strings.Trim(testCase.address, "[]")
+				raw.HostIP = networking.ToStandaloneAddress(testCase.address)
 				mappings = append(mappings, raw)
 			}
 			require.Equal(t, [][]apiv2.ServiceAddress{{{Address: testCase.expected, Port: 18080}}},
 				containerEndpointAddresses([]apiv2.LogicalContainerPort{{ContainerPort: 8080}}, []logicalPortData{port}, mappings))
+		})
+	}
+	for _, testCase := range []struct {
+		name     string
+		mappings []apiv2.PhysicalContainerPortMapping
+		expected []apiv2.ServiceAddress
+	}{
+		{name: "no mappings"},
+		{name: "empty host address", mappings: []apiv2.PhysicalContainerPortMapping{{
+			ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 18080,
+		}}, expected: []apiv2.ServiceAddress{{Address: networking.IPv4LocalhostDefaultAddress, Port: 18080}}},
+		{name: "different container port", mappings: []apiv2.PhysicalContainerPortMapping{{
+			ContainerPort: 9090, Protocol: commonapi.PortProtocolTCP, HostPort: 8080,
+		}}},
+		{name: "different protocol", mappings: []apiv2.PhysicalContainerPortMapping{{
+			ContainerPort: 8080, Protocol: commonapi.PortProtocolUDP, HostPort: 18080,
+		}}},
+		{name: "unpublished port", mappings: []apiv2.PhysicalContainerPortMapping{{
+			ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv4LocalhostDefaultAddress,
+		}}},
+		{name: "invalid host ports", mappings: []apiv2.PhysicalContainerPortMapping{
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: -1},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostPort: 65536},
+		}},
+		{name: "matching port and protocol", mappings: []apiv2.PhysicalContainerPortMapping{
+			{ContainerPort: 9090, Protocol: commonapi.PortProtocolTCP, HostPort: 8080},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolUDP, HostPort: 18081},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv4LocalhostDefaultAddress, HostPort: 18080},
+		}, expected: []apiv2.ServiceAddress{{Address: networking.IPv4LocalhostDefaultAddress, Port: 18080}}},
+		{name: "sorted unique addresses and ports", mappings: []apiv2.PhysicalContainerPortMapping{
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv6LocalhostDefaultAddress, HostPort: 18080},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: "127.0.0.2", HostPort: 19000},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv4LocalhostDefaultAddress, HostPort: 19000},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv4LocalhostDefaultAddress, HostPort: 18080},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: networking.IPv4AllInterfaceAddress, HostPort: 18080},
+			{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: net.IPv6loopback.String(), HostPort: 18080},
+		}, expected: []apiv2.ServiceAddress{
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: 18080},
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: 19000},
+			{Address: "127.0.0.2", Port: 19000},
+			{Address: networking.IPv6LocalhostDefaultAddress, Port: 18080},
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			original := slices.Clone(testCase.mappings)
+			port := logicalPortData{protocol: commonapi.PortProtocolTCP}
+			port.Port = 8080
+			require.Equal(t, [][]apiv2.ServiceAddress{testCase.expected},
+				containerEndpointAddresses([]apiv2.LogicalContainerPort{{ContainerPort: 8080}}, []logicalPortData{port}, testCase.mappings))
+			require.Equal(t, original, testCase.mappings)
 		})
 	}
 }
