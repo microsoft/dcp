@@ -73,6 +73,9 @@ type ApiServerInfo struct {
 	// Configuration for the client used to connect to the API server.
 	ClientConfig *clientgorest.Config
 
+	// Kubeconfig path for test-owned subprocesses connecting to this API server.
+	KubeconfigPath string
+
 	// Container orchestrator used by the API server.
 	ContainerOrchestrator containers.ContainerOrchestrator
 
@@ -80,9 +83,6 @@ type ApiServerInfo struct {
 	ApiServerPID process.Pid_t
 
 	// NON-CONTRACT MEMBERS (used internally by the startApiServer function)
-
-	// Path to the kubeconfig file used to connect to the API server.
-	kubeconfigPath string
 
 	// The execution context and the execution context cancel function for the API server process.
 	dcpCtx context.Context
@@ -183,7 +183,7 @@ func StartApiServerWithOptions(
 		cleanup()
 		return nil, fmt.Errorf("failed to generate random string for kubeconfig file suffix: %w", randErr)
 	}
-	info.kubeconfigPath = filepath.Join(testutil.TestTempDir(), fmt.Sprintf("kubeconfig-test-%s", suffix))
+	info.KubeconfigPath = filepath.Join(testutil.TestTempDir(), fmt.Sprintf("kubeconfig-test-%s", suffix))
 
 	var dcpCtxCancel context.CancelFunc
 	info.dcpCtx, dcpCtxCancel = context.WithCancel(testRunCtx)
@@ -195,7 +195,7 @@ func StartApiServerWithOptions(
 	dcpArgs := []string{
 		"start-apiserver",
 		"--server-only",
-		"--kubeconfig", info.kubeconfigPath,
+		"--kubeconfig", info.KubeconfigPath,
 		"--monitor", strconv.Itoa(os.Getpid()),
 	}
 
@@ -277,7 +277,7 @@ func StartApiServerWithOptions(
 	configCreationCtx, configCreationCancel := context.WithTimeout(info.dcpCtx, configCreationTimeout)
 	defer configCreationCancel()
 
-	clientConfig, clientConfigErr := dcpclient.NewConfigFromKubeconfigFile(configCreationCtx, info.kubeconfigPath)
+	clientConfig, clientConfigErr := dcpclient.NewConfigFromKubeconfigFile(configCreationCtx, info.KubeconfigPath)
 	if clientConfigErr != nil {
 		info.Dispose()
 		return nil, fmt.Errorf("failed to build client-go config: %w", clientConfigErr)

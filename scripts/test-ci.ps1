@@ -13,7 +13,7 @@
 # The sequence implemented here mirrors, for the non-make-4.4 TEST_PREREQS:
 #   generate-grpc build-dcp build-dcptun-containerexe
 #   container-probe-tool-containerexe delay-tool lfwriter-tool
-#   parrot-tool parrot-tool-containerexe termchild-tool
+#   parrot-tool parrot-tool-containerexe termchild-tool controller-manager-startup-tool
 # followed by `go test ./... -coverprofile cover.out -count 1 -timeout 20m`.
 #
 # The Windows CI job runs with CGO_ENABLED=0, so no C toolchain (mingw/gcc) is
@@ -32,6 +32,9 @@ $ProtocVersion = '33.5'
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $OutputBin = Join-Path $RepoRoot 'bin'
 $ToolBin = Join-Path $RepoRoot '.toolbin'
+$GoBuildOverlayDir = Join-Path $ToolBin 'go-build-overlay'
+$GoBuildOverlayFile = Join-Path $GoBuildOverlayDir 'overlay.json'
+$GoBuildModfile = Join-Path $GoBuildOverlayDir 'go.mod'
 $ProtocDir = Join-Path $ToolBin 'protoc'
 $ProtocExe = Join-Path $ProtocDir 'bin\protoc.exe'
 
@@ -154,7 +157,7 @@ function Invoke-GoBuild {
         }
         Write-Host "go build -> $Output ($Package, GOOS=$(if ($TargetGoos) { $TargetGoos } else { 'host' }), CGO_ENABLED=$(if ($CgoEnabled -ne '') { $CgoEnabled } else { 'ambient' }))"
         Invoke-Native -Description "go build $Package" -Script {
-            & go build -o $Output $Package
+            & go build -modfile $GoBuildModfile -overlay $GoBuildOverlayFile -o $Output $Package
         }
     } finally {
         $env:GOOS = $savedGoos
@@ -167,6 +170,9 @@ function Build-TestPrereqs {
     New-DirectoryIfMissing $ToolBin
 
     Invoke-GenerateGrpc
+    Invoke-Native -Description 'generate Go build overlay' -Script {
+        & go run ./internal/tools/gobuildoverlay --target-os windows --output-dir $GoBuildOverlayDir
+    }
 
     # build-dcp
     Invoke-GoBuild -Output (Join-Path $OutputBin 'dcp.exe') -Package './cmd/dcp'
@@ -179,6 +185,7 @@ function Build-TestPrereqs {
     Invoke-GoBuild -Output (Join-Path $ToolBin 'lfwriter.exe') -Package 'github.com/microsoft/dcp/test/lfwriter'
     Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot.exe') -Package 'github.com/microsoft/dcp/test/parrot'
     Invoke-GoBuild -Output (Join-Path $ToolBin 'termchild.exe') -Package 'github.com/microsoft/dcp/test/termchild'
+    Invoke-GoBuild -Output (Join-Path $ToolBin 'controller-manager-startup.exe') -Package './test/managerstartup'
     # parrot-tool-containerexe (static Linux binary for the scratch-based test image)
     Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot_c') -Package 'github.com/microsoft/dcp/test/parrot' -TargetGoos 'linux' -CgoEnabled '0'
 }
@@ -189,7 +196,7 @@ function Invoke-Tests {
     try {
         Write-Host 'go test ./... -coverprofile cover.out -count 1 -timeout 20m'
         Invoke-Native -Description 'go test' -Script {
-            & go test ./... -coverprofile cover.out -count 1 -timeout 20m
+            & go test -modfile $GoBuildModfile -overlay $GoBuildOverlayFile ./... -coverprofile cover.out -count 1 -timeout 20m
         }
     } finally {
         Pop-Location

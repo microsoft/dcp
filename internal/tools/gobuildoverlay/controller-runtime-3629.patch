@@ -1,0 +1,32 @@
+diff --git a/pkg/manager/runnable_group.go b/pkg/manager/runnable_group.go
+--- a/pkg/manager/runnable_group.go
++++ b/pkg/manager/runnable_group.go
+@@ -183,8 +183,6 @@ func (r *runnableGroup) Start(ctx context.Context) error {
+ 	var retErr error
+ 
+ 	r.startOnce.Do(func() {
+-		defer close(r.startReadyCh)
+-
+ 		// Start the internal reconciler.
+ 		go r.reconcile()
+ 
+@@ -210,6 +208,7 @@ func (r *runnableGroup) Start(ctx context.Context) error {
+ 				if err := ctx.Err(); !errors.Is(err, context.Canceled) {
+ 					retErr = err
+ 				}
++				return
+ 			case rn := <-r.startReadyCh:
+ 				for i, existing := range r.startQueue {
+ 					if existing == rn {
+@@ -264,7 +263,10 @@ func (r *runnableGroup) reconcile() {
+ 			go func() {
+ 				if rn.Check(r.ctx) {
+ 					if rn.signalReady {
+-						r.startReadyCh <- rn
++						select {
++						case r.startReadyCh <- rn:
++						case <-r.ctx.Done():
++						}
+ 					}
+ 				}
+ 			}()
