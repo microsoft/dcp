@@ -45,7 +45,8 @@ func TestNamespaceResourcesIncludeAllNamespacedV2Kinds(t *testing.T) {
 }
 
 // Verifies that NamespaceResources cleans executions and Projects before their physical dependencies,
-// logical processes before physical processes, and containers before their networks and volumes.
+// logical workloads before endpoints, logical processes before physical processes,
+// and containers before their networks and volumes.
 func TestNamespaceResourcesCleanLogicalResourcesBeforePhysicalDependencies(t *testing.T) {
 	namespaceResourcesByGVR := cleanupResourcesByGVR(NamespaceResources)
 	containerGVR := (&apiv2.LogicalContainer{}).GetGroupVersionResource()
@@ -57,6 +58,7 @@ func TestNamespaceResourcesCleanLogicalResourcesBeforePhysicalDependencies(t *te
 	physicalContainerVolumeGVR := (&apiv2.PhysicalContainerVolume{}).GetGroupVersionResource()
 	physicalProcessGVR := (&apiv2.PhysicalProcess{}).GetGroupVersionResource()
 	logicalProcessGVR := (&apiv2.LogicalProcess{}).GetGroupVersionResource()
+	serviceEndpointGVR := (&apiv2.ServiceEndpoint{}).GetGroupVersionResource()
 
 	require.Len(t, namespaceResourcesByGVR, 14)
 	require.Contains(t, namespaceResourcesByGVR, containerGVR)
@@ -68,6 +70,8 @@ func TestNamespaceResourcesCleanLogicalResourcesBeforePhysicalDependencies(t *te
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerVolumeGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalProcessGVR)
 	require.Contains(t, namespaceResourcesByGVR[physicalProcessGVR].CleanUpAfter, logicalProcessGVR)
+	require.Contains(t, namespaceResourcesByGVR[serviceEndpointGVR].CleanUpAfter, logicalProcessGVR)
+	require.Contains(t, namespaceResourcesByGVR[serviceEndpointGVR].CleanUpAfter, containerGVR)
 	require.Empty(t, namespaceResourcesByGVR[logicalProcessGVR].CleanUpAfter)
 	logicalExecGVR := (&apiv2.LogicalContainerExec{}).GetGroupVersionResource()
 	physicalExecGVR := (&apiv2.PhysicalContainerExec{}).GetGroupVersionResource()
