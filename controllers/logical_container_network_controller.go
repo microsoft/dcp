@@ -361,6 +361,7 @@ func (r *LogicalContainerNetworkReconciler) createPhysicalContainerNetwork(
 	if ownerErr != nil {
 		return nil, fmt.Errorf("set physical network owner: %w", ownerErr)
 	}
+	data.unobservedChildren.recordCreateAttempt(physical)
 	createErr := r.Create(ctx, physical)
 	if physical.UID != "" {
 		data.physicalNetworkUID = physical.UID
@@ -408,6 +409,7 @@ func (r *LogicalContainerNetworkReconciler) findLogicalNetworkBacking(
 		owned = child
 	}
 	if owned != nil {
+		data.unobservedChildren.observeCached(owned)
 		if (data.physicalNetworkUID != "" && owned.UID != data.physicalNetworkUID) || !hasFinalizer(owned, LogicalBackingFinalizer) {
 			identityErr := fmt.Errorf("physical network %q UID or logical hold changed", owned.NamespacedName())
 			data.state, data.reason, data.message, data.reconcileErr = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonPhysicalNetworkChanged, identityErr.Error(), nil
@@ -587,6 +589,7 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 	delay = StandardDelay
 	if data == nil {
 		data = &logicalContainerNetworkData{state: logicalContainerNetworkStateDelete}
+		data.unobservedChildren.recordCreateAttempt(&apiv2.PhysicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(network.UID)}})
 		r.networkData.Store(network.NamespacedName(), network.UID, data.Clone())
 	}
 	defer func() {
@@ -609,16 +612,10 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 		data.reconcileErr, data.message = listErr, listErr.Error()
 		return additionalReconciliationNeeded, delay
 	}
-	if len(children.Items) == 0 {
-		verifyErr := r.NoCacheClient.List(ctx, &children, ctrl_client.InNamespace(network.Namespace))
-		if verifyErr != nil {
-			log.Error(verifyErr, "Failed to verify physical network absence before deletion")
-			data.reconcileErr, data.message = verifyErr, verifyErr.Error()
-			return additionalReconciliationNeeded, delay
-		}
-		children.Items = slices.DeleteFunc(children.Items, func(child apiv2.PhysicalContainerNetwork) bool {
-			return !metav1.IsControlledBy(&child, network)
-		})
+	if confirmationErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, network, data.unobservedChildren, &children.Items); confirmationErr != nil {
+		log.Error(confirmationErr, "Failed to resolve unobserved physical networks before deletion")
+		data.reconcileErr, data.message = confirmationErr, confirmationErr.Error()
+		return additionalReconciliationNeeded, delay
 	}
 	if len(children.Items) != 0 {
 		if len(children.Items) == 1 && data.physicalNetworkUID == "" {

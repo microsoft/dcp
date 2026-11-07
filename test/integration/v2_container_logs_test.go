@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -49,6 +51,100 @@ func readV2ContainerLog[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]]
 		return "", readErr
 	}
 	return string(contents), closeErr
+}
+
+type unavailableContainerInspectionOrchestrator struct {
+	containers.ContainerOrchestrator
+	unavailable atomic.Bool
+}
+
+func (orchestrator *unavailableContainerInspectionOrchestrator) InspectContainers(
+	ctx context.Context, options containers.InspectContainersOptions,
+) ([]containers.InspectedContainer, error) {
+	if orchestrator.unavailable.Load() {
+		return nil, errors.New("transient container inspection failure")
+	}
+	return orchestrator.ContainerOrchestrator.InspectContainers(ctx, options)
+}
+
+// Verifies that LogicalContainer preserves the physical log source during transient inspection
+// failures and the same stdout follower receives output while Unknown and after recovery.
+func TestV2LogicalContainerLogFollowerSurvivesInspectionFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	var decorated *unavailableContainerInspectionOrchestrator
+	server, _, startErr := StartTestEnvironmentWithOptions(t, ctx,
+		LogicalContainerController|PhysicalContainerController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateContainerOrchestrator: func(original containers.ContainerOrchestrator, _ *statestore.Store) containers.ContainerOrchestrator {
+			decorated = &unavailableContainerInspectionOrchestrator{ContainerOrchestrator: original}
+			return decorated
+		}})
+	require.NoError(t, startErr)
+	defer decorated.unavailable.Store(false)
+	orchestrator := decorated.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	runtimeID, runErr := orchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{Name: "inspection-log-runtime", Image: "existing-image"},
+	})
+	require.NoError(t, runErr)
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-inspection-log-follow")
+	logical := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerSpec{Mode: apiv2.LogicalContainerModeExisting,
+			ContainerName: "inspection-log-runtime"},
+	}
+	require.NoError(t, server.Client.Create(ctx, logical))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+	})
+	require.NoError(t, orchestrator.SimulateContainerLogging(runtimeID, apiv1.LogStreamSourceStdout, []byte("history\n")))
+	gvr := logical.GetGroupVersionResource()
+	follower, followErr := server.RestClient.Get().
+		AbsPath("/apis", gvr.Group, gvr.Version, "namespaces", namespace.Name, gvr.Resource, logical.Name, apiv2.LogSubresourceName).
+		SpecificallyVersionedParams(&apiv2.ResourceLogOptions{Follow: true},
+			runtime.NewParameterCodec(dcpclient.NewScheme()), apiv2.GroupVersion).Stream(ctx)
+	require.NoError(t, followErr)
+	defer func() { require.NoError(t, follower.Close()) }()
+	history := make([]byte, len("history\n"))
+	_, historyErr := io.ReadFull(follower, history)
+	require.NoError(t, historyErr)
+	require.Equal(t, "history\n", string(history))
+	physical := &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{
+		Name: running.Status.PhysicalContainerRef, Namespace: namespace.Name,
+	}}
+	decorated.unavailable.Store(true)
+	require.NoError(t, server.Client.Patch(ctx, physical, ctrl_client.RawPatch(types.MergePatchType,
+		[]byte(`{"metadata":{"annotations":{"inspect":"unavailable"}}}`))))
+	unknown := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseUnknown, nil
+	})
+	require.NoError(t, server.Client.Get(ctx, physical.NamespacedName(), physical))
+	require.Equal(t, apiv2.PhysicalContainerPhaseUnknown, physical.Status.Phase)
+	require.False(t, physical.GetLogSource().Complete)
+	require.Equal(t, physical.GetLogSource(), unknown.Status.RuntimeLogs)
+	require.NoError(t, orchestrator.SimulateContainerLogging(runtimeID, apiv1.LogStreamSourceStdout, []byte("while-unknown\n")))
+	continued := make([]byte, len("while-unknown\n"))
+	_, continuedErr := io.ReadFull(follower, continued)
+	require.NoError(t, continuedErr)
+	require.Equal(t, "while-unknown\n", string(continued))
+	decorated.unavailable.Store(false)
+	require.NoError(t, server.Client.Patch(ctx, physical, ctrl_client.RawPatch(types.MergePatchType,
+		[]byte(`{"metadata":{"annotations":{"inspect":"recovered"}}}`))))
+	recovered := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+	})
+	require.Equal(t, runtimeID, recovered.Status.ContainerID)
+	require.Equal(t, running.Status.RuntimeLogs, recovered.Status.RuntimeLogs)
+	require.NoError(t, orchestrator.SimulateContainerLogging(runtimeID, apiv1.LogStreamSourceStdout, []byte("after-recovery\n")))
+	recoveredOutput := make([]byte, len("after-recovery\n"))
+	_, recoveredErr := io.ReadFull(follower, recoveredOutput)
+	require.NoError(t, recoveredErr)
+	require.Equal(t, "after-recovery\n", string(recoveredOutput))
+	require.NoError(t, server.Client.Delete(ctx, logical))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
+	remaining, readErr := io.ReadAll(follower)
+	require.NoError(t, readErr)
+	require.Empty(t, remaining)
 }
 
 // Verifies that namespaced logical and physical log endpoints expose identical stdout and stderr,
@@ -223,6 +319,17 @@ func TestV2ContainerStartupLogsCompleteAfterPreparationFailure(t *testing.T) {
 			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonLogicalNetworkFailed)
 			require.Empty(t, failed.Status.PhysicalContainerRef)
 			waitPullImageCallCount(t, ctx, source, 1)
+			draining := waitObjectAssumesState(t, ctx, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+				return current.Status.StartupLogs != nil && current.Status.StartupLogs.Available &&
+					(!testCase.pullFails || current.Status.StartupLogs.Complete), nil
+			})
+			require.Equal(t, apiv2.LogicalContainerPhaseFailed, draining.Status.Phase)
+			if !testCase.pullFails {
+				require.False(t, draining.Status.StartupLogs.Complete)
+			}
+			pulling := &apiv2.PhysicalContainerImage{}
+			require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: draining.Status.StartupLogs.Name}, pulling))
+			require.Equal(t, pulling.GetLogSource(), draining.Status.StartupLogs)
 			require.ErrorIs(t, testStateStore.VerifyResourceLeaseHeld(ctx, logical, testResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 			releasePull()
 			image := waitObjectAssumesState(t, ctx,
@@ -388,6 +495,10 @@ func TestV2LogicalContainerLogFollowerKeepsBackingUntilLogicalDeletion(t *testin
 	waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
 		return !current.DeletionTimestamp.IsZero(), nil
 	})
+	unknown := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseUnknown, nil
+	})
+	require.Equal(t, running.Status.RuntimeLogs, unknown.Status.RuntimeLogs)
 	require.NoError(t, orchestrator.SimulateContainerLogging(runtimeID, apiv1.LogStreamSourceStdout, []byte("held\n")))
 	held := make([]byte, len("held\n"))
 	_, heldErr := io.ReadFull(follower, held)

@@ -97,7 +97,7 @@ func EvaluateV2Values(
 		selected, addressFound, selectionErr := networking.SelectServiceAddress(
 			service.Status.EffectiveAddresses, networking.IpVersionPreference(selector), networking.GetIpVersionPreference())
 		if selectionErr != nil {
-			return apiv2.ServiceAddress{}, selectionErr
+			return apiv2.ServiceAddress{}, errV2ServiceLookup{cause: fmt.Errorf("select address for service %q: %w", serviceName, selectionErr)}
 		}
 		if !addressFound {
 			return apiv2.ServiceAddress{}, errServiceNotAssignedAddress{Service: serviceName}

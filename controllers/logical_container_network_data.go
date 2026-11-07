@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"time"
 
@@ -76,12 +77,14 @@ type logicalContainerNetworkData struct {
 	reconcileErr        error
 	lifecycleKey        string
 	physicalNetworkUID  types.UID
+	unobservedChildren  unobservedLogicalChildren
 	lease               *statestore.ResourceLease
 	leaseFailureMessage string
 }
 
 func (data *logicalContainerNetworkData) Clone() *logicalContainerNetworkData {
 	cloned := *data
+	cloned.unobservedChildren = maps.Clone(data.unobservedChildren)
 	return &cloned
 }
 

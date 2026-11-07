@@ -7,6 +7,7 @@ package networking
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -15,6 +16,7 @@ import (
 // SelectServiceAddress selects a usable address/port pair without modifying addresses.
 // requiredFamily filters candidates; preferredFamily ranks them without preventing fallback.
 // Empty/None means no filter and IPv4 preference respectively. Ties use address then port ordering.
+// If an explicit family has no published matching IP, local host addresses are resolved using LookupIP.
 // The boolean is false when no usable address matches the filter.
 func SelectServiceAddress(
 	addresses []apiv2.ServiceAddress, requiredFamily IpVersionPreference, preferredFamily IpVersionPreference,
@@ -30,6 +32,32 @@ func SelectServiceAddress(
 		return apiv2.ServiceAddress{}, false, fmt.Errorf("unsupported preferred address family: %s", preferredFamily)
 	}
 
+	selected, found := selectPublishedServiceAddress(addresses, requiredFamily, preferredFamily)
+	if found || requiredFamily == "" || requiredFamily == IpVersionPreferenceNone {
+		return selected, found, nil
+	}
+
+	var resolved []apiv2.ServiceAddress
+	for _, address := range addresses {
+		if address.Address == "" || !IsValidPort(int(address.Port)) ||
+			net.ParseIP(ToStandaloneAddress(address.Address)) != nil {
+			continue
+		}
+		ips, lookupErr := LookupIP(address.Address)
+		if lookupErr != nil {
+			return apiv2.ServiceAddress{}, false, fmt.Errorf("resolve local service address %q: %w", address.Address, lookupErr)
+		}
+		for _, ip := range ips {
+			resolved = append(resolved, apiv2.ServiceAddress{Address: IpToString(ip), Port: address.Port})
+		}
+	}
+	selected, found = selectPublishedServiceAddress(resolved, requiredFamily, preferredFamily)
+	return selected, found, nil
+}
+
+func selectPublishedServiceAddress(
+	addresses []apiv2.ServiceAddress, requiredFamily IpVersionPreference, preferredFamily IpVersionPreference,
+) (apiv2.ServiceAddress, bool) {
 	var selected apiv2.ServiceAddress
 	found, selectedPreferred := false, false
 	for _, address := range addresses {
@@ -48,5 +76,5 @@ func SelectServiceAddress(
 			selected, selectedPreferred, found = address, preferred, true
 		}
 	}
-	return selected, found, nil
+	return selected, found
 }

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/logs"
+	"github.com/microsoft/dcp/internal/networking"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/process"
@@ -552,6 +554,64 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 			}
 			require.NoError(t, client.Delete(ctx, namespace))
 			ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
+		})
+	}
+}
+
+// Verifies that explicit family selectors resolve a default process endpoint's localhost address
+// to a matching loopback IP while unqualified templates and published service addresses retain localhost.
+func TestV2LogicalProcessFamilySelectorsResolveLocalhost(t *testing.T) {
+	t.Parallel()
+	for _, family := range []string{"IPv4", "IPv6"} {
+		t.Run(family, func(t *testing.T) {
+			t.Parallel()
+			if family == "IPv6" && !networking.IsIPv6("::1") {
+				t.Skip("IPv6 is unavailable")
+			}
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			namespace := createActiveV2Namespace(t, ctx, "v2-process-localhost-"+strings.ToLower(family))
+			producer := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "producer", Namespace: namespace.Name},
+				Spec: apiv2.LogicalProcessSpec{
+					Process: &apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-producer"},
+					Ports: []apiv2.LogicalProcessPort{{Port: 8080, LogicalServiceBinding: apiv2.LogicalServiceBinding{
+						Name: "http", Service: &apiv2.LogicalServiceTemplate{Name: "http",
+							LogicalServiceSpec: apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}},
+					}}},
+				}}
+			require.NoError(t, client.Create(ctx, producer))
+			waitLogicalProcessPhase(t, ctx, producer.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+			serviceName := types.NamespacedName{Name: "producer-http", Namespace: namespace.Name}
+			published := waitObjectAssumesState(t, ctx, serviceName, func(current *apiv2.LogicalService) (bool, error) {
+				return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+			})
+			require.Equal(t, []apiv2.ServiceAddress{{Address: networking.Localhost, Port: 8080}}, published.Status.EffectiveAddresses)
+			addressTemplate := fmt.Sprintf(`{{addressFor %q %q}}`, serviceName.Name, family)
+			portTemplate := fmt.Sprintf(`{{portFor %q %q}}`, serviceName.Name, family)
+			consumer := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "consumer", Namespace: namespace.Name},
+				Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{
+					ExecutablePath: namespace.Name + "-consumer",
+					Args:           []string{addressTemplate, portTemplate, fmt.Sprintf(`{{addressFor %q}}`, serviceName.Name)},
+					Env:            []commonapi.EnvVar{{Name: "HOST", Value: addressTemplate}, {Name: "PORT", Value: portTemplate}},
+				}}}
+			require.NoError(t, client.Create(ctx, consumer))
+			running := waitLogicalProcessPhase(t, ctx, consumer.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+			physical := &apiv2.PhysicalProcess{}
+			require.NoError(t, client.Get(ctx, types.NamespacedName{Name: running.Status.PhysicalProcessRef, Namespace: namespace.Name}, physical))
+			resolvedAddress := physical.Spec.Process.Args[0]
+			require.Equal(t, family == "IPv4", networking.IsIPv4(resolvedAddress))
+			require.Equal(t, family == "IPv6", networking.IsIPv6(resolvedAddress))
+			ip := net.ParseIP(networking.ToStandaloneAddress(resolvedAddress))
+			require.NotNil(t, ip)
+			require.True(t, ip.IsLoopback())
+			require.Equal(t, networking.IpToString(ip), resolvedAddress)
+			require.Equal(t, []string{resolvedAddress, "8080", networking.Localhost}, physical.Spec.Process.Args)
+			require.Equal(t, []commonapi.EnvVar{{Name: "HOST", Value: resolvedAddress}, {Name: "PORT", Value: "8080"}}, physical.Spec.Process.Env)
+			unchanged := &apiv2.LogicalService{}
+			require.NoError(t, client.Get(ctx, serviceName, unchanged))
+			require.Equal(t, published.Status.EffectiveAddresses, unchanged.Status.EffectiveAddresses)
+			require.NoError(t, client.Delete(ctx, namespace))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
 		})
 	}
 }

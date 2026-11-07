@@ -10,10 +10,70 @@ import (
 	"fmt"
 	"slices"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
+
+type logicalChildIdentity struct {
+	resource schema.GroupVersionResource
+	name     string
+}
+
+// unobservedLogicalChildren records possible creations not yet observed through the cache.
+type unobservedLogicalChildren map[logicalChildIdentity]struct{}
+
+func (children *unobservedLogicalChildren) recordCreateAttempt(child commonapi.DcpModelObject) {
+	if *children == nil {
+		*children = make(unobservedLogicalChildren)
+	}
+	identity := logicalChildIdentity{resource: child.GetGroupVersionResource(), name: child.GetName()}
+	(*children)[identity] = struct{}{}
+}
+
+func (children unobservedLogicalChildren) observeCached(child commonapi.DcpModelObject) {
+	identity := logicalChildIdentity{resource: child.GetGroupVersionResource(), name: child.GetName()}
+	delete(children, identity)
+}
+
+// resolveUnobservedLogicalChildren supplements cached owner queries only where creation may
+// have committed without reaching the cache. Confirmed absence remains resolved during deletion.
+func resolveUnobservedLogicalChildren[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
+	ctx context.Context, reader ctrl_client.Reader, owner ctrl_client.Object, pending unobservedLogicalChildren, cached *[]T,
+) error {
+	for i := range *cached {
+		child := PT(&(*cached)[i])
+		if metav1.IsControlledBy(child, owner) {
+			pending.observeCached(child)
+		}
+	}
+	prototype := PT(new(T))
+	for identity := range pending {
+		if identity.resource != prototype.GetGroupVersionResource() {
+			continue
+		}
+		child := PT(new(T))
+		name := types.NamespacedName{Namespace: owner.GetNamespace(), Name: identity.name}
+		getErr := reader.Get(ctx, name, child)
+		if apierrors.IsNotFound(getErr) {
+			delete(pending, identity)
+			continue
+		}
+		if getErr != nil {
+			return fmt.Errorf("confirm logical child %s %q: %w", identity.resource.Resource, name, getErr)
+		}
+		if !metav1.IsControlledBy(child, owner) {
+			delete(pending, identity)
+			continue
+		}
+		*cached = append(*cached, *child)
+	}
+	return nil
+}
 
 // LogicalBackingFinalizer retains an owned physical API object until its logical owner observes cleanup.
 const LogicalBackingFinalizer = "usvc-dev.developer.microsoft.com/logical-backing"

@@ -257,7 +257,7 @@ func TestV2PhysicalContainerControllerRejectsTerminatingVolume(t *testing.T) {
 	const hold = "test.dcp.microsoft.com/hold-dependency"
 	volume := &apiv2.PhysicalContainerVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "volume", Namespace: namespace.Name, Finalizers: []string{hold}},
-		Spec:       apiv2.PhysicalContainerVolumeSpec{VolumeID: runtimeVolumeName},
+		Spec:       apiv2.PhysicalContainerVolumeSpec{VolumeName: runtimeVolumeName},
 	}
 	require.NoError(t, client.Create(ctx, volume))
 	volume = waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
@@ -348,22 +348,33 @@ func TestV2PhysicalContainerControllerChecksAllDependenciesBeforeWaiting(t *test
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-			defer cancel()
-			namespace := createActiveV2Namespace(t, ctx, "v2-pctr-dependency-order-"+testCase.name)
-			image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "image", namespace.Name+"-image")
+			t.Cleanup(cancel)
+			server, _, startErr := StartTestEnvironment(t, ctx,
+				PhysicalContainerController|PhysicalContainerImageController|PhysicalContainerNetworkController,
+				t.Name(), t.TempDir())
+			require.NoError(t, startErr)
+			apiClient := server.Client
+			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+			namespace := createV2ExecNamespace(t, ctx, apiClient, "v2-pctr-dependency-order-"+testCase.name)
+			image := &apiv2.PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{Name: "image", Namespace: namespace.Name},
+				Spec:       apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
+			}
+			require.NoError(t, apiClient.Create(ctx, image))
+			waitObjectAssumesStateEx(t, ctx, apiClient, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+				return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+			})
 			config := &apiv2.PhysicalContainerConfig{ContainerName: namespace.Name + "-container", ImageRef: image.Name}
 			pendingRuntimeName := namespace.Name + "-pending"
 			if testCase.pendingKind == "volume" {
-				releaseVolume := containerOrchestrator.BlockCreateVolume(pendingRuntimeName)
-				defer releaseVolume()
 				pendingVolume := &apiv2.PhysicalContainerVolume{
 					ObjectMeta: metav1.ObjectMeta{Name: "pending", Namespace: namespace.Name},
 					Spec:       newRemovablePhysicalContainerVolumeSpec(pendingRuntimeName),
 				}
-				require.NoError(t, client.Create(ctx, pendingVolume))
+				require.NoError(t, apiClient.Create(ctx, pendingVolume))
 				config.VolumeMounts = []apiv2.VolumeMount{{Type: apiv2.NamedVolumeMount, VolumeRef: pendingVolume.Name, Target: "/pending"}}
 			} else {
-				releaseNetwork := containerOrchestrator.BlockCreateNetwork(pendingRuntimeName)
+				releaseNetwork := orchestrator.BlockCreateNetwork(pendingRuntimeName)
 				defer releaseNetwork()
 				pendingNetwork := &apiv2.PhysicalContainerNetwork{
 					ObjectMeta: metav1.ObjectMeta{Name: "pending", Namespace: namespace.Name},
@@ -371,50 +382,50 @@ func TestV2PhysicalContainerControllerChecksAllDependenciesBeforeWaiting(t *test
 						Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: pendingRuntimeName},
 					},
 				}
-				require.NoError(t, client.Create(ctx, pendingNetwork))
+				require.NoError(t, apiClient.Create(ctx, pendingNetwork))
 				config.Networks = []apiv2.ContainerNetworkConnectionConfig{{NetworkRef: pendingNetwork.Name}}
 			}
 			failedRuntimeName := namespace.Name + "-failed"
 			if testCase.failedKind == "PhysicalContainerVolume" {
-				require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: failedRuntimeName}))
-				removeRuntimeVolumeOnCleanup(t, failedRuntimeName)
 				failedVolume := &apiv2.PhysicalContainerVolume{
 					ObjectMeta: metav1.ObjectMeta{Name: "failed", Namespace: namespace.Name},
 					Spec:       newRemovablePhysicalContainerVolumeSpec(failedRuntimeName),
 				}
-				require.NoError(t, client.Create(ctx, failedVolume))
-				waitPhysicalContainerVolumePhase(t, ctx, failedVolume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseFailed)
+				require.NoError(t, apiClient.Create(ctx, failedVolume))
+				// Publish dependency failure through the real API without a volume controller overwriting it.
+				setPhysicalVolumeFailure(t, ctx, apiClient, failedVolume)
 				config.VolumeMounts = append(config.VolumeMounts, apiv2.VolumeMount{
 					Type: apiv2.NamedVolumeMount, VolumeRef: failedVolume.Name, Target: "/failed",
 				})
 			} else {
-				_, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: failedRuntimeName})
+				_, createErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: failedRuntimeName})
 				require.NoError(t, createErr)
-				removeRuntimeNetworkOnCleanup(t, failedRuntimeName)
 				failedNetwork := &apiv2.PhysicalContainerNetwork{
 					ObjectMeta: metav1.ObjectMeta{Name: "failed", Namespace: namespace.Name},
 					Spec: apiv2.PhysicalContainerNetworkSpec{
 						Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: failedRuntimeName},
 					},
 				}
-				require.NoError(t, client.Create(ctx, failedNetwork))
-				waitPhysicalContainerNetworkPhase(t, ctx, failedNetwork.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseFailed)
+				require.NoError(t, apiClient.Create(ctx, failedNetwork))
+				waitPhysicalContainerNetworkPhaseEx(t, ctx, apiClient, failedNetwork.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseFailed)
 				config.Networks = append(config.Networks, apiv2.ContainerNetworkConnectionConfig{NetworkRef: failedNetwork.Name})
 			}
 			container := &apiv2.PhysicalContainer{
 				ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
 				Spec:       apiv2.PhysicalContainerSpec{Container: config},
 			}
-			require.NoError(t, client.Create(ctx, container))
-			failed := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
+			require.NoError(t, apiClient.Create(ctx, container))
+			failed := waitObjectAssumesStateEx(t, ctx, apiClient, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+				return current.Status.Phase == apiv2.PhysicalContainerPhaseFailed, nil
+			})
 			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependencyFailed)
 			failure := apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady))
 			require.Contains(t, failure.Message, testCase.failedKind)
 			require.Contains(t, failure.Message, "CreateFailed")
 			require.Empty(t, failed.Status.ContainerID)
-			require.Zero(t, containerOrchestrator.CreateContainerCallCount(config.ContainerName))
-			require.NoError(t, client.Delete(ctx, container))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, client, container)
+			require.Zero(t, orchestrator.CreateContainerCallCount(config.ContainerName))
+			require.NoError(t, apiClient.Delete(ctx, container))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, container)
 		})
 	}
 }
@@ -538,7 +549,7 @@ func TestV2PhysicalContainerControllerCreatesContainerWithVolumes(t *testing.T) 
 			Name:      "container-volume",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerVolumeSpec{VolumeID: runtimeVolumeName},
+		Spec: apiv2.PhysicalContainerVolumeSpec{VolumeName: runtimeVolumeName},
 	}
 	require.NoError(t, client.Create(ctx, volume))
 	waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
@@ -621,9 +632,7 @@ func TestV2PhysicalContainerControllerReconcilesWhenReferencedVolumeBecomesReady
 			Name:      volumeName,
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerVolumeSpec{
-			Volume: &apiv2.PhysicalContainerVolumeConfig{VolumeName: runtimeVolumeName},
-		},
+		Spec: apiv2.PhysicalContainerVolumeSpec{VolumeName: runtimeVolumeName},
 	}
 	require.NoError(t, client.Create(ctx, volume))
 
@@ -709,7 +718,7 @@ func TestV2PhysicalContainerControllerRechecksEarlierDependencies(t *testing.T) 
 			Name:      volumeName,
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerVolumeSpec{VolumeID: runtimeVolumeName},
+		Spec: apiv2.PhysicalContainerVolumeSpec{VolumeName: runtimeVolumeName},
 	}
 	require.NoError(t, client.Create(ctx, volume))
 	waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)

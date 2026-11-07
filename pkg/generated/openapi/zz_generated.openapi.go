@@ -156,7 +156,6 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.PhysicalContainerSpec{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref),
 		v2.PhysicalContainerStatus{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v2_PhysicalContainerStatus(ref),
 		v2.PhysicalContainerVolume{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v2_PhysicalContainerVolume(ref),
-		v2.PhysicalContainerVolumeConfig{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerVolumeConfig(ref),
 		v2.PhysicalContainerVolumeList{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalContainerVolumeList(ref),
 		v2.PhysicalContainerVolumeSpec{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalContainerVolumeSpec(ref),
 		v2.PhysicalContainerVolumeStatus{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerVolumeStatus(ref),
@@ -8519,63 +8518,6 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerVolume(ref common.ReferenceCal
 	}
 }
 
-func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "PhysicalContainerVolumeConfig describes a runtime volume to create.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"volumeName": {
-						SchemaProps: spec.SchemaProps{
-							Description: "VolumeName is the runtime name to use when creating a new volume.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"removeRuntimeVolumeOnDelete": {
-						SchemaProps: spec.SchemaProps{
-							Description: "RemoveRuntimeVolumeOnDelete removes the created runtime volume when this resource is deleted. Created runtime volumes are retained by default.",
-							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
-					"replaceExisting": {
-						SchemaProps: spec.SchemaProps{
-							Description: "ReplaceExisting removes an existing runtime volume with volumeName before creating a new one. Replacement retries non-forced removal while the existing volume is in use and never removes attached containers.",
-							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
-					"labels": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"key",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Labels contains labels to apply to a newly-created runtime volume. DCP harvesting and physical resource UID labels are reserved and set by the controller.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Ref: ref(commonapi.Label{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			commonapi.Label{}.OpenAPIModelName()},
-	}
-}
-
 func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -8628,27 +8570,51 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeSpec(ref common.Referenc
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PhysicalContainerVolumeSpec describes either an existing runtime volume or how to create one.",
+				Description: "PhysicalContainerVolumeSpec describes a named runtime volume to create or reuse.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"volumeID": {
+					"volumeName": {
 						SchemaProps: spec.SchemaProps{
-							Description: "VolumeID identifies an existing runtime volume to track. Exactly one of volumeID or volume must be set. Container runtimes commonly use the volume name as its identifier.",
+							Description: "VolumeName is the runtime volume name to create or reuse.",
+							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
-					"volume": {
+					"removeRuntimeVolumeOnDelete": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Volume describes a runtime volume to create. Exactly one of volumeID or volume must be set.",
-							Ref:         ref(v2.PhysicalContainerVolumeConfig{}.OpenAPIModelName()),
+							Description: "RemoveRuntimeVolumeOnDelete removes the created or reused runtime volume when this resource is deleted. Runtime volumes are retained by default.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"labels": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"key",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels contains labels to apply to a newly-created runtime volume. DCP harvesting and physical resource UID labels are reserved and set by the controller.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.Label{}.OpenAPIModelName()),
+									},
+								},
+							},
 						},
 					},
 				},
+				Required: []string{"volumeName"},
 			},
 		},
 		Dependencies: []string{
-			v2.PhysicalContainerVolumeConfig{}.OpenAPIModelName()},
+			commonapi.Label{}.OpenAPIModelName()},
 	}
 }
 

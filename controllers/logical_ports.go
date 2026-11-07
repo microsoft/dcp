@@ -175,13 +175,34 @@ func projectLogicalPorts(ports []logicalPortData, destination *[]apiv2.LogicalPo
 	return statusChanged
 }
 
-func syncLogicalEndpoints(
-	ctx context.Context, apiClient ctrl_client.Client, reader ctrl_client.Reader, owner commonapi.DcpModelObject,
-	ports []logicalPortData, addresses [][]apiv2.ServiceAddress,
-) error {
+type logicalPortDataSource[Resource commonapi.DcpModelObject] interface {
+	portData(Resource) []logicalPortData
+}
+
+// syncLogicalEndpoints computes publication data only when publish is true.
+// The boolean reports whether every logical port has a publishable address.
+func syncLogicalEndpoints[Resource commonapi.DcpModelObject](
+	ctx context.Context, apiClient ctrl_client.Client, reader ctrl_client.Reader, owner Resource, data logicalPortDataSource[Resource],
+	ownerUIDField string, pending *unobservedLogicalChildren, publish bool, mappings ...apiv2.PhysicalContainerPortMapping,
+) (bool, error) {
+	var ports []logicalPortData
+	var addresses [][]apiv2.ServiceAddress
+	if publish {
+		ports = data.portData(owner)
+		switch resource := any(owner).(type) {
+		case *apiv2.LogicalProcess:
+			addresses = processEndpointAddresses(ports)
+		case *apiv2.LogicalContainer:
+			addresses = containerEndpointAddresses(resource.Spec.Ports, ports, mappings)
+		default:
+			return false, fmt.Errorf("unsupported logical endpoint resource %T", owner)
+		}
+	}
+	addressesReady := publish
 	desired := make(map[string]apiv2.ServiceEndpointSpec, len(ports))
 	for portIndex, port := range ports {
 		if portIndex >= len(addresses) || len(addresses[portIndex]) == 0 {
+			addressesReady = false
 			continue
 		}
 		desired[logicalPortResourceName(owner, port.Name)] = apiv2.ServiceEndpointSpec{
@@ -189,8 +210,9 @@ func syncLogicalEndpoints(
 		}
 	}
 	var current apiv2.ServiceEndpointList
-	if listErr := reader.List(ctx, &current, ctrl_client.InNamespace(owner.GetNamespace())); listErr != nil {
-		return fmt.Errorf("list logical workload endpoints: %w", listErr)
+	if listErr := apiClient.List(ctx, &current, ctrl_client.InNamespace(owner.GetNamespace()),
+		ctrl_client.MatchingFields{ownerUIDField: string(owner.GetUID())}); listErr != nil {
+		return false, fmt.Errorf("list logical workload endpoints: %w", listErr)
 	}
 	var syncErr error
 	for endpointIndex := range current.Items {
@@ -203,6 +225,7 @@ func syncLogicalEndpoints(
 			}
 			continue
 		}
+		(*pending).observeCached(endpoint)
 		delete(desired, endpoint.Name)
 		if wanted && endpoint.DeletionTimestamp.IsZero() && reflect.DeepEqual(endpoint.Spec, spec) {
 			continue
@@ -230,6 +253,7 @@ func syncLogicalEndpoints(
 			syncErr = errors.Join(syncErr, fmt.Errorf("set port %q endpoint owner: %w", port.Name, ownerErr))
 			continue
 		}
+		pending.recordCreateAttempt(endpoint)
 		createErr := apiClient.Create(ctx, endpoint)
 		if apierrors.IsAlreadyExists(createErr) {
 			existing := &apiv2.ServiceEndpoint{}
@@ -244,15 +268,20 @@ func syncLogicalEndpoints(
 			syncErr = errors.Join(syncErr, fmt.Errorf("create port %q endpoint: %w", port.Name, createErr))
 		}
 	}
-	return syncErr
+	return addressesReady, syncErr
 }
 
 func cleanupLogicalEndpoints(
 	ctx context.Context, apiClient ctrl_client.Client, reader ctrl_client.Reader, owner commonapi.DcpModelObject,
+	ownerUIDField string, pending unobservedLogicalChildren,
 ) (bool, error) {
 	var current apiv2.ServiceEndpointList
-	if listErr := reader.List(ctx, &current, ctrl_client.InNamespace(owner.GetNamespace())); listErr != nil {
+	if listErr := apiClient.List(ctx, &current, ctrl_client.InNamespace(owner.GetNamespace()),
+		ctrl_client.MatchingFields{ownerUIDField: string(owner.GetUID())}); listErr != nil {
 		return false, fmt.Errorf("list logical workload endpoints before cleanup: %w", listErr)
+	}
+	if confirmationErr := resolveUnobservedLogicalChildren(ctx, reader, owner, pending, &current.Items); confirmationErr != nil {
+		return false, confirmationErr
 	}
 	complete := true
 	var cleanupErr error

@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"time"
 
@@ -106,6 +107,7 @@ type logicalContainerData struct {
 	lifecycleKey         string
 	physicalContainerUID types.UID
 	physicalImageUID     types.UID
+	unobservedChildren   unobservedLogicalChildren
 	lease                *statestore.ResourceLease
 	// Lease settlement failures are independent of the original reconciliation failure.
 	leaseFailureMessage string
@@ -113,6 +115,7 @@ type logicalContainerData struct {
 
 func (data *logicalContainerData) Clone() *logicalContainerData {
 	cloned := *data
+	cloned.unobservedChildren = maps.Clone(data.unobservedChildren)
 	cloned.effectiveCommand = append([]string(nil), data.effectiveCommand...)
 	cloned.effectiveEnv = append([]commonapi.EnvVar(nil), data.effectiveEnv...)
 	cloned.ports = append([]logicalPortSelection(nil), data.ports...)
@@ -156,13 +159,6 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 	change |= setValue(&container.Status.LifecycleKey, lifecycleKey)
 	if data.physicalContainerUID == "" {
 		change |= applyLogicalContainerBackingStatus(container, &apiv2.PhysicalContainer{})
-	}
-	if data.state == logicalContainerStateUnknown {
-		for _, source := range []*apiv2.LogSource{container.Status.RuntimeLogs, container.Status.StartupLogs} {
-			if source != nil {
-				change |= setValue(&source.Complete, true)
-			}
-		}
 	}
 	if _, valid := logicalContainerProjections.project(data.state); valid &&
 		(data.reconcileErr != nil || data.leaseFailureMessage != "") {

@@ -263,6 +263,7 @@ func (reconciler *LogicalContainerExecReconciler) ensureLogicalPhysicalContainer
 			return noChange
 		}
 		InitializeLogicalBackingFinalizers(physical, physicalContainerExecFinalizer)
+		data.unobservedChildren.recordCreateAttempt(physical)
 		createErr := reconciler.Create(ctx, physical)
 		if physical.UID != "" {
 			data.physicalUID = physical.UID
@@ -365,6 +366,7 @@ func (r *LogicalContainerExecReconciler) findPhysicalContainerExec(
 	for i := range children.Items {
 		child := &children.Items[i]
 		if child.Name == name && metav1.IsControlledBy(child, resource) {
+			data.unobservedChildren.observeCached(child)
 			if (data.physicalUID != "" && child.UID != data.physicalUID) || !hasFinalizer(child, LogicalBackingFinalizer) {
 				identityErr := fmt.Errorf("physical execution %q UID or logical hold changed", child.NamespacedName())
 				data.state, data.reason, data.message, data.reconcileErr = logicalContainerExecStateMissing, apiv2.LogicalContainerExecReasonPhysicalExecutionChanged, identityErr.Error(), nil
@@ -399,6 +401,7 @@ func (r *LogicalContainerExecReconciler) handleLogicalContainerExecDeletion(
 	delay = StandardDelay
 	if data == nil {
 		data = &logicalContainerExecData{state: logicalContainerExecStateDelete}
+		data.unobservedChildren.recordCreateAttempt(&apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(resource.UID)}})
 		r.executions.Store(resource.NamespacedName(), resource.UID, data.Clone())
 	}
 	defer func() {
@@ -416,8 +419,8 @@ func (r *LogicalContainerExecReconciler) handleLogicalContainerExecDeletion(
 	var children apiv2.PhysicalContainerExecList
 	listErr := r.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace),
 		ctrl_client.MatchingFields{logicalContainerExecOwnerUIDField: string(resource.UID)})
-	if listErr == nil && len(children.Items) == 0 {
-		listErr = r.NoCacheClient.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace))
+	if listErr == nil {
+		listErr = resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, resource, data.unobservedChildren, &children.Items)
 	}
 	if listErr != nil {
 		log.Error(listErr, "Failed to list physical executions before deletion")

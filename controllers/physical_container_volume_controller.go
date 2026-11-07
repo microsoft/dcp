@@ -33,12 +33,9 @@ var (
 	physicalContainerVolumeFinalizer string = fmt.Sprintf("%s/physicalcontainervolume-reconciler", apiv2.GroupVersion.Group)
 
 	physicalContainerVolumeDataInitializers = map[physicalContainerVolumeState]physicalContainerVolumeDataInitializerFunc{
-		physicalContainerVolumeStateResolve:          handlePhysicalContainerVolumeResolve,
 		physicalContainerVolumeStateCreate:           handlePhysicalContainerVolumeCreating,
 		physicalContainerVolumeStateCreated:          handlePhysicalContainerVolumeCreated,
-		physicalContainerVolumeStateReplaced:         handlePhysicalContainerVolumeCreated,
 		physicalContainerVolumeStateCreateRetry:      handlePhysicalContainerVolumeRecoverableCreateFailed,
-		physicalContainerVolumeStateReplaceRetry:     handlePhysicalContainerVolumeRecoverableCreateFailed,
 		physicalContainerVolumeStateCreateFailed:     handlePhysicalContainerVolumeCreateFailed,
 		physicalContainerVolumeStateReady:            handlePhysicalContainerVolumeReady,
 		physicalContainerVolumeStateMissing:          handlePhysicalContainerVolumeUnknown,
@@ -158,7 +155,7 @@ func (r *PhysicalContainerVolumeReconciler) managePhysicalContainerVolume(
 				volume.Generation, metav1.ConditionFalse, namespaceReason, namespaceMessage)
 			return namespaceChange, StandardDelay
 		}
-		data = &physicalContainerVolumeData{state: physicalContainerVolumeStateResolve}
+		data = &physicalContainerVolumeData{state: physicalContainerVolumeStateCreate}
 		r.volumeData.Store(volume.NamespacedName(), physicalContainerVolumeDataKey(volume), data.Clone())
 	}
 	handler := getStateInitializer(physicalContainerVolumeDataInitializers, data.state, log)
@@ -170,37 +167,6 @@ func (r *PhysicalContainerVolumeReconciler) managePhysicalContainerVolume(
 			"PhysicalContainerVolume reached invalid reconciliation state")
 	}
 	return change | dataChange, delay
-}
-
-func handlePhysicalContainerVolumeResolve(
-	ctx context.Context,
-	reconciler *PhysicalContainerVolumeReconciler,
-	volume *apiv2.PhysicalContainerVolume,
-	_ physicalContainerVolumeState,
-	data *physicalContainerVolumeData,
-	log logr.Logger,
-) objectChange {
-
-	volumeID := volume.Spec.VolumeID
-	if volumeID == "" {
-		volumeID = data.volumeID
-	}
-	if volumeID == "" {
-		return reconciler.schedulePhysicalContainerVolumeCreate(volume, data, log)
-	}
-	data.volumeID = volumeID
-	inspected, inspectErr := inspectPhysicalContainerVolume(ctx, reconciler.orchestrator, volumeID)
-	if errors.Is(inspectErr, containers.ErrNotFound) {
-		data.state, data.failureMessage = physicalContainerVolumeStateMissing, ""
-		return additionalReconciliationNeeded
-	}
-	if inspectErr != nil {
-		log.Error(inspectErr, "Failed to inspect resolved volume", "VolumeID", volumeID)
-		data.state, data.failureMessage = physicalContainerVolumeStateInspectFailed, inspectErr.Error()
-		return additionalReconciliationNeeded
-	}
-	data.state, data.volumeID, data.failureMessage = physicalContainerVolumeStateReady, inspected.Name, ""
-	return applyReadyPhysicalContainerVolumeStatus(volume, inspected) | additionalReconciliationNeeded
 }
 
 func handlePhysicalContainerVolumeReady(
@@ -234,10 +200,10 @@ func handlePhysicalContainerVolumeReady(
 }
 
 func handlePhysicalContainerVolumeUnknown(
-	ctx context.Context, reconciler *PhysicalContainerVolumeReconciler, _ *apiv2.PhysicalContainerVolume,
+	ctx context.Context, reconciler *PhysicalContainerVolumeReconciler, volume *apiv2.PhysicalContainerVolume,
 	_ physicalContainerVolumeState, data *physicalContainerVolumeData, log logr.Logger,
 ) objectChange {
-	_, inspectErr := inspectPhysicalContainerVolume(ctx, reconciler.orchestrator, data.volumeID)
+	inspected, inspectErr := inspectPhysicalContainerVolume(ctx, reconciler.orchestrator, data.volumeID)
 	if errors.Is(inspectErr, containers.ErrNotFound) {
 		data.state, data.failureMessage = physicalContainerVolumeStateMissing, ""
 		return noChange
@@ -248,8 +214,8 @@ func handlePhysicalContainerVolumeUnknown(
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime volume: %v", inspectErr)
 		return noChange
 	}
-	data.state, data.failureMessage = physicalContainerVolumeStateReady, ""
-	return additionalReconciliationNeeded
+	data.state, data.volumeID, data.failureMessage = physicalContainerVolumeStateReady, inspected.Name, ""
+	return applyReadyPhysicalContainerVolumeStatus(volume, inspected)
 }
 
 func (r *PhysicalContainerVolumeReconciler) schedulePhysicalContainerVolumeCreate(
@@ -258,9 +224,8 @@ func (r *PhysicalContainerVolumeReconciler) schedulePhysicalContainerVolumeCreat
 	log logr.Logger,
 ) objectChange {
 	stateKey := physicalContainerVolumeDataKey(volume)
-	volumeConfig := volume.Spec.Volume
+	volumeConfig := &volume.Spec
 	data := &physicalContainerVolumeData{state: physicalContainerVolumeStateCreate}
-	data.state = physicalContainerVolumeStateCreate
 	data.workInProgress = true
 	if !r.volumeData.Update(volume.NamespacedName(), stateKey, data) {
 		return additionalReconciliationNeeded
@@ -291,22 +256,21 @@ func (r *PhysicalContainerVolumeReconciler) createPhysicalContainerVolume(
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) {
-	volumeConfig := volume.Spec.Volume
-	if volumeConfig.ReplaceExisting {
-		replaced, replaceErr := r.replacePhysicalContainerVolume(ctx, volume, data, log)
-		if replaceErr != nil {
-			log.Error(replaceErr, "Failed to replace existing runtime volume", "VolumeName", volumeConfig.VolumeName)
-
-			data.state = physicalContainerVolumeStateReplaceRetry
-			data.failureMessage = fmt.Sprintf("Failed to replace existing runtime volume: %v", replaceErr)
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-			r.queuePhysicalContainerVolumeDataResult(volume, stateKey, data)
-			return
-		}
-		if !replaced {
-			r.queuePhysicalContainerVolumeDataResult(volume, stateKey, data)
-			return
-		}
+	volumeConfig := &volume.Spec
+	inspected, inspectErr := inspectPhysicalContainerVolume(ctx, r.orchestrator, volumeConfig.VolumeName)
+	if inspectErr == nil {
+		data.state, data.volumeID, data.failureMessage = physicalContainerVolumeStateCreated, inspected.Name, ""
+		log.V(1).Info("Using existing runtime volume", "VolumeID", inspected.Name)
+		r.queuePhysicalContainerVolumeDataResult(volume, stateKey, data)
+		return
+	}
+	if !errors.Is(inspectErr, containers.ErrNotFound) {
+		log.Error(inspectErr, "Failed to inspect runtime volume before creation", "VolumeName", volumeConfig.VolumeName)
+		data.state = physicalContainerVolumeStateCreateRetry
+		data.failureMessage = fmt.Sprintf("Failed to inspect runtime volume before creation: %v", inspectErr)
+		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		r.queuePhysicalContainerVolumeDataResult(volume, stateKey, data)
+		return
 	}
 
 	createErr := r.orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
@@ -317,53 +281,13 @@ func (r *PhysicalContainerVolumeReconciler) createPhysicalContainerVolume(
 	r.queuePhysicalContainerVolumeDataResult(volume, stateKey, data)
 }
 
-func (r *PhysicalContainerVolumeReconciler) replacePhysicalContainerVolume(
-	ctx context.Context,
-	volume *apiv2.PhysicalContainerVolume,
-	data *physicalContainerVolumeData,
-	log logr.Logger,
-) (bool, error) {
-	volumeName := volume.Spec.Volume.VolumeName
-	inspectedVolume, inspectErr := inspectPhysicalContainerVolume(ctx, r.orchestrator, volumeName)
-	if errors.Is(inspectErr, containers.ErrNotFound) {
-		return true, nil
-	}
-	if inspectErr != nil {
-		return false, fmt.Errorf("inspect runtime volume %q: %w", volumeName, inspectErr)
-	}
-	if inspectedVolume.Name == "" {
-		return false, fmt.Errorf("inspect runtime volume %q returned an empty name", volumeName)
-	}
-	if physicalContainerVolumeBelongsToResource(inspectedVolume, volume) {
-
-		data.state = physicalContainerVolumeStateCreated
-		data.volumeID = inspectedVolume.Name
-		data.failureMessage = ""
-		data.retryAfter = time.Time{}
-		log.V(1).Info("Adopted runtime volume created by an earlier attempt", "VolumeID", inspectedVolume.Name)
-		return false, nil
-	}
-
-	removeErr := r.removeRuntimeVolume(ctx, inspectedVolume.Name)
-	if removeErr != nil {
-		return false, fmt.Errorf("remove runtime volume %q: %w", inspectedVolume.Name, removeErr)
-	}
-
-	log.V(1).Info(
-		"Removed existing runtime volume before replacement",
-		"VolumeID", inspectedVolume.Name,
-		"VolumeName", inspectedVolume.Name,
-	)
-	return true, nil
-}
-
 func applyPhysicalContainerVolumeCreateResult(
 	volume *apiv2.PhysicalContainerVolume,
 	data *physicalContainerVolumeData,
 	createErr error,
 	log logr.Logger,
 ) {
-	volumeConfig := volume.Spec.Volume
+	volumeConfig := &volume.Spec
 	if createErr != nil {
 		log.Error(createErr, "Runtime volume create returned an error; reconciliation will verify the outcome", "VolumeName", volumeConfig.VolumeName)
 		data.state = physicalContainerVolumeStateCreateRetry
@@ -400,6 +324,9 @@ func handlePhysicalContainerVolumeCreating(
 	if data.state != physicalContainerVolumeStateCreate {
 		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
 	}
+	if !data.operationInProgress() {
+		return reconciler.schedulePhysicalContainerVolumeCreate(volume, data, log)
+	}
 
 	log.V(1).Info("Runtime volume creation is still in progress")
 	return noChange
@@ -413,28 +340,19 @@ func handlePhysicalContainerVolumeCreated(
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
-	if data.state != physicalContainerVolumeStateCreated && data.state != physicalContainerVolumeStateReplaced {
+	if data.state != physicalContainerVolumeStateCreated {
 		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, physicalContainerVolumeStateCreate, data, log)
 	}
 
-	log.V(1).Info("Runtime volume created; saving volume status", "VolumeID", data.volumeID)
+	log.V(1).Info("Runtime volume resolved; saving volume status", "VolumeID", data.volumeID)
 	inspected, inspectErr := inspectPhysicalContainerVolume(ctx, reconciler.orchestrator, data.volumeID)
 	if errors.Is(inspectErr, containers.ErrNotFound) {
 		data.state, data.failureMessage = physicalContainerVolumeStateMissing, ""
 		return additionalReconciliationNeeded
 	}
 	if inspectErr != nil {
-		log.Error(inspectErr, "Failed to inspect created volume", "VolumeID", data.volumeID)
+		log.Error(inspectErr, "Failed to inspect resolved volume", "VolumeID", data.volumeID)
 		data.state, data.failureMessage = physicalContainerVolumeStateInspectFailed, inspectErr.Error()
-		return additionalReconciliationNeeded
-	}
-	if !physicalContainerVolumeBelongsToResource(inspected, volume) {
-		data.state = physicalContainerVolumeStateCreateFailed
-		data.failureMessage = fmt.Sprintf("Runtime volume name %q is already in use.", inspected.Name)
-		if volume.Spec.Volume.ReplaceExisting {
-			data.state = physicalContainerVolumeStateCreateRetry
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		}
 		return additionalReconciliationNeeded
 	}
 	data.state, data.volumeID, data.failureMessage = physicalContainerVolumeStateReady, inspected.Name, ""
@@ -462,36 +380,23 @@ func handlePhysicalContainerVolumeRecoverableCreateFailed(
 	data *physicalContainerVolumeData,
 	log logr.Logger,
 ) objectChange {
-	if data.state != physicalContainerVolumeStateCreateRetry && data.state != physicalContainerVolumeStateReplaceRetry {
+	if data.state != physicalContainerVolumeStateCreateRetry {
 		return handleUnknownPhysicalContainerVolumeDataReason(ctx, reconciler, volume, state, data, log)
 	}
 
-	volumeConfig := volume.Spec.Volume
+	volumeConfig := &volume.Spec
 	if time.Now().Before(data.retryAfter) {
 		return additionalReconciliationNeeded
 	}
 
 	inspectedVolume, inspectErr := inspectPhysicalContainerVolume(ctx, reconciler.orchestrator, volumeConfig.VolumeName)
 	if inspectErr == nil {
-		belongsToResource := physicalContainerVolumeBelongsToResource(inspectedVolume, volume)
-		if !belongsToResource && !volumeConfig.ReplaceExisting {
-
-			data.state = physicalContainerVolumeStateCreateFailed
-			data.failureMessage = fmt.Sprintf("Runtime volume name %q is already in use.", volumeConfig.VolumeName)
-			data.retryAfter = time.Time{}
-			return noChange
-		}
-		if !belongsToResource {
-			log.V(1).Info("Retrying runtime volume replacement", "VolumeID", inspectedVolume.Name, "VolumeName", inspectedVolume.Name)
-			return reconciler.schedulePhysicalContainerVolumeCreate(volume, data, log)
-		}
-
 		previousFailure := data.failureMessage
 		data.state = physicalContainerVolumeStateCreated
 		data.volumeID = inspectedVolume.Name
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
-		log.Info("Verified runtime volume created by an earlier attempt", "VolumeID", inspectedVolume.Name, "PreviousFailure", previousFailure)
+		log.Info("Resolved runtime volume after a failed attempt", "VolumeID", inspectedVolume.Name, "PreviousFailure", previousFailure)
 		return additionalReconciliationNeeded
 	}
 	if !errors.Is(inspectErr, containers.ErrNotFound) {
@@ -561,9 +466,8 @@ func (r *PhysicalContainerVolumeReconciler) handleDeletionRequest(
 		}
 		return change, delay
 	}
-	volumeConfig := volume.Spec.Volume
 	createFailed := data.state == physicalContainerVolumeStateCreateFailed
-	if volumeConfig == nil || !volumeConfig.RemoveRuntimeVolumeOnDelete || createFailed {
+	if !volume.Spec.RemoveRuntimeVolumeOnDelete || createFailed {
 		dataChange, _, valid := data.applyTo(volume)
 		if !valid || dataChange&statusChanged != 0 {
 			return dataChange | additionalReconciliationNeeded, delay
@@ -768,7 +672,8 @@ func (r *PhysicalContainerVolumeReconciler) removePhysicalContainerVolume(
 	volumeID := data.volumeID
 	var removeErr error
 	if data.resolveByName {
-		inspectedVolume, inspectErr := inspectPhysicalContainerVolume(ctx, r.orchestrator, volume.Spec.Volume.VolumeName)
+		// An unresolved create may have succeeded, but an unobserved existing volume was not adopted.
+		inspectedVolume, inspectErr := inspectPhysicalContainerVolume(ctx, r.orchestrator, volume.Spec.VolumeName)
 		switch {
 		case errors.Is(inspectErr, containers.ErrNotFound):
 			volumeID = ""
@@ -843,7 +748,7 @@ func inspectPhysicalContainerVolume(
 }
 
 func physicalContainerVolumeCreationLabels(volume *apiv2.PhysicalContainerVolume, log logr.Logger) map[string]string {
-	volumeConfig := volume.Spec.Volume
+	volumeConfig := &volume.Spec
 	creationLabels := physicalResourceCreationLabels(
 		volumeConfig.Labels,
 		!volumeConfig.RemoveRuntimeVolumeOnDelete,

@@ -6,6 +6,7 @@
 package networking
 
 import (
+	"net"
 	"slices"
 	"testing"
 
@@ -36,8 +37,15 @@ func TestSelectServiceAddress(t *testing.T) {
 		{name: "preferred family falls back", addresses: []apiv2.ServiceAddress{ipv4}, preferred: IpVersionPreference6, expected: ipv4, found: true},
 		{name: "require IPv4", addresses: []apiv2.ServiceAddress{ipv6, ipv4}, required: IpVersionPreference4, preferred: IpVersionPreference6, expected: ipv4, found: true},
 		{name: "require IPv6", addresses: []apiv2.ServiceAddress{ipv4, ipv6}, required: IpVersionPreference6, expected: ipv6, found: true, needsIPv6: true},
-		{name: "required family cannot fall back", addresses: []apiv2.ServiceAddress{ipv4, hostname}, required: IpVersionPreference6},
+		{name: "required family cannot fall back", addresses: []apiv2.ServiceAddress{ipv4}, required: IpVersionPreference6},
 		{name: "hostname without filter", addresses: []apiv2.ServiceAddress{hostname}, expected: hostname, found: true},
+		{name: "localhost resolves to IPv4", addresses: []apiv2.ServiceAddress{hostname}, required: IpVersionPreference4,
+			preferred: IpVersionPreference6, expected: apiv2.ServiceAddress{Address: "127.0.0.1", Port: hostname.Port}, found: true},
+		{name: "localhost resolves to IPv6", addresses: []apiv2.ServiceAddress{hostname}, required: IpVersionPreference6,
+			expected: apiv2.ServiceAddress{Address: "[::1]", Port: hostname.Port}, found: true, needsIPv6: true},
+		{name: "published matching IP preferred to hostname resolution", addresses: []apiv2.ServiceAddress{
+			hostname, {Address: "127.0.0.2", Port: 5003},
+		}, required: IpVersionPreference4, expected: apiv2.ServiceAddress{Address: "127.0.0.2", Port: 5003}, found: true},
 		{name: "IP preferred to hostname", addresses: []apiv2.ServiceAddress{hostname, ipv4}, expected: ipv4, found: true},
 		{name: "bracketed IPv6 retained", addresses: []apiv2.ServiceAddress{{Address: "[::1]", Port: 5001}}, required: IpVersionPreference6, expected: apiv2.ServiceAddress{Address: "[::1]", Port: 5001}, found: true, needsIPv6: true},
 		{name: "address tie break", addresses: []apiv2.ServiceAddress{{Address: "127.0.0.2", Port: 1}, ipv4}, expected: ipv4, found: true},
@@ -67,6 +75,28 @@ func TestSelectServiceAddress(t *testing.T) {
 			require.Equal(t, found, reversedFound)
 		})
 	}
+}
+
+// Verifies that SelectServiceAddress resolves arbitrary hostnames as local interface addresses,
+// without requiring DNS registration, while preserving the original hostname and port without a selector.
+func TestSelectServiceAddressResolvesLocalHostname(t *testing.T) {
+	t.Parallel()
+	address := apiv2.ServiceAddress{Address: "not-registered-in-dns.invalid", Port: 5002}
+	addresses := []apiv2.ServiceAddress{address}
+	selected, found, selectionErr := SelectServiceAddress(addresses, IpVersionPreference4, IpVersionPreference6)
+	require.NoError(t, selectionErr)
+	require.True(t, found)
+	require.True(t, IsIPv4(selected.Address))
+	require.Equal(t, address.Port, selected.Port)
+	localIPs, lookupErr := LookupIP(address.Address)
+	require.NoError(t, lookupErr)
+	require.True(t, slices.ContainsFunc(localIPs, func(ip net.IP) bool { return IpToString(ip) == selected.Address }))
+
+	unqualified, unqualifiedFound, unqualifiedErr := SelectServiceAddress(addresses, IpVersionPreferenceNone, IpVersionPreference6)
+	require.NoError(t, unqualifiedErr)
+	require.True(t, unqualifiedFound)
+	require.Equal(t, address, unqualified)
+	require.Equal(t, []apiv2.ServiceAddress{address}, addresses)
 }
 
 // Verifies that SelectServiceAddress reports invalid family policies explicitly instead of treating them as defaults.
