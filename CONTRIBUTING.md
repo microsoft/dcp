@@ -72,17 +72,21 @@ On Windows open the Environment Variables applet and add `$USERPROFILE\.dcp` to 
 `make test` will install all dependencies and run all the tests.
 
 ### Running subsets of tests from command line
-Now you can run `go test` commands to run selected tests, including integration tests. For example, to run just Endpoint controller tests in verbose mode with race detection:
+Run `make test-prereqs` before selective tests. This builds the test tools and generates `.toolbin/go-build-overlay/overlay.json`, which carries the controller-runtime startup cancellation fix and, on macOS, the Go runtime signal fix without changing the module cache or installed toolchain. Because Go does not allow overlays inside its module cache, the generator stages only the pinned controller-runtime module under ignored build output and generates an alternate modfile pointing to that copy; the repository's `go.mod` and `go.sum` remain unchanged.
+
+Pass both generated files to selective `go test` commands, including integration tests. For example, to run just Endpoint controller tests in verbose mode with race detection:
 
 ```shell
- go test -race -count 1 -run TestEndpoint -v ./test/integration/...
+ go test -modfile=.toolbin/go-build-overlay/go.mod -overlay=.toolbin/go-build-overlay/overlay.json -race -count 1 -timeout 180s -run TestEndpoint -v ./test/integration/...
 ```
 `-count 1` is a Go idiom that forces test (re-)run even if Go thinks nothing has changed and a previous, cached test result is still valid. `-race` enables automatic race detection. which is always worth enabling, but is unfortunately not supported on Windows (but is supported inside WSL). For more information on these, and other Go test options run `go help testflag`.
 
 `TEST_CONTEXT_TIMEOUT` is an environment variable that can be set to change the default test timeout (60 seconds). E.g. `TEST_CONTEXT_TIMEOUT=30` changes it to 30 seconds.
 
+`make` build/test targets and the Windows CI driver use the overlay automatically. For a direct `go build`, first run `make generate-go-build-overlay` and pass the same `-modfile` and `-overlay` flags. The generator rejects unexpected dependency versions or source rather than silently dropping a fix. Remove the controller-runtime patch once a dependency containing [kubernetes-sigs/controller-runtime#3629](https://github.com/kubernetes-sigs/controller-runtime/issues/3629) is adopted.
+
 ### Debugging tests
-You can also run individual tests via VS Code "run test" and "debug test" gestures. When tests are running under the debugger, the timeout is increased to 60 minutes via VS Code repository settings.
+You can also run individual tests via VS Code "run test" and "debug test" gestures after `make test-prereqs`. The repository settings pass the generated overlay. When tests are running under the debugger, the timeout is increased to 60 minutes via VS Code repository settings.
 
 If the test is killed while running under the debugger, may leave orphaned `dcp` process. You can check if such processes exist by running following commands:
 
