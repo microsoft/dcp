@@ -684,10 +684,8 @@ func ensureContainerRunningState(
 			return ensureContainerUnknownState(ctx, r, container, desiredState, rcd, log)
 		} else {
 			log.Info("Container resource could not be inspected", "Error", err.Error())
-			// Could be a transient error, so for know we keep the rest of the status as-is.
-			// Don't try to reconcile again unconditionally (that might result in an infinite loop),
-			// but instead wait for another event from the container watcher.
-			return noChange
+			// Preserve the current state and retry after the runtime recovers, even if no watcher event arrives.
+			return additionalReconciliationNeeded
 		}
 	}
 
