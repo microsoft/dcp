@@ -339,6 +339,65 @@ type processBackingLookupFailureClient struct {
 	fail          atomic.Bool
 }
 
+type failedStoppingProcessClient struct {
+	ctrl_client.Client
+	observations atomic.Uint32
+}
+
+func (apiClient *failedStoppingProcessClient) List(
+	ctx context.Context, objects ctrl_client.ObjectList, options ...ctrl_client.ListOption,
+) error {
+	listErr := apiClient.Client.List(ctx, objects, options...)
+	if listErr != nil {
+		return listErr
+	}
+	if physicals, processList := objects.(*apiv2.PhysicalProcessList); processList {
+		for i := range physicals.Items {
+			physical := &physicals.Items[i]
+			if physical.Spec.Stop && physical.DeletionTimestamp.IsZero() {
+				physical.Status.Phase = apiv2.PhysicalProcessPhaseFailed
+				physical.Status.Conditions = nil
+				apiClient.observations.Add(1)
+			}
+		}
+	}
+	return nil
+}
+
+// Verifies that LogicalProcess reports a stopping backing's failure without a Ready condition,
+// preserves process identity, and still allows resource cleanup.
+func TestV2LogicalProcessControllerHandlesStopFailureWithoutReadyCondition(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	var observed *failedStoppingProcessClient
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+			observed = &failedStoppingProcessClient{Client: apiClient}
+			return observed
+		}})
+	require.NoError(t, startupErr)
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-process-stop-without-ready")
+	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+		Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name}}}
+	require.NoError(t, server.Client.Create(ctx, resource))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+	})
+	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseFailed, nil
+	})
+	require.Positive(t, observed.observations.Load())
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonPhysicalProcessFailed)
+	require.Empty(t, apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady)).Message)
+	require.Equal(t, running.Status.PID, failed.Status.PID)
+	require.Equal(t, running.Status.PhysicalProcessRef, failed.Status.PhysicalProcessRef)
+	require.NoError(t, server.Client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+}
+
 func (reader *processBackingLookupFailureClient) List(
 	ctx context.Context, object ctrl_client.ObjectList, options ...ctrl_client.ListOption,
 ) error {

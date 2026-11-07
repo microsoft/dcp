@@ -569,8 +569,10 @@ func handleLogicalProcessStopping(
 		data.state, data.reason, data.message = logicalProcessStateExited, apiv2.LogicalProcessReasonExited, ""
 		return change | additionalReconciliationNeeded
 	case logicalProcessStateRuntimeFailed:
-		data.state, data.reason = logicalProcessStateRuntimeFailed, apiv2.LogicalProcessReasonPhysicalProcessFailed
-		data.message = apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady)).Message
+		data.state, data.reason, data.message = logicalProcessStateRuntimeFailed, apiv2.LogicalProcessReasonPhysicalProcessFailed, ""
+		if ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
+			data.message = ready.Message
+		}
 		return change | additionalReconciliationNeeded
 	}
 	if !physical.DeletionTimestamp.IsZero() {
