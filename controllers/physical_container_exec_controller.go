@@ -48,7 +48,7 @@ var physicalContainerExecDataHandlers = map[physicalContainerExecState]physicalC
 	physicalContainerExecStateTargetRetry:    handlePhysicalContainerExecTarget,
 	physicalContainerExecStateLaunch:         handlePhysicalContainerExecLaunch,
 	physicalContainerExecStateLaunchRetry:    handlePhysicalContainerExecLaunch,
-	physicalContainerExecStateRunning:        handlePhysicalContainerExecRuntime,
+	physicalContainerExecStateRunning:        handlePhysicalContainerExecRunning,
 	physicalContainerExecStateExited:         handlePhysicalContainerExecTerminal,
 	physicalContainerExecStateFailed:         handlePhysicalContainerExecTerminal,
 	physicalContainerExecStateStop:           handlePhysicalContainerExecStop,
@@ -208,38 +208,41 @@ func handlePhysicalContainerExecTarget(
 	getErr := reconciler.Get(ctx, commonapi.AsNamespacedName(resource.Spec.ContainerRef, resource.Namespace), &container)
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) && data.targetUID != "" {
-			data.fail("ContainerUnavailable", "The selected PhysicalContainer no longer exists.")
+			data.fail(apiv2.ContainerExecReasonContainerUnavailable, "The selected PhysicalContainer no longer exists.")
 			return noChange
 		}
 		data.state = physicalContainerExecStateTargetNotFound
-		data.reason, data.message = "ContainerNotFound", "Waiting for the target PhysicalContainer."
+		data.reason, data.message = apiv2.ContainerExecReasonContainerNotFound, "Waiting for the target PhysicalContainer."
 		if !apierrors.IsNotFound(getErr) {
 			log.Error(getErr, "Failed to get execution target")
-			data.reason, data.message = "ContainerLookupFailed", getErr.Error()
+			data.reason, data.message = apiv2.ContainerExecReasonContainerLookupFailed, getErr.Error()
 			data.state = physicalContainerExecStateTargetRetry
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		}
 		return noChange
 	}
 	if !data.matchesTarget(&container) {
-		data.fail("ContainerUnavailable", "The selected PhysicalContainer identity changed.")
+		data.fail(apiv2.ContainerExecReasonContainerUnavailable, "The selected PhysicalContainer identity changed.")
 		return noChange
 	}
 	if !container.DeletionTimestamp.IsZero() {
-		data.fail("ContainerUnavailable", "The target PhysicalContainer is being deleted.")
+		data.fail(apiv2.ContainerExecReasonContainerUnavailable, "The target PhysicalContainer is being deleted.")
+		return noChange
+	}
+	if container.Spec.Stop {
+		data.fail(apiv2.ContainerExecReasonContainerUnavailable, "The target PhysicalContainer is stopping.")
 		return noChange
 	}
 	condition := apimeta.FindStatusCondition(container.Status.Conditions, string(apiv2.ConditionReady))
-	if condition != nil && condition.ObservedGeneration == container.Generation {
-		if container.Status.Phase == apiv2.PhysicalContainerPhaseExited || container.Status.Phase == apiv2.PhysicalContainerPhaseFailed {
-			data.fail("ContainerUnavailable", "The target PhysicalContainer has exited or failed.")
-			return noChange
-		}
-		if condition.Status == metav1.ConditionTrue && container.Status.Phase == apiv2.PhysicalContainerPhaseRunning && container.Status.ContainerID != "" {
-			return reconciler.scheduleExecution(resource, &container, data, log)
-		}
+	if container.Status.Phase == apiv2.PhysicalContainerPhaseExited || container.Status.Phase == apiv2.PhysicalContainerPhaseFailed {
+		data.fail(apiv2.ContainerExecReasonContainerUnavailable, "The target PhysicalContainer has exited or failed.")
+		return noChange
 	}
-	data.reason, data.message = "ContainerNotReady", "Waiting for the target PhysicalContainer to be running."
+	if condition != nil && condition.Status == metav1.ConditionTrue &&
+		container.Status.Phase == apiv2.PhysicalContainerPhaseRunning && container.Status.ContainerID != "" {
+		return reconciler.scheduleExecution(resource, &container, data, log)
+	}
+	data.reason, data.message = apiv2.ContainerExecReasonContainerNotReady, "Waiting for the target PhysicalContainer to be running."
 	return noChange
 }
 
@@ -252,13 +255,13 @@ func handlePhysicalContainerExecLaunch(
 		return noChange
 	case physicalContainerExecStateLaunchRetry:
 		data.state = physicalContainerExecStateTarget
-		return handlePhysicalContainerExecTarget(ctx, reconciler, resource, data.state, data, log)
+		return additionalReconciliationNeeded
 	default:
 		return handleInvalidPhysicalContainerExecState(ctx, reconciler, resource, state, data, log)
 	}
 }
 
-func handlePhysicalContainerExecRuntime(
+func handlePhysicalContainerExecRunning(
 	ctx context.Context, reconciler *PhysicalContainerExecReconciler, resource *apiv2.PhysicalContainerExec,
 	state physicalContainerExecState, data *physicalContainerExecData, log logr.Logger,
 ) objectChange {
@@ -307,7 +310,7 @@ func (r *PhysicalContainerExecReconciler) handleExecutionDeletion(
 			return noChange, StandardDelay
 		}
 		data = &physicalContainerExecData{
-			state: physicalContainerExecStateExited, reason: "ExecutionCancelled",
+			state: physicalContainerExecStateExited, reason: apiv2.ContainerExecReasonCancelled,
 			message: "Execution was cancelled before launch.", finishedAt: metav1.NowMicro(),
 		}
 		r.executions.Store(resource.NamespacedName(), resource.UID, data.Clone())
@@ -316,14 +319,14 @@ func (r *PhysicalContainerExecReconciler) handleExecutionDeletion(
 		data.session.cancel()
 		data.state = physicalContainerExecStateStop
 		data.workInProgress = true
-		data.reason, data.message = "Stopping", "Waiting for attached execution cancellation to complete."
+		data.reason, data.message = apiv2.ContainerExecReasonStopping, "Waiting for attached execution cancellation to complete."
 		_ = r.executions.Update(resource.NamespacedName(), resource.UID, data)
 		change, delay, _ := data.applyTo(resource)
 		return change, delay
 	}
 	if data.state != physicalContainerExecStateExited && data.state != physicalContainerExecStateFailed &&
 		data.state != physicalContainerExecStateInvalid {
-		data.state, data.reason, data.message = physicalContainerExecStateExited, "ExecutionCancelled", "Execution was cancelled before launch."
+		data.state, data.reason, data.message = physicalContainerExecStateExited, apiv2.ContainerExecReasonCancelled, "Execution was cancelled before launch."
 		data.finishedAt = metav1.NowMicro()
 	}
 	_ = r.executions.Update(resource.NamespacedName(), resource.UID, data)
@@ -357,7 +360,7 @@ func (r *PhysicalContainerExecReconciler) scheduleExecution(
 	data.session = &physicalContainerExecSession{cancel: cancel}
 	data.state = physicalContainerExecStateLaunch
 	data.workInProgress = true
-	data.reason, data.message = "Launching", "Attached command launch is in progress."
+	data.reason, data.message = apiv2.ContainerExecReasonLaunching, "Attached command launch is in progress."
 	_ = r.executions.Update(resource.NamespacedName(), resource.UID, data)
 	snapshot, result := resource.DeepCopy(), data.Clone()
 	enqueueErr := r.operationQueue.Enqueue(func(context.Context) {
@@ -369,7 +372,7 @@ func (r *PhysicalContainerExecReconciler) scheduleExecution(
 		data.workInProgress = false
 		data.state = physicalContainerExecStateLaunchRetry
 		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		data.reason, data.message = "LaunchQueueFailed", enqueueErr.Error()
+		data.reason, data.message = apiv2.ContainerExecReasonLaunchQueueFailed, enqueueErr.Error()
 		log.Error(enqueueErr, "Failed to queue attached execution launch")
 		return noChange
 	}
@@ -396,38 +399,41 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 	targetErr := r.NoCacheClient.Get(ctx, commonapi.AsNamespacedName(resource.Spec.ContainerRef, resource.Namespace), &current)
 	condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 	if targetErr != nil && !apierrors.IsNotFound(targetErr) {
-		r.retryExecution(resource, data, physicalContainerExecStateTargetRetry, "ContainerLookupFailed", targetErr, log)
+		r.retryExecution(resource, data, physicalContainerExecStateTargetRetry, apiv2.ContainerExecReasonContainerLookupFailed, targetErr, log)
 		return
 	}
 	switch {
 	case targetErr != nil:
-		fail("ContainerUnavailable", fmt.Errorf("target PhysicalContainer no longer exists before execution launch: %w", targetErr))
+		fail(apiv2.ContainerExecReasonContainerUnavailable, fmt.Errorf("target PhysicalContainer no longer exists before execution launch: %w", targetErr))
 		return
 	case !data.matchesTarget(&current):
-		fail("ContainerUnavailable", fmt.Errorf("selected PhysicalContainer identity changed before execution launch"))
+		fail(apiv2.ContainerExecReasonContainerUnavailable, fmt.Errorf("selected PhysicalContainer identity changed before execution launch"))
 		return
 	case !current.DeletionTimestamp.IsZero():
-		fail("ContainerUnavailable", fmt.Errorf("target PhysicalContainer is being deleted before execution launch"))
+		fail(apiv2.ContainerExecReasonContainerUnavailable, fmt.Errorf("target PhysicalContainer is being deleted before execution launch"))
+		return
+	case current.Spec.Stop:
+		fail(apiv2.ContainerExecReasonContainerUnavailable, fmt.Errorf("target PhysicalContainer is stopping before execution launch"))
 		return
 	case current.Status.Phase == apiv2.PhysicalContainerPhaseExited || current.Status.Phase == apiv2.PhysicalContainerPhaseFailed:
-		fail("ContainerUnavailable", fmt.Errorf("target PhysicalContainer has exited or failed before execution launch"))
+		fail(apiv2.ContainerExecReasonContainerUnavailable, fmt.Errorf("target PhysicalContainer has exited or failed before execution launch"))
 		return
 	}
 	if current.Status.ContainerID == "" || current.Status.Phase != apiv2.PhysicalContainerPhaseRunning ||
-		condition == nil || condition.Status != metav1.ConditionTrue || condition.ObservedGeneration != current.Generation {
-		r.retryExecution(resource, data, physicalContainerExecStateTargetRetry, "ContainerNotReady", fmt.Errorf("target container is not ready for execution"), log)
+		condition == nil || condition.Status != metav1.ConditionTrue {
+		r.retryExecution(resource, data, physicalContainerExecStateTargetRetry, apiv2.ContainerExecReasonContainerNotReady, fmt.Errorf("target container is not ready for execution"), log)
 		return
 	}
 	data.retryAfter = time.Time{}
 	stdout, stdoutErr := logs.NewCaptureFile(resource, logstream.LogStreamSourceStdout)
 	if stdoutErr != nil {
-		fail("CaptureFailed", stdoutErr)
+		fail(apiv2.ContainerExecReasonCaptureFailed, stdoutErr)
 		return
 	}
 	data.stdout = stdout
 	stderr, stderrErr := logs.NewCaptureFile(resource, logstream.LogStreamSourceStderr)
 	if stderrErr != nil {
-		fail("CaptureFailed", stderrErr)
+		fail(apiv2.ContainerExecReasonCaptureFailed, stderrErr)
 		return
 	}
 	data.stderr = stderr
@@ -438,16 +444,16 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 		StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: stdout.Writer, StdErrStream: stderr.Writer},
 	})
 	if launchErr != nil {
-		fail("LaunchFailed", launchErr)
+		fail(apiv2.ContainerExecReasonLaunchFailed, launchErr)
 		return
 	}
 	if exitCodes == nil {
-		fail("LaunchFailed", fmt.Errorf("runtime returned no execution completion channel"))
+		fail(apiv2.ContainerExecReasonLaunchFailed, fmt.Errorf("runtime returned no execution completion channel"))
 		return
 	}
 	data.state = physicalContainerExecStateRunning
 	data.workInProgress = false
-	data.reason, data.message = "ExecutionRunning", "Attached runtime execution is running."
+	data.reason, data.message = apiv2.ContainerExecReasonRunning, "Attached runtime execution is running."
 	data.startedAt = metav1.NowMicro()
 	r.queueExecutionResult(resource, data.Clone())
 	go func() {
@@ -458,9 +464,9 @@ func (r *PhysicalContainerExecReconciler) launchExecution(
 		if !valid {
 			completionErr := fmt.Errorf("runtime execution completion channel closed without a result")
 			log.Error(completionErr, "Container execution completion was not reported")
-			data.fail("CompletionUnknown", completionErr.Error())
+			data.fail(apiv2.ContainerExecReasonCompletionUnknown, completionErr.Error())
 		} else {
-			data.state, data.reason, data.message = physicalContainerExecStateExited, "ExecutionExited", "Attached runtime execution has completed."
+			data.state, data.reason, data.message = physicalContainerExecStateExited, apiv2.ContainerExecReasonExited, "Attached runtime execution has completed."
 			data.finishedAt = metav1.NowMicro()
 		}
 		r.finishExecution(resource, data, log)

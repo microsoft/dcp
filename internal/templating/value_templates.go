@@ -52,7 +52,8 @@ func IsTransientTemplateError(err error) bool {
 	var ePort errServiceNotAssignedPort
 	var eAddress errServiceNotAssignedAddress
 	var eDoesNotExist errServiceDoesNotExist
-	return errors.As(err, &ePort) || errors.As(err, &eAddress) || errors.As(err, &eDoesNotExist)
+	var eLookup errV2ServiceLookup
+	return errors.As(err, &ePort) || errors.As(err, &eAddress) || errors.As(err, &eDoesNotExist) || errors.As(err, &eLookup)
 }
 
 // Creates a template for evaluating a value of a spec field of a Container or Executable.

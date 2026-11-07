@@ -84,8 +84,6 @@ type physicalContainerNetworkData struct {
 	retryAfter     time.Time
 	resolveByName  bool
 	connections    map[string]int
-	expected       int
-	connected      int
 }
 
 func (data *physicalContainerNetworkData) operationInProgress() bool {
@@ -101,8 +99,6 @@ func (data *physicalContainerNetworkData) Clone() *physicalContainerNetworkData 
 		retryAfter:     data.retryAfter,
 		resolveByName:  data.resolveByName,
 		connections:    stdmaps.Clone(data.connections),
-		expected:       data.expected,
-		connected:      data.connected,
 	}
 }
 
@@ -140,15 +136,6 @@ func (data *physicalContainerNetworkData) UpdateFrom(other *physicalContainerNet
 		data.connections = stdmaps.Clone(other.connections)
 		updated = true
 	}
-	if data.expected != other.expected {
-		data.expected = other.expected
-		updated = true
-	}
-	if data.connected != other.connected {
-		data.connected = other.connected
-		updated = true
-	}
-
 	return updated
 }
 

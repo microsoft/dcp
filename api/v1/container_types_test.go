@@ -138,14 +138,15 @@ func TestContainerSpecLifecycleKeyIsStable(t *testing.T) {
 	)
 }
 
-// Verifies that LogicalContainerSpec.GetLifecycleKey preserves its encoding under the ordered
-// lifecycle-hash type initialization shared with V1.
+// Verifies that LogicalContainerSpec.GetLifecycleKey preserves its runtime port encoding
+// under the ordered lifecycle-hash type initialization shared with V1.
 func TestLogicalContainerSpecLifecycleKeyIsStable(t *testing.T) {
 	t.Parallel()
 	monitorPID := int64(42)
 	spec := &apiv2.LogicalContainerSpec{
 		ContainerName: "runtime-container", Mode: apiv2.LogicalContainerModePersistent,
 		MonitorPID: &monitorPID, MonitorTimestamp: metav1.NewMicroTime(time.Unix(123456789, 0).UTC()),
+		Ports: []apiv2.LogicalContainerPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http", ServiceRef: "service"}, ContainerPort: 8080}},
 		Container: &apiv2.LogicalContainerConfig{
 			Image: &apiv2.PhysicalContainerImageConfig{
 				Image: "example/app:dev",
@@ -161,7 +162,6 @@ func TestLogicalContainerSpecLifecycleKeyIsStable(t *testing.T) {
 			Env:          []commonapi.EnvVar{{Name: "VALUE", Value: "test"}},
 			Labels:       []commonapi.Label{{Key: "app", Value: "test"}},
 			VolumeMounts: []apiv2.VolumeMount{{Type: apiv2.NamedVolumeMount, VolumeRef: "volume", Target: "/data"}},
-			Ports:        []apiv2.ContainerPort{{ContainerPort: 8080}},
 			Networks:     []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "network", Aliases: []string{"app"}}},
 			CreateFiles: []apiv2.CreateFileSystem{{
 				Destination: "/etc/app",
@@ -172,10 +172,10 @@ func TestLogicalContainerSpecLifecycleKeyIsStable(t *testing.T) {
 			}},
 		},
 	}
-	key, computed, keyErr := spec.GetLifecycleKey()
+	key, computed, keyErr := spec.GetLifecycleKey([]apiv2.ContainerPort{{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP}})
 	require.NoError(t, keyErr)
 	require.True(t, computed)
-	require.Equal(t, "0c393b2a2eb5838203b1ea199818e276", key, "V2 lifecycle-key encoding changed; existing persistent containers would be replaced")
+	require.Equal(t, "c1329e9a97574da35f3e76fbc91b23f8", key, "V2 lifecycle-key encoding changed; existing persistent containers would be replaced")
 }
 
 // Verifies that V1 and V2 persistent kinds and log subresource types can share standard API-server registration.

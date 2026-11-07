@@ -32,6 +32,7 @@ import (
 type undecodedBackingClient struct {
 	ctrl_client.Client
 	kind                string
+	committedCreates    atomic.Uint32
 	processVisibleLists atomic.Uint32
 }
 
@@ -46,6 +47,7 @@ func (apiClient *undecodedBackingClient) Create(
 	if createErr != nil {
 		return createErr
 	}
+	apiClient.committedCreates.Add(1)
 	return errors.New("physical backing Create committed without decoding its response")
 }
 
@@ -59,6 +61,8 @@ func (apiClient *undecodedBackingClient) matchesBacking(object ctrl_client.Objec
 		return apiClient.kind == "network"
 	case *apiv2.PhysicalProcess:
 		return apiClient.kind == "process"
+	case *apiv2.PhysicalContainerExec:
+		return apiClient.kind == "exec"
 	default:
 		return false
 	}
@@ -97,34 +101,56 @@ func (apiClient *undecodedBackingClient) List(
 				apiClient.processVisibleLists.Add(1)
 			}
 		}
+	case *apiv2.PhysicalContainerExecList:
+		if apiClient.kind == "exec" {
+			children.Items = nil
+		}
 	}
 	return nil
 }
 
 type undecodedBackingReader struct {
 	ctrl_client.Reader
-	kind                 string
-	logicalName          types.NamespacedName
-	failDeletion         atomic.Bool
-	confirmationFailures atomic.Uint32
-	deletionFailures     atomic.Uint32
+	kind             string
+	logicalName      types.NamespacedName
+	failDeletion     atomic.Bool
+	deletionFailures atomic.Uint32
 }
 
 func (reader *undecodedBackingReader) Get(
 	ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption,
 ) error {
 	getErr := reader.Reader.Get(ctx, key, object, options...)
-	if _, physical := object.(*apiv2.PhysicalProcess); !physical || reader.kind != "process" || getErr != nil {
+	target := false
+	var logical ctrl_client.Object = &apiv2.LogicalContainer{}
+	switch object.(type) {
+	case *apiv2.PhysicalContainer:
+		target = reader.kind == "container"
+	case *apiv2.PhysicalContainerImage:
+		target = reader.kind == "image"
+	case *apiv2.PhysicalContainerNetwork:
+		target = reader.kind == "network"
+		logical = &apiv2.LogicalContainerNetwork{}
+	case *apiv2.PhysicalProcess:
+		target = reader.kind == "process"
+		logical = &apiv2.LogicalProcess{}
+	case *apiv2.PhysicalContainerExec:
+		target = reader.kind == "exec"
+		logical = &apiv2.LogicalContainerExec{}
+	}
+	if !target || getErr != nil {
 		return getErr
 	}
-	logical := &apiv2.LogicalProcess{}
 	logicalErr := reader.Reader.Get(ctx, reader.logicalName, logical)
 	if logicalErr != nil {
 		return logicalErr
 	}
-	if logical.DeletionTimestamp.IsZero() {
-		reader.confirmationFailures.Add(1)
+	if logical.GetDeletionTimestamp().IsZero() && reader.kind == "process" {
 		return errors.New("uncached Create confirmation unavailable")
+	}
+	if !logical.GetDeletionTimestamp().IsZero() && reader.failDeletion.Load() {
+		reader.deletionFailures.Add(1)
+		return errors.New("uncached deletion confirmation unavailable")
 	}
 	return nil
 }
@@ -142,35 +168,20 @@ func (reader *undecodedBackingReader) List(
 		target = reader.kind == "network"
 	case *apiv2.PhysicalProcessList:
 		target = reader.kind == "process"
+	case *apiv2.PhysicalContainerExecList:
+		target = reader.kind == "exec"
 	}
 	if target {
-		var logical ctrl_client.Object = &apiv2.LogicalContainer{}
-		if reader.kind == "network" {
-			logical = &apiv2.LogicalContainerNetwork{}
-		} else if reader.kind == "process" {
-			logical = &apiv2.LogicalProcess{}
-		}
-		getErr := reader.Reader.Get(ctx, reader.logicalName, logical)
-		if getErr != nil {
-			return getErr
-		}
-		if logical.GetDeletionTimestamp().IsZero() {
-			reader.confirmationFailures.Add(1)
-			return errors.New("uncached Create confirmation unavailable")
-		}
-		if reader.failDeletion.Load() {
-			reader.deletionFailures.Add(1)
-			return errors.New("uncached deletion confirmation unavailable")
-		}
+		return errors.New("unscoped uncached backing list")
 	}
 	return reader.Reader.List(ctx, objects, options...)
 }
 
-// Verifies that logical deletion discovers owned containers, images, networks, and processes without decoded
-// Create UIDs, retains the owner and lease while uncached confirmation fails, and cleans backings before finalizing.
-func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
+// Verifies that logical deletion confirms generated backing names after undecoded Create responses,
+// retains the owner and lease while point reads fail, and also cleans up cached unexpected-name backings.
+func TestV2LogicalDeletionConfirmsUnrecordedBackingsByName(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"container", "image", "network", "process"} {
+	for _, kind := range []string{"container", "image", "network", "process", "exec"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -182,6 +193,8 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 				PhysicalContainerImageController | PhysicalContainerNetworkController
 			if kind == "process" {
 				included = LogicalProcessController | PhysicalProcessController
+			} else if kind == "exec" {
+				included = containerExecTestControllers
 			}
 			server, environment, startErr := StartTestEnvironmentWithOptions(t, ctx,
 				included,
@@ -237,6 +250,25 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 					ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: logicalName.Namespace},
 					Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
 				}
+			} else if kind == "exec" {
+				target := &apiv2.LogicalContainer{
+					ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: logicalName.Namespace},
+					Spec:       apiv2.LogicalContainerSpec{Container: config},
+				}
+				require.NoError(t, server.Client.Create(ctx, target))
+				runningTarget := waitObjectAssumesStateEx(t, ctx, server.Client, target.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+					return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+				})
+				logical = &apiv2.LogicalContainerExec{
+					ObjectMeta: metav1.ObjectMeta{Name: logicalName.Name, Namespace: logicalName.Namespace},
+					Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name,
+						Execution: apiv2.ContainerExecConfig{Command: "unrecorded-exec"}},
+				}
+				unrelated = &apiv2.PhysicalContainerExec{
+					ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: logicalName.Namespace},
+					Spec: apiv2.PhysicalContainerExecSpec{ContainerRef: runningTarget.Status.PhysicalContainerRef,
+						Execution: apiv2.ContainerExecConfig{Command: "unrelated-exec"}},
+				}
 			} else {
 				logical = &apiv2.LogicalContainer{
 					ObjectMeta: metav1.ObjectMeta{Name: logicalName.Name, Namespace: logicalName.Namespace},
@@ -259,7 +291,7 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 			require.NoError(t, server.Client.Create(ctx, unrelated))
 			require.NoError(t, server.Client.Create(ctx, logical))
 			require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(context.Context) (bool, error) {
-				return reader.confirmationFailures.Load() > 0, nil
+				return backingClient.committedCreates.Load() > 0, nil
 			}))
 			backingName := types.NamespacedName{Namespace: logicalName.Namespace, Name: "logical-" + string(logical.GetUID())}
 			var backing ctrl_client.Object
@@ -279,6 +311,10 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 			case "process":
 				backing = waitObjectAssumesStateEx(t, ctx, server.Client, backingName, func(current *apiv2.PhysicalProcess) (bool, error) {
 					return current.Status.Phase == apiv2.PhysicalProcessPhaseRunning, nil
+				})
+			case "exec":
+				backing = waitObjectAssumesStateEx(t, ctx, server.Client, backingName, func(current *apiv2.PhysicalContainerExec) (bool, error) {
+					return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
 				})
 			}
 			require.True(t, metav1.IsControlledBy(backing, logical))
@@ -314,6 +350,8 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, owner)
 			case *apiv2.LogicalContainerNetwork:
 				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, owner)
+			case *apiv2.LogicalContainerExec:
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, owner)
 			case *apiv2.LogicalProcess:
 				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, owner)
 				require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, owner, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
@@ -335,6 +373,8 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByOwner(t *testing.T) {
 			case *apiv2.PhysicalProcess:
 				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, child)
 				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, visible)
+			case *apiv2.PhysicalContainerExec:
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, child)
 			}
 			require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(unrelated), unrelated))
 			require.True(t, unrelated.GetDeletionTimestamp().IsZero())
@@ -426,18 +466,18 @@ func (visibility *unobservedBackingClient) List(
 	switch children := list.(type) {
 	case *apiv2.PhysicalContainerList:
 		if !visibility.images {
-			children.Items = nil
+			children.Items = slices.DeleteFunc(children.Items, func(child apiv2.PhysicalContainer) bool { return child.Name != "duplicate" })
 		}
 	case *apiv2.PhysicalContainerImageList:
 		if visibility.images {
-			children.Items = nil
+			children.Items = slices.DeleteFunc(children.Items, func(child apiv2.PhysicalContainerImage) bool { return child.Name != "duplicate" })
 		}
 	}
 	return nil
 }
 
-// Verifies that logical deletion confirms an empty cached owner list after successful creation,
-// deletes every owned backing before finalizing, and leaves unrelated resources untouched.
+// Verifies that logical deletion finds unobserved creations by name alongside cached unexpected-name
+// backings, waits for their cleanup, and leaves unrelated resources untouched.
 func TestV2LogicalContainerDeletesCreatedBackingsBeforeCacheObservation(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {

@@ -7,8 +7,10 @@ package controllers
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -16,6 +18,38 @@ import (
 )
 
 type logicalContainerExecState int
+
+func applyLogicalContainerExecBackingStatus(
+	resource *apiv2.LogicalContainerExec, physical *apiv2.PhysicalContainerExec,
+) (objectChange, logicalContainerExecState) {
+	change := setValue(&resource.Status.ContainerID, physical.Status.ContainerID)
+	change |= setTimestamp(&resource.Status.StartedAt, physical.Status.StartedAt)
+	change |= setTimestamp(&resource.Status.FinishedAt, physical.Status.FinishedAt)
+	change |= setExitCode(&resource.Status.ExitCode, physical.Status.ExitCode)
+	source := physical.GetLogSource()
+	if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
+		resource.Status.RuntimeLogs = source
+		change |= statusChanged
+	}
+	if !physical.DeletionTimestamp.IsZero() && hasFinalizer(physical, physicalContainerExecFinalizer) {
+		return change, logicalContainerExecStateCreating
+	}
+	condition := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
+	switch physical.Status.Phase {
+	case apiv2.ContainerExecPhaseRunning:
+		if condition != nil && condition.Status == metav1.ConditionTrue {
+			return change, logicalContainerExecStateRunning
+		}
+	case apiv2.ContainerExecPhaseExited:
+		return change, logicalContainerExecStateExited
+	case apiv2.ContainerExecPhaseFailed:
+		return change, logicalContainerExecStateRuntimeFailed
+	case apiv2.ContainerExecPhasePending, "":
+	default:
+		return change, logicalContainerExecStateInvalid
+	}
+	return change, logicalContainerExecStateCreating
+}
 
 const (
 	logicalContainerExecStatePending logicalContainerExecState = iota + 1
@@ -61,6 +95,7 @@ type logicalContainerExecData struct {
 	reason             apiv2.ConditionReason
 	message            string
 	physicalUID        types.UID
+	unobservedChildren unobservedLogicalChildren
 	pendingPhysicalRef string
 	failureTime        metav1.MicroTime
 	reconcileErr       error
@@ -68,6 +103,7 @@ type logicalContainerExecData struct {
 
 func (data *logicalContainerExecData) Clone() *logicalContainerExecData {
 	cloned := *data
+	cloned.unobservedChildren = maps.Clone(data.unobservedChildren)
 	return &cloned
 }
 
@@ -75,7 +111,7 @@ func (data *logicalContainerExecData) UpdateFrom(other *logicalContainerExecData
 	if other == nil || reflect.DeepEqual(data, other) {
 		return false
 	}
-	*data = *other
+	*data = *other.Clone()
 	return true
 }
 
@@ -100,11 +136,11 @@ func (data *logicalContainerExecData) applyTo(resource *apiv2.LogicalContainerEx
 		if reason == "" {
 			switch data.state {
 			case logicalContainerExecStatePending:
-				reason = "PhysicalExecutionPreparationFailed"
+				reason = apiv2.LogicalContainerExecReasonPhysicalExecutionPreparationFailed
 			case logicalContainerExecStateDelete:
-				reason = "PhysicalExecutionDeletionFailed"
+				reason = apiv2.LogicalContainerExecReasonPhysicalExecutionDeletionFailed
 			default:
-				reason = "PhysicalExecutionLookupFailed"
+				reason = apiv2.LogicalContainerExecReasonPhysicalExecutionLookupFailed
 			}
 		}
 		change |= setValue(&resource.Status.Phase, apiv2.ContainerExecPhasePending)
@@ -123,28 +159,28 @@ var logicalContainerExecProjections = physicalResourceProjectionTable[logicalCon
 	invalidPhase: apiv2.ContainerExecPhaseFailed,
 	projections: map[logicalContainerExecState]physicalResourceProjection[apiv2.ContainerExecPhase]{
 		logicalContainerExecStatePending: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "ContainerNotReady",
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ContainerExecReasonContainerNotReady,
 		},
 		logicalContainerExecStateFailed: {
-			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionPreparationFailed",
+			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonPhysicalExecutionPreparationFailed,
 		},
 		logicalContainerExecStateCreating: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionNotReady",
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonPhysicalExecutionNotReady,
 		},
 		logicalContainerExecStateRunning: {
-			phase: apiv2.ContainerExecPhaseRunning, conditionStatus: metav1.ConditionTrue, conditionReason: "ExecutionRunning",
+			phase: apiv2.ContainerExecPhaseRunning, conditionStatus: metav1.ConditionTrue, conditionReason: apiv2.ContainerExecReasonRunning,
 		},
 		logicalContainerExecStateExited: {
-			phase: apiv2.ContainerExecPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: "ExecutionExited",
+			phase: apiv2.ContainerExecPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ContainerExecReasonExited,
 		},
 		logicalContainerExecStateRuntimeFailed: {
-			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionFailed",
+			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonPhysicalExecutionFailed,
 		},
 		logicalContainerExecStateMissing: {
-			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: "PhysicalExecutionChanged",
+			phase: apiv2.ContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonPhysicalExecutionChanged,
 		},
 		logicalContainerExecStateDelete: {
-			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: "DeletingPhysicalExecution",
+			phase: apiv2.ContainerExecPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonDeletingPhysicalExecution,
 			requeue: true,
 		},
 		logicalContainerExecStateInvalid: {

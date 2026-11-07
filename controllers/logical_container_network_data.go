@@ -7,9 +7,11 @@ package controllers
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -27,7 +29,6 @@ const (
 	logicalContainerNetworkStateFailed
 	logicalContainerNetworkStateUnknown
 	logicalContainerNetworkStateDelete
-	logicalContainerNetworkStateInvalid
 )
 
 func (state logicalContainerNetworkState) String() string {
@@ -48,11 +49,24 @@ func (state logicalContainerNetworkState) String() string {
 		return "Unknown"
 	case logicalContainerNetworkStateDelete:
 		return "Delete"
-	case logicalContainerNetworkStateInvalid:
-		return "Invalid"
 	default:
 		return fmt.Sprintf("logicalContainerNetworkState(%d)", int(state))
 	}
+}
+
+func logicalContainerNetworkBackingState(physical *apiv2.PhysicalContainerNetwork) logicalContainerNetworkState {
+	switch physical.Status.Phase {
+	case apiv2.PhysicalContainerNetworkPhaseReady:
+		ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
+		if ready != nil && ready.Status == metav1.ConditionTrue {
+			return logicalContainerNetworkStateReady
+		}
+	case apiv2.PhysicalContainerNetworkPhaseFailed:
+		return logicalContainerNetworkStateFailed
+	case apiv2.PhysicalContainerNetworkPhaseUnknown:
+		return logicalContainerNetworkStateUnknown
+	}
+	return logicalContainerNetworkStateCreating
 }
 
 type logicalContainerNetworkData struct {
@@ -63,12 +77,14 @@ type logicalContainerNetworkData struct {
 	reconcileErr        error
 	lifecycleKey        string
 	physicalNetworkUID  types.UID
+	unobservedChildren  unobservedLogicalChildren
 	lease               *statestore.ResourceLease
 	leaseFailureMessage string
 }
 
 func (data *logicalContainerNetworkData) Clone() *logicalContainerNetworkData {
 	cloned := *data
+	cloned.unobservedChildren = maps.Clone(data.unobservedChildren)
 	return &cloned
 }
 
@@ -97,15 +113,15 @@ func (data *logicalContainerNetworkData) applyTo(network *apiv2.LogicalContainer
 		if reason == "" {
 			switch data.state {
 			case logicalContainerNetworkStatePending:
-				reason = "PhysicalNetworkPreparationFailed"
+				reason = apiv2.LogicalContainerNetworkReasonPhysicalNetworkPreparationFailed
 			case logicalContainerNetworkStateDelete:
-				reason = "PhysicalNetworkDeletionFailed"
+				reason = apiv2.LogicalContainerNetworkReasonPhysicalNetworkDeletionFailed
 			default:
-				reason = "PhysicalNetworkLookupFailed"
+				reason = apiv2.LogicalContainerNetworkReasonPhysicalNetworkLookupFailed
 			}
 		}
 		if data.leaseFailureMessage != "" {
-			reason, message = "PersistenceFailed", data.leaseFailureMessage
+			reason, message = apiv2.LogicalResourceReasonPersistenceFailed, data.leaseFailureMessage
 		}
 		change |= setValue(&network.Status.Phase, apiv2.LogicalContainerNetworkPhaseUnknown)
 		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation,
@@ -126,35 +142,31 @@ var logicalContainerNetworkProjections = physicalResourceProjectionTable[logical
 	projections: map[logicalContainerNetworkState]physicalResourceProjection[apiv2.LogicalContainerNetworkPhase]{
 		logicalContainerNetworkStatePending: {
 			phase: apiv2.LogicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalNetworkPreparationPending",
+			conditionReason: apiv2.LogicalContainerNetworkReasonPhysicalNetworkPreparationPending,
 		},
 		logicalContainerNetworkStatePreparationFailed: {
 			phase: apiv2.LogicalContainerNetworkPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalNetworkPreparationFailed",
+			conditionReason: apiv2.LogicalContainerNetworkReasonPhysicalNetworkPreparationFailed,
 		},
 		logicalContainerNetworkStateCreating: {
 			phase: apiv2.LogicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalNetworkNotReady",
+			conditionReason: apiv2.LogicalContainerNetworkReasonPhysicalNetworkNotReady,
 		},
 		logicalContainerNetworkStateReady: {
 			phase: apiv2.LogicalContainerNetworkPhaseReady, conditionStatus: metav1.ConditionTrue,
-			conditionReason: "NetworkAvailable", message: "The logical network is available.",
+			conditionReason: apiv2.LogicalContainerNetworkReasonNetworkAvailable, message: "The logical network is available.",
 		},
 		logicalContainerNetworkStateFailed: {
 			phase: apiv2.LogicalContainerNetworkPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalNetworkFailed",
+			conditionReason: apiv2.LogicalContainerNetworkReasonPhysicalNetworkFailed,
 		},
 		logicalContainerNetworkStateUnknown: {
 			phase: apiv2.LogicalContainerNetworkPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "PhysicalNetworkStateUnknown",
+			conditionReason: apiv2.LogicalContainerNetworkReasonPhysicalNetworkStateUnknown,
 		},
 		logicalContainerNetworkStateDelete: {
 			phase: apiv2.LogicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: "DeletingPhysicalNetwork", requeue: true,
-		},
-		logicalContainerNetworkStateInvalid: {
-			phase: apiv2.LogicalContainerNetworkPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalResourceReasonOperationStateInvalid,
+			conditionReason: apiv2.LogicalContainerNetworkReasonDeletingPhysicalNetwork, requeue: true,
 		},
 	},
 }

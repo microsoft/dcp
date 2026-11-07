@@ -24,6 +24,23 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
+const (
+	// LogicalContainerExecReasonPhysicalExecutionPreparationFailed indicates that the physical execution could not be prepared.
+	LogicalContainerExecReasonPhysicalExecutionPreparationFailed ConditionReason = "PhysicalExecutionPreparationFailed"
+	// LogicalContainerExecReasonPhysicalExecutionChanged indicates that the physical execution identity, owner, or configuration changed.
+	LogicalContainerExecReasonPhysicalExecutionChanged ConditionReason = "PhysicalExecutionChanged"
+	// LogicalContainerExecReasonPhysicalExecutionNotReady indicates that the physical execution has not become ready.
+	LogicalContainerExecReasonPhysicalExecutionNotReady ConditionReason = "PhysicalExecutionNotReady"
+	// LogicalContainerExecReasonPhysicalExecutionLookupFailed indicates that the physical execution could not be read.
+	LogicalContainerExecReasonPhysicalExecutionLookupFailed ConditionReason = "PhysicalExecutionLookupFailed"
+	// LogicalContainerExecReasonPhysicalExecutionDeletionFailed indicates that physical execution cleanup failed.
+	LogicalContainerExecReasonPhysicalExecutionDeletionFailed ConditionReason = "PhysicalExecutionDeletionFailed"
+	// LogicalContainerExecReasonPhysicalExecutionFailed indicates that the physical execution failed.
+	LogicalContainerExecReasonPhysicalExecutionFailed ConditionReason = "PhysicalExecutionFailed"
+	// LogicalContainerExecReasonDeletingPhysicalExecution indicates that the owned physical execution is being removed.
+	LogicalContainerExecReasonDeletingPhysicalExecution ConditionReason = "DeletingPhysicalExecution"
+)
+
 // LogicalContainerExecSpec describes one command execution against a logical container.
 // +k8s:openapi-gen=true
 type LogicalContainerExecSpec struct {
@@ -93,7 +110,7 @@ func (resource *LogicalContainerExec) Validate(context.Context) field.ErrorList 
 		errorList = append(errorList, field.Forbidden(nil, commonapi.ErrResourceCreationProhibited.Error()))
 	}
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(resource.Annotations, field.NewPath("metadata", "annotations"))...)
-	errorList = append(errorList, validateSameNamespaceResourceReference(resource.Spec.ContainerRef, resource.Namespace, field.NewPath("spec", "containerRef"))...)
+	errorList = append(errorList, ValidateSameNamespaceResourceReference(resource.Spec.ContainerRef, resource.Namespace, field.NewPath("spec", "containerRef"))...)
 	return append(errorList, resource.Spec.Execution.validate(field.NewPath("spec", "execution"))...)
 }
 func (resource *LogicalContainerExec) ValidateUpdate(_ context.Context, old runtime.Object) field.ErrorList {

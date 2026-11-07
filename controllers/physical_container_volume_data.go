@@ -31,9 +31,6 @@ const (
 	physicalContainerVolumeStateRemove
 	physicalContainerVolumeStateRemoveRetry
 	physicalContainerVolumeStateRemoved
-	physicalContainerVolumeStateReplaceRetry
-	physicalContainerVolumeStateReplaced
-	physicalContainerVolumeStateResolve
 )
 
 func (state physicalContainerVolumeState) String() string {
@@ -64,12 +61,6 @@ func (state physicalContainerVolumeState) String() string {
 		return "RemoveRetry"
 	case physicalContainerVolumeStateRemoved:
 		return "Removed"
-	case physicalContainerVolumeStateReplaceRetry:
-		return "ReplaceRetry"
-	case physicalContainerVolumeStateReplaced:
-		return "Replaced"
-	case physicalContainerVolumeStateResolve:
-		return "Resolve"
 	default:
 		return fmt.Sprintf("physicalContainerVolumeState(%d)", int(state))
 	}
@@ -173,11 +164,6 @@ var physicalContainerVolumeProjections = physicalResourceProjectionTable[physica
 		physicalContainerVolumeStateCreateFailed: {
 			phase: apiv2.PhysicalContainerVolumePhaseFailed, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.PhysicalContainerVolumeReasonCreateFailed,
-		},
-		physicalContainerVolumeStateReplaceRetry: {
-			phase: apiv2.PhysicalContainerVolumePhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.PhysicalContainerVolumeReasonExistingVolumeReplacementFailed,
-			requeue:         true, requeueDelay: LongDelay,
 		},
 		physicalContainerVolumeStateReady: {
 			phase: apiv2.PhysicalContainerVolumePhaseReady, conditionStatus: metav1.ConditionTrue,

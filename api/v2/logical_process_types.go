@@ -52,6 +52,39 @@ const (
 type LogicalProcessPhase string
 
 const (
+	// LogicalProcessReasonPreparingLifecycle indicates that process lifecycle inputs are being prepared.
+	LogicalProcessReasonPreparingLifecycle ConditionReason = "PreparingLifecycle"
+	// LogicalProcessReasonRunning indicates that the backing process is running.
+	LogicalProcessReasonRunning ConditionReason = "ProcessRunning"
+	// LogicalProcessReasonExited indicates that the backing process has exited.
+	LogicalProcessReasonExited ConditionReason = "ProcessExited"
+	// LogicalProcessReasonStopping indicates that process termination has been requested.
+	LogicalProcessReasonStopping ConditionReason = "ProcessStopping"
+	// LogicalProcessReasonPhysicalProcessPreparationPending indicates that the physical process declaration is not prepared.
+	LogicalProcessReasonPhysicalProcessPreparationPending ConditionReason = "PhysicalProcessPreparationPending"
+	// LogicalProcessReasonPhysicalProcessPreparationFailed indicates that physical process preparation failed.
+	LogicalProcessReasonPhysicalProcessPreparationFailed ConditionReason = "PhysicalProcessPreparationFailed"
+	// LogicalProcessReasonPhysicalProcessDeletionFailed indicates that physical process cleanup failed.
+	LogicalProcessReasonPhysicalProcessDeletionFailed ConditionReason = "PhysicalProcessDeletionFailed"
+	// LogicalProcessReasonPhysicalProcessLookupFailed indicates that the physical process could not be read.
+	LogicalProcessReasonPhysicalProcessLookupFailed ConditionReason = "PhysicalProcessLookupFailed"
+	// LogicalProcessReasonPhysicalProcessNotReady indicates that the physical process has not become ready.
+	LogicalProcessReasonPhysicalProcessNotReady ConditionReason = "PhysicalProcessNotReady"
+	// LogicalProcessReasonPhysicalProcessFailed indicates that the physical process failed.
+	LogicalProcessReasonPhysicalProcessFailed ConditionReason = "PhysicalProcessFailed"
+	// LogicalProcessReasonPhysicalProcessStateUnknown indicates that the physical process state is unknown.
+	LogicalProcessReasonPhysicalProcessStateUnknown ConditionReason = "PhysicalProcessStateUnknown"
+	// LogicalProcessReasonPhysicalProcessMissing indicates that a previously observed physical process is absent.
+	LogicalProcessReasonPhysicalProcessMissing ConditionReason = "PhysicalProcessMissing"
+	// LogicalProcessReasonPhysicalProcessChanged indicates that the physical process identity, owner, or hold changed.
+	LogicalProcessReasonPhysicalProcessChanged ConditionReason = "PhysicalProcessChanged"
+	// LogicalProcessReasonPhysicalProcessTerminating indicates that the physical process is being deleted.
+	LogicalProcessReasonPhysicalProcessTerminating ConditionReason = "PhysicalProcessTerminating"
+	// LogicalProcessReasonDeletingPhysicalProcess indicates that owned physical processes are being removed.
+	LogicalProcessReasonDeletingPhysicalProcess ConditionReason = "DeletingPhysicalProcess"
+)
+
+const (
 	// LogicalProcessPhasePending indicates that the process is waiting for prerequisites or launch.
 	LogicalProcessPhasePending LogicalProcessPhase = "Pending"
 	// LogicalProcessPhaseRunning indicates that the process is running.
@@ -75,6 +108,9 @@ type LogicalProcessSpec struct {
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
 	// Process describes the desired process. Required for session and persistent modes, forbidden for existing mode.
 	Process *LogicalProcessConfig `json:"process,omitempty"`
+	// Ports declares service-backed process endpoints in all lifecycle modes.
+	// +listType=atomic
+	Ports []LogicalProcessPort `json:"ports,omitempty"`
 	// PID identifies the process to observe in existing mode; forbidden in other modes.
 	PID *int64 `json:"pid,omitempty"`
 	// IdentityTimestamp identifies the expected process in pid. Required in existing mode.
@@ -157,6 +193,11 @@ func (spec *LogicalProcessSpec) GetLifecycleKey() (string, bool, error) {
 // LogicalProcessStatus describes the observed process and its backing PhysicalProcess.
 // +k8s:openapi-gen=true
 type LogicalProcessStatus struct {
+	// Ports describes service selection and the listening address/port for each logical port.
+	// +listType=map
+	// +listMapKey=name
+	Ports []LogicalPortStatus `json:"ports,omitempty"`
+
 	// RuntimeLogs describes output captured or referenced by the backing PhysicalProcess.
 	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
 	// Phase summarizes process availability.
@@ -164,7 +205,7 @@ type LogicalProcessStatus struct {
 	Phase LogicalProcessPhase `json:"phase,omitempty"`
 	// PhysicalProcessRef identifies the same-namespace backing PhysicalProcess.
 	PhysicalProcessRef string `json:"physicalProcessRef,omitempty"`
-	// LifecycleKey is the supplied or calculated lifecycle key.
+	// LifecycleKey is the supplied or calculated key for the desired process configuration.
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
 	// PID is the observed operating system process ID.
 	PID *int64 `json:"pid,omitempty"`
@@ -298,7 +339,18 @@ func (resource *LogicalProcess) Validate(ctx context.Context) field.ErrorList {
 			string(LogicalProcessModeSession), string(LogicalProcessModePersistent), string(LogicalProcessModeExisting),
 		}))
 	}
+	// Allocated ports are not persisted with retained process identities. A new allocation on reuse
+	// could advertise a port the process never opened; existing processes cannot receive new allocations either.
+	if mode == LogicalProcessModePersistent || mode == LogicalProcessModeExisting {
+		for portIndex, port := range resource.Spec.Ports {
+			if port.Port == 0 {
+				errorList = append(errorList, field.Invalid(specPath.Child("ports").Index(portIndex).Child("port"), port.Port,
+					fmt.Sprintf("an explicit serving port is required in %s mode", mode)))
+			}
+		}
+	}
 	errorList = append(errorList, validateRetainedResourceMonitor(mode == LogicalProcessModePersistent, resource.Spec.MonitorPID, resource.Spec.MonitorTimestamp, specPath)...)
+	errorList = append(errorList, validateLogicalProcessPorts(resource.Spec.Ports, resource.Namespace, resource.Name, specPath.Child("ports"))...)
 	return errorList
 }
 

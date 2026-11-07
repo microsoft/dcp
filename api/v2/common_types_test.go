@@ -10,12 +10,50 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
+
+// Verifies that every persisted V2 resource provides both creation and update validation hooks.
+func TestPersistentResourcesValidateCreationAndUpdates(t *testing.T) {
+	t.Parallel()
+	for _, resource := range PersistentTypes {
+		t.Run(resource.GetGroupVersionResource().Resource, func(t *testing.T) {
+			t.Parallel()
+			require.Implements(t, (*apiserver_resourcestrategy.Validater)(nil), resource)
+			require.Implements(t, (*apiserver_resourcestrategy.ValidateUpdater)(nil), resource)
+		})
+	}
+}
+
+// Verifies that typed condition reasons preserve the status strings consumed by API clients.
+func TestConditionReasonsPreserveStatusValues(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		reason ConditionReason
+		value  string
+	}{
+		{LogicalContainerReasonStopping, "ContainerStopping"},
+		{LogicalProcessReasonStopping, "ProcessStopping"},
+		{LogicalContainerNetworkReasonNetworkAvailable, "NetworkAvailable"},
+		{LogicalServiceReasonReady, "ServiceReady"},
+		{ContainerExecReasonContainerUnavailable, "ContainerUnavailable"},
+		{ContainerExecReasonStopping, "Stopping"},
+		{LogicalContainerExecReasonPhysicalExecutionChanged, "PhysicalExecutionChanged"},
+		{LogicalResourceReasonTemplateEvaluationFailed, "TemplateEvaluationFailed"},
+		{LogicalResourceReasonPortPreparationFailed, "PortPreparationFailed"},
+		{PhysicalContainerReasonResolvingRuntimeContainer, "ResolvingRuntimeContainer"},
+	} {
+		t.Run(testCase.value, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, testCase.value, string(testCase.reason))
+		})
+	}
+}
 
 // Verifies that both process APIs accept supported ambient environment behaviors, default to inheritance,
 // and reject unsupported values at the nested behavior field.
@@ -114,6 +152,8 @@ func TestValidateNamespacedResourceMetadata(t *testing.T) {
 	}
 }
 
+// Verifies that ValidateSameNamespaceResourceReference rejects invalid names and namespaces
+// while accepting unqualified names and explicitly qualified same-namespace references.
 func TestValidateSameNamespaceResourceReference(t *testing.T) {
 	testCases := []struct {
 		name          string
@@ -166,7 +206,7 @@ func TestValidateSameNamespaceResourceReference(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			errorList := validateSameNamespaceResourceReference(
+			errorList := ValidateSameNamespaceResourceReference(
 				tc.reference,
 				"test-namespace",
 				field.NewPath("spec", "reference"),

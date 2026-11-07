@@ -13,11 +13,33 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/containers"
 )
 
 type physicalContainerDataStateKey string
 
 type physicalContainerState int
+
+func physicalContainerRuntimeState(status containers.ContainerStatus) physicalContainerState {
+	switch status {
+	case containers.ContainerStatusRunning:
+		return physicalContainerStateRunning
+	case containers.ContainerStatusPaused:
+		return physicalContainerStatePaused
+	case containers.ContainerStatusRestarting:
+		return physicalContainerStateRestarting
+	case containers.ContainerStatusCreated:
+		return physicalContainerStateNotStarted
+	case containers.ContainerStatusRemoving:
+		return physicalContainerStateRemoving
+	case containers.ContainerStatusExited:
+		return physicalContainerStateExited
+	case containers.ContainerStatusDead:
+		return physicalContainerStateDead
+	default:
+		return physicalContainerStateUnknown
+	}
+}
 
 const (
 	physicalContainerStateCleanupFailed physicalContainerState = iota + 1
@@ -52,6 +74,7 @@ const (
 	physicalContainerStateStarted
 	physicalContainerStateStopRetry
 	physicalContainerStateStopped
+	physicalContainerStateStopping
 	physicalContainerStateUnknown
 )
 
@@ -123,6 +146,8 @@ func (state physicalContainerState) String() string {
 		return "StopRetry"
 	case physicalContainerStateStopped:
 		return "Stopped"
+	case physicalContainerStateStopping:
+		return "Stopping"
 	case physicalContainerStateUnknown:
 		return "Unknown"
 	default:
@@ -277,6 +302,11 @@ func (data *physicalContainerData) applyTo(
 var physicalContainerProjections = physicalResourceProjectionTable[physicalContainerState, apiv2.PhysicalContainerPhase]{
 	invalidPhase: apiv2.PhysicalContainerPhaseUnknown,
 	projections: map[physicalContainerState]physicalResourceProjection[apiv2.PhysicalContainerPhase]{
+		physicalContainerStateResolve: {
+			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerReasonResolvingRuntimeContainer, message: "Resolving the runtime container identity.",
+			requeue: true,
+		},
 		physicalContainerStateDependencies: {
 			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonDependenciesNotReady,
 		},
@@ -383,6 +413,11 @@ var physicalContainerProjections = physicalResourceProjectionTable[physicalConta
 		physicalContainerStateStopRetry: {
 			phase: apiv2.PhysicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerStopFailed,
 			requeue: true, requeueDelay: LongDelay,
+		},
+		physicalContainerStateStopping: {
+			phase: apiv2.PhysicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.PhysicalContainerReasonStopRequested, message: "Waiting to stop the runtime container.",
+			requeue: true,
 		},
 		physicalContainerStateStopped: {
 			phase: apiv2.PhysicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonStopRequested,

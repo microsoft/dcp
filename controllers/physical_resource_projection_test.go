@@ -15,6 +15,124 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 )
 
+// Verifies that logical backing state helpers use observed runtime status despite a newer Stop
+// generation, and that process/execution status projection and startup settlement retain those observations.
+func TestLogicalBackingStateUsesObservedStatusWithoutGenerationGate(t *testing.T) {
+	t.Parallel()
+	physicalProcess := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Generation: 2},
+		Spec:       apiv2.PhysicalProcessSpec{Stop: true},
+		Status: apiv2.PhysicalProcessStatus{
+			Phase:      apiv2.PhysicalProcessPhaseRunning,
+			Conditions: []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue, ObservedGeneration: 1}},
+		},
+	}
+	logicalProcess := &apiv2.LogicalProcess{}
+	_, processState := applyLogicalProcessBackingStatus(logicalProcess, physicalProcess)
+	require.Equal(t, logicalProcessStateRunning, processState)
+	require.True(t, logicalPhysicalProcessStartupSettled(physicalProcess))
+	physicalProcess.Status.Phase = apiv2.PhysicalProcessPhaseExited
+	physicalProcess.Status.Conditions[0].Status = metav1.ConditionFalse
+	_, processState = applyLogicalProcessBackingStatus(logicalProcess, physicalProcess)
+	require.Equal(t, logicalProcessStateExited, processState)
+	require.True(t, logicalPhysicalProcessStartupSettled(physicalProcess))
+
+	physicalContainer := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Generation: 2},
+		Spec:       apiv2.PhysicalContainerSpec{Stop: true},
+		Status: apiv2.PhysicalContainerStatus{
+			Phase:      apiv2.PhysicalContainerPhaseRunning,
+			Conditions: []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue, ObservedGeneration: 1}},
+		},
+	}
+	require.Equal(t, logicalContainerStateRunning, logicalContainerBackingState(physicalContainer))
+	physicalContainer.Status.Phase = apiv2.PhysicalContainerPhaseExited
+	physicalContainer.Status.Conditions[0].Status = metav1.ConditionFalse
+	require.Equal(t, logicalContainerStateExited, logicalContainerBackingState(physicalContainer))
+
+	physicalExecution := &apiv2.PhysicalContainerExec{
+		ObjectMeta: metav1.ObjectMeta{Generation: 2},
+		Status: apiv2.PhysicalContainerExecStatus{ContainerExecStatus: apiv2.ContainerExecStatus{
+			Phase:      apiv2.ContainerExecPhaseRunning,
+			Conditions: []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue, ObservedGeneration: 1}},
+		}},
+	}
+	logicalExecution := &apiv2.LogicalContainerExec{}
+	_, executionState := applyLogicalContainerExecBackingStatus(logicalExecution, physicalExecution)
+	require.Equal(t, logicalContainerExecStateRunning, executionState)
+	physicalExecution.Status.Phase = apiv2.ContainerExecPhaseExited
+	physicalExecution.Status.Conditions[0].Status = metav1.ConditionFalse
+	_, executionState = applyLogicalContainerExecBackingStatus(logicalExecution, physicalExecution)
+	require.Equal(t, logicalContainerExecStateExited, executionState)
+}
+
+// Verifies that shared logical backing projections preserve physical source completion independently
+// of logical phases, including terminal process/execution captures and owned startup image output.
+func TestLogicalBackingLogSourceProjection(t *testing.T) {
+	t.Parallel()
+	for _, complete := range []bool{false, true} {
+		name := "draining"
+		if complete {
+			name = "complete"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			physicalContainer := &apiv2.PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "container", UID: "container-uid"},
+				Status: apiv2.PhysicalContainerStatus{
+					ContainerID: "runtime-id", StartedAt: metav1.NowMicro(), Phase: apiv2.PhysicalContainerPhaseUnknown,
+				},
+			}
+			if complete {
+				physicalContainer.Status.Phase = apiv2.PhysicalContainerPhaseExited
+			}
+			image := &apiv2.PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{Name: "image", UID: "image-uid"},
+				Status: apiv2.PhysicalContainerImageStatus{
+					StdoutFile: "image-stdout", StderrFile: "image-stderr", LogsComplete: complete,
+				},
+			}
+			for _, state := range []logicalContainerState{
+				logicalContainerStateUnknown, logicalContainerStateFailed, logicalContainerStateExited, logicalContainerStateStopped,
+			} {
+				logicalContainer := &apiv2.LogicalContainer{}
+				applyLogicalContainerBackingStatus(logicalContainer, physicalContainer)
+				applyLogicalContainerStartupImageStatus(logicalContainer, image)
+				containerData := &logicalContainerData{state: state, physicalContainerUID: physicalContainer.UID}
+				_, _, containerValid := containerData.applyTo(logicalContainer)
+				require.True(t, containerValid)
+				require.Equal(t, physicalContainer.GetLogSource(), logicalContainer.Status.RuntimeLogs)
+				require.Equal(t, image.GetLogSource(), logicalContainer.Status.StartupLogs)
+			}
+			physicalProcess := &apiv2.PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "process", UID: "process-uid"},
+				Status: apiv2.PhysicalProcessStatus{
+					Phase: apiv2.PhysicalProcessPhaseExited, StdoutFile: "process-stdout", LogsComplete: complete,
+				},
+			}
+			logicalProcess := &apiv2.LogicalProcess{}
+			applyLogicalProcessBackingStatus(logicalProcess, physicalProcess)
+			processData := &logicalProcessData{state: logicalProcessStateExited, physicalUID: physicalProcess.UID}
+			_, _, processValid := processData.applyTo(logicalProcess)
+			require.True(t, processValid)
+			require.Equal(t, physicalProcess.GetLogSource(), logicalProcess.Status.RuntimeLogs)
+			physicalExecution := &apiv2.PhysicalContainerExec{
+				ObjectMeta: metav1.ObjectMeta{Name: "execution", UID: "execution-uid"},
+				Status: apiv2.PhysicalContainerExecStatus{
+					ContainerExecStatus: apiv2.ContainerExecStatus{Phase: apiv2.ContainerExecPhaseExited},
+					StdoutFile:          "exec-stdout", StderrFile: "exec-stderr", LogsComplete: complete,
+				},
+			}
+			logicalExecution := &apiv2.LogicalContainerExec{}
+			applyLogicalContainerExecBackingStatus(logicalExecution, physicalExecution)
+			executionData := &logicalContainerExecData{state: logicalContainerExecStateExited, physicalUID: physicalExecution.UID}
+			_, _, executionValid := executionData.applyTo(logicalExecution)
+			require.True(t, executionValid)
+			require.Equal(t, physicalExecution.GetLogSource(), logicalExecution.Status.RuntimeLogs)
+		})
+	}
+}
+
 // Verifies that physical resource projections preserve phase, conditions, and retry policy.
 // Terminal dependency failures and confirmed missing containers and networks never schedule retries.
 func TestPhysicalResourceProjections(t *testing.T) {
@@ -30,6 +148,10 @@ func TestPhysicalResourceProjections(t *testing.T) {
 	assertPhysicalResourceProjections(t, logicalProcessProjections)
 	assertPhysicalResourceProjections(t, physicalContainerExecProjections)
 	assertPhysicalResourceProjections(t, logicalContainerExecProjections)
+	resolveProjection, valid := physicalContainerProjections.project(physicalContainerStateResolve)
+	require.True(t, valid)
+	require.Equal(t, apiv2.PhysicalContainerPhasePending, resolveProjection.phase)
+	require.Equal(t, apiv2.PhysicalContainerReasonResolvingRuntimeContainer, resolveProjection.conditionReason)
 
 	containerMissing, containerMissingFound := physicalContainerProjections.project(physicalContainerStateMissing)
 	require.True(t, containerMissingFound)
@@ -183,7 +305,6 @@ func TestPhysicalResourceInvalidProjectionsAreTerminal(t *testing.T) {
 	assertTerminalPhysicalResourceProjection(t, physicalContainerNetworkProjections, physicalContainerNetworkStateInvalid)
 	assertTerminalPhysicalResourceProjection(t, physicalContainerVolumeProjections, physicalContainerVolumeStateInvalid)
 	assertTerminalPhysicalResourceProjection(t, physicalProcessProjections, physicalProcessStateInvalid)
-	assertTerminalPhysicalResourceProjection(t, logicalProcessProjections, logicalProcessStateInvalid)
 }
 
 // Verifies that a state projection permits a more specific diagnostic condition reason.
@@ -236,6 +357,11 @@ func assertPhysicalResourceProjections[State comparable, Phase ~string](
 		)
 
 		require.True(t, valid, "state %v", key)
+		if (string(expected.phase) == "Failed" || string(expected.phase) == "Exited") &&
+			expected.conditionReason != apiv2.PhysicalContainerReasonPartialContainerCleanupFailed {
+			require.False(t, expected.requeue, "terminal state %v", key)
+			require.Equal(t, StandardDelay, delay, "terminal state %v", key)
+		}
 		require.Equal(t, expected.phase, phase, "state %v", key)
 		require.Equal(t, expected.requeueDelay, delay, "state %v", key)
 		require.Len(t, conditions, 1, "state %v", key)

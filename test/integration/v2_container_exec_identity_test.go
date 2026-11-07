@@ -121,7 +121,7 @@ func TestV2PhysicalContainerExecRejectsReplacementAfterPreflightRetry(t *testing
 	releaseLaunch()
 	selected := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
 		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return current.Status.Phase == apiv2.ContainerExecPhasePending && condition != nil && condition.Reason == "ContainerNotReady", nil
+		return current.Status.Phase == apiv2.ContainerExecPhasePending && condition != nil && condition.Reason == string(apiv2.ContainerExecReasonContainerNotReady), nil
 	})
 	require.Equal(t, originalID, selected.Status.ContainerID)
 	retryReader.enabled.Store(true)
@@ -141,7 +141,7 @@ func TestV2PhysicalContainerExecRejectsReplacementAfterPreflightRetry(t *testing
 	failed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
 		return current.Status.Phase == apiv2.ContainerExecPhaseFailed, nil
 	})
-	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "ContainerUnavailable")
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ContainerExecReasonContainerUnavailable)
 	require.Equal(t, originalID, failed.Status.ContainerID)
 	require.Zero(t, orchestrator.ExecContainerCallCount(resource.Spec.Execution.Command))
 }

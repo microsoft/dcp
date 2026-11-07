@@ -67,23 +67,24 @@ var (
 		physicalContainerStateFilesCopied:            handlePhysicalContainerFilesCreated,
 		physicalContainerStateFileCopyFailed:         handlePhysicalContainerOperationFailed,
 		physicalContainerStateStart:                  handlePhysicalContainerOperationInProgress,
-		physicalContainerStateStarted:                handlePhysicalContainerRuntime,
+		physicalContainerStateStarted:                handlePhysicalContainerStarting,
 		physicalContainerStateStartFailed:            handlePhysicalContainerOperationFailed,
 		physicalContainerStateCleanupRetry:           handlePhysicalContainerRecoverableCreateFailed,
 		physicalContainerStateCleanupFailed:          handlePhysicalContainerCreateFailed,
-		physicalContainerStateRunning:                handlePhysicalContainerRuntime,
-		physicalContainerStatePaused:                 handlePhysicalContainerRuntime,
-		physicalContainerStateRestarting:             handlePhysicalContainerRuntime,
-		physicalContainerStateNotStarted:             handlePhysicalContainerRuntime,
-		physicalContainerStateRemoving:               handlePhysicalContainerRuntime,
-		physicalContainerStateExited:                 handlePhysicalContainerRuntime,
-		physicalContainerStateDead:                   handlePhysicalContainerRuntime,
-		physicalContainerStateUnknown:                handlePhysicalContainerRuntime,
-		physicalContainerStateMissing:                handlePhysicalContainerRuntime,
-		physicalContainerStateInspectFailed:          handlePhysicalContainerRuntime,
-		physicalContainerStateStopped:                handlePhysicalContainerRuntime,
-		physicalContainerStateStopRetry:              handlePhysicalContainerRuntime,
-		physicalContainerStateRemoveRetry:            handlePhysicalContainerRuntime,
+		physicalContainerStateRunning:                handlePhysicalContainerRunning,
+		physicalContainerStatePaused:                 handlePhysicalContainerRunning,
+		physicalContainerStateRestarting:             handlePhysicalContainerStarting,
+		physicalContainerStateNotStarted:             handlePhysicalContainerStarting,
+		physicalContainerStateRemoving:               handlePhysicalContainerRemoving,
+		physicalContainerStateExited:                 handlePhysicalContainerTerminal,
+		physicalContainerStateDead:                   handlePhysicalContainerTerminal,
+		physicalContainerStateUnknown:                handlePhysicalContainerUnknown,
+		physicalContainerStateMissing:                handlePhysicalContainerMissing,
+		physicalContainerStateInspectFailed:          handlePhysicalContainerUnknown,
+		physicalContainerStateStopped:                handlePhysicalContainerTerminal,
+		physicalContainerStateStopping:               handlePhysicalContainerStopping,
+		physicalContainerStateStopRetry:              handlePhysicalContainerStopping,
+		physicalContainerStateRemoveRetry:            handlePhysicalContainerRemoving,
 		physicalContainerStateInvalid:                handlePhysicalContainerTerminal,
 		0:                                            handleUnknownPhysicalContainerDataReason,
 	}
@@ -400,7 +401,8 @@ func handlePhysicalContainerResolve(
 		containerID = existing.Id
 	}
 	if containerID == "" {
-		return handlePhysicalContainerPrepare(ctx, reconciler, container, data.state, data, log)
+		data.state = physicalContainerStateDependencies
+		return additionalReconciliationNeeded
 	}
 
 	if data.containerID == "" {
@@ -424,7 +426,8 @@ func handlePhysicalContainerResolve(
 		return additionalReconciliationNeeded
 	}
 
-	return handlePhysicalContainerRuntime(ctx, reconciler, container, data.state, data, log)
+	data.state = physicalContainerStateStarted
+	return additionalReconciliationNeeded
 }
 
 func handlePhysicalContainerPrepare(
@@ -439,7 +442,8 @@ func handlePhysicalContainerPrepare(
 		return noChange
 	}
 	if container.Spec.Stop && container.Spec.Container.ReplaceExisting {
-		return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
+		data.state = physicalContainerStateResolve
+		return additionalReconciliationNeeded
 	}
 	data.image = ""
 	if container.Spec.Stop {
@@ -483,9 +487,7 @@ func handlePhysicalContainerPrepare(
 	return change | reconciler.schedulePhysicalContainerCreate(container, data, volumeMounts, networks, log)
 }
 
-// Observes the runtime container and records what was seen. When the spec requests a stop, the
-// stop operation takes over before the observed state is applied.
-func handlePhysicalContainerRuntime(
+func handlePhysicalContainerRunning(
 	ctx context.Context,
 	reconciler *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
@@ -495,9 +497,8 @@ func handlePhysicalContainerRuntime(
 ) objectChange {
 	containerID := data.containerID
 	if containerID == "" {
-		// The runtime identity has not been captured yet, so resolution owns this reconciliation.
 		data.state = physicalContainerStateResolve
-		return handlePhysicalContainerResolve(ctx, reconciler, container, data.state, data, log)
+		return additionalReconciliationNeeded
 	}
 
 	reconciler.ensurePhysicalContainerWatch(container, log)
@@ -509,12 +510,7 @@ func handlePhysicalContainerRuntime(
 		if container.Spec.Stop {
 			data.state = physicalContainerStateStopped
 		}
-		connectionChange, connectionErr := reconciler.ensurePhysicalContainerNetworkConnections(ctx, container, true, log)
-		if connectionErr != nil {
-			log.Error(connectionErr, "Failed to remove PhysicalContainerNetworkConnections for missing runtime container")
-			connectionChange |= additionalReconciliationNeeded
-		}
-		return connectionChange
+		return additionalReconciliationNeeded
 	}
 	if inspectErr != nil {
 		log.Error(inspectErr, "Failed to inspect runtime container", "ContainerID", containerID)
@@ -523,41 +519,157 @@ func handlePhysicalContainerRuntime(
 		return additionalReconciliationNeeded
 	}
 
-	connectionChange, connectionErr := reconciler.ensurePhysicalContainerNetworkConnections(ctx, container, container.Spec.Stop, log)
+	change := reconciler.applyInspectedPhysicalContainerStatus(container, data, inspectedContainer, log)
+	if data.state != physicalContainerStateRunning && data.state != physicalContainerStatePaused {
+		return change | additionalReconciliationNeeded
+	}
+	if container.Spec.Stop {
+		data.state = physicalContainerStateStopping
+		return change | additionalReconciliationNeeded
+	}
+	connectionChange, connectionErr := reconciler.ensurePhysicalContainerNetworkConnections(ctx, container, false, log)
 	if connectionErr != nil {
 		log.Error(connectionErr, "Failed to ensure PhysicalContainerNetworkConnections")
 		connectionChange |= additionalReconciliationNeeded
 	}
-	if container.Spec.Stop {
-		return connectionChange | reconciler.stopPhysicalContainer(ctx, container, data, inspectedContainer, log)
-	}
-
-	return connectionChange | reconciler.applyInspectedPhysicalContainerStatus(container, data, inspectedContainer, log)
+	return change | connectionChange
 }
 
-// Stops the runtime container when it is still active and records the resulting state.
-func (r *PhysicalContainerReconciler) stopPhysicalContainer(
+func handlePhysicalContainerStopping(
 	ctx context.Context,
+	r *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
+	_ physicalContainerState,
 	data *physicalContainerData,
-	inspectedContainer *containers.InspectedContainer,
 	log logr.Logger,
 ) objectChange {
+	connectionChange, connectionErr := r.ensurePhysicalContainerNetworkConnections(ctx, container, true, log)
+	if connectionErr != nil {
+		log.Error(connectionErr, "Failed to remove PhysicalContainerNetworkConnections while stopping")
+		connectionChange |= additionalReconciliationNeeded
+	}
 	containerID := data.containerID
+	inspectedContainer, inspectErr := r.inspectPhysicalContainer(ctx, containerID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerStateStopped, ""
+		return connectionChange | additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect stopping runtime container", "ContainerID", containerID)
+		data.state, data.failureMessage = physicalContainerStateStopRetry, inspectErr.Error()
+		return connectionChange | additionalReconciliationNeeded
+	}
 	stoppedContainer, stopErr := r.stopPhysicalContainerIfNecessary(ctx, containerID, inspectedContainer)
 	if errors.Is(stopErr, containers.ErrNotFound) {
 		data.state = physicalContainerStateStopped
 		data.failureMessage = ""
-		return noChange
+		return connectionChange | additionalReconciliationNeeded
 	}
 	if stopErr != nil {
 		log.Error(stopErr, "Failed to stop runtime container", "ContainerID", containerID)
 		data.state = physicalContainerStateStopRetry
 		data.failureMessage = fmt.Sprintf("Failed to stop runtime container: %v", stopErr)
-		return applyInspectedPhysicalContainerDetails(container, inspectedContainer, log) | additionalReconciliationNeeded
+		return connectionChange | applyInspectedPhysicalContainerDetails(container, inspectedContainer, log) | additionalReconciliationNeeded
 	}
 
-	return r.applyInspectedPhysicalContainerStatus(container, data, stoppedContainer, log)
+	change := r.applyInspectedPhysicalContainerStatus(container, data, stoppedContainer, log)
+	if data.state == physicalContainerStateNotStarted {
+		data.state = physicalContainerStateStopped
+	}
+	return connectionChange | change | additionalReconciliationNeeded
+}
+
+func handlePhysicalContainerStarting(
+	ctx context.Context, reconciler *PhysicalContainerReconciler, container *apiv2.PhysicalContainer,
+	_ physicalContainerState, data *physicalContainerData, log logr.Logger,
+) objectChange {
+	if data.containerID == "" {
+		data.state = physicalContainerStateResolve
+		return additionalReconciliationNeeded
+	}
+	reconciler.ensurePhysicalContainerWatch(container, log)
+	inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerStateMissing, ""
+		if container.Spec.Stop {
+			data.state = physicalContainerStateStopped
+		}
+		return additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect starting runtime container", "ContainerID", data.containerID)
+		data.state, data.failureMessage = physicalContainerStateInspectFailed, inspectErr.Error()
+		return additionalReconciliationNeeded
+	}
+	change := reconciler.applyInspectedPhysicalContainerStatus(container, data, inspected, log)
+	switch data.state {
+	case physicalContainerStateExited, physicalContainerStateDead:
+		return change | additionalReconciliationNeeded
+	}
+	if container.Spec.Stop {
+		data.state = physicalContainerStateStopping
+	}
+	return change | additionalReconciliationNeeded
+}
+
+func handlePhysicalContainerUnknown(
+	ctx context.Context, reconciler *PhysicalContainerReconciler, container *apiv2.PhysicalContainer,
+	_ physicalContainerState, data *physicalContainerData, log logr.Logger,
+) objectChange {
+	if data.containerID == "" {
+		data.state = physicalContainerStateResolve
+		return additionalReconciliationNeeded
+	}
+	reconciler.ensurePhysicalContainerWatch(container, log)
+	inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerStateMissing, ""
+		if container.Spec.Stop {
+			data.state = physicalContainerStateStopped
+		}
+		return additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect runtime container", "ContainerID", data.containerID)
+		data.state = physicalContainerStateInspectFailed
+		data.failureMessage = fmt.Sprintf("Failed to inspect runtime container: %v", inspectErr)
+		return noChange
+	}
+	change := reconciler.applyInspectedPhysicalContainerStatus(container, data, inspected, log)
+	return change | additionalReconciliationNeeded
+}
+
+func handlePhysicalContainerRemoving(
+	ctx context.Context, reconciler *PhysicalContainerReconciler, container *apiv2.PhysicalContainer,
+	_ physicalContainerState, data *physicalContainerData, log logr.Logger,
+) objectChange {
+	inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerStateMissing, ""
+		if container.Spec.Stop {
+			data.state = physicalContainerStateStopped
+		}
+		return additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect removing runtime container", "ContainerID", data.containerID)
+		data.state, data.failureMessage = physicalContainerStateRemoveRetry, inspectErr.Error()
+		return noChange
+	}
+	change := reconciler.applyInspectedPhysicalContainerStatus(container, data, inspected, log)
+	return change | additionalReconciliationNeeded
+}
+
+func handlePhysicalContainerMissing(
+	ctx context.Context, reconciler *PhysicalContainerReconciler, container *apiv2.PhysicalContainer,
+	_ physicalContainerState, _ *physicalContainerData, log logr.Logger,
+) objectChange {
+	change, connectionErr := reconciler.ensurePhysicalContainerNetworkConnections(ctx, container, true, log)
+	if connectionErr != nil {
+		log.Error(connectionErr, "Failed to remove PhysicalContainerNetworkConnections for missing runtime container")
+		change |= additionalReconciliationNeeded
+	}
+	return change
 }
 
 func handlePhysicalContainerCreating(
@@ -582,7 +694,8 @@ func handlePhysicalContainerCreated(
 ) objectChange {
 	reconciler.ensurePhysicalContainerWatch(container, log)
 	if container.Spec.Stop {
-		return handlePhysicalContainerRuntime(ctx, reconciler, container, data.state, data, log)
+		data.state = physicalContainerStateStopping
+		return additionalReconciliationNeeded
 	}
 	if len(container.Spec.Container.CreateFiles) > 0 {
 		return reconciler.schedulePhysicalContainerCreateFiles(container, data, log)
@@ -611,7 +724,8 @@ func handlePhysicalContainerFilesCreated(
 ) objectChange {
 	reconciler.ensurePhysicalContainerWatch(container, log)
 	if container.Spec.Stop {
-		return handlePhysicalContainerRuntime(ctx, reconciler, container, data.state, data, log)
+		data.state = physicalContainerStateStopping
+		return additionalReconciliationNeeded
 	}
 	return reconciler.schedulePhysicalContainerStart(container, data, log)
 }
@@ -673,7 +787,8 @@ func handlePhysicalContainerRecoverableCreateFailed(
 	}
 
 	log.V(1).Info("Retrying physical container creation", "ContainerName", container.Spec.Container.ContainerName)
-	return cleanupChange | handlePhysicalContainerPrepare(ctx, reconciler, container, data.state, data, log)
+	data.state = physicalContainerStateDependencies
+	return cleanupChange | additionalReconciliationNeeded
 }
 
 func (r *PhysicalContainerReconciler) removePartiallyCreatedPhysicalContainer(
@@ -734,14 +849,29 @@ func handleUnknownPhysicalContainerDataReason(
 }
 
 func handlePhysicalContainerTerminal(
-	_ context.Context,
-	_ *PhysicalContainerReconciler,
-	_ *apiv2.PhysicalContainer,
+	ctx context.Context,
+	reconciler *PhysicalContainerReconciler,
+	container *apiv2.PhysicalContainer,
 	_ physicalContainerState,
-	_ *physicalContainerData,
-	_ logr.Logger,
+	data *physicalContainerData,
+	log logr.Logger,
 ) objectChange {
-	return noChange
+	change, connectionErr := reconciler.ensurePhysicalContainerNetworkConnections(ctx, container, true, log)
+	if connectionErr != nil {
+		log.Error(connectionErr, "Failed to remove PhysicalContainerNetworkConnections for terminal container")
+		change |= additionalReconciliationNeeded
+	}
+	if data.containerID != "" {
+		inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
+		if inspectErr != nil {
+			if !errors.Is(inspectErr, containers.ErrNotFound) {
+				log.Error(inspectErr, "Failed to refresh terminal runtime container", "ContainerID", data.containerID)
+			}
+			return change
+		}
+		change |= applyInspectedPhysicalContainerDetails(container, inspected, log)
+	}
+	return change
 }
 
 func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(
@@ -1329,8 +1459,18 @@ func (r *PhysicalContainerReconciler) ensurePhysicalContainerNetworkConnections(
 	existingNames := make(map[string]struct{}, len(connections.Items))
 	for i := range connections.Items {
 		connection := &connections.Items[i]
-		if _, expected := desiredConnections[connection.Name]; expected {
+		desired, expected := desiredConnections[connection.Name]
+		if !metav1.IsControlledBy(connection, container) {
+			if expected {
+				resultErr = errors.Join(resultErr, fmt.Errorf("physical container network connection %q has a different owner", connection.NamespacedName()))
+			}
+			continue
+		}
+		if expected {
 			existingNames[connection.Name] = struct{}{}
+			if !connection.Spec.Equal(desired) || !connection.DeletionTimestamp.IsZero() {
+				resultErr = errors.Join(resultErr, fmt.Errorf("physical container network connection %q has a different spec or is terminating", connection.NamespacedName()))
+			}
 			continue
 		}
 
@@ -1370,7 +1510,7 @@ func (r *PhysicalContainerReconciler) ensurePhysicalContainerNetworkConnections(
 				continue
 			}
 			if !metav1.IsControlledBy(&existingConnection, container) ||
-				!existingConnection.Spec.Equal(connection.Spec) {
+				!existingConnection.Spec.Equal(connection.Spec) || !existingConnection.DeletionTimestamp.IsZero() {
 				resultErr = errors.Join(resultErr, fmt.Errorf("physical container network connection %q already exists with a different owner or spec", connection.NamespacedName()))
 			}
 			continue
@@ -1563,26 +1703,8 @@ func (r *PhysicalContainerReconciler) applyInspectedPhysicalContainerStatus(
 ) objectChange {
 	change := applyInspectedPhysicalContainerDetails(container, inspectedContainer, log)
 	data.failureMessage = ""
-	switch inspectedContainer.Status {
-	case containers.ContainerStatusRunning:
-		data.state = physicalContainerStateRunning
-	case containers.ContainerStatusPaused:
-		data.state = physicalContainerStatePaused
-	case containers.ContainerStatusRestarting:
-		data.state = physicalContainerStateRestarting
-	case containers.ContainerStatusCreated:
-		data.state = physicalContainerStateNotStarted
-		if container.Spec.Stop {
-			data.state = physicalContainerStateStopped
-		}
-	case containers.ContainerStatusRemoving:
-		data.state = physicalContainerStateRemoving
-	case containers.ContainerStatusExited:
-		data.state = physicalContainerStateExited
-	case containers.ContainerStatusDead:
-		data.state = physicalContainerStateDead
-	default:
-		data.state = physicalContainerStateUnknown
+	data.state = physicalContainerRuntimeState(inspectedContainer.Status)
+	if data.state == physicalContainerStateUnknown {
 		data.failureMessage = fmt.Sprintf("Runtime container returned unrecognized status %q.", inspectedContainer.Status)
 	}
 

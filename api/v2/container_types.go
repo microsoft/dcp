@@ -68,7 +68,7 @@ func ValidateVolumeMounts(mounts []VolumeMount, namespace string, mountsPath *fi
 			if mount.Source != "" {
 				errorList = append(errorList, field.Forbidden(mountPath.Child("source"), "source cannot be set for volume mounts"))
 			}
-			errorList = append(errorList, validateSameNamespaceResourceReference(mount.VolumeRef, namespace, mountPath.Child("volumeRef"))...)
+			errorList = append(errorList, ValidateSameNamespaceResourceReference(mount.VolumeRef, namespace, mountPath.Child("volumeRef"))...)
 		default:
 			errorList = append(errorList, field.NotSupported(mountPath.Child("type"), mount.Type, []string{string(BindMount), string(NamedVolumeMount)}))
 		}
@@ -473,7 +473,7 @@ type CreateFileSystem struct {
 func validateContainerNetworks(networks []ContainerNetworkConnectionConfig, namespace string, networksPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 	for i, network := range networks {
-		errorList = append(errorList, validateSameNamespaceResourceReference(network.NetworkRef, namespace, networksPath.Index(i).Child("networkRef"))...)
+		errorList = append(errorList, ValidateSameNamespaceResourceReference(network.NetworkRef, namespace, networksPath.Index(i).Child("networkRef"))...)
 	}
 	return errorList
 }

@@ -111,13 +111,22 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.LogicalContainerNetworkList{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_LogicalContainerNetworkList(ref),
 		v2.LogicalContainerNetworkSpec{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_LogicalContainerNetworkSpec(ref),
 		v2.LogicalContainerNetworkStatus{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref),
+		v2.LogicalContainerPort{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalContainerPort(ref),
 		v2.LogicalContainerSpec{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalContainerSpec(ref),
 		v2.LogicalContainerStatus{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref),
+		v2.LogicalPortStatus{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v2_LogicalPortStatus(ref),
 		v2.LogicalProcess{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v2_LogicalProcess(ref),
 		v2.LogicalProcessConfig{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalProcessConfig(ref),
 		v2.LogicalProcessList{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_LogicalProcessList(ref),
+		v2.LogicalProcessPort{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_LogicalProcessPort(ref),
 		v2.LogicalProcessSpec{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_LogicalProcessSpec(ref),
 		v2.LogicalProcessStatus{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref),
+		v2.LogicalService{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v2_LogicalService(ref),
+		v2.LogicalServiceBinding{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_LogicalServiceBinding(ref),
+		v2.LogicalServiceList{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_LogicalServiceList(ref),
+		v2.LogicalServiceSpec{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_LogicalServiceSpec(ref),
+		v2.LogicalServiceStatus{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalServiceStatus(ref),
+		v2.LogicalServiceTemplate{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_LogicalServiceTemplate(ref),
 		v2.Namespace{}.OpenAPIModelName():                               schema_microsoft_dcp_api_v2_Namespace(ref),
 		v2.NamespaceList{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v2_NamespaceList(ref),
 		v2.NamespaceStatus{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v2_NamespaceStatus(ref),
@@ -145,7 +154,6 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.PhysicalContainerSpec{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref),
 		v2.PhysicalContainerStatus{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v2_PhysicalContainerStatus(ref),
 		v2.PhysicalContainerVolume{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v2_PhysicalContainerVolume(ref),
-		v2.PhysicalContainerVolumeConfig{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerVolumeConfig(ref),
 		v2.PhysicalContainerVolumeList{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalContainerVolumeList(ref),
 		v2.PhysicalContainerVolumeSpec{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalContainerVolumeSpec(ref),
 		v2.PhysicalContainerVolumeStatus{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerVolumeStatus(ref),
@@ -156,6 +164,10 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.PhysicalProcessStatus{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref),
 		v2.ResourceLogOptions{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_ResourceLogOptions(ref),
 		v2.ResourceLogResponse{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ResourceLogResponse(ref),
+		v2.ServiceAddress{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v2_ServiceAddress(ref),
+		v2.ServiceEndpoint{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v2_ServiceEndpoint(ref),
+		v2.ServiceEndpointList{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ServiceEndpointList(ref),
+		v2.ServiceEndpointSpec{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ServiceEndpointSpec(ref),
 		v2.VolumeMount{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v2_VolumeMount(ref),
 		commonapi.EnvVar{}.OpenAPIModelName():                           schema_microsoft_dcp_pkg_commonapi_EnvVar(ref),
 		commonapi.Label{}.OpenAPIModelName():                            schema_microsoft_dcp_pkg_commonapi_Label(ref),
@@ -5004,24 +5016,6 @@ func schema_microsoft_dcp_api_v2_LogicalContainerConfig(ref common.ReferenceCall
 							},
 						},
 					},
-					"ports": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Ports describes ports to expose from the container.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Ref: ref(v2.ContainerPort{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
 					"volumeMounts": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -5101,7 +5095,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerConfig(ref common.ReferenceCall
 			},
 		},
 		Dependencies: []string{
-			v2.ContainerPort{}.OpenAPIModelName(), v2.CreateFileSystem{}.OpenAPIModelName(), v2.LogicalContainerNetworkConnectionConfig{}.OpenAPIModelName(), v2.PhysicalContainerImageConfig{}.OpenAPIModelName(), v2.VolumeMount{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName()},
+			v2.CreateFileSystem{}.OpenAPIModelName(), v2.LogicalContainerNetworkConnectionConfig{}.OpenAPIModelName(), v2.PhysicalContainerImageConfig{}.OpenAPIModelName(), v2.VolumeMount{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName()},
 	}
 }
 
@@ -5730,6 +5724,72 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref common.Refere
 	}
 }
 
+func schema_microsoft_dcp_api_v2_LogicalContainerPort(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerPort publishes one container port for a service-backed endpoint. The referenced or templated service determines the transport protocol.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name identifies this logical port within the workload and in serving templates.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"serviceRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ServiceRef identifies a LogicalService using <name> or <namespace>/<name>. Cross-namespace references are not supported. The referenced service is not owned by the workload.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"service": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Service creates a named LogicalService if absent, or references it if its configuration matches. The service has an independent lifetime and is not deleted with the workload.",
+							Ref:         ref(v2.LogicalServiceTemplate{}.OpenAPIModelName()),
+						},
+					},
+					"containerPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerPort is the container port to publish.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"hostPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "HostPort is the backend's host port. Zero selects an available port. Explicit ports select their matching bindings. Within each container-port/protocol group, zero-port declarations are matched in declaration order to ascending host ports, excluding explicitly requested ports.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"hostIP": {
+						SchemaProps: spec.SchemaProps{
+							Description: "HostIP is the host address on which the container runtime publishes the backend port.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address is the listening address inside the container, defaulting to localhost. IPv6 literals are enclosed in brackets.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name", "containerPort"},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalServiceTemplate{}.OpenAPIModelName()},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_LogicalContainerSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -5764,6 +5824,24 @@ func schema_microsoft_dcp_api_v2_LogicalContainerSpec(ref common.ReferenceCallba
 							Ref:         ref(v2.LogicalContainerConfig{}.OpenAPIModelName()),
 						},
 					},
+					"ports": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Ports declares service-backed container endpoints in all lifecycle modes.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalContainerPort{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
 					"monitorPID": {
 						SchemaProps: spec.SchemaProps{
 							Description: "MonitorPID optionally scopes a persistent container to another process lifetime. When set, monitorTimestamp must also be set. The container is stopped but not removed when that process exits.",
@@ -5788,7 +5866,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerSpec(ref common.ReferenceCallba
 			},
 		},
 		Dependencies: []string{
-			v2.LogicalContainerConfig{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.LogicalContainerConfig{}.OpenAPIModelName(), v2.LogicalContainerPort{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -5799,6 +5877,27 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 				Description: "LogicalContainerStatus describes the observed logical container and its physical dependencies.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"ports": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Ports describes service selection and the listening address/port for each logical port.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalPortStatus{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
 					"startupLogs": {
 						SchemaProps: spec.SchemaProps{
 							Description: "StartupLogs identifies output from the physical image dependency.",
@@ -5855,7 +5954,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 					},
 					"lifecycleKey": {
 						SchemaProps: spec.SchemaProps{
-							Description: "LifecycleKey is the supplied or calculated key applied to the runtime container.",
+							Description: "LifecycleKey is the supplied or calculated key for the desired container configuration.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -5928,7 +6027,53 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 			},
 		},
 		Dependencies: []string{
-			v2.LogSource{}.OpenAPIModelName(), v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalPortStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalPortStatus describes a logical port's allocated serving address and selected service.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name is the logical port name.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"serviceRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ServiceRef identifies the same-namespace LogicalService selected for the port.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address is the workload's listening address, not the service's consumer address.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port is the workload's listening port, not the service's consumer port.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"name", "serviceRef", "address", "port"},
+			},
+		},
 	}
 }
 
@@ -6105,6 +6250,58 @@ func schema_microsoft_dcp_api_v2_LogicalProcessList(ref common.ReferenceCallback
 	}
 }
 
+func schema_microsoft_dcp_api_v2_LogicalProcessPort(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalProcessPort registers one listening process port as a service-backed endpoint. The referenced or templated service determines the transport protocol.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name identifies this logical port within the workload and in serving templates.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"serviceRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ServiceRef identifies a LogicalService using <name> or <namespace>/<name>. Cross-namespace references are not supported. The referenced service is not owned by the workload.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"service": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Service creates a named LogicalService if absent, or references it if its configuration matches. The service has an independent lifetime and is not deleted with the workload.",
+							Ref:         ref(v2.LogicalServiceTemplate{}.OpenAPIModelName()),
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address is the process's listening IP address or hostname, defaulting to localhost. IPv6 literals are enclosed in brackets.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port is the port on which the process listens. Zero allocates a port for portForServing templates in session mode; persistent and existing modes require an explicit nonzero port regardless of lifecycle key.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"name", "port"},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalServiceTemplate{}.OpenAPIModelName()},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_LogicalProcessSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -6130,6 +6327,24 @@ func schema_microsoft_dcp_api_v2_LogicalProcessSpec(ref common.ReferenceCallback
 						SchemaProps: spec.SchemaProps{
 							Description: "Process describes the desired process. Required for session and persistent modes, forbidden for existing mode.",
 							Ref:         ref(v2.LogicalProcessConfig{}.OpenAPIModelName()),
+						},
+					},
+					"ports": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Ports declares service-backed process endpoints in all lifecycle modes.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalProcessPort{}.OpenAPIModelName()),
+									},
+								},
+							},
 						},
 					},
 					"pid": {
@@ -6169,7 +6384,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessSpec(ref common.ReferenceCallback
 			},
 		},
 		Dependencies: []string{
-			v2.LogicalProcessConfig{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.LogicalProcessConfig{}.OpenAPIModelName(), v2.LogicalProcessPort{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -6180,6 +6395,27 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 				Description: "LogicalProcessStatus describes the observed process and its backing PhysicalProcess.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"ports": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Ports describes service selection and the listening address/port for each logical port.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalPortStatus{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
 					"runtimeLogs": {
 						SchemaProps: spec.SchemaProps{
 							Description: "RuntimeLogs describes output captured or referenced by the backing PhysicalProcess.",
@@ -6202,7 +6438,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 					},
 					"lifecycleKey": {
 						SchemaProps: spec.SchemaProps{
-							Description: "LifecycleKey is the supplied or calculated lifecycle key.",
+							Description: "LifecycleKey is the supplied or calculated key for the desired process configuration.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -6258,7 +6494,298 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 			},
 		},
 		Dependencies: []string{
-			v2.LogSource{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalService(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalService represents a DCP-managed service with a lifetime independent of its workloads.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.LogicalServiceSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.LogicalServiceStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalServiceSpec{}.OpenAPIModelName(), v2.LogicalServiceStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalServiceBinding(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalServiceBinding references a service or ensures that a matching service exists. Exactly one of serviceRef or service must be set.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name identifies this logical port within the workload and in serving templates.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"serviceRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ServiceRef identifies a LogicalService using <name> or <namespace>/<name>. Cross-namespace references are not supported. The referenced service is not owned by the workload.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"service": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Service creates a named LogicalService if absent, or references it if its configuration matches. The service has an independent lifetime and is not deleted with the workload.",
+							Ref:         ref(v2.LogicalServiceTemplate{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalServiceTemplate{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalServiceList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalServiceList contains a list of LogicalService instances.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalService{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalService{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalServiceSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalServiceSpec describes a DCP-managed service's listener allocation or endpoint selection.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"protocol": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Protocol is the transport protocol, defaulting to TCP.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address is the requested IP address or hostname. If set, it overrides addressAllocationMode, except in Proxyless mode, where address and port are ignored. IPv6 literals are enclosed in brackets.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port is the requested listener port. Zero selects an available port.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"addressAllocationMode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AddressAllocationMode selects listener addresses, defaulting to Localhost. Proxyless selects one ServiceEndpoint and publishes all of its addresses.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalServiceStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalServiceStatus describes observed service availability and all of its effective addresses.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase summarizes service availability without implying a network reachability probe.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"effectiveAddresses": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveAddresses contains the usable addresses and their individual ports.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.ServiceAddress{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"proxylessEndpointRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ProxylessEndpointRef identifies the selected same-namespace ServiceEndpoint in Proxyless mode.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe readiness and reconciliation progress.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.ServiceAddress{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalServiceTemplate(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalServiceTemplate describes a named service to create if absent or reuse when its configuration matches.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"protocol": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Protocol is the transport protocol, defaulting to TCP.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address is the requested IP address or hostname. If set, it overrides addressAllocationMode, except in Proxyless mode, where address and port are ignored. IPv6 literals are enclosed in brackets.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port is the requested listener port. Zero selects an available port.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"addressAllocationMode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AddressAllocationMode selects listener addresses, defaulting to Localhost. Proxyless selects one ServiceEndpoint and publishes all of its addresses.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name forms the service resource name as <parent-name>-<name>.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
 	}
 }
 
@@ -7875,63 +8402,6 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerVolume(ref common.ReferenceCal
 	}
 }
 
-func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "PhysicalContainerVolumeConfig describes a runtime volume to create.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"volumeName": {
-						SchemaProps: spec.SchemaProps{
-							Description: "VolumeName is the runtime name to use when creating a new volume.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"removeRuntimeVolumeOnDelete": {
-						SchemaProps: spec.SchemaProps{
-							Description: "RemoveRuntimeVolumeOnDelete removes the created runtime volume when this resource is deleted. Created runtime volumes are retained by default.",
-							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
-					"replaceExisting": {
-						SchemaProps: spec.SchemaProps{
-							Description: "ReplaceExisting removes an existing runtime volume with volumeName before creating a new one. Replacement retries non-forced removal while the existing volume is in use and never removes attached containers.",
-							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
-					"labels": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"key",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Labels contains labels to apply to a newly-created runtime volume. DCP harvesting and physical resource UID labels are reserved and set by the controller.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Ref: ref(commonapi.Label{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			commonapi.Label{}.OpenAPIModelName()},
-	}
-}
-
 func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -7984,27 +8454,51 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeSpec(ref common.Referenc
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PhysicalContainerVolumeSpec describes either an existing runtime volume or how to create one.",
+				Description: "PhysicalContainerVolumeSpec describes a named runtime volume to create or reuse.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"volumeID": {
+					"volumeName": {
 						SchemaProps: spec.SchemaProps{
-							Description: "VolumeID identifies an existing runtime volume to track. Exactly one of volumeID or volume must be set. Container runtimes commonly use the volume name as its identifier.",
+							Description: "VolumeName is the runtime volume name to create or reuse.",
+							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
-					"volume": {
+					"removeRuntimeVolumeOnDelete": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Volume describes a runtime volume to create. Exactly one of volumeID or volume must be set.",
-							Ref:         ref(v2.PhysicalContainerVolumeConfig{}.OpenAPIModelName()),
+							Description: "RemoveRuntimeVolumeOnDelete removes the created or reused runtime volume when this resource is deleted. Runtime volumes are retained by default.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"labels": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"key",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels contains labels to apply to a newly-created runtime volume. DCP harvesting and physical resource UID labels are reserved and set by the controller.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.Label{}.OpenAPIModelName()),
+									},
+								},
+							},
 						},
 					},
 				},
+				Required: []string{"volumeName"},
 			},
 		},
 		Dependencies: []string{
-			v2.PhysicalContainerVolumeConfig{}.OpenAPIModelName()},
+			commonapi.Label{}.OpenAPIModelName()},
 	}
 }
 
@@ -8539,6 +9033,167 @@ func schema_microsoft_dcp_api_v2_ResourceLogResponse(ref common.ReferenceCallbac
 		},
 		Dependencies: []string{
 			metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ServiceAddress(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceAddress identifies one reachable transport address.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address is an IP address or hostname without a port. IPv6 literals are enclosed in brackets.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port is the port reachable at this address.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"address", "port"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ServiceEndpoint(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceEndpoint represents resolved routing addresses for one LogicalService producer binding. Workload-owned endpoints follow their owner's availability and lifetime; caller-managed endpoints need no workload owner.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.ServiceEndpointSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.ServiceEndpointSpec{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ServiceEndpointList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceEndpointList contains a list of ServiceEndpoint instances.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.ServiceEndpoint{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v2.ServiceEndpoint{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ServiceEndpointSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceEndpointSpec describes the resolved addresses for one producer binding. The spec is immutable; changed bindings require a new endpoint.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"serviceRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ServiceRef identifies the LogicalService using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"addresses": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Addresses are alternative ways to reach the same producer binding. The transport protocol is defined by the referenced LogicalService.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.ServiceAddress{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"serviceRef", "addresses"},
+			},
+		},
+		Dependencies: []string{
+			v2.ServiceAddress{}.OpenAPIModelName()},
 	}
 }
 

@@ -35,6 +35,7 @@ import (
 	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -147,9 +148,9 @@ func (executor *processOutputDrainExecutor) StartProcess(
 	return executor.Executor.StartProcess(ctx, command, handler, flags, create)
 }
 
-// Verifies that PhysicalProcess output completes after descendant-held pipes drain,
-// rather than when the root process disappears, including for a newly opened follower.
-func TestV2PhysicalProcessLogsWaitForOutputDrain(t *testing.T) {
+// Verifies that LogicalProcess and PhysicalProcess preserve incomplete output after root exit
+// until descendant-held pipes drain, including for newly opened followers of terminal resources.
+func TestV2ProcessLogFollowersWaitForOutputDrain(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses Unix root-only termination to leave a descendant writing to the inherited pipe")
 	}
@@ -158,7 +159,7 @@ func TestV2PhysicalProcessLogsWaitForOutputDrain(t *testing.T) {
 	defer cancel()
 	executor := process.NewOSExecutor(logr.Discard())
 	defer executor.Dispose()
-	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, PhysicalProcessController, t.Name(), t.TempDir(),
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecoratePhysicalProcessExecutor: func(process.Executor) process.Executor {
 			return &processOutputDrainExecutor{Executor: executor, testContext: ctx}
 		}})
@@ -170,11 +171,15 @@ func TestV2PhysicalProcessLogsWaitForOutputDrain(t *testing.T) {
 	})
 	tool, toolErr := internal_testutil.GetTestToolPath("delay")
 	require.NoError(t, toolErr)
-	physical := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
-		Spec: apiv2.PhysicalProcessSpec{Process: &apiv2.PhysicalProcessConfig{
+	logical := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+		Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{
 			ExecutablePath: tool, Args: []string{"--child-spec", "1", "--hold-pipe", "--report-ready"},
 		}}}
-	require.NoError(t, server.Client.Create(ctx, physical))
+	require.NoError(t, server.Client.Create(ctx, logical))
+	logicalRunning := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+	})
+	physical := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: logicalRunning.Status.PhysicalProcessRef, Namespace: namespace.Name}}
 	running := waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
 		return current.Status.Phase == apiv2.PhysicalProcessPhaseRunning, nil
 	})
@@ -209,18 +214,34 @@ func TestV2PhysicalProcessLogsWaitForOutputDrain(t *testing.T) {
 		return current.Status.Phase == apiv2.PhysicalProcessPhaseExited, nil
 	})
 	require.False(t, exited.Status.LogsComplete, "root disappearance must not finish the capture before pipe drain")
-	stream, streamErr := server.RestClient.Get().AbsPath("/apis", apiv2.GroupVersion.Group, apiv2.GroupVersion.Version,
-		"namespaces", namespace.Name, "physicalprocesses", physical.Name, apiv2.LogSubresourceName).Param("follow", "true").Stream(ctx)
-	require.NoError(t, streamErr)
-	defer func() { require.NoError(t, stream.Close()) }()
+	logicalExited := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
+	})
+	require.Equal(t, exited.GetLogSource(), logicalExited.Status.RuntimeLogs)
+	require.False(t, logicalExited.Status.RuntimeLogs.Complete)
+	var followers []io.ReadCloser
+	for _, resource := range []commonapi.DcpModelObject{logical, physical} {
+		gvr := resource.GetGroupVersionResource()
+		stream, streamErr := server.RestClient.Get().AbsPath("/apis", gvr.Group, gvr.Version,
+			"namespaces", namespace.Name, gvr.Resource, resource.GetName(), apiv2.LogSubresourceName).Param("follow", "true").Stream(ctx)
+		require.NoError(t, streamErr)
+		defer func() { require.NoError(t, stream.Close()) }()
+		followers = append(followers, stream)
+	}
 	require.NoError(t, executor.StopProcess(ctx, tree[1], process.StopRootOnly()))
-	output, readErr := io.ReadAll(stream)
-	require.NoError(t, readErr)
-	require.Contains(t, string(output), "Received request to exit\n")
+	for _, follower := range followers {
+		output, readErr := io.ReadAll(follower)
+		require.NoError(t, readErr)
+		require.Contains(t, string(output), "Received request to exit\n")
+	}
 	waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
 		return current.Status.LogsComplete, nil
 	})
-	require.NoError(t, server.Client.Delete(ctx, physical))
+	waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete, nil
+	})
+	require.NoError(t, server.Client.Delete(ctx, logical))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
 }
 
@@ -335,12 +356,76 @@ func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T)
 			waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 				return current.Status.Phase == apiv2.LogicalProcessPhaseFailed &&
-					ready != nil && ready.Reason == "PhysicalProcessMissing", nil
+					ready != nil && ready.Reason == string(apiv2.LogicalProcessReasonPhysicalProcessMissing), nil
 			})
 			require.NoError(t, apiClient.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, resource)
 		})
 	}
+}
+
+// Verifies that LogicalProcess preserves a captured exit outcome after backing deletion while
+// publishing unavailable logs, including when a real API conflict rejects the first status update.
+func TestV2ProcessTerminalOutcomeSurvivesBackingDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	logicalName := types.NamespacedName{Namespace: "v2-terminal-process-backing-loss", Name: "process"}
+	var conflictReader *processBackingDeletionConflictReader
+	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIReader: func(reader ctrl_client.Reader) ctrl_client.Reader {
+			conflictReader = &processBackingDeletionConflictReader{Reader: reader, logicalName: logicalName}
+			return conflictReader
+		}})
+	require.NoError(t, startupErr)
+	conflictReader.client = server.Client
+	createV2ExecNamespace(t, ctx, server.Client, logicalName.Namespace)
+	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: logicalName.Name, Namespace: logicalName.Namespace},
+		Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: logicalName.Namespace}}}
+	require.NoError(t, server.Client.Create(ctx, resource))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, logicalName, func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+	})
+	pid, pidErr := process.Int64_ToPidT(*running.Status.PID)
+	require.NoError(t, pidErr)
+	environment.TestProcessExecutor.SimulateProcessExit(t, pid, 17)
+	exited := waitObjectAssumesStateEx(t, ctx, server.Client, logicalName, func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
+	})
+	require.NotNil(t, exited.Status.ExitCode)
+	require.Equal(t, int32(17), *exited.Status.ExitCode)
+	require.False(t, exited.Status.FinishedAt.IsZero())
+	require.NotNil(t, exited.Status.RuntimeLogs)
+	require.True(t, exited.Status.RuntimeLogs.Available)
+	physical := &apiv2.PhysicalProcess{}
+	require.NoError(t, server.Client.Get(ctx,
+		types.NamespacedName{Name: exited.Status.PhysicalProcessRef, Namespace: logicalName.Namespace}, physical))
+	conflictReader.armed.Store(true)
+	forceRemoveLogicalProcessBacking(t, ctx, server.Client, physical)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+	completed := waitObjectAssumesStateEx(t, ctx, server.Client, logicalName, func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete && !current.Status.RuntimeLogs.Available, nil
+	})
+	require.True(t, conflictReader.injected.Load())
+	require.Equal(t, exited.Status.Phase, completed.Status.Phase)
+	require.Equal(t, exited.Status.Conditions, completed.Status.Conditions)
+	require.Equal(t, exited.Status.PID, completed.Status.PID)
+	require.Equal(t, exited.Status.IdentityTimestamp, completed.Status.IdentityTimestamp)
+	require.Equal(t, exited.Status.ExitCode, completed.Status.ExitCode)
+	require.Equal(t, exited.Status.FinishedAt, completed.Status.FinishedAt)
+	require.Equal(t, exited.Status.PhysicalProcessRef, completed.Status.PhysicalProcessRef)
+	require.Equal(t, physical.Name, completed.Status.RuntimeLogs.Name)
+	require.Equal(t, physical.UID, completed.Status.RuntimeLogs.UID)
+	require.NoError(t, server.Client.Patch(ctx, resource,
+		ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	unchanged := waitObjectAssumesStateEx(t, ctx, server.Client, logicalName, func(current *apiv2.LogicalProcess) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Spec.Stop && ready != nil && ready.ObservedGeneration == current.Generation, nil
+	})
+	require.Equal(t, apiv2.LogicalProcessPhaseExited, unchanged.Status.Phase)
+	requireReadyCondition(t, unchanged.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonExited)
+	require.Equal(t, completed.Status.RuntimeLogs, unchanged.Status.RuntimeLogs)
 }
 
 // Verifies that LogicalProcess and PhysicalProcess endpoints share captured stdout/stderr,

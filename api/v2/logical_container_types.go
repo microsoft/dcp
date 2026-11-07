@@ -69,6 +69,53 @@ func (mode LogicalContainerMode) ShouldCreateIfMissing() bool {
 type LogicalContainerPhase string
 
 const (
+	// LogicalContainerReasonRunning indicates that the backing container is running.
+	LogicalContainerReasonRunning ConditionReason = "ContainerRunning"
+	// LogicalContainerReasonPaused indicates that the backing container is paused.
+	LogicalContainerReasonPaused ConditionReason = "ContainerPaused"
+	// LogicalContainerReasonExited indicates that the backing container has exited.
+	LogicalContainerReasonExited ConditionReason = "ContainerExited"
+	// LogicalContainerReasonStopping indicates that container termination has been requested.
+	LogicalContainerReasonStopping ConditionReason = "ContainerStopping"
+	// LogicalContainerReasonStopped indicates that container termination has completed.
+	LogicalContainerReasonStopped ConditionReason = "ContainerStopped"
+	// LogicalContainerReasonRuntimeLookupFailed indicates that runtime container inspection failed.
+	LogicalContainerReasonRuntimeLookupFailed ConditionReason = "ContainerLookupFailed"
+	// LogicalContainerReasonExistingContainerNotFound indicates that an existing-mode target is absent.
+	LogicalContainerReasonExistingContainerNotFound ConditionReason = "ExistingContainerNotFound"
+	// LogicalContainerReasonPhysicalResourcePreparationPending indicates that physical declarations are not prepared.
+	LogicalContainerReasonPhysicalResourcePreparationPending ConditionReason = "PhysicalResourcePreparationPending"
+	// LogicalContainerReasonPhysicalResourcePreparationFailed indicates that physical declaration preparation failed.
+	LogicalContainerReasonPhysicalResourcePreparationFailed ConditionReason = "PhysicalResourcePreparationFailed"
+	// LogicalContainerReasonPhysicalResourceDeletionFailed indicates that physical declaration cleanup failed.
+	LogicalContainerReasonPhysicalResourceDeletionFailed ConditionReason = "PhysicalResourceDeletionFailed"
+	// LogicalContainerReasonPhysicalContainerLookupFailed indicates that the physical container could not be read.
+	LogicalContainerReasonPhysicalContainerLookupFailed ConditionReason = "PhysicalContainerLookupFailed"
+	// LogicalContainerReasonPhysicalContainerNotReady indicates that the physical container has not become ready.
+	LogicalContainerReasonPhysicalContainerNotReady ConditionReason = "PhysicalContainerNotReady"
+	// LogicalContainerReasonPhysicalContainerFailed indicates that the physical container failed.
+	LogicalContainerReasonPhysicalContainerFailed ConditionReason = "PhysicalContainerFailed"
+	// LogicalContainerReasonPhysicalContainerStateUnknown indicates that the physical container state is unknown.
+	LogicalContainerReasonPhysicalContainerStateUnknown ConditionReason = "PhysicalContainerStateUnknown"
+	// LogicalContainerReasonPhysicalContainerChanged indicates that the physical container identity or hold changed.
+	LogicalContainerReasonPhysicalContainerChanged ConditionReason = "PhysicalContainerChanged"
+	// LogicalContainerReasonMultiplePhysicalContainers indicates that more than one owned physical container was found.
+	LogicalContainerReasonMultiplePhysicalContainers ConditionReason = "MultiplePhysicalContainers"
+	// LogicalContainerReasonPhysicalImageLookupFailed indicates that the startup image could not be read.
+	LogicalContainerReasonPhysicalImageLookupFailed ConditionReason = "PhysicalImageLookupFailed"
+	// LogicalContainerReasonPhysicalImageChanged indicates that the startup image identity or hold changed.
+	LogicalContainerReasonPhysicalImageChanged ConditionReason = "PhysicalImageChanged"
+	// LogicalContainerReasonMultiplePhysicalImages indicates that more than one owned startup image was found.
+	LogicalContainerReasonMultiplePhysicalImages ConditionReason = "MultiplePhysicalImages"
+	// LogicalContainerReasonLogicalNetworkFailed indicates that a referenced logical network failed.
+	LogicalContainerReasonLogicalNetworkFailed ConditionReason = "LogicalNetworkFailed"
+	// LogicalContainerReasonStopRequestFailed indicates that Stop could not be forwarded to the physical container.
+	LogicalContainerReasonStopRequestFailed ConditionReason = "StopRequestFailed"
+	// LogicalContainerReasonDeletingPhysicalResources indicates that owned physical declarations are being removed.
+	LogicalContainerReasonDeletingPhysicalResources ConditionReason = "DeletingPhysicalResources"
+)
+
+const (
 	// LogicalContainerPhasePending indicates that the container is waiting for prerequisites or startup.
 	LogicalContainerPhasePending LogicalContainerPhase = "Pending"
 
@@ -110,6 +157,10 @@ type LogicalContainerSpec struct {
 	// and forbidden for existing mode.
 	Container *LogicalContainerConfig `json:"container,omitempty"`
 
+	// Ports declares service-backed container endpoints in all lifecycle modes.
+	// +listType=atomic
+	Ports []LogicalContainerPort `json:"ports,omitempty"`
+
 	// MonitorPID optionally scopes a persistent container to another process lifetime.
 	// When set, monitorTimestamp must also be set. The container is stopped but not removed when that process exits.
 	MonitorPID *int64 `json:"monitorPID,omitempty"`
@@ -131,12 +182,16 @@ func (cs LogicalContainerSpec) EffectiveMode() LogicalContainerMode {
 
 // GetLifecycleKey returns the explicit lifecycle key, or computes one from the desired configuration.
 // The second result is true when the key is computed. Build-content identity comes only from the supplied build digest.
-func (cs *LogicalContainerSpec) GetLifecycleKey() (string, bool, error) {
+// runtimePorts must contain the resolved physical port settings for every declared logical port.
+func (cs *LogicalContainerSpec) GetLifecycleKey(runtimePorts []ContainerPort) (string, bool, error) {
 	if cs.LifecycleKey != "" {
 		return cs.LifecycleKey, false, nil
 	}
 	if cs.Container == nil {
 		return "", false, errors.New("container configuration is required to compute a lifecycle key")
+	}
+	if len(runtimePorts) != len(cs.Ports) {
+		return "", false, errors.New("resolved runtime ports must be supplied for every declared logical port")
 	}
 
 	desired := cs.Container.DeepCopy()
@@ -176,22 +231,27 @@ func (cs *LogicalContainerSpec) GetLifecycleKey() (string, bool, error) {
 	slices.SortStableFunc(desired.CreateFiles, func(left, right CreateFileSystem) int {
 		return strings.Compare(left.Destination, right.Destination)
 	})
-	for i := range desired.Ports {
-		desired.Ports[i].RangeSize = desired.Ports[i].EffectiveRangeSize()
-		if desired.Ports[i].Protocol == "" {
-			desired.Ports[i].Protocol = commonapi.PortProtocolTCP
-		}
-	}
-	slices.SortStableFunc(desired.Ports, func(left, right ContainerPort) int {
-		if protocolOrder := strings.Compare(string(left.Protocol), string(right.Protocol)); protocolOrder != 0 {
-			return protocolOrder
-		}
-		return cmp.Compare(left.HostPort, right.HostPort)
-	})
-
 	fnvHash := fnv.New128()
 	encoder := gob.NewEncoder(fnvHash)
 	hashErr := encoder.Encode(desired)
+	if len(runtimePorts) > 0 {
+		ports := slices.Clone(runtimePorts)
+		for portIndex := range ports {
+			ports[portIndex].RangeSize = ports[portIndex].EffectiveRangeSize()
+			if ports[portIndex].Protocol == "" {
+				ports[portIndex].Protocol = commonapi.PortProtocolTCP
+			}
+		}
+		slices.SortStableFunc(ports, func(left, right ContainerPort) int {
+			if protocolOrder := strings.Compare(string(left.Protocol), string(right.Protocol)); protocolOrder != 0 {
+				return protocolOrder
+			}
+			return cmp.Compare(left.HostPort, right.HostPort)
+		})
+		for _, port := range ports {
+			hashErr = errors.Join(hashErr, encoder.Encode(port))
+		}
+	}
 	if cs.MonitorPID != nil {
 		hashErr = errors.Join(hashErr, encoder.Encode(*cs.MonitorPID), encoder.Encode(cs.MonitorTimestamp.Time))
 	}
@@ -220,10 +280,6 @@ type LogicalContainerConfig struct {
 	// +listType=map
 	// +listMapKey=name
 	Env []commonapi.EnvVar `json:"env,omitempty"`
-
-	// Ports describes ports to expose from the container.
-	// +listType=atomic
-	Ports []ContainerPort `json:"ports,omitempty"`
 
 	// VolumeMounts describes volume and bind mounts for the container.
 	// +listType=atomic
@@ -261,6 +317,11 @@ type LogicalContainerNetworkConnectionConfig struct {
 // LogicalContainerStatus describes the observed logical container and its physical dependencies.
 // +k8s:openapi-gen=true
 type LogicalContainerStatus struct {
+	// Ports describes service selection and the listening address/port for each logical port.
+	// +listType=map
+	// +listMapKey=name
+	Ports []LogicalPortStatus `json:"ports,omitempty"`
+
 	// StartupLogs identifies output from the physical image dependency.
 	StartupLogs *LogSource `json:"startupLogs,omitempty"`
 
@@ -289,7 +350,7 @@ type LogicalContainerStatus struct {
 	// Image is the resolved runtime image reference.
 	Image string `json:"image,omitempty"`
 
-	// LifecycleKey is the supplied or calculated key applied to the runtime container.
+	// LifecycleKey is the supplied or calculated key for the desired container configuration.
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
 
 	// CreatedAt is the runtime container creation timestamp.
@@ -431,6 +492,7 @@ func (c *LogicalContainer) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Invalid(specPath.Child("containerName"), c.Spec.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
 	}
 	errorList = append(errorList, validateRetainedResourceMonitor(mode == LogicalContainerModePersistent, c.Spec.MonitorPID, c.Spec.MonitorTimestamp, specPath)...)
+	errorList = append(errorList, validateLogicalContainerPorts(c.Spec.Ports, c.Namespace, c.Name, specPath.Child("ports"))...)
 
 	if c.Spec.Container != nil {
 		errorList = append(errorList, c.Spec.Container.Validate(c.Namespace, specPath.Child("container"))...)
@@ -448,16 +510,15 @@ func (ct *LogicalContainerConfig) Validate(namespace string, containerPath *fiel
 		errorList = append(errorList, field.Forbidden(containerPath.Child("image"), "image cannot be set when imageRef is set"))
 	}
 	if ct.ImageRef != "" {
-		errorList = append(errorList, validateSameNamespaceResourceReference(ct.ImageRef, namespace, containerPath.Child("imageRef"))...)
+		errorList = append(errorList, ValidateSameNamespaceResourceReference(ct.ImageRef, namespace, containerPath.Child("imageRef"))...)
 	}
 	if ct.Image != nil {
 		errorList = append(errorList, ct.Image.Validate(containerPath.Child("image"))...)
 	}
 	for i, network := range ct.Networks {
-		errorList = append(errorList, validateSameNamespaceResourceReference(network.NetworkRef, namespace, containerPath.Child("networks").Index(i).Child("networkRef"))...)
+		errorList = append(errorList, ValidateSameNamespaceResourceReference(network.NetworkRef, namespace, containerPath.Child("networks").Index(i).Child("networkRef"))...)
 	}
 	errorList = append(errorList, ValidateVolumeMounts(ct.VolumeMounts, namespace, containerPath.Child("volumeMounts"))...)
-	errorList = append(errorList, ValidateContainerPorts(ct.Ports, containerPath.Child("ports"))...)
 	errorList = append(errorList, validateLabels(ct.Labels, containerPath.Child("labels"))...)
 	errorList = append(errorList, validateCreateFiles(ct.CreateFiles, containerPath.Child("createFiles"))...)
 	return errorList
