@@ -67,6 +67,7 @@ func MonitorPid(
 
 	go func() {
 		waitErr := monitorProc.Wait(monitorCtx)
+		monitorCtxCancelCause(waitErr)
 		if waitErr != nil {
 			if errors.Is(waitErr, context.Canceled) {
 				logger.V(1).Info("Monitoring cancelled by context", "PID", handle.Pid)
@@ -76,7 +77,6 @@ func MonitorPid(
 		} else {
 			logger.Info("Monitor process exited, shutting down", "PID", handle.Pid)
 		}
-		monitorCtxCancelCause(waitErr)
 	}()
 
 	return monitorCtx, monitorCtxCancel, nil

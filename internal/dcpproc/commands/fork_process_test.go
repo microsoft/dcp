@@ -68,6 +68,7 @@ type blockingForkPidWriter struct {
 	release chan struct{}
 	done    chan struct{}
 	once    sync.Once
+	payload []byte
 }
 
 func newBlockingForkPidWriter() *blockingForkPidWriter {
@@ -83,6 +84,7 @@ func (writer *blockingForkPidWriter) Write(payload []byte) (int, error) {
 		close(writer.started)
 	})
 	<-writer.release
+	writer.payload = append([]byte(nil), payload...)
 	close(writer.done)
 	return len(payload), nil
 }
@@ -170,7 +172,7 @@ func TestForkProcessCleanupDuringStartup(t *testing.T) {
 }
 
 // Verifies that runForkedProcess stops its child when owner exit or command cancellation occurs
-// while PID output is blocked, without waiting for the writer to become writable.
+// while PID output is blocked, while permitting the best-effort write to finish later.
 func TestForkProcessCleanupDuringBlockedPidHandoff(t *testing.T) {
 	for _, cancellation := range []bool{false, true} {
 		t.Run("cancel="+strconv.FormatBool(cancellation), func(t *testing.T) {
@@ -238,55 +240,67 @@ func TestForkProcessCleanupDuringBlockedPidHandoff(t *testing.T) {
 			case <-testCtx.Done():
 				t.Fatal(testCtx.Err())
 			}
+			require.Equal(t, strconv.FormatInt(int64(child.Pid), 10)+"\n", string(writer.payload))
 		})
 	}
 }
 
-// Verifies that runForkedProcess cleans up its child and returns a terminal owner-monitoring failure.
+// Verifies that runForkedProcess returns terminal owner-monitoring failures only when cleanup is
+// enabled, preserving the existing successful default-mode behavior.
 func TestForkProcessReturnsOwnerMonitoringFailure(t *testing.T) {
-	testCtx, testCancel := testutil.GetTestContext(t, 0)
-	defer testCancel()
-	command, commandErr := NewForkProcessCommand(logr.Discard())
-	require.NoError(t, commandErr)
-	command.SetContext(testCtx)
-	writer := &observedForkPidWriter{written: make(chan struct{})}
-	command.SetOut(writer)
-	monitorCtx, monitorCancel := context.WithCancelCause(testCtx)
-	defer monitorCancel(context.Canceled)
-	executor := process.NewOSExecutor(logr.Discard())
-	defer executor.Dispose()
-	var child process.ProcessHandle
-	startExecutor := &forkStartExecutor{
-		Executor:   executor,
-		afterStart: func(handle process.ProcessHandle) { child = handle },
+	for _, cleanupEnabled := range []bool{false, true} {
+		t.Run("cleanup="+strconv.FormatBool(cleanupEnabled), func(t *testing.T) {
+			testCtx, testCancel := testutil.GetTestContext(t, 0)
+			defer testCancel()
+			command, commandErr := NewForkProcessCommand(logr.Discard())
+			require.NoError(t, commandErr)
+			command.SetContext(testCtx)
+			writer := &observedForkPidWriter{written: make(chan struct{})}
+			command.SetOut(writer)
+			monitorCtx, monitorCancel := context.WithCancelCause(testCtx)
+			defer monitorCancel(context.Canceled)
+			executor := process.NewOSExecutor(logr.Discard())
+			defer executor.Dispose()
+			var child process.ProcessHandle
+			defer func() { stopForkTestProcess(testCtx, executor, child) }()
+			startExecutor := &forkStartExecutor{
+				Executor:   executor,
+				afterStart: func(handle process.ProcessHandle) { child = handle },
+			}
+			childCmd := forkTestDelayCommand(t, "--delay=2m")
+			runResultCh := make(chan error, 1)
+			go func() {
+				runResultCh <- runForkedProcess(
+					command,
+					childCmd,
+					monitorCtx,
+					&forkProcessOptions{enableChildCleanup: cleanupEnabled},
+					startExecutor,
+					logr.Discard(),
+				)
+			}()
+			select {
+			case <-writer.written:
+			case <-testCtx.Done():
+				t.Fatal(testCtx.Err())
+			}
+			monitorErr := errors.New("injected owner monitoring failure")
+			monitorCancel(monitorErr)
+			var runErr error
+			select {
+			case runErr = <-runResultCh:
+			case <-testCtx.Done():
+				t.Fatal(testCtx.Err())
+			}
+			if cleanupEnabled {
+				require.ErrorIs(t, runErr, monitorErr)
+				require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(child)))
+			} else {
+				require.NoError(t, runErr)
+				require.NoError(t, executor.CheckProcessRunning(child))
+			}
+		})
 	}
-	childCmd := forkTestDelayCommand(t, "--delay=2m")
-	runResultCh := make(chan error, 1)
-	go func() {
-		runResultCh <- runForkedProcess(
-			command,
-			childCmd,
-			monitorCtx,
-			&forkProcessOptions{enableChildCleanup: true},
-			startExecutor,
-			logr.Discard(),
-		)
-	}()
-	select {
-	case <-writer.written:
-	case <-testCtx.Done():
-		t.Fatal(testCtx.Err())
-	}
-	monitorErr := errors.New("injected owner monitoring failure")
-	monitorCancel(monitorErr)
-	var runErr error
-	select {
-	case runErr = <-runResultCh:
-	case <-testCtx.Done():
-		t.Fatal(testCtx.Err())
-	}
-	require.ErrorIs(t, runErr, monitorErr)
-	require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(child)))
 }
 
 // Verifies that runForkedProcess rolls back a failed PID handoff only when cleanup is enabled,

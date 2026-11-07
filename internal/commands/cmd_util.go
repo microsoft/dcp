@@ -26,10 +26,6 @@ type exitCodeError struct {
 	logMode exitErrorLogMode
 }
 
-type sigpipeProtectedExitError struct {
-	err error
-}
-
 func NewExitCodeError(err error, exitCode int) error {
 	return newExitCodeError(err, exitCode, exitErrorLogAsError)
 }
@@ -65,28 +61,7 @@ func (e *exitCodeError) ExitCode() int {
 	return e.code
 }
 
-// ProtectExitErrorFromSIGPIPE preserves SIGPIPE-to-EPIPE handling while ErrorExit reports err.
-func ProtectExitErrorFromSIGPIPE(err error) error {
-	if err == nil {
-		return nil
-	}
-	return &sigpipeProtectedExitError{err: err}
-}
-
-func (e *sigpipeProtectedExitError) Error() string {
-	return e.err.Error()
-}
-
-func (e *sigpipeProtectedExitError) Unwrap() error {
-	return e.err
-}
-
 func ErrorExit(log *logger.Logger, err error, exitCode int) {
-	var protectedErr *sigpipeProtectedExitError
-	if errors.As(err, &protectedErr) {
-		EnableSIGPIPEErrors()
-	}
-
 	exitCode, logMode := exitErrorMetadata(err, exitCode)
 	switch logMode {
 	case exitErrorLogSilent:
