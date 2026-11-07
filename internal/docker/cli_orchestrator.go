@@ -726,6 +726,9 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 
 func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
 	args := []string{"exec"}
+	if options.StdInStream != nil {
+		args = append(args, "--interactive")
+	}
 
 	if options.WorkingDirectory != "" {
 		args = append(args, "--workdir", options.WorkingDirectory)
@@ -748,6 +751,7 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 
 	cmd := makeDockerCommand(args...)
 
+	cmd.Stdin = options.StdInStream
 	cmd.Stdout = options.StdOutStream
 	cmd.Stderr = options.StdErrStream
 	cmd.WaitDelay = 2 * time.Second

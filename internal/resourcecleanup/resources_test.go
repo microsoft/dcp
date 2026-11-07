@@ -44,9 +44,9 @@ func TestNamespaceResourcesIncludeAllNamespacedV2Kinds(t *testing.T) {
 	}
 }
 
-// Verifies that NamespaceResources cleans LogicalProcess resources before PhysicalProcess resources,
-// logical workloads before ServiceEndpoint resources, containers before LogicalContainerNetwork resources,
-// and logical networks before PhysicalContainerNetwork resources.
+// Verifies that NamespaceResources cleans executions and Projects before their physical dependencies,
+// logical workloads before endpoints, logical processes before physical processes,
+// and containers before their networks and volumes.
 func TestNamespaceResourcesCleanLogicalResourcesBeforePhysicalDependencies(t *testing.T) {
 	namespaceResourcesByGVR := cleanupResourcesByGVR(NamespaceResources)
 	containerGVR := (&apiv2.LogicalContainer{}).GetGroupVersionResource()
@@ -60,7 +60,7 @@ func TestNamespaceResourcesCleanLogicalResourcesBeforePhysicalDependencies(t *te
 	logicalProcessGVR := (&apiv2.LogicalProcess{}).GetGroupVersionResource()
 	serviceEndpointGVR := (&apiv2.ServiceEndpoint{}).GetGroupVersionResource()
 
-	require.Len(t, namespaceResourcesByGVR, 13)
+	require.Len(t, namespaceResourcesByGVR, 14)
 	require.Contains(t, namespaceResourcesByGVR, containerGVR)
 	require.Contains(t, namespaceResourcesByGVR, logicalNetworkGVR)
 	require.Contains(t, namespaceResourcesByGVR, physicalContainerGVR)
@@ -79,6 +79,12 @@ func TestNamespaceResourcesCleanLogicalResourcesBeforePhysicalDependencies(t *te
 	require.Contains(t, namespaceResourcesByGVR[containerGVR].CleanUpAfter, logicalExecGVR)
 	require.Contains(t, namespaceResourcesByGVR[containerGVR].CleanUpAfter, physicalExecGVR)
 	require.Contains(t, namespaceResourcesByGVR[physicalExecGVR].CleanUpAfter, logicalExecGVR)
+	projectGVR := (&apiv2.Project{}).GetGroupVersionResource()
+	require.Contains(t, namespaceResourcesByGVR[serviceEndpointGVR].CleanUpAfter, projectGVR)
+	require.Contains(t, namespaceResourcesByGVR[projectGVR].CleanUpAfter, logicalExecGVR)
+	require.Contains(t, namespaceResourcesByGVR[projectGVR].CleanUpAfter, physicalExecGVR)
+	require.Contains(t, namespaceResourcesByGVR[physicalProcessGVR].CleanUpAfter, projectGVR)
+	require.Contains(t, namespaceResourcesByGVR[physicalContainerGVR].CleanUpAfter, projectGVR)
 	require.Contains(t, namespaceResourcesByGVR[physicalContainerGVR].CleanUpAfter, physicalExecGVR)
 	require.Empty(t, namespaceResourcesByGVR[physicalContainerNetworkConnectionGVR].CleanUpAfter)
 	require.Contains(t, namespaceResourcesByGVR[physicalContainerGVR].CleanUpAfter, physicalContainerNetworkConnectionGVR)

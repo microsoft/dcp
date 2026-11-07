@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,8 +22,23 @@ import (
 	"github.com/microsoft/dcp/internal/pubsub"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that Podman exec forwards caller-owned stdin without a TTY, preserves raw duplex IO,
+// keeps stderr separate and retains its existing completion, cancellation and startup-failure behavior.
+func TestExecContainerStreams(t *testing.T) {
+	t.Parallel()
+	internal_testutil.VerifyCommandStreams(t, []string{"podman", "exec"},
+		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
+			orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+			return orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
+				Container: "pinned-id", Command: "adapter", Args: []string{"--flag"}, StdInStream: stdin,
+				StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
+			})
+		})
+}
 
 func TestInspectedContainerDeserialization(t *testing.T) {
 	var b bytes.Buffer

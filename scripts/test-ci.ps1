@@ -14,6 +14,7 @@
 #   generate-grpc build-dcp build-dcptun-containerexe
 #   container-probe-tool-containerexe delay-tool lfwriter-tool
 #   parrot-tool parrot-tool-containerexe termchild-tool
+# plus cache-delve / projectdebug-tool for CI debug-adapter E2E coverage,
 # followed by `go test ./... -coverprofile cover.out -count 1 -timeout 20m`.
 #
 # The Windows CI job runs with CGO_ENABLED=0, so no C toolchain (mingw/gcc) is
@@ -181,17 +182,36 @@ function Build-TestPrereqs {
     Invoke-GoBuild -Output (Join-Path $ToolBin 'termchild.exe') -Package 'github.com/microsoft/dcp/test/termchild'
     # parrot-tool-containerexe (static Linux binary for the scratch-based test image)
     Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot_c') -Package 'github.com/microsoft/dcp/test/parrot' -TargetGoos 'linux' -CgoEnabled '0'
+
+    $savedGoos = $env:GOOS
+    $savedGoarch = $env:GOARCH
+    try {
+        $env:GOOS = ''
+        $env:GOARCH = ''
+        Invoke-Native -Description 'cache registered Delve Go tool' -Script {
+            & go tool -n github.com/go-delve/delve/cmd/dlv
+        }
+        Invoke-Native -Description 'build Project debug target' -Script {
+            & go build '-gcflags=all=-N -l' -o (Join-Path $ToolBin 'projectdebug.exe') 'github.com/microsoft/dcp/test/projectdebug'
+        }
+    } finally {
+        $env:GOOS = $savedGoos
+        $env:GOARCH = $savedGoarch
+    }
 }
 
 function Invoke-Tests {
     # Matches TEST_OPTS in the Makefile when CGO_ENABLED=0: no -race, no -parallel override.
+    $savedDelveEnabled = $env:DCP_TEST_ENABLE_DELVE
     Push-Location $RepoRoot
     try {
+        $env:DCP_TEST_ENABLE_DELVE = 'true'
         Write-Host 'go test ./... -coverprofile cover.out -count 1 -timeout 20m'
         Invoke-Native -Description 'go test' -Script {
             & go test ./... -coverprofile cover.out -count 1 -timeout 20m
         }
     } finally {
+        $env:DCP_TEST_ENABLE_DELVE = $savedDelveEnabled
         Pop-Location
     }
 }

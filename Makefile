@@ -111,6 +111,7 @@ OPENAPI_GEN ?= $(GOTOOL_BIN) k8s.io/kube-openapi/cmd/openapi-gen
 GOVERSIONINFO_GEN ?= $(GOTOOL_BIN) github.com/josephspurrier/goversioninfo/cmd/goversioninfo
 GOLANGCI_LINT_TOOL ?= $(GOTOOL_BIN) -n github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
+PROJECTDEBUG_TOOL ?= $(TOOL_BIN)/projectdebug$(exe_suffix)
 LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
 PARROT_TOOL ?= $(TOOL_BIN)/parrot$(exe_suffix)
 PARROT_TOOL_CONTAINER_BINARY ?= $(TOOL_BIN)/parrot_c
@@ -371,13 +372,18 @@ ifeq ($(build_os),darwin)
 TEST_PREREQS := $(TEST_PREREQS) signal-disposition-tool
 endif
 
+export DCP_TEST_ENABLE_DELVE ?= false
+ifeq ($(DCP_TEST_ENABLE_DELVE),true)
+TEST_PREREQS := $(TEST_PREREQS) cache-delve projectdebug-tool
+endif
+
 .PHONY: test-prereqs
 test-prereqs: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
 test-prereqs: $(TEST_PREREQS) ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
 
 # NOTE: Keep scripts/test-ci.ps1 in sync with test-ci-prereqs (see comment above TEST_PREREQS).
 .PHONY: test-ci-prereqs
-test-ci-prereqs: $(TEST_PREREQS)
+test-ci-prereqs: $(TEST_PREREQS) cache-delve projectdebug-tool
 
 COMMON_TEST_OPTS := -coverprofile cover.out -count 1 -timeout 20m
 ifeq ($(CGO_ENABLED),0)
@@ -392,6 +398,7 @@ test: test-prereqs $(GO_RUNTIME_OVERLAY_PREREQ) ## Run all tests in the reposito
 
 # NOTE: Keep scripts/test-ci.ps1 in sync with test-ci (see comment above TEST_PREREQS).
 .PHONY: test-ci
+test-ci: export DCP_TEST_ENABLE_DELVE := true
 test-ci: test-ci-prereqs $(GO_RUNTIME_OVERLAY_PREREQ) ## Runs tests in a way appropriate for CI pipeline, with linting etc.
 	$(GO_BIN) test ./... $(GO_RUNTIME_OVERLAY_ARG) $(TEST_OPTS)
 
@@ -432,6 +439,15 @@ $(PROTOC): | $(TOOL_BIN)
 		&& unzip -q -o -DD '$(TOOL_BIN)/$(PROTOC_ZIP)' -d '$(TOOL_BIN)/protoc'; \
 	}
 endif
+
+.PHONY: cache-delve
+cache-delve: ## Acquires the host Delve Go tool registered in go.mod without starting a debug session
+	$(CLEAR_GOARGS) $(GOTOOL_BIN) -n github.com/go-delve/delve/cmd/dlv
+
+.PHONY: projectdebug-tool
+projectdebug-tool: $(PROJECTDEBUG_TOOL) ## Builds the Project debug target with optimizations and inlining disabled
+$(PROJECTDEBUG_TOOL): $(wildcard ./test/projectdebug/*.go) Makefile | $(TOOL_BIN)
+	$(CLEAR_GOARGS) $(GO_BIN) build -gcflags="all=-N -l" -o $(PROJECTDEBUG_TOOL) github.com/microsoft/dcp/test/projectdebug
 
 # delay-tool is used for process package testing
 .PHONY: delay-tool

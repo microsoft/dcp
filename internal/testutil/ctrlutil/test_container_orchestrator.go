@@ -2282,7 +2282,7 @@ func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options 
 	return exitCodeChan, nil
 }
 
-// GetContainerExecOptions returns a copy of the recorded invocation without its output writers.
+// GetContainerExecOptions returns a copy of the recorded invocation without its input/output streams.
 func (to *TestContainerOrchestrator) GetContainerExecOptions(containerID, command string) (containers.ExecContainerOptions, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
@@ -2294,6 +2294,7 @@ func (to *TestContainerOrchestrator) GetContainerExecOptions(containerID, comman
 	options.Args = append([]string(nil), options.Args...)
 	options.Env = append([]containers.EnvVar(nil), options.Env...)
 	options.EnvFiles = append([]string(nil), options.EnvFiles...)
+	options.StdInStream = nil
 	options.StreamCommandOptions = containers.StreamCommandOptions{}
 	return options, nil
 }
