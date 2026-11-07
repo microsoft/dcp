@@ -31,6 +31,7 @@ func AddMonitorFlags(cmd *cobra.Command) {
 
 // Starts monitoring a process identified by the given handle.
 // Returns a context that will be cancelled when the monitored process exits, or if the returned cancellation function is called.
+// The cancellation cause preserves parent or monitoring errors; a normal monitored-process exit uses context.Canceled.
 // The returned context (and the cancellation function) is valid even if an error occurs (e.g. the process cannot be found),
 // but it will be already cancelled in that case.
 func MonitorPid(
@@ -39,11 +40,14 @@ func MonitorPid(
 	pollInterval uint8,
 	logger logr.Logger,
 ) (context.Context, context.CancelFunc, error) {
-	monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
+	monitorCtx, monitorCtxCancelCause := context.WithCancelCause(ctx)
+	monitorCtxCancel := func() {
+		monitorCtxCancelCause(context.Canceled)
+	}
 	resolved, resolveErr := process.ResolveProcessHandle(handle.Pid, handle.IdentityTime)
 	if resolveErr != nil {
 		logger.Info("Could not resolve monitored process", "PID", handle.Pid, "Error", resolveErr)
-		monitorCtxCancel()
+		monitorCtxCancelCause(resolveErr)
 		return monitorCtx, monitorCtxCancel, resolveErr
 	}
 	handle = resolved
@@ -51,7 +55,7 @@ func MonitorPid(
 	monitorProc, monitorProcErr := process.FindWaitableProcess(handle)
 	if monitorProcErr != nil {
 		logger.Info("Error finding process", "PID", handle.Pid, "Error", monitorProcErr)
-		monitorCtxCancel()
+		monitorCtxCancelCause(monitorProcErr)
 		return monitorCtx, monitorCtxCancel, monitorProcErr
 	}
 
@@ -62,8 +66,9 @@ func MonitorPid(
 	logger.Info("Started monitoring process", "PID", handle.Pid)
 
 	go func() {
-		defer monitorCtxCancel()
-		if waitErr := monitorProc.Wait(monitorCtx); waitErr != nil {
+		waitErr := monitorProc.Wait(monitorCtx)
+		monitorCtxCancelCause(waitErr)
+		if waitErr != nil {
 			if errors.Is(waitErr, context.Canceled) {
 				logger.V(1).Info("Monitoring cancelled by context", "PID", handle.Pid)
 			} else {
