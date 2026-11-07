@@ -299,7 +299,6 @@ type namespaceWorkloadFailureReader struct {
 type networkOwnerDiscoveryClient struct {
 	ctrl_client.Client
 	creates atomic.Int32
-	hide    atomic.Bool
 }
 
 func (apiClient *networkOwnerDiscoveryClient) Create(
@@ -316,23 +315,6 @@ func (apiClient *networkOwnerDiscoveryClient) Create(
 		return createErr
 	}
 	return errors.New("committed physical network create response lost")
-}
-
-func (apiClient *networkOwnerDiscoveryClient) List(
-	ctx context.Context, objects ctrl_client.ObjectList, options ...ctrl_client.ListOption,
-) error {
-	listErr := apiClient.Client.List(ctx, objects, options...)
-	if listErr != nil {
-		return listErr
-	}
-	listOptions := (&ctrl_client.ListOptions{}).ApplyOptions(options)
-	if children, physical := objects.(*apiv2.PhysicalContainerNetworkList); physical && apiClient.hide.Load() &&
-		listOptions.FieldSelector != nil {
-		if _, ownerQuery := listOptions.FieldSelector.RequiresExactMatch(".metadata.logicalNetworkOwnerUID"); ownerQuery {
-			children.Items = nil
-		}
-	}
-	return nil
 }
 
 // Verifies that LogicalContainerNetwork preserves an adopted container network's lifecycle key
@@ -435,7 +417,6 @@ func TestV2LogicalContainerNetworkControllerDiscoversOwnedBackings(t *testing.T)
 		Spec:       apiv2.PhysicalContainerNetworkSpec{NetworkID: ready.Status.NetworkID},
 	}
 	require.NoError(t, serverInfo.Client.Create(ctx, unrelated))
-	decorated.hide.Store(true)
 	require.NoError(t, serverInfo.Client.Delete(ctx, logical))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, logical)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, physical)

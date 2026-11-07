@@ -6,16 +6,90 @@
 package controllers
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+type logicalChildConfirmationReader struct {
+	ctrl_client.Reader
+	calls []types.NamespacedName
+}
+
+func (reader *logicalChildConfirmationReader) Get(
+	ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption,
+) error {
+	reader.calls = append(reader.calls, key)
+	return reader.Reader.Get(ctx, key, object, options...)
+}
+
+// Verifies that child confirmation separates resource kinds with identical generated names
+// and retains unexpected-name owned resources discovered by cached queries.
+func TestLogicalChildConfirmationSeparatesKinds(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	owner := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "test", UID: "owner-uid"}}
+	image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: "logical-owner-uid", Namespace: owner.Namespace}}
+	physical := &apiv2.PhysicalContainer{ObjectMeta: image.ObjectMeta}
+	var pending unobservedLogicalChildren
+	pending.recordCreateAttempt(image)
+	pending.recordCreateAttempt(physical)
+	unexpected := apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{
+		Name: "unexpected", Namespace: owner.Namespace,
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(owner, apiv2.GroupVersion.WithKind("LogicalContainer"))},
+	}}
+	cached := []apiv2.PhysicalContainerImage{unexpected}
+	reader := &logicalChildConfirmationReader{Reader: fake.NewClientBuilder().WithScheme(scheme).Build()}
+	require.NoError(t, resolveUnobservedLogicalChildren(ctx, reader, owner, pending, &cached))
+	require.Equal(t, []apiv2.PhysicalContainerImage{unexpected}, cached)
+	require.Len(t, pending, 1)
+	require.Equal(t, []types.NamespacedName{image.NamespacedName()}, reader.calls)
+}
+
+// Verifies that logical state snapshots do not share mutable child-creation tracking.
+func TestLogicalChildTrackingClonesIndependently(t *testing.T) {
+	t.Parallel()
+	for name, clone := range map[string]func(unobservedLogicalChildren) unobservedLogicalChildren{
+		"container": func(pending unobservedLogicalChildren) unobservedLogicalChildren {
+			data := &logicalContainerData{unobservedChildren: pending}
+			return data.Clone().unobservedChildren
+		},
+		"process": func(pending unobservedLogicalChildren) unobservedLogicalChildren {
+			data := &logicalProcessData{unobservedChildren: pending}
+			return data.Clone().unobservedChildren
+		},
+		"network": func(pending unobservedLogicalChildren) unobservedLogicalChildren {
+			data := &logicalContainerNetworkData{unobservedChildren: pending}
+			return data.Clone().unobservedChildren
+		},
+		"exec": func(pending unobservedLogicalChildren) unobservedLogicalChildren {
+			data := &logicalContainerExecData{unobservedChildren: pending}
+			return data.Clone().unobservedChildren
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			child := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "child"}}
+			var pending unobservedLogicalChildren
+			pending.recordCreateAttempt(child)
+			snapshot := clone(pending)
+			snapshot.observeCached(child)
+			require.Empty(t, snapshot)
+			require.Len(t, pending, 1)
+		})
+	}
+}
 
 // Verifies that InitializeLogicalBackingFinalizers preserves existing finalizers without aliasing
 // their storage and installs each required finalizer only once.

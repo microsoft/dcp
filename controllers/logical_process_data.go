@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"time"
 
@@ -142,6 +143,7 @@ type logicalProcessData struct {
 	lifecycleKey        string
 	physicalUID         types.UID
 	replacementUID      types.UID
+	unobservedChildren  unobservedLogicalChildren
 	lease               *statestore.ResourceLease
 	leaseFailureMessage string
 	// Selected process identity and captures, cleared after physical handoff.
@@ -150,6 +152,7 @@ type logicalProcessData struct {
 
 func (data *logicalProcessData) Clone() *logicalProcessData {
 	cloned := *data
+	cloned.unobservedChildren = maps.Clone(data.unobservedChildren)
 	cloned.effectiveArgs = append([]string(nil), data.effectiveArgs...)
 	cloned.effectiveEnv = append([]commonapi.EnvVar(nil), data.effectiveEnv...)
 	cloned.ports = append([]logicalPortSelection(nil), data.ports...)

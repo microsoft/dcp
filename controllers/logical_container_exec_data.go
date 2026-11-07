@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -94,6 +95,7 @@ type logicalContainerExecData struct {
 	reason             apiv2.ConditionReason
 	message            string
 	physicalUID        types.UID
+	unobservedChildren unobservedLogicalChildren
 	pendingPhysicalRef string
 	failureTime        metav1.MicroTime
 	reconcileErr       error
@@ -101,6 +103,7 @@ type logicalContainerExecData struct {
 
 func (data *logicalContainerExecData) Clone() *logicalContainerExecData {
 	cloned := *data
+	cloned.unobservedChildren = maps.Clone(data.unobservedChildren)
 	return &cloned
 }
 
@@ -108,7 +111,7 @@ func (data *logicalContainerExecData) UpdateFrom(other *logicalContainerExecData
 	if other == nil || reflect.DeepEqual(data, other) {
 		return false
 	}
-	*data = *other
+	*data = *other.Clone()
 	return true
 }
 

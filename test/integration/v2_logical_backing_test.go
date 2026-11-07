@@ -657,51 +657,73 @@ func TestV2LogicalContainerRetriesBackingLookup(t *testing.T) {
 	}
 }
 
-// Verifies that a LogicalContainer first observed during deletion removes its finalizer
-// without initializing lifecycle work, creating backings, or acquiring a startup lease.
+// Verifies that a LogicalContainer first observed during deletion confirms generated backing names,
+// including children absent from cached queries, without initializing lifecycle work or acquiring a lease.
 func TestV2LogicalContainerDeletesWithoutInitializingLifecycle(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-	observe := make(chan struct{})
-	var observeOnce sync.Once
-	allowObservation := func() { observeOnce.Do(func() { close(observe) }) }
-	defer allowObservation()
-	server, environment, startErr := StartTestEnvironmentWithOptions(t, ctx,
-		NamespaceController|LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController,
-		t.Name(), t.TempDir(), TestEnvironmentOptions{
-			WorkloadID: "uninitialized-workload",
-			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-				return &logicalObservationGate{Client: client, observe: observe}
-			},
+	for _, withBackings := range []bool{false, true} {
+		t.Run(fmt.Sprintf("backings-%t", withBackings), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			observe := make(chan struct{})
+			var observeOnce sync.Once
+			allowObservation := func() { observeOnce.Do(func() { close(observe) }) }
+			defer allowObservation()
+			var gated *logicalObservationGate
+			server, environment, startErr := StartTestEnvironmentWithOptions(t, ctx,
+				NamespaceController|LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController,
+				t.Name(), t.TempDir(), TestEnvironmentOptions{
+					WorkloadID: "uninitialized-workload",
+					DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+						gated = &logicalObservationGate{Client: client, observe: observe}
+						return gated
+					},
+				})
+			require.NoError(t, startErr)
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "uninitialized-logical"}}
+			require.NoError(t, server.Client.Create(ctx, namespace))
+			waitObjectAssumesStateEx(t, ctx, server.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+				return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+			})
+			logical := &apiv2.LogicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "logical", Namespace: namespace.Name,
+					Finalizers: []string{apiv2.GroupVersion.Group + "/logicalcontainer-reconciler"},
+				},
+				Spec: apiv2.LogicalContainerSpec{
+					Mode: apiv2.LogicalContainerModePersistent, ContainerName: "uninitialized-runtime",
+					Container: &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "uninitialized-image"}},
+				},
+			}
+			require.NoError(t, server.Client.Create(ctx, logical))
+			if withBackings {
+				metadata := metav1.ObjectMeta{Name: "logical-" + string(logical.UID), Namespace: namespace.Name,
+					OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(logical, apiv2.GroupVersion.WithKind("LogicalContainer"))}}
+				physical := &apiv2.PhysicalContainer{ObjectMeta: metadata, Spec: apiv2.PhysicalContainerSpec{ContainerID: "uninitialized-container-id"}}
+				image := &apiv2.PhysicalContainerImage{ObjectMeta: metadata, Spec: apiv2.PhysicalContainerImageSpec{ImageID: "uninitialized-image-id"}}
+				controllers.InitializeLogicalBackingFinalizers(physical, apiv2.GroupName+"/physicalcontainer-reconciler")
+				controllers.InitializeLogicalBackingFinalizers(image, apiv2.GroupName+"/physicalcontainerimage-reconciler")
+				require.NoError(t, server.Client.Create(ctx, physical))
+				require.NoError(t, server.Client.Create(ctx, image))
+				gated.containerHidden.Store(true)
+				gated.imagesHidden.Store(true)
+			}
+			require.NoError(t, server.Client.Delete(ctx, logical))
+			allowObservation()
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
+			var physicalContainers apiv2.PhysicalContainerList
+			require.NoError(t, server.Client.List(ctx, &physicalContainers, ctrl_client.InNamespace(namespace.Name)))
+			require.Empty(t, physicalContainers.Items)
+			var images apiv2.PhysicalContainerImageList
+			require.NoError(t, server.Client.List(ctx, &images, ctrl_client.InNamespace(namespace.Name)))
+			require.Empty(t, images.Items)
+			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+			require.Zero(t, orchestrator.CreateContainerCallCount("uninitialized-runtime"))
+			require.Zero(t, orchestrator.PullImageCallCount("uninitialized-image"))
+			require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 		})
-	require.NoError(t, startErr)
-	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "uninitialized-logical"}}
-	require.NoError(t, server.Client.Create(ctx, namespace))
-	logical := &apiv2.LogicalContainer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "logical", Namespace: namespace.Name,
-			Finalizers: []string{apiv2.GroupVersion.Group + "/logicalcontainer-reconciler"},
-		},
-		Spec: apiv2.LogicalContainerSpec{
-			Mode: apiv2.LogicalContainerModePersistent, ContainerName: "uninitialized-runtime",
-			Container: &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "uninitialized-image"}},
-		},
 	}
-	require.NoError(t, server.Client.Create(ctx, logical))
-	require.NoError(t, server.Client.Delete(ctx, logical))
-	allowObservation()
-	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
-	var physicalContainers apiv2.PhysicalContainerList
-	require.NoError(t, server.Client.List(ctx, &physicalContainers, ctrl_client.InNamespace(namespace.Name)))
-	require.Empty(t, physicalContainers.Items)
-	var images apiv2.PhysicalContainerImageList
-	require.NoError(t, server.Client.List(ctx, &images, ctrl_client.InNamespace(namespace.Name)))
-	require.Empty(t, images.Items)
-	orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
-	require.Zero(t, orchestrator.CreateContainerCallCount("uninitialized-runtime"))
-	require.Zero(t, orchestrator.PullImageCallCount("uninitialized-image"))
-	require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 }
 
 func (client *backingCreateResponseLoss) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {

@@ -120,7 +120,7 @@ func (r *LogicalContainerReconciler) SetupWithManager(mgr ctrl.Manager, name str
 			return indexErr
 		}
 	}
-	for _, child := range []ctrl_client.Object{&apiv2.PhysicalContainer{}, &apiv2.PhysicalContainerImage{}} {
+	for _, child := range []ctrl_client.Object{&apiv2.PhysicalContainer{}, &apiv2.PhysicalContainerImage{}, &apiv2.ServiceEndpoint{}} {
 		ownerIndexErr := mgr.GetFieldIndexer().IndexField(r.LifetimeCtx, child, logicalContainerOwnerUIDField, func(obj ctrl_client.Object) []string {
 			owner := metav1.GetControllerOf(obj)
 			if owner == nil {
@@ -673,6 +673,7 @@ func (r *LogicalContainerReconciler) createPhysicalContainerImage(
 	if ownerErr != nil {
 		return nil, fmt.Errorf("set physical image owner: %w", ownerErr)
 	}
+	data.unobservedChildren.recordCreateAttempt(image)
 	createErr := r.Create(ctx, image)
 	if image.UID != "" {
 		data.physicalImageUID = image.UID
@@ -710,6 +711,7 @@ func (r *LogicalContainerReconciler) createPhysicalContainer(
 	if ownerErr != nil {
 		return nil, fmt.Errorf("set physical container owner: %w", ownerErr)
 	}
+	data.unobservedChildren.recordCreateAttempt(physical)
 	createErr := r.Create(ctx, physical)
 	if physical.UID != "" {
 		data.physicalContainerUID = physical.UID
@@ -777,6 +779,7 @@ func (r *LogicalContainerReconciler) findPhysicalContainer(
 		owned = child
 	}
 	if owned != nil {
+		data.unobservedChildren.observeCached(owned)
 		if (data.physicalContainerUID != "" && owned.UID != data.physicalContainerUID) || !hasFinalizer(owned, LogicalBackingFinalizer) {
 			identityErr := fmt.Errorf("physical container %q UID or logical hold changed", owned.NamespacedName())
 			data.state, data.reason, data.message, data.reconcileErr = logicalContainerStateUnknown, apiv2.LogicalContainerReasonPhysicalContainerChanged, identityErr.Error(), nil
@@ -817,6 +820,7 @@ func (r *LogicalContainerReconciler) findPhysicalContainerImage(
 		owned = child
 	}
 	if owned != nil {
+		data.unobservedChildren.observeCached(owned)
 		if (data.physicalImageUID != "" && owned.UID != data.physicalImageUID) || !hasFinalizer(owned, LogicalBackingFinalizer) {
 			identityErr := fmt.Errorf("physical image %q UID or logical hold changed", owned.NamespacedName())
 			data.state, data.reason, data.message, data.reconcileErr = logicalContainerStateUnknown, apiv2.LogicalContainerReasonPhysicalImageChanged, identityErr.Error(), nil
@@ -872,7 +876,7 @@ func handleLogicalContainerRunning(
 	if state == logicalContainerStateRunning && physical.DeletionTimestamp.IsZero() {
 		addresses = containerEndpointAddresses(container.Spec.Ports, ports, physical.Status.PortMappings)
 	}
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, ports, addresses); endpointErr != nil {
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, logicalContainerOwnerUIDField, &data.unobservedChildren, ports, addresses); endpointErr != nil {
 		log.Error(endpointErr, "Failed to synchronize logical container endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -916,7 +920,7 @@ func handleLogicalContainerCreating(
 	if observedState == logicalContainerStateRunning && len(container.Spec.Ports) > 0 {
 		ports := data.portData(container)
 		addresses := containerEndpointAddresses(container.Spec.Ports, ports, physical.Status.PortMappings)
-		if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, ports, addresses); endpointErr != nil {
+		if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, logicalContainerOwnerUIDField, &data.unobservedChildren, ports, addresses); endpointErr != nil {
 			log.Error(endpointErr, "Failed to publish starting container endpoints")
 			data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, "Waiting to publish service endpoints."
 			return change | additionalReconciliationNeeded
@@ -938,7 +942,7 @@ func handleLogicalContainerUnknown(
 	state logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data.portData(container), nil); endpointErr != nil {
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, logicalContainerOwnerUIDField, &data.unobservedChildren, data.portData(container), nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw unknown logical container endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -1003,7 +1007,7 @@ func handleLogicalContainerStopping(
 	_ logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data.portData(container), nil); endpointErr != nil {
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, logicalContainerOwnerUIDField, &data.unobservedChildren, data.portData(container), nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw stopping logical container endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -1053,7 +1057,7 @@ func handleLogicalContainerTerminal(
 	_ logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data.portData(container), nil); endpointErr != nil {
+	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, logicalContainerOwnerUIDField, &data.unobservedChildren, data.portData(container), nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw terminal logical container endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -1171,6 +1175,14 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 	delay = StandardDelay
 	if data == nil {
 		data = &logicalContainerData{state: logicalContainerStateDelete}
+		physicalName := "logical-" + string(container.UID)
+		data.unobservedChildren.recordCreateAttempt(&apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{Name: physicalName}})
+		if container.Spec.Container != nil && container.Spec.Container.Image != nil {
+			data.unobservedChildren.recordCreateAttempt(&apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: physicalName}})
+		}
+		for _, port := range container.Spec.Ports {
+			data.unobservedChildren.recordCreateAttempt(&apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: logicalPortResourceName(container, port.Name)}})
+		}
 		r.containerData.Store(container.NamespacedName(), container.UID, data.Clone())
 	}
 
@@ -1192,7 +1204,7 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 	data.reconcileErr = nil
 
 	// Endpoint failures must not prevent requesting backing deletion.
-	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, container)
+	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, container, logicalContainerOwnerUIDField, data.unobservedChildren)
 	if portDeleteErr != nil {
 		log.Error(portDeleteErr, "Failed to delete logical container endpoints")
 	}
@@ -1208,16 +1220,10 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 		data.reconcileErr, data.message = containerListErr, containerListErr.Error()
 		return additionalReconciliationNeeded, delay
 	}
-	if len(physicals.Items) == 0 {
-		uncachedContainerListErr := r.NoCacheClient.List(ctx, &physicals, ctrl_client.InNamespace(container.Namespace))
-		if uncachedContainerListErr != nil {
-			log.Error(uncachedContainerListErr, "Failed to verify physical container absence before deletion")
-			data.reconcileErr, data.message = uncachedContainerListErr, uncachedContainerListErr.Error()
-			return additionalReconciliationNeeded, delay
-		}
-		physicals.Items = std_slices.DeleteFunc(physicals.Items, func(candidate apiv2.PhysicalContainer) bool {
-			return !metav1.IsControlledBy(&candidate, container)
-		})
+	if confirmationErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, container, data.unobservedChildren, &physicals.Items); confirmationErr != nil {
+		log.Error(confirmationErr, "Failed to resolve unobserved physical containers before deletion")
+		data.reconcileErr, data.message = confirmationErr, confirmationErr.Error()
+		return additionalReconciliationNeeded, delay
 	}
 	if len(physicals.Items) != 0 {
 		if len(physicals.Items) == 1 && data.physicalContainerUID == "" {
@@ -1275,16 +1281,10 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 		data.reconcileErr, data.message = imageListErr, imageListErr.Error()
 		return additionalReconciliationNeeded, delay
 	}
-	if len(images.Items) == 0 {
-		uncachedImageListErr := r.NoCacheClient.List(ctx, &images, ctrl_client.InNamespace(container.Namespace))
-		if uncachedImageListErr != nil {
-			log.Error(uncachedImageListErr, "Failed to verify physical image absence before deletion")
-			data.reconcileErr, data.message = uncachedImageListErr, uncachedImageListErr.Error()
-			return additionalReconciliationNeeded, delay
-		}
-		images.Items = std_slices.DeleteFunc(images.Items, func(candidate apiv2.PhysicalContainerImage) bool {
-			return !metav1.IsControlledBy(&candidate, container)
-		})
+	if confirmationErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, container, data.unobservedChildren, &images.Items); confirmationErr != nil {
+		log.Error(confirmationErr, "Failed to resolve unobserved physical images before deletion")
+		data.reconcileErr, data.message = confirmationErr, confirmationErr.Error()
+		return additionalReconciliationNeeded, delay
 	}
 	if len(images.Items) != 0 {
 		if len(images.Items) == 1 && data.physicalImageUID == "" {

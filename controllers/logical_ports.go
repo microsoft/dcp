@@ -177,7 +177,7 @@ func projectLogicalPorts(ports []logicalPortData, destination *[]apiv2.LogicalPo
 
 func syncLogicalEndpoints(
 	ctx context.Context, apiClient ctrl_client.Client, reader ctrl_client.Reader, owner commonapi.DcpModelObject,
-	ports []logicalPortData, addresses [][]apiv2.ServiceAddress,
+	ownerUIDField string, pending *unobservedLogicalChildren, ports []logicalPortData, addresses [][]apiv2.ServiceAddress,
 ) error {
 	desired := make(map[string]apiv2.ServiceEndpointSpec, len(ports))
 	for portIndex, port := range ports {
@@ -189,7 +189,8 @@ func syncLogicalEndpoints(
 		}
 	}
 	var current apiv2.ServiceEndpointList
-	if listErr := reader.List(ctx, &current, ctrl_client.InNamespace(owner.GetNamespace())); listErr != nil {
+	if listErr := apiClient.List(ctx, &current, ctrl_client.InNamespace(owner.GetNamespace()),
+		ctrl_client.MatchingFields{ownerUIDField: string(owner.GetUID())}); listErr != nil {
 		return fmt.Errorf("list logical workload endpoints: %w", listErr)
 	}
 	var syncErr error
@@ -203,6 +204,7 @@ func syncLogicalEndpoints(
 			}
 			continue
 		}
+		(*pending).observeCached(endpoint)
 		delete(desired, endpoint.Name)
 		if wanted && endpoint.DeletionTimestamp.IsZero() && reflect.DeepEqual(endpoint.Spec, spec) {
 			continue
@@ -230,6 +232,7 @@ func syncLogicalEndpoints(
 			syncErr = errors.Join(syncErr, fmt.Errorf("set port %q endpoint owner: %w", port.Name, ownerErr))
 			continue
 		}
+		pending.recordCreateAttempt(endpoint)
 		createErr := apiClient.Create(ctx, endpoint)
 		if apierrors.IsAlreadyExists(createErr) {
 			existing := &apiv2.ServiceEndpoint{}
@@ -249,10 +252,15 @@ func syncLogicalEndpoints(
 
 func cleanupLogicalEndpoints(
 	ctx context.Context, apiClient ctrl_client.Client, reader ctrl_client.Reader, owner commonapi.DcpModelObject,
+	ownerUIDField string, pending unobservedLogicalChildren,
 ) (bool, error) {
 	var current apiv2.ServiceEndpointList
-	if listErr := reader.List(ctx, &current, ctrl_client.InNamespace(owner.GetNamespace())); listErr != nil {
+	if listErr := apiClient.List(ctx, &current, ctrl_client.InNamespace(owner.GetNamespace()),
+		ctrl_client.MatchingFields{ownerUIDField: string(owner.GetUID())}); listErr != nil {
 		return false, fmt.Errorf("list logical workload endpoints before cleanup: %w", listErr)
+	}
+	if confirmationErr := resolveUnobservedLogicalChildren(ctx, reader, owner, pending, &current.Items); confirmationErr != nil {
+		return false, confirmationErr
 	}
 	complete := true
 	var cleanupErr error
