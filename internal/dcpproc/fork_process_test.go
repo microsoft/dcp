@@ -55,7 +55,7 @@ func TestForkProcessExitsWithChildExitCode(t *testing.T) {
 				delayToolPath, toolPathErr := int_testutil.GetTestToolPath("delay")
 				require.NoError(t, toolPathErr)
 				cmdArgs := forkProcessArgsForCurrentProcess(t, delayToolPath,
-					"--delay=100ms", "--report-ready", "--exit-code="+strconv.Itoa(exitCode))
+					"--delay=100ms", "--exit-code="+strconv.Itoa(exitCode))
 				if cleanupEnabled {
 					cmdArgs = append([]string{"fork-process", "--enable-child-cleanup"}, cmdArgs[1:]...)
 				}
