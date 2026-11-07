@@ -167,7 +167,9 @@ func TestForkProcessCleanupHandlesFullLoggingPipe(t *testing.T) {
 	t.Cleanup(func() { stopCleanupProcess(testCtx, childHandle) })
 	fillResultCh := startForkProcessPipeFill(stderrWrite)
 	require.NoError(t, ownerCmd.Process.Kill())
-	waitCleanupProcessGone(t, testCtx, childHandle)
+	cleanupCtx, cleanupCancel := process.WithMonitoredProcessStopTimeout(testCtx)
+	defer cleanupCancel()
+	waitCleanupProcessGone(t, cleanupCtx, childHandle)
 	require.NoError(t, stderrRead.Close())
 	select {
 	case fillErr := <-fillResultCh:
