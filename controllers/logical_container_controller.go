@@ -871,12 +871,8 @@ func handleLogicalContainerRunning(
 		return change | additionalReconciliationNeeded
 	}
 	data.reason, data.message = "", ""
-	var addresses [][]apiv2.ServiceAddress
-	ports := data.portData(container)
-	if state == logicalContainerStateRunning && physical.DeletionTimestamp.IsZero() {
-		addresses = containerEndpointAddresses(container.Spec.Ports, ports, physical.Status.PortMappings)
-	}
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, logicalContainerOwnerUIDField, &data.unobservedChildren, ports, addresses); endpointErr != nil {
+	publish := state == logicalContainerStateRunning && physical.DeletionTimestamp.IsZero()
+	if _, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data, logicalContainerOwnerUIDField, &data.unobservedChildren, publish, physical.Status.PortMappings...); endpointErr != nil {
 		log.Error(endpointErr, "Failed to synchronize logical container endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -918,14 +914,13 @@ func handleLogicalContainerCreating(
 	}
 	change |= reconciler.settleLogicalContainerObservedLease(ctx, container, data, physical, log)
 	if observedState == logicalContainerStateRunning && len(container.Spec.Ports) > 0 {
-		ports := data.portData(container)
-		addresses := containerEndpointAddresses(container.Spec.Ports, ports, physical.Status.PortMappings)
-		if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, logicalContainerOwnerUIDField, &data.unobservedChildren, ports, addresses); endpointErr != nil {
+		addressesReady, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data, logicalContainerOwnerUIDField, &data.unobservedChildren, true, physical.Status.PortMappings...)
+		if endpointErr != nil {
 			log.Error(endpointErr, "Failed to publish starting container endpoints")
 			data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, "Waiting to publish service endpoints."
 			return change | additionalReconciliationNeeded
 		}
-		if std_slices.ContainsFunc(addresses, func(portAddresses []apiv2.ServiceAddress) bool { return len(portAddresses) == 0 }) {
+		if !addressesReady {
 			data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, "Waiting for container port mappings."
 			return change | additionalReconciliationNeeded
 		}
@@ -942,7 +937,7 @@ func handleLogicalContainerUnknown(
 	state logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, logicalContainerOwnerUIDField, &data.unobservedChildren, data.portData(container), nil); endpointErr != nil {
+	if _, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data, logicalContainerOwnerUIDField, &data.unobservedChildren, false); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw unknown logical container endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -1007,7 +1002,7 @@ func handleLogicalContainerStopping(
 	_ logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, logicalContainerOwnerUIDField, &data.unobservedChildren, data.portData(container), nil); endpointErr != nil {
+	if _, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data, logicalContainerOwnerUIDField, &data.unobservedChildren, false); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw stopping logical container endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -1057,7 +1052,7 @@ func handleLogicalContainerTerminal(
 	_ logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, logicalContainerOwnerUIDField, &data.unobservedChildren, data.portData(container), nil); endpointErr != nil {
+	if _, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data, logicalContainerOwnerUIDField, &data.unobservedChildren, false); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw terminal logical container endpoints")
 		change |= additionalReconciliationNeeded
 	}

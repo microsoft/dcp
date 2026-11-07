@@ -364,9 +364,9 @@ func (apiClient *failedStoppingProcessClient) List(
 	return nil
 }
 
-// Verifies that LogicalProcess reports a stopping backing's failure without a Ready condition,
-// preserves process identity, and still allows resource cleanup.
-func TestV2LogicalProcessControllerHandlesStopFailureWithoutReadyCondition(t *testing.T) {
+// Verifies that LogicalProcess reports a stopping backing's failure without a Ready condition.
+// The terminal failure and process identity survive later backing loss while logs become unavailable.
+func TestV2LogicalProcessControllerPreservesConditionlessStopFailureAfterBackingLoss(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -394,6 +394,26 @@ func TestV2LogicalProcessControllerHandlesStopFailureWithoutReadyCondition(t *te
 	require.Empty(t, apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady)).Message)
 	require.Equal(t, running.Status.PID, failed.Status.PID)
 	require.Equal(t, running.Status.PhysicalProcessRef, failed.Status.PhysicalProcessRef)
+	physical := waitObjectAssumesStateEx(t, ctx, server.Client,
+		types.NamespacedName{Name: failed.Status.PhysicalProcessRef, Namespace: namespace.Name},
+		func(current *apiv2.PhysicalProcess) (bool, error) {
+			return current.Status.Phase == apiv2.PhysicalProcessPhaseExited, nil
+		})
+	failed = waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.ExitCode != nil && current.Status.FinishedAt.Equal(&physical.Status.FinishedAt), nil
+	})
+	require.Equal(t, apiv2.LogicalProcessPhaseFailed, failed.Status.Phase)
+	forceRemoveLogicalProcessBacking(t, ctx, server.Client, physical)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+	unavailable := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete && !current.Status.RuntimeLogs.Available, nil
+	})
+	require.Equal(t, failed.Status.Phase, unavailable.Status.Phase)
+	require.Equal(t, failed.Status.Conditions, unavailable.Status.Conditions)
+	require.Equal(t, failed.Status.PID, unavailable.Status.PID)
+	require.Equal(t, failed.Status.ExitCode, unavailable.Status.ExitCode)
+	require.Equal(t, failed.Status.FinishedAt, unavailable.Status.FinishedAt)
+	require.Equal(t, physical.UID, unavailable.Status.RuntimeLogs.UID)
 	require.NoError(t, server.Client.Delete(ctx, resource))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }

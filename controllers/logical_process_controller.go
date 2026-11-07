@@ -492,8 +492,7 @@ func handleLogicalProcessCreating(
 			data.state, data.reason, data.message = logicalProcessStateStopping, apiv2.LogicalProcessReasonStopping, ""
 			return change | additionalReconciliationNeeded
 		}
-		ports := data.portData(resource)
-		if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, logicalProcessOwnerUIDField, &data.unobservedChildren, ports, processEndpointAddresses(ports)); endpointErr != nil {
+		if _, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data, logicalProcessOwnerUIDField, &data.unobservedChildren, true); endpointErr != nil {
 			log.Error(endpointErr, "Failed to publish starting process endpoints")
 			data.reason, data.message = apiv2.LogicalResourceReasonPortPreparationPending, "Waiting to publish service endpoints."
 			return change | additionalReconciliationNeeded
@@ -533,8 +532,7 @@ func handleLogicalProcessRunning(
 		return change | additionalReconciliationNeeded
 	}
 	data.reason, data.message = "", ""
-	ports := data.portData(resource)
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, logicalProcessOwnerUIDField, &data.unobservedChildren, ports, processEndpointAddresses(ports)); endpointErr != nil {
+	if _, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data, logicalProcessOwnerUIDField, &data.unobservedChildren, true); endpointErr != nil {
 		log.Error(endpointErr, "Failed to synchronize running process endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -549,7 +547,7 @@ func handleLogicalProcessStopping(
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, logicalProcessOwnerUIDField, &data.unobservedChildren, data.portData(resource), nil); endpointErr != nil {
+	if _, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data, logicalProcessOwnerUIDField, &data.unobservedChildren, false); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw stopping process endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -598,7 +596,7 @@ func handleLogicalProcessTerminal(
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, logicalProcessOwnerUIDField, &data.unobservedChildren, data.portData(resource), nil); endpointErr != nil {
+	if _, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data, logicalProcessOwnerUIDField, &data.unobservedChildren, false); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw terminal process endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -615,7 +613,6 @@ func handleLogicalProcessTerminal(
 	if getErr != nil {
 		log.Error(getErr, "Failed to get terminal process backing")
 		if lookupData.state == logicalProcessStateMissing {
-			data.state, data.reason, data.message = lookupData.state, lookupData.reason, lookupData.message
 			change |= data.applyMissingLogSource(resource)
 		}
 		return change
@@ -630,7 +627,7 @@ func handleLogicalProcessMissing(
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
 	change := data.applyMissingLogSource(resource)
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, logicalProcessOwnerUIDField, &data.unobservedChildren, data.portData(resource), nil); endpointErr != nil {
+	if _, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data, logicalProcessOwnerUIDField, &data.unobservedChildren, false); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw missing process endpoints")
 		change |= additionalReconciliationNeeded
 	}
@@ -805,7 +802,7 @@ func handleLogicalProcessUnknown(
 	state logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
 	change := noChange
-	if endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, logicalProcessOwnerUIDField, &data.unobservedChildren, data.portData(resource), nil); endpointErr != nil {
+	if _, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data, logicalProcessOwnerUIDField, &data.unobservedChildren, false); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw unknown process endpoints")
 		change |= additionalReconciliationNeeded
 	}

@@ -364,6 +364,70 @@ func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T)
 	}
 }
 
+// Verifies that LogicalProcess preserves a captured exit outcome after backing deletion while
+// publishing unavailable logs, including when a real API conflict rejects the first status update.
+func TestV2ProcessTerminalOutcomeSurvivesBackingDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	logicalName := types.NamespacedName{Namespace: "v2-terminal-process-backing-loss", Name: "process"}
+	var conflictReader *processBackingDeletionConflictReader
+	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIReader: func(reader ctrl_client.Reader) ctrl_client.Reader {
+			conflictReader = &processBackingDeletionConflictReader{Reader: reader, logicalName: logicalName}
+			return conflictReader
+		}})
+	require.NoError(t, startupErr)
+	conflictReader.client = server.Client
+	createV2ExecNamespace(t, ctx, server.Client, logicalName.Namespace)
+	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: logicalName.Name, Namespace: logicalName.Namespace},
+		Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{ExecutablePath: logicalName.Namespace}}}
+	require.NoError(t, server.Client.Create(ctx, resource))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, logicalName, func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+	})
+	pid, pidErr := process.Int64_ToPidT(*running.Status.PID)
+	require.NoError(t, pidErr)
+	environment.TestProcessExecutor.SimulateProcessExit(t, pid, 17)
+	exited := waitObjectAssumesStateEx(t, ctx, server.Client, logicalName, func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
+	})
+	require.NotNil(t, exited.Status.ExitCode)
+	require.Equal(t, int32(17), *exited.Status.ExitCode)
+	require.False(t, exited.Status.FinishedAt.IsZero())
+	require.NotNil(t, exited.Status.RuntimeLogs)
+	require.True(t, exited.Status.RuntimeLogs.Available)
+	physical := &apiv2.PhysicalProcess{}
+	require.NoError(t, server.Client.Get(ctx,
+		types.NamespacedName{Name: exited.Status.PhysicalProcessRef, Namespace: logicalName.Namespace}, physical))
+	conflictReader.armed.Store(true)
+	forceRemoveLogicalProcessBacking(t, ctx, server.Client, physical)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+	completed := waitObjectAssumesStateEx(t, ctx, server.Client, logicalName, func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete && !current.Status.RuntimeLogs.Available, nil
+	})
+	require.True(t, conflictReader.injected.Load())
+	require.Equal(t, exited.Status.Phase, completed.Status.Phase)
+	require.Equal(t, exited.Status.Conditions, completed.Status.Conditions)
+	require.Equal(t, exited.Status.PID, completed.Status.PID)
+	require.Equal(t, exited.Status.IdentityTimestamp, completed.Status.IdentityTimestamp)
+	require.Equal(t, exited.Status.ExitCode, completed.Status.ExitCode)
+	require.Equal(t, exited.Status.FinishedAt, completed.Status.FinishedAt)
+	require.Equal(t, exited.Status.PhysicalProcessRef, completed.Status.PhysicalProcessRef)
+	require.Equal(t, physical.Name, completed.Status.RuntimeLogs.Name)
+	require.Equal(t, physical.UID, completed.Status.RuntimeLogs.UID)
+	require.NoError(t, server.Client.Patch(ctx, resource,
+		ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	unchanged := waitObjectAssumesStateEx(t, ctx, server.Client, logicalName, func(current *apiv2.LogicalProcess) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Spec.Stop && ready != nil && ready.ObservedGeneration == current.Generation, nil
+	})
+	require.Equal(t, apiv2.LogicalProcessPhaseExited, unchanged.Status.Phase)
+	requireReadyCondition(t, unchanged.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonExited)
+	require.Equal(t, completed.Status.RuntimeLogs, unchanged.Status.RuntimeLogs)
+}
+
 // Verifies that LogicalProcess and PhysicalProcess endpoints share captured stdout/stderr,
 // support standard formatting and filtering, and finish followers when the process exits.
 func TestV2ProcessLogEndpointsShareOutputAndCompleteOnExit(t *testing.T) {
