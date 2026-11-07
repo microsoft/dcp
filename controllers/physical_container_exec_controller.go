@@ -310,7 +310,7 @@ func (r *PhysicalContainerExecReconciler) handleExecutionDeletion(
 			return noChange, StandardDelay
 		}
 		data = &physicalContainerExecData{
-			state: physicalContainerExecStateExited, reason: "ExecutionCancelled",
+			state: physicalContainerExecStateExited, reason: apiv2.ContainerExecReasonCancelled,
 			message: "Execution was cancelled before launch.", finishedAt: metav1.NowMicro(),
 		}
 		r.executions.Store(resource.NamespacedName(), resource.UID, data.Clone())
