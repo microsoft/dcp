@@ -8,7 +8,9 @@ package hosting
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,6 +18,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -151,6 +155,60 @@ func Test_CommandService_UnexpectedExitIsReportedWhenNotTerminated(t *testing.T)
 	runErr := <-runResult
 	require.Error(t, runErr)
 	require.ErrorContains(t, runErr, "exit code 3")
+}
+
+// Verifies that CommandService.Run with CommandServiceRunOptionWaitForExit does not return after context cancellation
+// until the process has exited, so files held open by the process can be removed without retries once Run returns.
+func Test_CommandService_WaitForExitReleasesProcessFiles(t *testing.T) {
+	execCtx, cancelExecCtx := testutil.GetTestContext(t, hostingTestTimeout)
+	defer cancelExecCtx()
+
+	delayToolPath, toolErr := internal_testutil.GetTestToolPath("delay")
+	require.NoError(t, toolErr)
+
+	sessionDir := t.TempDir()
+	readyFilePath := filepath.Join(sessionDir, "ready")
+	heldFile, heldFileErr := usvc_io.CreateNewFile(filepath.Join(sessionDir, "held.log"), osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, heldFileErr)
+
+	cmd := exec.Command(delayToolPath, "--delay=3s", "--ready-file="+readyFilePath)
+	cmd.Stdout = heldFile // The process holds the file open for its lifetime.
+
+	executor := process.NewOSExecutor(logr.Discard())
+	defer executor.Dispose()
+
+	svc := NewCommandService(
+		commandServiceTestName,
+		cmd,
+		executor,
+		CommandServiceRunOptionDontTerminate|CommandServiceRunOptionWaitForExit,
+		logr.Discard(),
+	)
+	svcCtx, cancelSvcCtx := context.WithCancel(execCtx)
+	defer cancelSvcCtx()
+	runResult := runCommandServiceAsync(svc, svcCtx)
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for _, statErr := os.Stat(readyFilePath); statErr != nil; _, statErr = os.Stat(readyFilePath) {
+		select {
+		case <-execCtx.Done():
+			require.FailNow(t, "timed out waiting for the service process to start")
+		case <-ticker.C:
+		}
+	}
+
+	cancelSvcCtx()
+	select {
+	case runErr := <-runResult:
+		require.NoError(t, runErr)
+	case <-execCtx.Done():
+		require.FailNow(t, "timed out waiting for the service to stop")
+	}
+
+	require.NoError(t, heldFile.Close())
+	require.NoError(t, os.RemoveAll(sessionDir))
+	require.Equal(t, int32(0), svc.exitCode, "the service should report the exit of its process")
 }
 
 // Test_CommandService_ProcessTrackingErrorIsReported verifies that a failure to observe the process
