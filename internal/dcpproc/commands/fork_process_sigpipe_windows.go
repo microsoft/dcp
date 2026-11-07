@@ -7,7 +7,6 @@
 
 package commands
 
-// EnableSIGPIPEErrors is a no-op on Windows.
-func EnableSIGPIPEErrors() func() {
-	return func() {}
+// enableForkProcessSIGPIPEErrorsForProcessLifetime is a no-op on Windows.
+func enableForkProcessSIGPIPEErrorsForProcessLifetime() {
 }
