@@ -153,6 +153,27 @@ func Test_CommandService_UnexpectedExitIsReportedWhenNotTerminated(t *testing.T)
 	require.ErrorContains(t, runErr, "exit code 3")
 }
 
+// Verifies that CommandService.Run returns without error and does not start the command
+// when the service context is already cancelled, including for services that outlive their context.
+func Test_CommandService_DoesNotStartWhenContextAlreadyCancelled(t *testing.T) {
+	execCtx, cancelExecCtx := testutil.GetTestContext(t, hostingTestTimeout)
+	defer cancelExecCtx()
+
+	for _, options := range []CommandServiceRunOptions{CommandServiceRunOptionDontTerminate, 0} {
+		executor := internal_testutil.NewTestProcessExecutor(execCtx)
+
+		svcCtx, cancelSvcCtx := context.WithCancel(execCtx)
+		cancelSvcCtx()
+
+		svc := newTestCommandService(t, executor, options)
+		require.NoError(t, svc.Run(svcCtx), "options: %d", options)
+
+		_, found := executor.FindByPid(firstTestProcessPID)
+		require.False(t, found, "the command should not be started when the service context is already cancelled (options: %d)", options)
+		executor.Dispose()
+	}
+}
+
 // Test_CommandService_ProcessTrackingErrorIsReported verifies that a failure to observe the process
 // exit is surfaced even though no exit code is available.
 func Test_CommandService_ProcessTrackingErrorIsReported(t *testing.T) {

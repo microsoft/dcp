@@ -55,6 +55,11 @@ func (s *CommandService) Name() string {
 }
 
 func (s *CommandService) Run(ctx context.Context) error {
+	// With CommandServiceRunOptionDontTerminate the command would outlive an already-ended service lifetime.
+	if ctx.Err() != nil {
+		return nil
+	}
+
 	if (s.options & CommandServiceRunOptionShowStderr) != 0 {
 		reader, writer := usvc_io.NewBufferedPipe()
 		s.cmd.Stderr = writer
