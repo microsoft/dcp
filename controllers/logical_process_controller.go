@@ -35,10 +35,7 @@ import (
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
-var (
-	logicalProcessFinalizer         = fmt.Sprintf("%s/logicalprocess-reconciler", apiv2.GroupVersion.Group)
-	errLogicalProcessBackingChanged = errors.New("logical process backing changed")
-)
+var logicalProcessFinalizer = fmt.Sprintf("%s/logicalprocess-reconciler", apiv2.GroupVersion.Group)
 
 const logicalProcessOwnerUIDField = ".metadata.logicalProcessOwnerUID"
 
@@ -405,7 +402,7 @@ func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
 	var creationCollision error
 	if apierrors.IsNotFound(getErr) {
 		if expectedUID != "" {
-			return nil, fmt.Errorf("%w: physical process %q no longer exists", errLogicalProcessBackingChanged, physical.NamespacedName())
+			return nil, fmt.Errorf("logical process backing changed: physical process %q no longer exists", physical.NamespacedName())
 		}
 		ready, reason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, resource.Namespace)
 		if namespaceErr != nil {
@@ -685,7 +682,7 @@ func (r *LogicalProcessReconciler) findPhysicalProcess(
 	}
 	if !metav1.IsControlledBy(physical, resource) || (expectedUID != "" && physical.UID != expectedUID) ||
 		!hasFinalizer(physical, LogicalBackingFinalizer) {
-		identityErr := fmt.Errorf("%w: physical process %q has a different identity, owner, or logical hold", errLogicalProcessBackingChanged, name)
+		identityErr := fmt.Errorf("logical process backing changed: physical process %q has a different identity, owner, or logical hold", name)
 		data.state, data.reason, data.message, data.reconcileErr = logicalProcessStateUnknown, apiv2.LogicalProcessReasonPhysicalProcessChanged, identityErr.Error(), nil
 		return nil, identityErr
 	}
