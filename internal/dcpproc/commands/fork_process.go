@@ -7,43 +7,59 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
 	cmds "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
-func NewForkProcessCommand(log logr.Logger) (*cobra.Command, error) {
-	forkProcessCmd := &cobra.Command{
-		Use:   "fork-process [--monitor pid] [--monitor-identity-time time] -- command [args...]",
-		Short: "Starts a detached child process.",
-		Long:  "Starts a child process outside of the parent process tree or process group and writes the child PID to stdout. If a monitor process is provided, waits for either the child or monitor process to exit and exits with the child process exit code if the child exits first. If the monitor process exits first, fork-process exits and leaves the child process running.",
-		RunE:  forkProcess(log),
-		Args:  validateForkProcessArgs,
+type forkProcessOptions struct {
+	enableChildCleanup bool
+}
 
+func NewForkProcessCommand(log logr.Logger) (*cobra.Command, error) {
+	options := &forkProcessOptions{}
+	forkProcessCmd := &cobra.Command{
+		Use:          "fork-process [--monitor pid] [--monitor-identity-time time] [--enable-child-cleanup] -- command [args...]",
+		Short:        "Starts a detached child process.",
+		Long:         "Starts a child process outside of the parent process tree or process group and writes the child PID to stdout on a best-effort basis. PID delivery can race with cleanup and does not guarantee that the process remains alive; consumers must validate the process identity and observe fork-process completion. If a monitor process is provided, waits for either the child or monitor process to exit and exits with the child process exit code if the child exits first. If the monitor process exits first, fork-process exits and leaves the child process running unless --enable-child-cleanup is specified. Enabled cleanup stops only the launched process when the monitored owner exits, fork-process receives a shutdown signal, or PID output fails; descendants are not enumerated or stopped, although shared-console signals may still reach them. Child stdout and stderr are not forwarded.",
+		RunE:         forkProcess(log, options),
+		Args:         validateForkProcessArgs,
 		SilenceUsage: true,
 	}
 
 	cmds.AddMonitorFlags(forkProcessCmd)
+	forkProcessCmd.Flags().BoolVar(&options.enableChildCleanup, "enable-child-cleanup", false, "Stops only the launched process when the monitored owner exits, fork-process receives a shutdown signal, or PID output fails. Descendants are not enumerated or stopped. Requires --monitor.")
 
 	return forkProcessCmd, nil
 }
 
-func validateForkProcessArgs(_ *cobra.Command, args []string) error {
+func validateForkProcessArgs(cmd *cobra.Command, args []string) error {
 	if len(trimForkProcessArgSeparator(args)) == 0 {
 		return fmt.Errorf("command is required")
+	}
+
+	cleanupEnabled, cleanupFlagErr := cmd.Flags().GetBool("enable-child-cleanup")
+	if cleanupFlagErr != nil {
+		return cleanupFlagErr
+	}
+	if cleanupEnabled && !cmd.Flags().Changed("monitor") {
+		return fmt.Errorf("--enable-child-cleanup requires --monitor")
 	}
 
 	return nil
 }
 
-func forkProcess(log logr.Logger) func(cmd *cobra.Command, args []string) error {
+func forkProcess(log logr.Logger, options *forkProcessOptions) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		args = trimForkProcessArgSeparator(args)
 
@@ -57,77 +73,82 @@ func forkProcess(log logr.Logger) func(cmd *cobra.Command, args []string) error 
 		logger.WithSessionId(childCmd)
 		process.ForkFromParent(childCmd)
 
+		if options.enableChildCleanup {
+			enableForkProcessSIGPIPEErrorsForProcessLifetime()
+		}
+
 		monitorEnabled := cmd.Flags().Changed("monitor")
 		var monitorCtx context.Context
 		var monitorCtxCancel context.CancelFunc
 		if monitorEnabled {
-			monitorCtx, monitorCtxCancel = cmds.GetMonitorContextFromFlags(cmd.Context(), log)
+			if options.enableChildCleanup {
+				var monitorErr error
+				monitorCtx, monitorCtxCancel, monitorErr = monitorForkOwner(cmd, log)
+				if monitorErr != nil && !process.IsProcessGoneErr(monitorErr) {
+					monitorCtxCancel()
+					return monitorErr
+				}
+			} else {
+				monitorCtx, monitorCtxCancel = cmds.GetMonitorContextFromFlags(cmd.Context(), log)
+			}
 			defer monitorCtxCancel()
 			select {
 			case <-monitorCtx.Done():
+				if options.enableChildCleanup {
+					monitorResultErr := forkOwnerMonitorResult(cmd.Context(), monitorCtx)
+					if monitorResultErr != nil {
+						return monitorResultErr
+					}
+				}
 				log.Info("Monitored process already exited; forked process will not be started")
 				return nil
 			default:
 			}
 		}
 
-		pid, childExitInfoCh, disposeChildExecutor, startErr := startForkedProcess(cmd, childCmd, monitorEnabled, log)
-		if startErr != nil {
-			return startErr
+		executorLog := log.WithName("ProcessExecutor")
+		if options.enableChildCleanup {
+			// Cleanup must not depend on a diagnostic sink that can block indefinitely.
+			executorLog = logr.Discard()
 		}
-		defer disposeChildExecutor()
-
-		if !monitorEnabled {
-			return nil
-		}
-
-		select {
-		case childExitInfo, ok := <-childExitInfoCh:
-			if !ok {
-				return fmt.Errorf("forked process exit channel closed without a result")
-			}
-
-			if childExitInfo.Err != nil {
-				log.Error(childExitInfo.Err, "Error waiting for forked process", "PID", pid)
-				return childExitInfo.Err
-			}
-
-			if childExitInfo.ExitCode != 0 {
-				exitCode := int(childExitInfo.ExitCode)
-				log.Info("Forked process exited with a non-zero exit code", "PID", pid, "ExitCode", exitCode)
-				return cmds.NewExitCodeError(fmt.Errorf("forked process exited with code %d", exitCode), exitCode)
-			}
-
-			log.V(1).Info("Forked process exited", "PID", pid)
-			return nil
-
-		case <-monitorCtx.Done():
-			if cmd.Context().Err() != nil {
-				return cmd.Context().Err()
-			}
-
-			log.Info("Monitored process exited; fork-process is exiting", "PID", pid)
-			return nil
-		}
+		executor := process.NewOSExecutor(executorLog)
+		defer executor.Dispose()
+		return runForkedProcess(cmd, childCmd, monitorCtx, options, executor, log)
 	}
 }
 
-func startForkedProcess(
+func monitorForkOwner(cmd *cobra.Command, log logr.Logger) (context.Context, context.CancelFunc, error) {
+	ownerPID, pidFlagErr := cmd.Flags().GetInt64("monitor")
+	if pidFlagErr != nil {
+		return cmd.Context(), func() {}, pidFlagErr
+	}
+	ownerIdentity, identityFlagErr := time.Parse(osutil.RFC3339MiliTimestampFormat, cmd.Flags().Lookup("monitor-identity-time").Value.String())
+	if identityFlagErr != nil {
+		return cmd.Context(), func() {}, identityFlagErr
+	}
+	pollInterval, intervalFlagErr := cmd.Flags().GetUint8("monitor-interval")
+	if intervalFlagErr != nil {
+		return cmd.Context(), func() {}, intervalFlagErr
+	}
+	return cmds.MonitorPid(cmd.Context(), process.NewHandle(process.Pid_t(ownerPID), ownerIdentity), pollInterval, log)
+}
+
+func runForkedProcess(
 	cmd *cobra.Command,
 	childCmd *exec.Cmd,
-	observeExit bool,
+	monitorCtx context.Context,
+	options *forkProcessOptions,
+	executor process.Executor,
 	log logr.Logger,
-) (process.Pid_t, <-chan process.ProcessExitInfo, func(), error) {
-	executor := process.NewOSExecutor(log.WithName("ProcessExecutor"))
-	dispose := executor.Dispose
-
+) (returnErr error) {
 	var handle process.ProcessHandle
 	var childExitInfoCh chan process.ProcessExitInfo
 	var startErr error
-	if observeExit {
+	if monitorCtx != nil {
 		childExitInfoCh = make(chan process.ProcessExitInfo, 1)
 		childExitHandler := process.NewChannelProcessExitHandler(childExitInfoCh)
 		var startWaitForProcessExit func()
+		// Cleanup is owned here so executor context cancellation cannot override root-only policy.
 		handle, startWaitForProcessExit, startErr = executor.StartProcess(context.Background(), childCmd, childExitHandler, process.CreationFlagsNone, nil)
 		if startErr == nil {
 			startWaitForProcessExit()
@@ -137,23 +158,115 @@ func startForkedProcess(
 	}
 	if startErr != nil {
 		log.Error(startErr, "Failed to start forked process", "Command", childCmd.Path, "Args", childCmd.Args[1:])
-		executor.Dispose()
-		return process.UnknownPID, nil, nil, fmt.Errorf("could not start forked process: %w", startErr)
+		return fmt.Errorf("could not start forked process: %w", startErr)
 	}
 
+	cleanupChild := options.enableChildCleanup
+	var afterCleanupLog func()
+	defer func() {
+		if cleanupChild {
+			stopErr := runDetachedProcessCleanup(cmd.Context(), func(stopCtx context.Context) error {
+				return process.StopViaConsole(stopCtx, logr.Discard(), executor, handle, process.StopRootOnly())
+			})
+			if process.IsProcessGoneErr(stopErr) {
+				log.V(1).Info("Forked process already exited before cleanup", "PID", handle.Pid)
+			} else if stopErr != nil {
+				returnErr = errors.Join(returnErr, fmt.Errorf("could not stop forked process: %w", stopErr))
+				log.Error(stopErr, "Failed to stop forked process", "PID", handle.Pid)
+			}
+		}
+		if afterCleanupLog != nil {
+			afterCleanupLog()
+		}
+	}()
+
+	if options.enableChildCleanup && monitorCtx != nil && monitorCtx.Err() != nil {
+		afterCleanupLog = func() {
+			log.Info("Monitored process exited during startup; fork-process is exiting", "PID", handle.Pid)
+		}
+		return forkOwnerMonitorResult(cmd.Context(), monitorCtx)
+	}
 	pid := handle.Pid
-	if _, writeErr := fmt.Fprintln(cmd.OutOrStdout(), pid); writeErr != nil {
-		log.Error(writeErr, "Failed to write forked process PID", "PID", pid)
-		executor.Dispose()
-		return process.UnknownPID, nil, nil, fmt.Errorf("could not write forked process pid: %w", writeErr)
+	var writeErr error
+	if options.enableChildCleanup && monitorCtx != nil {
+		writeResultCh := make(chan error, 1)
+		go func() {
+			// PID output is best effort. If cancellation wins, this one-shot helper can exit
+			// while the writer remains blocked, and the write may complete while cleanup runs.
+			_, pidWriteErr := fmt.Fprintln(cmd.OutOrStdout(), pid)
+			writeResultCh <- pidWriteErr
+		}()
+		select {
+		case writeErr = <-writeResultCh:
+		case <-cmd.Context().Done():
+			return cmd.Context().Err()
+		case <-monitorCtx.Done():
+			afterCleanupLog = func() {
+				log.Info("Monitored process exited before forked process PID was reported; fork-process is exiting", "PID", pid)
+			}
+			return forkOwnerMonitorResult(cmd.Context(), monitorCtx)
+		}
+	} else {
+		_, writeErr = fmt.Fprintln(cmd.OutOrStdout(), pid)
+	}
+	if writeErr != nil {
+		afterCleanupLog = func() {
+			log.Error(writeErr, "Failed to write forked process PID", "PID", pid)
+		}
+		return fmt.Errorf("could not write forked process pid: %w", writeErr)
 	}
 
-	if !observeExit {
-		executor.Dispose()
-		dispose = func() {}
+	if monitorCtx == nil {
+		return nil
 	}
 
-	return pid, childExitInfoCh, dispose, nil
+	select {
+	case childExitInfo, ok := <-childExitInfoCh:
+		if !ok {
+			return fmt.Errorf("forked process exit channel closed without a result")
+		}
+		if childExitInfo.Err != nil {
+			afterCleanupLog = func() {
+				log.Error(childExitInfo.Err, "Error waiting for forked process", "PID", pid)
+			}
+			return childExitInfo.Err
+		}
+		if childExitInfo.ExitCode >= 0 {
+			cleanupChild = false
+		}
+		if childExitInfo.ExitCode != 0 {
+			exitCode := int(childExitInfo.ExitCode)
+			log.Info("Forked process exited with a non-zero exit code", "PID", pid, "ExitCode", exitCode)
+			return cmds.NewExitCodeError(fmt.Errorf("forked process exited with code %d", exitCode), exitCode)
+		}
+		log.V(1).Info("Forked process exited", "PID", pid)
+		return nil
+	case <-monitorCtx.Done():
+		if commandErr := cmd.Context().Err(); commandErr != nil {
+			return commandErr
+		}
+		if options.enableChildCleanup {
+			monitorResultErr := forkOwnerMonitorResult(cmd.Context(), monitorCtx)
+			if monitorResultErr != nil {
+				return monitorResultErr
+			}
+		}
+		afterCleanupLog = func() {
+			log.Info("Monitored process exited; fork-process is exiting", "PID", pid)
+		}
+		return nil
+	}
+}
+
+func forkOwnerMonitorResult(commandCtx context.Context, monitorCtx context.Context) error {
+	if commandErr := commandCtx.Err(); commandErr != nil {
+		return commandErr
+	}
+	monitorErr := context.Cause(monitorCtx)
+	if monitorErr == nil || errors.Is(monitorErr, context.Canceled) || process.IsProcessGoneErr(monitorErr) {
+		return nil
+	}
+	return fmt.Errorf("could not monitor fork owner: %w", monitorErr)
 }
 
 func trimForkProcessArgSeparator(args []string) []string {

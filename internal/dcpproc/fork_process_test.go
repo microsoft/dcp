@@ -26,6 +26,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+// Verifies that fork-process starts a detached command and reports its live process identity.
 func TestForkProcessStartsDetachedCommand(t *testing.T) {
 	t.Parallel()
 
@@ -40,33 +41,44 @@ func TestForkProcessStartsDetachedCommand(t *testing.T) {
 	require.NoError(t, checkExecutor.CheckProcessRunning(forkedProcess))
 }
 
+// Verifies that fork-process propagates natural child exit codes and keeps stdout PID-only,
+// whether or not child cleanup is enabled.
 func TestForkProcessExitsWithChildExitCode(t *testing.T) {
-	t.Parallel()
-
-	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
-	t.Cleanup(testCancel)
-
-	dcpProc, dcpProcErr := getDcpProcExecutablePath()
-	require.NoError(t, dcpProcErr)
-
-	delayToolPath, toolPathErr := int_testutil.GetTestToolPath("delay")
-	require.NoError(t, toolPathErr)
-
-	cmdArgs := forkProcessArgsForCurrentProcess(t, delayToolPath, "--delay=100ms", "--exit-code=7")
-	dcpProcCmd := exec.CommandContext(testCtx, dcpProc, cmdArgs...)
-	var stdout, stderr bytes.Buffer
-	dcpProcCmd.Stdout = &stdout
-	dcpProcCmd.Stderr = &stderr
-
-	runErr := dcpProcCmd.Run()
-	var exitErr *exec.ExitError
-	require.True(t, errors.As(runErr, &exitErr), "dcp fork-process should exit with the child exit code; stderr: %s", stderr.String())
-	require.Equal(t, 7, exitErr.ExitCode(), "dcp fork-process should exit with the child exit code; stderr: %s", stderr.String())
-
-	stdoutText := strings.TrimSpace(stdout.String())
-	_ = parseForkedPid(t, stdoutText)
+	for _, cleanupEnabled := range []bool{false, true} {
+		for _, exitCode := range []int{0, 7} {
+			t.Run(fmt.Sprintf("cleanup=%t,exit=%d", cleanupEnabled, exitCode), func(t *testing.T) {
+				t.Parallel()
+				testCtx, testCancel := testutil.GetTestContext(t, 0)
+				defer testCancel()
+				dcpProc, dcpProcErr := getDcpProcExecutablePath()
+				require.NoError(t, dcpProcErr)
+				delayToolPath, toolPathErr := int_testutil.GetTestToolPath("delay")
+				require.NoError(t, toolPathErr)
+				cmdArgs := forkProcessArgsForCurrentProcess(t, delayToolPath,
+					"--delay=100ms", "--exit-code="+strconv.Itoa(exitCode))
+				if cleanupEnabled {
+					cmdArgs = append([]string{"fork-process", "--enable-child-cleanup"}, cmdArgs[1:]...)
+				}
+				dcpProcCmd := exec.CommandContext(testCtx, dcpProc, cmdArgs...)
+				var stdout, stderr bytes.Buffer
+				dcpProcCmd.Stdout = &stdout
+				dcpProcCmd.Stderr = &stderr
+				runErr := dcpProcCmd.Run()
+				if exitCode == 0 {
+					require.NoError(t, runErr, stderr.String())
+				} else {
+					var exitErr *exec.ExitError
+					require.True(t, errors.As(runErr, &exitErr), stderr.String())
+					require.Equal(t, exitCode, exitErr.ExitCode(), stderr.String())
+				}
+				_ = parseForkedPid(t, stdout.String())
+				require.NotContains(t, stderr.String(), "Ran to completion", "child stderr must not be forwarded")
+			})
+		}
+	}
 }
 
+// Verifies that default fork-process leaves the detached child alive when its monitored owner exits.
 func TestForkProcessExitsWhenMonitoredParentExits(t *testing.T) {
 	t.Parallel()
 
