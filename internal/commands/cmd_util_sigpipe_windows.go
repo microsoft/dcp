@@ -7,6 +7,7 @@
 
 package commands
 
-func enableForkProcessSIGPIPEErrors() func() {
+// EnableSIGPIPEErrors is a no-op on Windows.
+func EnableSIGPIPEErrors() func() {
 	return func() {}
 }

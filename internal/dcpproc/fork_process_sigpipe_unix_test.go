@@ -10,15 +10,19 @@ package dcpproc_test
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 
 	int_testutil "github.com/microsoft/dcp/internal/testutil"
@@ -68,12 +72,66 @@ func TestForkProcessCleanupHandlesClosedPidPipe(t *testing.T) {
 	require.False(t, waitStatus.Signaled(), stderr.String())
 	childPID := failedForkProcessPID(t, stderr.String())
 	childHandle, childHandleErr := process.FindProcessHandle(childPID)
-	if process.IsProcessGoneErr(childHandleErr) {
-		return
+	if childHandleErr == nil {
+		t.Cleanup(func() { stopCleanupProcess(testCtx, childHandle) })
 	}
-	require.NoError(t, childHandleErr)
+	require.True(t, process.IsProcessGoneErr(childHandleErr), "child remained alive after fork-process exited: %v", childHandleErr)
+}
+
+// Verifies that cleanup-enabled fork-process exits and stops its child when PID output blocks on a full pipe.
+func TestForkProcessCleanupHandlesFullPidPipe(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 0)
+	defer testCancel()
+	ownerCmd, owner := startCleanupOwner(t, testCtx)
+	dcpPath, dcpPathErr := getDcpProcExecutablePath()
+	require.NoError(t, dcpPathErr)
+	delayPath, delayPathErr := int_testutil.GetTestToolPath("delay")
+	require.NoError(t, delayPathErr)
+	stdoutRead, stdoutWrite, pipeErr := os.Pipe()
+	require.NoError(t, pipeErr)
+	defer stdoutRead.Close()
+	require.NoError(t, stdoutWrite.SetWriteDeadline(time.Now().Add(time.Second)))
+	for {
+		_, fillErr := stdoutWrite.Write(make([]byte, 4096))
+		if errors.Is(fillErr, os.ErrDeadlineExceeded) {
+			break
+		}
+		require.NoError(t, fillErr)
+	}
+	require.NoError(t, stdoutWrite.SetWriteDeadline(time.Time{}))
+	readyPath := filepath.Join(t.TempDir(), "child-ready")
+	command := exec.CommandContext(
+		testCtx,
+		dcpPath,
+		"fork-process",
+		"--monitor", strconv.FormatInt(int64(owner.Pid), 10),
+		"--monitor-identity-time", owner.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+		"--monitor-interval", "1",
+		"--enable-child-cleanup",
+		"--",
+		delayPath,
+		"--delay=2m",
+		"--ready-file="+readyPath,
+	)
+	process.ForkFromParent(command)
+	command.Stdout = stdoutWrite
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	require.NoError(t, command.Start())
+	commandHandle, commandHandleErr := process.ProcessHandleFromCmd(command)
+	require.NoError(t, commandHandleErr)
+	require.NoError(t, stdoutWrite.Close())
+	waitCleanupFile(t, testCtx, readyPath)
+	tree, treeErr := process.GetProcessTree(testCtx, commandHandle)
+	require.NoError(t, treeErr)
+	require.Len(t, tree, 2)
+	childHandle := tree[1]
 	t.Cleanup(func() { stopCleanupProcess(testCtx, childHandle) })
-	waitCleanupProcessGone(t, testCtx, childHandle)
+	require.NoError(t, ownerCmd.Process.Kill())
+	require.NoError(t, command.Wait(), stderr.String())
+	executor := process.NewOSExecutor(logr.Discard())
+	defer executor.Dispose()
+	require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(childHandle)))
 }
 
 // Verifies that cleanup-enabled fork-process survives a stderr pipe closed before monitoring or
@@ -123,9 +181,51 @@ func TestForkProcessCleanupHandlesClosedLoggingPipe(t *testing.T) {
 			require.NoError(t, ownerCmd.Process.Kill())
 			waitCleanupProcessGone(t, testCtx, owner)
 			require.NoError(t, command.Wait())
-			waitCleanupProcessGone(t, testCtx, childHandle)
+			executor := process.NewOSExecutor(logr.Discard())
+			defer executor.Dispose()
+			require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(childHandle)))
 		})
 	}
+}
+
+// Verifies that cleanup-enabled fork-process preserves a natural nonzero child exit code when final stderr logging hits a closed pipe.
+func TestForkProcessCleanupPreservesExitCodeWithClosedLoggingPipe(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 0)
+	defer testCancel()
+	_, owner := startCleanupOwner(t, testCtx)
+	dcpPath, dcpPathErr := getDcpProcExecutablePath()
+	require.NoError(t, dcpPathErr)
+	delayPath, delayPathErr := int_testutil.GetTestToolPath("delay")
+	require.NoError(t, delayPathErr)
+	stderrRead, stderrWrite, pipeErr := os.Pipe()
+	require.NoError(t, pipeErr)
+	require.NoError(t, stderrRead.Close())
+	command := exec.CommandContext(
+		testCtx,
+		dcpPath,
+		"fork-process",
+		"--monitor", strconv.FormatInt(int64(owner.Pid), 10),
+		"--monitor-identity-time", owner.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+		"--enable-child-cleanup",
+		"--",
+		delayPath,
+		"--delay=10ms",
+		"--exit-code=7",
+	)
+	process.ForkFromParent(command)
+	var stdout bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = stderrWrite
+	require.NoError(t, command.Start())
+	require.NoError(t, stderrWrite.Close())
+	runErr := command.Wait()
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, runErr, &exitErr)
+	require.Equal(t, 7, exitErr.ExitCode())
+	waitStatus, hasWaitStatus := exitErr.Sys().(syscall.WaitStatus)
+	require.True(t, hasWaitStatus)
+	require.False(t, waitStatus.Signaled())
+	_ = parseForkedPid(t, stdout.String())
 }
 
 // Verifies that cleanup-disabled fork-process retains standard Unix command-line SIGPIPE
