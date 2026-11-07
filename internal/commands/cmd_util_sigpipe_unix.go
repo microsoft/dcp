@@ -13,7 +13,8 @@ import (
 	"syscall"
 )
 
-func enableForkProcessSIGPIPEErrors() func() {
+// EnableSIGPIPEErrors converts SIGPIPE termination into write errors until the returned function is called.
+func EnableSIGPIPEErrors() func() {
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, syscall.SIGPIPE)
 	return func() {

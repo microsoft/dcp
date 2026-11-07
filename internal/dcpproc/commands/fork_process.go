@@ -68,13 +68,20 @@ func forkProcess(log logr.Logger, options *forkProcessOptions) func(cmd *cobra.C
 			"Args", args[1:],
 		)
 
+		protectExitError := func(err error) error {
+			if options.enableChildCleanup {
+				return cmds.ProtectExitErrorFromSIGPIPE(err)
+			}
+			return err
+		}
+
 		childCmd := exec.Command(args[0], args[1:]...)
 		childCmd.Env = os.Environ()
 		logger.WithSessionId(childCmd)
 		process.ForkFromParent(childCmd)
 
 		if options.enableChildCleanup {
-			stopSIGPIPEProtection := enableForkProcessSIGPIPEErrors()
+			stopSIGPIPEProtection := cmds.EnableSIGPIPEErrors()
 			defer stopSIGPIPEProtection()
 		}
 
@@ -87,7 +94,7 @@ func forkProcess(log logr.Logger, options *forkProcessOptions) func(cmd *cobra.C
 				monitorCtx, monitorCtxCancel, monitorErr = monitorForkOwner(cmd, log)
 				if monitorErr != nil && !process.IsProcessGoneErr(monitorErr) {
 					monitorCtxCancel()
-					return monitorErr
+					return protectExitError(monitorErr)
 				}
 			} else {
 				monitorCtx, monitorCtxCancel = cmds.GetMonitorContextFromFlags(cmd.Context(), log)
@@ -95,8 +102,11 @@ func forkProcess(log logr.Logger, options *forkProcessOptions) func(cmd *cobra.C
 			defer monitorCtxCancel()
 			select {
 			case <-monitorCtx.Done():
-				if options.enableChildCleanup && cmd.Context().Err() != nil {
-					return cmd.Context().Err()
+				if options.enableChildCleanup {
+					monitorResultErr := forkOwnerMonitorResult(cmd.Context(), monitorCtx)
+					if monitorResultErr != nil {
+						return protectExitError(monitorResultErr)
+					}
 				}
 				log.Info("Monitored process already exited; forked process will not be started")
 				return nil
@@ -106,7 +116,7 @@ func forkProcess(log logr.Logger, options *forkProcessOptions) func(cmd *cobra.C
 
 		executor := process.NewOSExecutor(log.WithName("ProcessExecutor"))
 		defer executor.Dispose()
-		return runForkedProcess(cmd, childCmd, monitorCtx, options, executor, log)
+		return protectExitError(runForkedProcess(cmd, childCmd, monitorCtx, options, executor, log))
 	}
 }
 
@@ -172,10 +182,28 @@ func runForkedProcess(
 
 	if options.enableChildCleanup && monitorCtx != nil && monitorCtx.Err() != nil {
 		log.Info("Monitored process exited during startup; stopping forked process", "PID", handle.Pid)
-		return cmd.Context().Err()
+		return forkOwnerMonitorResult(cmd.Context(), monitorCtx)
 	}
 	pid := handle.Pid
-	if _, writeErr := fmt.Fprintln(cmd.OutOrStdout(), pid); writeErr != nil {
+	var writeErr error
+	if options.enableChildCleanup && monitorCtx != nil {
+		writeResultCh := make(chan error, 1)
+		go func() {
+			_, pidWriteErr := fmt.Fprintln(cmd.OutOrStdout(), pid)
+			writeResultCh <- pidWriteErr
+		}()
+		select {
+		case writeErr = <-writeResultCh:
+		case <-cmd.Context().Done():
+			return cmd.Context().Err()
+		case <-monitorCtx.Done():
+			log.Info("Monitored process exited before forked process PID was reported; stopping forked process", "PID", pid)
+			return forkOwnerMonitorResult(cmd.Context(), monitorCtx)
+		}
+	} else {
+		_, writeErr = fmt.Fprintln(cmd.OutOrStdout(), pid)
+	}
+	if writeErr != nil {
 		log.Error(writeErr, "Failed to write forked process PID", "PID", pid)
 		return fmt.Errorf("could not write forked process pid: %w", writeErr)
 	}
@@ -204,12 +232,24 @@ func runForkedProcess(
 		log.V(1).Info("Forked process exited", "PID", pid)
 		return nil
 	case <-monitorCtx.Done():
-		if cmd.Context().Err() != nil {
-			return cmd.Context().Err()
+		monitorResultErr := forkOwnerMonitorResult(cmd.Context(), monitorCtx)
+		if monitorResultErr != nil {
+			return monitorResultErr
 		}
 		log.Info("Monitored process exited; fork-process is exiting", "PID", pid)
 		return nil
 	}
+}
+
+func forkOwnerMonitorResult(commandCtx context.Context, monitorCtx context.Context) error {
+	if commandErr := commandCtx.Err(); commandErr != nil {
+		return commandErr
+	}
+	monitorErr := context.Cause(monitorCtx)
+	if monitorErr == nil || errors.Is(monitorErr, context.Canceled) || process.IsProcessGoneErr(monitorErr) {
+		return nil
+	}
+	return fmt.Errorf("could not monitor fork owner: %w", monitorErr)
 }
 
 func trimForkProcessArgSeparator(args []string) []string {
