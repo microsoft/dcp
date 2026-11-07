@@ -323,7 +323,7 @@ func StartTestEnvironmentWithOptions(
 
 	outputCleanupQueue := resiliency.NewWorkQueue(ctx, controllers.MaxConcurrentReconciles)
 	controllerAPIReader := mgr.GetAPIReader()
-	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController|LogicalContainerExecController|PhysicalContainerExecController) != 0 && options.DecorateAPIReader != nil {
+	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController|LogicalContainerExecController|PhysicalContainerController|PhysicalContainerExecController) != 0 && options.DecorateAPIReader != nil {
 		controllerAPIReader = options.DecorateAPIReader(controllerAPIReader)
 		if controllerAPIReader == nil {
 			return nil, nil, fmt.Errorf("api reader decorator returned nil")
@@ -390,7 +390,7 @@ func StartTestEnvironmentWithOptions(
 		physicalContainerR := controllers.NewPhysicalContainerReconciler(
 			ctx,
 			mgr.GetClient(),
-			mgr.GetAPIReader(),
+			controllerAPIReader,
 			log.WithName("PhysicalContainerReconciler"),
 			serverInfo.ContainerOrchestrator,
 			pex,

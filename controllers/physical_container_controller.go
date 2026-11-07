@@ -507,6 +507,9 @@ func handlePhysicalContainerRunning(
 	if errors.Is(inspectErr, containers.ErrNotFound) {
 		data.state = physicalContainerStateMissing
 		data.failureMessage = ""
+		if container.Spec.Stop {
+			data.state = physicalContainerStateStopped
+		}
 		return additionalReconciliationNeeded
 	}
 	if inspectErr != nil {
@@ -588,6 +591,9 @@ func handlePhysicalContainerStarting(
 	inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
 	if errors.Is(inspectErr, containers.ErrNotFound) {
 		data.state, data.failureMessage = physicalContainerStateMissing, ""
+		if container.Spec.Stop {
+			data.state = physicalContainerStateStopped
+		}
 		return additionalReconciliationNeeded
 	}
 	if inspectErr != nil {
@@ -618,6 +624,9 @@ func handlePhysicalContainerUnknown(
 	inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
 	if errors.Is(inspectErr, containers.ErrNotFound) {
 		data.state, data.failureMessage = physicalContainerStateMissing, ""
+		if container.Spec.Stop {
+			data.state = physicalContainerStateStopped
+		}
 		return additionalReconciliationNeeded
 	}
 	if inspectErr != nil {
@@ -637,6 +646,9 @@ func handlePhysicalContainerRemoving(
 	inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
 	if errors.Is(inspectErr, containers.ErrNotFound) {
 		data.state, data.failureMessage = physicalContainerStateMissing, ""
+		if container.Spec.Stop {
+			data.state = physicalContainerStateStopped
+		}
 		return additionalReconciliationNeeded
 	}
 	if inspectErr != nil {

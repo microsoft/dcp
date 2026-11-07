@@ -710,6 +710,9 @@ func TestV2LogicalContainerDeletesWithoutInitializingLifecycle(t *testing.T) {
 				gated.imagesHidden.Store(true)
 			}
 			require.NoError(t, server.Client.Delete(ctx, logical))
+			waitObjectAssumesStateEx(t, ctx, gated.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+				return !current.DeletionTimestamp.IsZero(), nil
+			})
 			allowObservation()
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
 			var physicalContainers apiv2.PhysicalContainerList
