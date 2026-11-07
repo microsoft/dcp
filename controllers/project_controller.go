@@ -102,7 +102,7 @@ func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager, name string) erro
 			return fmt.Errorf("index project %s: %w", fieldName, indexErr)
 		}
 	}
-	for _, backing := range []ctrl_client.Object{&apiv2.PhysicalProcess{}, &apiv2.PhysicalContainer{}, &apiv2.PhysicalContainerImage{}} {
+	for _, backing := range []ctrl_client.Object{&apiv2.PhysicalProcess{}, &apiv2.PhysicalContainer{}, &apiv2.PhysicalContainerImage{}, &apiv2.ServiceEndpoint{}} {
 		indexErr := mgr.GetFieldIndexer().IndexField(r.LifetimeCtx, backing, projectOwnerUIDField, func(obj ctrl_client.Object) []string {
 			owner := metav1.GetControllerOf(obj)
 			if owner == nil {
@@ -922,7 +922,7 @@ func (r *ProjectReconciler) handleDeletionRequest(
 	if !r.settleProjectProcesses(resource, data, log) {
 		return additionalReconciliationNeeded, delay
 	}
-	cleaned, cleanupErr := r.cleanupProjectBackings(ctx, resource, log)
+	cleaned, cleanupErr := r.cleanupProjectBackings(ctx, resource, data, log)
 	if cleanupErr != nil {
 		data.retry(apiv2.ProjectReasonPhysicalDeletionFailed, cleanupErr)
 		return additionalReconciliationNeeded, delay
@@ -935,9 +935,9 @@ func (r *ProjectReconciler) handleDeletionRequest(
 }
 
 func (r *ProjectReconciler) cleanupProjectBackings(
-	ctx context.Context, resource *apiv2.Project, log logr.Logger,
+	ctx context.Context, resource *apiv2.Project, data *projectData, log logr.Logger,
 ) (bool, error) {
-	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource)
+	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, projectOwnerUIDField, data.unobservedChildren)
 	if portDeleteErr != nil {
 		log.Error(portDeleteErr, "Failed to clean Project service endpoints")
 	}
@@ -998,7 +998,7 @@ func handleProjectStopping(
 	if !reconciler.settleProjectProcesses(resource, data, log) {
 		return additionalReconciliationNeeded
 	}
-	cleaned, cleanupErr := reconciler.cleanupProjectBackings(ctx, resource, log)
+	cleaned, cleanupErr := reconciler.cleanupProjectBackings(ctx, resource, data, log)
 	if cleanupErr != nil {
 		data.retry(apiv2.ProjectReasonPhysicalDeletionFailed, cleanupErr)
 		return additionalReconciliationNeeded

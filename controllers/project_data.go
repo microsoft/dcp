@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"time"
@@ -99,27 +100,28 @@ func (state projectState) String() string {
 }
 
 type projectData struct {
-	state            projectState
-	reason           apiv2.ConditionReason
-	message          string
-	reconcileErr     error
-	reconcileReason  apiv2.ConditionReason
-	retryAfter       time.Time
-	stoppingAt       time.Time
-	physicalUID      types.UID
-	physicalName     string
-	imageUID         types.UID
-	imageName        string
-	networks         []apiv2.ContainerNetworkConnectionConfig
-	networksSelected bool
-	ports            []logicalPortSelection
-	effectiveArgs    []string
-	effectiveEnv     []commonapi.EnvVar
-	inputsPrepared   bool
-	processes        map[process.ProcessHandle]projectProcessData
-	processCleanup   *projectProcessCleanupOperation
-	processPoll      bool
-	adapterAddress   string
+	state              projectState
+	reason             apiv2.ConditionReason
+	message            string
+	reconcileErr       error
+	reconcileReason    apiv2.ConditionReason
+	retryAfter         time.Time
+	stoppingAt         time.Time
+	physicalUID        types.UID
+	physicalName       string
+	imageUID           types.UID
+	imageName          string
+	networks           []apiv2.ContainerNetworkConnectionConfig
+	networksSelected   bool
+	ports              []logicalPortSelection
+	unobservedChildren unobservedLogicalChildren
+	effectiveArgs      []string
+	effectiveEnv       []commonapi.EnvVar
+	inputsPrepared     bool
+	processes          map[process.ProcessHandle]projectProcessData
+	processCleanup     *projectProcessCleanupOperation
+	processPoll        bool
+	adapterAddress     string
 }
 
 func (data *projectData) Clone() *projectData {
@@ -131,6 +133,7 @@ func (data *projectData) Clone() *projectData {
 		}
 	}
 	cloned.ports = slices.Clone(data.ports)
+	cloned.unobservedChildren = maps.Clone(data.unobservedChildren)
 	cloned.effectiveArgs = slices.Clone(data.effectiveArgs)
 	cloned.effectiveEnv = slices.Clone(data.effectiveEnv)
 	cloned.networks = slices.Clone(data.networks)

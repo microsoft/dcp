@@ -67,6 +67,10 @@ func (apiClient *projectBackingClient) Create(ctx context.Context, obj ctrl_clie
 }
 
 func (apiClient *projectBackingClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+	if _, endpoints := list.(*apiv2.ServiceEndpointList); endpoints && apiClient.failEndpointLists.Load() {
+		apiClient.endpointListFailures.Add(1)
+		return errors.New("injected Project endpoint lookup failure")
+	}
 	if _, containers := list.(*apiv2.PhysicalContainerList); containers && apiClient.failContainerLists.Load() {
 		apiClient.containerListFailures.Add(1)
 		return errors.New("injected Project container lookup failure")

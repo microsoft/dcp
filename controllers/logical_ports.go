@@ -409,7 +409,7 @@ func (r *ProjectReconciler) withdrawProjectEndpoints(
 	ctx context.Context, resource *apiv2.Project, data *projectData, log logr.Logger,
 ) objectChange {
 	// A prepared context is not an application endpoint; target publication follows DAP launch.
-	endpointErr := syncLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, data.portData(resource), nil)
+	_, endpointErr := syncLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, data, projectOwnerUIDField, &data.unobservedChildren, false)
 	if endpointErr != nil {
 		log.Error(endpointErr, "Failed to synchronize Project service endpoints")
 		return additionalReconciliationNeeded

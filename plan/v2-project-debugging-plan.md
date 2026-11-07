@@ -528,6 +528,8 @@ Published services tip `2913ed2a4c6bd214d2b4f10116e13fee3576cb29` is integrated 
 
 Services tip `70e9b1ed5e1614536510511091ee7d49fd13c606` is integrated, adding only a UDP cleanup comment correction. The user authorized publication of the accumulated Project adaptations described above; earlier local/unpublished notes record their state at integration time.
 
+Services tip `047006e306ecff21cccc27928ff87305d6150b9e` is integrated normally, including scoped child/endpoint discovery, physical log-completion preservation, stop-result fixes, simplified volume policy and explicit-family local-host address selection. Project uses the updated lazy endpoint helper contract with its owner index and shared unobserved-child bookkeeping; withdrawal does not compute publication data. The private test API-reader decorator preserves both Project and physical-container coverage. This integration does not implement the independently reported Project debug-runtime review findings.
+
 ### Direction requiring verification
 
 Verified Delve terminal topology for T8: the user's interpretation matches VS Code Go's integrated/external-terminal launch path. Inspected vscode-go `1608cb5c907bfb238967d9aceb507620b08cf2a3` and Delve `749588dac9874b39e50b4c168f9ec064a4ddfad1`, and cross-checked the relevant behavior in released vscode-go v0.58.0 and Delve v1.27.2.
