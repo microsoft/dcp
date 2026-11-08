@@ -24,6 +24,7 @@ import (
 	ct "github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/commandstreams"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
@@ -42,7 +43,7 @@ const (
 // keeps stderr separate and retains its existing completion, cancellation and startup-failure behavior.
 func TestExecContainerStreams(t *testing.T) {
 	t.Parallel()
-	internal_testutil.VerifyCommandStreams(t, []string{"docker", "exec"},
+	commandstreams.VerifyCommandStreams(t, []string{"docker", "exec"},
 		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
 			orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
 			return orchestrator.ExecContainer(ctx, ct.ExecContainerOptions{

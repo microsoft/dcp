@@ -21,6 +21,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/commandstreams"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -30,7 +31,7 @@ import (
 // keeps stderr separate and retains its existing completion, cancellation and startup-failure behavior.
 func TestExecContainerStreams(t *testing.T) {
 	t.Parallel()
-	internal_testutil.VerifyCommandStreams(t, []string{"podman", "exec"},
+	commandstreams.VerifyCommandStreams(t, []string{"podman", "exec"},
 		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
 			orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
 			return orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
