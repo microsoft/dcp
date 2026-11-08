@@ -57,16 +57,21 @@ type InspectImages interface {
 	InspectImages(ctx context.Context, options InspectImagesOptions) ([]InspectedImage, error)
 }
 
-// InspectPulledImage resolves a successfully pulled reference to its image ID.
-// Inspection failures, including NotFound, retry with a six-second exponential-backoff budget.
-// Recognized runtime outages return immediately so the caller can defer recovery.
-func InspectPulledImage(ctx context.Context, inspector InspectImages, image string) (string, error) {
-	policy := backoff.NewExponentialBackOff(
+// NewImageInspectionBackoff creates the bounded retry policy for image identity verification.
+func NewImageInspectionBackoff() *backoff.ExponentialBackOff {
+	return backoff.NewExponentialBackOff(
 		backoff.WithInitialInterval(200*time.Millisecond),
 		backoff.WithMultiplier(2),
 		backoff.WithRandomizationFactor(0.1),
 		backoff.WithMaxElapsedTime(6*time.Second),
 	)
+}
+
+// InspectPulledImage resolves a successfully pulled reference to its image ID.
+// Inspection failures, including NotFound, retry with a six-second exponential-backoff budget.
+// Recognized runtime outages return immediately so the caller can defer recovery.
+func InspectPulledImage(ctx context.Context, inspector InspectImages, image string) (string, error) {
+	policy := NewImageInspectionBackoff()
 	return resiliency.RetryGet(ctx, policy, func() (string, error) {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return "", resiliency.Permanent(contextErr)

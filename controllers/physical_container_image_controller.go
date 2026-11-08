@@ -433,7 +433,30 @@ func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperatio
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
-	inspectedImage, inspectErr := r.inspectPhysicalContainerImageOnce(ctx, data, data.imageID, !data.imageIDVerified)
+	var inspectedImage *containers.InspectedImage
+	var inspectErr error
+	if data.imageIDVerified {
+		inspectedImage, inspectErr = r.inspectPhysicalContainerImageOnce(ctx, data, data.imageID, false)
+	} else {
+		inspectedImage, inspectErr = resiliency.RetryGet(ctx, containers.NewImageInspectionBackoff(), func() (*containers.InspectedImage, error) {
+			if contextErr := ctx.Err(); contextErr != nil {
+				return nil, resiliency.Permanent(contextErr)
+			}
+			inspected, inspectionErr := inspectPhysicalContainerImage(ctx, r.orchestrator, data.imageID)
+			if errors.Is(inspectionErr, containers.ErrRuntimeNotHealthy) {
+				return nil, resiliency.Permanent(inspectionErr)
+			}
+			return inspected, inspectionErr
+		})
+		if inspectErr != nil && ctx.Err() == nil && !errors.Is(inspectErr, containers.ErrRuntimeNotHealthy) {
+			data.inspectionFailureReason = apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed
+			if errors.Is(inspectErr, containers.ErrNotFound) {
+				data.inspectionFailureReason = apiv2.PhysicalContainerImageReasonLocalImageNotFound
+			}
+			inspectErr = fmt.Errorf("verify image %q identity: %w",
+				data.imageID, errors.Join(errPhysicalContainerImageInspectionExhausted, inspectErr))
+		}
+	}
 	if ctx.Err() != nil {
 		return noChange
 	}
@@ -467,7 +490,11 @@ func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperatio
 	}
 
 	data.state = physicalContainerImageStateReady
+	if !data.imageIDVerified {
+		data.imageID = inspectedImage.Id
+	}
 	data.imageIDVerified = true
+	data.retryAfter = time.Time{}
 	data.digest = inspectedImage.Digest
 	data.tags = slices.Clone(inspectedImage.Tags)
 	data.failureMessage = ""
@@ -575,37 +602,8 @@ func (r *PhysicalContainerImageReconciler) ensureExistingImage(
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) (objectChange, AdditionalReconciliationDelay) {
-	inspectedImage, inspectErr := r.inspectPhysicalContainerImage(ctx, data, image.Spec.ImageID, true, log)
-	if errors.Is(inspectErr, errPhysicalContainerImageInspectionExhausted) {
-		log.Error(inspectErr, "PhysicalContainerImage identity inspection retries exhausted", "ImageID", image.Spec.ImageID)
-		data.state = physicalContainerImageStateUnavailable
-		data.failureMessage = inspectErr.Error()
-		return noChange, StandardDelay
-	}
-	if inspectErr == nil {
-		data.state = physicalContainerImageStateReady
-		data.imageID = inspectedImage.Id
-		data.imageIDVerified = true
-		data.digest = inspectedImage.Digest
-		data.tags = slices.Clone(inspectedImage.Tags)
-		data.failureMessage = ""
-		return noChange, StandardDelay
-	}
-	if errors.Is(inspectErr, containers.ErrNotFound) {
-		data.state = physicalContainerImageStateUnavailable
-		data.failureMessage = fmt.Sprintf("Image %q is not available locally.", image.Spec.ImageID)
-		return noChange, StandardDelay
-	}
-
-	if errors.Is(inspectErr, containers.ErrRuntimeNotHealthy) {
-		log.V(1).Info("Container runtime became unhealthy while inspecting existing PhysicalContainerImage, retrying reconciliation later", "ImageID", image.Spec.ImageID, "Error", inspectErr)
-		setPhysicalContainerImageRuntimeUnhealthy(data)
-		return noChange, LongDelay
-	}
-	log.Error(inspectErr, "Failed to inspect existing PhysicalContainerImage", "ImageID", image.Spec.ImageID)
-	data.state = physicalContainerImageStateInspectFailed
-	data.failureMessage = fmt.Sprintf("Failed to inspect image: %v", inspectErr)
-	return noChange, LongDelay
+	data.imageID = image.Spec.ImageID
+	return r.inspectPhysicalContainerImageOperationResult(ctx, data, log), StandardDelay
 }
 
 func physicalContainerImageBuildInputsFingerprint(
@@ -1255,6 +1253,9 @@ func inspectPhysicalContainerImage(ctx context.Context, orchestrator containers.
 	}
 	if len(inspectedImages) == 0 {
 		return nil, containers.ErrNotFound
+	}
+	if len(inspectedImages) != 1 || inspectedImages[0].Id == "" {
+		return nil, fmt.Errorf("image %q inspection did not return exactly one non-empty image ID", image)
 	}
 
 	return &inspectedImages[0], nil
