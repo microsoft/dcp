@@ -18,6 +18,7 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/dap"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -42,7 +43,7 @@ func (writer *projectDebugStatusWriter) registerProcess(
 		if snapshot != nil {
 			for _, existing := range session.Processes {
 				if existing.ID == snapshot.ID || (existing.PID != nil && snapshot.PID != nil && existing.ContainerID == snapshot.ContainerID &&
-					!existing.IdentityTimestamp.IsZero() && existing.IdentityTimestamp.Equal(&snapshot.IdentityTimestamp) &&
+					!existing.IdentityTimestamp.IsZero() && osutil.MicroEqual(existing.IdentityTimestamp, snapshot.IdentityTimestamp) &&
 					*existing.PID == *snapshot.PID) {
 					return nil
 				}

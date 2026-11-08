@@ -23,7 +23,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that process registration deduplicates captured identities, preserves PID reuse,
+// Verifies that process registration deduplicates captured identities across API precision loss, preserves PID reuse,
 // isolates controller observations from session completion, and accepts late reports during stop.
 func TestProjectDebugProcessFieldOwnership(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
@@ -41,10 +41,13 @@ func TestProjectDebugProcessFieldOwnership(t *testing.T) {
 	require.NoError(t, unconfirmedErr)
 	require.True(t, unconfirmed.Status.Debug.Sessions[0].ProcessTrackingUnconfirmed)
 	pid := int64(123)
-	first := &apiv2.ProjectDebugProcessStatus{ID: "first", PID: &pid, IdentityTimestamp: metav1.NowMicro(), Name: "target"}
+	first := &apiv2.ProjectDebugProcessStatus{ID: "first", PID: &pid,
+		IdentityTimestamp: metav1.NewMicroTime(time.Unix(1_700_000_000, 123_456_789)), Name: "target"}
 	registered, registrationErr := writer.registerProcess(ctx, project.NamespacedName(), project.UID, session.ID, first)
 	require.NoError(t, registrationErr)
 	require.False(t, registered.Status.Debug.Sessions[0].ProcessTrackingUnconfirmed)
+	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), registered))
+	require.False(t, registered.Status.Debug.Sessions[0].Processes[0].IdentityTimestamp.Equal(&first.IdentityTimestamp))
 	duplicate := first.DeepCopy()
 	duplicate.ID = "duplicate"
 	deduplicated, duplicateErr := writer.registerProcess(ctx, project.NamespacedName(), project.UID, session.ID, duplicate)
@@ -52,7 +55,7 @@ func TestProjectDebugProcessFieldOwnership(t *testing.T) {
 	require.Len(t, deduplicated.Status.Debug.Sessions[0].Processes, 1)
 	reused := first.DeepCopy()
 	reused.ID = "reused"
-	reused.IdentityTimestamp = metav1.NewMicroTime(first.IdentityTimestamp.Add(time.Second))
+	reused.IdentityTimestamp = metav1.NewMicroTime(first.IdentityTimestamp.Add(3 * time.Microsecond))
 	registered, registrationErr = writer.registerProcess(ctx, project.NamespacedName(), project.UID, session.ID, reused)
 	require.NoError(t, registrationErr)
 	require.Len(t, registered.Status.Debug.Sessions[0].Processes, 2)
