@@ -55,6 +55,7 @@ type TestEnvironmentInfo struct {
 
 type TestEnvironmentOptions struct {
 	DecoratePhysicalProcessExecutor func(process.Executor) process.Executor
+	ConfigureTunnelProxy            func(*controllers.ContainerNetworkTunnelProxyReconcilerConfig)
 	DecorateAPIClient               func(ctrl_client.Client) ctrl_client.Client
 	WorkloadID                      commonapi.WorkloadID
 	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
@@ -499,6 +500,9 @@ func StartTestEnvironmentWithOptions(
 			BuildContextDir:              sessionFolder,
 			MakeTunnelControlClient:      func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
 			MaxTunnelPreparationAttempts: 2,
+		}
+		if options.ConfigureTunnelProxy != nil {
+			options.ConfigureTunnelProxy(&tprOpts)
 		}
 
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(

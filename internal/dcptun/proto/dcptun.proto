@@ -28,6 +28,11 @@ service TunnelControl {
   // That is, the new connection message exchange consist of the StreamRef message 
   // (representing a request to start a new stream) is sent by the client-side proxy,
   // and the NewStreamResult reply from the server-side proxy FOLLOWS.
+  // The client-side proxy sends the response header "dcp-tunnel-stream-ready: true"
+  // only after acquiring exclusive ownership of the stream-request queue.
+  // A send/receive error ends this RPC attempt, not the proxy pair. The server-side
+  // proxy reconnects with a fresh RPC; prepared tunnels and established data streams
+  // survive. Incomplete handshakes may fail and are not replayed on the replacement RPC.
   rpc NewStreamsConnection(stream NewStreamResult) returns (stream StreamRef);
 
   // Consider adding "list tunnels" request so that clients can discover existing tunnels.

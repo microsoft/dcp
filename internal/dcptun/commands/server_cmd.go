@@ -117,6 +117,7 @@ func runServerProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			tunnelConfig.ClientDataAddress,
 			tunnelConfig.ClientDataPort,
 			cancelServerProxyCtx,
+			dcptun.ServerProxyConfig{},
 			log,
 		)
 
@@ -135,6 +136,7 @@ func runServerProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 		}
 
 		controlEndpointServer := grpc.NewServer(grpcServerOpts...)
+		defer controlEndpointServer.Stop()
 		proto.RegisterTunnelControlServer(controlEndpointServer, serverProxy)
 
 		grpcServerErrChan := make(chan error, 1)
@@ -163,7 +165,7 @@ func runServerProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 				controlEndpointServer.Stop()
 			}
 
-			return nil
+			return serverProxy.Err()
 
 		case serveErr := <-grpcServerErrChan:
 			return serveErr

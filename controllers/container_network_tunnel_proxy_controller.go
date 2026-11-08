@@ -81,6 +81,8 @@ type serverProxyExit struct {
 
 type serverProxyRun struct {
 	handle              process.ProcessHandle
+	resourceUID         types.UID
+	pairGeneration      uint64
 	exit                *concurrency.ValuePromise[serverProxyExit]
 	removeOutputOnClose atomic.Bool
 }
@@ -135,13 +137,24 @@ const (
 var (
 	tunnelProxyFinalizer string = fmt.Sprintf("%s/tunnel-proxy-reconciler", apiv1.GroupVersion.Group)
 
+	// Startup: Pending -> BuildingImage -> Starting -> Started -> Running.
+	// Recovery: Running -> RecoveryPending -> RecoveryCleanup -> RecoveryWait
+	// -> BuildingImage -> Starting -> Running.
+	// Initial startup and configuration failures enter Failed; retryable tunnel proxy failures
+	// during replacement startup return to RecoveryPending.
+	// Deletion enters Deleting, then Deleted on completion or DeletePending
+	// before another Deleting attempt.
 	tunnelProxyStateInitializers = map[apiv1.ContainerNetworkTunnelProxyState]tunnelProxyStateInitializerFunc{
-		apiv1.ContainerNetworkTunnelProxyStateEmpty:         handleNewTunnelProxy,
-		apiv1.ContainerNetworkTunnelProxyStatePending:       handleNewTunnelProxy,
-		apiv1.ContainerNetworkTunnelProxyStateBuildingImage: ensureTunnelProxyBuildingImageState,
-		apiv1.ContainerNetworkTunnelProxyStateStarting:      ensureTunnelProxyStartingState,
-		apiv1.ContainerNetworkTunnelProxyStateRunning:       ensureTunnelProxyRunningState,
-		apiv1.ContainerNetworkTunnelProxyStateFailed:        ensureTunnelProxyFailedState,
+		apiv1.ContainerNetworkTunnelProxyStateEmpty:           handleNewTunnelProxy,
+		apiv1.ContainerNetworkTunnelProxyStatePending:         handleNewTunnelProxy,
+		apiv1.ContainerNetworkTunnelProxyStateBuildingImage:   ensureTunnelProxyBuildingImageState,
+		apiv1.ContainerNetworkTunnelProxyStateStarting:        ensureTunnelProxyStartingState,
+		apiv1.ContainerNetworkTunnelProxyStateStarted:         ensureTunnelProxyRunningState,
+		apiv1.ContainerNetworkTunnelProxyStateRunning:         ensureTunnelProxyRunningState,
+		apiv1.ContainerNetworkTunnelProxyStateRecoveryPending: ensureTunnelProxyRecoveryPendingState,
+		apiv1.ContainerNetworkTunnelProxyStateRecoveryCleanup: ensureTunnelProxyRecoveryCleanupState,
+		apiv1.ContainerNetworkTunnelProxyStateRecoveryWait:    ensureTunnelProxyRecoveryWaitState,
+		apiv1.ContainerNetworkTunnelProxyStateFailed:          ensureTunnelProxyFailedState,
 	}
 )
 
@@ -160,6 +173,9 @@ type ContainerNetworkTunnelProxyReconcilerConfig struct {
 	// Specifies how many attempts to prepare a tunnel will be made before giving up and marking the tunnel as failed.
 	// Defaults to defaultMaxTunnelPreparationAttempts, but much lower value is used for tests to simulate failures quickly.
 	MaxTunnelPreparationAttempts uint32
+
+	// Creates a per-proxy backoff policy for pair restarts; defaults to the standard exponential policy without a lifetime limit.
+	PairRestartBackoffFactory func() backoff.BackOff
 
 	readServerProxyConfig func(context.Context, string) (dcptun.TunnelProxyConfig, error)
 }
@@ -200,6 +216,13 @@ func NewContainerNetworkTunnelProxyReconciler(
 	}
 	if config.readServerProxyConfig == nil {
 		config.readServerProxyConfig = readServerProxyConfig
+	}
+	if config.PairRestartBackoffFactory == nil {
+		config.PairRestartBackoffFactory = func() backoff.BackOff {
+			policy := resiliency.NewExponentialBackoff()
+			policy.MaxElapsedTime = 0
+			return policy
+		}
 	}
 
 	base := NewReconcilerBase[apiv1.ContainerNetworkTunnelProxy](client, noCacheClient, log, lifetimeCtx)
@@ -432,9 +455,10 @@ func (r *ContainerNetworkTunnelProxyReconciler) handleDeletionRequest(ctx contex
 	namespacedName := tunnelProxy.NamespacedName()
 	_, pd := r.proxyData.BorrowByNamespacedName(namespacedName)
 	if pd == nil {
-		pd = newContainerNetworkTunnelProxyData(tunnelProxy.Status.State, tunnelProxy.UID)
+		pd = newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateDeletePending, tunnelProxy.UID)
 		pd.ContainerNetworkTunnelProxyStatus = *tunnelProxy.Status.DeepCopy()
-		r.proxyData.Store(namespacedName, namespacedName, pd)
+		pd.State = apiv1.ContainerNetworkTunnelProxyStateDeletePending
+		r.proxyData.Store(namespacedName, namespacedName, pd.Clone())
 	}
 
 	releaseStartup, startupAvailable := pd.startup.TryAcquire(r.LifetimeCtx)
@@ -445,74 +469,155 @@ func (r *ContainerNetworkTunnelProxyReconciler) handleDeletionRequest(ctx contex
 	defer releaseStartup()
 
 	var change objectChange = noChange
-	switch {
-	case pd.cleanupCompleted && pd.ServerProxyProcessID == nil && pd.ClientProxyContainerID == "":
+	switch pd.State {
+	case apiv1.ContainerNetworkTunnelProxyStateDeleted, apiv1.ContainerNetworkTunnelProxyStateRecoveryWait:
 		log.V(1).Info("ContainerNetworkTunnelProxy is being deleted (resource cleanup finished, deleting finalizer)...")
-		r.proxyData.DeleteByNamespacedName(namespacedName)
+		pd.State = apiv1.ContainerNetworkTunnelProxyStateDeleted
+		// Retain cleanup completion until object removal because status and finalizer updates are saved separately.
+		r.proxyData.Update(namespacedName, namespacedName, pd)
 		change = deleteFinalizer(tunnelProxy, tunnelProxyFinalizer, log)
 
-	default:
-		if !pd.cleanupScheduled {
-			pd.cleanupScheduled = true
-			pd.cleanupCompleted = false
-			r.proxyData.Update(namespacedName, namespacedName, pd)
+	case apiv1.ContainerNetworkTunnelProxyStateDeleting:
+		log.V(1).Info("ContainerNetworkTunnelProxy cleanup is still in progress")
 
-			log.V(1).Info("ContainerNetworkTunnelProxy is being deleted (scheduling resource cleanup)...")
-			cleanupErr := r.workQueue.Enqueue(r.startProxyPairCleanup(tunnelProxy, pd.Clone(), log))
-			if cleanupErr != nil {
-				// Should never happen. This means we (the reconciler) have been shut down via lifetime context
-				// with some tunnel proxy instances still running. Just give up on the cleanup here
-				// and rely on the dcpproc to do the cleanup instead.
-				log.Error(cleanupErr, "Failed to schedule tunnel proxy cleanup work, deleting instance without cleanup...")
-				r.proxyData.DeleteByNamespacedName(namespacedName)
-				change = deleteFinalizer(tunnelProxy, tunnelProxyFinalizer, log)
-			} else {
-				log.V(1).Info("Scheduled asynchronous cleanup for ContainerNetworkTunnelProxy proxy pair")
-			}
+	default:
+		pd.State = apiv1.ContainerNetworkTunnelProxyStateDeleting
+		r.proxyData.Update(namespacedName, namespacedName, pd)
+
+		log.V(1).Info("ContainerNetworkTunnelProxy is being deleted (scheduling resource cleanup)...")
+		cleanupErr := r.workQueue.Enqueue(r.startProxyPairCleanup(tunnelProxy, pd.Clone(), log))
+		if cleanupErr != nil {
+			// Should never happen. This means we (the reconciler) have been shut down via lifetime context
+			// with some tunnel proxy instances still running. Just give up on the cleanup here
+			// and rely on the dcpproc to do the cleanup instead.
+			log.Error(cleanupErr, "Failed to schedule tunnel proxy cleanup work, deleting instance without cleanup...")
+			r.proxyData.DeleteByNamespacedName(namespacedName)
+			return deleteFinalizer(tunnelProxy, tunnelProxyFinalizer, log)
+		} else {
+			log.V(1).Info("Scheduled asynchronous cleanup for ContainerNetworkTunnelProxy proxy pair")
 		}
 	}
 
-	return change
+	return change | pd.applyTo(tunnelProxy)
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) manageTunnelProxy(ctx context.Context, tunnelProxy *apiv1.ContainerNetworkTunnelProxy, log logr.Logger) objectChange {
-	targetProxyState := tunnelProxy.Status.State
 	_, pd := r.proxyData.BorrowByNamespacedName(tunnelProxy.NamespacedName())
+	state := apiv1.ContainerNetworkTunnelProxyStatePending
 	if pd != nil {
-		targetProxyState = pd.State
+		state = pd.State
 	}
 
-	initializer := getStateInitializer(tunnelProxyStateInitializers, targetProxyState, log)
-	change := initializer(ctx, r, tunnelProxy, targetProxyState, pd, log)
+	initializer := getStateInitializer(tunnelProxyStateInitializers, state, log)
+	change := initializer(ctx, r, tunnelProxy, state, pd, log)
 
 	if pd != nil {
 		r.proxyData.Update(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd)
 	}
-
-	return change
-}
-
-func (r *ContainerNetworkTunnelProxyReconciler) setTunnelProxyState(tproxy *apiv1.ContainerNetworkTunnelProxy, state apiv1.ContainerNetworkTunnelProxyState) objectChange {
-	change := noChange
-
-	if tproxy.Status.State != state {
-		tproxy.Status.State = state
-		change = statusChanged
-	}
-
 	return change
 }
 
 // STATE INITIALIZER FUNCTIONS
 
+func ensureTunnelProxyRecoveryPendingState(
+	ctx context.Context,
+	r *ContainerNetworkTunnelProxyReconciler,
+	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
+	_ apiv1.ContainerNetworkTunnelProxyState, pd *containerNetworkTunnelProxyData,
+	log logr.Logger,
+) objectChange {
+	if r.LifetimeCtx.Err() != nil || commonapi.ResourceCreationProhibited.Load() {
+		return pd.applyTo(tunnelProxy)
+	}
+	log.Info("Recovering container network tunnel proxy", "Reason", pd.Message, "PairGeneration", pd.pairGeneration)
+	for i := range pd.TunnelStatuses {
+		pd.TunnelStatuses[i].State = apiv1.TunnelStateNotReady
+		pd.TunnelStatuses[i].ErrorMessage = pd.Message
+	}
+	pd.State = apiv1.ContainerNetworkTunnelProxyStateRecoveryCleanup
+	return additionalReconciliationNeeded | pd.applyTo(tunnelProxy)
+}
+
+func ensureTunnelProxyRecoveryCleanupState(
+	ctx context.Context,
+	r *ContainerNetworkTunnelProxyReconciler,
+	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
+	_ apiv1.ContainerNetworkTunnelProxyState, pd *containerNetworkTunnelProxyData,
+	log logr.Logger,
+) objectChange {
+	if r.LifetimeCtx.Err() != nil || commonapi.ResourceCreationProhibited.Load() {
+		return pd.applyTo(tunnelProxy)
+	}
+	releaseStartup, acquired := pd.startup.TryAcquire(r.LifetimeCtx)
+	if !acquired {
+		return additionalReconciliationNeeded | pd.applyTo(tunnelProxy)
+	}
+	defer releaseStartup()
+	cleanupCompleted := r.cleanupProxyPair(ctx, pd, tunnelProxy.UID, log)
+	removeEndpointsForWorkload(ctx, r, tunnelProxy, log)
+	if !cleanupCompleted {
+		return additionalReconciliationNeeded | pd.applyTo(tunnelProxy)
+	}
+	if pd.recovery.backoff == nil {
+		pd.recovery.backoff = r.config.PairRestartBackoffFactory()
+	}
+	pd.recovery.retryAfter = time.Now().Add(pd.recovery.backoff.NextBackOff())
+	pd.State = apiv1.ContainerNetworkTunnelProxyStateRecoveryWait
+	return additionalReconciliationNeeded | pd.applyTo(tunnelProxy)
+}
+
+func ensureTunnelProxyRecoveryWaitState(
+	ctx context.Context,
+	r *ContainerNetworkTunnelProxyReconciler,
+	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
+	_ apiv1.ContainerNetworkTunnelProxyState, pd *containerNetworkTunnelProxyData,
+	log logr.Logger,
+) objectChange {
+	if r.LifetimeCtx.Err() != nil || commonapi.ResourceCreationProhibited.Load() {
+		return pd.applyTo(tunnelProxy)
+	}
+	if time.Now().Before(pd.recovery.retryAfter) {
+		return additionalReconciliationNeeded | pd.applyTo(tunnelProxy)
+	}
+
+	replacement := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateBuildingImage, tunnelProxy.UID)
+	replacement.pairGeneration = pd.pairGeneration + 1
+	replacement.recovery.backoff = pd.recovery.backoff
+	replacement.TunnelConfigurationVersion = pd.TunnelConfigurationVersion
+	for tunnelName, port := range pd.publishedPorts {
+		replacement.publishedPorts[tunnelName] = port
+	}
+	// Advancing a generation is a coordinator operation. Ordinary state merges
+	// reject different generations so a delayed old result cannot roll it back.
+	name := tunnelProxy.NamespacedName()
+	r.proxyData.Store(name, name, replacement)
+	return additionalReconciliationNeeded | replacement.applyTo(tunnelProxy)
+}
+
 func handleNewTunnelProxy(
 	ctx context.Context,
 	r *ContainerNetworkTunnelProxyReconciler,
 	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
-	_ apiv1.ContainerNetworkTunnelProxyState,
-	pd *containerNetworkTunnelProxyData,
+	_ apiv1.ContainerNetworkTunnelProxyState, pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) objectChange {
+	if pd == nil {
+		pd = newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStatePending, tunnelProxy.UID)
+		switch tunnelProxy.Status.State {
+		case apiv1.ContainerNetworkTunnelProxyStateEmpty, apiv1.ContainerNetworkTunnelProxyStatePending:
+			// Pair startup has not begun; retain Pending so reconciliation waits for the
+			// referenced network to be running before preparing the pair.
+		case apiv1.ContainerNetworkTunnelProxyStateBuildingImage:
+			pd.State = apiv1.ContainerNetworkTunnelProxyStateBuildingImage
+		default:
+			log.Error(errors.New("in-memory tunnel proxy state is missing"), "Cannot resume tunnel proxy without owned tunnel proxy state")
+			pd.ContainerNetworkTunnelProxyStatus = *tunnelProxy.Status.DeepCopy()
+			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		}
+		r.proxyData.Store(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd.Clone())
+		return additionalReconciliationNeeded | pd.applyTo(tunnelProxy)
+	}
+
 	containerNetworkName := commonapi.AsNamespacedName(tunnelProxy.Spec.ContainerNetworkName, tunnelProxy.Namespace)
 	containerNetwork := apiv1.ContainerNetwork{}
 	tryAgain := false
@@ -536,28 +641,21 @@ func handleNewTunnelProxy(
 	}
 
 	if tryAgain {
-		change := r.setTunnelProxyState(tunnelProxy, apiv1.ContainerNetworkTunnelProxyStatePending)
-		return change | additionalReconciliationNeeded
+		return pd.applyTo(tunnelProxy) | additionalReconciliationNeeded
 	}
 
-	return r.setTunnelProxyState(tunnelProxy, apiv1.ContainerNetworkTunnelProxyStateBuildingImage)
+	pd.State = apiv1.ContainerNetworkTunnelProxyStateBuildingImage
+	return additionalReconciliationNeeded | pd.applyTo(tunnelProxy)
 }
 
 func ensureTunnelProxyBuildingImageState(
 	ctx context.Context,
 	r *ContainerNetworkTunnelProxyReconciler,
 	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
-	_ apiv1.ContainerNetworkTunnelProxyState,
-	pd *containerNetworkTunnelProxyData,
+	state apiv1.ContainerNetworkTunnelProxyState, pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) objectChange {
 	change := noChange
-
-	if pd == nil {
-		log.V(1).Info("Ensuring the shared tunnel proxy PhysicalContainerImage exists...")
-		pd = newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateBuildingImage, tunnelProxy.UID)
-		r.proxyData.Store(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd)
-	}
 
 	physicalImage := apiv2.PhysicalContainerImage{}
 	getImageErr := r.Get(ctx, tunnelProxyPhysicalImageName(), &physicalImage)
@@ -602,7 +700,7 @@ func ensureTunnelProxyBuildingImageState(
 		}
 	}
 
-	if pd.State != apiv1.ContainerNetworkTunnelProxyStateFailed {
+	if pd.State == state {
 		certErr := r.createProxyConnectionCertificates(pd, log)
 		if certErr != nil {
 			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
@@ -612,12 +710,15 @@ func ensureTunnelProxyBuildingImageState(
 			if containerDelay != NoDelay {
 				change |= additionalReconciliationNeeded
 			}
-			if pd.State != apiv1.ContainerNetworkTunnelProxyStateFailed && imageReady {
+			if pd.State == state && imageReady {
 				pd.State = apiv1.ContainerNetworkTunnelProxyStateStarting
 			}
 		}
 	}
 
+	if pd.State != state {
+		change |= additionalReconciliationNeeded
+	}
 	// Ensure the object reflects the latest physical resource state.
 	return change | pd.applyTo(tunnelProxy)
 }
@@ -626,18 +727,10 @@ func ensureTunnelProxyStartingState(
 	ctx context.Context,
 	r *ContainerNetworkTunnelProxyReconciler,
 	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
-	_ apiv1.ContainerNetworkTunnelProxyState,
-	pd *containerNetworkTunnelProxyData,
+	_ apiv1.ContainerNetworkTunnelProxyState, pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) objectChange {
 	change := noChange
-
-	if pd == nil { // Should never happen when we reach this state
-		log.Error(fmt.Errorf("data about ContainerNetworkTunnelProxy object is missing"), "",
-			"CurrentState", apiv1.ContainerNetworkTunnelProxyStateStarting,
-		)
-		return r.setTunnelProxyState(tunnelProxy, apiv1.ContainerNetworkTunnelProxyStateFailed)
-	}
 
 	releaseStartup, acquiredStartup := pd.startup.TryAcquire(r.LifetimeCtx)
 	if acquiredStartup {
@@ -658,17 +751,9 @@ func ensureTunnelProxyRunningState(
 	ctx context.Context,
 	r *ContainerNetworkTunnelProxyReconciler,
 	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
-	_ apiv1.ContainerNetworkTunnelProxyState,
-	pd *containerNetworkTunnelProxyData,
+	_ apiv1.ContainerNetworkTunnelProxyState, pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) objectChange {
-	if pd == nil { // Should never happen when we reach this state
-		log.Error(fmt.Errorf("data about ContainerNetworkTunnelProxy object is missing"), "",
-			"CurrentState", apiv1.ContainerNetworkTunnelProxyStateRunning,
-		)
-		return r.setTunnelProxyState(tunnelProxy, apiv1.ContainerNetworkTunnelProxyStateFailed)
-	}
-
 	containerNetwork := apiv1.ContainerNetwork{}
 	containerNetworkName := types.NamespacedName{Name: tunnelProxy.Spec.ContainerNetworkName}
 	getNetworkErr := r.Get(ctx, containerNetworkName, &containerNetwork)
@@ -676,16 +761,13 @@ func ensureTunnelProxyRunningState(
 		log.Error(getNetworkErr, "Failed to get ContainerNetwork for running tunnel proxy", "ContainerNetwork", containerNetworkName)
 		return additionalReconciliationNeeded | pd.applyTo(tunnelProxy)
 	}
-	clientContainerReady, clientContainerDelay := r.updateClientProxyContainerStatus(ctx, tunnelProxy, &containerNetwork, pd, log)
+	clientContainerReady, _ := r.updateClientProxyContainerStatus(ctx, tunnelProxy, &containerNetwork, pd, log)
 	if !clientContainerReady {
-		change := pd.applyTo(tunnelProxy)
-		if clientContainerDelay != NoDelay {
-			change |= additionalReconciliationNeeded
-		}
-		return change
+		return additionalReconciliationNeeded | pd.applyTo(tunnelProxy)
 	}
 
 	change := r.manageTunnels(ctx, tunnelProxy, pd, log)
+	pd.State = apiv1.ContainerNetworkTunnelProxyStateRunning
 	ensureEndpointsForWorkload(ctx, r, tunnelProxy, nil, pd, log)
 
 	return change | pd.applyTo(tunnelProxy)
@@ -695,23 +777,12 @@ func ensureTunnelProxyFailedState(
 	ctx context.Context,
 	r *ContainerNetworkTunnelProxyReconciler,
 	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
-	_ apiv1.ContainerNetworkTunnelProxyState,
-	pd *containerNetworkTunnelProxyData,
+	_ apiv1.ContainerNetworkTunnelProxyState, pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) objectChange {
-	// Supported controller paths initialize proxy data before entering Failed.
-	// This guard only prevents an invariant violation from crashing the controller.
-	if pd == nil {
-		log.Error(fmt.Errorf("data about ContainerNetworkTunnelProxy object is missing"), "",
-			"CurrentState", apiv1.ContainerNetworkTunnelProxyStateFailed,
-		)
-		return noChange
-	}
-
 	change := r.failAllExistingTunnels(tunnelProxy, pd)
-	pd.cleanupScheduled = true
-	r.cleanupProxyPair(ctx, pd, tunnelProxy.UID, log)
-	if !pd.cleanupScheduled {
+	r.proxyData.Update(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd)
+	if !r.cleanupProxyPair(ctx, pd, tunnelProxy.UID, log) {
 		change |= additionalReconciliationNeeded
 	}
 	removeEndpointsForWorkload(ctx, r, tunnelProxy, log)
@@ -735,6 +806,11 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageTunnels(
 	// Convert to maps for easier lookup
 	specTunnels := maps.SliceToMap(tunnelProxy.Spec.Tunnels, apiv1.TunnelConfiguration.KV)
 	currentTunnels := maps.SliceToMap(pd.TunnelStatuses, apiv1.TunnelStatus.KV)
+	for tunnelName := range pd.publishedPorts {
+		if _, retained := specTunnels[tunnelName]; !retained {
+			delete(pd.publishedPorts, tunnelName)
+		}
+	}
 
 	// Remove tunnels that are no longer in the spec
 	for tunnelName, tunnelStatus := range currentTunnels {
@@ -753,7 +829,36 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageTunnels(
 
 	// Add or update tunnels from the spec
 	// Note that tunnels cannot be redefined in the spec, our type validation prevents that.
-	for tunnelName, tunnelConfig := range specTunnels {
+	// Rebind published ports before new tunnels can claim a preferred port
+	// that an existing consumer already has in its environment.
+	orderedTunnels := make([]apiv1.TunnelConfiguration, 0, len(specTunnels))
+	for _, tunnelConfig := range tunnelProxy.Spec.Tunnels {
+		if _, published := pd.publishedPorts[tunnelConfig.Name]; published {
+			orderedTunnels = append(orderedTunnels, tunnelConfig)
+		}
+	}
+	for _, tunnelConfig := range tunnelProxy.Spec.Tunnels {
+		if _, published := pd.publishedPorts[tunnelConfig.Name]; !published {
+			orderedTunnels = append(orderedTunnels, tunnelConfig)
+		}
+	}
+	publishedPortsChecked := false
+	for _, tunnelConfig := range orderedTunnels {
+		if _, published := pd.publishedPorts[tunnelConfig.Name]; !published && !publishedPortsChecked {
+			publishedPortsChecked = true
+			publishedPortPending := false
+			for _, tunnelStatus := range pd.TunnelStatuses {
+				if _, retained := pd.publishedPorts[tunnelStatus.Name]; retained && tunnelStatus.State != apiv1.TunnelStateReady {
+					publishedPortPending = true
+					break
+				}
+			}
+			if publishedPortPending {
+				change |= additionalReconciliationNeeded
+				break
+			}
+		}
+		tunnelName := tunnelConfig.Name
 		tlog := log.WithValues("TunnelName", tunnelName)
 		tunnelStatus, found := currentTunnels[tunnelName]
 
@@ -852,8 +957,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageSingleTunnel(
 	// CONSIDER: having a spec property for choosing server proxy control address
 	// (the one that server proxy listens on for control commands)
 
+	publishedPort, wasPublished := pd.publishedPorts[tunnelConfig.Name]
 	te.preparationAttempts++
-	if te.preparationAttempts > r.config.MaxTunnelPreparationAttempts {
+	if !wasPublished && te.preparationAttempts > r.config.MaxTunnelPreparationAttempts {
 		tlog.Error(errors.New("maximum number of preparation attempts reached"), "Failed to prepare tunnel")
 		pd.setTunnelStatus(failedTunnelStatus(originalTunnelStatus, "Failed to prepare tunnel (maximum number of preparation attempts reached)"))
 		return statusChanged
@@ -879,10 +985,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageSingleTunnel(
 		// If binding fails, we retry below with the OS assigning a random port.
 		ClientProxyPort: stdproto.Int32(serverSvc.Status.EffectivePort),
 	}
+	if wasPublished {
+		tunnelReq.ClientProxyPort = stdproto.Int32(publishedPort)
+	}
 	prepareCtx, prepareCtxCancel := context.WithTimeout(ctx, tunnelOperationTimeout)
 	defer prepareCtxCancel()
 	tSpec, prepareErr := serverProxyClient.PrepareTunnel(prepareCtx, tunnelReq, grpc.WaitForReady(true))
-	if prepareErr != nil {
+	if prepareErr != nil && !wasPublished {
 		tlog.V(1).Info("Failed to prepare tunnel on preferred port, falling back to random port", "Error", prepareErr)
 		fallbackTunnelReq := &dcptunproto.TunnelReq{
 			ServerAddress: stdproto.String(serverSvc.Status.EffectiveAddress),
@@ -894,6 +1003,14 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageSingleTunnel(
 			return additionalReconciliationNeeded
 		}
 	}
+	if prepareErr != nil {
+		tlog.Error(prepareErr, "Failed to rebind the published tunnel port, will retry", "Port", publishedPort)
+		return additionalReconciliationNeeded
+	}
+	if wasPublished && tSpec.GetClientProxyPort() != publishedPort {
+		tlog.Error(fmt.Errorf("proxy returned port %d instead of published port %d", tSpec.GetClientProxyPort(), publishedPort), "Refusing to change an existing tunnel URL")
+		return additionalReconciliationNeeded
+	}
 
 	tlog.V(1).Info("Tunnel prepared successfully")
 	ts := originalTunnelStatus.Clone()
@@ -902,6 +1019,10 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageSingleTunnel(
 	ts.Timestamp = metav1.NewMicroTime(time.Now())
 	ts.ClientProxyAddresses = tSpec.GetClientProxyAddresses()
 	ts.ClientProxyPort = tSpec.GetClientProxyPort()
+	if pd.publishedPorts == nil {
+		pd.publishedPorts = make(map[string]int32)
+	}
+	pd.publishedPorts[tunnelConfig.Name] = ts.ClientProxyPort
 	pd.setTunnelStatus(ts)
 
 	te.preparationAttempts = 0
@@ -1093,7 +1214,11 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 				serverRun, serverStarted = r.startServerProxy(ctx, tunnelProxy, pd, log)
 				if serverStarted {
 					log.V(1).Info("Server proxy started successfully, scheduling reconciliation")
-					pd.State = apiv1.ContainerNetworkTunnelProxyStateRunning
+					if pd.pairGeneration != 0 {
+						pd.State = apiv1.ContainerNetworkTunnelProxyStateRunning
+					} else {
+						pd.State = apiv1.ContainerNetworkTunnelProxyStateStarted
+					}
 				} else {
 					reconciliationDelay = StandardDelay
 				}
@@ -1121,7 +1246,11 @@ func (r *ContainerNetworkTunnelProxyReconciler) queueProxyPairStartupResult(
 			return
 		}
 		_, current := pdMap.BorrowByNamespacedName(proxyName)
-		if current == nil || current.resourceUID != proxyUID {
+		if current == nil || current.resourceUID != proxyUID || current.pairGeneration != result.pairGeneration {
+			r.queueDiscardedProxyPairCleanup(proxyUID, result, run, log)
+			return
+		}
+		if current.State != apiv1.ContainerNetworkTunnelProxyStateStarting {
 			r.queueDiscardedProxyPairCleanup(proxyUID, result, run, log)
 			return
 		}
@@ -1136,13 +1265,6 @@ func (r *ContainerNetworkTunnelProxyReconciler) queueProxyPairStartupResult(
 				return
 			}
 		}
-		if current.State == apiv1.ContainerNetworkTunnelProxyStateFailed ||
-			current.cleanupScheduled ||
-			current.cleanupCompleted {
-			r.queueDiscardedProxyPairCleanup(proxyUID, result, run, log)
-			return
-		}
-
 		pdMap.Update(proxyName, proxyName, result)
 	})
 	if !queued {
@@ -1166,7 +1288,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) queueDiscardedProxyPairCleanup(
 	}
 
 	cleanupData := result.Clone()
-	containerName := tunnelProxyPhysicalContainerNameForUID(proxyUID)
+	containerName := tunnelProxyPhysicalContainerNameForUID(proxyUID, result.pairGeneration)
 	serverHandle, _ := serverProxyHandle(cleanupData)
 	cleanupLog := log.WithValues(
 		"OldProxyUID", proxyUID,
@@ -1283,16 +1405,12 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupDiscardedProxyPair(
 		}
 	}
 
-	containerName := tunnelProxyPhysicalContainerNameForUID(proxyUID)
-	physicalContainer := &apiv2.PhysicalContainer{
-		ObjectMeta: metav1.ObjectMeta{Name: containerName.Name, Namespace: containerName.Namespace},
-	}
 	deleteCtx, deleteCancel := context.WithTimeout(context.WithoutCancel(ctx), tunnelOperationTimeout)
 	var deleteErr error
 	if r.ReconcilerBase == nil || r.Client == nil {
 		deleteErr = errors.New("controller client is unavailable")
 	} else {
-		deleteErr = r.Client.Delete(deleteCtx, physicalContainer)
+		_, deleteErr = r.cleanupClientPhysicalResources(deleteCtx, proxyUID, pd)
 	}
 	deleteCancel()
 	if deleteErr != nil && !apimachinery_errors.IsNotFound(deleteErr) {
@@ -1447,7 +1565,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		return false, StandardDelay
 	}
 
-	physicalContainerName := tunnelProxyPhysicalContainerName(tunnelProxy)
+	physicalContainerName := tunnelProxyPhysicalContainerNameForUID(tunnelProxy.UID, pd.pairGeneration)
 	physicalContainer := apiv2.PhysicalContainer{}
 	getContainerErr := r.Get(ctx, physicalContainerName, &physicalContainer)
 	if apimachinery_errors.IsNotFound(getContainerErr) {
@@ -1492,6 +1610,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		}
 
 		log.V(1).Info("Created client proxy PhysicalContainer", "PhysicalContainer", physicalContainerName)
+		pd.clientPhysicalUID = physicalContainer.UID
 		pd.Message = fmt.Sprintf("Waiting for client proxy PhysicalContainer %q to start", physicalContainerName.String())
 		return false, StandardDelay
 	}
@@ -1511,14 +1630,15 @@ func tunnelProxyPhysicalImageName() types.NamespacedName {
 	}
 }
 
-func tunnelProxyPhysicalContainerName(tunnelProxy *apiv1.ContainerNetworkTunnelProxy) types.NamespacedName {
-	return tunnelProxyPhysicalContainerNameForUID(tunnelProxy.UID)
-}
-
-func tunnelProxyPhysicalContainerNameForUID(tunnelProxyUID types.UID) types.NamespacedName {
+func tunnelProxyPhysicalContainerNameForUID(tunnelProxyUID types.UID, generation uint64) types.NamespacedName {
+	name := fmt.Sprintf("tunnel-proxy-%s", tunnelProxyUID)
+	if generation != 0 {
+		// Base 36 keeps the full uint64 generation within the DNS-label limit.
+		name += "-" + strconv.FormatUint(generation, 36)
+	}
 	return types.NamespacedName{
 		Namespace: V1PhysicalResourcesNamespaceName,
-		Name:      fmt.Sprintf("tunnel-proxy-%s", tunnelProxyUID),
+		Name:      name,
 	}
 }
 
@@ -1658,13 +1778,12 @@ func (r *ContainerNetworkTunnelProxyReconciler) updateClientProxyContainerStatus
 	pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) (bool, AdditionalReconciliationDelay) {
-	containerName := tunnelProxyPhysicalContainerName(tunnelProxy)
+	containerName := tunnelProxyPhysicalContainerNameForUID(tunnelProxy.UID, pd.pairGeneration)
 	physicalContainer := apiv2.PhysicalContainer{}
 	getContainerErr := r.Get(ctx, containerName, &physicalContainer)
 	if apimachinery_errors.IsNotFound(getContainerErr) {
-		if pd.State == apiv1.ContainerNetworkTunnelProxyStateRunning {
-			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-			pd.Message = fmt.Sprintf("Client proxy PhysicalContainer %q no longer exists", containerName.String())
+		if pd.State == apiv1.ContainerNetworkTunnelProxyStateRunning || pd.State == apiv1.ContainerNetworkTunnelProxyStateStarted {
+			pd.attemptProxyRecovery(fmt.Sprintf("Client proxy PhysicalContainer %q no longer exists", containerName.String()))
 			return false, NoDelay
 		}
 		pd.Message = fmt.Sprintf("Waiting for client proxy PhysicalContainer %q to be created", containerName.String())
@@ -1676,25 +1795,26 @@ func (r *ContainerNetworkTunnelProxyReconciler) updateClientProxyContainerStatus
 		return false, StandardDelay
 	}
 
+	if pd.clientPhysicalUID != "" && pd.clientPhysicalUID != physicalContainer.UID {
+		pd.attemptProxyRecovery(fmt.Sprintf("Client proxy PhysicalContainer %q was replaced", containerName.String()))
+		return false, NoDelay
+	}
+	pd.clientPhysicalUID = physicalContainer.UID
 	switch physicalContainer.Status.Phase {
 	case apiv2.PhysicalContainerPhaseRunning:
 		if physicalResourceReadyConditionReason(physicalContainer.Status.Conditions) == apiv2.PhysicalContainerReasonPortMappingResolutionFailed {
-			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-			pd.Message = fmt.Sprintf("Client proxy PhysicalContainer failed: %s", physicalResourceStatusMessage(physicalContainer.Status.Conditions))
+			pd.attemptProxyRecovery(fmt.Sprintf("Client proxy PhysicalContainer failed: %s", physicalResourceStatusMessage(physicalContainer.Status.Conditions)))
 			return false, NoDelay
 		}
 	case apiv2.PhysicalContainerPhaseFailed, apiv2.PhysicalContainerPhaseExited:
-		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		pd.Message = fmt.Sprintf("Client proxy PhysicalContainer failed: %s", physicalResourceStatusMessage(physicalContainer.Status.Conditions))
+		pd.attemptProxyRecovery(fmt.Sprintf("Client proxy PhysicalContainer failed: %s", physicalResourceStatusMessage(physicalContainer.Status.Conditions)))
 		return false, NoDelay
 	case apiv2.PhysicalContainerPhasePaused:
-		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		pd.Message = fmt.Sprintf("Client proxy PhysicalContainer failed: %s", physicalResourceStatusMessage(physicalContainer.Status.Conditions))
+		pd.attemptProxyRecovery(fmt.Sprintf("Client proxy PhysicalContainer failed: %s", physicalResourceStatusMessage(physicalContainer.Status.Conditions)))
 		return false, NoDelay
 	case apiv2.PhysicalContainerPhaseUnknown:
 		if physicalResourceReadyConditionReason(physicalContainer.Status.Conditions) == apiv2.PhysicalContainerReasonRuntimeContainerMissing {
-			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-			pd.Message = fmt.Sprintf("Client proxy PhysicalContainer failed: %s", physicalResourceStatusMessage(physicalContainer.Status.Conditions))
+			pd.attemptProxyRecovery(fmt.Sprintf("Client proxy PhysicalContainer failed: %s", physicalResourceStatusMessage(physicalContainer.Status.Conditions)))
 			return false, NoDelay
 		}
 		pd.Message = fmt.Sprintf("Waiting for client proxy PhysicalContainer %q: %s", containerName.String(), physicalResourceStatusMessage(physicalContainer.Status.Conditions))
@@ -1732,15 +1852,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) updateClientProxyContainerStatus
 	controlPort, controlPortErr := physicalContainerHostPort(physicalContainer.Status.PortMappings, int32(dcptun.DefaultContainerProxyControlPort))
 	if controlPortErr != nil {
 		log.Error(controlPortErr, "Failed to determine control connection host port for the client proxy PhysicalContainer")
-		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		pd.Message = fmt.Sprintf("Failed to determine control connection host port for client proxy PhysicalContainer %q: %v", containerName.String(), controlPortErr)
+		pd.attemptProxyRecovery(fmt.Sprintf("Failed to determine control connection host port for client proxy PhysicalContainer %q: %v", containerName.String(), controlPortErr))
 		return false, NoDelay
 	}
 	dataPort, dataPortErr := physicalContainerHostPort(physicalContainer.Status.PortMappings, int32(dcptun.DefaultContainerProxyDataPort))
 	if dataPortErr != nil {
 		log.Error(dataPortErr, "Failed to determine data connection host port for the client proxy PhysicalContainer")
-		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		pd.Message = fmt.Sprintf("Failed to determine data connection host port for client proxy PhysicalContainer %q: %v", containerName.String(), dataPortErr)
+		pd.attemptProxyRecovery(fmt.Sprintf("Failed to determine data connection host port for client proxy PhysicalContainer %q: %v", containerName.String(), dataPortErr))
 		return false, NoDelay
 	}
 
@@ -1811,7 +1929,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 			tunnelProxyCleanupUnconfirmedCounter.Add(context.Background(), 1)
 			log.WithValues(
 				"OldProxyUID", tunnelProxy.UID,
-				"PhysicalContainer", tunnelProxyPhysicalContainerName(tunnelProxy).String(),
+				"PhysicalContainer", tunnelProxyPhysicalContainerNameForUID(tunnelProxy.UID, pd.pairGeneration).String(),
 				"ServerPID", serverHandle.Pid,
 				"ServerIdentityTime", process.FormatIdentityTime(serverHandle.IdentityTime),
 			).Error(
@@ -1824,7 +1942,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	}()
 
 	var stdoutErr error
-	stdoutFile, stdoutErr = usvc_io.CreateNewTempFile(fmt.Sprintf("%s_out_%s", tunnelProxy.Name, tunnelProxy.UID), osutil.PermissionOnlyOwnerReadWrite)
+	stdoutFile, stdoutErr = usvc_io.CreateNewTempFile(fmt.Sprintf("%s_out_%s_%d", tunnelProxy.Name, tunnelProxy.UID, pd.pairGeneration), osutil.PermissionOnlyOwnerReadWrite)
 	if stdoutErr != nil {
 		log.Error(stdoutErr, "Failed to create stdout temp file for container tunnel server proxy")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
@@ -1833,7 +1951,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	}
 
 	var stderrErr error
-	stderrFile, stderrErr = usvc_io.CreateNewTempFile(fmt.Sprintf("%s_err_%s", tunnelProxy.Name, tunnelProxy.UID), osutil.PermissionOnlyOwnerReadWrite)
+	stderrFile, stderrErr = usvc_io.CreateNewTempFile(fmt.Sprintf("%s_err_%s_%d", tunnelProxy.Name, tunnelProxy.UID, pd.pairGeneration), osutil.PermissionOnlyOwnerReadWrite)
 	if stderrErr != nil {
 		log.Error(stderrErr, "Failed to create stderr temp file for container tunnel server proxy")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
@@ -1857,6 +1975,8 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	logger.WithSessionId(cmd)
 	proxyName := tunnelProxy.NamespacedName()
 	run := newServerProxyRun()
+	run.resourceUID = tunnelProxy.UID
+	run.pairGeneration = pd.pairGeneration
 	exitHandler := process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
 		r.onServerProcessExit(proxyName, run, pid, exitCode, err, stdoutFile, stderrFile)
 	})
@@ -1892,7 +2012,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		pd.Message = fmt.Sprintf("Failed to read server proxy configuration: %v", tcErr)
 		cleanupLog := log.WithValues(
 			"OldProxyUID", tunnelProxy.UID,
-			"PhysicalContainer", tunnelProxyPhysicalContainerName(tunnelProxy).String(),
+			"PhysicalContainer", tunnelProxyPhysicalContainerNameForUID(tunnelProxy.UID, pd.pairGeneration).String(),
 			"ServerPID", handle.Pid,
 			"ServerIdentityTime", process.FormatIdentityTime(handle.IdentityTime),
 		)
@@ -2067,16 +2187,24 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPairCleanup(
 	log logr.Logger,
 ) func(context.Context) {
 	return func(ctx context.Context) {
-		r.cleanupProxyPair(ctx, pd, tunnelProxy.UID, log)
+		if r.cleanupProxyPair(ctx, pd, tunnelProxy.UID, log) {
+			pd.State = apiv1.ContainerNetworkTunnelProxyStateDeleted
+		} else {
+			pd.State = apiv1.ContainerNetworkTunnelProxyStateDeletePending
+		}
 
 		log.V(1).Info("Completed cleanup attempt for ContainerNetworkTunnelProxy proxy pair")
 		nn := tunnelProxy.NamespacedName()
 		pdMap := r.proxyData
-		pdMap.QueueDeferredOp(nn, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
+		pdMap.QueueDeferredOp(nn, func(_ types.NamespacedName, _ types.NamespacedName, proxy *apiv1.ContainerNetworkTunnelProxy) {
+			_, current := pdMap.BorrowByNamespacedName(nn)
+			if proxy.UID != pd.resourceUID || current == nil || current.State != apiv1.ContainerNetworkTunnelProxyStateDeleting {
+				return
+			}
 			pdMap.Update(nn, nn, pd)
 		})
 		reconciliationDelay := NoDelay
-		if !pd.cleanupCompleted {
+		if pd.State != apiv1.ContainerNetworkTunnelProxyStateDeleted {
 			reconciliationDelay = StandardDelay
 		}
 		r.ScheduleReconciliationWithDelay(nn, reconciliationDelay)
@@ -2090,20 +2218,18 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 	pd *containerNetworkTunnelProxyData,
 	proxyObjectID types.UID,
 	log logr.Logger,
-) {
+) bool {
 	cleanupCompleted := true
 	cleanupUnconfirmed := false
 	log.V(1).Info("Removing client proxy physical resources...")
-	physicalResourcesRemoved, removeErr := r.cleanupClientPhysicalResources(ctx, proxyObjectID)
+	physicalResourcesRemoved, removeErr := r.cleanupClientPhysicalResources(ctx, proxyObjectID, pd)
 	if removeErr != nil {
 		log.Error(removeErr, "Failed to remove client proxy physical resources")
 		tunnelProxyDeleteSubmissionFailureCounter.Add(context.Background(), 1)
 		cleanupUnconfirmed = true
-		pd.cleanupScheduled = false
 		cleanupCompleted = false
 	} else if !physicalResourcesRemoved {
 		log.V(1).Info("Client proxy physical resource deletion is still in progress")
-		pd.cleanupScheduled = false
 		cleanupCompleted = false
 	} else {
 		log.V(1).Info("Successfully removed client proxy physical resources")
@@ -2120,7 +2246,6 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 			log.Error(stopErr, "Failed to stop server proxy process")
 			tunnelProxyProcessStopFailureCounter.Add(context.Background(), 1)
 			cleanupUnconfirmed = true
-			pd.cleanupScheduled = false
 			cleanupCompleted = false
 		} else {
 			log.V(1).Info("Successfully stopped server proxy process")
@@ -2134,18 +2259,27 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 	if cleanupUnconfirmed {
 		tunnelProxyCleanupUnconfirmedCounter.Add(context.Background(), 1)
 	}
-	pd.cleanupCompleted = cleanupCompleted
+	return cleanupCompleted
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) cleanupClientPhysicalResources(
 	ctx context.Context,
 	proxyObjectID types.UID,
+	pd *containerNetworkTunnelProxyData,
 ) (bool, error) {
-	containerName := tunnelProxyPhysicalContainerNameForUID(proxyObjectID)
-	physicalContainer := &apiv2.PhysicalContainer{
-		ObjectMeta: metav1.ObjectMeta{Name: containerName.Name, Namespace: containerName.Namespace},
+	containerName := tunnelProxyPhysicalContainerNameForUID(proxyObjectID, pd.pairGeneration)
+	physicalContainer := &apiv2.PhysicalContainer{}
+	getErr := r.NoCacheClient.Get(ctx, containerName, physicalContainer)
+	if apimachinery_errors.IsNotFound(getErr) {
+		return true, nil
 	}
-	deleteErr := r.Client.Delete(ctx, physicalContainer)
+	if getErr != nil {
+		return false, fmt.Errorf("get PhysicalContainer %q for cleanup: %w", containerName.String(), getErr)
+	}
+	if pd.clientPhysicalUID != "" && physicalContainer.UID != pd.clientPhysicalUID {
+		return true, nil // The owned container is gone; a different resource now occupies its name.
+	}
+	deleteErr := r.Client.Delete(ctx, physicalContainer, ctrl_client.Preconditions{UID: &physicalContainer.UID})
 	if apimachinery_errors.IsNotFound(deleteErr) {
 		return true, nil
 	}
@@ -2185,19 +2319,21 @@ func (r *ContainerNetworkTunnelProxyReconciler) onServerProcessExit(
 	}
 
 	pdMap := r.proxyData
-	pdMap.QueueDeferredOp(pName, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
+	pdMap.QueueDeferredOp(pName, func(_ types.NamespacedName, _ types.NamespacedName, proxy *apiv1.ContainerNetworkTunnelProxy) {
 		_, pd := pdMap.BorrowByNamespacedName(pName)
-		if pd == nil {
+		if pd == nil || proxy.UID != run.resourceUID || pd.resourceUID != run.resourceUID {
 			return // ContainerNetworkTunnelProxy object has been deleted, nothing to do
 		}
-		if !pd.hasServerProxy(run.handle) {
+		if pd.pairGeneration != run.pairGeneration || !pd.hasServerProxy(run.handle) {
 			return // This callback belongs to a server proxy process that is no longer current.
 		}
-		if pd.cleanupScheduled || pd.State == apiv1.ContainerNetworkTunnelProxyStateFailed {
+		switch pd.State {
+		case apiv1.ContainerNetworkTunnelProxyStateStarting, apiv1.ContainerNetworkTunnelProxyStateStarted, apiv1.ContainerNetworkTunnelProxyStateRunning:
+		default:
 			return // Cleanup or another failure already owns the proxy's terminal status.
 		}
 
-		// Server proxy process exited unexpectedly, so we need to mark the proxy as failed, which will trigger the cleanup.
+		// Unexpected exits require cleanup even when the process reports a successful exit code.
 		applyUnexpectedServerProxyExit(pd, run.handle.Pid, serverProxyExit{
 			exitType: serverProxyExitTypeUnexpected,
 			exitCode: exitCode,
@@ -2211,16 +2347,16 @@ func (r *ContainerNetworkTunnelProxyReconciler) onServerProcessExit(
 func applyUnexpectedServerProxyExit(pd *containerNetworkTunnelProxyData, pid process.Pid_t, exit serverProxyExit) {
 	pd.ServerProxyProcessID = nil
 	pd.ServerProxyStartupTimestamp = metav1.MicroTime{}
-	pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-	pd.Message = fmt.Sprintf("Server proxy process '%d' exited unexpectedly with exit code %d", pid, exit.exitCode)
+	message := fmt.Sprintf("Server proxy process '%d' exited unexpectedly with exit code %d", pid, exit.exitCode)
 	if exit.err != nil {
-		pd.Message = fmt.Sprintf(
+		message = fmt.Sprintf(
 			"Server proxy process '%d' exited unexpectedly with exit code %d: %v",
 			pid,
 			exit.exitCode,
 			exit.err,
 		)
 	}
+	pd.attemptProxyRecovery(message)
 }
 
 //

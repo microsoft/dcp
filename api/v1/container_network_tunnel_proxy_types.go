@@ -26,27 +26,48 @@ import (
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
+// ContainerNetworkTunnelProxyState describes the lifecycle phase of a tunnel proxy pair.
 type ContainerNetworkTunnelProxyState string
 
 const (
-	// The same as ContainerNetworkTunnelProxyStatePending.
-	// May be encountered when ContainerNetworkTunnelProxy status has not been initialized yet.
+	// The proxy pair has not been initialized; equivalent to Pending.
 	ContainerNetworkTunnelProxyStateEmpty ContainerNetworkTunnelProxyState = ""
 
-	// Initial state - proxy pair is being created.
+	// The proxy pair will not begin the startup sequence until the referenced container network is ready for use.
 	ContainerNetworkTunnelProxyStatePending ContainerNetworkTunnelProxyState = "Pending"
 
-	// Building the client proxy container image.
+	// The client proxy image and container are being prepared.
 	ContainerNetworkTunnelProxyStateBuildingImage ContainerNetworkTunnelProxyState = "BuildingImage"
 
-	// Starting the proxy pair.
+	// The proxy pair is starting and is not yet ready for tunnel traffic.
 	ContainerNetworkTunnelProxyStateStarting ContainerNetworkTunnelProxyState = "Starting"
 
-	// Proxy pair is ready with all tunnels operational.
+	// The initial proxy pair has started but its readiness has not yet been verified.
+	ContainerNetworkTunnelProxyStateStarted ContainerNetworkTunnelProxyState = "Started"
+
+	// The proxy pair is operational and can serve ready tunnels.
 	ContainerNetworkTunnelProxyStateRunning ContainerNetworkTunnelProxyState = "Running"
 
-	// Proxy pair encountered an unrecoverable error, either during startup, or during execution.
+	// The proxy pair has failed and is awaiting recovery.
+	ContainerNetworkTunnelProxyStateRecoveryPending ContainerNetworkTunnelProxyState = "RecoveryPending"
+
+	// The failed proxy pair is being removed before replacement.
+	ContainerNetworkTunnelProxyStateRecoveryCleanup ContainerNetworkTunnelProxyState = "RecoveryCleanup"
+
+	// The failed proxy pair has been removed; replacement startup is waiting for the restart backoff delay to expire.
+	ContainerNetworkTunnelProxyStateRecoveryWait ContainerNetworkTunnelProxyState = "RecoveryWait"
+
+	// The proxy pair has encountered an unrecoverable failure and will not be restarted.
 	ContainerNetworkTunnelProxyStateFailed ContainerNetworkTunnelProxyState = "Failed"
+
+	// Object deletion has been requested and proxy-pair removal is pending.
+	ContainerNetworkTunnelProxyStateDeletePending ContainerNetworkTunnelProxyState = "DeletePending"
+
+	// The proxy pair is being removed for object deletion.
+	ContainerNetworkTunnelProxyStateDeleting ContainerNetworkTunnelProxyState = "Deleting"
+
+	// The proxy pair has been removed for object deletion.
+	ContainerNetworkTunnelProxyStateDeleted ContainerNetworkTunnelProxyState = "Deleted"
 )
 
 type TunnelState string
@@ -167,7 +188,7 @@ type ContainerNetworkTunnelProxySpec struct {
 // ContainerNetworkTunnelProxyStatus defines the current state of a ContainerNetworkTunnelProxy.
 // +k8s:openapi-gen=true
 type ContainerNetworkTunnelProxyStatus struct {
-	// Overall state of the tunnel proxy pair.
+	// Lifecycle phase of the tunnel proxy pair.
 	// +kubebuilder:default:="Pending"
 	State ContainerNetworkTunnelProxyState `json:"state,omitempty"`
 

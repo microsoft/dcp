@@ -8,11 +8,13 @@ package controllers
 import (
 	"cmp"
 	"context"
+	std_maps "maps"
 	"os"
 	std_slices "slices"
 	"sync"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
@@ -23,6 +25,15 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
 )
+
+// tunnelProxyRecoverySchedule retains retry timing across replacement pairs.
+type tunnelProxyRecoverySchedule struct {
+	// Earliest time at which the next replacement pair may be started.
+	retryAfter time.Time
+
+	// Per-proxy retry progression, advanced only by reconciliation.
+	backoff backoff.BackOff
+}
 
 type tunnelExtraData struct {
 	// The number of preparation attempts made for this tunnel.
@@ -95,36 +106,37 @@ func (lease *startupLease) TryAcquire(lifetimeCtx context.Context) (func(), bool
 
 // Data we keep in memory for ContainerNetworkTunnelProxy instances.
 type containerNetworkTunnelProxyData struct {
+	// Authoritative proxy lifecycle and status details.
 	apiv1.ContainerNetworkTunnelProxyStatus
 
+	// Identifies the logical proxy that owns this data.
 	resourceUID types.UID
 
-	// Coordinates asynchronous startup work. Clones share this lease by pointer.
+	// Identifies the pair incarnation for fencing and startup classification; zero denotes the initial pair.
+	pairGeneration uint64
+
+	// Identifies the client physical container this pair is allowed to clean up.
+	clientPhysicalUID types.UID
+
+	// Preserves retry progression and the next replacement time across pair generations.
+	recovery tunnelProxyRecoverySchedule
+
+	// Preserves consumer-facing port allocations across pair replacements, keyed by tunnel name.
+	publishedPorts map[string]int32
+
+	// Serializes startup and cleanup against asynchronous startup results.
 	startup *startupLease
 
-	// Whether the cleanup of the proxy pair has been scheduled.
-	// Graceful shutdown of the client proxy container and the server proxy process
-	// can take a while, so we do it asynchronously.
-	cleanupScheduled bool
-
-	// Whether cleanup completed successfully.
-	cleanupCompleted bool
-
-	// Standard output file for the server proxy process.
-	// Note: this is a file descriptor, and is not "cloned" when Clone() is called.
+	// Captures server proxy standard output; clones share the file descriptor.
 	serverStdout *os.File
 
-	// Standard error file for the server proxy process.
-	// Note: this is a file descriptor, and is not "cloned" when Clone() is called.
+	// Captures server proxy standard error; clones share the file descriptor.
 	serverStderr *os.File
 
-	// Additional in-memory state for tunnels, keyed by tunnel name.
+	// Tracks preparation retries and owned client-service endpoints, keyed by tunnel name.
 	tunnelExtra map[string]tunnelExtraData
 
-	// Certificates for securing the tunnel control connection.
-	// Generated when starting the server proxy and used by both server and client proxies.
-	// Note: this is not "cloned" when Clone() is called, as the securityConfig is created once during the startup
-	// and is used for the lifetime of the proxy pair.
+	// Authenticates the pair's control connection with certificates shared by its state clones.
 	securityConfig *dcptun.TunnelProxySecurityConfig
 }
 
@@ -133,12 +145,11 @@ func newContainerNetworkTunnelProxyData(
 	resourceUID types.UID,
 ) *containerNetworkTunnelProxyData {
 	return &containerNetworkTunnelProxyData{
-		ContainerNetworkTunnelProxyStatus: apiv1.ContainerNetworkTunnelProxyStatus{
-			State: state,
-		},
-		resourceUID: resourceUID,
-		startup:     newStartupLease(),
-		tunnelExtra: make(map[string]tunnelExtraData),
+		ContainerNetworkTunnelProxyStatus: apiv1.ContainerNetworkTunnelProxyStatus{State: state},
+		resourceUID:                       resourceUID,
+		startup:                           newStartupLease(),
+		tunnelExtra:                       make(map[string]tunnelExtraData),
+		publishedPorts:                    make(map[string]int32),
 	}
 }
 
@@ -146,9 +157,11 @@ func (tpd *containerNetworkTunnelProxyData) Clone() *containerNetworkTunnelProxy
 	clone := containerNetworkTunnelProxyData{
 		ContainerNetworkTunnelProxyStatus: *tpd.ContainerNetworkTunnelProxyStatus.DeepCopy(),
 		resourceUID:                       tpd.resourceUID,
+		pairGeneration:                    tpd.pairGeneration,
+		clientPhysicalUID:                 tpd.clientPhysicalUID,
+		recovery:                          tpd.recovery,
+		publishedPorts:                    std_maps.Clone(tpd.publishedPorts),
 		startup:                           tpd.startup,
-		cleanupScheduled:                  tpd.cleanupScheduled,
-		cleanupCompleted:                  tpd.cleanupCompleted,
 		serverStdout:                      tpd.serverStdout,
 		serverStderr:                      tpd.serverStderr,
 		tunnelExtra:                       maps.Map[string, tunnelExtraData, tunnelExtraData](tpd.tunnelExtra, tunnelExtraData.Clone),
@@ -165,16 +178,35 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 	if tpd.resourceUID != "" && other.resourceUID != "" && tpd.resourceUID != other.resourceUID {
 		return false
 	}
+	if tpd.pairGeneration != other.pairGeneration {
+		return false
+	}
 
 	updated := false
 
-	if tpd.resourceUID == "" && other.resourceUID != "" {
-		tpd.resourceUID = other.resourceUID
+	if tpd.clientPhysicalUID != other.clientPhysicalUID {
+		tpd.clientPhysicalUID = other.clientPhysicalUID
+		updated = true
+	}
+	if tpd.State != other.State {
+		tpd.State = other.State
+		updated = true
+	}
+	if !tpd.recovery.retryAfter.Equal(other.recovery.retryAfter) {
+		tpd.recovery.retryAfter = other.recovery.retryAfter
+		updated = true
+	}
+	if tpd.recovery.backoff == nil && other.recovery.backoff != nil {
+		tpd.recovery.backoff = other.recovery.backoff
+		updated = true
+	}
+	if !std_maps.Equal(tpd.publishedPorts, other.publishedPorts) {
+		tpd.publishedPorts = std_maps.Clone(other.publishedPorts)
 		updated = true
 	}
 
-	if tpd.State != other.State {
-		tpd.State = other.State
+	if tpd.resourceUID == "" && other.resourceUID != "" {
+		tpd.resourceUID = other.resourceUID
 		updated = true
 	}
 
@@ -238,16 +270,6 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 		updated = true
 	}
 
-	if tpd.cleanupScheduled != other.cleanupScheduled {
-		tpd.cleanupScheduled = other.cleanupScheduled
-		updated = true
-	}
-
-	if tpd.cleanupCompleted != other.cleanupCompleted {
-		tpd.cleanupCompleted = other.cleanupCompleted
-		updated = true
-	}
-
 	if other.serverStdout != nil && tpd.serverStdout != other.serverStdout {
 		tpd.serverStdout = other.serverStdout
 		updated = true
@@ -277,6 +299,18 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 	return updated
 }
 
+// Initiates ContainerNetworkTunnelProxy recovery after an operational-pair or
+// replacement-startup failure; initial startup failures remain terminal.
+func (tpd *containerNetworkTunnelProxyData) attemptProxyRecovery(message string) {
+	if tpd.State == apiv1.ContainerNetworkTunnelProxyStateRunning ||
+		(tpd.pairGeneration != 0 && (tpd.State == apiv1.ContainerNetworkTunnelProxyStateBuildingImage || tpd.State == apiv1.ContainerNetworkTunnelProxyStateStarting)) {
+		tpd.State = apiv1.ContainerNetworkTunnelProxyStateRecoveryPending
+	} else {
+		tpd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+	}
+	tpd.Message = message
+}
+
 func (tpd *containerNetworkTunnelProxyData) hasServerProxy(handle process.ProcessHandle) bool {
 	return tpd.ServerProxyProcessID != nil &&
 		process.Pid_t(*tpd.ServerProxyProcessID) == handle.Pid &&
@@ -286,7 +320,7 @@ func (tpd *containerNetworkTunnelProxyData) hasServerProxy(handle process.Proces
 func (tpd *containerNetworkTunnelProxyData) applyTo(tunnelProxy *apiv1.ContainerNetworkTunnelProxy) objectChange {
 	change := noChange
 
-	if tpd.State != apiv1.ContainerNetworkTunnelProxyStateEmpty && tpd.State != tunnelProxy.Status.State {
+	if tpd.State != tunnelProxy.Status.State {
 		tunnelProxy.Status.State = tpd.State
 		change |= statusChanged
 	}
@@ -317,7 +351,8 @@ func (tpd *containerNetworkTunnelProxyData) applyTo(tunnelProxy *apiv1.Container
 		change |= statusChanged
 	}
 
-	if tunnelProxy.Status.ServerProxyStartupTimestamp.IsZero() && !tpd.ServerProxyStartupTimestamp.IsZero() {
+	serverStartupTime := tpd.ServerProxyStartupTimestamp.Time.Truncate(time.Microsecond)
+	if !serverStartupTime.Equal(tunnelProxy.Status.ServerProxyStartupTimestamp.Time.Truncate(time.Microsecond)) {
 		tunnelProxy.Status.ServerProxyStartupTimestamp = tpd.ServerProxyStartupTimestamp
 		change |= statusChanged
 	}

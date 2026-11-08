@@ -1397,7 +1397,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref common.Re
 				Properties: map[string]spec.Schema{
 					"state": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Overall state of the tunnel proxy pair.",
+							Description: "Lifecycle phase of the tunnel proxy pair.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

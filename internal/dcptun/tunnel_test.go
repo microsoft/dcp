@@ -24,8 +24,13 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	stdproto "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/networking"
@@ -49,8 +54,9 @@ func TestTunnelServerAndClientProxies(t *testing.T) {
 	testServerListener, testServerPort := setupEchoServer(t)
 	defer testServerListener.Close()
 
-	serverProxyClient, proxyCleanup := createProxyPair(t, ctx, log)
-	defer proxyCleanup()
+	pair := createProxyPair(t, ctx, log, proxyPairConfig{})
+	defer pair.cleanup()
+	serverProxyClient := pair.control
 
 	tunnelReq := &proto.TunnelReq{
 		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
@@ -106,8 +112,9 @@ func TestTunnelConnectionThroughput(t *testing.T) {
 	testServerListener, testServerPort := setupEchoServer(t)
 	defer testServerListener.Close()
 
-	serverProxyClient, proxyCleanup := createProxyPair(t, testCtx, log)
-	defer proxyCleanup()
+	pair := createProxyPair(t, testCtx, log, proxyPairConfig{})
+	defer pair.cleanup()
+	serverProxyClient := pair.control
 
 	tunnelReq := &proto.TunnelReq{
 		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
@@ -173,8 +180,9 @@ func TestTunnelDataThroughput(t *testing.T) {
 	serverPort, portErr := networking.GetFreePort(commonapi.PortProtocolTCP, networking.IPv4LocalhostDefaultAddress, log)
 	require.NoError(t, portErr, "Failed to get free port for server")
 
-	serverProxyClient, proxyCleanup := createProxyPair(t, testCtx, log)
-	defer proxyCleanup()
+	pair := createProxyPair(t, testCtx, log, proxyPairConfig{})
+	defer pair.cleanup()
+	serverProxyClient := pair.control
 
 	tunnelReq := &proto.TunnelReq{
 		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
@@ -232,8 +240,9 @@ func TestTunnelPreparationIdempotency(t *testing.T) {
 	defer cancelFunc()
 	log := testutil.NewLogForTesting(t.Name())
 
-	serverProxyClient, proxyCleanup := createProxyPair(t, ctx, log)
-	defer proxyCleanup()
+	pair := createProxyPair(t, ctx, log, proxyPairConfig{})
+	defer pair.cleanup()
+	serverProxyClient := pair.control
 
 	const testServerPort = 29307 // Value does not matter, just need a reasonable port number.
 
@@ -388,7 +397,7 @@ func setupListener(t *testing.T, port int32) (net.Listener, int) {
 	return listener, effectivePort
 }
 
-func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger) (proto.TunnelControlClient, context.CancelFunc) {
+func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger, config proxyPairConfig) proxyPair {
 	securityConfig, securityConfigErr := NewTunnelProxySecurityConfig()
 	require.NoError(t, securityConfigErr, "Failed to create tunnel proxy security configuration")
 	clientCertPool, clientCertPoolErr := securityConfig.GetClientPool()
@@ -404,7 +413,11 @@ func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger) (proto.
 	clientLog := log.WithName("ClientProxy")
 	clientProxy := NewClientProxy(clientProxyCtx, clientDataListener, clientProxyCtxCancel, clientLog)
 
-	clientGrpcServer := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
+	clientServerOptions := []grpc.ServerOption{grpc.Creds(credentials.NewTLS(tlsConfig))}
+	if config.controlServerInterceptor != nil {
+		clientServerOptions = append(clientServerOptions, grpc.StreamInterceptor(config.controlServerInterceptor))
+	}
+	clientGrpcServer := grpc.NewServer(clientServerOptions...)
 	proto.RegisterTunnelControlServer(clientGrpcServer, clientProxy)
 
 	go func() {
@@ -414,9 +427,18 @@ func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger) (proto.
 
 	serverControlListener, serverControlPort := setupListener(t, autoAllocatePort)
 
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(credentials.NewClientTLSFromCert(clientCertPool, "")),
+	}
+	if config.controlDialer != nil {
+		dialOptions = append(dialOptions, grpc.WithContextDialer(config.controlDialer))
+	}
+	if config.controlStreamInterceptor != nil {
+		dialOptions = append(dialOptions, grpc.WithStreamInterceptor(config.controlStreamInterceptor))
+	}
 	clientProxyConn, clientProxyErr := grpc.NewClient(
 		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, int32(clientControlPort)),
-		grpc.WithTransportCredentials(credentials.NewClientTLSFromCert(clientCertPool, "")),
+		dialOptions...,
 	)
 	require.NoError(t, clientProxyErr, "Failed to connect to client-side proxy")
 
@@ -430,6 +452,7 @@ func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger) (proto.
 		networking.IPv4LocalhostDefaultAddress,
 		int32(clientDataPort),
 		serverProxyCtxCancel,
+		config.server,
 		serverLog,
 	)
 	require.NotNil(t, serverProxy)
@@ -450,34 +473,568 @@ func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger) (proto.
 
 	serverProxyClient := proto.NewTunnelControlClient(serverProxyConn)
 
-	const gracefulShutdownTimeout = 5 * time.Second
+	cleanup := sync.OnceFunc(func() {
+		serverProxyCtxCancel()
+		clientProxyCtxCancel()
+		_ = serverProxyConn.Close()
+		_ = clientProxyConn.Close()
+		serverGrpcServer.Stop()
+		clientGrpcServer.Stop()
+		_ = serverControlListener.Close()
+		_ = clientControlListener.Close()
+		_ = clientDataListener.Close()
+	})
 
-	cleanup := func() {
-		if serverProxyConn != nil {
-			_ = serverProxyConn.Close()
-		}
-		if serverGrpcServer != nil {
-			serverProxyCtxCancel()
-			select {
-			case <-serverProxy.Done():
-				// Stopped gracefully
-			case <-time.After(gracefulShutdownTimeout):
-				serverGrpcServer.Stop()
+	return proxyPair{
+		control: serverProxyClient,
+		server:  serverProxy,
+		client:  clientProxy,
+		cleanup: cleanup,
+	}
+}
+
+// Verifies that ServerProxy replaces a failed control transport without losing
+// prepared tunnels, client listeners, or already-established data connections.
+func TestTunnelControlReconnectPreservesDataStreams(t *testing.T) {
+	t.Parallel()
+	testTunnelControlReconnectPreservesDataStreams(t, false)
+}
+
+// Verifies that cancelling only the control RPC reuses the TLS transport while
+// preserving tunnel identity, listeners, and established data streams.
+func TestTunnelControlRPCCancellationPreservesDataStreams(t *testing.T) {
+	t.Parallel()
+	testTunnelControlReconnectPreservesDataStreams(t, true)
+}
+
+func testTunnelControlReconnectPreservesDataStreams(t *testing.T, cancelRPCOnly bool) {
+	t.Helper()
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	transport := &controlledTunnelTransport{}
+	attempts := make(chan context.CancelFunc, 4)
+	ready := make(chan struct{}, 4)
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{
+		server:        ServerProxyConfig{ReconnectTimeout: 3 * time.Second},
+		controlDialer: transport.dial,
+		controlStreamInterceptor: func(callCtx context.Context, desc *grpc.StreamDesc, connection *grpc.ClientConn, method string, streamer grpc.Streamer, options ...grpc.CallOption) (grpc.ClientStream, error) {
+			attemptCtx, cancelAttempt := context.WithCancel(callCtx)
+			stream, streamErr := streamer(attemptCtx, desc, connection, method, options...)
+			if streamErr != nil {
+				cancelAttempt()
+				return nil, streamErr
 			}
-		}
-		if clientProxyConn != nil {
-			_ = clientProxyConn.Close()
-		}
-		if clientGrpcServer != nil {
-			clientProxyCtxCancel()
 			select {
-			case <-clientProxy.Done():
-				// Stopped gracefully
-			case <-time.After(gracefulShutdownTimeout):
-				clientGrpcServer.Stop()
+			case attempts <- cancelAttempt:
+			case <-callCtx.Done():
+				cancelAttempt()
 			}
-		}
+			return &observedTunnelControlStream{ClientStream: stream, ready: ready}, nil
+		},
+	})
+	defer pair.cleanup()
+	echoListener, echoPort := setupEchoServer(t)
+	defer echoListener.Close()
+	request := &proto.TunnelReq{
+		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:         stdproto.Int32(int32(echoPort)),
+		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+	}
+	spec, prepareErr := pair.control.PrepareTunnel(ctx, request)
+	require.NoError(t, prepareErr)
+	var dialer net.Dialer
+	connection, dialErr := dialer.DialContext(ctx, "tcp", networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, spec.GetClientProxyPort()))
+	require.NoError(t, dialErr)
+	defer connection.Close()
+	deadline, hasDeadline := ctx.Deadline()
+	require.True(t, hasDeadline)
+	require.NoError(t, connection.SetDeadline(deadline))
+	reader := bufio.NewReader(connection)
+	roundTrip := func(message string) {
+		_, writeErr := io.WriteString(connection, message)
+		require.NoError(t, writeErr)
+		reply, readErr := reader.ReadString('\n')
+		require.NoError(t, readErr)
+		require.Equal(t, message, reply)
+	}
+	roundTrip("before control loss\n")
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal("The initial control RPC did not become ready")
 	}
 
-	return serverProxyClient, cleanup
+	for cycle := range 3 {
+		var cancelAttempt context.CancelFunc
+		select {
+		case cancelAttempt = <-attempts:
+		case <-ctx.Done():
+			t.Fatal("Control RPC was not established")
+		}
+		if cancelRPCOnly {
+			cancelAttempt()
+		} else {
+			require.NoError(t, transport.interrupt(false))
+		}
+		roundTrip(fmt.Sprintf("existing stream during reconnect %d\n", cycle))
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			t.Fatal("The replacement control RPC did not acknowledge readiness")
+		}
+		newConnectionErr := doRoundTrip(ctx, networking.IPv4LocalhostDefaultAddress, spec.GetClientProxyPort(), 10*time.Second, func() []byte {
+			return []byte("new stream after reconnect\n")
+		})
+		require.NoError(t, newConnectionErr)
+		observed, observeErr := pair.control.PrepareTunnel(ctx, request)
+		require.NoError(t, observeErr)
+		require.True(t, stdproto.Equal(spec, observed), "Reconnect must preserve the complete tunnel spec")
+	}
+	require.NoError(t, pair.server.Err())
+	select {
+	case <-pair.client.Done():
+		t.Fatal("Control transport loss disposed the client proxy")
+	default:
+	}
+	if cancelRPCOnly {
+		transport.lock.Lock()
+		dialCount := transport.dialCount
+		transport.lock.Unlock()
+		require.Equal(t, 1, dialCount, "RPC-only cancellation must not replace the TLS transport")
+	}
+}
+
+type observedTunnelControlStream struct {
+	grpc.ClientStream
+	ready chan<- struct{}
+}
+
+func (stream *observedTunnelControlStream) Header() (metadata.MD, error) {
+	headers, headerErr := stream.ClientStream.Header()
+	if headerErr != nil {
+		return nil, headerErr
+	}
+	select {
+	case stream.ready <- struct{}{}:
+	case <-stream.Context().Done():
+		return nil, stream.Context().Err()
+	}
+	return headers, nil
+}
+
+// Verifies that ServerProxy retires its establishment watchdog after readiness,
+// allowing a healthy idle control stream to outlive the reconnect budget.
+func TestTunnelControlReconnectBudgetDoesNotLimitHealthyStream(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	const reconnectTimeout = time.Second
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{
+		server: ServerProxyConfig{ReconnectTimeout: reconnectTimeout},
+	})
+	defer pair.cleanup()
+	echoListener, echoPort := setupEchoServer(t)
+	defer echoListener.Close()
+	spec, prepareErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{
+		ServerPort: stdproto.Int32(int32(echoPort)),
+	})
+	require.NoError(t, prepareErr)
+	message := func() []byte { return []byte("healthy control stream\n") }
+	require.NoError(t, doRoundTrip(ctx, networking.IPv4LocalhostDefaultAddress, spec.GetClientProxyPort(), 10*time.Second, message))
+
+	// Waiting past this exact boundary is necessary to detect a deadline
+	// accidentally retained on the long-lived RPC.
+	timer := time.NewTimer(2 * reconnectTimeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		t.Fatal("Test context ended before the establishment budget elapsed")
+	case <-timer.C:
+	}
+	require.NoError(t, doRoundTrip(ctx, networking.IPv4LocalhostDefaultAddress, spec.GetClientProxyPort(), 10*time.Second, message))
+	require.NoError(t, pair.server.Err())
+}
+
+// Verifies that ServerProxy bounds reconnect even while WaitForReady blocks,
+// reports budget exhaustion, and leaves pair recreation to the controller.
+func TestTunnelControlReconnectBudgetExhaustion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	transport := &controlledTunnelTransport{}
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{
+		server:        ServerProxyConfig{ReconnectTimeout: time.Second},
+		controlDialer: transport.dial,
+	})
+	defer pair.cleanup()
+	echoListener, echoPort := setupEchoServer(t)
+	defer echoListener.Close()
+	spec, prepareErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{
+		ServerPort: stdproto.Int32(int32(echoPort)),
+	})
+	require.NoError(t, prepareErr)
+	require.NoError(t, doRoundTrip(ctx, networking.IPv4LocalhostDefaultAddress, spec.GetClientProxyPort(), 10*time.Second, func() []byte {
+		return []byte("before blocked transport\n")
+	}))
+	require.NoError(t, transport.interrupt(true))
+
+	select {
+	case <-ctx.Done():
+		t.Fatal("Server proxy did not stop after exhausting its reconnect budget")
+	case <-pair.server.Done():
+	}
+	require.ErrorIs(t, pair.server.Err(), context.DeadlineExceeded)
+	select {
+	case <-pair.client.Done():
+		t.Fatal("RPC failure directly disposed the client instead of letting the controller replace the pair")
+	default:
+	}
+}
+
+// Verifies that ServerProxy bounds a control RPC that never acknowledges
+// ownership, including cancellation of the blocked client handler.
+func TestTunnelControlReconnectBudgetBoundsReadiness(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	handlerStopped := make(chan struct{})
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{
+		server: ServerProxyConfig{ReconnectTimeout: time.Second},
+		controlServerInterceptor: func(_ any, stream grpc.ServerStream, _ *grpc.StreamServerInfo, _ grpc.StreamHandler) error {
+			defer close(handlerStopped)
+			<-stream.Context().Done()
+			return status.FromContextError(stream.Context().Err()).Err()
+		},
+	})
+	defer pair.cleanup()
+	select {
+	case <-pair.server.Done():
+	case <-ctx.Done():
+		t.Fatal("Control readiness did not respect the reconnect budget")
+	}
+	require.ErrorIs(t, pair.server.Err(), context.DeadlineExceeded)
+	select {
+	case <-handlerStopped:
+	case <-ctx.Done():
+		t.Fatal("The abandoned control RPC handler did not stop")
+	}
+}
+
+// Verifies that cancelling an ambiguous stream handshake closes its pending
+// sockets and cannot deliver a stale completion through the replacement RPC.
+func TestTunnelControlReconnectAbandonsPendingHandshake(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	transport := &controlledTunnelTransport{}
+	blocked := make(chan struct{})
+	var blockFirst sync.Once
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{
+		controlDialer: transport.dial,
+		controlStreamInterceptor: func(callCtx context.Context, desc *grpc.StreamDesc, connection *grpc.ClientConn, method string, streamer grpc.Streamer, options ...grpc.CallOption) (grpc.ClientStream, error) {
+			stream, streamErr := streamer(callCtx, desc, connection, method, options...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			return &blockedTunnelResult{ClientStream: stream, blockFirst: &blockFirst, blocked: blocked}, nil
+		},
+	})
+	defer pair.cleanup()
+	backend, backendPort := setupListener(t, autoAllocatePort)
+	defer backend.Close()
+	stopBackend := context.AfterFunc(ctx, func() { _ = backend.Close() })
+	defer stopBackend()
+	spec, prepareErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{ServerPort: stdproto.Int32(int32(backendPort))})
+	require.NoError(t, prepareErr)
+	var dialer net.Dialer
+	pending, dialErr := dialer.DialContext(ctx, "tcp", networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, spec.GetClientProxyPort()))
+	require.NoError(t, dialErr)
+	defer pending.Close()
+	deadline, hasDeadline := ctx.Deadline()
+	require.True(t, hasDeadline)
+	require.NoError(t, pending.SetDeadline(deadline))
+	select {
+	case <-blocked:
+	case <-ctx.Done():
+		t.Fatal("The first handshake did not reach the control reply")
+	}
+	abandonedBackend, acceptErr := backend.Accept()
+	require.NoError(t, acceptErr)
+	defer abandonedBackend.Close()
+	require.NoError(t, abandonedBackend.SetDeadline(deadline))
+	require.NoError(t, transport.interrupt(false))
+	_, backendReadErr := abandonedBackend.Read(make([]byte, 1))
+	require.Error(t, backendReadErr)
+	require.False(t, os.IsTimeout(backendReadErr), "The abandoned backend socket must close promptly")
+	_, clientReadErr := pending.Read(make([]byte, 1))
+	require.Error(t, clientReadErr)
+	require.False(t, os.IsTimeout(clientReadErr), "The ambiguous client handshake must fail rather than be replayed")
+
+	echoDone := make(chan error, 1)
+	go func() {
+		connection, newAcceptErr := backend.Accept()
+		if newAcceptErr != nil {
+			echoDone <- newAcceptErr
+			return
+		}
+		defer connection.Close()
+		_ = connection.SetDeadline(deadline)
+		_, echoErr := io.Copy(connection, connection)
+		echoDone <- echoErr
+	}()
+	require.NoError(t, doRoundTrip(ctx, networking.IPv4LocalhostDefaultAddress, spec.GetClientProxyPort(), 10*time.Second, func() []byte {
+		return []byte("only the new handshake completes\n")
+	}))
+	select {
+	case echoErr := <-echoDone:
+		require.NoError(t, echoErr)
+	case <-ctx.Done():
+		t.Fatal("The replacement stream did not finish")
+	}
+	require.NoError(t, pair.server.Err())
+}
+
+type blockedTunnelResult struct {
+	grpc.ClientStream
+	blockFirst *sync.Once
+	blocked    chan<- struct{}
+}
+
+func (stream *blockedTunnelResult) SendMsg(message any) error {
+	block := false
+	stream.blockFirst.Do(func() {
+		block = true
+		close(stream.blocked)
+	})
+	if block {
+		<-stream.Context().Done()
+		return status.FromContextError(stream.Context().Err()).Err()
+	}
+	return stream.ClientStream.SendMsg(message)
+}
+
+// Verifies that shutdown cancels a blocked reconnect and closes parked client
+// sockets without waiting for the reconnect budget or reporting recovery failure.
+func TestTunnelControlReconnectShutdown(t *testing.T) {
+	t.Parallel()
+	for _, shutdown := range []string{"lifetime", "rpc"} {
+		t.Run(shutdown, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+			defer cancel()
+			pairCtx, cancelPair := context.WithCancel(ctx)
+			defer cancelPair()
+			transport := &controlledTunnelTransport{}
+			pair := createProxyPair(t, pairCtx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{
+				controlDialer: transport.dial,
+			})
+			defer pair.cleanup()
+			echoListener, echoPort := setupEchoServer(t)
+			defer echoListener.Close()
+			spec, prepareErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{ServerPort: stdproto.Int32(int32(echoPort))})
+			require.NoError(t, prepareErr)
+			require.NoError(t, doRoundTrip(ctx, networking.IPv4LocalhostDefaultAddress, spec.GetClientProxyPort(), 10*time.Second, func() []byte {
+				return []byte("before shutdown\n")
+			}))
+			require.NoError(t, transport.interrupt(true))
+			var dialer net.Dialer
+			parked, dialErr := dialer.DialContext(ctx, "tcp", networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, spec.GetClientProxyPort()))
+			require.NoError(t, dialErr)
+			defer parked.Close()
+			deadline, hasDeadline := ctx.Deadline()
+			require.True(t, hasDeadline)
+			require.NoError(t, parked.SetDeadline(deadline))
+			if shutdown == "lifetime" {
+				cancelPair()
+			} else {
+				// Shutdown must cancel local recovery even if the peer is unreachable.
+				shutdownCtx, cancelShutdown := context.WithCancel(ctx)
+				cancelShutdown()
+				_, shutdownErr := pair.server.Shutdown(shutdownCtx, &emptypb.Empty{})
+				require.Error(t, shutdownErr)
+			}
+			select {
+			case <-pair.server.Done():
+			case <-ctx.Done():
+				t.Fatal("Shutdown did not interrupt reconnect")
+			}
+			require.NoError(t, pair.server.Err())
+			if shutdown == "rpc" {
+				cancelPair()
+			}
+			_, readErr := parked.Read(make([]byte, 1))
+			require.Error(t, readErr, "Shutdown must close pending client connections")
+			require.False(t, os.IsTimeout(readErr), "The parked connection must close before the test deadline")
+		})
+	}
+}
+
+// Verifies that requests queued during a transport outage resume exactly once,
+// and tunnels added or deleted while disconnected retain their intended lifecycle.
+func TestTunnelControlReconnectQueuedRequestsAndTunnelChanges(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	transport := &controlledTunnelTransport{}
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{
+		controlDialer: transport.dial,
+		server:        ServerProxyConfig{ReconnectTimeout: 10 * time.Second},
+	})
+	defer pair.cleanup()
+	echoListener, echoPort := setupEchoServer(t)
+	defer echoListener.Close()
+	spec, prepareErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{ServerPort: stdproto.Int32(int32(echoPort))})
+	require.NoError(t, prepareErr)
+	require.NoError(t, doRoundTrip(ctx, networking.IPv4LocalhostDefaultAddress, spec.GetClientProxyPort(), 10*time.Second, func() []byte {
+		return []byte("before queued requests\n")
+	}))
+	retired, retirePrepareErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{
+		ServerPort: stdproto.Int32(int32(echoPort)), ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+	})
+	require.NoError(t, retirePrepareErr)
+	require.NoError(t, transport.interrupt(true))
+
+	oldHandlerStopped := wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(context.Context) (bool, error) {
+		if !pair.client.controlStreamLock.TryLock() {
+			return false, nil
+		}
+		pair.client.controlStreamLock.Unlock()
+		return true, nil
+	})
+	require.NoError(t, oldHandlerStopped)
+	_, offlineDeleteErr := pair.control.DeleteTunnel(ctx, retired.GetTunnelRef())
+	if offlineDeleteErr != nil {
+		require.Equal(t, codes.Internal, status.Code(offlineDeleteErr), "The unreachable client may reject deletion until reconnect")
+	}
+	pair.server.lock.Lock()
+	retiredData := pair.server.tunnels[TunnelID(retired.GetTunnelRef().GetTunnelId())]
+	retiredLocally := retiredData != nil && retiredData.deleted.Load()
+	pair.server.lock.Unlock()
+	require.True(t, retiredLocally, "An offline delete must immediately stop new stream creation on the server")
+	const queuedCount = 4
+	var pending []net.Conn
+	t.Cleanup(func() {
+		for _, connection := range pending {
+			_ = connection.Close()
+		}
+	})
+	for i := range queuedCount {
+		var dialer net.Dialer
+		connection, dialErr := dialer.DialContext(ctx, "tcp", networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, spec.GetClientProxyPort()))
+		require.NoError(t, dialErr)
+		pending = append(pending, connection)
+		deadline, hasDeadline := ctx.Deadline()
+		require.True(t, hasDeadline)
+		require.NoError(t, connection.SetDeadline(deadline))
+		_, writeErr := fmt.Fprintf(connection, "queued request %d\n", i)
+		require.NoError(t, writeErr)
+	}
+	queuedErr := wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(context.Context) (bool, error) {
+		pair.client.lock.Lock()
+		defer pair.client.lock.Unlock()
+		data := pair.client.tunnels[TunnelID(spec.GetTunnelRef().GetTunnelId())]
+		pendingCount := 0
+		if data != nil {
+			for _, stream := range data.streams {
+				if stream.proxyConn == nil {
+					pendingCount++
+				}
+			}
+		}
+		return pendingCount == queuedCount, nil
+	})
+	require.NoError(t, queuedErr)
+	added := make(chan *proto.TunnelSpec, 1)
+	addErrs := make(chan error, 1)
+	go func() {
+		newSpec, newErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{
+			ServerAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+			ServerPort:    stdproto.Int32(int32(echoPort)),
+		})
+		added <- newSpec
+		addErrs <- newErr
+	}()
+	transport.lock.Lock()
+	transport.blocked = false
+	transport.lock.Unlock()
+	for i, connection := range pending {
+		reply, readErr := bufio.NewReader(connection).ReadString('\n')
+		require.NoError(t, readErr)
+		require.Equal(t, fmt.Sprintf("queued request %d\n", i), reply)
+	}
+	var newSpec *proto.TunnelSpec
+	select {
+	case newSpec = <-added:
+	case <-ctx.Done():
+		t.Fatal("A tunnel added during reconnect did not complete")
+	}
+	require.NoError(t, <-addErrs)
+	require.NotEqual(t, spec.GetTunnelRef().GetTunnelId(), newSpec.GetTunnelRef().GetTunnelId())
+	_, retireErr := pair.control.DeleteTunnel(ctx, retired.GetTunnelRef())
+	require.NoError(t, retireErr, "Deletion must be retryable after reconnect")
+	_, deleteErr := pair.control.DeleteTunnel(ctx, spec.GetTunnelRef())
+	require.NoError(t, deleteErr)
+	_, writeErr := io.WriteString(pending[0], "established stream after deletion\n")
+	require.NoError(t, writeErr)
+	reply, readErr := bufio.NewReader(pending[0]).ReadString('\n')
+	require.NoError(t, readErr)
+	require.Equal(t, "established stream after deletion\n", reply)
+	require.NoError(t, doRoundTrip(ctx, networking.IPv4LocalhostDefaultAddress, newSpec.GetClientProxyPort(), 10*time.Second, func() []byte {
+		return []byte("new tunnel after reconnect\n")
+	}))
+}
+
+type proxyPairConfig struct {
+	server                   ServerProxyConfig
+	controlDialer            func(context.Context, string) (net.Conn, error)
+	controlStreamInterceptor grpc.StreamClientInterceptor
+	controlServerInterceptor grpc.StreamServerInterceptor
+}
+
+type proxyPair struct {
+	control proto.TunnelControlClient
+	server  *ServerProxy
+	client  *ClientProxy
+	cleanup context.CancelFunc
+}
+
+type controlledTunnelTransport struct {
+	lock       sync.Mutex
+	connection net.Conn
+	blocked    bool
+	dialCount  int
+}
+
+func (transport *controlledTunnelTransport) dial(ctx context.Context, address string) (net.Conn, error) {
+	transport.lock.Lock()
+	blocked := transport.blocked
+	transport.lock.Unlock()
+	if blocked {
+		return nil, errors.New("tunnel control transport is disabled by the test")
+	}
+	var dialer net.Dialer
+	connection, dialErr := dialer.DialContext(ctx, "tcp", address)
+	if dialErr != nil {
+		return nil, dialErr
+	}
+	transport.lock.Lock()
+	defer transport.lock.Unlock()
+	if transport.blocked {
+		_ = connection.Close()
+		return nil, errors.New("tunnel control transport was disabled while dialing")
+	}
+	transport.connection = connection
+	transport.dialCount++
+	return connection, nil
+}
+
+func (transport *controlledTunnelTransport) interrupt(blockReconnect bool) error {
+	transport.lock.Lock()
+	transport.blocked = blockReconnect
+	connection := transport.connection
+	transport.lock.Unlock()
+	if connection == nil {
+		return errors.New("no tunnel control transport has connected")
+	}
+	return connection.Close()
 }

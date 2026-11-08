@@ -6,14 +6,17 @@
 package integration_test
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	std_slices "slices"
 	"sync"
@@ -22,7 +25,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	stdproto "google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -623,7 +630,9 @@ func TestTunnelProxyTunnelCreate(t *testing.T) {
 	validateTunnel(t, ctx, updatedProxy.Status.TunnelStatuses[0], tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
 }
 
-// Verifies that when the preferred client proxy port is unavailable, the tunnel falls back to an OS-assigned random port.
+// Verifies that a tunnel uses a random port when its preferred port is unavailable,
+// retries that exact published port without a retry limit after pair recreation,
+// and reserves it before preparing newly added tunnels.
 func TestTunnelProxyTunnelCreateFallsBackToRandomPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -632,7 +641,31 @@ func TestTunnelProxyTunnelCreateFallsBackToRandomPort(t *testing.T) {
 	const testName = "test-tunnel-proxy-tunnel-port-fallback"
 
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, includedControllers, t.Name(), t.TempDir())
+	var publishedPort atomic.Int32
+	var blockPublishedPort atomic.Bool
+	var rebindAttempts atomic.Uint32
+	var addedTunnelAttempts atomic.Uint32
+	serverInfo, teInfo, startupErr := StartTestEnvironmentWithOptions(t, ctx, includedControllers, t.Name(), t.TempDir(), TestEnvironmentOptions{
+		ConfigureTunnelProxy: func(config *controllers.ContainerNetworkTunnelProxyReconcilerConfig) {
+			makeClient := config.MakeTunnelControlClient
+			config.MakeTunnelControlClient = func(connection grpc.ClientConnInterface) dcptunproto.TunnelControlClient {
+				return &tunnelPreparationObserver{
+					TunnelControlClient: makeClient(connection),
+					beforePrepare: func(request *dcptunproto.TunnelReq) error {
+						port := publishedPort.Load()
+						if port != 0 && request.GetServerPort() == port {
+							addedTunnelAttempts.Add(1)
+						}
+						if port != 0 && request.GetClientProxyPort() == port && blockPublishedPort.Load() {
+							rebindAttempts.Add(1)
+							return status.Error(codes.Unavailable, "published port is temporarily unavailable")
+						}
+						return nil
+					},
+				}
+			}
+		},
+	})
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	network := apiv1.ContainerNetwork{
@@ -691,6 +724,78 @@ func TestTunnelProxyTunnelCreateFallsBackToRandomPort(t *testing.T) {
 	require.NotEqual(t, serverServicePort, updatedProxy.Status.TunnelStatuses[0].ClientProxyPort, "Tunnel should fall back to a random port")
 
 	validateTunnel(t, ctx, updatedProxy.Status.TunnelStatuses[0], tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
+
+	originalPort := updatedProxy.Status.TunnelStatuses[0].ClientProxyPort
+	publishedPort.Store(originalPort)
+	blockPublishedPort.Store(true)
+	originalContainerID := updatedProxy.Status.ClientProxyContainerID
+	originalServerPID := *updatedProxy.Status.ServerProxyProcessID
+	require.True(t, teInfo.TestTunnelControlClient.DisableTunnel(fallbackFingerprint))
+	pinnedSpec := &dcptunproto.TunnelSpec{
+		ServerAddress:   stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:      stdproto.Int32(serverServicePort),
+		ClientProxyPort: stdproto.Int32(originalPort),
+	}
+	teInfo.TestTunnelControlClient.EnableTunnel(pinnedSpec)
+	tunnelData.fingerprint = ctrl_testutil.TestFingerprint(pinnedSpec)
+	serverPID, pidErr := process.Int64_ToPidT(originalServerPID)
+	require.NoError(t, pidErr)
+	teInfo.TestProcessExecutor.SimulateProcessExit(t, serverPID, 0)
+
+	restarting := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning &&
+			tp.Status.ServerProxyProcessID != nil &&
+			*tp.Status.ServerProxyProcessID != originalServerPID &&
+			tp.Status.ClientProxyContainerID != originalContainerID, nil
+	})
+	addedTunnel := prepareTunnelServices(t, ctx, serverInfo.Client, teInfo.TestTunnelControlClient, 1, testName+"-added", originalPort)[0]
+	require.True(t, teInfo.TestTunnelControlClient.DisableTunnel(addedTunnel.fingerprint))
+	addedFallback := &dcptunproto.TunnelSpec{
+		ServerAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:    stdproto.Int32(originalPort),
+	}
+	teInfo.TestTunnelControlClient.EnableTunnel(addedFallback)
+	addedTunnel.fingerprint = ctrl_testutil.TestFingerprint(addedFallback)
+	restarting.Spec.Tunnels = append(restarting.Spec.Tunnels, apiv1.TunnelConfiguration{
+		Name: addedTunnel.tunnelName, ServerServiceName: addedTunnel.serverServiceName, ClientServiceName: addedTunnel.clientServiceName,
+	})
+	require.NoError(t, serverInfo.Client.Update(ctx, restarting))
+	retryErr := wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(context.Context) (bool, error) {
+		return rebindAttempts.Load() > 2, nil
+	})
+	require.NoError(t, retryErr, "Published ports must retry beyond the initial preparation-attempt limit")
+	require.Zero(t, addedTunnelAttempts.Load(), "New tunnels must not claim ports before published listeners are rebound")
+	blockPublishedPort.Store(false)
+	recovered := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning &&
+			tp.Status.ServerProxyProcessID != nil &&
+			*tp.Status.ServerProxyProcessID != originalServerPID &&
+			tp.Status.ClientProxyContainerID != originalContainerID &&
+			len(tp.Status.TunnelStatuses) == 2 &&
+			tp.Status.TunnelStatuses[0].State == apiv1.TunnelStateReady &&
+			tp.Status.TunnelStatuses[1].State == apiv1.TunnelStateReady, nil
+	})
+	require.Equal(t, updatedProxy.UID, recovered.UID)
+	originalIndex := std_slices.IndexFunc(recovered.Status.TunnelStatuses, func(tunnelStatus apiv1.TunnelStatus) bool {
+		return tunnelStatus.Name == tunnelData.tunnelName
+	})
+	require.NotEqual(t, -1, originalIndex)
+	require.Equal(t, originalPort, recovered.Status.TunnelStatuses[originalIndex].ClientProxyPort)
+	require.Greater(t, recovered.Status.TunnelConfigurationVersion, updatedProxy.Status.TunnelConfigurationVersion)
+	validateTunnel(t, ctx, recovered.Status.TunnelStatuses[originalIndex], tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
+	validateTunnel(t, ctx, recovered.Status.TunnelStatuses[1-originalIndex], addedTunnel, serverInfo.Client, teInfo.TestTunnelControlClient)
+}
+
+type tunnelPreparationObserver struct {
+	dcptunproto.TunnelControlClient
+	beforePrepare func(*dcptunproto.TunnelReq) error
+}
+
+func (observer *tunnelPreparationObserver) PrepareTunnel(ctx context.Context, request *dcptunproto.TunnelReq, options ...grpc.CallOption) (*dcptunproto.TunnelSpec, error) {
+	if observeErr := observer.beforePrepare(request); observeErr != nil {
+		return nil, observeErr
+	}
+	return observer.TunnelControlClient.PrepareTunnel(ctx, request, options...)
 }
 
 // Verifies that when tunnel preparation fails after maximum attempts, the tunnel status indicates failure.
@@ -1108,7 +1213,7 @@ func TestTunnelProxyServerStartupFailure(t *testing.T) {
 }
 
 // Verifies that configuration failure retains an unconfirmed server identity until cleanup
-// succeeds, preserves the original failure after the expected exit, and never relaunches the server.
+// succeeds, preserves the original failure across repeated reconciliation, and never relaunches the server.
 func TestTunnelProxyConfigurationFailureCleansUpWithoutRelaunching(t *testing.T) {
 	t.Parallel()
 	dcppaths.EnableTestPathProbing()
@@ -1174,6 +1279,17 @@ func TestTunnelProxyConfigurationFailureCleansUpWithoutRelaunching(t *testing.T)
 	require.True(t, stderrOK)
 	require.NoFileExists(t, stdoutFile.Name())
 	require.NoFileExists(t, stderrFile.Name())
+	require.Len(t, teInfo.TestProcessExecutor.FindAll(criteria.Command, "", nil), 1)
+	require.NoError(t, retryOnConflictEx(ctx, serverInfo.Client, proxy.NamespacedName(), func(updateCtx context.Context, current *apiv1.ContainerNetworkTunnelProxy) error {
+		current.Status.Message = "forcing another terminal-state reconciliation"
+		return serverInfo.Client.Status().Update(updateCtx, current)
+	}))
+	completedProxy = waitObjectAssumesStateEx(t, ctx, serverInfo.Client, proxy.NamespacedName(), func(current *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return current.Status.State == apiv1.ContainerNetworkTunnelProxyStateFailed &&
+			current.Status.Message == failedProxy.Status.Message &&
+			current.Status.ServerProxyProcessID == nil &&
+			current.Status.ClientProxyContainerID == "", nil
+	})
 	require.Len(t, teInfo.TestProcessExecutor.FindAll(criteria.Command, "", nil), 1)
 	require.NoError(t, serverInfo.Client.Delete(ctx, completedProxy))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, completedProxy)
@@ -1337,7 +1453,8 @@ func TestTunnelProxyClientContainerStartupFailure(t *testing.T) {
 	require.NoError(t, waitErr, "Expected client proxy container to have been removed after failed startup")
 }
 
-// Verifies that ContainerNetworkTunnelProxy transitions to Failed state when server proxy process exits unexpectedly.
+// Verifies that ContainerNetworkTunnelProxy repeatedly replaces a lost server
+// and its client container, including an unexpected exit with code zero.
 func TestTunnelProxyServerUnexpectedExit(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -1408,28 +1525,37 @@ func TestTunnelProxyServerUnexpectedExit(t *testing.T) {
 	t.Log("Verifying all tunnels are in NotReady state...")
 	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateNotReady)
 
-	t.Logf("Simulating server proxy process exit with code 3 (PID: %d)...", serverPID)
-	teInfo.TestProcessExecutor.SimulateProcessExit(t, serverPID, 3)
-
-	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Failed state...")
-	_ = waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
-		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateFailed, nil
-	})
-
-	t.Log("Verifying client container have been removed...")
-	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, true /* poll immediately */, func(_ context.Context) (bool, error) {
+	for _, exitCode := range []int32{0, 3, 0} {
+		previousPID := *updatedTunnelProxy.Status.ServerProxyProcessID
+		previousContainer := updatedTunnelProxy.Status.ClientProxyContainerID
+		previousStdout := updatedTunnelProxy.Status.ServerProxyStdOutFile
+		previousStderr := updatedTunnelProxy.Status.ServerProxyStdErrFile
+		t.Logf("Simulating server proxy process exit with code %d (PID: %d)...", exitCode, serverPID)
+		teInfo.TestProcessExecutor.SimulateProcessExit(t, serverPID, exitCode)
+		updatedTunnelProxy = waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+			return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning &&
+				tp.Status.ServerProxyProcessID != nil &&
+				*tp.Status.ServerProxyProcessID != previousPID &&
+				tp.Status.ClientProxyContainerID != "" &&
+				tp.Status.ClientProxyContainerID != previousContainer, nil
+		})
+		require.Equal(t, tunnelProxy.UID, updatedTunnelProxy.UID)
+		require.NotEqual(t, previousStdout, updatedTunnelProxy.Status.ServerProxyStdOutFile)
+		require.NotEqual(t, previousStderr, updatedTunnelProxy.Status.ServerProxyStdErrFile)
+		require.FileExists(t, updatedTunnelProxy.Status.ServerProxyStdOutFile)
+		require.FileExists(t, updatedTunnelProxy.Status.ServerProxyStdErrFile)
+		serverPID, pidErr = process.Int64_ToPidT(*updatedTunnelProxy.Status.ServerProxyProcessID)
+		require.NoError(t, pidErr)
 		ctrs, listErr = serverInfo.ContainerOrchestrator.ListContainers(ctx, containers.ListContainersOptions{})
-		if listErr != nil {
-			return false, listErr
-		}
-		return len(ctrs) == 0, nil
-	})
-	require.NoError(t, waitErr, "Expected client proxy container to be removed when ContainerNetworkTunnelProxy entered Failed state")
-
-	t.Log("Verifying all tunnels are in Failed state...")
-	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateFailed)
+		require.NoError(t, listErr)
+		require.Len(t, ctrs, 1)
+		require.Equal(t, updatedTunnelProxy.Status.ClientProxyContainerID, ctrs[0].Id)
+		require.Equal(t, containers.ContainerStatusRunning, ctrs[0].Status)
+		_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateNotReady)
+	}
 }
 
+// Verifies that ContainerNetworkTunnelProxy recreates a client container that exits.
 func TestTunnelProxyClientExited(t *testing.T) {
 	t.Parallel()
 	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-unexpected-exit", "Runtime container has exited", func(
@@ -1441,6 +1567,7 @@ func TestTunnelProxyClientExited(t *testing.T) {
 	}, nil)
 }
 
+// Verifies that ContainerNetworkTunnelProxy recreates a client container removed from the runtime.
 func TestTunnelProxyClientDestroyed(t *testing.T) {
 	t.Parallel()
 	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-destroyed", "Runtime container was not found", func(
@@ -1462,6 +1589,7 @@ func TestTunnelProxyClientDestroyed(t *testing.T) {
 	}, nil)
 }
 
+// Verifies that ContainerNetworkTunnelProxy replaces a paused client container.
 func TestTunnelProxyClientPaused(t *testing.T) {
 	t.Parallel()
 	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-paused", "Runtime container is paused", func(
@@ -1475,6 +1603,7 @@ func TestTunnelProxyClientPaused(t *testing.T) {
 	})
 }
 
+// Verifies that ContainerNetworkTunnelProxy replaces a client whose published control/data ports disappear.
 func TestTunnelProxyClientPortMappingsMissing(t *testing.T) {
 	t.Parallel()
 	testTunnelProxyClientFailure(t, "test-tunnel-proxy-client-port-mappings-missing", "no host port mapping exists", func(
@@ -1486,7 +1615,8 @@ func TestTunnelProxyClientPortMappingsMissing(t *testing.T) {
 	}, nil)
 }
 
-// Verifies that ContainerNetworkTunnelProxy transitions to Failed state when its runtime client proxy container becomes unusable.
+// Verifies that ContainerNetworkTunnelProxy recreates an unusable client and its
+// server under the same logical resource, without retaining terminal tunnel states.
 func testTunnelProxyClientFailure(
 	t *testing.T,
 	testName string,
@@ -1575,14 +1705,27 @@ func testTunnelProxyClientFailure(
 	t.Logf("Terminating client proxy runtime container (container ID: %s)...", clientContainerID)
 	require.NoError(t, terminateContainer(ctx, testContainerOrchestrator, clientContainerID))
 
-	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Failed state...")
-	failedTunnelProxy := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
-		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateFailed, nil
-	})
-	require.Contains(t, failedTunnelProxy.Status.Message, expectedMessage)
 	if afterFailure != nil {
+		// Permit old-container cleanup after ContainerNetworkTunnelProxy detects the failure.
+		recovering := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+			return (tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRecoveryPending ||
+				tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRecoveryCleanup) && tp.Status.Message != "", nil
+		})
+		require.Contains(t, recovering.Status.Message, expectedMessage)
 		require.NoError(t, afterFailure(ctx, testContainerOrchestrator, clientContainerID))
 	}
+	recovered := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return tp.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning &&
+			tp.Status.ServerProxyProcessID != nil &&
+			*tp.Status.ServerProxyProcessID != *updatedTunnelProxy.Status.ServerProxyProcessID &&
+			tp.Status.ClientProxyContainerID != "" &&
+			tp.Status.ClientProxyContainerID != clientContainerID, nil
+	})
+	require.Equal(t, updatedTunnelProxy.UID, recovered.UID)
+	ctrs, listErr = serverInfo.ContainerOrchestrator.ListContainers(ctx, containers.ListContainersOptions{})
+	require.NoError(t, listErr)
+	require.Len(t, ctrs, 1)
+	require.Equal(t, recovered.Status.ClientProxyContainerID, ctrs[0].Id)
 
 	t.Log("Verifying server proxy process has been stopped...")
 	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, true /* poll immediately */, func(_ context.Context) (bool, error) {
@@ -1592,10 +1735,679 @@ func testTunnelProxyClientFailure(
 		}
 		return pe.Finished(), nil
 	})
-	require.NoError(t, waitErr, "Expected server proxy process to have been stopped when ContainerNetworkTunnelProxy entered Failed state")
+	require.NoError(t, waitErr, "Expected the previous server proxy process to have been stopped during recovery")
 
-	t.Log("Verifying all tunnels are in Failed state...")
-	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateFailed)
+	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateNotReady)
+}
+
+// Verifies that ContainerNetworkTunnelProxy retries failed replacement containers
+// without a total restart limit or resetting its pair-recovery backoff.
+func TestTunnelProxyRecoveryRetainsBackoffAcrossFailedGenerations(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	policy := &observedTunnelRecoveryBackoff{BackOff: backoff.NewConstantBackOff(20 * time.Millisecond)}
+	var factories atomic.Uint32
+	server, environment, running := createRunningTunnelProxy(t, ctx, "recovery-backoff", TestEnvironmentOptions{
+		ConfigureTunnelProxy: func(config *controllers.ContainerNetworkTunnelProxyReconcilerConfig) {
+			config.PairRestartBackoffFactory = func() backoff.BackOff {
+				factories.Add(1)
+				return policy
+			}
+		},
+	})
+	orchestrator, isTestOrchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTestOrchestrator)
+	failureCtx, stopFailures := context.WithCancel(ctx)
+	defer stopFailures()
+	orchestrator.FailMatchingContainers(failureCtx, dcptun.ClientProxyContainerImageNamePrefix, 7, "temporary replacement startup failure")
+	serverPID, pidErr := process.Int64_ToPidT(*running.Status.ServerProxyProcessID)
+	require.NoError(t, pidErr)
+	environment.SimulateProcessExit(t, serverPID, 0)
+	retryErr := wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(context.Context) (bool, error) {
+		return policy.attempts.Load() >= 4, nil
+	})
+	require.NoError(t, retryErr)
+	stopFailures()
+	recovered := waitObjectAssumesStateEx(t, ctx, server.Client, running.NamespacedName(), func(current *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return current.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning &&
+			current.Status.ClientProxyContainerID != "" && current.Status.ClientProxyContainerID != running.Status.ClientProxyContainerID, nil
+	})
+	require.Equal(t, running.UID, recovered.UID)
+	require.Equal(t, uint32(1), factories.Load())
+	require.Zero(t, policy.resets.Load())
+}
+
+// Verifies that ContainerNetworkTunnelProxy publishes distinct recovery phases
+// and defers readiness withdrawal and physical cleanup to subsequent reconciliations.
+func TestTunnelProxyRecoveryUsesSeparateStateInitializers(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	dcppaths.EnableTestPathProbing()
+	resumeDetection, resumePreparation := make(chan struct{}), make(chan struct{})
+	releaseDetection := sync.OnceFunc(func() { close(resumeDetection) })
+	releasePreparation := sync.OnceFunc(func() { close(resumePreparation) })
+	defer releaseDetection()
+	defer releasePreparation()
+	gate := &tunnelProxyStatusGate{
+		checkpoints: make(chan *apiv1.ContainerNetworkTunnelProxy, 2),
+		resume:      [2]<-chan struct{}{resumeDetection, resumePreparation},
+		states: [2]apiv1.ContainerNetworkTunnelProxyState{
+			apiv1.ContainerNetworkTunnelProxyStateRecoveryPending,
+			apiv1.ContainerNetworkTunnelProxyStateRecoveryCleanup,
+		},
+	}
+	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		ServiceController|NetworkController|ContainerNetworkTunnelProxyController, t.Name(), t.TempDir(), TestEnvironmentOptions{
+			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+				gate.Client = client
+				return gate
+			},
+		})
+	require.NoError(t, startupErr)
+	const name = "recovery-state-initializers"
+	network := &apiv1.ContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: name + "-network"}}
+	require.NoError(t, server.Client.Create(ctx, network))
+	simulateServerProxy(t, 16784, environment.TestProcessExecutor)
+	tunnel := prepareTunnelServices(t, ctx, server.Client, environment.TestTunnelControlClient, 1, name, 28272)[0]
+	resource := &apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.Name,
+			Tunnels: []apiv1.TunnelConfiguration{{
+				Name: tunnel.tunnelName, ServerServiceName: tunnel.serverServiceName, ClientServiceName: tunnel.clientServiceName,
+			}},
+		},
+	}
+	require.NoError(t, server.Client.Create(ctx, resource))
+	running := waitAllTunnelsInState(t, ctx, server.Client, resource.NamespacedName(), 1, apiv1.TunnelStateReady)
+	orchestrator, isTestOrchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTestOrchestrator)
+	pid, pidErr := process.Int64_ToPidT(*running.Status.ServerProxyProcessID)
+	require.NoError(t, pidErr)
+	handle := process.NewHandle(pid, running.Status.ServerProxyStartupTimestamp.Time)
+	physicalName := types.NamespacedName{
+		Namespace: controllers.V1PhysicalResourcesNamespaceName,
+		Name:      "tunnel-proxy-" + string(resource.UID),
+	}
+	gate.stage.Store(1)
+	require.NoError(t, orchestrator.SimulateContainerPortMappings(ctx, running.Status.ClientProxyContainerID, nil))
+
+	for _, step := range []struct {
+		proxyState  apiv1.ContainerNetworkTunnelProxyState
+		tunnelState apiv1.TunnelState
+		resume      func()
+	}{
+		{apiv1.ContainerNetworkTunnelProxyStateRecoveryPending, apiv1.TunnelStateReady, releaseDetection},
+		{apiv1.ContainerNetworkTunnelProxyStateRecoveryCleanup, apiv1.TunnelStateNotReady, releasePreparation},
+	} {
+		var checkpoint *apiv1.ContainerNetworkTunnelProxy
+		select {
+		case checkpoint = <-gate.checkpoints:
+		case <-ctx.Done():
+			t.Fatal("Recovery did not reach its next reconciliation boundary")
+		}
+		require.Equal(t, step.proxyState, checkpoint.Status.State)
+		published := &apiv1.ContainerNetworkTunnelProxy{}
+		require.NoError(t, server.Client.Get(ctx, resource.NamespacedName(), published))
+		require.Equal(t, step.proxyState, published.Status.State)
+		require.Len(t, checkpoint.Status.TunnelStatuses, 1)
+		require.Equal(t, step.tunnelState, checkpoint.Status.TunnelStatuses[0].State)
+		physical := &apiv2.PhysicalContainer{}
+		require.NoError(t, server.Client.Get(ctx, physicalName, physical))
+		require.Nil(t, physical.DeletionTimestamp, "Cleanup must not start before the cleanup initializer runs")
+		require.NoError(t, environment.TestProcessExecutor.CheckProcessRunning(handle))
+		step.resume()
+	}
+	recovered := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return current.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning &&
+			current.Status.ClientProxyContainerID != "" &&
+			current.Status.ClientProxyContainerID != running.Status.ClientProxyContainerID &&
+			len(current.Status.TunnelStatuses) == 1 && current.Status.TunnelStatuses[0].State == apiv1.TunnelStateReady, nil
+	})
+	require.Equal(t, running.Status.TunnelStatuses[0].ClientProxyPort, recovered.Status.TunnelStatuses[0].ClientProxyPort)
+}
+
+type tunnelProxyStatusGate struct {
+	ctrl_client.Client
+	stage       atomic.Uint32
+	checkpoints chan *apiv1.ContainerNetworkTunnelProxy
+	resume      [2]<-chan struct{}
+	states      [2]apiv1.ContainerNetworkTunnelProxyState
+}
+
+func (gate *tunnelProxyStatusGate) Status() ctrl_client.SubResourceWriter {
+	return &tunnelProxyStatusWriter{SubResourceWriter: gate.Client.Status(), gate: gate}
+}
+
+type tunnelProxyStatusWriter struct {
+	ctrl_client.SubResourceWriter
+	gate *tunnelProxyStatusGate
+}
+
+func (writer *tunnelProxyStatusWriter) Patch(ctx context.Context, object ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
+	patchErr := writer.SubResourceWriter.Patch(ctx, object, patch, options...)
+	if patchErr != nil {
+		return patchErr
+	}
+	proxy, isProxy := object.(*apiv1.ContainerNetworkTunnelProxy)
+	if isProxy {
+		stage := writer.gate.stage.Load()
+		if stage >= 1 && stage <= 2 && proxy.Status.State == writer.gate.states[stage-1] && writer.gate.stage.CompareAndSwap(stage, stage+1) {
+			select {
+			case writer.gate.checkpoints <- proxy.DeepCopy():
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			select {
+			case <-writer.gate.resume[stage-1]:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	return nil
+}
+
+// Verifies that ContainerNetworkTunnelProxy restores externally changed API
+// lifecycle states without restarting or deleting either member of the pair.
+func TestTunnelProxyAPIStateIsProjection(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	server, _, running := createRunningTunnelProxy(t, ctx, "lifecycle-status-projection", TestEnvironmentOptions{})
+	for _, state := range []apiv1.ContainerNetworkTunnelProxyState{
+		apiv1.ContainerNetworkTunnelProxyStateEmpty,
+		apiv1.ContainerNetworkTunnelProxyStateStarted,
+		apiv1.ContainerNetworkTunnelProxyStateRecoveryPending,
+		apiv1.ContainerNetworkTunnelProxyStateRecoveryCleanup,
+		apiv1.ContainerNetworkTunnelProxyStateRecoveryWait,
+		apiv1.ContainerNetworkTunnelProxyStateFailed,
+		apiv1.ContainerNetworkTunnelProxyStateDeletePending,
+		apiv1.ContainerNetworkTunnelProxyStateDeleting,
+		apiv1.ContainerNetworkTunnelProxyStateDeleted,
+	} {
+		require.NoError(t, retryOnConflictEx(ctx, server.Client, running.NamespacedName(), func(updateCtx context.Context, current *apiv1.ContainerNetworkTunnelProxy) error {
+			current.Status.State = state
+			return server.Client.Status().Update(updateCtx, current)
+		}))
+		projected := waitObjectAssumesStateEx(t, ctx, server.Client, running.NamespacedName(), func(current *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+			return current.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning, nil
+		})
+		require.Equal(t, running.Status.ServerProxyProcessID, projected.Status.ServerProxyProcessID)
+		require.Equal(t, running.Status.ServerProxyStartupTimestamp, projected.Status.ServerProxyStartupTimestamp)
+		require.Equal(t, running.Status.ClientProxyContainerID, projected.Status.ClientProxyContainerID)
+	}
+}
+
+// Verifies that ContainerNetworkTunnelProxy publishes Deleting and Deleted through
+// the API before releasing its finalizer, without repeating completed cleanup.
+func TestTunnelProxyPublishesDeletionStates(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	resumeDeleting, resumeDeleted := make(chan struct{}), make(chan struct{})
+	releaseDeleting := sync.OnceFunc(func() { close(resumeDeleting) })
+	releaseDeleted := sync.OnceFunc(func() { close(resumeDeleted) })
+	defer releaseDeleting()
+	defer releaseDeleted()
+	gate := &tunnelProxyStatusGate{
+		checkpoints: make(chan *apiv1.ContainerNetworkTunnelProxy, 2),
+		resume:      [2]<-chan struct{}{resumeDeleting, resumeDeleted},
+		states: [2]apiv1.ContainerNetworkTunnelProxyState{
+			apiv1.ContainerNetworkTunnelProxyStateDeleting,
+			apiv1.ContainerNetworkTunnelProxyStateDeleted,
+		},
+	}
+	server, environment, running := createRunningTunnelProxy(t, ctx, "published-deletion-states", TestEnvironmentOptions{
+		DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+			gate.Client = client
+			return gate
+		},
+	})
+	const hold = "test.dcp.microsoft.com/hold-tunnel-deletion"
+	require.NoError(t, retryOnConflictEx(ctx, server.Client, running.NamespacedName(), func(updateCtx context.Context, current *apiv1.ContainerNetworkTunnelProxy) error {
+		current.Finalizers = append(current.Finalizers, hold)
+		return server.Client.Update(updateCtx, current)
+	}))
+	gate.stage.Store(1)
+	require.NoError(t, server.Client.Delete(ctx, running))
+	for _, step := range []struct {
+		state  apiv1.ContainerNetworkTunnelProxyState
+		resume func()
+	}{
+		{apiv1.ContainerNetworkTunnelProxyStateDeleting, releaseDeleting},
+		{apiv1.ContainerNetworkTunnelProxyStateDeleted, releaseDeleted},
+	} {
+		var checkpoint *apiv1.ContainerNetworkTunnelProxy
+		select {
+		case checkpoint = <-gate.checkpoints:
+		case <-ctx.Done():
+			t.Fatal("Deletion did not publish its next lifecycle state")
+		}
+		require.Equal(t, step.state, checkpoint.Status.State)
+		published := &apiv1.ContainerNetworkTunnelProxy{}
+		require.NoError(t, server.Client.Get(ctx, running.NamespacedName(), published))
+		require.Equal(t, step.state, published.Status.State)
+		require.False(t, published.DeletionTimestamp.IsZero())
+		require.Contains(t, published.Finalizers, hold)
+		if step.state == apiv1.ContainerNetworkTunnelProxyStateDeleted {
+			require.Nil(t, published.Status.ServerProxyProcessID)
+			require.Empty(t, published.Status.ClientProxyContainerID)
+		}
+		step.resume()
+	}
+	controllerFinalizer := apiv1.GroupVersion.Group + "/tunnel-proxy-reconciler"
+	completed := waitObjectAssumesStateEx(t, ctx, server.Client, running.NamespacedName(), func(current *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return current.Status.State == apiv1.ContainerNetworkTunnelProxyStateDeleted &&
+			!slices.Contains(current.Finalizers, controllerFinalizer), nil
+	})
+	require.Contains(t, completed.Finalizers, hold)
+	dcpPath, pathErr := dcppaths.GetDcpExePath()
+	require.NoError(t, pathErr)
+	require.Len(t, environment.TestProcessExecutor.FindAll([]string{dcpPath, "tunnel-server"}, "", nil), 1)
+	remainingContainers, listErr := server.ContainerOrchestrator.ListContainers(ctx, containers.ListContainersOptions{})
+	require.NoError(t, listErr)
+	require.Empty(t, remainingContainers)
+	require.NoError(t, retryOnConflictEx(ctx, server.Client, running.NamespacedName(), func(updateCtx context.Context, current *apiv1.ContainerNetworkTunnelProxy) error {
+		current.Finalizers = std_slices.DeleteFunc(current.Finalizers, func(finalizer string) bool { return finalizer == hold })
+		return server.Client.Update(updateCtx, current)
+	}))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, running)
+}
+
+type observedTunnelRecoveryBackoff struct {
+	backoff.BackOff
+	attempts atomic.Uint32
+	resets   atomic.Uint32
+}
+
+func (policy *observedTunnelRecoveryBackoff) NextBackOff() time.Duration {
+	policy.attempts.Add(1)
+	return policy.BackOff.NextBackOff()
+}
+
+func (policy *observedTunnelRecoveryBackoff) Reset() {
+	policy.resets.Add(1)
+	policy.BackOff.Reset()
+}
+
+// Verifies that deleting ContainerNetworkTunnelProxy during recovery cancels a
+// pending replacement delay and leaves no client container or server process.
+func TestTunnelProxyDeletionDuringRecovery(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	policy := &observedTunnelRecoveryBackoff{BackOff: backoff.NewConstantBackOff(time.Hour)}
+	server, environment, running := createRunningTunnelProxy(t, ctx, "delete-during-recovery", TestEnvironmentOptions{
+		ConfigureTunnelProxy: func(config *controllers.ContainerNetworkTunnelProxyReconcilerConfig) {
+			config.PairRestartBackoffFactory = func() backoff.BackOff { return policy }
+		},
+	})
+	serverPID, pidErr := process.Int64_ToPidT(*running.Status.ServerProxyProcessID)
+	require.NoError(t, pidErr)
+	execution, found := environment.FindByPid(serverPID)
+	require.True(t, found)
+	environment.SimulateProcessExit(t, serverPID, 0)
+	waiting := waitObjectAssumesStateEx(t, ctx, server.Client, running.NamespacedName(), func(current *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return current.Status.State == apiv1.ContainerNetworkTunnelProxyStateRecoveryWait, nil
+	})
+	require.Equal(t, uint32(1), policy.attempts.Load())
+	require.Nil(t, waiting.Status.ServerProxyProcessID)
+	require.Empty(t, waiting.Status.ClientProxyContainerID)
+	require.NoError(t, server.Client.Delete(ctx, running))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, running)
+	require.Len(t, environment.TestProcessExecutor.FindAll([]string{execution.Cmd.Path, "tunnel-server"}, "", nil), 1)
+	remainingContainers, listErr := server.ContainerOrchestrator.ListContainers(ctx, containers.ListContainersOptions{})
+	require.NoError(t, listErr)
+	require.Empty(t, remainingContainers)
+}
+
+// Verifies that invalid replacement-server configuration remains terminal after
+// an earlier successful generation, rather than entering a recovery relaunch loop.
+func TestTunnelProxyRecoveryConfigurationFailureIsTerminal(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	server, environment, running := createRunningTunnelProxy(t, ctx, "recovery-invalid-config", TestEnvironmentOptions{})
+	serverPID, pidErr := process.Int64_ToPidT(*running.Status.ServerProxyProcessID)
+	require.NoError(t, pidErr)
+	execution, found := environment.FindByPid(serverPID)
+	require.True(t, found)
+	criteria := internal_testutil.ProcessSearchCriteria{Command: []string{execution.Cmd.Path, "tunnel-server"}}
+	environment.TestProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: criteria,
+		RunCommand: func(replacement *internal_testutil.ProcessExecution) int32 {
+			if _, writeErr := io.WriteString(replacement.Cmd.Stdout, "invalid configuration\n"); writeErr != nil {
+				t.Errorf("could not write replacement configuration: %v", writeErr)
+				return 1
+			}
+			select {
+			case _, open := <-replacement.Signal:
+				if !open {
+					t.Error("replacement signal channel closed unexpectedly")
+				}
+			case <-ctx.Done():
+			}
+			return 0
+		},
+	})
+	environment.SimulateProcessExit(t, serverPID, 0)
+	failed := waitObjectAssumesStateEx(t, ctx, server.Client, running.NamespacedName(), func(current *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return current.Status.State == apiv1.ContainerNetworkTunnelProxyStateFailed &&
+			current.Status.ServerProxyProcessID == nil && current.Status.ClientProxyContainerID == "", nil
+	})
+	require.Contains(t, failed.Status.Message, "Failed to read server proxy configuration:")
+	require.Len(t, environment.TestProcessExecutor.FindAll(criteria.Command, "", nil), 2)
+	require.NoError(t, server.Client.Delete(ctx, failed))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, failed)
+	require.Len(t, environment.TestProcessExecutor.FindAll(criteria.Command, "", nil), 2)
+}
+
+// Verifies that delayed exit callbacks and cleanup from an old proxy generation
+// cannot fail its replacement or delete a different physical resource with a reused name.
+func TestTunnelProxyRecoveryFencesOldExitAndPhysicalIdentity(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	releaseDelete := make(chan struct{})
+	unblockDelete := sync.OnceFunc(func() { close(releaseDelete) })
+	defer unblockDelete()
+	delayedExit := make(chan func(), 1)
+	var deletion *delayedTunnelContainerDeletion
+	server, environment, running := createRunningTunnelProxy(t, ctx, "recovery-stale-identity", TestEnvironmentOptions{
+		ConfigureTunnelProxy: func(config *controllers.ContainerNetworkTunnelProxyReconcilerConfig) {
+			config.ProcessExecutor = &delayedTunnelExitExecutor{Executor: config.ProcessExecutor, delayed: delayedExit}
+		},
+		DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+			deletion = &delayedTunnelContainerDeletion{
+				Client: client, deleted: make(chan *apiv2.PhysicalContainer, 1), release: releaseDelete,
+			}
+			return deletion
+		},
+	})
+	deletion.armed.Store(true)
+	orchestrator, isTestOrchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTestOrchestrator)
+	require.NoError(t, orchestrator.SimulateContainerExit(ctx, running.Status.ClientProxyContainerID, 5))
+	var oldPhysical *apiv2.PhysicalContainer
+	select {
+	case oldPhysical = <-deletion.deleted:
+	case <-ctx.Done():
+		t.Fatal("Recovery did not submit the old physical-container deletion")
+	}
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, oldPhysical)
+	reused := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: oldPhysical.Name, Namespace: oldPhysical.Namespace},
+		Spec:       *oldPhysical.Spec.DeepCopy(),
+	}
+	require.NoError(t, server.Client.Create(ctx, reused))
+	require.NotEqual(t, oldPhysical.UID, reused.UID)
+	unblockDelete()
+	recovered := waitObjectAssumesStateEx(t, ctx, server.Client, running.NamespacedName(), func(current *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		return current.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning &&
+			current.Status.ServerProxyProcessID != nil &&
+			*current.Status.ServerProxyProcessID != *running.Status.ServerProxyProcessID &&
+			current.Status.ClientProxyContainerID != "" && current.Status.ClientProxyContainerID != running.Status.ClientProxyContainerID, nil
+	})
+	select {
+	case completeOldExit := <-delayedExit:
+		completeOldExit()
+	case <-ctx.Done():
+		t.Fatal("The old server exit callback was not captured")
+	}
+	require.NoError(t, retryOnConflictEx(ctx, server.Client, running.NamespacedName(), func(updateCtx context.Context, current *apiv1.ContainerNetworkTunnelProxy) error {
+		current.Spec.Tunnels = append(current.Spec.Tunnels, apiv1.TunnelConfiguration{
+			Name: "after-stale-exit", ServerServiceName: "missing-server-2", ClientServiceName: "missing-client-2",
+		})
+		return server.Client.Update(updateCtx, current)
+	}))
+	settled := waitAllTunnelsInState(t, ctx, server.Client, running.NamespacedName(), 2, apiv1.TunnelStateNotReady)
+	require.Equal(t, recovered.Status.ServerProxyProcessID, settled.Status.ServerProxyProcessID)
+	require.Equal(t, recovered.Status.ClientProxyContainerID, settled.Status.ClientProxyContainerID)
+	stillReused := &apiv2.PhysicalContainer{}
+	require.NoError(t, server.Client.Get(ctx, reused.NamespacedName(), stillReused))
+	require.Equal(t, reused.UID, stillReused.UID)
+	require.Nil(t, stillReused.DeletionTimestamp)
+	require.NoError(t, server.Client.Delete(ctx, settled))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, settled)
+	require.NoError(t, server.Client.Get(ctx, reused.NamespacedName(), stillReused))
+	require.NoError(t, server.Client.Delete(ctx, reused))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, reused)
+	dcpPath, pathErr := dcppaths.GetDcpExePath()
+	require.NoError(t, pathErr)
+	require.Len(t, environment.TestProcessExecutor.FindAll([]string{dcpPath, "tunnel-server"}, "", nil), 2)
+}
+
+type delayedTunnelContainerDeletion struct {
+	ctrl_client.Client
+	armed   atomic.Bool
+	deleted chan *apiv2.PhysicalContainer
+	release <-chan struct{}
+}
+
+func (client *delayedTunnelContainerDeletion) Delete(ctx context.Context, object ctrl_client.Object, options ...ctrl_client.DeleteOption) error {
+	physical, isPhysical := object.(*apiv2.PhysicalContainer)
+	if !isPhysical || !client.armed.CompareAndSwap(true, false) {
+		return client.Client.Delete(ctx, object, options...)
+	}
+	deleteErr := client.Client.Delete(ctx, object, options...)
+	if deleteErr != nil {
+		return deleteErr
+	}
+	select {
+	case client.deleted <- physical.DeepCopy():
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-client.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+type delayedTunnelExitExecutor struct {
+	process.Executor
+	first   sync.Once
+	delayed chan<- func()
+}
+
+func (executor *delayedTunnelExitExecutor) StartProcess(
+	ctx context.Context,
+	command *exec.Cmd,
+	handler process.ProcessExitHandler,
+	flags process.ProcessCreationFlag,
+	create process.SysCreateProcessFunc,
+) (process.ProcessHandle, func(), error) {
+	delay := false
+	executor.first.Do(func() { delay = true })
+	if delay {
+		originalHandler := handler
+		handler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, exitErr error) {
+			executor.delayed <- func() { originalHandler.OnProcessExited(pid, exitCode, exitErr) }
+		})
+	}
+	return executor.Executor.StartProcess(ctx, command, handler, flags, create)
+}
+
+func createRunningTunnelProxy(
+	t *testing.T,
+	ctx context.Context,
+	name string,
+	options TestEnvironmentOptions,
+) (*ctrl_testutil.ApiServerInfo, *TestEnvironmentInfo, *apiv1.ContainerNetworkTunnelProxy) {
+	t.Helper()
+	dcppaths.EnableTestPathProbing()
+	server, environment, startErr := StartTestEnvironmentWithOptions(t, ctx,
+		ServiceController|NetworkController|ContainerNetworkTunnelProxyController, t.Name(), t.TempDir(), options)
+	require.NoError(t, startErr)
+	simulateServerProxy(t, 16783, environment.TestProcessExecutor)
+	network := &apiv1.ContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: name + "-network"}}
+	require.NoError(t, server.Client.Create(ctx, network))
+	resource := &apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.Name,
+			Tunnels: []apiv1.TunnelConfiguration{
+				{Name: "not-ready", ServerServiceName: "missing-server", ClientServiceName: "missing-client"},
+			},
+		},
+	}
+	require.NoError(t, server.Client.Create(ctx, resource))
+	running := waitAllTunnelsInState(t, ctx, server.Client, resource.NamespacedName(), 1, apiv1.TunnelStateNotReady)
+	require.Equal(t, apiv1.ContainerNetworkTunnelProxyStateRunning, running.Status.State)
+	return server, environment, running
+}
+
+// Verifies that ContainerNetworkTunnelProxy restores real container traffic after
+// server loss and client removal while retaining the consumer and its random fallback port.
+func TestTunnelProxyRecoveryWithRealOrchestrator(t *testing.T) {
+	testutil.SkipIfTrueContainerOrchestratorNotEnabled(t)
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 3*time.Minute)
+	t.Cleanup(cancel)
+	listener, listenErr := net.Listen("tcp", networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, dcptun.DefaultContainerProxyControlPort))
+	if listenErr != nil {
+		t.Skipf("host port %d is needed to force a client-proxy port collision: %v", dcptun.DefaultContainerProxyControlPort, listenErr)
+	}
+	echoCtx, stopEcho := context.WithCancel(ctx)
+	var echoWorkers sync.WaitGroup
+	t.Cleanup(func() {
+		stopEcho()
+		require.NoError(t, listener.Close())
+		echoWorkers.Wait()
+	})
+	echoWorkers.Go(func() {
+		for {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				if !errors.Is(acceptErr, net.ErrClosed) {
+					t.Errorf("echo listener failed: %v", acceptErr)
+				}
+				return
+			}
+			echoWorkers.Go(func() {
+				defer connection.Close()
+				stopClose := context.AfterFunc(echoCtx, func() { _ = connection.Close() })
+				defer stopClose()
+				_, _ = io.Copy(connection, connection)
+			})
+		}
+	})
+	containertest.ForEachHealthyRuntime(t, ctx, func(t *testing.T, runtimeCtx context.Context, runtime containertest.Runtime) {
+		runCtx, stopRun := context.WithCancel(runtimeCtx)
+		defer stopRun()
+		tracker := containertest.NewResourceTracker(t, runtime)
+		server, environment, startErr := StartAdvancedTestEnvironmentWithOptions(runCtx, AllControllers,
+			containertest.UniqueName(t, "tunnel-recovery"), t.TempDir(), AdvancedTestEnvironmentOptions{
+				ApiServerFlags: ctrl_testutil.ApiServerUseTrueContainerOrchestrator, ContainerOrchestrator: runtime.Orchestrator,
+			})
+		require.NoError(t, startErr)
+		defer environment.ProcessExecutor.Dispose()
+		defer shutdownAdvancedTestEnvironment(t, runCtx, stopRun, server)
+		serverService := &apiv1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "recovery-server"},
+			Spec:       apiv1.ServiceSpec{Protocol: commonapi.PortProtocolTCP, AddressAllocationMode: apiv1.AddressAllocationModeProxyless},
+		}
+		clientService := &apiv1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "recovery-client"},
+			Spec:       apiv1.ServiceSpec{Protocol: commonapi.PortProtocolTCP, AddressAllocationMode: apiv1.AddressAllocationModeProxyless},
+		}
+		require.NoError(t, server.Client.Create(runCtx, serverService))
+		require.NoError(t, server.Client.Create(runCtx, clientService))
+		endpoint := &apiv1.Endpoint{
+			ObjectMeta: metav1.ObjectMeta{Name: "recovery-server-endpoint"},
+			Spec: apiv1.EndpointSpec{
+				ServiceName: serverService.Name, Address: networking.IPv4LocalhostDefaultAddress, Port: dcptun.DefaultContainerProxyControlPort,
+			},
+		}
+		require.NoError(t, server.Client.Create(runCtx, endpoint))
+		network := &apiv1.ContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: "recovery-network"}}
+		require.NoError(t, server.Client.Create(runCtx, network))
+		const proxyAlias = "recovery-host"
+		proxy := &apiv1.ContainerNetworkTunnelProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "recovery-proxy"},
+			Spec: apiv1.ContainerNetworkTunnelProxySpec{
+				ContainerNetworkName: network.Name, Aliases: []string{proxyAlias},
+				Tunnels: []apiv1.TunnelConfiguration{{Name: "echo", ServerServiceName: serverService.Name, ClientServiceName: clientService.Name}},
+			},
+		}
+		require.NoError(t, server.Client.Create(runCtx, proxy))
+		running := waitAllTunnelsInState(t, runCtx, server.Client, proxy.NamespacedName(), 1, apiv1.TunnelStateReady)
+		publishedPort := running.Status.TunnelStatuses[0].ClientProxyPort
+		require.NotEqual(t, int32(dcptun.DefaultContainerProxyControlPort), publishedPort, "The occupied client port must cause a real random-port fallback")
+		toolDir, toolErr := internal_testutil.GetTestToolDir("parrot")
+		require.NoError(t, toolErr)
+		imageName := "localhost/" + containertest.UniqueName(t, "tunnel-recovery-client") + ":latest"
+		require.NoError(t, tracker.TrackImage(imageName))
+		image, binaryPath, imageErr := ensureParrotContainerImage(runCtx, filepath.Join(toolDir, "parrot_c"), imageName, tracker.MapLabels(), runtime.Orchestrator)
+		require.NoError(t, imageErr)
+		consumer := &apiv1.Container{
+			ObjectMeta: metav1.ObjectMeta{Name: "recovery-consumer"},
+			Spec: apiv1.ContainerSpec{
+				Image: image, Command: binaryPath,
+				Args: []string{"server", "--port", "0", "--timeout", "3m"},
+				Networks: &[]apiv1.ContainerNetworkConnectionConfig{
+					{Name: network.Name},
+				},
+			},
+		}
+		require.NoError(t, server.Client.Create(runCtx, consumer))
+		originalConsumer := waitObjectAssumesStateEx(t, runCtx, server.Client, consumer.NamespacedName(), func(current *apiv1.Container) (bool, error) {
+			return current.Status.State == apiv1.ContainerStateRunning, nil
+		})
+		probe := func() {
+			var stdout, stderr bytes.Buffer
+			exitCodes, execErr := runtime.Orchestrator.ExecContainer(runCtx, containers.ExecContainerOptions{
+				Container: originalConsumer.Status.ContainerID, Command: binaryPath,
+				Args: []string{"client", "--address", proxyAlias, "--port", fmt.Sprintf("%d", publishedPort), "--conversations", "1", "--timeout", "20s"},
+				StreamCommandOptions: containers.StreamCommandOptions{
+					StdOutStream: usvc_io.NopWriteCloser(&stdout), StdErrStream: usvc_io.NopWriteCloser(&stderr),
+				},
+			})
+			require.NoError(t, execErr)
+			select {
+			case exitCode, open := <-exitCodes:
+				require.True(t, open, "probe execution must report its exit code")
+				require.Zero(t, exitCode, "Container probe failed: %s %s", stdout.String(), stderr.String())
+			case <-runCtx.Done():
+				t.Fatal("Container traffic did not complete before test cancellation")
+			}
+		}
+		probe()
+		for _, fault := range []string{"server", "client"} {
+			previous := running
+			if fault == "server" {
+				pid, pidErr := process.Int64_ToPidT(*previous.Status.ServerProxyProcessID)
+				require.NoError(t, pidErr)
+				handle := process.NewHandle(pid, previous.Status.ServerProxyStartupTimestamp.Time)
+				require.NoError(t, environment.ProcessExecutor.StopProcess(runCtx, handle))
+			} else {
+				_, removeErr := runtime.Orchestrator.RemoveContainers(runCtx, containers.RemoveContainersOptions{
+					Containers: []string{previous.Status.ClientProxyContainerID}, Force: true,
+				})
+				require.NoError(t, removeErr)
+			}
+			running = waitObjectAssumesStateEx(t, runCtx, server.Client, proxy.NamespacedName(), func(current *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+				return current.Status.State == apiv1.ContainerNetworkTunnelProxyStateRunning &&
+					current.Status.ServerProxyProcessID != nil &&
+					*current.Status.ServerProxyProcessID != *previous.Status.ServerProxyProcessID &&
+					current.Status.ClientProxyContainerID != previous.Status.ClientProxyContainerID &&
+					len(current.Status.TunnelStatuses) == 1 && current.Status.TunnelStatuses[0].State == apiv1.TunnelStateReady, nil
+			})
+			require.Equal(t, publishedPort, running.Status.TunnelStatuses[0].ClientProxyPort)
+			require.Equal(t, proxy.UID, running.UID)
+			probe()
+			currentConsumer := &apiv1.Container{}
+			require.NoError(t, server.Client.Get(runCtx, consumer.NamespacedName(), currentConsumer))
+			require.Equal(t, originalConsumer.UID, currentConsumer.UID)
+			require.Equal(t, originalConsumer.Status.ContainerID, currentConsumer.Status.ContainerID)
+			t.Logf("Recovered from %s loss with consumer %s and published fallback port %d unchanged", fault, currentConsumer.Status.ContainerID, publishedPort)
+		}
+	})
 }
 
 // Verifies that a ContainerNetworkTunnelProxy works with each supported real container orchestrator.

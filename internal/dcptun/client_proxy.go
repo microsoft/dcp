@@ -20,6 +20,7 @@ import (
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	stdproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -28,7 +29,6 @@ import (
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/proxy"
 	"github.com/microsoft/dcp/pkg/concurrency"
-	"github.com/microsoft/dcp/pkg/grpcutil"
 	"github.com/microsoft/dcp/pkg/security"
 	"github.com/microsoft/dcp/pkg/slices"
 )
@@ -113,6 +113,9 @@ type ClientProxy struct {
 	// Mutex to protect access to internal proxy state (primarily the tunnels map).
 	lock *sync.Mutex
 
+	// One RPC at a time may consume the pending stream queue.
+	controlStreamLock *concurrency.ContextAwareLock
+
 	// True if the proxy has been shut down.
 	disposed *atomic.Bool
 
@@ -122,16 +125,17 @@ type ClientProxy struct {
 
 func NewClientProxy(ctx context.Context, dataListener net.Listener, requestShutdown func(), log logr.Logger) *ClientProxy {
 	cp := &ClientProxy{
-		lifetimeCtx:     ctx,
-		dataListener:    dataListener,
-		requestShutdown: requestShutdown,
-		log:             log,
-		tunnels:         make(map[TunnelID]*clientTunnelData),
-		tunnelRequests:  make(map[proto.TunnelRequestFingerprint]TunnelID),
-		newStreamsReqs:  concurrency.NewUnboundedChan[*proto.StreamRef](ctx),
-		lock:            &sync.Mutex{},
-		disposed:        &atomic.Bool{},
-		done:            make(chan struct{}),
+		lifetimeCtx:       ctx,
+		dataListener:      dataListener,
+		requestShutdown:   requestShutdown,
+		log:               log,
+		tunnels:           make(map[TunnelID]*clientTunnelData),
+		tunnelRequests:    make(map[proto.TunnelRequestFingerprint]TunnelID),
+		newStreamsReqs:    concurrency.NewUnboundedChan[*proto.StreamRef](ctx),
+		lock:              &sync.Mutex{},
+		controlStreamLock: concurrency.NewContextAwareLock(),
+		disposed:          &atomic.Bool{},
+		done:              make(chan struct{}),
 	}
 
 	context.AfterFunc(ctx, func() { _ = cp.disposeOnce() })
@@ -244,6 +248,11 @@ func (cp *ClientProxy) DeleteTunnel(ctx context.Context, tr *proto.TunnelRef) (*
 			break
 		}
 	}
+	if len(td.streams) == 0 {
+		td.tunnelCtxCancel()
+		_ = td.listener.Close()
+		delete(cp.tunnels, tid)
+	}
 
 	cp.log.V(1).Info("Tunnel deleted", "TunnelID", tid)
 	return &emptypb.Empty{}, nil
@@ -262,41 +271,58 @@ func (cp *ClientProxy) Shutdown(ctx context.Context, _ *emptypb.Empty) (*emptypb
 // Creates a long-running, bi-directional streaming connection to the server-side proxy
 // to facilitate creation of new tunnel streams.
 func (cp *ClientProxy) NewStreamsConnection(newStreamConn grpc.BidiStreamingServer[proto.NewStreamResult, proto.StreamRef]) error {
+	callCtx, cancelCall := context.WithCancel(newStreamConn.Context())
+	stopLifetimeCancellation := context.AfterFunc(cp.lifetimeCtx, cancelCall)
+	defer stopLifetimeCancellation()
+	defer cancelCall()
+	if lockErr := cp.controlStreamLock.Lock(callCtx); lockErr != nil {
+		return lockErr
+	}
+	defer cp.controlStreamLock.Unlock()
+	if cp.disposed.Load() || cp.lifetimeCtx.Err() != nil {
+		return status.Error(codes.Unavailable, errMsgProxyDisposed)
+	}
+	// A replacement must not receive readiness until the old RPC has released
+	// ownership, otherwise the two handlers could consume each other's work.
+	if headerErr := newStreamConn.SendHeader(metadata.Pairs(controlStreamReadyHeader, "true")); headerErr != nil {
+		return headerErr
+	}
 	for {
 		select {
-		case <-cp.lifetimeCtx.Done():
-			return nil // Client-side proxy is shutting down
-
-		case streamRef := <-cp.newStreamsReqs.Out:
+		case <-callCtx.Done():
+			return callCtx.Err()
+		case streamRef, isOpen := <-cp.newStreamsReqs.Out:
+			if !isOpen {
+				return nil
+			}
 
 			tid := TunnelID(streamRef.GetTunnelId())
 			streamID := StreamID(streamRef.GetStreamId())
-
-			sendErr := newStreamConn.Send(streamRef)
-
-			if grpcutil.IsStreamDoneErr(sendErr) {
-				cp.log.Info("New streams connection closed, exiting...")
-				_ = cp.disposeOnce()
-				return nil
+			cp.lock.Lock()
+			pending, _ := cp.getStreamInfo(tid, streamID)
+			cp.lock.Unlock()
+			if pending == nil {
+				continue
 			}
 
+			sendErr := newStreamConn.Send(streamRef)
 			if sendErr != nil {
-				cp.log.Error(sendErr, "Failed to send new stream request to server proxy", "TunnelID", tid, "StreamID", streamID)
-				cp.forgetStream(tid, streamID)
-				continue
+				cp.log.Info("Tunnel control stream send failed; awaiting reconnect", "Error", sendErr)
+				cp.forgetStream(tid, streamID, true)
+				return sendErr
 			}
 
 			res, rcvErr := newStreamConn.Recv()
-			if grpcutil.IsStreamDoneErr(rcvErr) {
-				cp.log.Info("New streams connection is done, exiting...")
-				_ = cp.disposeOnce()
-				return nil
-			}
-
 			if rcvErr != nil {
-				cp.log.Error(rcvErr, "Failed to receive new stream result from server proxy", "TunnelID", tid, "StreamID", streamID)
-				cp.forgetStream(tid, streamID)
-				continue
+				cp.log.Info("Tunnel control stream receive failed; awaiting reconnect", "Error", rcvErr)
+				// The data connection can arrive before its control reply. Losing
+				// that reply must not dispose an already-established data stream.
+				cp.forgetStream(tid, streamID, true)
+				return rcvErr
+			}
+			if res.GetStreamRef().GetTunnelId() != uint32(tid) || res.GetStreamRef().GetStreamId() != uint64(streamID) {
+				cp.forgetStream(tid, streamID, true)
+				return status.Error(codes.DataLoss, "control reply does not match the pending tunnel stream")
 			}
 
 			streamFailure := res.GetFailure()
@@ -307,7 +333,7 @@ func (cp *ClientProxy) NewStreamsConnection(newStreamConn grpc.BidiStreamingServ
 					"ErrorCode", streamFailure.GetError(),
 					"ErrorMessage", streamFailure.GetMessage(),
 				)
-				cp.forgetStream(tid, streamID)
+				cp.forgetStream(tid, streamID, true)
 				continue
 			}
 
@@ -322,54 +348,26 @@ func (cp *ClientProxy) Done() <-chan struct{} {
 }
 
 func (cp *ClientProxy) handleProxyConnections() {
-	connCh := concurrency.NewUnboundedChan[net.Conn](cp.lifetimeCtx)
-
-	go func() {
-		for {
-			if cp.lifetimeCtx.Err() != nil {
-				return
-			}
-
-			if cp.disposed.Load() {
-				return
-			}
-
-			incoming, err := cp.dataListener.Accept()
-			if errors.Is(err, net.ErrClosed) {
-				// We might get into this case if the proxy is being shut down and the timing is just right.
-				return
-			} else if err != nil {
-				cp.log.Error(err, "Failed to accept incoming proxy connection")
-			} else {
-				connCh.In <- incoming
-			}
-		}
-	}()
-
 	for {
-		select {
-		case <-cp.lifetimeCtx.Done():
+		incoming, acceptErr := cp.dataListener.Accept()
+		if errors.Is(acceptErr, net.ErrClosed) {
 			return
-
-		case incoming := <-connCh.Out:
-			if cp.lifetimeCtx.Err() != nil {
-				cp.log.V(1).Info("Lifetime context is done, closing incoming proxy connection")
-				_ = incoming.Close()
-				return
-			}
-
-			if cp.disposed.Load() {
-				cp.log.V(1).Info("Client-side proxy is disposed, closing incoming proxy connection")
-				_ = incoming.Close()
-				return
-			}
-
-			go cp.runTunnelStream(incoming)
 		}
+		if acceptErr != nil {
+			cp.log.Error(acceptErr, "Failed to accept incoming proxy connection")
+			continue
+		}
+		if cp.lifetimeCtx.Err() != nil || cp.disposed.Load() {
+			_ = incoming.Close()
+			return
+		}
+		go cp.runTunnelStream(incoming)
 	}
 }
 
 func (cp *ClientProxy) runTunnelStream(proxyConn net.Conn) {
+	stopCloseOnShutdown := context.AfterFunc(cp.lifetimeCtx, func() { _ = proxyConn.Close() })
+	defer stopCloseOnShutdown()
 	const preambleSize = 12 + security.BearerTokenLength // 4 bytes for tunnel ID, 8 bytes for stream ID, and the size of the auth token.
 	buf := make([]byte, preambleSize)
 	_, preambleErr := io.ReadFull(proxyConn, buf)
@@ -427,7 +425,7 @@ func (cp *ClientProxy) runTunnelStream(proxyConn net.Conn) {
 	streamLog.V(1).Info("New tunnel stream started")
 
 	defer func() {
-		cp.forgetStream(tid, streamID)
+		cp.forgetStream(tid, streamID, false)
 	}()
 
 	pcr, cr := proxy.StreamNetworkData(streamCtx, proxyConn, clientConn)
@@ -472,91 +470,54 @@ func (cp *ClientProxy) runTunnelStream(proxyConn net.Conn) {
 //     b. The server portion of the stream cannot be created. In that case we receive a proto.NewStreamResult message
 //     with an error code and message. We then close the parked connection and remove it from the tunnel data (streams map).
 func (cp *ClientProxy) handleClientConnections(tunnelCtx context.Context, tid TunnelID, listener net.Listener) {
-	connCh := concurrency.NewUnboundedChan[net.Conn](tunnelCtx)
-
-	go func() {
-		for {
-			if tunnelCtx.Err() != nil {
-				return
-			}
-
-			if cp.disposed.Load() {
-				return
-			}
-
-			incoming, err := listener.Accept()
-			if errors.Is(err, net.ErrClosed) {
-				// Shutting down the tunnel listener, no need to log anything.
-				return
-			} else if err != nil {
-				cp.log.Error(err, "Failed to accept incoming client connection", "TunnelID", tid)
-			} else {
-				connCh.In <- incoming
-			}
-		}
-	}()
-
 	for {
-		select {
-
-		case <-tunnelCtx.Done():
+		incoming, acceptErr := listener.Accept()
+		if errors.Is(acceptErr, net.ErrClosed) {
 			return
-
-		case incoming := <-connCh.Out:
-			if tunnelCtx.Err() != nil {
-				cp.log.V(1).Info("Tunnel context is done, closing incoming connection",
-					"TunnelID", tid, "ClientAddress", incoming.RemoteAddr().String())
-				_ = incoming.Close()
-				return
-			}
-
-			if cp.disposed.Load() {
-				cp.log.V(1).Info("Client-side proxy is disposed, closing incoming connection",
-					"TunnelID", tid, "ClientAddress", incoming.RemoteAddr().String())
-				_ = incoming.Close()
-				return
-			}
-
-			cp.lock.Lock()
-
-			td, found := cp.tunnels[tid]
-			if !found {
-				cp.lock.Unlock()
-				_ = incoming.Close()
-				cp.log.V(1).Info("Tunnel not found, rejecting incoming connection", "TunnelID", tid)
-				continue
-			}
-			if td.deleted.Load() {
-				cp.lock.Unlock()
-				_ = incoming.Close()
-				cp.log.V(1).Info("Tunnel is deleted, rejecting incoming connection", "TunnelID", tid)
-				continue
-			}
-
-			streamCtx, streamCtxCancel := context.WithCancel(tunnelCtx)
-			streamInfo := &streamInfo{
-				clientConn:      incoming,
-				streamCtx:       streamCtx,
-				streamCtxCancel: streamCtxCancel,
-				created:         time.Now(),
-			}
-			streamID := StreamID(atomic.AddUint64((*uint64)(&latestStreamID), 1))
-			td.streams[streamID] = streamInfo
-
+		}
+		if acceptErr != nil {
+			cp.log.Error(acceptErr, "Failed to accept incoming client connection", "TunnelID", tid)
+			continue
+		}
+		if tunnelCtx.Err() != nil || cp.disposed.Load() {
+			_ = incoming.Close()
+			return
+		}
+		cp.lock.Lock()
+		td, found := cp.tunnels[tid]
+		if !found || td.deleted.Load() {
 			cp.lock.Unlock()
+			_ = incoming.Close()
+			cp.log.V(1).Info("Tunnel is no longer available, rejecting incoming connection", "TunnelID", tid)
+			continue
+		}
 
-			cp.log.V(1).Info("New client connection accepted",
-				"TunnelID", tid,
-				"StreamID", streamID,
-				"ClientAddress", incoming.RemoteAddr().String(),
-				"ClientProxyAddress", incoming.LocalAddr().String(),
-			)
+		streamCtx, streamCtxCancel := context.WithCancel(tunnelCtx)
+		si := &streamInfo{
+			clientConn:      incoming,
+			streamCtx:       streamCtx,
+			streamCtxCancel: streamCtxCancel,
+			created:         time.Now(),
+		}
+		streamID := StreamID(atomic.AddUint64((*uint64)(&latestStreamID), 1))
+		td.streams[streamID] = si
+		cp.lock.Unlock()
 
-			streamRef := &proto.StreamRef{
-				TunnelId: stdproto.Uint32(uint32(tid)),
-				StreamId: stdproto.Uint64(uint64(streamID)),
-			}
-			cp.newStreamsReqs.In <- streamRef
+		cp.log.V(1).Info("New client connection accepted",
+			"TunnelID", tid,
+			"StreamID", streamID,
+			"ClientAddress", incoming.RemoteAddr().String(),
+			"ClientProxyAddress", incoming.LocalAddr().String(),
+		)
+		streamRef := &proto.StreamRef{
+			TunnelId: stdproto.Uint32(uint32(tid)),
+			StreamId: stdproto.Uint64(uint64(streamID)),
+		}
+		select {
+		case cp.newStreamsReqs.In <- streamRef:
+		case <-tunnelCtx.Done():
+			cp.forgetStream(tid, streamID, true)
+			return
 		}
 	}
 }
@@ -613,10 +574,10 @@ func (cp *ClientProxy) getStreamInfo(tid TunnelID, streamID StreamID) (*streamIn
 	return streamInfo, td
 }
 
-func (cp *ClientProxy) forgetStream(tid TunnelID, streamID StreamID) {
+func (cp *ClientProxy) forgetStream(tid TunnelID, streamID StreamID, pendingOnly bool) {
 	cp.lock.Lock()
 	si, ctd := cp.getStreamInfo(tid, streamID)
-	if si != nil {
+	if si != nil && (!pendingOnly || si.proxyConn == nil) {
 		si.dispose()
 		delete(ctd.streams, streamID)
 
@@ -676,7 +637,7 @@ func (cp *ClientProxy) scavengeHalfOpenStreams() {
 
 			for _, ts := range streamsToCleanup {
 				cp.log.V(1).Info("Scavenging half-open stream", "TunnelID", ts.TunnelID, "StreamID", ts.StreamID)
-				cp.forgetStream(ts.TunnelID, ts.StreamID)
+				cp.forgetStream(ts.TunnelID, ts.StreamID, true)
 			}
 
 			timer.Reset(scanInterval)
