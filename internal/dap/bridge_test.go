@@ -237,6 +237,65 @@ func TestBridgePreservesClientShutdown(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
+// Verifies that Bridge continues forwarding after terminate and permits either a client
+// disconnect or an injected resource-shutdown disconnect with correct response correlation.
+func TestBridgeTerminateAllowsDisconnect(t *testing.T) {
+	t.Parallel()
+	for _, injected := range []bool{false, true} {
+		name := "client"
+		if injected {
+			name = "resource"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			lifetime, cancelLifetime := testutil.GetTestContext(t, time.Minute)
+			defer cancelLifetime()
+			ctx, cancel := context.WithCancelCause(lifetime)
+			defer cancel(nil)
+			client, adapter, done := bridgeEndpoints(t, ctx, time.Second, nil)
+			require.NoError(t, client.WriteMessage(testRequest(40, "terminate")))
+			terminate, terminateErr := adapter.ReadMessage()
+			require.NoError(t, terminateErr)
+			require.Equal(t, "terminate", terminate.text("command"))
+			require.NoError(t, adapter.WriteMessage(testResponse(50, terminate.number("seq"), "terminate")))
+			terminateResponse, terminateResponseErr := client.ReadMessage()
+			require.NoError(t, terminateResponseErr)
+			require.EqualValues(t, 40, terminateResponse.number("request_seq"))
+			require.NoError(t, adapter.WriteMessage(Message{
+				"seq": json.RawMessage("51"), "type": json.RawMessage(`"event"`),
+				"event": json.RawMessage(`"terminated"`),
+			}))
+			terminated, terminatedErr := client.ReadMessage()
+			require.NoError(t, terminatedErr)
+			require.Equal(t, "terminated", terminated.text("event"))
+			require.NoError(t, client.WriteMessage(testRequest(41, "threads")))
+			threads, threadsErr := adapter.ReadMessage()
+			require.NoError(t, threadsErr)
+			require.Equal(t, "threads", threads.text("command"))
+			require.NoError(t, adapter.WriteMessage(testResponse(52, threads.number("seq"), "threads")))
+			threadsResponse, threadsResponseErr := client.ReadMessage()
+			require.NoError(t, threadsResponseErr)
+			require.EqualValues(t, 41, threadsResponse.number("request_seq"))
+			if injected {
+				cancel(ErrShutdownRequested)
+			} else {
+				require.NoError(t, client.WriteMessage(testRequest(42, "disconnect")))
+			}
+			disconnect, disconnectErr := adapter.ReadMessage()
+			require.NoError(t, disconnectErr)
+			require.Equal(t, "disconnect", disconnect.text("command"))
+			require.NoError(t, adapter.WriteMessage(testResponse(53, disconnect.number("seq"), "disconnect")))
+			if !injected {
+				disconnectResponse, disconnectResponseErr := client.ReadMessage()
+				require.NoError(t, disconnectResponseErr)
+				require.EqualValues(t, 42, disconnectResponse.number("request_seq"))
+			}
+			require.NoError(t, adapter.Close())
+			require.NoError(t, <-done)
+		})
+	}
+}
+
 // Verifies that unexpected client closure is a session failure, not successful protocol shutdown.
 func TestBridgeUnexpectedDisconnectFails(t *testing.T) {
 	t.Parallel()

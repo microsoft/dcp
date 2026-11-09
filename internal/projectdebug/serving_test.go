@@ -7,6 +7,7 @@ package projectdebug
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,6 +40,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dap"
 	internaltest "github.com/microsoft/dcp/internal/testutil"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -49,6 +51,81 @@ type adapterServingExecutor struct {
 	mu          sync.Mutex
 	stops       map[process.Pid_t]func()
 	unconfirmed atomic.Bool
+}
+
+// Verifies that unread adapter output fails the real debug endpoint at the backlog limit,
+// closes a non-reading client's connection, and releases stdio and TCP adapter executions.
+func TestProjectDebugServingDisconnectsSlowClient(t *testing.T) {
+	for _, mode := range []apiv2.DebugAdapterMode{
+		apiv2.DebugAdapterModeStdio, apiv2.DebugAdapterModeTCPConnect, apiv2.DebugAdapterModeTCPCallback,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			defer cancel()
+			apiClient, config, executor := startDebugServingTest(t, ctx)
+			command := "stdio"
+			if mode == apiv2.DebugAdapterModeTCPConnect {
+				command = "listen"
+			} else if mode == apiv2.DebugAdapterModeTCPCallback {
+				command = "callback"
+			}
+			project := createDebugServingProject(t, ctx, apiClient, mode, command)
+			connection, connectErr := connectDebugServing(ctx, config, project)
+			require.NoError(t, connectErr)
+			defer connection.Close()
+			stopCancellation := context.AfterFunc(ctx, func() { _ = connection.Close() })
+			defer stopCancellation()
+			deadline, hasDeadline := ctx.Deadline()
+			require.True(t, hasDeadline)
+			require.NoError(t, connection.SetWriteDeadline(deadline))
+			body, encodeErr := json.Marshal(map[string]string{"output": strings.Repeat("x", 64*1024)})
+			require.NoError(t, encodeErr)
+			var frame bytes.Buffer
+			require.NoError(t, dap.WriteMessage(&frame, dap.Message{
+				"seq": json.RawMessage("1"), "type": json.RawMessage(`"event"`),
+				"event": json.RawMessage(`"output"`), "body": body,
+			}))
+			floodDone := make(chan error, 1)
+			go func() {
+				defer close(floodDone)
+				for {
+					if writeErr := connection.WriteMessage(websocket.BinaryMessage, frame.Bytes()); writeErr != nil {
+						floodDone <- writeErr
+						return
+					}
+				}
+			}()
+			t.Cleanup(func() { _ = connection.Close(); <-floodDone })
+			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
+				current := &apiv2.Project{}
+				if getErr := apiClient.Get(ctx, project.NamespacedName(), current); getErr != nil {
+					return false, getErr
+				}
+				if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 1 {
+					return false, nil
+				}
+				session := current.Status.Debug.Sessions[0]
+				if session.Phase != apiv2.ProjectDebugPhaseFailed {
+					return false, nil
+				}
+				require.NotEmpty(t, session.Conditions)
+				require.Contains(t, session.Conditions[0].Message, usvc_io.ErrBufferFull.Error())
+				return true, nil
+			}))
+			select {
+			case writeErr := <-floodDone:
+				require.Error(t, writeErr)
+			case <-ctx.Done():
+				t.Fatal("buffer overflow left the client connection open")
+			}
+			executions := executor.FindAll([]string{"test-adapter"}, "", nil)
+			require.Len(t, executions, 1)
+			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
+				handle := process.NewHandle(executions[0].PID, executions[0].StartedAt)
+				return process.IsProcessGoneErr(executor.CheckProcessRunning(handle)), nil
+			}))
+		})
+	}
 }
 
 // Verifies that prerequisite waiting outlasts the adapter connection timeout and uses no adapter
@@ -780,6 +857,7 @@ type containerAdapterExecutor struct {
 	noCompletion bool
 	tcpListener  net.Listener
 	tcpComplete  <-chan int32
+	run          func(context.Context, containers.ExecContainerOptions) (<-chan int32, error)
 }
 
 // Verifies that container TCP streams share one provider, keep sibling connections independent,
@@ -907,6 +985,9 @@ func (executor *containerAdapterExecutor) ExecContainer(ctx context.Context, opt
 	}
 	if executor.noCompletion {
 		return nil, nil
+	}
+	if executor.run != nil {
+		return executor.run(ctx, options)
 	}
 	exits := make(chan int32, 1)
 	if executor.tcpListener != nil {

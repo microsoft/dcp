@@ -335,6 +335,13 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 		}
 		return
 	}
+	if transport.failure == nil {
+		transport = bufferProjectDebugTransport(transport)
+	}
+	stopOutputFailure := context.AfterFunc(transport.failure, func() {
+		cancel(fmt.Errorf("debug adapter output failed: %w", context.Cause(transport.failure)))
+	})
+	defer stopOutputFailure()
 	defer func() {
 		if closeErr := transport.Close(); closeErr != nil {
 			storage.runtime.log.Error(closeErr, "Failed to close debug adapter transport")

@@ -77,9 +77,10 @@ type projectDebugExecution struct {
 type projectDebugTransport struct {
 	io.Reader
 	io.Writer
-	close func() error
-	once  sync.Once
-	err   error
+	close   func() error
+	failure context.Context
+	once    sync.Once
+	err     error
 }
 
 func (transport *projectDebugTransport) Close() error {
@@ -206,7 +207,9 @@ func (runtime *projectDebugRuntime) launch(
 			_ = listener.Close()
 		}
 		if transport != nil {
-			_ = transport.Close()
+			launchErr = errors.Join(launchErr, transport.Close())
+		} else if stdout != nil {
+			launchErr = errors.Join(launchErr, stdout.detach())
 		}
 		if execution.handle.Pid > 0 {
 			launchErr = errors.Join(launchErr, execution.stop())
@@ -254,13 +257,13 @@ func (runtime *projectDebugRuntime) launch(
 		logger.RESOURCE_LOG_STREAM_ID, project.GetResourceId(), "Project", project.NamespacedName(), "Execution", string(id))}
 	cmd.Stderr = diagnostic
 	if mode == apiv2.DebugAdapterModeStdio {
+		stdout = newProjectDebugOutput(projectDebugOutputLimit)
 		stdin, stdinErr := cmd.StdinPipe()
 		if stdinErr != nil {
 			return fail(stdinErr)
 		}
-		stdout = newProjectDebugOutput()
 		cmd.Stdout = stdout
-		transport = &projectDebugTransport{Reader: stdout.reader, Writer: stdin, close: func() error {
+		transport = &projectDebugTransport{Reader: stdout.reader, Writer: stdin, failure: stdout.failure, close: func() error {
 			var closeErrors error
 			closeErrors = errors.Join(closeErrors, stdout.detach())
 			// Executor admission can fail before exec.Cmd.Start takes ownership of its child-side pipe.
@@ -276,10 +279,11 @@ func (runtime *projectDebugRuntime) launch(
 		cmd.Stdout = diagnostic
 	}
 	onExit := process.ProcessExitHandlerFunc(func(_ process.Pid_t, code int32, exitErr error) {
-		defer close(execution.done)
 		defer cancel()
 		if stdout != nil {
-			_ = stdout.Close()
+			if closeErr := stdout.Close(); closeErr != nil {
+				runtime.log.Error(closeErr, "Failed to close adapter output pipe", "Project", project.NamespacedName())
+			}
 		}
 		execution.statusMu.Lock()
 		defer execution.statusMu.Unlock()
@@ -295,6 +299,7 @@ func (runtime *projectDebugRuntime) launch(
 		} else {
 			execution.status.Conditions = debugConditions("AdapterExited", "The adapter process exited.", false, project.Generation)
 		}
+		close(execution.done)
 		if publishErr := runtime.publish(project, execution.status.DeepCopy(), nil); publishErr != nil {
 			runtime.log.Error(publishErr, "Failed to publish debug adapter completion")
 		}
@@ -348,10 +353,13 @@ func (runtime *projectDebugRuntime) launchContainer(
 	setupCtx, executionCtx context.Context, project *apiv2.Project, execution *projectDebugExecution,
 ) (*projectDebugExecution, *projectDebugTransport, error) {
 	var transport *projectDebugTransport
+	var stdout *projectDebugOutput
 	started := false
 	fail := func(launchErr error) (*projectDebugExecution, *projectDebugTransport, error) {
 		if transport != nil {
 			launchErr = errors.Join(launchErr, transport.Close())
+		} else if stdout != nil {
+			launchErr = errors.Join(launchErr, stdout.detach())
 		}
 		if started {
 			launchErr = errors.Join(launchErr, execution.stop())
@@ -398,15 +406,14 @@ func (runtime *projectDebugRuntime) launchContainer(
 		Container: execution.containerID, Env: environment,
 		StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: usvc_io.NopWriteCloser(diagnostic), StdErrStream: usvc_io.NopWriteCloser(diagnostic)},
 	}
-	var stdout *projectDebugOutput
 	if project.Spec.DebugAdapter.EffectiveMode() == apiv2.DebugAdapterModeStdio {
+		stdout = newProjectDebugOutput(projectDebugOutputLimit)
 		stdin, input, pipeErr := os.Pipe()
 		if pipeErr != nil {
 			return fail(fmt.Errorf("create container adapter input pipe: %w", pipeErr))
 		}
-		stdout = newProjectDebugOutput()
 		options.StdInStream, options.StdOutStream = stdin, stdout
-		transport = &projectDebugTransport{Reader: stdout.reader, Writer: input, close: func() error {
+		transport = &projectDebugTransport{Reader: stdout.reader, Writer: input, failure: stdout.failure, close: func() error {
 			closeErrors := stdout.detach()
 			for _, closer := range []io.Closer{stdin, input} {
 				closeErr := closer.Close()
@@ -444,7 +451,6 @@ func (runtime *projectDebugRuntime) launchContainer(
 	_, publishErr := runtime.writer.update(setupCtx, project.NamespacedName(), project.UID, execution.status.DeepCopy(), nil)
 	execution.statusMu.Unlock()
 	go func() {
-		defer close(execution.done)
 		defer execution.cancel()
 		var code int32
 		var open bool
@@ -458,6 +464,11 @@ func (runtime *projectDebugRuntime) launchContainer(
 			}
 			settlementCancel()
 		}
+		if stdout != nil {
+			if closeErr := stdout.Close(); closeErr != nil {
+				runtime.log.Error(closeErr, "Failed to close container adapter output pipe", "Project", project.NamespacedName())
+			}
+		}
 		execution.statusMu.Lock()
 		if !open || code == process.UnknownExitCode || executionCtx.Err() != nil {
 			execution.status.Phase, execution.status.FinishedAt = apiv2.ProjectDebugPhaseFailed, metav1.MicroTime{}
@@ -469,13 +480,11 @@ func (runtime *projectDebugRuntime) launchContainer(
 			execution.status.Conditions = debugConditions("AdapterExecExited",
 				"The runtime reported completion of the container adapter command.", false, project.Generation)
 		}
+		close(execution.done)
 		if completionErr := runtime.publish(project, execution.status.DeepCopy(), nil); completionErr != nil {
 			runtime.log.Error(completionErr, "Failed to publish container adapter completion", "Project", project.NamespacedName())
 		}
 		execution.statusMu.Unlock()
-		if stdout != nil {
-			_ = stdout.Close()
-		}
 	}()
 	if publishErr != nil {
 		return fail(publishErr)

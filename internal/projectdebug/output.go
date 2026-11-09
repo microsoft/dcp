@@ -6,40 +6,67 @@
 package projectdebug
 
 import (
+	"context"
 	"errors"
 	"io"
-	"sync/atomic"
+
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
-// projectDebugOutput keeps the executor's stdout copy alive after its viewer departs.
-// Detaching releases a blocked write and discards subsequent bytes until process output settles.
+// Allow eight maximum-sized DAP messages of unread output before failing a stalled session.
+const projectDebugOutputLimit = 64 * 1024 * 1024
+
+// projectDebugOutput buffers adapter output without blocking on client consumption.
+// Overflow fails the session independently of the forwarding worker.
 type projectDebugOutput struct {
-	reader   *io.PipeReader
-	writer   *io.PipeWriter
-	detached atomic.Bool
+	io.WriteCloser
+	reader  io.ReadCloser
+	failure context.Context
+	fail    context.CancelCauseFunc
 }
 
-func newProjectDebugOutput() *projectDebugOutput {
-	reader, writer := io.Pipe()
-	return &projectDebugOutput{reader: reader, writer: writer}
+func newProjectDebugOutput(limit uint) *projectDebugOutput {
+	reader, writer := usvc_io.NewBufferedPipeWithOverflowLimit(limit)
+	failure, fail := context.WithCancelCause(context.Background())
+	return &projectDebugOutput{reader: reader, WriteCloser: writer, failure: failure, fail: fail}
 }
 
 func (output *projectDebugOutput) Write(payload []byte) (int, error) {
-	if output.detached.Load() {
-		return len(payload), nil
+	count, writeErr := output.WriteCloser.Write(payload)
+	if errors.Is(writeErr, usvc_io.ErrBufferFull) {
+		output.fail(writeErr)
 	}
-	written, writeErr := output.writer.Write(payload)
-	if errors.Is(writeErr, io.ErrClosedPipe) && output.detached.Load() {
-		return len(payload), nil
-	}
-	return written, writeErr
+	return count, writeErr
 }
 
 func (output *projectDebugOutput) detach() error {
-	output.detached.Store(true)
-	return output.reader.Close()
+	return errors.Join(output.Close(), output.reader.Close())
 }
 
-func (output *projectDebugOutput) Close() error {
-	return output.writer.Close()
+// bufferProjectDebugTransport applies the same output policy to network adapter connections.
+func bufferProjectDebugTransport(transport *projectDebugTransport) *projectDebugTransport {
+	output := newProjectDebugOutput(projectDebugOutputLimit)
+	done := make(chan struct{})
+	stopping := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, copyErr := io.Copy(output, transport.Reader)
+		if copyErr != nil {
+			select {
+			case <-stopping:
+			default:
+				output.fail(copyErr)
+			}
+		}
+		_ = output.Close()
+	}()
+	return &projectDebugTransport{
+		Reader: output.reader, Writer: transport.Writer, failure: output.failure,
+		close: func() error {
+			close(stopping)
+			closeErr := errors.Join(transport.Close(), output.detach())
+			<-done
+			return closeErr
+		},
+	}
 }

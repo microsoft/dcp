@@ -6,6 +6,9 @@
 package io_test
 
 import (
+	"bytes"
+	"fmt"
+	"io"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,7 +16,83 @@ import (
 	"github.com/stretchr/testify/require"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that overflow-limited pipes reject excess unread data without blocking or partial writes,
+// retain the overflow error after close, and allow capacity to be reused after reads.
+func TestBufferedPipeOverflowLimit(t *testing.T) {
+	for _, limit := range []uint{0, 1, 1024} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			reader, writer := usvc_io.NewBufferedPipeWithOverflowLimit(limit)
+			defer reader.Close()
+			defer writer.Close()
+			payload := bytes.Repeat([]byte("x"), int(limit))
+			count, writeErr := writer.Write(payload)
+			require.NoError(t, writeErr)
+			require.Equal(t, len(payload), count)
+			if limit > 0 {
+				drained := make([]byte, len(payload))
+				_, readErr := io.ReadFull(reader, drained)
+				require.NoError(t, readErr)
+				require.Equal(t, payload, drained)
+				refilled, refillErr := writer.Write(payload)
+				require.NoError(t, refillErr)
+				require.Equal(t, len(payload), refilled)
+			}
+			overflowed, overflowErr := writer.Write([]byte("x"))
+			require.Zero(t, overflowed)
+			require.ErrorIs(t, overflowErr, usvc_io.ErrBufferFull)
+			require.NoError(t, writer.Close())
+			require.NoError(t, reader.Close())
+			_, retainedWriteErr := writer.Write([]byte("x"))
+			require.ErrorIs(t, retainedWriteErr, usvc_io.ErrBufferFull)
+			_, retainedReadErr := reader.Read(make([]byte, 1))
+			require.ErrorIs(t, retainedReadErr, usvc_io.ErrBufferFull)
+		})
+	}
+}
+
+// Verifies that overflowing an empty buffered pipe wakes pending readers with an explicit error.
+func TestBufferedPipeOverflowWakesReader(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	reader, writer := usvc_io.NewBufferedPipeWithOverflowLimit(1)
+	defer reader.Close()
+	defer writer.Close()
+	readDone := make(chan error, 1)
+	go func() {
+		_, readErr := reader.Read(make([]byte, 1))
+		readDone <- readErr
+	}()
+	count, writeErr := writer.Write([]byte("too large"))
+	require.Zero(t, count)
+	require.ErrorIs(t, writeErr, usvc_io.ErrBufferFull)
+	select {
+	case readErr := <-readDone:
+		require.ErrorIs(t, readErr, usvc_io.ErrBufferFull)
+	case <-ctx.Done():
+		t.Fatal("buffer overflow left the reader blocked")
+	}
+}
+
+// Verifies that closing the reader rejects writes in both unlimited and overflow-limited pipes.
+func TestBufferedPipeReaderClosureRejectsWrites(t *testing.T) {
+	for _, overflow := range []bool{false, true} {
+		reader, writer := usvc_io.NewBufferedPipe()
+		if overflow {
+			require.NoError(t, reader.Close())
+			require.NoError(t, writer.Close())
+			reader, writer = usvc_io.NewBufferedPipeWithOverflowLimit(16)
+		}
+		require.NoError(t, reader.Close())
+		count, writeErr := writer.Write([]byte("closed"))
+		require.Zero(t, count)
+		require.ErrorIs(t, writeErr, io.ErrClosedPipe)
+		require.NoError(t, writer.Close())
+	}
+}
 
 func TestMultipleRwOps(t *testing.T) {
 	reader, writer := usvc_io.NewBufferedPipe()

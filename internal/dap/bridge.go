@@ -69,7 +69,7 @@ func (writer *messageWriter) send(message Message, local bool) error {
 			}
 			return fmt.Errorf("DAP request received after shutdown began")
 		}
-		if command == "disconnect" || command == "terminate" {
+		if command == "disconnect" {
 			writer.shutdown = true
 		}
 	}
@@ -143,7 +143,7 @@ func (writer *messageWriter) remap(message Message) (bool, bool, error) {
 }
 
 // Bridge forwards DAP while preserving extension payloads and request correlation in both directions.
-// On ErrShutdownRequested it injects disconnect unless shutdown was already forwarded, allowing
+// On ErrShutdownRequested it injects disconnect unless disconnect was already forwarded, allowing
 // final messages to drain until adapter EOF or grace expiry. Other cancellation and client loss fail.
 // It never synthesizes application exit or terminated events.
 // Observe runs before forwarding, after response correlation, and must be bounded and leave messages unchanged.
