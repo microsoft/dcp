@@ -696,7 +696,16 @@ func handleProjectUnknown(
 ) objectChange {
 	data.reconcileErr = nil
 	reconciler.observeProjectProcesses(resource, data, log)
-	return reconciler.withdrawProjectEndpoints(ctx, resource, data, log) |
+	change := reconciler.withdrawProjectEndpoints(ctx, resource, data, log)
+	if data.physicalUID != "" {
+		lookupData := *data
+		_, observationChange, getErr := reconciler.observeProjectContainer(ctx, resource, &lookupData)
+		change |= observationChange
+		if getErr != nil {
+			log.Error(getErr, "Failed to observe unknown Project container")
+		}
+	}
+	return change |
 		(reconciler.projectImageLogs(ctx, resource, data, log) &^ additionalReconciliationNeeded)
 }
 
@@ -754,6 +763,11 @@ func (r *ProjectReconciler) observeProjectContainer(
 	if physical == nil {
 		missingErr := fmt.Errorf("prepared Project container is missing")
 		data.state, data.reason, data.message, data.reconcileErr = projectStateUnknown, apiv2.ProjectReasonContainerContextMissing, missingErr.Error(), nil
+		source := &apiv2.LogSource{Name: data.physicalName, UID: data.physicalUID, Complete: true}
+		if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
+			resource.Status.RuntimeLogs = source
+			return nil, statusChanged, missingErr
+		}
 		return nil, noChange, missingErr
 	}
 	change := setValue(&resource.Status.ContainerID, physical.Status.ContainerID)

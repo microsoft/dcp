@@ -8,6 +8,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
+	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
@@ -47,6 +49,88 @@ type projectBackingClient struct {
 	staleContainerCondition atomic.Bool
 	reportContainerRunning  atomic.Bool
 	confirmationReader      *projectBackingReader
+}
+
+// Verifies that an Unknown Project preserves its original readable capture on ambiguous discovery
+// or logical-hold loss, including existing followers and clients opening logs after the transition.
+// Later capture completion is observed without reopening the Unknown lifecycle.
+func TestV2ProjectUnknownPreservesRuntimeLogs(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"ambiguous", "hold-removed"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			server, _, startupErr := StartTestEnvironment(t, ctx, projectTestControllers, t.Name(), t.TempDir())
+			require.NoError(t, startupErr)
+			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-logs-"+scenario)
+			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+					LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
+				}}}
+			require.NoError(t, server.Client.Create(ctx, resource))
+			prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+			require.NoError(t, orchestrator.SimulateContainerLogging(prepared.Status.ContainerID, apiv1.LogStreamSourceStdout, []byte("before-unknown\n")))
+			follow, followErr := server.RestClient.Get().
+				AbsPath("/apis", apiv2.GroupName, apiv2.Version, "namespaces", namespace.Name, "projects", resource.Name, "log").
+				Param("follow", "true").Stream(ctx)
+			require.NoError(t, followErr)
+			defer follow.Close()
+			first := make([]byte, len("before-unknown\n"))
+			_, firstErr := io.ReadFull(follow, first)
+			require.NoError(t, firstErr)
+			require.Equal(t, "before-unknown\n", string(first))
+			physical := &apiv2.PhysicalContainer{}
+			require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
+			var duplicate *apiv2.PhysicalContainer
+			if scenario == "ambiguous" {
+				duplicate = physical.DeepCopy()
+				duplicate.ObjectMeta = metav1.ObjectMeta{Name: "duplicate", Namespace: namespace.Name,
+					OwnerReferences: physical.OwnerReferences, Finalizers: physical.Finalizers}
+				require.NoError(t, server.Client.Create(ctx, duplicate))
+			} else {
+				removeProjectBackingHold(t, ctx, server.Client, physical)
+			}
+			unknown := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseUnknown)
+			requireReadyCondition(t, unknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPhysicalExecutionChanged)
+			require.NoError(t, server.Client.Get(ctx, physical.NamespacedName(), physical))
+			require.Equal(t, physical.GetLogSource(), unknown.Status.RuntimeLogs)
+			require.True(t, unknown.Status.RuntimeLogs.Available)
+			require.False(t, unknown.Status.RuntimeLogs.Complete)
+			require.NoError(t, orchestrator.SimulateContainerLogging(prepared.Status.ContainerID, apiv1.LogStreamSourceStdout, []byte("after-unknown\n")))
+			next := make([]byte, len("after-unknown\n"))
+			_, nextErr := io.ReadFull(follow, next)
+			require.NoError(t, nextErr)
+			require.Equal(t, "after-unknown\n", string(next))
+			late, lateErr := server.RestClient.Get().
+				AbsPath("/apis", apiv2.GroupName, apiv2.Version, "namespaces", namespace.Name, "projects", resource.Name, "log").
+				Stream(ctx)
+			require.NoError(t, lateErr)
+			defer late.Close()
+			output, readErr := io.ReadAll(late)
+			require.NoError(t, readErr)
+			require.Equal(t, "before-unknown\nafter-unknown\n", string(output))
+			if duplicate != nil {
+				require.NoError(t, server.Client.Delete(ctx, duplicate))
+				removeProjectBackingHold(t, ctx, server.Client, duplicate)
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, duplicate)
+				require.NoError(t, orchestrator.SimulateContainerStatus(ctx, prepared.Status.ContainerID, containers.ContainerStatusDead))
+				completed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+					return current.Status.Phase == apiv2.ProjectPhaseUnknown && current.Status.RuntimeLogs != nil &&
+						current.Status.RuntimeLogs.Available && current.Status.RuntimeLogs.Complete, nil
+				})
+				require.Equal(t, unknown.Status.Conditions[0].Reason, completed.Status.Conditions[0].Reason)
+				require.Equal(t, unknown.Status.Conditions[0].Message, completed.Status.Conditions[0].Message)
+				require.Equal(t, prepared.Status.RuntimeLogs.UID, completed.Status.RuntimeLogs.UID)
+				remaining, drainErr := io.ReadAll(follow)
+				require.NoError(t, drainErr)
+				require.Empty(t, remaining)
+			}
+			require.NoError(t, server.Client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+		})
+	}
 }
 
 func (apiClient *projectBackingClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {

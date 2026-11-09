@@ -209,13 +209,13 @@ func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, Additio
 		}
 	}
 	change |= setValue(&resource.Status.ImageRef, imageRef)
-	if data.state == projectStateUnknown || data.state == projectStateStopped {
+	if data.state == projectStateStopped {
 		source := &apiv2.LogSource{Name: physicalRef, UID: data.physicalUID, Complete: true}
 		if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
 			resource.Status.RuntimeLogs = source
 			change |= statusChanged
 		}
-		if data.state == projectStateStopped && resource.Status.StartupLogs != nil {
+		if resource.Status.StartupLogs != nil {
 			startupSource := &apiv2.LogSource{Name: data.imageName, UID: data.imageUID, Complete: true}
 			if !reflect.DeepEqual(resource.Status.StartupLogs, startupSource) {
 				resource.Status.StartupLogs = startupSource
