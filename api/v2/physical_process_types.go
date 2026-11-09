@@ -1,0 +1,392 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+package v2
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"path/filepath"
+	"reflect"
+	"strings"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
+	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
+	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
+	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
+
+	"github.com/microsoft/dcp/pkg/commonapi"
+)
+
+// PhysicalProcessPhase describes the lifecycle phase of a PhysicalProcess.
+type PhysicalProcessPhase PhysicalResourcePhase
+
+const (
+	// PhysicalProcessPhasePending indicates that the process is waiting for reconciliation to make progress.
+	PhysicalProcessPhasePending PhysicalProcessPhase = PhysicalProcessPhase(PhysicalResourcePhasePending)
+
+	// PhysicalProcessPhaseRunning indicates that the operating system process is running.
+	PhysicalProcessPhaseRunning PhysicalProcessPhase = PhysicalProcessPhase(PhysicalResourcePhaseRunning)
+
+	// PhysicalProcessPhaseExited indicates that the operating system process has exited.
+	PhysicalProcessPhaseExited PhysicalProcessPhase = PhysicalProcessPhase(PhysicalResourcePhaseExited)
+
+	// PhysicalProcessPhaseUnknown indicates that process state is unavailable or indeterminate.
+	PhysicalProcessPhaseUnknown PhysicalProcessPhase = PhysicalProcessPhase(PhysicalResourcePhaseUnknown)
+
+	// PhysicalProcessPhaseFailed indicates a terminal operation failure.
+	PhysicalProcessPhaseFailed PhysicalProcessPhase = PhysicalProcessPhase(PhysicalResourcePhaseFailed)
+)
+
+const (
+	// PhysicalProcessReasonLaunching indicates that process launch is in progress.
+	PhysicalProcessReasonLaunching ConditionReason = "Launching"
+
+	// PhysicalProcessReasonLaunchFailed indicates that process launch failed.
+	// The phase distinguishes whether the launch will be retried.
+	PhysicalProcessReasonLaunchFailed ConditionReason = "LaunchFailed"
+
+	// PhysicalProcessReasonRuntimeProcessRunning indicates that the operating system process is running.
+	PhysicalProcessReasonRuntimeProcessRunning ConditionReason = "RuntimeProcessRunning"
+
+	// PhysicalProcessReasonRuntimeProcessExited indicates that the operating system process has exited.
+	PhysicalProcessReasonRuntimeProcessExited ConditionReason = "RuntimeProcessExited"
+
+	// PhysicalProcessReasonRuntimeProcessMissing indicates that the operating system process was not found.
+	PhysicalProcessReasonRuntimeProcessMissing ConditionReason = "RuntimeProcessMissing"
+
+	// PhysicalProcessReasonRuntimeProcessInspectFailed indicates that process state could not be inspected.
+	PhysicalProcessReasonRuntimeProcessInspectFailed ConditionReason = "RuntimeProcessInspectFailed"
+
+	// PhysicalProcessReasonRuntimeProcessAlreadyTracked indicates that another PhysicalProcess tracks the same process instance.
+	PhysicalProcessReasonRuntimeProcessAlreadyTracked ConditionReason = "RuntimeProcessAlreadyTracked"
+
+	// PhysicalProcessReasonStopping indicates that process termination is in progress.
+	PhysicalProcessReasonStopping ConditionReason = "Stopping"
+
+	// PhysicalProcessReasonStopFailed indicates that process termination failed and will be retried.
+	PhysicalProcessReasonStopFailed ConditionReason = "StopFailed"
+
+	// PhysicalProcessReasonDescendantCleanupUnconfirmed indicates that the root process is gone,
+	// but one or more descendants could not be discovered or confirmed stopped.
+	PhysicalProcessReasonDescendantCleanupUnconfirmed ConditionReason = "DescendantCleanupUnconfirmed"
+
+	// PhysicalProcessReasonStopRequested indicates that process launch was skipped because stop was requested.
+	PhysicalProcessReasonStopRequested ConditionReason = "StopRequested"
+)
+
+// PhysicalProcessSpec describes either an existing operating system process or how to launch one.
+// +k8s:openapi-gen=true
+type PhysicalProcessSpec struct {
+	// PID identifies an existing operating system process to track. Exactly one of pid or process must be set.
+	// The controller resolves the PID once and guards against PID reuse with an in-memory process identity.
+	PID *int64 `json:"pid,omitempty"`
+
+	// IdentityTimestamp optionally identifies the expected process in pid.
+	// When set, a reused PID is reported as missing rather than adopted or stopped.
+	// Forbidden when process is set.
+	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
+
+	// StdoutFile optionally supplies an existing raw stdout capture for an identity-bound PID reference.
+	// It is retained while that process instance is running. On resource deletion,
+	// removal is best effort after exit or confirmed absence, including PID reuse.
+	StdoutFile string `json:"stdoutFile,omitempty"`
+
+	// StderrFile optionally supplies an existing raw stderr capture for an identity-bound PID reference.
+	// It is retained while that process instance is running. On resource deletion,
+	// removal is best effort after exit or confirmed absence, including PID reuse.
+	StderrFile string `json:"stderrFile,omitempty"`
+
+	// Process describes an operating system process to launch. Exactly one of pid or process must be set.
+	Process *PhysicalProcessConfig `json:"process,omitempty"`
+
+	// Stop requests that the tracked operating system process be stopped.
+	Stop bool `json:"stop,omitempty"`
+}
+
+// PhysicalProcessConfig describes an operating system process to launch.
+// +k8s:openapi-gen=true
+type PhysicalProcessConfig struct {
+	// RetainRuntimeProcess keeps a process launched by this resource running when the resource is deleted.
+	RetainRuntimeProcess bool `json:"retainRuntimeProcess,omitempty"`
+
+	// MonitorPID optionally scopes a retained process to another process lifetime.
+	// When set, monitorTimestamp must also be set and retainRuntimeProcess must be true.
+	// The retained process is stopped when the monitored process exits.
+	MonitorPID *int64 `json:"monitorPID,omitempty"`
+
+	// MonitorTimestamp identifies the process in monitorPID and guards against PID reuse.
+	MonitorTimestamp metav1.MicroTime `json:"monitorTimestamp,omitempty"`
+
+	// ExecutablePath is the executable path or name to launch.
+	ExecutablePath string `json:"executablePath"`
+
+	// Args are arguments passed to the executable.
+	// +listType=atomic
+	Args []string `json:"args,omitempty"`
+
+	// WorkingDirectory is the process working directory. The controller process working directory is used when omitted.
+	WorkingDirectory string `json:"workingDirectory,omitempty"`
+
+	// AmbientEnvironment controls inheritance from the controller process environment.
+	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
+
+	// Env contains process environment variables. These values override inherited variables with the same name.
+	// +listType=map
+	// +listMapKey=name
+	Env []commonapi.EnvVar `json:"env,omitempty"`
+}
+
+// PhysicalProcessStatus describes the observed operating system process.
+// +k8s:openapi-gen=true
+type PhysicalProcessStatus struct {
+	// StdoutFile is the output capture for a process launched by this resource.
+	StdoutFile string `json:"stdoutFile,omitempty"`
+
+	// StderrFile is the error capture for a process launched by this resource.
+	StderrFile string `json:"stderrFile,omitempty"`
+
+	// LogsComplete indicates that this resource will not publish more process output.
+	LogsComplete bool `json:"logsComplete,omitempty"`
+
+	// Phase summarizes the operating system process lifecycle.
+	// +kubebuilder:validation:Enum=Pending;Running;Exited;Unknown;Failed
+	// +optional
+	Phase PhysicalProcessPhase `json:"phase,omitempty"`
+
+	// PID is the operating system process ID being tracked.
+	PID *int64 `json:"pid,omitempty"`
+
+	// IdentityTimestamp identifies the observed process instance together with PID.
+	// It is used to guard against PID reuse for subsequent persistent processes.
+	// On Linux this value represents elapsed time since boot rather than wall-clock time.
+	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
+
+	// FinishedAt is when the controller observed process exit.
+	FinishedAt metav1.MicroTime `json:"finishedAt,omitempty"`
+
+	// ExitCode is the process exit code when it was available to the controller.
+	ExitCode *int32 `json:"exitCode,omitempty"`
+
+	// Conditions describe readiness and reconciliation progress.
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+func (pps PhysicalProcessStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
+	pps.DeepCopyInto(&dest.(*PhysicalProcess).Status)
+}
+
+// PhysicalProcess represents one operating system process in a DCP V2 namespace.
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +k8s:openapi-gen=true
+// +kubebuilder:resource:scope=Namespaced,path=physicalprocesses,shortName=pproc
+type PhysicalProcess struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   PhysicalProcessSpec   `json:"spec,omitempty"`
+	Status PhysicalProcessStatus `json:"status,omitempty"`
+}
+
+func (pp *PhysicalProcess) GetGroupVersionResource() schema.GroupVersionResource {
+	return schema.GroupVersionResource{
+		Group:    GroupVersion.Group,
+		Version:  GroupVersion.Version,
+		Resource: "physicalprocesses",
+	}
+}
+
+func (pp *PhysicalProcess) GetObjectMeta() *metav1.ObjectMeta {
+	return &pp.ObjectMeta
+}
+
+// GetResourceId identifies the PhysicalProcess system log stream.
+func (pp *PhysicalProcess) GetResourceId() string {
+	return fmt.Sprintf("physicalprocess-%s", pp.UID)
+}
+
+// GetLogSource describes output captured or referenced by this PhysicalProcess.
+func (pp *PhysicalProcess) GetLogSource() *LogSource {
+	return &LogSource{
+		Name: pp.Name, UID: pp.UID, StdoutFile: pp.Status.StdoutFile, StderrFile: pp.Status.StderrFile,
+		Available: pp.Status.StdoutFile != "" || pp.Status.StderrFile != "", Complete: pp.Status.LogsComplete,
+		Raw: pp.Spec.PID != nil || (pp.Spec.Process != nil && pp.Spec.Process.RetainRuntimeProcess),
+	}
+}
+
+func (*PhysicalProcess) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{&PhysicalProcessLogResource{}}
+}
+
+// PhysicalProcessLogResource registers process output and system log storage.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type PhysicalProcessLogResource struct{}
+
+func (*PhysicalProcessLogResource) Name() string { return LogSubresourceName }
+
+func (*PhysicalProcessLogResource) GetStorageProvider(
+	obj apiserver_resource.Object, _ string, parentProvider apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return newLogStorageProvider(obj, parentProvider)
+}
+
+func (pp *PhysicalProcess) GetStatus() apiserver_resource.StatusSubResource {
+	return pp.Status
+}
+
+func (pp *PhysicalProcess) New() runtime.Object {
+	return &PhysicalProcess{}
+}
+
+func (pp *PhysicalProcess) NewList() runtime.Object {
+	return &PhysicalProcessList{}
+}
+
+func (pp *PhysicalProcess) IsStorageVersion() bool {
+	return true
+}
+
+func (pp *PhysicalProcess) NamespaceScoped() bool {
+	return true
+}
+
+func (pp *PhysicalProcess) ShortNames() []string {
+	return []string{"pproc"}
+}
+
+func (pp *PhysicalProcess) NamespacedName() types.NamespacedName {
+	return NamespacedName(pp)
+}
+
+func (pp *PhysicalProcess) Validate(ctx context.Context) field.ErrorList {
+	errorList := ValidateNamespacedResourceMetadata(pp)
+	specPath := field.NewPath("spec")
+
+	if commonapi.ResourceCreationProhibited.Load() && pp.DeletionTimestamp.IsZero() {
+		errorList = append(errorList, field.Forbidden(nil, commonapi.ErrResourceCreationProhibited.Error()))
+	}
+
+	errorList = append(errorList, commonapi.ValidateAnnotationsSize(pp.Annotations, field.NewPath("metadata", "annotations"))...)
+	for _, capture := range []struct {
+		name string
+		path string
+	}{{"stdoutFile", pp.Spec.StdoutFile}, {"stderrFile", pp.Spec.StderrFile}} {
+		if capture.path == "" {
+			continue
+		}
+		if pp.Spec.PID == nil || pp.Spec.IdentityTimestamp.IsZero() {
+			errorList = append(errorList, field.Forbidden(specPath.Child(capture.name), "existing capture requires pid and identityTimestamp"))
+		} else if !filepath.IsAbs(capture.path) {
+			errorList = append(errorList, field.Invalid(specPath.Child(capture.name), capture.path, "capture path must be absolute"))
+		}
+	}
+
+	if pp.Spec.PID == nil && pp.Spec.Process == nil {
+		errorList = append(errorList, field.Required(specPath, "exactly one of pid or process must be set"))
+		return errorList
+	}
+	if pp.Spec.PID != nil && pp.Spec.Process != nil {
+		errorList = append(errorList, field.Forbidden(specPath.Child("process"), "process cannot be set when pid is set"))
+		return errorList
+	}
+	if pp.Spec.PID != nil {
+		if *pp.Spec.PID <= 0 || *pp.Spec.PID > math.MaxUint32 {
+			errorList = append(errorList, field.Invalid(specPath.Child("pid"), *pp.Spec.PID, "pid must be between 1 and 4294967295"))
+		}
+		return errorList
+	}
+
+	processConfig := pp.Spec.Process
+	processPath := specPath.Child("process")
+	errorList = append(errorList, processConfig.AmbientEnvironment.validate(processPath.Child("ambientEnvironment"))...)
+	if !pp.Spec.IdentityTimestamp.IsZero() {
+		errorList = append(errorList, field.Forbidden(specPath.Child("identityTimestamp"), "identityTimestamp requires pid"))
+	}
+	errorList = append(
+		errorList,
+		validateRetainedResourceMonitor(
+			processConfig.RetainRuntimeProcess,
+			processConfig.MonitorPID,
+			processConfig.MonitorTimestamp,
+			processPath,
+		)...,
+	)
+	if strings.TrimSpace(processConfig.ExecutablePath) == "" {
+		errorList = append(errorList, field.Required(processPath.Child("executablePath"), "executablePath must be set"))
+	}
+
+	return errorList
+}
+
+// ValidateUpdate freezes process identity and creation fields while allowing stop to be requested.
+func (pp *PhysicalProcess) ValidateUpdate(ctx context.Context, old runtime.Object) field.ErrorList {
+	errorList := field.ErrorList{}
+
+	oldPhysicalProcess := old.(*PhysicalProcess)
+	if oldPhysicalProcess.Spec.Stop && !pp.Spec.Stop {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "stop cannot be set to false once it has been set to true"))
+	}
+
+	oldSpec := oldPhysicalProcess.Spec
+	newSpec := pp.Spec
+	oldSpec.Stop = false
+	newSpec.Stop = false
+	if !reflect.DeepEqual(oldSpec, newSpec) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec"), "spec is immutable"))
+	}
+
+	return errorList
+}
+
+// PhysicalProcessList contains a list of PhysicalProcess instances.
+// +k8s:openapi-gen=true
+// +kubebuilder:object:root=true
+type PhysicalProcessList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []PhysicalProcess `json:"items"`
+}
+
+func (ppl *PhysicalProcessList) GetListMeta() *metav1.ListMeta {
+	return &ppl.ListMeta
+}
+
+func (ppl *PhysicalProcessList) ItemCount() uint32 {
+	return uint32(len(ppl.Items))
+}
+
+func (ppl *PhysicalProcessList) GetItems() []*PhysicalProcess {
+	retval := make([]*PhysicalProcess, len(ppl.Items))
+	for i := range ppl.Items {
+		retval[i] = &ppl.Items[i]
+	}
+	return retval
+}
+
+func init() {
+	SchemeBuilder.Register(&PhysicalProcess{}, &PhysicalProcessList{})
+}
+
+// Ensure types support interfaces expected by our API server.
+var _ apiserver_resource.Object = (*PhysicalProcess)(nil)
+var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalProcess)(nil)
+var _ apiserver_resource.StatusSubResource = (*PhysicalProcessStatus)(nil)
+var _ apiserver_resource.ObjectList = (*PhysicalProcessList)(nil)
+var _ commonapi.ListWithObjectItems[PhysicalProcess, *PhysicalProcess] = (*PhysicalProcessList)(nil)
+var _ apiserver_resourcerest.ShortNamesProvider = (*PhysicalProcess)(nil)
+var _ apiserver_resourcestrategy.Validater = (*PhysicalProcess)(nil)
+var _ apiserver_resourcestrategy.ValidateUpdater = (*PhysicalProcess)(nil)

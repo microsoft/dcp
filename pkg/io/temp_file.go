@@ -24,8 +24,19 @@ func CreateTempFolder(name string, perm os.FileMode) (string, error) {
 	return filepath.Join(DcpTempDir(), name), nil
 }
 
-func OpenTempFile(name string, flag int, perm os.FileMode) (*os.File, error) {
-	return OpenFile(filepath.Join(DcpTempDir(), name), flag, perm)
+// CreateNewTempFile creates a new read-write file in the DCP temporary directory.
+func CreateNewTempFile(name string, perm os.FileMode) (*os.File, error) {
+	return CreateNewFile(filepath.Join(DcpTempDir(), name), perm)
+}
+
+// EnsureEmptyTempFile opens or creates an empty read-write file in the DCP temporary directory.
+func EnsureEmptyTempFile(name string, perm os.FileMode) (*os.File, error) {
+	return EnsureEmptyFile(filepath.Join(DcpTempDir(), name), perm)
+}
+
+// OpenOrCreateTempFileForAppending opens or creates a file in the DCP temporary directory for appending.
+func OpenOrCreateTempFileForAppending(name string, perm os.FileMode) (*AppendFile, error) {
+	return OpenOrCreateFileForAppending(filepath.Join(DcpTempDir(), name), perm)
 }
 
 func init() {

@@ -111,7 +111,7 @@ func monitorContainer(log logr.Logger) func(cmd *cobra.Command, args []string) e
 		}
 		defer pe.Dispose()
 
-		monitorCtx, monitorCtxCancel, monitorCtxErr := cmds.MonitorPid(cmd.Context(), monitorPid, monitorProcessStartTime, monitorInterval, log)
+		monitorCtx, monitorCtxCancel, monitorCtxErr := cmds.MonitorPid(cmd.Context(), process.NewHandle(monitorPid, monitorProcessStartTime), monitorInterval, log)
 		defer monitorCtxCancel()
 		if monitorCtxErr != nil {
 			if isMonitorProcessGoneErr(monitorCtxErr) {

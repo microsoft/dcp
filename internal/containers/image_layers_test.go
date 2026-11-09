@@ -14,7 +14,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -25,7 +24,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 // fakeCLICommandRunner implements CLICommandRunner for testing.
@@ -38,8 +38,11 @@ type fakeCLICommandRunner struct {
 
 // fakeBuildResult captures the stdin tar and args for inspection by tests.
 type fakeBuildResult struct {
-	args     []string
-	stdinTar []byte
+	args          []string
+	stdinTar      []byte
+	env           []string
+	operationName string
+	timeout       time.Duration
 }
 
 func (f *fakeCLICommandRunner) MakeCommand(args ...string) *exec.Cmd {
@@ -48,6 +51,9 @@ func (f *fakeCLICommandRunner) MakeCommand(args ...string) *exec.Cmd {
 
 func (f *fakeCLICommandRunner) RunBufferedCommand(ctx context.Context, opName string, cmd *exec.Cmd, stdout io.WriteCloser, stderr io.WriteCloser, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
 	f.result.args = cmd.Args
+	f.result.env = cmd.Env
+	f.result.operationName = opName
+	f.result.timeout = timeout
 
 	if cmd.Stdin != nil {
 		data, readErr := io.ReadAll(cmd.Stdin)
@@ -97,7 +103,7 @@ func TestApplyImageLayersImpl_DockerfileGeneration(t *testing.T) {
 			Id:   "sha256:baseimage123",
 			Tags: []string{"myrepo/myimage:v1"},
 		},
-		Layers: []apiv1.ImageLayer{
+		Layers: []ImageLayer{
 			{Digest: "layer-a", RawContents: rawContents},
 			{Digest: "layer-b", RawContents: rawContents},
 		},
@@ -139,7 +145,7 @@ func TestApplyImageLayersImpl_UsesImageIdWhenNoTags(t *testing.T) {
 	result := &fakeBuildResult{}
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:abc123"},
-		Layers:    []apiv1.ImageLayer{{Digest: "d1", RawContents: rawContents}},
+		Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
 		Tag:       "test:tag",
 	}
 
@@ -160,7 +166,7 @@ func TestApplyImageLayersImpl_ReturnsImageIdWhenNoTag(t *testing.T) {
 
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-		Layers:    []apiv1.ImageLayer{{Digest: "d1", RawContents: rawContents}},
+		Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
 		Tag:       "",
 	}
 
@@ -178,7 +184,7 @@ func TestApplyImageLayersImpl_EmptyLayersReturnsError(t *testing.T) {
 
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base"},
-		Layers:    []apiv1.ImageLayer{},
+		Layers:    []ImageLayer{},
 		Tag:       "test:tag",
 	}
 
@@ -198,7 +204,7 @@ func TestApplyImageLayersImpl_BuildErrorTakesPrecedenceOverTarError(t *testing.T
 
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-		Layers:    []apiv1.ImageLayer{{Digest: "d1", RawContents: rawContents}},
+		Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
 		Tag:       "test:tag",
 	}
 
@@ -223,12 +229,12 @@ func TestApplyImageLayersImpl_SourceLayerWithSHA256Prefix(t *testing.T) {
 
 	tempDir := t.TempDir()
 	layerPath := filepath.Join(tempDir, "layer.tar")
-	require.NoError(t, os.WriteFile(layerPath, layerContent, 0644))
+	require.NoError(t, usvc_io.WriteFile(layerPath, layerContent, osutil.PermissionOwnerReadWriteOthersRead))
 
 	result := &fakeBuildResult{}
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-		Layers: []apiv1.ImageLayer{{
+		Layers: []ImageLayer{{
 			Digest: "d1",
 			Source: layerPath,
 			SHA256: "sha256:" + hashHex,
@@ -257,12 +263,12 @@ func TestApplyImageLayersImpl_SourceLayerWithUppercaseSHA256(t *testing.T) {
 
 	tempDir := t.TempDir()
 	layerPath := filepath.Join(tempDir, "layer.tar")
-	require.NoError(t, os.WriteFile(layerPath, layerContent, 0644))
+	require.NoError(t, usvc_io.WriteFile(layerPath, layerContent, osutil.PermissionOwnerReadWriteOthersRead))
 
 	result := &fakeBuildResult{}
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-		Layers: []apiv1.ImageLayer{{
+		Layers: []ImageLayer{{
 			Digest: "d1",
 			Source: layerPath,
 			SHA256: hashHex,
@@ -285,11 +291,11 @@ func TestApplyImageLayersImpl_SourceLayerHashMismatch(t *testing.T) {
 
 	tempDir := t.TempDir()
 	layerPath := filepath.Join(tempDir, "layer.tar")
-	require.NoError(t, os.WriteFile(layerPath, layerContent, 0644))
+	require.NoError(t, usvc_io.WriteFile(layerPath, layerContent, osutil.PermissionOwnerReadWriteOthersRead))
 
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-		Layers: []apiv1.ImageLayer{{
+		Layers: []ImageLayer{{
 			Digest: "d1",
 			Source: layerPath,
 			SHA256: "0000000000000000000000000000000000000000000000000000000000000000",
@@ -316,8 +322,12 @@ func TestApplyImageLayersImpl_BuildCommandArgs(t *testing.T) {
 		result := &fakeBuildResult{}
 		options := ApplyImageLayersOptions{
 			BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-			Layers:    []apiv1.ImageLayer{{Digest: "d1", RawContents: rawContents}},
-			Tag:       "myimage:dcp-abc",
+			Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
+			Labels: map[string]string{
+				"test.label":    "value with spaces",
+				"another.label": "second-value",
+			},
+			Tag: "myimage:dcp-abc",
 		}
 
 		_, applyErr := ApplyImageLayersImpl(
@@ -330,6 +340,8 @@ func TestApplyImageLayersImpl_BuildCommandArgs(t *testing.T) {
 		assert.Contains(t, result.args, "--quiet")
 		assert.Contains(t, result.args, "-t")
 		assert.Contains(t, result.args, "myimage:dcp-abc")
+		assert.Contains(t, result.args, "test.label=value with spaces")
+		assert.Contains(t, result.args, "another.label=second-value")
 		assert.Equal(t, "-", result.args[len(result.args)-1])
 	})
 
@@ -338,7 +350,7 @@ func TestApplyImageLayersImpl_BuildCommandArgs(t *testing.T) {
 		result := &fakeBuildResult{}
 		options := ApplyImageLayersOptions{
 			BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-			Layers:    []apiv1.ImageLayer{{Digest: "d1", RawContents: rawContents}},
+			Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
 			Tag:       "",
 		}
 

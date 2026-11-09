@@ -11,7 +11,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	stdio "io"
-	"os"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
@@ -99,7 +98,7 @@ func LoadCertificateAuthorityFile(caFile string) ([]byte, error) {
 }
 
 func readPEMFile(path string, description string) ([]byte, error) {
-	file, openErr := usvc_io.OpenFile(path, os.O_RDONLY, 0)
+	file, openErr := usvc_io.OpenFileReadOnly(path)
 	if openErr != nil {
 		return nil, fmt.Errorf("unable to open %s %q: %w", description, path, openErr)
 	}

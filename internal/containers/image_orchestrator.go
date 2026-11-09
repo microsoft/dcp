@@ -7,9 +7,24 @@ package containers
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/cenkalti/backoff/v4"
+
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
+
+// ImageReferenceWithDefaultTag makes an implicit latest tag explicit without resolving registry aliases.
+// The reference must be nonempty; tagged and digest-qualified references are preserved.
+func ImageReferenceWithDefaultTag(image string) string {
+	if strings.Contains(image, "@") || strings.LastIndex(image, ":") > strings.LastIndex(image, "/") {
+		return image
+	}
+	return image + ":latest"
+}
 
 // InspectImages command types
 
@@ -42,20 +57,114 @@ type InspectImages interface {
 	InspectImages(ctx context.Context, options InspectImagesOptions) ([]InspectedImage, error)
 }
 
+// InspectPulledImage resolves a successfully pulled reference to its image ID.
+// Inspection failures, including NotFound, retry with a six-second exponential-backoff budget.
+// Recognized runtime outages return immediately so the caller can defer recovery.
+func InspectPulledImage(ctx context.Context, inspector InspectImages, image string) (string, error) {
+	policy := backoff.NewExponentialBackOff(
+		backoff.WithInitialInterval(200*time.Millisecond),
+		backoff.WithMultiplier(2),
+		backoff.WithRandomizationFactor(0.1),
+		backoff.WithMaxElapsedTime(6*time.Second),
+	)
+	return resiliency.RetryGet(ctx, policy, func() (string, error) {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return "", resiliency.Permanent(contextErr)
+		}
+		images, inspectErr := inspector.InspectImages(ctx, InspectImagesOptions{Images: []string{image}})
+		if errors.Is(inspectErr, ErrRuntimeNotHealthy) {
+			return "", resiliency.Permanent(inspectErr)
+		}
+		if inspectErr != nil {
+			return "", inspectErr
+		}
+		if len(images) == 0 {
+			return "", ErrNotFound
+		}
+		if len(images) != 1 || images[0].Id == "" {
+			return "", fmt.Errorf("pulled image %q inspection did not return exactly one non-empty image ID", image)
+		}
+		return images[0].Id, nil
+	})
+}
+
 // BuildImage command types
+
+type BuildSecretType string
+
+const (
+	EnvSecret  BuildSecretType = "env"
+	FileSecret BuildSecretType = "file"
+)
+
+// ContainerBuildSecret is a secret made available to the image builder.
+type ContainerBuildSecret struct {
+	// The type of secret (defaults to file).
+	Type BuildSecretType `json:"type,omitempty"`
+
+	// The ID of the secret.
+	ID string `json:"id"`
+
+	// For file secrets, the source filepath of the secret; for env secrets, the environment
+	// variable name. Required for file secrets, optional for env secrets (defaults to the ID).
+	Source string `json:"source,omitempty"`
+
+	// Only used for env secrets. If set, this value is applied via the configured environment
+	// variable to the build command. If unset, the value comes from the ambient environment.
+	Value string `json:"value,omitempty"`
+}
+
+// ContainerBuildContext describes how to build a container image from source.
+type ContainerBuildContext struct {
+	// The path to the directory to be used as the root of the build context.
+	Context string `json:"context"`
+
+	// A tar archive to stream to the image builder as the build context.
+	ContextArchive *ContainerBuildContextArchive `json:"contextArchive,omitempty"`
+
+	// An opaque identifier for the logical contents of the build context.
+	Digest string `json:"digest,omitempty"`
+
+	// The path to a Dockerfile to use for the build.
+	Dockerfile string `json:"dockerfile,omitempty"`
+
+	// Additional tags to apply to the image.
+	Tags []string `json:"tags,omitempty"`
+
+	// Additional --build-arg values to pass to the build command.
+	Args []EnvVar `json:"args,omitempty"`
+
+	// Build time secrets to be passed in to the builder via --secret.
+	Secrets []ContainerBuildSecret `json:"secrets,omitempty"`
+
+	// Optional: the name of the build stage to use for the build.
+	Stage string `json:"stage,omitempty"`
+
+	// Labels maps built-image label keys to their values.
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Optional target platform for the build (e.g. "linux/amd64").
+	Platform string `json:"platform,omitempty"`
+}
+
+type ContainerBuildContextArchive struct {
+	Source      string `json:"source,omitempty"`
+	SHA256      string `json:"sha256,omitempty"`
+	RawContents string `json:"rawContents,omitempty"`
+}
 
 type BuildImageOptions struct {
 	IidFile string
 	Pull    bool
 
-	*apiv1.ContainerBuildContext
+	*ContainerBuildContext
 
 	StreamCommandOptions
 	TimeoutOption
 }
 
 type BuildImage interface {
-	// Build a new container image. If successful, the ID of the image is returned.
+	// Build a new container image.
 	BuildImage(ctx context.Context, options BuildImageOptions) error
 }
 
@@ -68,6 +177,7 @@ type PullImageOptions struct {
 	// Digest of the image to pull (optional)
 	Digest string `json:"Digest,omitempty"`
 
+	StreamCommandOptions
 	TimeoutOption
 }
 
@@ -76,10 +186,74 @@ type PullImage interface {
 	PullImage(ctx context.Context, options PullImageOptions) (string, error)
 }
 
+// RemoveImages command types
+
+type RemoveImagesOptions struct {
+	// The list of image IDs or names to remove.
+	Images []string
+
+	// Force removal of the images.
+	Force bool
+}
+
+type RemoveImages interface {
+	// Removes images identified by the given list of names or IDs.
+	// Returns the requested names or IDs that were successfully removed. If some images cannot be
+	// removed, an error is reported, but images that can be removed are still processed.
+	RemoveImages(ctx context.Context, options RemoveImagesOptions) ([]string, error)
+}
+
+// RemoveImagesSequentially applies a runtime-specific single-image removal operation while
+// preserving the partial-success contract shared by the orchestrator removal APIs.
+// Image removal output of the underlying runtime (e.g., Docker) tends to report affected tags and layers
+// rather than requested identifiers, so separate exit results are required to attribute success reliably.
+func RemoveImagesSequentially(
+	ctx context.Context,
+	options RemoveImagesOptions,
+	removeImage func(ctx context.Context, image string, force bool) error,
+) ([]string, error) {
+	if len(options.Images) == 0 {
+		return nil, fmt.Errorf("must specify at least one image")
+	}
+	if removeImage == nil {
+		return nil, fmt.Errorf("image removal function cannot be nil")
+	}
+
+	removed := make([]string, 0, len(options.Images))
+	var removalErrors error
+
+	for _, image := range options.Images {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			removalErrors = errors.Join(removalErrors, ctxErr)
+			break
+		}
+
+		if removeErr := removeImage(ctx, image, options.Force); removeErr != nil {
+			removalErrors = errors.Join(removalErrors, fmt.Errorf("removing image %q: %w", image, removeErr))
+			continue
+		}
+
+		removed = append(removed, image)
+	}
+
+	if len(removed) < len(options.Images) {
+		removalErrors = errors.Join(
+			removalErrors,
+			errors.Join(
+				ErrIncomplete,
+				fmt.Errorf("only %d out of %d images were successfully removed", len(removed), len(options.Images)),
+			),
+		)
+	}
+
+	return removed, removalErrors
+}
+
 type ImageOrchestrator interface {
 	InspectImages
 	BuildImage
 	PullImage
+	RemoveImages
 
 	RuntimeStatusChecker
 }

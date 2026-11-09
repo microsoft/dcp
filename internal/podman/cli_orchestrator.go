@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
@@ -24,7 +23,6 @@ import (
 
 	"github.com/go-logr/logr"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -68,18 +66,14 @@ var (
 	// We allow up to a minute for diagnostic commands to finish as we'd rather wait a bit longer than miss information.
 	diagnosticPodmanCommandTimeout = 1 * time.Minute
 
-	defaultBuildImageTimeout      = 10 * time.Minute
 	defaultPullImageTimeout       = 10 * time.Minute
 	defaultCreateContainerTimeout = 10 * time.Minute
 	defaultRunContainerTimeout    = 10 * time.Minute
 
-	// Cache and synchronization control for checking runtime cachedStatus
-	cachedStatus *containers.ContainerRuntimeStatus
-	// Ensure that only one goroutine is checking the status at a time
-	checkStatusLock = concurrency.NewContextAwareLock()
-	// Mutex to control read/write access to the cached status
-	updateStatus            = &sync.RWMutex{}
-	backgroundStatusUpdates atomic.Int32
+	networkEventResolutionConcurrency = 4
+	networkEventReplayMargin          = time.Second
+
+	errNetworkIDNotCached = errors.New("network ID is not cached")
 )
 
 type PodmanCliOrchestrator struct {
@@ -87,6 +81,21 @@ type PodmanCliOrchestrator struct {
 
 	// Process executor for running Podman commands
 	executor process.Executor
+
+	// Runtime status state is scoped to this orchestrator instance.
+	cachedStatus            *containers.ContainerRuntimeStatus
+	checkStatusLock         *concurrency.ContextAwareLock
+	updateStatus            sync.RWMutex
+	backgroundStatusUpdates atomic.Int32
+
+	// Podman connect/disconnect events identify networks by name, while DCP tracks them by ID.
+	networkIDsLock       sync.Mutex
+	networkIDs           map[string]networkIDCacheEntry
+	networkIDsGeneration uint64
+	networkIDLookups     map[uint64]uint32
+
+	// Limits asynchronous cache-miss resolution without blocking the event scanner.
+	networkEventResolutionSlots chan struct{}
 
 	// Event watcher for container events
 	containerEvtWatcher *pubsub.SubscriptionSet[containers.EventMessage]
@@ -97,18 +106,18 @@ type PodmanCliOrchestrator struct {
 
 func NewPodmanCliOrchestrator(log logr.Logger, executor process.Executor) containers.ContainerOrchestrator {
 	pco := &PodmanCliOrchestrator{
-		log:      log,
-		executor: executor,
+		log:                         log,
+		executor:                    executor,
+		checkStatusLock:             concurrency.NewContextAwareLock(),
+		networkIDs:                  make(map[string]networkIDCacheEntry),
+		networkIDLookups:            make(map[uint64]uint32),
+		networkEventResolutionSlots: make(chan struct{}, networkEventResolutionConcurrency),
 	}
 
 	pco.containerEvtWatcher = pubsub.NewSubscriptionSet(pco.doWatchContainers, context.Background())
 	pco.networkEvtWatcher = pubsub.NewSubscriptionSet(pco.doWatchNetworks, context.Background())
 
 	return pco
-}
-
-func (*PodmanCliOrchestrator) IsDefault() bool {
-	return false
 }
 
 func (*PodmanCliOrchestrator) Name() string {
@@ -121,16 +130,16 @@ func (*PodmanCliOrchestrator) ContainerHost() string {
 
 func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage containers.CachedRuntimeStatusUsage) containers.ContainerRuntimeStatus {
 	// A cached status is already available, return it
-	updateStatus.RLock()
-	if cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
-		defer updateStatus.RUnlock()
-		return *cachedStatus
+	pco.updateStatus.RLock()
+	if pco.cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
+		defer pco.updateStatus.RUnlock()
+		return *pco.cachedStatus
 	}
-	updateStatus.RUnlock()
+	pco.updateStatus.RUnlock()
 
 	if cacheUsage == containers.CachedRuntimeStatusAllowed {
 		// For cached results, only one goroutine should be checking the status at a time
-		if syncErr := checkStatusLock.Lock(ctx); syncErr != nil {
+		if syncErr := pco.checkStatusLock.Lock(ctx); syncErr != nil {
 			// Timed out, assume Podman is not responsive and unavailable
 			return containers.ContainerRuntimeStatus{
 				Installed: false,
@@ -139,29 +148,29 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage co
 			}
 		}
 
-		defer checkStatusLock.Unlock()
+		defer pco.checkStatusLock.Unlock()
 	}
 
-	updateStatus.RLock()
+	pco.updateStatus.RLock()
 	// Check again if the status is available in the cache
-	if cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
-		defer updateStatus.RUnlock()
-		return *cachedStatus
+	if pco.cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
+		defer pco.updateStatus.RUnlock()
+		return *pco.cachedStatus
 	}
-	updateStatus.RUnlock()
+	pco.updateStatus.RUnlock()
 
 	newStatus := pco.getStatus(ctx)
-	updateStatus.Lock()
+	pco.updateStatus.Lock()
 	// Update the cached status
-	cachedStatus = &newStatus
-	updateStatus.Unlock()
+	pco.cachedStatus = &newStatus
+	pco.updateStatus.Unlock()
 
 	return newStatus
 }
 
 // Check the status of the Podman runtime in the background until the context is canceled.
 func (pco *PodmanCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Context) {
-	if !backgroundStatusUpdates.CompareAndSwap(0, 1) {
+	if !pco.backgroundStatusUpdates.CompareAndSwap(0, 1) {
 		return
 	}
 
@@ -170,13 +179,15 @@ func (pco *PodmanCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Cont
 		timer.Stop()
 		for {
 			// Only one goroutine should be checking the status at a time
-			if checkStatusLock.TryLock() {
+			if pco.checkStatusLock.TryLock() {
 				newStatus := pco.getStatus(ctx)
 
-				updateStatus.Lock()
+				pco.updateStatus.Lock()
 				// Update the cached status
-				cachedStatus = &newStatus
-				updateStatus.Unlock()
+				pco.cachedStatus = &newStatus
+				pco.updateStatus.Unlock()
+
+				pco.checkStatusLock.Unlock()
 			}
 
 			// Wait for 5 seconds before checking again
@@ -254,7 +265,12 @@ func (pco *PodmanCliOrchestrator) GetDiagnostics(ctx context.Context) (container
 }
 
 func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
-	cmd := makePodmanCommand("volume", "create", options.Name)
+	args := []string{"volume", "create"}
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
+	}
+	args = append(args, options.Name)
+	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return errors.Join(err, normalizeCliErrors(errBuf, volumeAlreadyExistsErrorMatch.MaxObjects(1)))
@@ -288,6 +304,28 @@ func (pco *PodmanCliOrchestrator) InspectVolumes(ctx context.Context, options co
 	return inspectedVolumes, err
 }
 
+func (pco *PodmanCliOrchestrator) ListVolumes(ctx context.Context, options containers.ListVolumesOptions) ([]containers.ListedVolume, error) {
+	args := []string{"volume", "ls", "--quiet"}
+	for _, label := range options.Filters.LabelFilters {
+		filter := fmt.Sprintf("label=%s", label.Key)
+		if label.Value != "" {
+			filter += "=" + label.Value
+		}
+		args = append(args, "--filter", filter)
+	}
+
+	cmd := makePodmanCommand(args...)
+	outBuf, errBuf, listErr := pco.runBufferedPodmanCommand(ctx, "ListVolumes", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	if listErr != nil {
+		return nil, errors.Join(listErr, normalizeCliErrors(errBuf))
+	}
+
+	names := slices.NonEmpty[byte](slices.Map[[]byte, []byte](bytes.Split(outBuf.Bytes(), osutil.LF()), bytes.TrimSpace))
+	return slices.Map[containers.ListedVolume](names, func(name []byte) containers.ListedVolume {
+		return containers.ListedVolume{Name: string(name)}
+	}), nil
+}
+
 func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
 	if len(options.Volumes) == 0 {
 		return nil, fmt.Errorf("must specify at least one volume")
@@ -318,93 +356,9 @@ func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, options con
 }
 
 func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
-	args := []string{"build"}
-
-	if options.Dockerfile != "" {
-		args = append(args, "-f", options.Dockerfile)
-	}
-
-	// Should base images be updated even if they are already present locally?
-	if options.Pull {
-		args = append(args, "--pull")
-	}
-
-	// If specified, the ID of the image will be written to this file
-	if options.IidFile != "" {
-		args = append(args, "--iidfile", options.IidFile)
-	}
-
-	// Apply all tags specified in the build context to the image
-	for _, tag := range options.Tags {
-		args = append(args, "-t", tag)
-	}
-
-	// Apply all specified build arguments
-	for _, buildArg := range options.Args {
-		if buildArg.Value != "" {
-			args = append(args, "--build-arg", fmt.Sprintf("%s=%s", buildArg.Name, buildArg.Value))
-		} else {
-			args = append(args, "--build-arg", buildArg.Name)
-		}
-	}
-
-	// Secret values that need to be applied to the build command environment
-	secretEnvironment := map[string]string{}
-
-	// Apply all specified build secrets
-	for _, secret := range options.Secrets {
-		switch secret.Type {
-		case apiv1.FileSecret, "":
-			args = append(args, "--secret", fmt.Sprintf("id=%s,src=%s", secret.ID, secret.Source))
-		case apiv1.EnvSecret:
-			if secret.Source != "" {
-				args = append(args, "--secret", fmt.Sprintf("id=%s,env=%s", secret.ID, secret.Source))
-				if secret.Value != "" {
-					secretEnvironment[secret.Source] = secret.Value
-				}
-			} else {
-				args = append(args, "--secret", fmt.Sprintf("id=%s,env=%s", secret.ID, secret.ID))
-				if secret.Value != "" {
-					secretEnvironment[secret.ID] = secret.Value
-				}
-			}
-		}
-	}
-
-	// If a build stage is given, use it
-	if options.Stage != "" {
-		args = append(args, "--target", options.Stage)
-	}
-
-	// Apply any specified labels
-	for _, label := range options.Labels {
-		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
-	}
-
-	// If a target platform is specified, build for that platform
-	if options.Platform != "" {
-		args = append(args, "--platform", options.Platform)
-	}
-
-	// Append the build context argument
-	args = append(args, options.Context)
-
-	cmd := makePodmanCommand(args...)
-
-	// Append secret environment
-	cmd.Env = os.Environ()
-	for secretName, secretValue := range secretEnvironment {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", secretName, secretValue))
-	}
-
-	// Building an image can take a long time to finish, particularly if any base images are not available locally.
-	// Use a much longer timeout than for other commands.
-	if options.Timeout == 0 {
-		options.Timeout = defaultBuildImageTimeout
-	}
-	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "BuildImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
-	if err != nil {
-		return errors.Join(err, normalizeCliErrors(errBuf))
+	errBuf, buildErr := containers.BuildImageImpl(ctx, options, pco)
+	if buildErr != nil {
+		return errors.Join(buildErr, normalizeCliErrors(errBuf))
 	}
 
 	return nil
@@ -435,29 +389,54 @@ func (pco *PodmanCliOrchestrator) InspectImages(ctx context.Context, options con
 	return inspectedImages, err
 }
 
-func (dco *PodmanCliOrchestrator) PullImage(ctx context.Context, options containers.PullImageOptions) (string, error) {
+func (pco *PodmanCliOrchestrator) PullImage(ctx context.Context, options containers.PullImageOptions) (string, error) {
 	if options.Image == "" {
 		return "", fmt.Errorf("must specify an image to pull")
 	}
 
-	args := []string{"image", "pull", "--quiet"}
-	if options.Digest != "" {
-		args = append(args, options.Image+"@"+options.Digest)
-	} else {
-		args = append(args, options.Image)
+	args := []string{"image", "pull"}
+	if options.StdOutStream == nil && options.StdErrStream == nil {
+		args = append(args, "--quiet")
 	}
+	imageReference := options.Image
+	if options.Digest != "" {
+		imageReference += "@" + options.Digest
+	}
+	args = append(args, imageReference)
 
 	cmd := makePodmanCommand(args...)
 	// Pulling large images can take a long time, especially if the image is not available locally and the network is slow.
 	if options.Timeout == 0 {
 		options.Timeout = defaultPullImageTimeout
 	}
-	outBuf, errBuf, err := dco.runBufferedPodmanCommand(ctx, "PullImage", cmd, nil, nil, options.Timeout)
+	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "PullImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
 		return "", errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
 	}
 
-	return asId(outBuf)
+	imageID, inspectErr := containers.InspectPulledImage(ctx, pco, imageReference)
+	if inspectErr != nil {
+		return "", fmt.Errorf("inspect pulled image %q: %w", imageReference, inspectErr)
+	}
+	return imageID, nil
+}
+
+func (pco *PodmanCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {
+	return containers.RemoveImagesSequentially(ctx, options, func(ctx context.Context, image string, force bool) error {
+		args := []string{"image", "rm"}
+		if force {
+			args = append(args, "--force")
+		}
+		args = append(args, image)
+
+		cmd := makePodmanCommand(args...)
+		_, errBuf, removeErr := pco.runBufferedPodmanCommand(ctx, "RemoveImage", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+		if removeErr != nil {
+			return errors.Join(removeErr, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
+		}
+
+		return nil
+	})
 }
 
 func applyCreateContainerOptions(args []string, options containers.CreateContainerOptions) []string {
@@ -465,14 +444,17 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		args = append(args, "--name", options.Name)
 	}
 
-	if options.Network != "" {
-		args = append(args, "--network", options.Network)
-
-		if len(options.NetworkAliases) > 0 {
-			for _, alias := range options.NetworkAliases {
-				args = append(args, "--network-alias", alias)
+	for _, network := range options.Networks {
+		networkArg := network.Name
+		for i, alias := range network.Aliases {
+			if i == 0 {
+				networkArg += ":"
+			} else {
+				networkArg += ","
 			}
+			networkArg += "alias=" + alias
 		}
+		args = append(args, "--network", networkArg)
 	}
 
 	for _, mount := range options.VolumeMounts {
@@ -521,11 +503,11 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		args = append(args, "--env-file", envFile)
 	}
 
-	for _, label := range options.Labels {
-		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
 	}
 
-	if options.RestartPolicy != "" && options.RestartPolicy != apiv1.RestartPolicyNone {
+	if options.RestartPolicy != "" && options.RestartPolicy != containers.RestartPolicyNone {
 		args = append(args, fmt.Sprintf("--restart=%s", options.RestartPolicy))
 	}
 
@@ -533,8 +515,8 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		args = append(args, "--pull", string(options.PullPolicy))
 	}
 
-	if options.Command != "" {
-		args = append(args, "--entrypoint", options.Command)
+	if options.Entrypoint != "" {
+		args = append(args, "--entrypoint", options.Entrypoint)
 	}
 
 	if len(options.Healthcheck.Command) > 0 {
@@ -565,7 +547,7 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		}
 	}
 
-	if options.Terminal != nil {
+	if options.AttachTerminal {
 		// Attach a TTY (-t) and keep STDIN open (-i) if a terminal is requested
 		args = append(args, "-it")
 	}
@@ -582,8 +564,8 @@ func (pco *PodmanCliOrchestrator) CreateContainer(ctx context.Context, options c
 
 	args = append(args, options.Image)
 
-	if len(options.Args) > 0 {
-		args = append(args, options.Args...)
+	if len(options.Command) > 0 {
+		args = append(args, options.Command...)
 	}
 
 	cmd := makePodmanCommand(args...)
@@ -616,8 +598,8 @@ func (pco *PodmanCliOrchestrator) RunContainer(ctx context.Context, options cont
 	args = append(args, "--detach")
 	args = append(args, options.Image)
 
-	if len(options.Args) > 0 {
-		args = append(args, options.Args...)
+	if len(options.Command) > 0 {
+		args = append(args, options.Command...)
 	}
 
 	cmd := makePodmanCommand(args...)
@@ -662,8 +644,9 @@ func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options con
 
 	cmd.Stdout = options.StdOutStream
 	cmd.Stderr = options.StdErrStream
+	cmd.WaitDelay = 2 * time.Second
 
-	exitCh := make(chan int32)
+	exitCh := make(chan int32, 1)
 	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
 		// We only care about the exit code, not the error. The only scenario where we should get an error
 		// is if the context for an exec command is canceled during DCP shutdown, in which case that's expected.
@@ -675,7 +658,7 @@ func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options con
 	}
 
 	pco.log.V(1).Info("Running Podman command", "Command", cmd.String())
-	_, _, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
+	_, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Podman command '%s'", "ExecContainer"))
@@ -697,7 +680,22 @@ func (pco *PodmanCliOrchestrator) AttachContainer(ctx context.Context, options c
 }
 
 func (pco *PodmanCliOrchestrator) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
-	args := []string{"container", "ls", "--no-trunc"}
+	args := applyListContainersOptions([]string{"container", "ls", "--no-trunc"}, options)
+	args = append(args, "--format", "json")
+
+	cmd := makePodmanCommand(args...)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "ListContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	if err != nil {
+		return nil, errors.Join(err, normalizeCliErrors(errBuf))
+	}
+
+	return asObjects(outBuf, unmarshalListedContainer)
+}
+
+func applyListContainersOptions(args []string, options containers.ListContainersOptions) []string {
+	if options.All {
+		args = append(args, "--all")
+	}
 
 	for _, label := range options.Filters.LabelFilters {
 		filter := fmt.Sprintf("label=%s", label.Key)
@@ -708,16 +706,11 @@ func (pco *PodmanCliOrchestrator) ListContainers(ctx context.Context, options co
 
 		args = append(args, "--filter", filter)
 	}
-
-	args = append(args, "--format", "json")
-
-	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "ListContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
-	if err != nil {
-		return nil, errors.Join(err, normalizeCliErrors(errBuf))
+	for _, network := range options.Filters.NetworkFilters {
+		args = append(args, "--filter", fmt.Sprintf("network=%s", network))
 	}
 
-	return asObjects(outBuf, unmarshalListedContainer)
+	return args
 }
 
 func (pco *PodmanCliOrchestrator) InspectContainers(ctx context.Context, options containers.InspectContainersOptions) ([]containers.InspectedContainer, error) {
@@ -833,54 +826,13 @@ func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options conta
 
 	args = append(args, options.Container+":/")
 
-	tarWriter := usvc_io.NewTarWriter()
-
-	certificateHashes := []string{}
-	for _, item := range options.Entries {
-		switch item.Type {
-		case apiv1.FileSystemEntryTypeDir:
-			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addDirectoryErr != nil {
-				return addDirectoryErr
-			}
-		case apiv1.FileSystemEntryTypeSymlink:
-			if addSymlinkErr := containers.AddSymlinkToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addSymlinkErr != nil {
-				if item.ContinueOnError {
-					pco.log.Error(addSymlinkErr, "Failed to add symlink to tar archive, continuing", "SymLink", item)
-				} else {
-					return addSymlinkErr
-				}
-			}
-		case apiv1.FileSystemEntryTypeOpenSSL:
-			hash, addCertErr := containers.AddCertificateToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, certificateHashes, pco.log)
-			if addCertErr != nil {
-				if item.ContinueOnError {
-					pco.log.Error(addCertErr, "Failed to add a certificate to the tar file, but continueOnError is set", "Certificate", item)
-				} else {
-					return addCertErr
-				}
-			}
-
-			// Keep track of the certificate hashes we've added to this directory so that we can deal with the possibility of collisions
-			certificateHashes = append(certificateHashes, hash)
-		default:
-			if addFileErr := containers.AddFileToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addFileErr != nil {
-				if item.ContinueOnError {
-					pco.log.Error(addFileErr, "Failed to add a file to the tar file, but continueOnError is set", "File", item)
-				} else {
-					return addFileErr
-				}
-			}
-		}
+	buffer, archiveErr := containers.CreateFilesArchive(ctx, pco.log, options)
+	if archiveErr != nil {
+		return archiveErr
 	}
-
-	if tarWriter.Empty() {
+	if buffer == nil {
 		// Can happen if all ContinueOnError items fail
 		return nil
-	}
-
-	buffer, bufferErr := tarWriter.Buffer()
-	if bufferErr != nil {
-		return bufferErr
 	}
 
 	var cmd *exec.Cmd
@@ -959,12 +911,22 @@ func (pco *PodmanCliOrchestrator) CreateNetwork(ctx context.Context, options con
 	args = append(args, options.Name)
 
 	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return "", errors.Join(err, normalizeCliErrors(errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1)))
 	}
 
-	return asId(outBuf)
+	inspected, inspectErr := pco.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{options.Name},
+	})
+	if inspectErr != nil {
+		return "", fmt.Errorf("inspecting newly created network %q: %w", options.Name, inspectErr)
+	}
+	if len(inspected) != 1 || inspected[0].Id == "" {
+		return "", fmt.Errorf("newly created network %q did not report an ID", options.Name)
+	}
+
+	return inspected[0].Id, nil
 }
 
 func (pco *PodmanCliOrchestrator) RemoveNetworks(ctx context.Context, options containers.RemoveNetworksOptions) ([]string, error) {
@@ -995,8 +957,28 @@ func (pco *PodmanCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 }
 
 func (pco *PodmanCliOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
+	return pco.inspectNetworks(ctx, options, true)
+}
+
+func (pco *PodmanCliOrchestrator) inspectNetworks(
+	ctx context.Context,
+	options containers.InspectNetworksOptions,
+	rememberIDs bool,
+) ([]containers.InspectedNetwork, error) {
 	if len(options.Networks) == 0 {
 		return nil, fmt.Errorf("must specify at least one network")
+	}
+
+	var lookup networkIDLookup
+	lookupActive := false
+	if rememberIDs {
+		lookup = pco.beginNetworkIDLookup()
+		lookupActive = true
+		defer func() {
+			if lookupActive {
+				pco.cancelNetworkIDLookup(lookup)
+			}
+		}()
 	}
 
 	args := []string{"network", "inspect", "--format", "json"}
@@ -1015,6 +997,10 @@ func (pco *PodmanCliOrchestrator) InspectNetworks(ctx context.Context, options c
 		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all networks were inspected, expected %d but got %d", len(options.Networks), len(inspectedNetworks))))
 	}
 
+	if rememberIDs {
+		pco.rememberNetworkIDs(lookup, inspectedNetworks)
+		lookupActive = false
+	}
 	return inspectedNetworks, err
 }
 
@@ -1055,6 +1041,14 @@ func (pco *PodmanCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 }
 
 func (pco *PodmanCliOrchestrator) ListNetworks(ctx context.Context, options containers.ListNetworksOptions) ([]containers.ListedNetwork, error) {
+	lookup := pco.beginNetworkIDLookup()
+	lookupActive := true
+	defer func() {
+		if lookupActive {
+			pco.cancelNetworkIDLookup(lookup)
+		}
+	}()
+
 	args := []string{"network", "ls"}
 
 	for _, label := range options.Filters.LabelFilters {
@@ -1076,11 +1070,18 @@ func (pco *PodmanCliOrchestrator) ListNetworks(ctx context.Context, options cont
 		return nil, errors.Join(err, normalizeCliErrors(errBuf))
 	}
 
-	return asObjects(outBuf, unmarshalListedNetwork)
+	networks, unmarshalErr := asObjects(outBuf, unmarshalListedNetwork)
+	pco.rememberListedNetworkIDs(lookup, networks)
+	lookupActive = false
+	return networks, unmarshalErr
 }
 
 func (pco *PodmanCliOrchestrator) DefaultNetworkName() string {
 	return "podman"
+}
+
+func (*PodmanCliOrchestrator) IsBuiltInNetwork(networkName string) bool {
+	return networkName == "podman"
 }
 
 func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, ss *pubsub.SubscriptionSet[containers.EventMessage]) {
@@ -1120,13 +1121,13 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 	// Container events are delivered on best-effort basis.
 	// If the "podman events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone, nil)
+	handle, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone, nil)
 	if err != nil {
 		pco.log.Error(err, "Could not execute 'podman events' command; container events unavailable")
 		return
 	}
 
-	dcpproc.RunProcessWatcher(pco.executor, pid, startTime, pco.log)
+	dcpproc.RunProcessWatcher(pco.executor, handle, pco.log)
 
 	startWaitForProcessExit()
 
@@ -1138,12 +1139,18 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		pco.log.V(1).Info("Stopping 'podman events' command", "PID", pid)
+		pco.log.V(1).Info("Stopping 'podman events' command", "PID", handle.Pid)
 	}
 }
 
 func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss *pubsub.SubscriptionSet[containers.EventMessage]) {
-	args := []string{"events", "--filter", "type=network", "--format", "json"}
+	prewarmStart := time.Now()
+	if _, listErr := pco.ListNetworks(watcherCtx, containers.ListNetworksOptions{}); listErr != nil {
+		pco.log.Error(listErr, "Could not pre-warm network ID cache before watching Podman events")
+	}
+
+	replayDuration := time.Since(prewarmStart) + networkEventReplayMargin
+	args := podmanNetworkEventsArgs(replayDuration)
 	cmd := makePodmanCommand(args...)
 
 	reader, writer := usvc_io.NewBufferedPipe()
@@ -1159,13 +1166,44 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 				return // Cancellation has been requested, so we should stop scanning events
 			}
 
-			evtData := scanner.Text()
-			var evtMessage containers.EventMessage
-			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
+			var rawEvent podmanEventMessage
+			unmarshalErr := json.Unmarshal(scanner.Bytes(), &rawEvent)
 			if unmarshalErr != nil {
-				pco.log.Error(unmarshalErr, "Network event data could not be parsed", "EventData", evtData)
+				pco.log.Error(unmarshalErr, "Network event data could not be parsed", "EventData", scanner.Text())
 			} else {
-				ss.Notify(evtMessage)
+				eventMessage, normalizeErr, resolution := pco.normalizeNetworkEventMessage(&rawEvent)
+				if normalizeErr != nil {
+					if errors.Is(normalizeErr, errNetworkIDNotCached) {
+						eventData := scanner.Text()
+						if resolution == nil {
+							pco.log.Error(normalizeErr, "Network event cache miss did not include resolution state", "EventData", eventData)
+							continue
+						}
+						select {
+						case pco.networkEventResolutionSlots <- struct{}{}:
+							go pco.resolveAndNotifyNetworkEvent(
+								watcherCtx,
+								ss,
+								rawEvent,
+								eventData,
+								*resolution,
+							)
+						default:
+							pco.cancelNetworkIDResolution(*resolution)
+							pco.log.Error(
+								normalizeErr,
+								"Network event ID resolution is saturated; delivering unresolved event",
+								"EventData",
+								eventData,
+							)
+							ss.Notify(eventMessage)
+						}
+						continue
+					}
+					pco.log.Error(normalizeErr, "Network event data could not be normalized", "EventData", scanner.Text())
+					continue
+				}
+				ss.Notify(eventMessage)
 			}
 		}
 
@@ -1180,13 +1218,13 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	// Container events are delivered on best-effort basis.
 	// If the "podman events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone, nil)
+	handle, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone, nil)
 	if err != nil {
 		pco.log.Error(err, "Could not execute 'podman events' command; network events unavailable")
 		return
 	}
 
-	dcpproc.RunProcessWatcher(pco.executor, pid, startTime, pco.log)
+	dcpproc.RunProcessWatcher(pco.executor, handle, pco.log)
 
 	startWaitForProcessExit()
 
@@ -1198,7 +1236,16 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		pco.log.V(1).Info("Stopping 'podman events' command", "PID", pid)
+		pco.log.V(1).Info("Stopping 'podman events' command", "PID", handle.Pid)
+	}
+}
+
+func podmanNetworkEventsArgs(replayDuration time.Duration) []string {
+	return []string{
+		"events",
+		"--since", replayDuration.String(),
+		"--filter", "type=network",
+		"--format", "json",
 	}
 }
 
@@ -1233,14 +1280,14 @@ func (pco *PodmanCliOrchestrator) streamPodmanCommand(
 	}
 
 	pco.log.V(1).Info("Running podman command", "Command", cmd.String())
-	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
+	handle, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start podman command '%s'", commandName))
 	}
 
 	if opts&streamCommandOptionUseWatcher != 0 {
-		dcpproc.RunProcessWatcher(pco.executor, pid, startTime, pco.log)
+		dcpproc.RunProcessWatcher(pco.executor, handle, pco.log)
 	}
 
 	startWaitForProcessExit()
@@ -1409,7 +1456,7 @@ func unmarshalImage(pii *podmanInspectedImage, ic *containers.InspectedImage) er
 
 func unmarshalListedContainer(plc *podmanListedContainer, lc *containers.ListedContainer) error {
 	lc.Id = plc.Id
-	if len(plc.Names) == 0 {
+	if len(plc.Names) > 0 {
 		lc.Name = plc.Names[0]
 	}
 	lc.Image = plc.Image
@@ -1433,14 +1480,14 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 	ic.Health = pci.State.Health
 	ic.Healthcheck = pci.Config.Healthcheck.Test
 
-	ic.Mounts = make([]apiv1.VolumeMount, len(pci.Mounts))
+	ic.Mounts = make([]containers.VolumeMount, len(pci.Mounts))
 	for i, mount := range pci.Mounts {
 		source := mount.Source
-		if mount.Type == apiv1.NamedVolumeMount {
+		if mount.Type == containers.NamedVolumeMount {
 			source = mount.Name
 		}
 
-		ic.Mounts[i] = apiv1.VolumeMount{
+		ic.Mounts[i] = containers.VolumeMount{
 			Type:     mount.Type,
 			Source:   source,
 			Target:   mount.Destination,
@@ -1494,6 +1541,7 @@ func unmarshalNetwork(pcn *podmanInspectedNetwork, net *containers.InspectedNetw
 	net.CreatedAt = pcn.Created
 	net.Driver = pcn.Driver
 	net.Scope = "local"
+	net.IPv6 = pcn.EnableIPv6
 	net.Labels = pcn.Labels
 	net.Attachable = true
 	net.Internal = pcn.Internal
@@ -1615,11 +1663,11 @@ type podmanInspectedContainerState struct {
 }
 
 type podmanInspectedContainerMount struct {
-	Type        apiv1.VolumeMountType `json:"Type,omitempty"`
-	Name        string                `json:"Name,omitempty"`
-	Source      string                `json:"Source,omitempty"`
-	Destination string                `json:"Destination,omitempty"`
-	ReadWrite   bool                  `json:"RW,omitempty"`
+	Type        containers.VolumeMountType `json:"Type,omitempty"`
+	Name        string                     `json:"Name,omitempty"`
+	Source      string                     `json:"Source,omitempty"`
+	Destination string                     `json:"Destination,omitempty"`
+	ReadWrite   bool                       `json:"RW,omitempty"`
 }
 
 type podmanInspectedContainerNetworkSettings struct {
@@ -1684,33 +1732,350 @@ type podmanEventMessage struct {
 	// The ID of the resource triggering the event
 	ID string `json:"ID,omitempty"`
 
+	// The name of the resource triggering the event.
+	Name string `json:"Name,omitempty"`
+
+	// The network associated with a network connect or disconnect event.
+	Network string `json:"Network,omitempty"`
+
 	// The status change that triggered the event
 	Action containers.EventAction `json:"Status"`
+
+	Attributes map[string]string `json:"Attributes,omitempty"`
 }
 
 func (pem *podmanEventMessage) ToEventMessage() containers.EventMessage {
+	attributes := make(map[string]string, len(pem.Attributes)+3)
+	for key, value := range pem.Attributes {
+		attributes[key] = value
+	}
+	if pem.Name != "" {
+		attributes["name"] = pem.Name
+	}
+	if pem.Network != "" {
+		attributes["network"] = pem.Network
+	}
+
+	action := pem.Action
+	if action == containers.EventActionRemove {
+		action = containers.EventActionDestroy
+	}
+
+	actorID := pem.ID
 	if pem.Source == containers.EventSourceNetwork {
-		// Podman only returns network events for containers, not the actual networks
-		return containers.EventMessage{
-			Source: pem.Source,
-			Action: pem.Action,
-			Actor: containers.EventActor{
-				ID: pem.ID,
-			},
-			Attributes: map[string]string{
-				"container": pem.ID,
-			},
+		if pem.Action == containers.EventActionConnect || pem.Action == containers.EventActionDisconnect {
+			attributes["container"] = pem.ID
+			if pem.Network != "" {
+				actorID = pem.Network
+			}
+		} else if actorID == "" {
+			if pem.Network != "" {
+				actorID = pem.Network
+			} else {
+				actorID = pem.Name
+			}
 		}
 	}
 
 	return containers.EventMessage{
 		Source: pem.Source,
-		Action: pem.Action,
+		Action: action,
 		Actor: containers.EventActor{
-			ID: pem.ID,
+			ID: actorID,
 		},
-		Attributes: make(map[string]string),
+		Attributes: attributes,
 	}
+}
+
+func (pco *PodmanCliOrchestrator) toNetworkEventMessage(
+	event *podmanEventMessage,
+) (containers.EventMessage, error) {
+	message, normalizeErr, resolution := pco.normalizeNetworkEventMessage(event)
+	if resolution != nil {
+		pco.cancelNetworkIDResolution(*resolution)
+	}
+	return message, normalizeErr
+}
+
+type networkIDCacheEntry struct {
+	id         string
+	generation uint64
+}
+
+type networkIDLookup struct {
+	generation uint64
+}
+
+type networkIDResolution struct {
+	networkName string
+	lookup      networkIDLookup
+}
+
+func (pco *PodmanCliOrchestrator) normalizeNetworkEventMessage(
+	event *podmanEventMessage,
+) (containers.EventMessage, error, *networkIDResolution) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	message := event.ToEventMessage()
+	if event.Source != containers.EventSourceNetwork {
+		return message, nil, nil
+	}
+
+	networkName := event.Network
+	if networkName == "" {
+		networkName = event.Name
+	}
+	if networkName == "" {
+		return message, nil, nil
+	}
+
+	switch message.Action {
+	case containers.EventActionCreate:
+		entry := pco.networkIDs[networkName]
+		pco.networkIDsGeneration++
+		entry.id = event.ID
+		entry.generation = pco.networkIDsGeneration
+		pco.storeNetworkIDEntryLocked(networkName, entry)
+		return message, nil, nil
+	case containers.EventActionDestroy:
+		entry := pco.networkIDs[networkName]
+		pco.networkIDsGeneration++
+		if message.Actor.ID == "" && entry.id != "" {
+			message.Actor.ID = entry.id
+		}
+		entry.id = ""
+		entry.generation = pco.networkIDsGeneration
+		pco.storeNetworkIDEntryLocked(networkName, entry)
+		return message, nil, nil
+	case containers.EventActionConnect, containers.EventActionDisconnect:
+		entry := pco.networkIDs[networkName]
+		if entry.id == "" {
+			resolution := &networkIDResolution{
+				networkName: networkName,
+				lookup:      pco.beginNetworkIDLookupLocked(),
+			}
+			return message, fmt.Errorf("%w: %q", errNetworkIDNotCached, networkName), resolution
+		}
+		message.Actor.ID = entry.id
+	}
+
+	return message, nil, nil
+}
+
+func (pco *PodmanCliOrchestrator) resolveAndNotifyNetworkEvent(
+	ctx context.Context,
+	subscriptions *pubsub.SubscriptionSet[containers.EventMessage],
+	event podmanEventMessage,
+	eventData string,
+	resolution networkIDResolution,
+) {
+	defer func() {
+		<-pco.networkEventResolutionSlots
+	}()
+
+	message, resolveErr := pco.resolveNetworkEventMessage(ctx, &event, resolution)
+	if resolveErr != nil {
+		if ctx.Err() == nil {
+			pco.log.Error(resolveErr, "Network event data could not be normalized", "EventData", eventData)
+		}
+	}
+	if ctx.Err() == nil {
+		subscriptions.Notify(message)
+	}
+}
+
+func (pco *PodmanCliOrchestrator) resolveNetworkEventMessage(
+	ctx context.Context,
+	event *podmanEventMessage,
+	resolution networkIDResolution,
+) (containers.EventMessage, error) {
+	resolutionCompleted := false
+	defer func() {
+		if !resolutionCompleted {
+			pco.cancelNetworkIDResolution(resolution)
+		}
+	}()
+
+	networkName := event.Network
+	if networkName == "" {
+		networkName = event.Name
+	}
+	if networkName == "" {
+		return event.ToEventMessage(), fmt.Errorf("network event does not identify a network")
+	}
+
+	inspected, inspectErr := pco.inspectNetworks(
+		ctx,
+		containers.InspectNetworksOptions{Networks: []string{networkName}},
+		false,
+	)
+	if inspectErr != nil {
+		return event.ToEventMessage(), fmt.Errorf("resolving network event name %q to an ID: %w", networkName, inspectErr)
+	}
+	if len(inspected) != 1 || inspected[0].Id == "" {
+		return event.ToEventMessage(), fmt.Errorf("resolving network event name %q returned no network ID", networkName)
+	}
+
+	resolvedNetworkID, accepted := pco.completeNetworkIDResolution(resolution, inspected[0].Id)
+	resolutionCompleted = true
+	if !accepted {
+		return event.ToEventMessage(), fmt.Errorf(
+			"network event name %q was resolved after the network cache changed",
+			networkName,
+		)
+	}
+
+	message := event.ToEventMessage()
+	message.Actor.ID = resolvedNetworkID
+	return message, nil
+}
+
+func (pco *PodmanCliOrchestrator) rememberNetworkIDs(lookup networkIDLookup, networks []containers.InspectedNetwork) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	for _, network := range networks {
+		if network.Name != "" && network.Id != "" {
+			pco.rememberNetworkIDLookupResultLocked(lookup, network.Name, network.Id)
+		}
+	}
+	pco.finishNetworkIDLookupLocked(lookup)
+}
+
+func (pco *PodmanCliOrchestrator) rememberListedNetworkIDs(
+	lookup networkIDLookup,
+	networks []containers.ListedNetwork,
+) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	for _, network := range networks {
+		if network.Name != "" && network.ID != "" {
+			pco.rememberNetworkIDLookupResultLocked(lookup, network.Name, network.ID)
+		}
+	}
+	pco.finishNetworkIDLookupLocked(lookup)
+}
+
+func (pco *PodmanCliOrchestrator) rememberNetworkID(networkName string, networkID string) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+	pco.rememberNetworkIDLocked(networkName, networkID)
+}
+
+func (pco *PodmanCliOrchestrator) rememberNetworkIDLocked(networkName string, networkID string) {
+	entry := pco.networkIDs[networkName]
+	if entry.id == networkID {
+		return
+	}
+	entry.id = networkID
+	pco.networkIDsGeneration++
+	entry.generation = pco.networkIDsGeneration
+	pco.networkIDs[networkName] = entry
+}
+
+func (pco *PodmanCliOrchestrator) beginNetworkIDLookup() networkIDLookup {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	return pco.beginNetworkIDLookupLocked()
+}
+
+func (pco *PodmanCliOrchestrator) beginNetworkIDLookupLocked() networkIDLookup {
+	lookup := networkIDLookup{generation: pco.networkIDsGeneration}
+	if pco.networkIDLookups == nil {
+		pco.networkIDLookups = make(map[uint64]uint32)
+	}
+	pco.networkIDLookups[lookup.generation]++
+	return lookup
+}
+
+func (pco *PodmanCliOrchestrator) rememberNetworkIDLookupResultLocked(
+	lookup networkIDLookup,
+	networkName string,
+	networkID string,
+) (string, bool) {
+	entry := pco.networkIDs[networkName]
+	if entry.generation > lookup.generation {
+		return entry.id, entry.id != "" && entry.id == networkID
+	}
+	if entry.id == networkID {
+		return entry.id, true
+	}
+
+	pco.networkIDsGeneration++
+	entry.id = networkID
+	entry.generation = pco.networkIDsGeneration
+	pco.networkIDs[networkName] = entry
+	return entry.id, true
+}
+
+func (pco *PodmanCliOrchestrator) storeNetworkIDEntryLocked(networkName string, entry networkIDCacheEntry) {
+	if entry.id == "" && !pco.networkIDEntryNeededLocked(entry) {
+		delete(pco.networkIDs, networkName)
+		return
+	}
+	pco.networkIDs[networkName] = entry
+}
+
+func (pco *PodmanCliOrchestrator) networkIDEntryNeededLocked(entry networkIDCacheEntry) bool {
+	for lookupGeneration := range pco.networkIDLookups {
+		if lookupGeneration < entry.generation {
+			return true
+		}
+	}
+	return false
+}
+
+func (pco *PodmanCliOrchestrator) finishNetworkIDLookupLocked(lookup networkIDLookup) {
+	activeCount := pco.networkIDLookups[lookup.generation]
+	if activeCount <= 1 {
+		delete(pco.networkIDLookups, lookup.generation)
+	} else {
+		pco.networkIDLookups[lookup.generation] = activeCount - 1
+	}
+
+	for networkName, entry := range pco.networkIDs {
+		if entry.id == "" && !pco.networkIDEntryNeededLocked(entry) {
+			delete(pco.networkIDs, networkName)
+		}
+	}
+}
+
+func (pco *PodmanCliOrchestrator) cachedNetworkID(networkName string) (string, bool) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	entry, found := pco.networkIDs[networkName]
+	return entry.id, found && entry.id != ""
+}
+
+func (pco *PodmanCliOrchestrator) cancelNetworkIDLookup(lookup networkIDLookup) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	pco.finishNetworkIDLookupLocked(lookup)
+}
+
+func (pco *PodmanCliOrchestrator) cancelNetworkIDResolution(resolution networkIDResolution) {
+	pco.cancelNetworkIDLookup(resolution.lookup)
+}
+
+func (pco *PodmanCliOrchestrator) completeNetworkIDResolution(
+	resolution networkIDResolution,
+	resolvedNetworkID string,
+) (string, bool) {
+	pco.networkIDsLock.Lock()
+	defer pco.networkIDsLock.Unlock()
+
+	networkID, accepted := pco.rememberNetworkIDLookupResultLocked(
+		resolution.lookup,
+		resolution.networkName,
+		resolvedNetworkID,
+	)
+	pco.finishNetworkIDLookupLocked(resolution.lookup)
+	return networkID, accepted
 }
 
 func normalizeCliErrors(errBuf *bytes.Buffer, errorMatches ...containers.ErrorMatch) error {

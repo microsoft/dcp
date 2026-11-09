@@ -19,8 +19,11 @@ type TerminalSocketMode string
 
 const (
 	// TerminalSocketModeListen means DCP listens on the socket and the client connects to it.
+	// In this mode DCP owns the socket file: it creates the file and unlinks it when the terminal
+	// is torn down. If a file already exists at the path, DCP refuses to bind and returns an error.
 	TerminalSocketModeListen TerminalSocketMode = "listen"
 	// TerminalSocketModeConnect means the client listens on the socket and DCP connects to it.
+	// In this mode the peer owns the socket file; DCP never creates or removes it.
 	TerminalSocketModeConnect TerminalSocketMode = "connect"
 )
 
@@ -49,13 +52,19 @@ func (m TerminalSocketMode) Normalized() TerminalSocketMode {
 //
 // +k8s:openapi-gen=true
 type TerminalSpec struct {
-	// UDSPath is the Unix Domain Socket path used for the HMP v1 client connection.
-	// Required.
+	// Unix Domain Socket path used for the HMP v1 client connection.
+	// In "listen" mode UDSPath is optional: when empty, DCP chooses a unique socket path in the
+	// session/temp folder and reports the actual path in the resource Status.
+	// DCP owns the socket file in this mode (creates it and removes it on teardown); when UDSPath
+	// is provided it must not already exist, as DCP will not reuse or remove a pre-existing file.
+	// In "connect" mode UDSPath is required and refers to a socket the peer is listening on.
 	UDSPath string `json:"udsPath,omitempty"`
 
 	// SocketMode selects how DCP establishes the HMP v1 connection over UDSPath.
-	// "listen" (the default) means DCP listens on the socket and the client connects to it.
-	// "connect" means the client listens on the socket and DCP connects to it.
+	// "listen" (the default) means DCP listens on the socket and the client connects to it;
+	// DCP owns the socket file (creating and removing it).
+	// "connect" means the client listens on the
+	// socket (which it owns) and DCP connects to it.
 	// The terminal data flow is identical in both modes; only connection establishment differs.
 	// +kubebuilder:default:=listen
 	SocketMode TerminalSocketMode `json:"socketMode,omitempty"`
@@ -91,8 +100,9 @@ func (ts *TerminalSpec) Validate(specPath *field.Path) field.ErrorList {
 	if ts == nil {
 		return errorList
 	}
-	if ts.UDSPath == "" {
-		errorList = append(errorList, field.Invalid(specPath.Child("udsPath"), ts.UDSPath, "udsPath is required."))
+	if ts.UDSPath == "" && ts.SocketMode.Normalized() == TerminalSocketModeConnect {
+		errorList = append(errorList, field.Invalid(specPath.Child("udsPath"), ts.UDSPath,
+			"udsPath is required in \"connect\" socket mode."))
 	}
 	switch ts.SocketMode {
 	case "", TerminalSocketModeListen, TerminalSocketModeConnect:

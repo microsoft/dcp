@@ -7,12 +7,12 @@ package controllers
 
 import (
 	"context"
-	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/statestore"
 
 	"github.com/microsoft/dcp/pkg/process"
 )
@@ -48,24 +48,34 @@ type ExecutableRunner interface {
 	ReleaseRun(ctx context.Context, runID RunID, log logr.Logger) error
 }
 
-type ExecutableRunAdoptionInfo struct {
-	RunID               RunID
-	Pid                 process.Pid_t
-	ProcessIdentityTime time.Time
-	StdOutFile          string
-	StdErrFile          string
-	CommandInfo         string
-}
-
 type PersistentExecutableRunner interface {
 	ExecutableRunner
 
-	// Adopts a persistent run that was started by a previous DCP controller instance.
+	// Adopts a persistent process record for controller-side tracking.
 	AdoptRun(
 		ctx context.Context,
-		run ExecutableRunAdoptionInfo,
+		exe *apiv1.Executable,
+		record *statestore.PersistentProcessRecord,
 		runChangeHandler RunChangeHandler,
 		log logr.Logger,
+	) error
+
+	// Stops the process referenced by a persistent process record without adopting it.
+	StopPersistentProcess(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error
+
+	// Checks that the process associated with a persistent run is running.
+	CheckProcessRunning(handle process.ProcessHandle) error
+}
+
+// ExecutableOutputCleanupRunner coordinates output deletion with runner-owned file handles.
+type ExecutableOutputCleanupRunner interface {
+	// DeleteRunOutput removes the supplied output files immediately when possible, or marks them
+	// for removal after the runner closes any handles it still owns. Repeated calls must be safe.
+	DeleteRunOutput(
+		ctx context.Context,
+		runID RunID,
+		stdOutPath string,
+		stdErrPath string,
 	) error
 }
 

@@ -13,9 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +23,6 @@ import (
 
 	"github.com/go-logr/logr"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -38,13 +37,14 @@ import (
 )
 
 var (
-	volumeNotFoundRegEx        = regexp.MustCompile(`(?i)no such volume`)
+	volumeNotFoundRegEx        = regexp.MustCompile(`(?i)(no such volume|volume (.*) not found)`)
 	networkNotFoundRegEx       = regexp.MustCompile(`(?i)network (.*) not found`)
 	containerNotFoundRegEx     = regexp.MustCompile(`(?i)no such container`)
 	networkAlreadyExistsRegEx  = regexp.MustCompile(`(?i)network with name (.*) already exists`)
 	endpointAlreadyExistsRegEx = regexp.MustCompile(`(?i)endpoint with (.*) already exists in network`)
 	networkSubnetPoolFullRegEx = regexp.MustCompile(`(?i)could not find an available, non-overlapping (.*) address pool`)
 	dockerNotRunningRegEx      = regexp.MustCompile(`(?i)error during connect:`)
+	dockerVersionRegEx         = regexp.MustCompile(`(?i)^Docker version\s+([0-9]+)\.([0-9]+)\.([0-9]+)(?:[^\s,]*)`)
 	volumeInUseRegEx           = regexp.MustCompile(`(?i)volume is in use`)
 	imageNotFoundRegEx         = regexp.MustCompile(`(?i)(not found|no such image)`)
 
@@ -65,25 +65,52 @@ var (
 	// We allow up to a minute for diagnostic commands to finish as we'd rather wait a bit longer than miss information.
 	diagnosticDockerCommandTimeout = 1 * time.Minute
 
-	defaultBuildImageTimeout      = 10 * time.Minute
 	defaultPullImageTimeout       = 10 * time.Minute
 	defaultCreateContainerTimeout = 10 * time.Minute
 	defaultRunContainerTimeout    = 10 * time.Minute
 
-	// Cache and synchronization control for checking runtime cachedStatus
-	cachedStatus *containers.ContainerRuntimeStatus
-	// Ensure that only one goroutine is checking the status at a time
-	checkStatusLock = concurrency.NewContextAwareLock()
-	// Mutex to control read/write access to the cached status
-	updateStatus            = &sync.RWMutex{}
-	backgroundStatusUpdates atomic.Int32
+	errInvalidDockerVersionOutput = fmt.Errorf("invalid Docker CLI version output")
+
+	minimumSupportedDockerCliVersion = dockerCliVersion{
+		major: 25,
+		minor: 0,
+		patch: 0,
+	}
 )
+
+type dockerCliVersion struct {
+	major int
+	minor int
+	patch int
+}
+
+func (v dockerCliVersion) String() string {
+	return fmt.Sprintf("%d.%d.%d", v.major, v.minor, v.patch)
+}
+
+func (v dockerCliVersion) isBefore(other dockerCliVersion) bool {
+	if v.major != other.major {
+		return v.major < other.major
+	}
+
+	if v.minor != other.minor {
+		return v.minor < other.minor
+	}
+
+	return v.patch < other.patch
+}
 
 type DockerCliOrchestrator struct {
 	log logr.Logger
 
 	// Process executor for running Docker commands
 	executor process.Executor
+
+	// Runtime status state is scoped to this orchestrator instance.
+	cachedStatus            *containers.ContainerRuntimeStatus
+	checkStatusLock         *concurrency.ContextAwareLock
+	updateStatus            sync.RWMutex
+	backgroundStatusUpdates atomic.Int32
 
 	// Event watcher for container events
 	containerEvtWatcher *pubsub.SubscriptionSet[containers.EventMessage]
@@ -94,18 +121,15 @@ type DockerCliOrchestrator struct {
 
 func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) containers.ContainerOrchestrator {
 	dco := &DockerCliOrchestrator{
-		log:      log,
-		executor: executor,
+		log:             log,
+		executor:        executor,
+		checkStatusLock: concurrency.NewContextAwareLock(),
 	}
 
 	dco.containerEvtWatcher = pubsub.NewSubscriptionSet(dco.doWatchContainers, context.Background())
 	dco.networkEvtWatcher = pubsub.NewSubscriptionSet(dco.doWatchNetworks, context.Background())
 
 	return dco
-}
-
-func (*DockerCliOrchestrator) IsDefault() bool {
-	return true
 }
 
 func (*DockerCliOrchestrator) Name() string {
@@ -118,16 +142,16 @@ func (*DockerCliOrchestrator) ContainerHost() string {
 
 func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage containers.CachedRuntimeStatusUsage) containers.ContainerRuntimeStatus {
 	// A cached status is already available, return it
-	updateStatus.RLock()
-	if cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
-		defer updateStatus.RUnlock()
-		return *cachedStatus
+	dco.updateStatus.RLock()
+	if dco.cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
+		defer dco.updateStatus.RUnlock()
+		return *dco.cachedStatus
 	}
-	updateStatus.RUnlock()
+	dco.updateStatus.RUnlock()
 
 	if cacheUsage == containers.CachedRuntimeStatusAllowed {
 		// For cached results, only one goroutine should be checking the status at a time
-		if syncErr := checkStatusLock.Lock(ctx); syncErr != nil {
+		if syncErr := dco.checkStatusLock.Lock(ctx); syncErr != nil {
 			// Timed out, assume Docker is not responsive and unavailable
 			return containers.ContainerRuntimeStatus{
 				Installed: false,
@@ -136,30 +160,30 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context, cacheUsage co
 			}
 		}
 
-		defer checkStatusLock.Unlock()
+		defer dco.checkStatusLock.Unlock()
 	}
 
-	updateStatus.RLock()
+	dco.updateStatus.RLock()
 	// Check again if the status is available in the cache
-	if cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
-		defer updateStatus.RUnlock()
-		return *cachedStatus
+	if dco.cachedStatus != nil && cacheUsage == containers.CachedRuntimeStatusAllowed {
+		defer dco.updateStatus.RUnlock()
+		return *dco.cachedStatus
 	}
-	updateStatus.RUnlock()
+	dco.updateStatus.RUnlock()
 
 	newStatus := dco.getStatus(ctx)
 
-	updateStatus.Lock()
+	dco.updateStatus.Lock()
 	// Update the cached status
-	cachedStatus = &newStatus
-	updateStatus.Unlock()
+	dco.cachedStatus = &newStatus
+	dco.updateStatus.Unlock()
 
 	return newStatus
 }
 
 // Check the status of the Docker runtime in the background until the context is canceled.
 func (dco *DockerCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Context) {
-	if !backgroundStatusUpdates.CompareAndSwap(0, 1) {
+	if !dco.backgroundStatusUpdates.CompareAndSwap(0, 1) {
 		return
 	}
 
@@ -168,15 +192,15 @@ func (dco *DockerCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Cont
 		timer.Stop()
 		for {
 			// Only one goroutine should be checking the status at a time
-			if checkStatusLock.TryLock() {
+			if dco.checkStatusLock.TryLock() {
 				newStatus := dco.getStatus(ctx)
 
-				updateStatus.Lock()
+				dco.updateStatus.Lock()
 				// Update the cached status
-				cachedStatus = &newStatus
-				updateStatus.Unlock()
+				dco.cachedStatus = &newStatus
+				dco.updateStatus.Unlock()
 
-				checkStatusLock.Unlock()
+				dco.checkStatusLock.Unlock()
 			}
 
 			// Wait for 5 seconds before checking again
@@ -193,6 +217,37 @@ func (dco *DockerCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Cont
 }
 
 func (dco *DockerCliOrchestrator) getStatus(ctx context.Context) containers.ContainerRuntimeStatus {
+	versionErr := dco.ensureSupportedDockerCliVersion(ctx)
+	if errors.Is(versionErr, exec.ErrNotFound) {
+		if unwrapErr := errors.Unwrap(versionErr); errors.Is(unwrapErr, exec.ErrNotFound) {
+			versionErr = unwrapErr
+		}
+
+		return containers.ContainerRuntimeStatus{
+			Installed: false,
+			Running:   false,
+			Error:     versionErr.Error(),
+		}
+	} else if errors.Is(versionErr, context.DeadlineExceeded) {
+		return containers.ContainerRuntimeStatus{
+			Installed: true,
+			Running:   false,
+			Error:     "Docker CLI timed out while checking version. Ensure Docker CLI is functioning correctly and try again.",
+		}
+	} else if errors.Is(versionErr, errInvalidDockerVersionOutput) {
+		return containers.ContainerRuntimeStatus{
+			Installed: false,
+			Running:   false,
+			Error:     "Output from Docker CLI didn't match the expected format. The Docker CLI found on your PATH may not be a valid Docker installation.",
+		}
+	} else if versionErr != nil {
+		return containers.ContainerRuntimeStatus{
+			Installed: true,
+			Running:   false,
+			Error:     versionErr.Error(),
+		}
+	}
+
 	// Docker always includes default networks and formats its response in a consistent way, so we can use this to ensure we're talking to Docker
 	// and not a symlinked runtime like Podman.
 	_, err := dco.ListNetworks(ctx, containers.ListNetworksOptions{})
@@ -244,6 +299,59 @@ func (dco *DockerCliOrchestrator) getStatus(ctx context.Context) containers.Cont
 	}
 }
 
+func (dco *DockerCliOrchestrator) ensureSupportedDockerCliVersion(ctx context.Context) error {
+	// Use the non-JSON `docker --version` output because `docker version --format` contacts the daemon
+	// and can hang when the engine is unresponsive.
+	cmd := makeDockerCommand("--version")
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "Version", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	if err != nil {
+		return errors.Join(err, normalizeCliErrors(errBuf))
+	}
+
+	version, parseErr := parseDockerCliVersion(outBuf.String())
+	if parseErr != nil {
+		return parseErr
+	}
+
+	if version.isBefore(minimumSupportedDockerCliVersion) {
+		return fmt.Errorf(
+			"docker CLI version %s is not supported; DCP requires Docker CLI version %s or newer",
+			version.String(),
+			minimumSupportedDockerCliVersion.String(),
+		)
+	}
+
+	return nil
+}
+
+func parseDockerCliVersion(versionOutput string) (dockerCliVersion, error) {
+	match := dockerVersionRegEx.FindStringSubmatch(strings.TrimSpace(versionOutput))
+	if match == nil {
+		return dockerCliVersion{}, errInvalidDockerVersionOutput
+	}
+
+	major, majorErr := strconv.Atoi(match[1])
+	if majorErr != nil {
+		return dockerCliVersion{}, fmt.Errorf("parse docker CLI major version: %w", majorErr)
+	}
+
+	minor, minorErr := strconv.Atoi(match[2])
+	if minorErr != nil {
+		return dockerCliVersion{}, fmt.Errorf("parse docker CLI minor version: %w", minorErr)
+	}
+
+	patch, patchErr := strconv.Atoi(match[3])
+	if patchErr != nil {
+		return dockerCliVersion{}, fmt.Errorf("parse docker CLI patch version: %w", patchErr)
+	}
+
+	return dockerCliVersion{
+		major: major,
+		minor: minor,
+		patch: patch,
+	}, nil
+}
+
 func (dco *DockerCliOrchestrator) GetDiagnostics(ctx context.Context) (containers.ContainerDiagnostics, error) {
 	cmd := makeDockerCommand("version", "--format", "{{json .}}")
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "Version", cmd, nil, nil, diagnosticDockerCommandTimeout)
@@ -262,7 +370,12 @@ func (dco *DockerCliOrchestrator) GetDiagnostics(ctx context.Context) (container
 }
 
 func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
-	cmd := makeDockerCommand("volume", "create", options.Name)
+	args := []string{"volume", "create"}
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
+	}
+	args = append(args, options.Name)
+	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		// Note: unlike Podman, Docker does not return an error if the volume already exists.
@@ -298,6 +411,28 @@ func (dco *DockerCliOrchestrator) InspectVolumes(ctx context.Context, options co
 	return inspectedVolumes, err
 }
 
+func (dco *DockerCliOrchestrator) ListVolumes(ctx context.Context, options containers.ListVolumesOptions) ([]containers.ListedVolume, error) {
+	args := []string{"volume", "ls", "--quiet"}
+	for _, label := range options.Filters.LabelFilters {
+		filter := fmt.Sprintf("label=%s", label.Key)
+		if label.Value != "" {
+			filter += "=" + label.Value
+		}
+		args = append(args, "--filter", filter)
+	}
+
+	cmd := makeDockerCommand(args...)
+	outBuf, errBuf, listErr := dco.runBufferedDockerCommand(ctx, "ListVolumes", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	if listErr != nil {
+		return nil, errors.Join(listErr, normalizeCliErrors(errBuf))
+	}
+
+	names := slices.NonEmpty[byte](slices.Map[[]byte, []byte](bytes.Split(outBuf.Bytes(), osutil.LF()), bytes.TrimSpace))
+	return slices.Map[containers.ListedVolume](names, func(name []byte) containers.ListedVolume {
+		return containers.ListedVolume{Name: string(name)}
+	}), nil
+}
+
 func (dco *DockerCliOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
 	if len(options.Volumes) == 0 {
 		return nil, fmt.Errorf("must specify at least one volume")
@@ -329,96 +464,9 @@ func (dco *DockerCliOrchestrator) RemoveVolumes(ctx context.Context, options con
 }
 
 func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
-	args := []string{"build"}
-
-	if options.Dockerfile != "" {
-		args = append(args, "-f", options.Dockerfile)
-	}
-
-	// Should base images be updated even if they are already present locally?
-	if options.Pull {
-		args = append(args, "--pull")
-	}
-
-	// If specified, the ID of the image will be written to this file
-	if options.IidFile != "" {
-		args = append(args, "--iidfile", options.IidFile)
-	}
-
-	// Apply all tags specified in the build context to the image
-	for _, tag := range options.Tags {
-		args = append(args, "-t", tag)
-	}
-
-	// Apply all specified build arguments
-	for _, buildArg := range options.Args {
-		if buildArg.Value != "" {
-			args = append(args, "--build-arg", fmt.Sprintf("%s=%s", buildArg.Name, buildArg.Value))
-		} else {
-			args = append(args, "--build-arg", buildArg.Name)
-		}
-	}
-
-	// Secret values that need to be applied to the build command environment
-	secretEnvironment := map[string]string{}
-
-	// Apply all specified build secrets
-	for _, secret := range options.Secrets {
-		switch secret.Type {
-		case apiv1.FileSecret, "":
-			args = append(args, "--secret", fmt.Sprintf("id=%s,src=%s", secret.ID, secret.Source))
-		case apiv1.EnvSecret:
-			if secret.Source != "" {
-				args = append(args, "--secret", fmt.Sprintf("id=%s,env=%s", secret.ID, secret.Source))
-				if secret.Value != "" {
-					secretEnvironment[secret.Source] = secret.Value
-				}
-			} else {
-				args = append(args, "--secret", fmt.Sprintf("id=%s,env=%s", secret.ID, secret.ID))
-				if secret.Value != "" {
-					secretEnvironment[secret.ID] = secret.Value
-				}
-			}
-		}
-	}
-
-	// If a build stage is given, use it
-	if options.Stage != "" {
-		args = append(args, "--target", options.Stage)
-	}
-
-	// Apply any specified labels
-	for _, label := range options.Labels {
-		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
-	}
-
-	// If a target platform is specified, build for that platform
-	if options.Platform != "" {
-		args = append(args, "--platform", options.Platform)
-	}
-
-	// Enable plain output mode (Docker only)
-	args = append(args, "--progress", "plain")
-
-	// Append the build context argument
-	args = append(args, options.Context)
-
-	cmd := makeDockerCommand(args...)
-
-	// Append secret environment
-	cmd.Env = os.Environ()
-	for secretName, secretValue := range secretEnvironment {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", secretName, secretValue))
-	}
-
-	// Building an image can take a long time to finish, particularly if any base images are not available locally.
-	// Use a much longer timeout than for other commands.
-	if options.Timeout == 0 {
-		options.Timeout = defaultBuildImageTimeout
-	}
-	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "BuildImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
-	if err != nil {
-		return errors.Join(err, normalizeCliErrors(errBuf))
+	errBuf, buildErr := containers.BuildImageImpl(ctx, options, dco, "--progress", "plain")
+	if buildErr != nil {
+		return errors.Join(buildErr, normalizeCliErrors(errBuf))
 	}
 
 	return nil
@@ -455,24 +503,49 @@ func (dco *DockerCliOrchestrator) PullImage(ctx context.Context, options contain
 		return "", fmt.Errorf("must specify an image to pull")
 	}
 
-	args := []string{"image", "pull", "--quiet"}
-	if options.Digest != "" {
-		args = append(args, options.Image+"@"+options.Digest)
-	} else {
-		args = append(args, options.Image)
+	args := []string{"image", "pull"}
+	if options.StdOutStream == nil && options.StdErrStream == nil {
+		args = append(args, "--quiet")
 	}
+	imageReference := options.Image
+	if options.Digest != "" {
+		imageReference += "@" + options.Digest
+	}
+	args = append(args, imageReference)
 
 	cmd := makeDockerCommand(args...)
 	// Pulling large images can take a long time, especially if the image is not available locally and the network is slow.
 	if options.Timeout == 0 {
 		options.Timeout = defaultPullImageTimeout
 	}
-	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "PullImage", cmd, nil, nil, options.Timeout)
+	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "PullImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
 		return "", errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
 	}
 
-	return asId(outBuf)
+	imageID, inspectErr := containers.InspectPulledImage(ctx, dco, imageReference)
+	if inspectErr != nil {
+		return "", fmt.Errorf("inspect pulled image %q: %w", imageReference, inspectErr)
+	}
+	return imageID, nil
+}
+
+func (dco *DockerCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {
+	return containers.RemoveImagesSequentially(ctx, options, func(ctx context.Context, image string, force bool) error {
+		args := []string{"image", "rm"}
+		if force {
+			args = append(args, "--force")
+		}
+		args = append(args, image)
+
+		cmd := makeDockerCommand(args...)
+		_, errBuf, removeErr := dco.runBufferedDockerCommand(ctx, "RemoveImage", cmd, nil, nil, ordinaryDockerCommandTimeout)
+		if removeErr != nil {
+			return errors.Join(removeErr, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
+		}
+
+		return nil
+	})
 }
 
 func applyCreateContainerOptions(args []string, options containers.CreateContainerOptions) []string {
@@ -480,14 +553,15 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		args = append(args, "--name", options.Name)
 	}
 
-	if options.Network != "" {
-		args = append(args, "--network", options.Network)
-
-		if len(options.NetworkAliases) > 0 {
-			for _, alias := range options.NetworkAliases {
-				args = append(args, "--network-alias", alias)
+	for _, network := range options.Networks {
+		networkArg := network.Name
+		if len(network.Aliases) > 0 {
+			networkArg = "name=" + network.Name
+			for _, alias := range network.Aliases {
+				networkArg += ",alias=" + alias
 			}
 		}
+		args = append(args, "--network", networkArg)
 	}
 
 	for _, mount := range options.VolumeMounts {
@@ -536,11 +610,11 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		args = append(args, "--env-file", envFile)
 	}
 
-	for _, label := range options.Labels {
-		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
 	}
 
-	if options.RestartPolicy != "" && options.RestartPolicy != apiv1.RestartPolicyNone {
+	if options.RestartPolicy != "" && options.RestartPolicy != containers.RestartPolicyNone {
 		args = append(args, fmt.Sprintf("--restart=%s", options.RestartPolicy))
 	}
 
@@ -548,8 +622,8 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		args = append(args, "--pull", string(options.PullPolicy))
 	}
 
-	if options.Command != "" {
-		args = append(args, "--entrypoint", options.Command)
+	if options.Entrypoint != "" {
+		args = append(args, "--entrypoint", options.Entrypoint)
 	}
 
 	if len(options.Healthcheck.Command) > 0 {
@@ -580,7 +654,7 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		}
 	}
 
-	if options.Terminal != nil {
+	if options.AttachTerminal {
 		// Attach a TTY (-t) and keep STDIN open (-i) if a terminal is requested
 		args = append(args, "-it")
 	}
@@ -597,8 +671,8 @@ func (dco *DockerCliOrchestrator) CreateContainer(ctx context.Context, options c
 
 	args = append(args, options.Image)
 
-	if len(options.Args) > 0 {
-		args = append(args, options.Args...)
+	if len(options.Command) > 0 {
+		args = append(args, options.Command...)
 	}
 
 	cmd := makeDockerCommand(args...)
@@ -631,8 +705,8 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 	args = append(args, "--detach")
 	args = append(args, options.Image)
 
-	if len(options.Args) > 0 {
-		args = append(args, options.Args...)
+	if len(options.Command) > 0 {
+		args = append(args, options.Command...)
 	}
 
 	cmd := makeDockerCommand(args...)
@@ -676,8 +750,9 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 
 	cmd.Stdout = options.StdOutStream
 	cmd.Stderr = options.StdErrStream
+	cmd.WaitDelay = 2 * time.Second
 
-	exitCh := make(chan int32)
+	exitCh := make(chan int32, 1)
 	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
 		// We only care about the exit code, not the error. The only scenario where we should get an error
 		// is if the context for an exec command is canceled during DCP shutdown, in which case that's expected.
@@ -689,7 +764,7 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 	}
 
 	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
-	_, _, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
+	_, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", "ExecContainer"))
@@ -711,18 +786,7 @@ func (dco *DockerCliOrchestrator) AttachContainer(ctx context.Context, options c
 }
 
 func (dco *DockerCliOrchestrator) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
-	args := []string{"container", "ls", "--no-trunc"}
-
-	for _, label := range options.Filters.LabelFilters {
-		filter := fmt.Sprintf("label=%s", label.Key)
-
-		if label.Value != "" {
-			filter += "=" + label.Value
-		}
-
-		args = append(args, "--filter", filter)
-	}
-
+	args := applyListContainersOptions([]string{"container", "ls", "--no-trunc"}, options)
 	args = append(args, "--format", "{{json .}}")
 
 	cmd := makeDockerCommand(args...)
@@ -733,6 +797,27 @@ func (dco *DockerCliOrchestrator) ListContainers(ctx context.Context, options co
 	}
 
 	return asObjects(outBuf, unmarshalListedContainer)
+}
+
+func applyListContainersOptions(args []string, options containers.ListContainersOptions) []string {
+	if options.All {
+		args = append(args, "--all")
+	}
+
+	for _, label := range options.Filters.LabelFilters {
+		filter := fmt.Sprintf("label=%s", label.Key)
+
+		if label.Value != "" {
+			filter += "=" + label.Value
+		}
+
+		args = append(args, "--filter", filter)
+	}
+	for _, network := range options.Filters.NetworkFilters {
+		args = append(args, "--filter", fmt.Sprintf("network=%s", network))
+	}
+
+	return args
 }
 
 func (dco *DockerCliOrchestrator) InspectContainers(ctx context.Context, options containers.InspectContainersOptions) ([]containers.InspectedContainer, error) {
@@ -794,7 +879,7 @@ func (dco *DockerCliOrchestrator) StopContainers(ctx context.Context, options co
 	args := []string{"container", "stop"}
 	var timeout time.Duration = ordinaryDockerCommandTimeout
 	if options.SecondsToKill > 0 {
-		args = append(args, "--time", fmt.Sprintf("%d", options.SecondsToKill))
+		args = append(args, "-t", fmt.Sprintf("%d", options.SecondsToKill))
 		timeout = time.Duration(options.SecondsToKill)*time.Second + ordinaryDockerCommandTimeout
 	}
 	args = append(args, options.Containers...)
@@ -850,54 +935,13 @@ func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options conta
 
 	args = append(args, options.Container+":/")
 
-	tarWriter := usvc_io.NewTarWriter()
-
-	certificateHashes := []string{}
-	for _, item := range options.Entries {
-		switch item.Type {
-		case apiv1.FileSystemEntryTypeDir:
-			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, dco.log); addDirectoryErr != nil {
-				return addDirectoryErr
-			}
-		case apiv1.FileSystemEntryTypeSymlink:
-			if addSymlinkErr := containers.AddSymlinkToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, dco.log); addSymlinkErr != nil {
-				if item.ContinueOnError {
-					dco.log.Error(addSymlinkErr, "Failed to add symlink to tar archive, continuing", "SymLink", item)
-				} else {
-					return addSymlinkErr
-				}
-			}
-		case apiv1.FileSystemEntryTypeOpenSSL:
-			hash, addCertErr := containers.AddCertificateToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, certificateHashes, dco.log)
-			if addCertErr != nil {
-				if item.ContinueOnError {
-					dco.log.Error(addCertErr, "Failed to add a certificate to the tar file, but continueOnError is set", "Certificate", item)
-				} else {
-					return addCertErr
-				}
-			}
-
-			// Keep track of the certificate hashes we've added to this directory so that we can deal with the possibility of collisions
-			certificateHashes = append(certificateHashes, hash)
-		default:
-			if addFileErr := containers.AddFileToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, dco.log); addFileErr != nil {
-				if item.ContinueOnError {
-					dco.log.Error(addFileErr, "Failed to add a file to the tar file, but continueOnError is set", "File", item)
-				} else {
-					return addFileErr
-				}
-			}
-		}
+	buffer, archiveErr := containers.CreateFilesArchive(ctx, dco.log, options)
+	if archiveErr != nil {
+		return archiveErr
 	}
-
-	if tarWriter.Empty() {
+	if buffer == nil {
 		// Can happen if all ContinueOnError items fail
 		return nil
-	}
-
-	buffer, bufferErr := tarWriter.Buffer()
-	if bufferErr != nil {
-		return bufferErr
 	}
 
 	cmd := makeDockerCommand(args...)
@@ -1064,7 +1108,7 @@ func (dco *DockerCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 }
 
 func (dco *DockerCliOrchestrator) ListNetworks(ctx context.Context, options containers.ListNetworksOptions) ([]containers.ListedNetwork, error) {
-	args := []string{"network", "ls"}
+	args := []string{"network", "ls", "--no-trunc"}
 
 	for _, label := range options.Filters.LabelFilters {
 		filter := fmt.Sprintf("label=%s", label.Key)
@@ -1091,6 +1135,10 @@ func (dco *DockerCliOrchestrator) DefaultNetworkName() string {
 	return "bridge"
 }
 
+func (*DockerCliOrchestrator) IsBuiltInNetwork(networkName string) bool {
+	return networkName == "bridge" || networkName == "host" || networkName == "none"
+}
+
 func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, ss *pubsub.SubscriptionSet[containers.EventMessage]) {
 	args := []string{"events", "--filter", "type=container", "--format", "{{json .}}"}
 	cmd := makeDockerCommand(args...)
@@ -1109,8 +1157,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 			}
 
 			evtData := scanner.Text()
-			var evtMessage containers.EventMessage
-			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
+			evtMessage, unmarshalErr := unmarshalDockerEvent(scanner.Bytes())
 			if unmarshalErr != nil {
 				dco.log.Error(unmarshalErr, "Container event data could not be parsed", "EventData", evtData)
 			} else {
@@ -1129,13 +1176,13 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 	// Container events are delivered on best-effort basis.
 	// If the "docker events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone, nil)
+	handle, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone, nil)
 	if err != nil {
 		dco.log.Error(err, "Could not execute 'docker events' command; container events unavailable")
 		return
 	}
 
-	dcpproc.RunProcessWatcher(dco.executor, pid, startTime, dco.log)
+	dcpproc.RunProcessWatcher(dco.executor, handle, dco.log)
 
 	startWaitForProcessExit()
 
@@ -1147,7 +1194,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		dco.log.V(1).Info("Stopping 'docker events' command", "pid", pid)
+		dco.log.V(1).Info("Stopping 'docker events' command", "pid", handle.Pid)
 	}
 }
 
@@ -1168,8 +1215,7 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 				return // Cancellation has been requested, so we should stop scanning events
 			}
 
-			var evtMessage containers.EventMessage
-			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
+			evtMessage, unmarshalErr := unmarshalDockerEvent(scanner.Bytes())
 			if unmarshalErr != nil {
 				dco.log.Error(unmarshalErr, "Network event data could not be parsed", "EventData", scanner.Text())
 			} else {
@@ -1188,13 +1234,13 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	// Container events are delivered on best-effort basis.
 	// If the "docker events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone, nil)
+	handle, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone, nil)
 	if err != nil {
 		dco.log.Error(err, "Could not execute 'docker events' command; network events unavailable")
 		return
 	}
 
-	dcpproc.RunProcessWatcher(dco.executor, pid, startTime, dco.log)
+	dcpproc.RunProcessWatcher(dco.executor, handle, dco.log)
 
 	startWaitForProcessExit()
 
@@ -1206,7 +1252,7 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		dco.log.V(1).Info("Stopping 'docker events' command", "PID", pid)
+		dco.log.V(1).Info("Stopping 'docker events' command", "PID", handle.Pid)
 	}
 }
 
@@ -1241,14 +1287,14 @@ func (dco *DockerCliOrchestrator) streamDockerCommand(
 	}
 
 	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
-	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
+	handle, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", commandName))
 	}
 
 	if opts&streamCommandOptionUseWatcher != 0 {
-		dcpproc.RunProcessWatcher(dco.executor, pid, startTime, dco.log)
+		dcpproc.RunProcessWatcher(dco.executor, handle, dco.log)
 	}
 
 	startWaitForProcessExit()
@@ -1442,7 +1488,7 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	}
 
 	ic.Id = dci.Id
-	ic.Name = dci.Name
+	ic.Name = strings.TrimPrefix(dci.Name, "/")
 	ic.Image = dci.Config.Image
 	ic.CreatedAt = dci.Created
 	ic.StartedAt = dci.State.StartedAt
@@ -1453,14 +1499,14 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	ic.Healthcheck = dci.Config.Healthcheck.Test
 	ic.Health = dci.State.Health
 
-	ic.Mounts = make([]apiv1.VolumeMount, len(dci.Mounts))
+	ic.Mounts = make([]containers.VolumeMount, len(dci.Mounts))
 	for i, mount := range dci.Mounts {
 		source := mount.Source
-		if mount.Type == apiv1.NamedVolumeMount {
+		if mount.Type == containers.NamedVolumeMount {
 			source = mount.Name
 		}
 
-		ic.Mounts[i] = apiv1.VolumeMount{
+		ic.Mounts[i] = containers.VolumeMount{
 			Type:     mount.Type,
 			Source:   source,
 			Target:   mount.Destination,
@@ -1528,6 +1574,7 @@ func unmarshalNetwork(data []byte, net *containers.InspectedNetwork) error {
 	net.CreatedAt = dcn.Created
 	net.Driver = dcn.Driver
 	net.Scope = dcn.Scope
+	net.IPv6 = dcn.EnableIPv6
 	net.Labels = dcn.Labels
 	net.Attachable = dcn.Attachable
 	net.Internal = dcn.Internal
@@ -1557,6 +1604,33 @@ type dockerClientVersion struct {
 
 type dockerServerVersion struct {
 	Version string `json:"Version"`
+}
+
+type dockerEventActor struct {
+	ID         string            `json:"ID,omitempty"`
+	Attributes map[string]string `json:"Attributes,omitempty"`
+}
+
+type dockerEventMessage struct {
+	Source containers.EventSource `json:"Type"`
+	Action containers.EventAction `json:"Action"`
+	Actor  dockerEventActor       `json:"Actor,omitempty"`
+}
+
+func unmarshalDockerEvent(data []byte) (containers.EventMessage, error) {
+	var dockerEvent dockerEventMessage
+	if unmarshalErr := json.Unmarshal(data, &dockerEvent); unmarshalErr != nil {
+		return containers.EventMessage{}, unmarshalErr
+	}
+
+	return containers.EventMessage{
+		Source: dockerEvent.Source,
+		Action: dockerEvent.Action,
+		Actor: containers.EventActor{
+			ID: dockerEvent.Actor.ID,
+		},
+		Attributes: dockerEvent.Actor.Attributes,
+	}, nil
 }
 
 type dockerListedContainer struct {
@@ -1600,11 +1674,11 @@ type dockerInspectedContainer struct {
 }
 
 type dockerInspectedContainerMount struct {
-	Type        apiv1.VolumeMountType `json:"Type,omitempty"`
-	Name        string                `json:"Name,omitempty"`
-	Source      string                `json:"Source,omitempty"`
-	Destination string                `json:"Destination,omitempty"`
-	ReadWrite   bool                  `json:"RW,omitempty"`
+	Type        containers.VolumeMountType `json:"Type,omitempty"`
+	Name        string                     `json:"Name,omitempty"`
+	Source      string                     `json:"Source,omitempty"`
+	Destination string                     `json:"Destination,omitempty"`
+	ReadWrite   bool                       `json:"RW,omitempty"`
 }
 
 type dockerInspectedContainerConfig struct {

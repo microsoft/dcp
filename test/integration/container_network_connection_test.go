@@ -7,16 +7,18 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
-	"github.com/microsoft/dcp/internal/containers"
-	"github.com/microsoft/dcp/pkg/testutil"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 func TestContainerNetworkConnectsToExisting(t *testing.T) {
@@ -96,7 +98,8 @@ func TestContainerNetworkChanges(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			Image: imageName,
+			Image:         imageName,
+			ContainerName: testName,
 			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
 				{
 					Name: testName,
@@ -172,6 +175,52 @@ func TestContainerNetworkChanges(t *testing.T) {
 	})
 }
 
+// Verifies that removing the last requested network or stopping a container persists an empty network status through the API server.
+func TestContainerNetworkFinalDisconnect(t *testing.T) {
+	t.Parallel()
+	for _, stop := range []bool{false, true} {
+		name := "remove-last-network"
+		if stop {
+			name = "stop-container"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			testName := "container-final-disconnect-" + name
+			network := apiv1.ContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: testName}}
+			require.NoError(t, client.Create(ctx, &network))
+			ensureNetworkCreated(t, ctx, &network)
+			container := apiv1.Container{
+				ObjectMeta: metav1.ObjectMeta{Name: testName},
+				Spec: apiv1.ContainerSpec{
+					Image:    testName + "-image",
+					Networks: &[]apiv1.ContainerNetworkConnectionConfig{{Name: testName}},
+				},
+			}
+			require.NoError(t, client.Create(ctx, &container))
+			ensureContainerRunning(t, ctx, &container)
+			waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv1.Container) (bool, error) {
+				return slices.Contains(current.Status.Networks, network.NamespacedName().String()), nil
+			})
+
+			patchErr := retryOnConflict(ctx, container.NamespacedName(), func(patchCtx context.Context, current *apiv1.Container) error {
+				updated := current.DeepCopy()
+				if stop {
+					updated.Spec.Stop = true
+				} else {
+					updated.Spec.Networks = &[]apiv1.ContainerNetworkConnectionConfig{}
+				}
+				return client.Patch(patchCtx, updated, ctrl_client.MergeFromWithOptions(current, ctrl_client.MergeFromWithOptimisticLock{}))
+			})
+			require.NoError(t, patchErr)
+			waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv1.Container) (bool, error) {
+				return len(current.Status.Networks) == 0 && (!stop || current.Status.State == apiv1.ContainerStateExited), nil
+			})
+		})
+	}
+}
+
 func TestContainerNetworkDoesNotStartUntilNetworkExists(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -187,7 +236,8 @@ func TestContainerNetworkDoesNotStartUntilNetworkExists(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			Image: imageName,
+			Image:         imageName,
+			ContainerName: testName,
 			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
 				{
 					Name: testName,
@@ -206,6 +256,8 @@ func TestContainerNetworkDoesNotStartUntilNetworkExists(t *testing.T) {
 
 	// Ensure the container is still starting
 	_ = ensureContainerState(t, ctx, client, &ctr, apiv1.ContainerStateStarting)
+	_, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{testName}})
+	require.True(t, errors.Is(inspectErr, containers.ErrNotFound), "Container resource should not be created before its initial network exists")
 
 	net := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -226,6 +278,68 @@ func TestContainerNetworkDoesNotStartUntilNetworkExists(t *testing.T) {
 		return n.Name == updatedNetwork.Status.NetworkName
 	})
 	require.True(t, found)
+}
+
+func TestContainerNetworkKeepsUnmanagedConnections(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-container-network-keeps-unmanaged"
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err := client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedNetwork := ensureNetworkCreated(t, ctx, &net)
+
+	containerName := testName + "-container"
+	containerID, err := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name: containerName,
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: updatedNetwork.Status.NetworkName},
+			},
+			Image: testName + "-image",
+		},
+	})
+	require.NoError(t, err, "could not run unmanaged container")
+	defer func() {
+		_, _ = containerOrchestrator.RemoveContainers(context.Background(), containers.RemoveContainersOptions{
+			Containers: []string{containerID},
+			Force:      true,
+		})
+	}()
+
+	err = retryOnConflict(ctx, updatedNetwork.NamespacedName(), func(ctx context.Context, currentNet *apiv1.ContainerNetwork) error {
+		networkPatch := currentNet.DeepCopy()
+		if networkPatch.Annotations == nil {
+			networkPatch.Annotations = map[string]string{}
+		}
+		networkPatch.Annotations["test.dcp.microsoft.com/reconcile"] = "after-unmanaged-connect"
+		return client.Patch(ctx, networkPatch, ctrl_client.MergeFromWithOptions(currentNet, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "could not trigger network reconciliation")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(updatedNetwork), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
+		return slices.Contains(currentNet.Status.ContainerIDs, containerID), nil
+	})
+
+	inspectedContainers, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+	require.NoError(t, err, "could not inspect unmanaged container")
+	require.Len(t, inspectedContainers, 1)
+
+	found := slices.ContainsFunc(inspectedContainers[0].Networks, func(n containers.InspectedContainerNetwork) bool {
+		return n.Name == updatedNetwork.Status.NetworkName
+	})
+	require.True(t, found, "network controller should not disconnect unmanaged session network connections")
 }
 
 // Ensures that network aliases are applied to containers if Container Spec requests them
@@ -306,4 +420,65 @@ func TestContainerNetworkWithAliases(t *testing.T) {
 
 	require.Equal(t, aliases1, foundNetwork1.Aliases, "Network 1 aliases should match expected values")
 	require.Equal(t, aliases2, foundNetwork2.Aliases, "Network 2 aliases should match expected values")
+}
+
+func TestContainerConnectsToMixedCasePersistentNetworkWithAliases(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-container-mixed-case-persistent-network-aliases"
+	const runtimeNetworkName = "Test-Container-Mixed-Case-Persistent-Network-Aliases"
+
+	id, err := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: runtimeNetworkName,
+	})
+	require.NoError(t, err, "could not create a network")
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-network",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkSpec{
+			NetworkName: runtimeNetworkName,
+			Mode:        apiv1.ContainerNetworkModePersistent,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err = client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedNetwork := ensureNetworkCreated(t, ctx, &net)
+	require.Equal(t, id, updatedNetwork.Status.ID, "network ID did not match expected value")
+	require.Equal(t, runtimeNetworkName, updatedNetwork.Status.NetworkName, "existing runtime network name was not preserved")
+
+	const imageName = testName + "-image"
+	aliases := []string{"web", "frontend"}
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
+				{
+					Name:    net.ObjectMeta.Name,
+					Aliases: aliases,
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s' with mixed-case persistent network and aliases", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container object")
+
+	_, inspectedContainer := ensureContainerRunning(t, ctx, &ctr)
+	require.Len(t, inspectedContainer.Networks, 1, "Container should only be attached to the target network")
+	require.Equal(t, runtimeNetworkName, inspectedContainer.Networks[0].Name, "Container should be attached to the mixed-case network")
+	require.Equal(t, aliases, inspectedContainer.Networks[0].Aliases, "Container should have the requested aliases on the target network")
 }

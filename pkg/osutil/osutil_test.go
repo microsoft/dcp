@@ -6,9 +6,11 @@
 package osutil
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHasOnlyValidFilenameChars(t *testing.T) {
@@ -63,4 +65,12 @@ func TestHasOnlyValidFilenameChars(t *testing.T) {
 			assert.Equal(t, tt.expected, result, "HasOnlyValidFilenameChars(%q)", tt.input)
 		})
 	}
+}
+
+func TestSameCleanPath(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	require.True(t, SameCleanPath(tempDir, filepath.Join(tempDir, ".")))
+	require.False(t, SameCleanPath(tempDir, filepath.Join(tempDir, "child")))
 }

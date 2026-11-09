@@ -6,14 +6,186 @@
 package v1
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
+
+// goldenContainerLifecycleKey is the lifecycle key produced by goldenContainerSpec.
+// Lifecycle keys identify already-running containers across DCP restarts, so a change
+// to this value silently orphans existing containers and recreates them.
+//
+// The key is derived from gob encodings of the types registered in
+// initializeLifecycleHashEncoder. It changes if any of the following change:
+// an encoded type's name, an encoded type's exported field list, or the order of
+// registrations in initializeLifecycleHashEncoder (gob assigns type IDs from a
+// process-global counter in registration order). Note that the package a type lives
+// in is not part of its gob identity.
+//
+// If this test fails, do not update the constant to match. Restore the encoding instead,
+// or accept that every running container will be recreated on upgrade. The one exception is
+// a deliberate change to goldenContainerSpec itself, which changes the inputs rather than
+// the encoding; in that case recompute the constant.
+const goldenContainerLifecycleKey = "47db3cfd3c6710276a8b72550f90bf19"
+
+// goldenDockerfileContents is hashed into the golden lifecycle key by way of the
+// Dockerfile that goldenContainerSpec points at.
+const goldenDockerfileContents = "FROM scratch\nRUN echo golden\n"
+
+// goldenEnvSecretSource is cleared explicitly by TestContainerSpecLifecycleKeyIsStable
+// so the golden key does not depend on the ambient environment.
+const goldenEnvSecretSource = "DCP_GOLDEN_TEST_SECRET_DO_NOT_SET"
+
+// goldenContainerSpec exercises every field group that contributes to the lifecycle key.
+//
+// dockerfilePath must be an absolute path to a readable file holding goldenDockerfileContents.
+// GetLifecycleKey hashes the Dockerfile contents when the file can be read, and falls back to
+// hashing the resolved path otherwise. The fallback is not portable: a POSIX-absolute literal
+// such as "/src/Dockerfile" is absolute on Linux and macOS but not on Windows, where
+// filepath.IsAbs requires a volume name, so Windows would join it against the build context
+// and hash a different string. Pointing at a real file keeps the key platform-independent.
+func goldenContainerSpec(dockerfilePath string) *ContainerSpec {
+	umask := fs.FileMode(0o022)
+	owner := int32(1000)
+
+	return &ContainerSpec{
+		Image:         "api:dev",
+		ContainerName: "api",
+		Persistent:    true,
+		Build: &ContainerBuildContext{
+			Context:    "/src",
+			Dockerfile: dockerfilePath,
+			Stage:      "final",
+			Platform:   "linux/amd64",
+			Labels: []ContainerLabel{
+				{Key: "com.example.b", Value: "two"},
+				{Key: "com.example.a", Value: "one"},
+			},
+			Secrets: []ContainerBuildSecret{
+				{Type: EnvSecret, ID: "npm_token", Source: goldenEnvSecretSource},
+				{Type: FileSecret, ID: "aws", Source: "/nonexistent/aws.json"},
+			},
+		},
+		VolumeMounts: []VolumeMount{
+			{Type: BindMount, Source: "/host/data", Target: "/data", ReadOnly: true},
+			{Type: NamedVolumeMount, Source: "cache", Target: "/cache"},
+		},
+		Ports: []ContainerPort{
+			{HostPort: 18080, ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: "127.0.0.1"},
+			{HostPort: 15353, ContainerPort: 53, Protocol: commonapi.PortProtocolUDP},
+		},
+		Env: []EnvVar{
+			{Name: "B_VAR", Value: "2"},
+			{Name: "A_VAR", Value: "1"},
+		},
+		CreateFiles: []CreateFileSystem{
+			{
+				Destination:  "/etc/golden",
+				DefaultOwner: 1000,
+				DefaultGroup: 1000,
+				Umask:        &umask,
+				Entries: []FileSystemEntry{
+					{
+						Type:  FileSystemEntryTypeDir,
+						Name:  "conf.d",
+						Owner: &owner,
+						Mode:  0o755,
+						Entries: []FileSystemEntry{
+							{Type: FileSystemEntryTypeFile, Name: "app.conf", Contents: "x=1", Mode: 0o644},
+						},
+					},
+				},
+			},
+		},
+		ImageLayers: []ImageLayer{
+			{Digest: "sha256:golden-layer-1", RawContents: "AAAA"},
+		},
+		PemCertificates: &ContainerPemCertificates{
+			Certificates:         []PemCertificate{{Thumbprint: "AABB", Contents: "-----BEGIN CERTIFICATE-----"}},
+			Destination:          "/certs",
+			OverwriteBundlePaths: []string{"/etc/ssl/certs/ca-certificates.crt"},
+		},
+		Terminal: &TerminalSpec{UDSPath: "/tmp/api.sock", Cols: 80, Rows: 24},
+	}
+}
+
+func TestContainerSpecLifecycleKeyIsStable(t *testing.T) {
+	t.Setenv(goldenEnvSecretSource, "")
+
+	dockerfilePath := filepath.Join(t.TempDir(), "Dockerfile.golden")
+	require.NoError(t, os.WriteFile(dockerfilePath, []byte(goldenDockerfileContents), osutil.PermissionOnlyOwnerReadWrite))
+
+	key, computed, err := goldenContainerSpec(dockerfilePath).GetLifecycleKey()
+	require.NoError(t, err)
+	require.True(t, computed)
+	require.Equal(
+		t,
+		goldenContainerLifecycleKey,
+		key,
+		"container lifecycle key changed; existing containers would be orphaned and recreated",
+	)
+}
+
+// Verifies that LogicalContainerSpec.GetLifecycleKey preserves its runtime port encoding
+// under the ordered lifecycle-hash type initialization shared with V1.
+func TestLogicalContainerSpecLifecycleKeyIsStable(t *testing.T) {
+	t.Parallel()
+	monitorPID := int64(42)
+	spec := &apiv2.LogicalContainerSpec{
+		ContainerName: "runtime-container", Mode: apiv2.LogicalContainerModePersistent,
+		MonitorPID: &monitorPID, MonitorTimestamp: metav1.NewMicroTime(time.Unix(123456789, 0).UTC()),
+		Ports: []apiv2.LogicalContainerPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{Name: "http", ServiceRef: "service"}, ContainerPort: 8080}},
+		Container: &apiv2.LogicalContainerConfig{
+			Image: &apiv2.PhysicalContainerImageConfig{
+				Image: "example/app:dev",
+				Build: &apiv2.ContainerBuildContext{
+					Context: "/source", Digest: "source-digest", Dockerfile: "Dockerfile",
+					Tags: []string{"app:dev"}, Args: []commonapi.EnvVar{{Name: "ARG", Value: "value"}},
+					Secrets: []apiv2.ContainerBuildSecret{{Type: apiv2.FileSecret, ID: "secret", Source: "/missing-secret"}},
+					Stage:   "final", Platform: "linux/arm64", BaseImages: []string{"base:latest"},
+					Labels: []commonapi.Label{{Key: "build", Value: "value"}},
+				},
+			},
+			Entrypoint: "/app", Command: []string{"serve"},
+			Env:          []commonapi.EnvVar{{Name: "VALUE", Value: "test"}},
+			Labels:       []commonapi.Label{{Key: "app", Value: "test"}},
+			VolumeMounts: []apiv2.VolumeMount{{Type: apiv2.NamedVolumeMount, VolumeRef: "volume", Target: "/data"}},
+			Networks:     []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "network", Aliases: []string{"app"}}},
+			CreateFiles: []apiv2.CreateFileSystem{{
+				Destination: "/etc/app",
+				Entries: []apiv2.FileSystemEntry{{
+					Name: "conf", Type: apiv2.FileSystemEntryTypeDir,
+					Entries: []apiv2.FileSystemEntry{{Name: "config", Contents: "value", Mode: 0o644}},
+				}},
+			}},
+		},
+	}
+	key, computed, keyErr := spec.GetLifecycleKey([]apiv2.ContainerPort{{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP}})
+	require.NoError(t, keyErr)
+	require.True(t, computed)
+	require.Equal(t, "c1329e9a97574da35f3e76fbc91b23f8", key, "V2 lifecycle-key encoding changed; existing persistent containers would be replaced")
+}
+
+// Verifies that V1 and V2 persistent kinds and log subresource types can share standard API-server registration.
+func TestV1AndV2StorageRegistration(t *testing.T) {
+	storageTypes := append([]apiserver_resource.Object{}, PersistentTypes...)
+	storageTypes = append(storageTypes, AddtionalTypes...)
+	storageTypes = append(storageTypes, apiv2.PersistentTypes...)
+	storageTypes = append(storageTypes, apiv2.AdditionalTypes...)
+	require.NoError(t, apiserver_resource.AddToScheme(storageTypes...)(runtime.NewScheme()))
+}
 
 func TestContainerGetLeaseKey(t *testing.T) {
 	t.Parallel()
@@ -31,6 +203,15 @@ func TestContainerNetworkGetLeaseKey(t *testing.T) {
 	network.Spec.NetworkName = " app-network "
 
 	require.Equal(t, "containernetworks/app-network", network.GetLeaseKey())
+}
+
+func TestContainerVolumeGetLeaseKey(t *testing.T) {
+	t.Parallel()
+
+	volume := &ContainerVolume{}
+	volume.Spec.Name = " data "
+
+	require.Equal(t, "containervolumes/data", volume.GetLeaseKey())
 }
 
 func TestContainerSpecGetLifecycleKeyIncludesMonitorFields(t *testing.T) {
@@ -184,6 +365,76 @@ func TestContainerValidateTerminalPersistentCombination(t *testing.T) {
 					Cols:    80,
 					Rows:    24,
 				},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			container := &Container{Spec: testCase.spec}
+			errors := container.Validate(nil)
+
+			if testCase.expectError {
+				require.NotEmpty(t, errors)
+			} else {
+				require.Empty(t, errors)
+			}
+		})
+	}
+}
+
+func TestContainerValidateImageOnlyRequiredForCreationModes(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		spec        ContainerSpec
+		expectError bool
+	}{
+		{
+			name:        "session mode requires image or build",
+			spec:        ContainerSpec{},
+			expectError: true,
+		},
+		{
+			name: "persistent mode requires image or build",
+			spec: ContainerSpec{
+				ContainerName: "api",
+				Mode:          ContainerModePersistent,
+			},
+			expectError: true,
+		},
+		{
+			name: "persistent override requires image or build",
+			spec: ContainerSpec{
+				ContainerName: "api",
+				Persistent:    true,
+			},
+			expectError: true,
+		},
+		{
+			name: "existing mode does not require image or build",
+			spec: ContainerSpec{
+				ContainerName: "api",
+				Mode:          ContainerModeExisting,
+			},
+		},
+		{
+			name: "cleanup mode does not require image or build",
+			spec: ContainerSpec{
+				ContainerName: "api",
+				Mode:          ContainerModeCleanup,
+			},
+		},
+		{
+			name: "cleanup mode still validates explicit build",
+			spec: ContainerSpec{
+				ContainerName: "api",
+				Mode:          ContainerModeCleanup,
+				Build:         &ContainerBuildContext{},
 			},
 			expectError: true,
 		},

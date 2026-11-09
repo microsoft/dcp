@@ -10,13 +10,13 @@ import (
 
 	"github.com/go-logr/logr"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/ports"
 )
 
 // Gets a free TCP or UDP port for a given address (defaults to localhost).
 // Even if this method is called twice in a row, it should not return the same port.
-func GetFreePort(ctx context.Context, protocol apiv1.PortProtocol, address string, log logr.Logger) (int32, error) {
+func GetFreePort(ctx context.Context, protocol commonapi.PortProtocol, address string, log logr.Logger) (int32, error) {
 	address, addressErr := NormalizePortAllocationAddress(address)
 	if addressErr != nil {
 		return 0, addressErr
@@ -33,7 +33,7 @@ func GetFreePort(ctx context.Context, protocol apiv1.PortProtocol, address strin
 	return allocateRandomEphemeralPortWithMruFile(ctx, protocol, address, log)
 }
 
-func CheckPortAvailable(ctx context.Context, protocol apiv1.PortProtocol, address string, port int32, log logr.Logger) error {
+func CheckPortAvailable(ctx context.Context, protocol commonapi.PortProtocol, address string, port int32, log logr.Logger) error {
 	address, addressErr := NormalizePortAllocationAddress(address)
 	if addressErr != nil {
 		return addressErr

@@ -22,6 +22,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
 	ctrl_handler "sigs.k8s.io/controller-runtime/pkg/handler"
+	ctrl_reconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/microsoft/dcp/internal/telemetry"
@@ -79,6 +80,37 @@ func NewReconcilerBase[T commonapi.ObjectStruct, PT commonapi.PCopyableObjectStr
 		rb.doScheduleReconciliation(name)
 	})
 	return rb
+}
+
+// mapNamespaceToReconcileRequests maps a Namespace object to reconciliation
+// requests for every object of this reconciler's type in that Namespace.
+func (rb *ReconcilerBase[T, PT]) mapNamespaceToReconcileRequests(
+	listPrototype commonapi.ListWithObjectItems[T, PT],
+) ctrl_handler.MapFunc {
+	return func(ctx context.Context, obj ctrl_client.Object) []ctrl_reconcile.Request {
+		namespace := obj.GetName()
+		objectList, validList := listPrototype.DeepCopyObject().(commonapi.ListWithObjectItems[T, PT])
+		if !validList {
+			listErr := fmt.Errorf("list prototype %T returned an incompatible deep copy", listPrototype)
+			rb.Log.Error(listErr, "Failed to create object list for namespace", "Namespace", namespace, "Kind", rb.kind)
+			return nil
+		}
+
+		listErr := rb.List(ctx, objectList, ctrl_client.InNamespace(namespace))
+		if listErr != nil {
+			rb.Log.Error(listErr, "Failed to list objects for namespace", "Namespace", namespace, "Kind", rb.kind)
+			return nil
+		}
+
+		items := objectList.GetItems()
+		requests := make([]ctrl_reconcile.Request, len(items))
+		for i := range items {
+			requests[i] = ctrl_reconcile.Request{NamespacedName: items[i].NamespacedName()}
+		}
+
+		rb.Log.V(1).Info("Namespace updated, requesting object reconciliation", "Namespace", namespace, "Kind", rb.kind, "Objects", len(requests))
+		return requests
+	}
 }
 
 // Marks the startup of another reconciliation.
@@ -144,36 +176,38 @@ func (rb *ReconcilerBase[T, PT]) GetReconciliationEventSource() ctrl_source.Sour
 // Saves changes to the object and schedules additional reconciliation as appropriate.
 // Standard delay is used for additional reconciliation.
 // If conflicts occurred during previous save, additional delay will be exponentially increased up to maxConflictDelay.
+// onStatusDurable runs after a status update succeeds, or after save processing when no status update is needed.
 func (rb *ReconcilerBase[T, PT]) SaveChanges(
 	ctx context.Context,
 	obj PT,
 	patch ctrl_client.Patch,
 	change objectChange,
-	onSuccessfulSave func(),
+	onStatusDurable func(),
 	log logr.Logger,
 ) (ctrl.Result, error) {
-	return rb.SaveChangesWithDelay(ctx, obj, patch, change, StandardDelay, onSuccessfulSave, log)
+	return rb.SaveChangesWithDelay(ctx, obj, patch, change, StandardDelay, onStatusDurable, log)
 }
 
 // Saves changes to the object and schedules additional reconciliation as appropriate.
 // Standard or long delay will be used for additional reconciliation, depending on the flag passed.
 // If long delay is requested, it implies that additional reconciliation is needed.
 // If conflicts occurred during previous save, reconciliation delay will be exponentially increased up to maxConflictDelay.
+// onStatusDurable runs after a status update succeeds, or after save processing when no status update is needed.
 func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 	ctx context.Context,
 	obj PT,
 	patch ctrl_client.Patch,
 	change objectChange,
 	delay AdditionalReconciliationDelay,
-	onSuccessfulSave func(),
+	onStatusDurable func(),
 	log logr.Logger,
 ) (ctrl.Result, error) {
 	return telemetry.CallWithTelemetryOnErrorOnly(telemetry.GetTracer("controller-common"), "saveChanges", ctx, func(ctx context.Context) (ctrl.Result, error) {
 		var update PT
 		kind := obj.GetObjectKind().GroupVersionKind().Kind
-		afterGoodSave := func() {
-			if onSuccessfulSave != nil {
-				onSuccessfulSave()
+		acknowledgeStatus := func() {
+			if onStatusDurable != nil {
+				onStatusDurable()
 			}
 		}
 
@@ -181,7 +215,12 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 			change |= additionalReconciliationNeeded
 		}
 
-		doUpdate := func(p Patcher, operation string, saveSuccesCounter metric.Int64Counter) (ctrl.Result, error) {
+		doUpdate := func(
+			p Patcher,
+			operation string,
+			saveSuccesCounter metric.Int64Counter,
+			acknowledgeDurableStatus bool,
+		) (ctrl.Result, error) {
 			update = obj.DeepCopy()
 			updateErr := p(ctx, update, patch)
 
@@ -202,7 +241,9 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 				return ctrl.Result{}, updateErr
 			} else {
 				log.V(1).Info(fmt.Sprintf("%s %s succeeded", kind, operation))
-				afterGoodSave()
+				if acknowledgeDurableStatus {
+					acknowledgeStatus()
+				}
 				saveSuccesCounter.Add(ctx, 1)
 				return ctrl.Result{}, nil
 			}
@@ -210,6 +251,7 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 
 		if change == noChange {
 			log.V(1).Info(fmt.Sprintf("No changes detected for %s object, continue monitoring...", kind))
+			acknowledgeStatus()
 			return ctrl.Result{}, nil
 		}
 
@@ -222,11 +264,15 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 		if (change & statusChanged) != 0 {
 			res, err = doUpdate(func(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch) error {
 				return rb.Client.Status().Patch(ctx, obj, patch)
-			}, "status update", statusSaveCounter)
+			}, "status update", statusSaveCounter, true)
 		} else if (change & (metadataChanged | specChanged)) != 0 {
 			res, err = doUpdate(func(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch) error {
 				return rb.Client.Patch(ctx, obj, patch)
-			}, "update", metadataOrSpecSaveCounter)
+			}, "update", metadataOrSpecSaveCounter, false)
+		}
+
+		if change&statusChanged == 0 {
+			acknowledgeStatus()
 		}
 
 		if res.RequeueAfter > 0 {

@@ -18,6 +18,11 @@ const DefaultConcurrency uint8 = 0
 type WorkQueueItem = func(ctx context.Context)
 
 // WorkQueue runs work concurrently, but limits the number of concurrent executions.
+//
+// The queue is bound to a lifetime context. Once that context is done the queue stops
+// draining and any items still queued are dropped without running, so callers that rely on
+// queued work completing (for example resource cleanup on shutdown) must do so before the
+// lifetime context is cancelled.
 type WorkQueue struct {
 	incoming    *concurrency.UnboundedChan[WorkQueueItem]
 	limiter     chan struct{}

@@ -21,10 +21,11 @@ const (
 	UnknownRuntime RuntimeFlagValue = ""
 	DockerRuntime  RuntimeFlagValue = "docker"
 	PodmanRuntime  RuntimeFlagValue = "podman"
+	WslcRuntime    RuntimeFlagValue = "wslc"
 )
 
 var (
-	supportedRuntimeNames = []string{"docker", "podman"}
+	supportedRuntimeNames = []string{string(DockerRuntime), string(PodmanRuntime), string(WslcRuntime)}
 	runtime               = UnknownRuntime
 )
 
@@ -38,6 +39,11 @@ func GetRuntimeFlag() string {
 
 func GetRuntimeFlagValue() RuntimeFlagValue {
 	return runtime
+}
+
+// SetRuntimeFlagValue sets the container runtime used by subsequent runtime consumers.
+func SetRuntimeFlagValue(value RuntimeFlagValue) error {
+	return runtime.Set(string(value))
 }
 
 func (rf *RuntimeFlagValue) Set(flagValue string) error {

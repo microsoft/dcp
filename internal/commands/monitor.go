@@ -25,27 +25,37 @@ var (
 
 func AddMonitorFlags(cmd *cobra.Command) {
 	cmd.Flags().Int64VarP((*int64)(&monitorPid), "monitor", "m", int64(process.UnknownPID), "If present, tells DCP to monitor a given process ID (PID) and gracefully shutdown if the monitored process exits for any reason.")
-	cmd.Flags().Var(flags.NewTimeFlag(&monitorProcessStartTime, osutil.RFC3339MiliTimestampFormat), "monitor-identity-time", "If present, specifies the identity time of the process to monitor. This is used to ensure the correct process is being monitored. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
+	cmd.Flags().Var(flags.NewTimeFlag(&monitorProcessStartTime, osutil.RFC3339MiliTimestampFormat), "monitor-identity-time", "Specifies the identity time of the process to monitor. If omitted, identity is resolved once at command startup. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
 	cmd.Flags().Uint8VarP(&monitorInterval, "monitor-interval", "i", 0, "If present, specifies the time in seconds between checks for the monitor PID.")
 }
 
-// Starts monitoring a process with a given PID and (optional) start time.
+// Starts monitoring a process identified by the given handle.
 // Returns a context that will be cancelled when the monitored process exits, or if the returned cancellation function is called.
+// The cancellation cause preserves parent or monitoring errors; a normal monitored-process exit uses context.Canceled.
 // The returned context (and the cancellation function) is valid even if an error occurs (e.g. the process cannot be found),
 // but it will be already cancelled in that case.
 func MonitorPid(
 	ctx context.Context,
-	pid process.Pid_t,
-	expectedProcessStartTime time.Time,
+	handle process.ProcessHandle,
 	pollInterval uint8,
 	logger logr.Logger,
 ) (context.Context, context.CancelFunc, error) {
-	monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
+	monitorCtx, monitorCtxCancelCause := context.WithCancelCause(ctx)
+	monitorCtxCancel := func() {
+		monitorCtxCancelCause(context.Canceled)
+	}
+	resolved, resolveErr := process.ResolveProcessHandle(handle.Pid, handle.IdentityTime)
+	if resolveErr != nil {
+		logger.Info("Could not resolve monitored process", "PID", handle.Pid, "Error", resolveErr)
+		monitorCtxCancelCause(resolveErr)
+		return monitorCtx, monitorCtxCancel, resolveErr
+	}
+	handle = resolved
 
-	monitorProc, monitorProcErr := process.FindWaitableProcess(pid, expectedProcessStartTime)
+	monitorProc, monitorProcErr := process.FindWaitableProcess(handle)
 	if monitorProcErr != nil {
-		logger.Info("Error finding process", "PID", pid)
-		monitorCtxCancel()
+		logger.Info("Error finding process", "PID", handle.Pid, "Error", monitorProcErr)
+		monitorCtxCancelCause(monitorProcErr)
 		return monitorCtx, monitorCtxCancel, monitorProcErr
 	}
 
@@ -53,18 +63,19 @@ func MonitorPid(
 		monitorProc.WaitPollInterval = time.Second * time.Duration(pollInterval)
 	}
 
-	logger.Info("Started monitoring process", "PID", pid)
+	logger.Info("Started monitoring process", "PID", handle.Pid)
 
 	go func() {
-		defer monitorCtxCancel()
-		if waitErr := monitorProc.Wait(monitorCtx); waitErr != nil {
+		waitErr := monitorProc.Wait(monitorCtx)
+		monitorCtxCancelCause(waitErr)
+		if waitErr != nil {
 			if errors.Is(waitErr, context.Canceled) {
-				logger.V(1).Info("Monitoring cancelled by context", "PID", pid)
+				logger.V(1).Info("Monitoring cancelled by context", "PID", handle.Pid)
 			} else {
-				logger.Error(waitErr, "Error waiting for process", "PID", pid)
+				logger.Error(waitErr, "Error waiting for process", "PID", handle.Pid)
 			}
 		} else {
-			logger.Info("Monitor process exited, shutting down", "PID", pid)
+			logger.Info("Monitor process exited, shutting down", "PID", handle.Pid)
 		}
 	}()
 
@@ -85,6 +96,6 @@ func GetMonitorContextFromFlags(ctx context.Context, logger logr.Logger) (contex
 	}
 
 	// Ignore errors as they're logged by MonitorPid and we always return a valid context
-	monitorCtx, monitorCtxCancel, _ := MonitorPid(ctx, monitorPid, monitorProcessStartTime, monitorInterval, logger)
+	monitorCtx, monitorCtxCancel, _ := MonitorPid(ctx, process.NewHandle(monitorPid, monitorProcessStartTime), monitorInterval, logger)
 	return monitorCtx, monitorCtxCancel
 }

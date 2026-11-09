@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/microsoft/dcp/internal/logstream"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/randdata"
@@ -131,7 +132,7 @@ func (l *LogDescriptor) Usage() (uint32, time.Time) {
 }
 
 // Waits for all log watchers to stop (with a context + extra time serving as deadline)
-// and then deletes the log files (best effort).
+// and then deletes the log files (best effort), unless log preservation is enabled.
 func (l *LogDescriptor) Dispose(ctx context.Context, extraTime time.Duration) error {
 	l.lock.Lock()
 	if l.disposed {
@@ -176,9 +177,7 @@ func (l *LogDescriptor) doCleanup(deadline context.Context) error {
 
 	stdOutPath := l.stdOut.Id()
 	stdErrPath := l.stdErr.Id()
-	stdOutRemoveErr := RemoveWithRetry(deadline, stdOutPath)
-	stdErrRemoveErr := RemoveWithRetry(deadline, stdErrPath)
-	return errors.Join(stdOutRemoveErr, stdErrRemoveErr)
+	return RemoveOutputFiles(deadline, stdOutPath, stdErrPath)
 }
 
 func (l *LogDescriptor) createLogFiles(logsFolder string) error {
@@ -190,9 +189,16 @@ func (l *LogDescriptor) createLogFiles(logsFolder string) error {
 		return fmt.Errorf("could not generate random suffix for log file names for resource %s: %w", l.ResourceName.String(), randErr)
 	}
 
-	stdOutFileName := fmt.Sprintf("%s_out_%s_%s", l.ResourceName.Name, l.ResourceUID, string(suffix))
+	stdOutFileName, stdoutNameErr := logstream.LogFileName(l.ResourceName.Name, l.ResourceUID, logstream.LogStreamSourceStdout, string(suffix))
+	if stdoutNameErr != nil {
+		return stdoutNameErr
+	}
+	stdErrFileName, stderrNameErr := logstream.LogFileName(l.ResourceName.Name, l.ResourceUID, logstream.LogStreamSourceStderr, string(suffix))
+	if stderrNameErr != nil {
+		return stderrNameErr
+	}
 	stdOutPath := filepath.Join(logsFolder, stdOutFileName)
-	stdOut, stdOutErr := usvc_io.OpenFile(stdOutPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdOut, stdOutErr := usvc_io.CreateNewFile(stdOutPath, osutil.PermissionOnlyOwnerReadWrite)
 	if stdOutErr != nil {
 		// If we cannot create stdout or stderr file, this descriptor is pretty much unusable.
 		// We consider is disposed.
@@ -200,9 +206,8 @@ func (l *LogDescriptor) createLogFiles(logsFolder string) error {
 		return fmt.Errorf("could not create stdout log file for resource %s: %w", l.ResourceName.String(), stdOutErr)
 	}
 
-	stdErrFileName := fmt.Sprintf("%s_err_%s_%s", l.ResourceName.Name, l.ResourceUID, string(suffix))
 	stdErrPath := filepath.Join(logsFolder, stdErrFileName)
-	stdErr, stdErrErr := usvc_io.OpenFile(stdErrPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdErr, stdErrErr := usvc_io.CreateNewFile(stdErrPath, osutil.PermissionOnlyOwnerReadWrite)
 	if stdErrErr != nil {
 		l.disposed = true
 		stdOutCloseErr := stdOut.Close()

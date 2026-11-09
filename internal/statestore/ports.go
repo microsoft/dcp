@@ -29,7 +29,7 @@ var ErrPortReservationHeld = errors.New("port reservation is held by another own
 // PortReservation describes a state-store claim on a protocol/IP/port tuple by a DCP owner process.
 type PortReservation struct {
 	ports.Binding
-	OwnerProcess process.ProcessTreeItem
+	OwnerProcess process.ProcessHandle
 	UpdatedAt    time.Time
 }
 
@@ -37,7 +37,7 @@ type PortReservation struct {
 // owner process responsible for that claim.
 type PortReservationRequest struct {
 	ports.Binding
-	OwnerProcess process.ProcessTreeItem
+	OwnerProcess process.ProcessHandle
 }
 
 // PortReservationHeldError reports the conflicting active reservation when a requested
@@ -168,7 +168,7 @@ func (s *Store) reservePort(ctx context.Context, request PortReservationRequest,
 					continue
 				}
 			}
-			active := resourceLeaseOwnerIsActive(conflictingReservation.OwnerProcess)
+			active := s.resourceLeaseOwnerIsActive(conflictingReservation.OwnerProcess)
 			if !active {
 				if exactIP {
 					shouldUpdateExactReservation = true
@@ -507,7 +507,7 @@ func (s *Store) inactivePortReservationCandidates(ctx context.Context) ([]PortRe
 		if scanErr != nil {
 			return nil, fmt.Errorf("could not read port reservation for cleanup: %w", scanErr)
 		}
-		if !resourceLeaseOwnerIsActive(reservation.OwnerProcess) {
+		if !s.resourceLeaseOwnerIsActive(reservation.OwnerProcess) {
 			candidates = append(candidates, *reservation)
 		}
 	}

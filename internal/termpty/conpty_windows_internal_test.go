@@ -37,18 +37,22 @@ const internalTestTimeout = 20 * time.Second
 func newOpenedWindowsPTY(t *testing.T) *windowsPTY {
 	t.Helper()
 
+	consoleAPI, loadErr := getConPTY()
+	require.NoError(t, loadErr)
+
 	var inputRead, inputWrite, outputRead, outputWrite windows.Handle
 	require.NoError(t, windows.CreatePipe(&inputRead, &inputWrite, nil, 0))
 	require.NoError(t, windows.CreatePipe(&outputRead, &outputWrite, nil, 0))
 
 	var hConsole windows.Handle
-	err := windows.CreatePseudoConsole(
+	err := consoleAPI.createPseudoConsole(
 		windowsConsoleSize(0, 0),
-		inputRead, outputWrite, 0, &hConsole,
+		inputRead, outputWrite, &hConsole,
 	)
 	require.NoError(t, err, "CreatePseudoConsole failed")
 
 	p := &windowsPTY{
+		conpty:       consoleAPI,
 		hConsole:     hConsole,
 		outputRead:   outputRead,
 		inputWrite:   inputWrite,

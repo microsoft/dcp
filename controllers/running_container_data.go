@@ -6,6 +6,7 @@
 package controllers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	stdmaps "maps"
@@ -20,6 +21,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	ct "github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/termpty"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
@@ -74,10 +76,10 @@ type runningContainerData struct {
 	// or when the Container is deleted. There is a small chance
 	// that the file might not be deleted if Container startup is in progress when DCP is asked to shut down,
 	// but we do not consider this a problem worth slowing down the shutdown process.
-	startupStdoutLog *startupLog
+	startupStdoutLog *logs.CaptureFile
 
 	// Standard error content from startup commands will be saved to this log.
-	startupStderrLog *startupLog
+	startupStderrLog *logs.CaptureFile
 
 	networkConnections map[containerNetworkConnectionKey]bool
 
@@ -261,14 +263,14 @@ func (rcd *runningContainerData) ensureStartupLogFiles(ctr *apiv1.Container, log
 		return
 	}
 
-	stdoutLog, stdoutLogErr := newStartupLog(ctr, apiv1.LogStreamSourceStartupStdout)
+	stdoutLog, stdoutLogErr := logs.NewCaptureFile(ctr, apiv1.LogStreamSourceStartupStdout)
 	if stdoutLogErr != nil {
 		log.Error(stdoutLogErr, "Failed to create temporary file for capturing container startup standard output data", "Container", ctr.NamespacedName().String())
 	} else {
 		rcd.startupStdoutLog = stdoutLog
 	}
 
-	stderrLog, stderrLogErr := newStartupLog(ctr, apiv1.LogStreamSourceStartupStderr)
+	stderrLog, stderrLogErr := logs.NewCaptureFile(ctr, apiv1.LogStreamSourceStartupStderr)
 	if stderrLogErr != nil {
 		log.Error(stderrLogErr, "Failed to create temporary file for capturing container startup standard error data", "Container", ctr.NamespacedName().String())
 	} else {
@@ -279,12 +281,12 @@ func (rcd *runningContainerData) ensureStartupLogFiles(ctr *apiv1.Container, log
 func (rcd *runningContainerData) closeStartupLogFiles(log logr.Logger) {
 	stdoutLog := rcd.startupStdoutLog
 	if stdoutLog != nil {
-		stdoutLog.Close(startupLogCloseOptionDefault, log)
+		stdoutLog.CloseAndLog(logs.CaptureFileCloseDefault, log)
 	}
 
 	stderrLog := rcd.startupStderrLog
 	if stderrLog != nil {
-		stderrLog.Close(startupLogCloseOptionDefault, log)
+		stderrLog.CloseAndLog(logs.CaptureFileCloseDefault, log)
 	}
 }
 
@@ -292,13 +294,13 @@ func (rcd *runningContainerData) deleteStartupLogFiles(log logr.Logger) {
 	stdoutLog := rcd.startupStdoutLog
 	rcd.startupStdoutLog = nil
 	if stdoutLog != nil {
-		stdoutLog.Close(startupLogDisposeOnClose, log)
+		stdoutLog.CloseAndLog(logs.CaptureFileDisposeOnClose, log)
 	}
 
 	stderrLog := rcd.startupStderrLog
 	rcd.startupStderrLog = nil
 	if stderrLog != nil {
-		stderrLog.Close(startupLogDisposeOnClose, log)
+		stderrLog.CloseAndLog(logs.CaptureFileDisposeOnClose, log)
 	}
 }
 
@@ -307,12 +309,12 @@ func (rcd *runningContainerData) getStartupLogWriters() (usvc_io.ParagraphWriter
 
 	stdoutLog := rcd.startupStdoutLog
 	if stdoutLog != nil {
-		stdoutWriter = stdoutLog.writer
+		stdoutWriter = stdoutLog.Writer
 	}
 
 	stderrLog := rcd.startupStderrLog
 	if stderrLog != nil {
-		stderrWriter = stderrLog.writer
+		stderrWriter = stderrLog.Writer
 	}
 
 	return stdoutWriter, stderrWriter
@@ -416,13 +418,22 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 
 	startupStoutLog := rcd.startupStdoutLog
 	if startupStoutLog != nil && ctr.Status.StartupStdOutFile == "" {
-		ctr.Status.StartupStdOutFile = startupStoutLog.file.Name()
+		ctr.Status.StartupStdOutFile = startupStoutLog.Path
 		change |= statusChanged
 	}
 
 	startupStderrLog := rcd.startupStderrLog
 	if startupStderrLog != nil && ctr.Status.StartupStdErrFile == "" {
-		ctr.Status.StartupStdErrFile = startupStderrLog.file.Name()
+		ctr.Status.StartupStdErrFile = startupStderrLog.Path
+		change |= statusChanged
+	}
+
+	terminalSocketPath := ""
+	if rcd.connMgr != nil {
+		terminalSocketPath = rcd.connMgr.SocketPath()
+	}
+	if terminalSocketPath != "" && ctr.Status.TerminalSocketPath != terminalSocketPath {
+		ctr.Status.TerminalSocketPath = terminalSocketPath
 		change |= statusChanged
 	}
 
@@ -464,10 +475,10 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 		}
 	}
 
-	if setTimestampIfBeforeOrUnknown(rcd.finishTimestamp, &ctr.Status.FinishTimestamp) {
-		change |= statusChanged
-	} else if rcd.containerState == apiv1.ContainerStateFailedToStart && setTimestampIfBeforeOrUnknown(rcd.startAttemptFinishedAt, &ctr.Status.FinishTimestamp) {
-		change |= statusChanged
+	if finishTimestampChange := setTimestampIfBeforeOrUnknown(&ctr.Status.FinishTimestamp, rcd.finishTimestamp); finishTimestampChange != noChange {
+		change |= finishTimestampChange
+	} else if rcd.containerState == apiv1.ContainerStateFailedToStart {
+		change |= setTimestampIfBeforeOrUnknown(&ctr.Status.FinishTimestamp, rcd.startAttemptFinishedAt)
 	}
 
 	updatedHealthResults, healthResultsChanged := health.UpdateHealthProbeResults(ctr.Status.HealthProbeResults, rcd.healthProbeResults)
@@ -491,15 +502,24 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 // platforms (notably ConPTY on Windows does not propagate the close as a
 // signal that docker attach observes). Stopping the process triggers its
 // ExitHandler, which in turn drives the ConnManager shutdown.
-func (rcd *runningContainerData) closeTerminalResources(pe process.Executor, log logr.Logger) {
+func (rcd *runningContainerData) closeTerminalResources(ctx context.Context, pe process.Executor, log logr.Logger) {
 	ptp := rcd.ptp
+	connMgr := rcd.connMgr
 	rcd.ptp = nil
 	rcd.connMgr = nil
+
+	// Deterministically tear down the connection manager so the owned listen-mode socket file is
+	// removed promptly, rather than waiting for the lifetime context to cancel. Shutdown is
+	// idempotent, so this is safe even if process-exit observation also triggers it.
+	if connMgr != nil {
+		connMgr.Shutdown()
+	}
+
 	if ptp == nil {
 		return
 	}
 
-	if ptp.PID != 0 && ptp.PID != process.UnknownPID {
+	if ptp.Handle.Pid != 0 && ptp.Handle.Pid != process.UnknownPID {
 		// Only attempt to stop the attach process if it has not already
 		// exited. The exit handler may already have fired (e.g., the
 		// container itself exited and the OS noticed the attach process
@@ -514,9 +534,15 @@ func (rcd *runningContainerData) closeTerminalResources(pe process.Executor, log
 			}
 		}
 		if !alreadyExited {
-			var notFound *process.ErrProcessNotFound
-			if stopErr := pe.StopProcess(ptp.PID, ptp.IdentityTime); stopErr != nil && !errors.As(stopErr, &notFound) {
-				log.V(1).Info("Failed to stop container terminal attach process", "PID", ptp.PID, "Error", stopErr.Error())
+			stopCtx, stopCancel := process.WithDetachedStopTimeout(ctx)
+			stopErr := pe.StopProcess(stopCtx, ptp.Handle)
+			stopCancel()
+			if stopErr != nil {
+				if process.IsProcessGoneErr(stopErr) {
+					log.V(1).Info("Container terminal attach process already exited", "PID", ptp.Handle.Pid, "Error", stopErr)
+				} else {
+					log.Error(stopErr, "Failed to stop container terminal attach process", "PID", ptp.Handle.Pid)
+				}
 			}
 		}
 	}

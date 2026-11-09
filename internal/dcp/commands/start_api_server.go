@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -53,6 +54,7 @@ func NewStartApiSrvCommand(log logr.Logger) (*cobra.Command, error) {
 	startApiSrvCmd.Flags().BoolVar(&detach, "detach", false, "If present, instructs DCP to fork itself as a detached process.")
 	startApiSrvCmd.Flags().BoolVar(&serverOnly, "server-only", false, "If present, instructs DCP to start only the API server and not the controllers. This is useful for testing the API server in isolation.")
 
+	cmds.AddWorkloadIDFlag(startApiSrvCmd)
 	container_flags.EnsureRuntimeFlag(startApiSrvCmd.Flags())
 	container_flags.EnsureTestContainerOrchestratorSocketFlag(startApiSrvCmd.Flags())
 	cmds.AddMonitorFlags(startApiSrvCmd)
@@ -67,8 +69,12 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 		apiServerCtx, apiServerCtxCancel := cmds.GetMonitorContextFromFlags(cmd.Context(), log.WithName("monitor"))
 		defer apiServerCtxCancel()
 
+		if _, workloadIDErr := cmds.GetWorkloadIDFromFlags(cmd.Flags()); workloadIDErr != nil {
+			return workloadIDErr
+		}
+
 		if detach {
-			return runDetachedFork(apiServerCtx, log)
+			return runDetachedFork(apiServerCtx, cmd, log)
 		}
 
 		// At this point we are the actual API-server-hosting process. Open the
@@ -130,6 +136,11 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 		if container_flags.GetRuntimeFlagValue() != container_flags.UnknownRuntime {
 			invocationFlags = append(invocationFlags, container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue()))
 		}
+		if workloadIDFlag, hasWorkloadIDFlag, workloadIDFlagErr := cmds.GetWorkloadIDInvocationFlag(cmd.Flags()); workloadIDFlagErr != nil {
+			return workloadIDFlagErr
+		} else if hasWorkloadIDFlag {
+			invocationFlags = append(invocationFlags, workloadIDFlag...)
+		}
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}
@@ -151,7 +162,7 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 // without the --detach flag. The parent process exits immediately. The "dcp.startup.parent_fork"
 // span captures the small but real cost of the spawn step; parent and child end up as
 // siblings under the same outer trace because they read the same DCP_OTEL_STARTUP_TRACEPARENT.
-func runDetachedFork(apiServerCtx context.Context, log logr.Logger) error {
+func runDetachedFork(apiServerCtx context.Context, cmd *cobra.Command, log logr.Logger) error {
 	_, span := startupspans.BeginParentFork(apiServerCtx)
 	defer func() {
 		span.End()
@@ -161,6 +172,7 @@ func runDetachedFork(apiServerCtx context.Context, log logr.Logger) error {
 	args := make([]string, 0, len(os.Args)-2)
 
 	hasContainerRuntimeFlag := false
+	hasWorkloadIDFlag := false
 	for _, arg := range os.Args[1:] {
 		if arg != "--detach" {
 			args = append(args, arg)
@@ -169,10 +181,20 @@ func runDetachedFork(apiServerCtx context.Context, log logr.Logger) error {
 		if arg == container_flags.GetRuntimeFlag() {
 			hasContainerRuntimeFlag = true
 		}
+		if arg == cmds.GetWorkloadIDFlag() || strings.HasPrefix(arg, cmds.GetWorkloadIDFlag()+"=") {
+			hasWorkloadIDFlag = true
+		}
 	}
 
 	if !hasContainerRuntimeFlag && container_flags.GetRuntimeFlagValue() != container_flags.UnknownRuntime {
 		args = append(args, container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue()))
+	}
+	if !hasWorkloadIDFlag {
+		if workloadIDFlag, hasWorkloadIDFlagValue, workloadIDFlagErr := cmds.GetWorkloadIDInvocationFlag(cmd.Flags()); workloadIDFlagErr != nil {
+			return workloadIDFlagErr
+		} else if hasWorkloadIDFlagValue {
+			args = append(args, workloadIDFlag...)
+		}
 	}
 
 	log.V(1).Info("Forking command", "Cmd", os.Args[0], "Args", args)

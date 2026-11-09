@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +23,7 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/logs"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/termpty"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -34,37 +34,21 @@ import (
 )
 
 const (
-	DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR = "DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR"
-
-	persistentExecutableOutputDirName = "dcp-peo"
+	defaultProcessCleanupTimeout = 2 * time.Second
 )
 
-var persistentExecutableOutputDir = func() (string, error) {
-	isAdmin, adminErr := osutil.IsAdmin()
-	if adminErr != nil {
-		return "", fmt.Errorf("could not determine current elevation: %w", adminErr)
-	}
-	baseDir := persistentExecutableOutputBaseDir()
-	if isAdmin {
-		return baseDir + "-admin", nil
-	}
-	return baseDir, nil
-}
-
-func persistentExecutableOutputBaseDir() string {
-	if outputDir, found := os.LookupEnv(DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR); found && strings.TrimSpace(outputDir) != "" {
-		return strings.TrimSpace(outputDir)
-	}
-	return filepath.Join(os.TempDir(), persistentExecutableOutputDirName)
-}
+var persistentExecutableOutputDir = logs.PersistentProcessOutputDirectory
 
 type processRunState struct {
-	pid          process.Pid_t
-	identityTime time.Time
+	handle process.ProcessHandle
 
 	// File handles for the process's output (applicable to non-terminal processes)
 	stdOutFile *os.File
 	stdErrFile *os.File
+
+	outputCleanupLock   sync.Mutex
+	outputFilesClosed   bool
+	outputPathsToDelete []string
 
 	// For terminal-using processes, the process and its connection manager for handling terminal connections.
 	ptp     *termpty.PseudoTerminalProcess
@@ -149,7 +133,7 @@ func (r *ProcessExecutableRunner) makeProcessCommand(
 
 	var creationFlags process.ProcessCreationFlag = process.CreationFlagEnsureKillOnDispose
 	processCtx := ctx
-	if exe.Spec.Persistent {
+	if executableIsPersistent(exe) {
 		creationFlags = process.CreationFlagsNone
 		processCtx = context.WithoutCancel(ctx)
 	}
@@ -186,6 +170,14 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		cmd.Stderr = executableOutputWriter(exe, stdErrFile)
 		result.StdErrFile = stdErrFile.Name()
 	}
+	if !executableIsPersistent(exe) && (cmd.Stdout != nil || cmd.Stderr != nil) {
+		// Timestamped nonpersistent output is owned by the root process and receives a bounded
+		// post-exit drain. An escaped descendant can retain inherited stdout/stderr handles after
+		// the root exits, so waiting for normal pipe closure could block forever. WaitDelay bounds
+		// root completion at two seconds, after which os/exec closes the read side: descendant
+		// output after that cutoff may be truncated, and descendant writes may observe a broken pipe.
+		cmd.WaitDelay = defaultProcessCleanupTimeout
+	}
 
 	var processExitHandler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
 		ec := new(int32)
@@ -194,7 +186,7 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		runID := pidToRunID(pid)
 
 		if runState, found := r.runningProcesses.LoadAndDelete(runID); found {
-			err = errors.Join(closeProcessRunResources(runState), err)
+			err = errors.Join(closeRunFiles(nil, runState), err)
 		}
 
 		if runChangeHandler != nil {
@@ -202,7 +194,7 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		}
 	})
 
-	pid, processIdentityTime, startWaitForProcessExit, startErr := r.pe.StartProcess(processCtx, cmd, processExitHandler, creationFlags, nil)
+	handle, startWaitForProcessExit, startErr := r.pe.StartProcess(processCtx, cmd, processExitHandler, creationFlags, nil)
 	if startErr != nil {
 		startLog.Error(startErr, "Failed to start a process")
 		result.CompletionTimestamp = metav1.NowMicro()
@@ -222,32 +214,25 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 		return result
 	}
+	r.runExecutableLifecycleMonitor(exe, handle, startLog)
 
-	if !exe.Spec.Persistent {
-		// Use original log here, the watcher is a different process.
-		dcpproc.RunProcessWatcher(r.pe, pid, processIdentityTime, startLog)
-	} else if monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(exe.Spec.MonitorPID, exe.Spec.MonitorTimestamp); monitorErr != nil {
-		startLog.Error(monitorErr, "Could not start persistent Executable lifecycle monitor")
-	} else if found {
-		// Use original log here, the watcher is a different process.
-		dcpproc.RunProcessWatcherForMonitor(r.pe, monitor, pid, processIdentityTime, startLog)
-	}
-
-	r.runningProcesses.Store(pidToRunID(pid), &processRunState{
-		pid:              pid,
-		identityTime:     processIdentityTime,
+	r.runningProcesses.Store(pidToRunID(handle.Pid), &processRunState{
+		handle:           handle,
 		stdOutFile:       stdOutFile,
 		stdErrFile:       stdErrFile,
 		cmdInfo:          cmd.String(),
 		runChangeHandler: runChangeHandler,
 	})
 
-	displayStartTime := process.StartTimeForProcess(pid)
-	result.RunID = pidToRunID(pid)
-	pointers.SetValue(&result.Pid, int64(pid))
+	displayStartTime, displayErr := handle.WallClockStartTime()
+	if displayErr != nil {
+		startLog.Error(displayErr, "Could not read process display start time", "PID", handle.Pid)
+	}
+	result.RunID = pidToRunID(handle.Pid)
+	pointers.SetValue(&result.Pid, int64(handle.Pid))
 	result.ExeState = apiv1.ExecutableStateRunning
 	result.CompletionTimestamp = metav1.NewMicroTime(displayStartTime)
-	result.ProcessIdentityTime = processIdentityTime
+	result.ProcessIdentityTime = handle.IdentityTime
 	result.StartWaitForRunCompletion = startWaitForProcessExit
 
 	runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
@@ -267,7 +252,7 @@ func (r *ProcessExecutableRunner) startProcessRun(
 // is reachable only for non-persistent Executables; we still honor the
 // creationFlags / processCtx returned by makeProcessCommand for consistency.
 func (r *ProcessExecutableRunner) startTerminalRun(
-	ctx context.Context,
+	_ context.Context,
 	processCtx context.Context,
 	exe *apiv1.Executable,
 	cmd *exec.Cmd,
@@ -311,6 +296,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	ptp, startErr := r.terminalProcessFactory(processCtx, r.pe, commandSpec)
 	if startErr != nil {
 		startLog.Error(startErr, "Failed to start a process attached to a pseudo-terminal")
+		connMgr.Shutdown()
 		result.CompletionTimestamp = metav1.NowMicro()
 		result.ExeState = apiv1.ExecutableStateFailedToStart
 		result.StartupError = startErr
@@ -321,24 +307,35 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	attachErr := connMgr.AttachProcess(ptp)
 	if attachErr != nil {
 		startLog.Error(attachErr, "Failed to attach the process to the terminal connection manager; stopping process")
-		// Best-effort: stop the just-started process and close its PTY before reporting failure.
-		if stopErr := ptp.Stop(); stopErr != nil {
+		startupErr := attachErr
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(processCtx)
+		defer cleanupCancel()
+		if stopErr := ptp.Stop(cleanupCtx); stopErr != nil {
 			startLog.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
+			if !process.IsProcessGoneErr(stopErr) {
+				startupErr = errors.Join(
+					startupErr,
+					fmt.Errorf("%w: could not confirm terminal process cleanup: %w", process.ErrProcessStartUncertain, stopErr),
+				)
+			}
 		}
 		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			startLog.Error(closeErr, "Failed to close PTY after terminal connection manager creation failure")
 		}
+		connMgr.Shutdown()
 		result.CompletionTimestamp = metav1.NowMicro()
 		result.ExeState = apiv1.ExecutableStateFailedToStart
-		result.StartupError = attachErr
+		result.StartupError = startupErr
 		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 		return result
 	}
 
-	runID := pidToRunID(ptp.PID)
+	handle := ptp.Handle
+	runID := pidToRunID(handle.Pid)
+	r.runExecutableLifecycleMonitor(exe, handle, startLog)
+
 	r.runningProcesses.Store(runID, &processRunState{
-		pid:              ptp.PID,
-		identityTime:     ptp.IdentityTime,
+		handle:           handle,
 		ptp:              ptp,
 		connMgr:          connMgr,
 		cmdInfo:          cmd.String(),
@@ -347,21 +344,21 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 
 	// Watch for process exit so we can deregister the run, tear down the PTY/ConnManager
 	// resources, and notify the run-change handler.
-	go r.watchTerminalRunExit(processCtx, runID, ptp, connMgr, runChangeHandler, startLog)
+	go r.watchTerminalRunExit(processCtx, runID, ptp, runChangeHandler, startLog)
 
-	displayStartTime := process.StartTimeForProcess(ptp.PID)
+	displayStartTime, displayErr := handle.WallClockStartTime()
+	if displayErr != nil {
+		startLog.Error(displayErr, "Could not read terminal process display start time", "PID", handle.Pid)
+	}
 	result.RunID = runID
-	pointers.SetValue(&result.Pid, int64(ptp.PID))
+	pointers.SetValue(&result.Pid, int64(handle.Pid))
 	result.ExeState = apiv1.ExecutableStateRunning
 	result.CompletionTimestamp = metav1.NewMicroTime(displayStartTime)
-	result.ProcessIdentityTime = ptp.IdentityTime
+	result.ProcessIdentityTime = handle.IdentityTime
 	result.StartWaitForRunCompletion = ptp.StartWaitForExit
+	result.TerminalSocketPath = connMgr.SocketPath()
 
 	runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
-
-	// Reference the unused ctx parameter (kept for symmetry with startProcessRun and to
-	// allow future extensions that may need the caller-supplied context).
-	_ = ctx
 
 	return result
 }
@@ -378,7 +375,6 @@ func (r *ProcessExecutableRunner) watchTerminalRunExit(
 	processCtx context.Context,
 	runID controllers.RunID,
 	ptp *termpty.PseudoTerminalProcess,
-	connMgr *termpty.ConnManager,
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
 ) {
@@ -398,19 +394,11 @@ func (r *ProcessExecutableRunner) watchTerminalRunExit(
 	var closeErr error
 	if runState, found := r.runningProcesses.LoadAndDelete(runID); found {
 		// We are the first to observe the exit (no concurrent StopRun/ReleaseRun);
-		// own the resource cleanup. If StopRun/ReleaseRun already deleted the state,
-		// they also took care of closing the PTY and waiting on ConnManager — skip both.
-		closeErr = closeProcessRunResources(runState)
-		if closeErr != nil {
-			log.Error(closeErr, "Failed to close terminal run resources after process exit", "RunID", runID)
-		}
+		// need to do resource cleanup.
 
-		// Wait for the ConnManager to fully shut down so socket-file cleanup is observable
-		// to callers (notably tests). ConnManager triggers its own shutdown when it observes
-		// the process exit, so this should resolve promptly.
-		select {
-		case <-connMgr.Done():
-		case <-processCtx.Done():
+		closeErr = closeRunFiles(nil, runState)
+		if closeErr != nil {
+			log.Error(closeErr, "Failed to close files associated with Executable process after process exited", "RunID", runID)
 		}
 	}
 
@@ -422,23 +410,35 @@ func (r *ProcessExecutableRunner) watchTerminalRunExit(
 
 func (r *ProcessExecutableRunner) AdoptRun(
 	_ context.Context,
-	run controllers.ExecutableRunAdoptionInfo,
+	exe *apiv1.Executable,
+	record *statestore.PersistentProcessRecord,
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
 ) error {
-	if run.RunID == controllers.UnknownRunID {
-		return fmt.Errorf("cannot adopt a process run without a run ID")
+	if exe == nil {
+		return fmt.Errorf("cannot adopt a process run without an Executable")
 	}
-	if run.Pid == process.UnknownPID {
-		return fmt.Errorf("cannot adopt process run %s without a valid PID", run.RunID)
-	}
-	if run.ProcessIdentityTime.IsZero() {
-		return fmt.Errorf("cannot adopt process run %s without process identity time", run.RunID)
+	if record == nil {
+		return fmt.Errorf("cannot adopt a process run without a persistent process record")
 	}
 
-	if _, findErr := process.FindProcess(run.Pid, run.ProcessIdentityTime); findErr != nil {
-		return fmt.Errorf("cannot adopt process run %s: %w", run.RunID, findErr)
+	runID := controllers.RunID(record.RunID)
+	if runID == controllers.UnknownRunID {
+		return fmt.Errorf("cannot adopt a process run without a run ID")
 	}
+	if record.PID == process.UnknownPID {
+		return fmt.Errorf("cannot adopt process run %s without a valid PID", runID)
+	}
+	if record.IdentityTime.IsZero() {
+		return fmt.Errorf("cannot adopt process run %s without process identity time", runID)
+	}
+
+	handle := record.ProcessHandle()
+	if findErr := r.pe.CheckProcessRunning(handle); findErr != nil {
+		return fmt.Errorf("cannot adopt process run %s: %w", runID, findErr)
+	}
+	r.runExecutableLifecycleMonitor(exe, handle, log)
+
 	stopWatching := make(chan struct{})
 	var stopWatchingOnce sync.Once
 	cancelWatch := func() {
@@ -447,24 +447,83 @@ func (r *ProcessExecutableRunner) AdoptRun(
 		})
 	}
 
-	r.runningProcesses.Store(run.RunID, &processRunState{
-		pid:              run.Pid,
-		identityTime:     run.ProcessIdentityTime,
-		cmdInfo:          run.CommandInfo,
+	r.runningProcesses.Store(runID, &processRunState{
+		handle:           handle,
+		cmdInfo:          exe.Spec.ExecutablePath,
 		adopted:          true,
 		cancelWatch:      cancelWatch,
 		runChangeHandler: runChangeHandler,
 	})
 
-	go r.watchAdoptedProcess(run.RunID, run.Pid, run.ProcessIdentityTime, stopWatching, log)
+	go r.watchAdoptedProcess(runID, handle, stopWatching, log)
 
 	return nil
 }
 
+func (r *ProcessExecutableRunner) runExecutableLifecycleMonitor(
+	exe *apiv1.Executable,
+	handle process.ProcessHandle,
+	log logr.Logger,
+) {
+	effectiveMode := exe.Spec.EffectiveMode()
+	switch {
+	case effectiveMode.ShouldStopProcessOnDelete():
+		// Use original log here, the watcher is a different process.
+		dcpproc.RunProcessWatcher(r.pe, handle, log)
+		return
+
+	case effectiveMode == apiv1.ExecutableModePersistent:
+		monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(exe.Spec.MonitorPID, exe.Spec.MonitorTimestamp)
+		if monitorErr != nil {
+			log.Error(monitorErr, "Could not start persistent Executable lifecycle monitor")
+			return
+		}
+		if !found {
+			return
+		}
+
+		// Use original log here, the watcher is a different process.
+		dcpproc.RunProcessWatcherForMonitor(r.pe, monitor, handle, log)
+
+	default:
+		return
+	}
+}
+
+func (r *ProcessExecutableRunner) StopPersistentProcess(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error {
+	if exe == nil {
+		return fmt.Errorf("cannot stop a persistent process run without an Executable")
+	}
+	if record == nil {
+		return fmt.Errorf("cannot stop a persistent process run without a persistent process record")
+	}
+
+	runID := controllers.RunID(record.RunID)
+	if runID == controllers.UnknownRunID {
+		return fmt.Errorf("cannot stop a persistent process run without a run ID")
+	}
+	if record.PID == process.UnknownPID {
+		return fmt.Errorf("cannot stop persistent process run %s without a valid PID", runID)
+	}
+	if record.IdentityTime.IsZero() {
+		return fmt.Errorf("cannot stop persistent process run %s without process identity time", runID)
+	}
+
+	runState := &processRunState{
+		handle:  record.ProcessHandle(),
+		cmdInfo: exe.Spec.ExecutablePath,
+		adopted: true,
+	}
+	stopErr := r.stopProcessRun(ctx, runID, runState, log)
+	if stopErr != nil {
+		return stopErr
+	}
+	return r.completeStoppedRun(ctx, runID, runState, log)
+}
+
 func (r *ProcessExecutableRunner) watchAdoptedProcess(
 	runID controllers.RunID,
-	pid process.Pid_t,
-	identityTime time.Time,
+	handle process.ProcessHandle,
 	stopWatching <-chan struct{},
 	log logr.Logger,
 ) {
@@ -477,24 +536,32 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 			return
 
 		case <-timer.C:
-			if _, findErr := process.FindProcess(pid, identityTime); findErr != nil {
+			if findErr := r.pe.CheckProcessRunning(handle); findErr != nil {
+				if !process.IsProcessGoneErr(findErr) {
+					log.Error(findErr, "Could not check adopted process state", "RunID", runID, "PID", handle.Pid)
+					timer.Reset(2 * time.Second)
+					continue
+				}
+
 				runState, found := r.runningProcesses.Load(runID)
 				if !found {
 					return
 				}
-				if runState.pid != pid || !runState.identityTime.Equal(identityTime) {
+				if runState.handle != handle {
 					return
 				}
 				if !r.runningProcesses.CompareAndDelete(runID, runState) {
 					return
 				}
 
-				waitErr := closeProcessRunResources(runState)
+				waitErr := closeRunFiles(nil, runState)
+
 				if runState.runChangeHandler != nil {
 					runState.runChangeHandler.OnRunCompleted(runID, apiv1.UnknownExitCode, waitErr)
 				}
+				log.V(1).Info("Adopted process exited", "RunID", runID, "PID", runState.handle.Pid, "Error", findErr)
 				if waitErr != nil {
-					log.Error(waitErr, "Error watching adopted process", "RunID", runID, "PID", runState.pid)
+					log.Error(waitErr, "Error watching adopted process", "RunID", runID, "PID", runState.handle.Pid)
 				}
 				return
 			}
@@ -503,57 +570,72 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 	}
 }
 
+func (r *ProcessExecutableRunner) CheckProcessRunning(handle process.ProcessHandle) error {
+	return r.pe.CheckProcessRunning(handle)
+}
+
 func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
-	runState, found := r.runningProcesses.LoadAndDelete(runID)
+	runState, found := r.runningProcesses.Load(runID)
 	if !found {
 		log.V(1).Info("Stop of a process run requested, but the run was already stopped", "RunID", runID)
 		return nil
 	}
+
+	stopErr := r.stopProcessRun(ctx, runID, runState, log)
+	if stopErr != nil {
+		return stopErr
+	}
+	if !r.runningProcesses.CompareAndDelete(runID, runState) {
+		return nil
+	}
+	return r.completeStoppedRun(ctx, runID, runState, log)
+}
+
+func (r *ProcessExecutableRunner) stopProcessRun(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
+	stopLog := log.WithValues("RunID", runID, "Command", runState.cmdInfo)
+	stopLog.V(1).Info("Stopping run...")
+
+	var stopErr error
+	if r.shouldUseDcpProcStop(runState) {
+		// Regular Windows Executables are launched in a separate classic console, and adopted
+		// processes have no Windows-console availability state in this executor. Use dcpproc to
+		// isolate the process-global AttachConsole operation from this long-lived process; after
+		// the helper confirms CTRL_C_EVENT delivery, core stopping can use the 15-second graceful deadline.
+		// ConPTY-backed runs cannot receive classic-console control events and stay in-process so
+		// core stopping uses its six-second unconfirmed-delivery fallback. Keeping this choice here
+		// also avoids introducing a pkg/process -> dcpproc import cycle.
+		stopErr = dcpproc.StopProcessTree(ctx, r.pe, runState.handle, stopLog)
+	} else {
+		stopCtx, stopCtxCancel := process.WithStopTimeout(ctx)
+		defer stopCtxCancel()
+		stopErr = r.pe.StopProcess(stopCtx, runState.handle)
+	}
+	if process.IsProcessGoneErr(stopErr) {
+		return nil
+	}
+	if stopErr != nil {
+		stopLog.Error(stopErr, "Failed to stop run; keeping run state until the process exits")
+		return stopErr
+	}
+	return nil
+}
+
+func (r *ProcessExecutableRunner) shouldUseDcpProcStop(runState *processRunState) bool {
+	return osutil.IsWindows() && runState.ptp == nil && !r.disableConsoleStop
+}
+
+func (r *ProcessExecutableRunner) completeStoppedRun(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
 	if runState.cancelWatch != nil {
 		runState.cancelWatch()
 	}
 
-	stopLog := log.WithValues("RunID", runID, "Command", runState.cmdInfo)
-	stopLog.V(1).Info("Stopping run...")
-
-	// We want to make progress eventually, so we don't want to wait indefinitely for the process to stop.
-	const ProcessStopTimeout = 15 * time.Second
-
-	timer := time.NewTimer(ProcessStopTimeout)
-	defer timer.Stop()
-	errCh := make(chan error, 1)
-
-	go func() {
-		if osutil.IsWindows() && !r.disableConsoleStop {
-			// See StartRun() for why we need to use separate console for the app process on Windows.
-			// This means we cannot send Ctrl-C to that process directly and need to use dcpproc StopProcessTree facility instead.
-			stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
-			defer stopCtxCancel()
-			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runState.pid, runState.identityTime, stopLog)
-		} else {
-			errCh <- r.pe.StopProcess(runState.pid, runState.identityTime)
-		}
-	}()
-
-	var stopErr error = nil
-	select {
-	case stopErr = <-errCh:
-		// (no falltrough in Go)
-	case <-timer.C:
-		stopErr = fmt.Errorf("timed out waiting for process associated with run %s to stop", runID)
-	}
-
-	if found {
-		stopErr = errors.Join(stopErr, closeProcessRunResources(runState))
-		waitForConnManagerShutdown(ctx, runState, stopLog)
-	}
-
-	if stopErr != nil {
-		stopLog.Error(stopErr, "Failed to stop run")
+	cleanupErr := closeRunFiles(ctx, runState)
+	if cleanupErr != nil {
+		log.Error(cleanupErr, "Failed to clean up stopped run", "RunID", runID, "Command", runState.cmdInfo)
 	} else if runState.adopted && runState.runChangeHandler != nil {
 		runState.runChangeHandler.OnRunCompleted(runID, apiv1.UnknownExitCode, nil)
 	}
-	return stopErr
+	return cleanupErr
 }
 
 func (r *ProcessExecutableRunner) ReleaseRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
@@ -566,41 +648,62 @@ func (r *ProcessExecutableRunner) ReleaseRun(ctx context.Context, runID controll
 		runState.cancelWatch()
 	}
 
-	closeErr := closeProcessRunResources(runState)
+	closeErr := closeRunFiles(ctx, runState)
 	if closeErr != nil {
 		log.Error(closeErr, "Could not close process run resources while releasing run", "RunID", runID)
 	}
-	waitForConnManagerShutdown(ctx, runState, log)
 	return closeErr
 }
 
-// waitForConnManagerShutdown waits for a terminal run's ConnManager to finish
-// shutting down (i.e. close its listener and any in-flight Serve loop, after
-// which its background goroutines have terminated). It is a no-op for
-// non-terminal runs. The wait is bounded by the supplied context so callers do
-// not block indefinitely on a misbehaving manager.
-//
-// Note: ConnManager does not own the UDS socket file lifecycle, so the file
-// at SocketPath() is not removed as part of shutdown.
-func waitForConnManagerShutdown(ctx context.Context, runState *processRunState, log logr.Logger) {
-	if runState.connMgr == nil {
-		return
+func (r *ProcessExecutableRunner) DeleteRunOutput(
+	ctx context.Context,
+	runID controllers.RunID,
+	stdOutPath string,
+	stdErrPath string,
+) error {
+	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+		return nil
 	}
-	select {
-	case <-runState.connMgr.Done():
-	case <-ctx.Done():
-		log.V(1).Info("Context cancelled while waiting for terminal connection manager to shut down")
+
+	paths := compactOutputPaths(stdOutPath, stdErrPath)
+	if len(paths) == 0 {
+		return nil
 	}
+
+	runState, found := r.runningProcesses.Load(runID)
+	if !found {
+		return removeExecutableOutputPaths(ctx, paths)
+	}
+
+	var immediatePaths []string
+	runState.outputCleanupLock.Lock()
+	for _, path := range paths {
+		if runStateOwnsOutputPath(runState, path) && !runState.outputFilesClosed {
+			if !slices.Contains(runState.outputPathsToDelete, path) {
+				runState.outputPathsToDelete = append(runState.outputPathsToDelete, path)
+			}
+			continue
+		}
+		immediatePaths = append(immediatePaths, path)
+	}
+	runState.outputCleanupLock.Unlock()
+
+	return removeExecutableOutputPaths(ctx, immediatePaths)
 }
 
-// closeProcessRunResources releases the OS resources owned by a process run:
-// the stdout/stderr capture files (for non-terminal runs) and the PTY (for
-// terminal runs). It is safe to call multiple times. The ConnManager owned by
-// a terminal run is NOT closed here — its lifetime is governed by its parent
-// context and by process-exit observation; callers that need to observe its
-// shutdown should wait on connMgr.Done().
-func closeProcessRunResources(runState *processRunState) error {
+// closeRunFiles closes files associated with a process run
+// (including the pseudo-terminal the process is using, if any).
+// The passed context is used to control the timeout of the cleanup operation.
+// If nil, a default timeout of 2 seconds is used.
+func closeRunFiles(ctx context.Context, runState *processRunState) error {
 	var closeErr error
+	if ctx == nil {
+		var ctxCancel context.CancelFunc
+		ctx, ctxCancel = context.WithTimeout(context.Background(), defaultProcessCleanupTimeout)
+		defer ctxCancel()
+	}
+
+	runState.outputCleanupLock.Lock()
 	for _, file := range []*os.File{runState.stdOutFile, runState.stdErrFile} {
 		if file != nil {
 			fileErr := file.Close()
@@ -609,21 +712,65 @@ func closeProcessRunResources(runState *processRunState) error {
 			}
 		}
 	}
+	runState.outputFilesClosed = true
+	closeErr = errors.Join(closeErr, removeExecutableOutputPaths(ctx, runState.outputPathsToDelete))
+	runState.outputCleanupLock.Unlock()
+
 	if runState.ptp != nil && runState.ptp.PTY != nil {
 		ptyErr := runState.ptp.PTY.Close()
 		if ptyErr != nil && !errors.Is(ptyErr, os.ErrClosed) {
 			closeErr = errors.Join(closeErr, ptyErr)
 		}
 	}
+
+	if runState.connMgr != nil {
+		runState.connMgr.Shutdown()
+		select {
+		case <-runState.connMgr.Done():
+		case <-ctx.Done():
+			closeErr = errors.Join(closeErr, fmt.Errorf("context cancelled while waiting for terminal connection manager to shut down: %w", ctx.Err()))
+		}
+	}
+
 	return closeErr
+}
+
+func compactOutputPaths(paths ...string) []string {
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path != "" && !slices.Contains(result, path) {
+			result = append(result, path)
+		}
+	}
+	return result
+}
+
+func runStateOwnsOutputPath(runState *processRunState, path string) bool {
+	return (runState.stdOutFile != nil && runState.stdOutFile.Name() == path) ||
+		(runState.stdErrFile != nil && runState.stdErrFile.Name() == path)
+}
+
+func removeExecutableOutputPaths(ctx context.Context, paths []string) error {
+	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+		return nil
+	}
+
+	var removeErr error
+	for _, path := range paths {
+		pathErr := logs.RemoveWithRetry(ctx, path)
+		if pathErr != nil {
+			removeErr = errors.Join(removeErr, fmt.Errorf("could not remove Executable output file %q: %w", path, pathErr))
+		}
+	}
+	return removeErr
 }
 
 func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, error) {
 	// Persistent output files are keyed by resource UID to keep paths unique across persistent Executable instances.
 	// Kubernetes UIDs are effectively unique, so collisions between different Executable objects are not expected.
 	fileName := fmt.Sprintf("%s_%s", exe.UID, stream)
-	if !exe.Spec.Persistent {
-		return usvc_io.OpenTempFile(fileName, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	if !executableIsPersistent(exe) {
+		return usvc_io.CreateNewTempFile(fileName, osutil.PermissionOnlyOwnerReadWrite)
 	}
 
 	dir, dirErr := persistentExecutableOutputDir()
@@ -634,14 +781,18 @@ func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, e
 		return nil, fmt.Errorf("could not prepare persistent Executable output directory: %w", ensureDirErr)
 	}
 
-	return usvc_io.OpenFile(filepath.Join(dir, fileName), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	return usvc_io.CreateNewFile(filepath.Join(dir, fileName), osutil.PermissionOnlyOwnerReadWrite)
 }
 
 func executableOutputWriter(exe *apiv1.Executable, file *os.File) usvc_io.WriteSyncerCloser {
-	if exe.Spec.Persistent {
+	if executableIsPersistent(exe) {
 		return file
 	}
 	return usvc_io.NewTimestampWriter(file)
+}
+
+func executableIsPersistent(exe *apiv1.Executable) bool {
+	return exe.Spec.EffectiveMode() == apiv1.ExecutableModePersistent
 }
 
 func makeCommand(exe *apiv1.Executable) *exec.Cmd {
@@ -660,4 +811,5 @@ func pidToRunID(pid process.Pid_t) controllers.RunID {
 }
 
 var _ controllers.ExecutableRunner = (*ProcessExecutableRunner)(nil)
+var _ controllers.ExecutableOutputCleanupRunner = (*ProcessExecutableRunner)(nil)
 var _ controllers.PersistentExecutableRunner = (*ProcessExecutableRunner)(nil)

@@ -24,7 +24,9 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/termpty"
+	"github.com/microsoft/dcp/internal/testutil/containertest"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	usvc_random "github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -274,6 +276,12 @@ func TestContainerTerminalDeletionTearsDownPty(t *testing.T) {
 		t.Fatal("timed out waiting for TestPty from container attach factory")
 	}
 
+	// Status should report the configured terminal socket path.
+	running := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.TerminalSocketPath != "", nil
+	})
+	require.Equal(t, socketPath, running.Status.TerminalSocketPath, "Status should report the configured terminal socket path")
+
 	// Sanity check: the socket file exists before deletion.
 	_, statErr := os.Stat(socketPath)
 	require.NoError(t, statErr, "socket file should exist before deletion")
@@ -284,6 +292,72 @@ func TestContainerTerminalDeletionTearsDownPty(t *testing.T) {
 		return attached.TestPty.IsClosed(), nil
 	})
 	require.NoError(t, pollErr, "expected TestPty to be closed after Container deletion")
+
+	// DCP owns the listen-mode socket file, so it must be removed once the terminal is torn down.
+	removalErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		_, pollStatErr := os.Stat(socketPath)
+		return errors.Is(pollStatErr, os.ErrNotExist), nil
+	})
+	require.NoError(t, removalErr, "terminal socket file should be removed after Container deletion")
+}
+
+// TestContainerTerminalGeneratesSocketPathWhenUDSPathEmpty verifies that a terminal
+// Container created with an empty UDSPath reaches Running with a DCP-generated socket
+// path reported in Status, that the socket exists and serves while Running, and that the
+// generated file is removed once the Container is deleted.
+func TestContainerTerminalGeneratesSocketPathWhenUDSPathEmpty(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const ctrName = "test-ctr-term-autopath"
+	ctr := makeTerminalContainer(ctrName, "") // empty UDSPath: DCP generates the socket path.
+
+	infoCh := containerAttachFactoryDispatcher.InstallHandler(
+		t, ctr.Spec.ContainerName,
+		ctrl_testutil.NewTestPtyContainerAttachFactory(testProcessExecutor))
+
+	require.NoError(t, client.Create(ctx, ctr), "create Container")
+
+	_, _ = ensureContainerRunning(t, ctx, ctr)
+	var attached *ctrl_testutil.AttachedTerminalInfo
+	select {
+	case attached = <-infoCh:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for TestPty from container attach factory")
+	}
+
+	running := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.TerminalSocketPath != "", nil
+	})
+	generatedPath := running.Status.TerminalSocketPath
+	require.NotEmpty(t, generatedPath, "Status should report the DCP-generated terminal socket path")
+	require.Truef(t, strings.HasPrefix(generatedPath, usvc_io.DcpTempDir()),
+		"generated socket path %q should live under the DCP temp dir %q", generatedPath, usvc_io.DcpTempDir())
+	t.Cleanup(func() { _ = os.Remove(generatedPath) })
+
+	_, statErr := os.Stat(generatedPath)
+	require.NoError(t, statErr, "generated socket file should exist while Running")
+
+	// The generated socket must actually serve HMP v1 clients.
+	conn := dialTerminalSocketWhenReady(t, ctx, generatedPath)
+	hello := drainHelloAndStateSync(t, ctx, conn)
+	require.Equal(t, 1, hello.Version)
+	_ = conn.Close()
+
+	require.NoError(t, client.Delete(ctx, ctr), "delete Container")
+
+	pollErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		return attached.TestPty.IsClosed(), nil
+	})
+	require.NoError(t, pollErr, "expected TestPty to be closed after Container deletion")
+
+	removalErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		_, pollStatErr := os.Stat(generatedPath)
+		return errors.Is(pollStatErr, os.ErrNotExist), nil
+	})
+	require.NoError(t, removalErr, "generated terminal socket file should be removed after Container deletion")
 }
 
 // Verifies that when the container attach factory returns an error,
@@ -318,23 +392,37 @@ func TestContainerTerminalAttachFailure(t *testing.T) {
 // ====================================================================================
 
 // TestContainerTerminalEndToEndWithRealOrchestrator exercises the full container
-// terminal path through Docker/Podman attach to a real container running an
-// interactive busybox shell. It is gated by SkipIfTrueContainerOrchestratorNotEnabled
-// (i.e., DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR=true).
+// terminal path through each supported runtime using an interactive busybox shell.
 func TestContainerTerminalEndToEndWithRealOrchestrator(t *testing.T) {
-	testutil.SkipIfTrueContainerOrchestratorNotEnabled(t)
-
 	t.Parallel()
 
 	const testTimeout = 3 * time.Minute
-	ctx, cancel := testutil.GetTestContext(t, testTimeout)
-	defer cancel()
+	testCtx, testCancel := testutil.GetTestContext(t, testTimeout)
+	t.Cleanup(testCancel)
+	containertest.ForEachHealthyRuntime(t, testCtx, testContainerTerminalWithRealOrchestrator)
+}
 
-	serverInfo, teInfo, startupErr := StartAdvancedTestEnvironment(
+// Verifies a shell echo round trip and terminal-exit notification through the container controller for one real runtime.
+func testContainerTerminalWithRealOrchestrator(
+	t *testing.T,
+	runtimeCtx context.Context,
+	runtime containertest.Runtime,
+) {
+	ctx, cancel := context.WithCancel(runtimeCtx)
+	defer cancel()
+	tracker := containertest.NewResourceTracker(t, runtime)
+	containerName := containertest.UniqueName(t, "container-terminal")
+	require.NoError(t, tracker.TrackContainer(containerName))
+
+	serverInfo, teInfo, startupErr := StartAdvancedTestEnvironmentWithOptions(
 		ctx,
 		ContainerController,
-		t.Name(),
-		NoSeparateWorkingDir,
+		containertest.UniqueName(t, "terminal-environment"),
+		t.TempDir(),
+		AdvancedTestEnvironmentOptions{
+			ApiServerFlags:        ctrl_testutil.ApiServerUseTrueContainerOrchestrator,
+			ContainerOrchestrator: runtime.Orchestrator,
+		},
 	)
 	require.NoError(t, startupErr, "failed to start advanced test environment")
 	defer teInfo.ProcessExecutor.Dispose()
@@ -342,15 +430,14 @@ func TestContainerTerminalEndToEndWithRealOrchestrator(t *testing.T) {
 
 	apiClient := serverInfo.Client
 	socketPath := pickContainerTerminalSocketPath(t)
-	const ctrName = "test-ctr-term-e2e"
 
 	ctr := &apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      ctrName,
+			Name:      containerName,
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			ContainerName: ctrName,
+			ContainerName: containerName,
 			Image:         "busybox:latest",
 			Command:       "sh",
 			Args:          []string{"-i"},
@@ -360,6 +447,9 @@ func TestContainerTerminalEndToEndWithRealOrchestrator(t *testing.T) {
 				Rows:    40,
 			},
 		},
+	}
+	for _, label := range tracker.Labels() {
+		ctr.Spec.Labels = append(ctr.Spec.Labels, apiv1.ContainerLabel{Key: label.Key, Value: label.Value})
 	}
 
 	require.NoError(t, apiClient.Create(ctx, ctr), "create Container")

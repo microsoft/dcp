@@ -50,14 +50,18 @@ func NewRunControllersCommand(log *logger.Logger) *cobra.Command {
 	runControllersCmd := &cobra.Command{
 		Use:   "run-controllers",
 		Short: "Runs the standard DCP controllers (for Executable, Container, and ContainerVolume objects)",
-		RunE:  runControllers(controllerLog),
-		Args:  cobra.NoArgs,
+		Long: `Runs the standard DCP controllers (for Executable, Container, and ContainerVolume objects).
+
+If --workload-id is set, newly-created persistent Containers, Executables, ContainerNetworks, and ContainerVolumes are associated with that workload ID. If --workload-id is not set, DCP_WORKLOAD_ID is used when present. The cleanup command can stop persistent resources associated with a workload ID.`,
+		RunE: runControllers(controllerLog),
+		Args: cobra.NoArgs,
 	}
 
 	kubeconfig.EnsureKubeconfigFlag(runControllersCmd.Flags())
 	kubeconfig.EnsureKubeconfigPortFlag(runControllersCmd.Flags())
 
 	container_flags.EnsureRuntimeFlag(runControllersCmd.Flags())
+	cmds.AddWorkloadIDFlag(runControllersCmd)
 
 	cmds.AddMonitorFlags(runControllersCmd)
 	notifications.AddNotificationSocketFlag(runControllersCmd.Flags())
@@ -118,7 +122,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return fmt.Errorf("cannot set up connection to the API server without kubeconfig file: %w", err)
 		}
 
-		stateStore, stateStoreErr := statestore.Open(ctrlCtx, statestore.Options{})
+		stateStore, stateStoreErr := statestore.Open(ctrlCtx, statestore.Options{Log: log})
 		if stateStoreErr != nil {
 			return fmt.Errorf("failed to initialize state store: %w", stateStoreErr)
 		}
@@ -139,6 +143,10 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		}
 		networking.ConfigureStateStorePortAllocator(stateStore, leaseOwner)
 		startInvalidPersistentExecutableRecordCleanup(ctrlCtx, stateStore, leaseOwner, log)
+		workloadID, workloadIDErr := cmds.GetWorkloadIDFromFlags(cmd.Flags())
+		if workloadIDErr != nil {
+			return workloadIDErr
+		}
 
 		trySetupNotificationHandler(ctrlCtx, log)
 
@@ -180,6 +188,17 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 
 		const defaultControllerName = ""
 
+		namespaceCtrl := controllers.NewNamespaceReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("NamespaceReconciler"),
+		)
+		if err = namespaceCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "Unable to set up Namespace controller")
+			return err
+		}
+
 		serviceCtrl := controllers.NewServiceReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
@@ -192,6 +211,11 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		if err = serviceCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up Service controller")
 			return err
+		}
+		logicalServiceCtrl := controllers.NewLogicalServiceReconciler(ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalServiceReconciler"), nil)
+		if logicalServiceSetupErr := logicalServiceCtrl.SetupWithManager(mgr, defaultControllerName); logicalServiceSetupErr != nil {
+			log.Error(logicalServiceSetupErr, "Unable to set up LogicalService controller")
+			return logicalServiceSetupErr
 		}
 
 		if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
@@ -209,6 +233,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			controllers.ExecutableReconcilerConfig{
 				StateStore:         stateStore,
 				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         workloadID,
 			},
 		)
 		if err = exCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
@@ -239,11 +264,132 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 				StateStore:                 stateStore,
 				ResourceLeaseOwner:         leaseOwner,
 				ProcessExecutor:            processExecutor,
+				WorkloadID:                 workloadID,
 			},
 		)
 		if err = containerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up Container controller")
 			return err
+		}
+
+		logicalContainerCtrl := controllers.NewLogicalContainerReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("LogicalContainerReconciler"),
+			containerOrchestrator,
+			controllers.LogicalContainerReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: workloadID,
+			},
+		)
+		if logicalContainerSetupErr := logicalContainerCtrl.SetupWithManager(mgr, defaultControllerName); logicalContainerSetupErr != nil {
+			log.Error(logicalContainerSetupErr, "Unable to set up LogicalContainer controller")
+			return logicalContainerSetupErr
+		}
+
+		logicalNetworkCtrl := controllers.NewLogicalContainerNetworkReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalContainerNetworkReconciler"),
+			containerOrchestrator, harvester,
+			controllers.LogicalContainerNetworkReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: workloadID,
+			},
+		)
+		if logicalNetworkSetupErr := logicalNetworkCtrl.SetupWithManager(mgr, defaultControllerName); logicalNetworkSetupErr != nil {
+			log.Error(logicalNetworkSetupErr, "Unable to set up LogicalContainerNetwork controller")
+			return logicalNetworkSetupErr
+		}
+
+		outputCleanupQueue := resiliency.NewWorkQueue(ctrlCtx, controllers.MaxConcurrentReconciles)
+		logicalProcessCtrl := controllers.NewLogicalProcessReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalProcessReconciler"), processExecutor,
+			outputCleanupQueue,
+			controllers.LogicalProcessReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: workloadID,
+			},
+		)
+		if logicalProcessSetupErr := logicalProcessCtrl.SetupWithManager(mgr, defaultControllerName); logicalProcessSetupErr != nil {
+			log.Error(logicalProcessSetupErr, "Unable to set up LogicalProcess controller")
+			return logicalProcessSetupErr
+		}
+
+		physicalContainerImageCtrl := controllers.NewPhysicalContainerImageReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerImageReconciler"),
+			containerOrchestrator,
+			outputCleanupQueue,
+			controllers.PhysicalContainerImageReconcilerConfig{StateStore: stateStore, ResourceLeaseOwner: leaseOwner},
+		)
+		if err = physicalContainerImageCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "Unable to set up PhysicalContainerImage controller")
+			return err
+		}
+
+		physicalContainerCtrl := controllers.NewPhysicalContainerReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerReconciler"),
+			containerOrchestrator,
+			processExecutor,
+		)
+		if err = physicalContainerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "Unable to set up PhysicalContainer controller")
+			return err
+		}
+
+		physicalContainerNetworkCtrl := controllers.NewPhysicalContainerNetworkReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerNetworkReconciler"),
+			containerOrchestrator,
+		)
+		if err = physicalContainerNetworkCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "Unable to set up PhysicalContainerNetwork controller")
+			return err
+		}
+
+		physicalContainerVolumeCtrl := controllers.NewPhysicalContainerVolumeReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerVolumeReconciler"),
+			containerOrchestrator,
+		)
+		if err = physicalContainerVolumeCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "Unable to set up PhysicalContainerVolume controller")
+			return err
+		}
+
+		physicalProcessCtrl := controllers.NewPhysicalProcessReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalProcessReconciler"),
+			processExecutor,
+			outputCleanupQueue,
+		)
+		if err = physicalProcessCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "Unable to set up PhysicalProcess controller")
+			return err
+		}
+
+		physicalExecCtrl := controllers.NewPhysicalContainerExecReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("PhysicalContainerExecReconciler"), containerOrchestrator,
+			outputCleanupQueue,
+		)
+		if physicalExecSetupErr := physicalExecCtrl.SetupWithManager(mgr, defaultControllerName); physicalExecSetupErr != nil {
+			log.Error(physicalExecSetupErr, "Unable to set up PhysicalContainerExec controller")
+			return physicalExecSetupErr
+		}
+		logicalExecCtrl := controllers.NewLogicalContainerExecReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalContainerExecReconciler"),
+		)
+		if logicalExecSetupErr := logicalExecCtrl.SetupWithManager(mgr, defaultControllerName); logicalExecSetupErr != nil {
+			log.Error(logicalExecSetupErr, "Unable to set up LogicalContainerExec controller")
+			return logicalExecSetupErr
 		}
 
 		containerExecCtrl := controllers.NewContainerExecReconciler(
@@ -264,6 +410,11 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetAPIReader(),
 			log.WithName("VolumeReconciler"),
 			containerOrchestrator,
+			controllers.VolumeReconcilerConfig{
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         workloadID,
+			},
 		)
 		if err = volumeCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up ContainerVolume controller")
@@ -280,6 +431,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			controllers.NetworkReconcilerConfig{
 				StateStore:         stateStore,
 				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         workloadID,
 			},
 		)
 		if err = networkCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
@@ -292,7 +444,6 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			controllers.ContainerNetworkTunnelProxyReconcilerConfig{
-				Orchestrator:            containerOrchestrator,
 				ProcessExecutor:         processExecutor,
 				MakeTunnelControlClient: dcptunproto.NewTunnelControlClient,
 			},

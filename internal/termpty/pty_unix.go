@@ -169,7 +169,7 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 	}
 
 	exitHandler := process.NewConcurrentProcessExitHandler()
-	pid, startTime, startWait, startErr := pe.StartProcess(ctx, cmd, exitHandler, spec.CreationFlags, nil)
+	handle, startWait, startErr := pe.StartProcess(ctx, cmd, exitHandler, spec.CreationFlags, nil)
 	if startErr != nil {
 		_ = pty.Close() // best effort
 		return nil, fmt.Errorf("failed to start process: %w", startErr)
@@ -185,8 +185,7 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 
 	ptp := PseudoTerminalProcess{
 		PTY:              pty,
-		PID:              pid,
-		IdentityTime:     startTime,
+		Handle:           handle,
 		StartWaitForExit: startWait,
 		ExitHandler:      exitHandler,
 		Executor:         pe,

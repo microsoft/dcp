@@ -8,13 +8,13 @@
 package process
 
 import (
-	"time"
+	"context"
 
 	"github.com/go-logr/logr"
 )
 
 // StopViaConsole stops the process. Console attachment is Windows-specific, so this is a
 // regular StopProcess call on non-Windows platforms.
-func StopViaConsole(_ logr.Logger, executor Executor, pid Pid_t, startTime time.Time, options ...ProcessStopOption) error {
-	return executor.StopProcess(pid, startTime, options...)
+func StopViaConsole(ctx context.Context, _ logr.Logger, executor Executor, handle ProcessHandle, options ...ProcessStopOption) error {
+	return executor.StopProcess(ctx, handle, options...)
 }

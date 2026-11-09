@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 )
 
 const (
@@ -144,4 +145,19 @@ func isRoot(path string) bool {
 // Should NOT be used for security-sensitive validation.
 func HasOnlyValidFilenameChars(name string) bool {
 	return validFilenameCharsRegex.MatchString(name)
+}
+
+func SameCleanPath(left string, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if leftAbs, leftErr := filepath.Abs(left); leftErr == nil {
+		left = leftAbs
+	}
+	if rightAbs, rightErr := filepath.Abs(right); rightErr == nil {
+		right = rightAbs
+	}
+	if IsWindows() {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }

@@ -25,11 +25,14 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 )
 
+var updateProcThreadAttributeProc = windows.NewLazySystemDLL("kernel32.dll").NewProc("UpdateProcThreadAttribute")
+
 // windowsPTY is a PTY implementation for Windows OS that leverages the Windows Console API.
 // Read(), Write(), and Resize() are goroutine-safe.
 // The Close() method is also goroutine-safe, but invoking Close() while other methods are in progress
 // may lead to an I/O error.
 type windowsPTY struct {
+	conpty       conPTYProvider
 	hConsole     windows.Handle
 	outputRead   windows.Handle
 	inputWrite   windows.Handle
@@ -82,7 +85,7 @@ func (wp *windowsPTY) Resize(cols, rows uint16) error {
 	// windowsConsoleSize/normalizeTerminalDimensions substitutes defaults for
 	// zero dimensions; we reject zeros above so only the upper-bound clamp matters here.
 	consoleSize := windowsConsoleSize(cols, rows)
-	return windows.ResizePseudoConsole(hConsole, consoleSize)
+	return wp.conpty.resizePseudoConsole(hConsole, consoleSize)
 }
 
 func (wp *windowsPTY) Close() error {
@@ -90,7 +93,7 @@ func (wp *windowsPTY) Close() error {
 	defer wp.lock.Unlock()
 
 	if wp.hConsole != 0 && wp.hConsole != windows.InvalidHandle {
-		windows.ClosePseudoConsole(wp.hConsole)
+		wp.conpty.closePseudoConsole(wp.hConsole)
 		wp.hConsole = windows.InvalidHandle
 	}
 
@@ -106,6 +109,11 @@ var _ = PTY((*windowsPTY)(nil))
 
 // startProcessWithTerminal allocates a new Windows console and starts a process attached to it.
 func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *CommandSpec) (*PseudoTerminalProcess, error) {
+	consoleAPI, loadErr := getConPTY()
+	if loadErr != nil {
+		return nil, loadErr
+	}
+
 	var inputRead, inputWrite, outputRead, outputWrite windows.Handle
 	inputPipeErr := windows.CreatePipe(&inputRead, &inputWrite, nil, 0)
 	if inputPipeErr != nil {
@@ -120,37 +128,37 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 	initialCols, initialRows := NormalizeTerminalDimensions(spec.Cols, spec.Rows)
 	var hConsole windows.Handle
 	consoleSize := windowsConsoleSize(initialCols, initialRows)
-	createConsoleErr := windows.CreatePseudoConsole(consoleSize, inputRead, outputWrite, 0, &hConsole)
+	createConsoleErr := consoleAPI.createPseudoConsole(consoleSize, inputRead, outputWrite, &hConsole)
 	if createConsoleErr != nil {
 		_ = closeHandles(inputRead, inputWrite, outputRead, outputWrite)
 		return nil, fmt.Errorf("failed to create Windows console: %w", createConsoleErr)
 	}
 
 	exitHandler := process.NewConcurrentProcessExitHandler()
-	pid, startTime, startWait, startErr := pe.StartProcess(
+	handle, startWait, startErr := pe.StartProcess(
 		ctx,
 		spec.Cmd,
 		exitHandler,
 		spec.CreationFlags,
-		func(cmd *exec.Cmd) (process.Pid_t, process.Waitable, error) {
-			return createProcessWithConsole(cmd, hConsole, spec.CreationFlags)
+		func(startCtx context.Context, cmd *exec.Cmd) (process.ProcessHandle, process.Waitable, error) {
+			return createProcessWithConsole(startCtx, cmd, hConsole, spec.CreationFlags)
 		})
 	if startErr != nil {
-		windows.ClosePseudoConsole(hConsole)
+		consoleAPI.closePseudoConsole(hConsole)
 		_ = closeHandles(inputRead, inputWrite, outputRead, outputWrite)
 		return nil, fmt.Errorf("failed to start process: %w", startErr)
 	}
 
 	ptp := &PseudoTerminalProcess{
 		PTY: &windowsPTY{
+			conpty:       consoleAPI,
 			hConsole:     hConsole,
 			outputRead:   outputRead,
 			inputWrite:   inputWrite,
 			otherHandles: []windows.Handle{inputRead, outputWrite},
 			lock:         &sync.Mutex{},
 		},
-		PID:              pid,
-		IdentityTime:     startTime,
+		Handle:           handle,
 		StartWaitForExit: startWait,
 		ExitHandler:      exitHandler,
 		Executor:         pe,
@@ -160,12 +168,13 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 }
 
 func createProcessWithConsole(
+	ctx context.Context,
 	cmd *exec.Cmd,
 	hConsole windows.Handle,
 	flags process.ProcessCreationFlag,
-) (process.Pid_t, process.Waitable, error) {
+) (process.ProcessHandle, process.Waitable, error) {
 	if len(cmd.Args) == 0 || cmd.Args[0] != cmd.Path || cmd.Path == "" {
-		return process.UnknownPID, nil, fmt.Errorf("missing or invalid command path")
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("missing or invalid command path")
 	}
 
 	commandLine := windows.ComposeCommandLine(cmd.Args)
@@ -174,7 +183,7 @@ func createProcessWithConsole(
 	}
 	commandLinePtr, commandLineErr := windows.UTF16PtrFromString(commandLine)
 	if commandLineErr != nil {
-		return process.UnknownPID, nil, fmt.Errorf("could not convert command line to UTF-16: %w", commandLineErr)
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("could not convert command line to UTF-16: %w", commandLineErr)
 	}
 
 	var workingDir *uint16
@@ -182,23 +191,19 @@ func createProcessWithConsole(
 		var workingDirErr error
 		workingDir, workingDirErr = windows.UTF16PtrFromString(cmd.Dir)
 		if workingDirErr != nil {
-			return process.UnknownPID, nil, fmt.Errorf("could not convert working directory to UTF-16: %w", workingDirErr)
+			return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("could not convert working directory to UTF-16: %w", workingDirErr)
 		}
 	}
 
 	attributeList, attributeListErr := windows.NewProcThreadAttributeList(1)
 	if attributeListErr != nil {
-		return process.UnknownPID, nil, fmt.Errorf("could not create new thread attribute list: %w", attributeListErr)
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("could not create new thread attribute list: %w", attributeListErr)
 	}
 	defer attributeList.Delete()
 
-	updateAttributeErr := attributeList.Update(
-		windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-		unsafe.Pointer(uintptr(hConsole)),
-		unsafe.Sizeof(hConsole),
-	)
+	updateAttributeErr := updatePseudoConsoleAttribute(attributeList, hConsole)
 	if updateAttributeErr != nil {
-		return process.UnknownPID, nil, fmt.Errorf("could not update thread attribute list: %w", updateAttributeErr)
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("could not update thread attribute list: %w", updateAttributeErr)
 	}
 
 	startupInfoEx := windows.StartupInfoEx{
@@ -240,7 +245,7 @@ func createProcessWithConsole(
 
 	envBlock, envBlockErr := createEnvironmentBlock(cmd.Env)
 	if envBlockErr != nil {
-		return process.UnknownPID, nil, envBlockErr
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, envBlockErr
 	}
 	var envBlockPtr *uint16
 	if envBlock != nil {
@@ -262,7 +267,7 @@ func createProcessWithConsole(
 		&processInformation,
 	)
 	if createProcessErr != nil {
-		return process.UnknownPID, nil, fmt.Errorf("could not start process: %w", createProcessErr)
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("could not start process: %w", createProcessErr)
 	}
 
 	runtime.KeepAlive(envBlock)
@@ -270,10 +275,33 @@ func createProcessWithConsole(
 
 	_ = closeHandles(processInformation.Thread) // best effort
 
-	pid := process.Uint32_ToPidT(processInformation.ProcessId)
+	handle, handleErr := process.ProcessHandleFromNativeHandle(processInformation.Process)
+	if handleErr != nil {
+		rollbackErr := process.RollbackNativeProcess(context.WithoutCancel(ctx), processInformation.Process)
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, errors.Join(handleErr, rollbackErr)
+	}
 	waitable := newWindowsProcessHandle(processInformation.Process, cmd, flags)
 
-	return pid, waitable, nil
+	return handle, waitable, nil
+}
+
+func updatePseudoConsoleAttribute(attributeList *windows.ProcThreadAttributeListContainer, hConsole windows.Handle) error {
+	// PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE expects the HPCON value itself, not a
+	// pointer to a Go variable containing the handle.
+	result, _, callErr := updateProcThreadAttributeProc.Call(
+		uintptr(unsafe.Pointer(attributeList.List())),
+		0,
+		windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+		uintptr(hConsole),
+		unsafe.Sizeof(hConsole),
+		0,
+		0,
+	)
+	runtime.KeepAlive(attributeList)
+	if result == 0 {
+		return callErr
+	}
+	return nil
 }
 
 func closeHandles(handles ...windows.Handle) error {
@@ -314,8 +342,8 @@ func createEnvironmentBlock(env []string) ([]uint16, error) {
 	return utf16.Encode([]rune(block)), nil
 }
 
-// windowsProcessHandle represents a Windows process handle.
-// Implements process.Waitable (specifically process.WaitableWithExitCode) and io.Closer.
+// windowsProcessHandle represents a ConPTY-backed Windows process handle.
+// It reports that classic-console control events cannot reach the process.
 // All methods are goroutine-safe.
 type windowsProcessHandle struct {
 	hProcess windows.Handle
@@ -373,6 +401,17 @@ func (wph *windowsProcessHandle) Wait() error {
 	return wph.waitOnce()
 }
 
+func (wph *windowsProcessHandle) Abort(ctx context.Context) error {
+	wph.lock.Lock()
+	nativeHandle := wph.hProcess
+	wph.hProcess = windows.InvalidHandle
+	wph.lock.Unlock()
+	if nativeHandle == windows.InvalidHandle {
+		return os.ErrClosed
+	}
+	return process.RollbackNativeProcess(ctx, nativeHandle)
+}
+
 func (wph *windowsProcessHandle) ExitCode() int32 {
 	wph.lock.Lock()
 	defer wph.lock.Unlock()
@@ -385,6 +424,10 @@ func (wph *windowsProcessHandle) Info() string {
 
 func (wph *windowsProcessHandle) Flags() process.ProcessCreationFlag {
 	return wph.flags
+}
+
+func (*windowsProcessHandle) WindowsConsoleAvailability() process.WindowsConsoleAvailability {
+	return process.WindowsConsoleAvailabilityUnavailable
 }
 
 func (wph *windowsProcessHandle) Close() error {
@@ -400,3 +443,4 @@ func (wph *windowsProcessHandle) Close() error {
 
 var _ process.Waitable = (*windowsProcessHandle)(nil)
 var _ process.ExitCodeSource = (*windowsProcessHandle)(nil)
+var _ process.WindowsConsoleAvailabilitySource = (*windowsProcessHandle)(nil)

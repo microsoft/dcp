@@ -119,7 +119,7 @@ func TestCleanupInvalidPersistentExecutableRecordsSkipsRecordsWithHeldLease(t *t
 	stateStore := openPersistentProcessCleanupTestStore(t, ctx)
 	heldLeaseOwner, heldLeaseOwnerErr := statestore.CurrentResourceLeaseOwner()
 	require.NoError(t, heldLeaseOwnerErr)
-	cleanupLeaseOwner := process.ProcessTreeItem{
+	cleanupLeaseOwner := process.ProcessHandle{
 		Pid:          heldLeaseOwner.Pid,
 		IdentityTime: heldLeaseOwner.IdentityTime.Add(-time.Hour),
 	}
@@ -228,8 +228,7 @@ func openPersistentProcessCleanupTestStore(t *testing.T, ctx context.Context) *s
 
 	stateStorePath := filepath.Join(t.TempDir(), "state-store", "state.sqlite3")
 	stateStore, openErr := statestore.Open(ctx, statestore.Options{
-		Path:        stateStorePath,
-		BusyTimeout: 500 * time.Millisecond,
+		Path: stateStorePath,
 	})
 	require.NoError(t, openErr)
 	t.Cleanup(func() {
@@ -242,7 +241,7 @@ func createPersistentProcessCleanupLog(t *testing.T, dir string, name string) st
 	t.Helper()
 
 	path := filepath.Join(dir, name)
-	file, openErr := usvc_io.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	file, openErr := usvc_io.CreateNewFile(path, osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, openErr)
 	require.NoError(t, file.Close())
 	t.Cleanup(func() {

@@ -37,17 +37,52 @@ const (
 	ContainerNetworkStateNotFound ContainerNetworkState = "NotFound"
 )
 
+// +kubebuilder:validation:Enum=session;persistent;existing;cleanup
+type ContainerNetworkMode string
+
+const (
+	// ContainerNetworkModeSession creates the network with the ContainerNetwork resource and removes it when the resource is deleted.
+	ContainerNetworkModeSession ContainerNetworkMode = "session"
+	// ContainerNetworkModePersistent creates or reuses the network and leaves it running when the resource is deleted.
+	ContainerNetworkModePersistent ContainerNetworkMode = "persistent"
+	// ContainerNetworkModeExisting reuses an existing network but does not create or delete it.
+	ContainerNetworkModeExisting ContainerNetworkMode = "existing"
+	// ContainerNetworkModeCleanup reuses an existing network without creating it, then removes it when the resource is deleted.
+	ContainerNetworkModeCleanup ContainerNetworkMode = "cleanup"
+)
+
+var supportedContainerNetworkModes = []string{
+	string(ContainerNetworkModeSession),
+	string(ContainerNetworkModePersistent),
+	string(ContainerNetworkModeExisting),
+	string(ContainerNetworkModeCleanup),
+}
+
 // ContainerNetworkSpec defines the desired state of a ContainerNetwork
 // +k8s:openapi-gen=true
 type ContainerNetworkSpec struct {
 	// Name of the network (if omitted, a name is generated based on the resource name)
 	NetworkName string `json:"networkName,omitempty"`
 
-	// Shouild IPv6 be enabled for the network?
+	// Should IPv6 be enabled for the network?
 	IPv6 bool `json:"ipv6,omitempty"`
+
+	// Controls how the network is created, reused, and cleaned up.
+	// Ignored when persistent is true.
+	Mode ContainerNetworkMode `json:"mode,omitempty"`
 
 	// Should this network be created and persisted between DCP runs?
 	Persistent bool `json:"persistent,omitempty"`
+}
+
+func (cns ContainerNetworkSpec) EffectiveMode() ContainerNetworkMode {
+	if cns.Persistent {
+		return ContainerNetworkModePersistent
+	}
+	if cns.Mode == "" {
+		return ContainerNetworkModeSession
+	}
+	return cns.Mode
 }
 
 // ContainerNetworkStatus defines the current state of a ContainerNetwork
@@ -156,11 +191,34 @@ func (cn *ContainerNetwork) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 
-	if cn.Spec.Persistent && cn.Spec.NetworkName == "" {
-		errorList = append(errorList, field.Required(field.NewPath("spec", "networkName"), "networkName must be set to a value when persistent is true"))
+	if cn.Spec.Persistent {
+		if cn.Spec.NetworkName == "" {
+			errorList = append(errorList, field.Required(field.NewPath("spec", "networkName"), "networkName must be set to a value when persistent is true"))
+		}
+		return errorList
+	}
+
+	if cn.Spec.Mode != "" && !containerNetworkModeSupported(cn.Spec.Mode) {
+		errorList = append(errorList, field.NotSupported(field.NewPath("spec", "mode"), cn.Spec.Mode, supportedContainerNetworkModes))
+	}
+
+	if cn.Spec.EffectiveMode() != ContainerNetworkModeSession && cn.Spec.NetworkName == "" {
+		errorList = append(errorList, field.Required(field.NewPath("spec", "networkName"), "networkName must be set to a value when mode requires an existing or persistent network"))
 	}
 
 	return errorList
+}
+
+func containerNetworkModeSupported(mode ContainerNetworkMode) bool {
+	switch mode {
+	case ContainerNetworkModeSession,
+		ContainerNetworkModePersistent,
+		ContainerNetworkModeExisting,
+		ContainerNetworkModeCleanup:
+		return true
+	default:
+		return false
+	}
 }
 
 func (cn *ContainerNetwork) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
@@ -173,6 +231,10 @@ func (cn *ContainerNetwork) ValidateUpdate(ctx context.Context, obj runtime.Obje
 
 	if oldNetwork.Spec.IPv6 != cn.Spec.IPv6 {
 		errorList = append(errorList, field.Invalid(field.NewPath("spec", "ipv6"), cn.Spec.IPv6, "ipv6 is immutable"))
+	}
+
+	if oldNetwork.Spec.EffectiveMode() != cn.Spec.EffectiveMode() {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "mode"), "mode cannot be changed"))
 	}
 
 	// Make sure Persistent isn't changed after the network is created

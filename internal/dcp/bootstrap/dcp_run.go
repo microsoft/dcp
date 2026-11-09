@@ -38,6 +38,7 @@ type DcpRunEventHandlers struct {
 
 // DcpRun() starts the API server and controllers and waits for the signal to terminate them.
 // It serves as a "skeleton" for commands such as "up" and "start-apiserver".
+// It waits for API server shutdown, bounded by the server's graceful-shutdown timeout, before returning.
 //
 // onApiServerReady, when non-nil, is invoked once the API server's listener is accepting
 // connections and the kubeconfig file has been saved. It is intentionally called before
@@ -104,12 +105,14 @@ func DcpRun(
 	})
 
 	hostedServices := []hosting.Service{}
+	builtInControllerServiceName := ""
 	if !serverOnly {
 		// Always run the built-in controllers
 		controllerService, controllerServiceErr := newRunControllersService(cwd, invocationFlags, log)
 		if controllerServiceErr != nil {
 			return fmt.Errorf("could not start built-in controllers: %w", controllerServiceErr)
 		}
+		builtInControllerServiceName = controllerService.Name()
 		hostedServices = append(hostedServices, controllerService)
 
 		// Also run any extension controllers
@@ -144,6 +147,10 @@ func DcpRun(
 	if apiServerErr != nil {
 		return apiServerErr
 	}
+	defer func() {
+		cancelApiServerCtx()
+		<-apiServerShutdown
+	}()
 
 	if onApiServerReady != nil {
 		onApiServerReady()
@@ -167,6 +174,9 @@ func DcpRun(
 	}
 
 	var err error
+	// controllerHostErr records a fatal failure of the built-in controller host so it can be
+	// reported after the regular shutdown sequence completes.
+	var controllerHostErr error
 	// Wait for the user to signal that they want to shut down.
 	for {
 		select {
@@ -181,19 +191,25 @@ func DcpRun(
 			// If we are in server-only mode (no standard controllers) such as when running tests,
 			// there is no point trying to clean up all resources on shutdown because no actual resources are involved,
 			// it is all test mocks. Another case to avoid full cleanup is when shutdown request explicitly disables it.
+			// Hosted services still need to shut down before we return so child processes can release session files.
 			if serverOnly || !resourceCleanup.IsFull() {
-				return nil // No cleanup needed, just return
+				err = shutdownHost()
+				if err != nil {
+					log.Error(err, "Failed to shut down hosted services")
+					return errors.Join(controllerHostErr, err)
+				}
+				return controllerHostErr
 			}
 
 			err = appmgmt.CleanupAllResources(log)
 			err = errors.Join(err, shutdownHost())
 			if err != nil {
 				log.Error(err, "Failed to cleanup some resources. This may lead to resource leaks.")
-				return err
+				return errors.Join(controllerHostErr, err)
 			}
 
 			log.Info("Shutdown complete.")
-			return nil
+			return controllerHostErr
 
 		case <-apiServerShutdown:
 			err = fmt.Errorf("API server shut down unexpectedly. Graceful shutdown is not possible.")
@@ -208,7 +224,17 @@ func DcpRun(
 
 			if msg.Err != nil {
 				log.Error(msg.Err, fmt.Sprintf("Controller '%s' exited with an error. Application may not function correctly.", msg.ServiceName))
-				// Let the user decide whether to continue or not, do not break the loop yet.
+
+				// Nothing reconciles application resources without the built-in controllers, so keeping
+				// the API server alive would leave clients waiting indefinitely for resources that will
+				// never become ready. Shut down instead so the failure is visible. Resource cleanup also
+				// needs the controllers, so requesting it here (along with the cleanup notifications that
+				// go with it) would only delay the failure without releasing anything.
+				if msg.ServiceName == builtInControllerServiceName && controllerHostErr == nil {
+					controllerHostErr = fmt.Errorf("DCP cannot run without the built-in controllers: %w", msg.Err)
+					log.Error(controllerHostErr, "Terminating...")
+					runConfig.RequestShutdown(apiserver.ApiServerResourceCleanupNone)
+				}
 			}
 		}
 	}
@@ -217,14 +243,7 @@ func DcpRun(
 func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (notifications.UnixSocketNotificationSource, error) {
 	const noNotifications = "Notifications will not be sent to controller process"
 
-	socketPath, socketPathErr := notifications.PrepareNotificationSocketPath("", "dcp-notify-sock-")
-	if socketPathErr != nil {
-		retErr := fmt.Errorf("failed to prepare notification socket path: %w", socketPathErr)
-		log.Error(socketPathErr, noNotifications)
-		return nil, retErr
-	}
-
-	ns, nsErr := notifications.NewNotificationSource(lifetimeCtx, socketPath, log)
+	ns, nsErr := notifications.NewNotificationSource(lifetimeCtx, "", "dcp-notify-sock-", log)
 	if nsErr != nil {
 		retErr := fmt.Errorf("failed to create notification source: %w", nsErr)
 		log.Error(nsErr, noNotifications)
@@ -243,12 +262,11 @@ func newRunControllersService(appRootDir string, invocationFlags []string, log l
 	// Add monitor PID to the command args
 	allArgs = append(allArgs, "--monitor", strconv.Itoa(monitorPid))
 
-	// Add monitor start time if available
-	rootPid := process.Uint32_ToPidT(uint32(monitorPid))
-	identityTime := process.ProcessIdentityTime(rootPid)
-	if !identityTime.IsZero() {
-		allArgs = append(allArgs, "--monitor-identity-time", identityTime.Format(osutil.RFC3339MiliTimestampFormat))
+	monitorHandle, identityErr := process.This()
+	if identityErr != nil {
+		return nil, fmt.Errorf("could not identify controller host parent: %w", identityErr)
 	}
+	allArgs = append(allArgs, "--monitor-identity-time", monitorHandle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat))
 
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
 	if dcpPathErr != nil {

@@ -20,6 +20,8 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -29,14 +31,18 @@ import (
 	"github.com/stretchr/testify/require"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/containertest"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -53,15 +59,64 @@ var (
 	restClient                       *clientgorest.RESTClient
 	containerOrchestrator            *ctrl_testutil.TestContainerOrchestrator
 	testStateStore                   *statestore.Store
-	testResourceLeaseOwner           process.ProcessTreeItem
+	testResourceLeaseOwner           process.ProcessHandle
 )
 
 const pollImmediately = true // Don't wait before polling for the first time
 
+func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.CreateContainerOptions {
+	return containers.CreateContainerOptions{
+		Image:          spec.Image,
+		Entrypoint:     spec.Command,
+		Command:        spec.Args,
+		Env:            spec.Env,
+		EnvFiles:       spec.EnvFiles,
+		Ports:          v1PortsToCreateContainerPorts(spec.Ports),
+		VolumeMounts:   v1VolumeMountsToCreateContainerVolumeMounts(spec.VolumeMounts),
+		Labels:         v1LabelsToMap(spec.Labels),
+		RestartPolicy:  containers.ContainerRestartPolicy(spec.RestartPolicy),
+		PullPolicy:     containers.ImagePullPolicy(spec.PullPolicy),
+		RunArgs:        spec.RunArgs,
+		AttachTerminal: spec.Terminal != nil,
+	}
+}
+
+func v1LabelsToMap(labels []apiv1.ContainerLabel) map[string]string {
+	return maps.SliceToMap(labels, func(label apiv1.ContainerLabel) (string, string) {
+		return label.Key, label.Value
+	})
+}
+
+func v1PortsToCreateContainerPorts(ports []apiv1.ContainerPort) []containers.CreateContainerPort {
+	retval := make([]containers.CreateContainerPort, len(ports))
+	for i, port := range ports {
+		retval[i] = containers.CreateContainerPort{
+			HostPort:      port.HostPort,
+			ContainerPort: port.ContainerPort,
+			Protocol:      string(port.Protocol),
+			HostIP:        port.HostIP,
+		}
+	}
+	return retval
+}
+
+func v1VolumeMountsToCreateContainerVolumeMounts(mounts []apiv1.VolumeMount) []containers.CreateContainerVolumeMount {
+	retval := make([]containers.CreateContainerVolumeMount, len(mounts))
+	for i, mount := range mounts {
+		retval[i] = containers.CreateContainerVolumeMount{
+			Type:     containers.VolumeMountType(mount.Type),
+			Source:   mount.Source,
+			Target:   mount.Target,
+			ReadOnly: mount.ReadOnly,
+		}
+	}
+	return retval
+}
+
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	serverInfo, teInfo, envStartErr := StartTestEnvironment(ctx, AllControllers, "IntegrationTests", "")
+	serverInfo, teInfo, envStartErr := StartTestEnvironment(nil, ctx, AllControllers, "IntegrationTests", "")
 	if envStartErr != nil {
 		cancel()
 		panic(envStartErr)
@@ -91,6 +146,13 @@ func TestMain(m *testing.M) {
 		case <-time.After(5 * time.Second):
 		}
 
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		if cleanupErr := containertest.CleanupActiveResources(cleanupCtx); cleanupErr != nil {
+			log.Error(cleanupErr, "Could not clean active true-runtime test resources")
+			code = 1
+		}
+		cleanupCancel()
+
 		os.Exit(code)
 	}()
 
@@ -118,6 +180,15 @@ func waitObjectAssumesStateEx[T commonapi.ObjectStruct, PT commonapi.PObjectStru
 		t.Fatal(err)
 	}
 	return updatedObject
+}
+
+func requireReadyCondition(t *testing.T, conditions []metav1.Condition, status metav1.ConditionStatus, reason apiv2.ConditionReason) {
+	t.Helper()
+
+	readyCondition := apimeta.FindStatusCondition(conditions, string(apiv2.ConditionReady))
+	require.NotNil(t, readyCondition)
+	require.Equal(t, status, readyCondition.Status)
+	require.Equal(t, string(reason), readyCondition.Reason)
 }
 
 func waitServiceReady(t *testing.T, ctx context.Context, svcName types.NamespacedName) *apiv1.Service {

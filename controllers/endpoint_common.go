@@ -125,7 +125,7 @@ func releaseEndpointPortReservation(ctx context.Context, client ctrl_client.Clie
 	return releaseEndpointPortReservationForProtocol(ctx, svc.Spec.Protocol, endpoint, log)
 }
 
-func releaseEndpointPortReservationForProtocol(ctx context.Context, protocol apiv1.PortProtocol, endpoint *apiv1.Endpoint, log logr.Logger) error {
+func releaseEndpointPortReservationForProtocol(ctx context.Context, protocol commonapi.PortProtocol, endpoint *apiv1.Endpoint, log logr.Logger) error {
 	ip, ipErr := portReservationIP(endpoint.Spec.Address)
 	if ipErr != nil {
 		return ipErr

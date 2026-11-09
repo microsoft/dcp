@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -29,18 +29,18 @@ import (
 
 type protocolTestCase struct {
 	name     string
-	protocol apiv1.PortProtocol
+	protocol commonapi.PortProtocol
 }
 
 var (
 	protocolTestCases = []protocolTestCase{
 		{
 			name:     "TCP",
-			protocol: apiv1.TCP,
+			protocol: commonapi.PortProtocolTCP,
 		},
 		{
 			name:     "UDP",
-			protocol: apiv1.UDP,
+			protocol: commonapi.PortProtocolUDP,
 		},
 	}
 
@@ -124,7 +124,7 @@ func TestCheckPortAvailable(t *testing.T) {
 					var listener io.Closer
 					ap := AddressAndPort(address, port)
 
-					if tc.protocol == apiv1.UDP {
+					if tc.protocol == commonapi.PortProtocolUDP {
 						udpaddr, resolutionErr := net.ResolveUDPAddr("udp", ap)
 						require.NoError(t, resolutionErr, "Could not resolve UDP address %s", ap)
 						listener, err = net.ListenUDP("udp", udpaddr)
@@ -212,7 +212,7 @@ func TestPortAllocationCandidatesCoverRange(t *testing.T) {
 		{Start: 26020, End: 26022},
 	})
 
-	candidateIterator := newStateStorePortAllocationCandidateIterator(ranges, string(apiv1.TCP), IPv4LocalhostDefaultAddress)
+	candidateIterator := newStateStorePortAllocationCandidateIterator(ranges, string(commonapi.PortProtocolTCP), IPv4LocalhostDefaultAddress)
 	candidates := []int32{}
 	for {
 		candidate, ok := candidateIterator.Next()
@@ -235,7 +235,7 @@ func TestPortAllocationCandidatesCoverOverlappingRangesOnce(t *testing.T) {
 		{Start: 26020, End: 26021},
 	})
 
-	candidateIterator := newStateStorePortAllocationCandidateIterator(ranges, string(apiv1.TCP), IPv4LocalhostDefaultAddress)
+	candidateIterator := newStateStorePortAllocationCandidateIterator(ranges, string(commonapi.PortProtocolTCP), IPv4LocalhostDefaultAddress)
 	candidates := []int32{}
 	for {
 		candidate, ok := candidateIterator.Next()
@@ -303,12 +303,12 @@ func TestGetFreePortWithStateStoreUsesConfiguredRange(t *testing.T) {
 	owner, ownerErr := process.This()
 	require.NoError(t, ownerErr)
 	ConfigureStateStorePortAllocator(store, owner)
-	defer ConfigureStateStorePortAllocator(nil, process.ProcessTreeItem{})
+	defer ConfigureStateStorePortAllocator(nil, process.ProcessHandle{})
 	t.Setenv(DCP_PORT_ALLOCATOR, portAllocatorModeStateStore)
 	t.Setenv(DCP_PORT_ALLOCATION_RANGE, "26010-26020")
 
-	port1, port1Err := GetFreePort(ctx, apiv1.TCP, IPv4LocalhostDefaultAddress, log)
-	port2, port2Err := GetFreePort(ctx, apiv1.TCP, IPv4LocalhostDefaultAddress, log)
+	port1, port1Err := GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+	port2, port2Err := GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
 
 	require.NoError(t, port1Err)
 	require.NoError(t, port2Err)
@@ -317,4 +317,74 @@ func TestGetFreePortWithStateStoreUsesConfiguredRange(t *testing.T) {
 	require.LessOrEqual(t, port1, int32(26020))
 	require.GreaterOrEqual(t, port2, int32(26010))
 	require.LessOrEqual(t, port2, int32(26020))
+}
+
+// Verifies that IpToString brackets native IPv6 addresses without depending on host network
+// capabilities and preserves IPv4 formatting, including IPv4-mapped addresses.
+func TestIpToString(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		address  string
+		expected string
+	}{
+		{IPv4LocalhostDefaultAddress, IPv4LocalhostDefaultAddress},
+		{net.IPv6loopback.String(), IPv6LocalhostDefaultAddress},
+		{net.IPv6zero.String(), IPv6AllInterfaceAddress},
+		{"2001:db8::1", "[2001:db8::1]"},
+		{"::ffff:127.0.0.1", IPv4LocalhostDefaultAddress},
+	} {
+		t.Run(testCase.address, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, testCase.expected, IpToString(net.ParseIP(testCase.address)))
+		})
+	}
+}
+
+// Verifies that AddressAndPort preserves IPv4/hostname authorities and the bracketed
+// representation of IPv6 literals, including mapped and zoned addresses.
+func TestAddressAndPortIPv6Formatting(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		address  string
+		expected string
+		host     string
+	}{
+		{IPv4LocalhostDefaultAddress, IPv4LocalhostDefaultAddress + ":5001", IPv4LocalhostDefaultAddress},
+		{Localhost, Localhost + ":5001", Localhost},
+		{"service.example", "service.example:5001", "service.example"},
+		{IPv6LocalhostDefaultAddress, IPv6LocalhostDefaultAddress + ":5001", net.IPv6loopback.String()},
+		{"[2001:db8::1]", "[2001:db8::1]:5001", "2001:db8::1"},
+		{"[::ffff:127.0.0.1]", "[::ffff:127.0.0.1]:5001", "::ffff:127.0.0.1"},
+		{"[fe80::1%lo0]", "[fe80::1%lo0]:5001", "fe80::1%lo0"},
+	} {
+		t.Run(testCase.address, func(t *testing.T) {
+			t.Parallel()
+			authority := AddressAndPort(testCase.address, 5001)
+			require.Equal(t, testCase.expected, authority)
+			host, port, splitErr := net.SplitHostPort(authority)
+			require.NoError(t, splitErr)
+			require.Equal(t, testCase.host, host)
+			require.Equal(t, "5001", port)
+		})
+	}
+}
+
+// Verifies that TCP and UDP address parsers accept authorities built from bracketed IPv6 endpoints,
+// matching the formatting boundary used by the runtime proxy without opening network connections.
+func TestAddressAndPortParsesIPv6ProxyEndpoint(t *testing.T) {
+	t.Parallel()
+	for _, address := range []string{IPv6LocalhostDefaultAddress, "[2001:db8::1]"} {
+		t.Run(address, func(t *testing.T) {
+			t.Parallel()
+			authority := AddressAndPort(address, 5001)
+			tcpAddress, tcpErr := net.ResolveTCPAddr("tcp", authority)
+			require.NoError(t, tcpErr)
+			require.True(t, net.ParseIP(ToStandaloneAddress(address)).Equal(tcpAddress.IP))
+			require.Equal(t, 5001, tcpAddress.Port)
+			udpAddress, udpErr := net.ResolveUDPAddr("udp", authority)
+			require.NoError(t, udpErr)
+			require.True(t, net.ParseIP(ToStandaloneAddress(address)).Equal(udpAddress.IP))
+			require.Equal(t, 5001, udpAddress.Port)
+		})
+	}
 }

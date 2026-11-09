@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	std_slices "slices"
 	"strconv"
 	"strings"
 	"time"
@@ -95,7 +94,7 @@ func inspectContainer(findContext context.Context, o containers.ContainerOrchest
 	})
 }
 
-func inspectContainerIfExists(findContext context.Context, o containers.ContainerOrchestrator, containerID string) (*containers.InspectedContainer, error) {
+func inspectContainerIfExists(findContext context.Context, o containers.InspectContainers, containerID string) (*containers.InspectedContainer, error) {
 	b := exponentialBackoff(containerInspectionTimeout)
 	return resiliency.RetryGet(findContext, b, func() (*containers.InspectedContainer, error) {
 		inspectedCtrs, err := o.InspectContainers(findContext, containers.InspectContainersOptions{Containers: []string{containerID}})
@@ -285,26 +284,6 @@ func startContainer(
 	return inspected, err
 }
 
-func disconnectNetwork(ctx context.Context, o containers.ContainerOrchestrator, opts containers.DisconnectNetworkOptions) error {
-	action := func(ctx context.Context) error {
-		return o.DisconnectNetwork(ctx, opts)
-	}
-
-	verify := func(ctx context.Context) (*containers.InspectedNetwork, error) {
-		return verifyNetworkState(ctx, o, opts.Network, func(i *containers.InspectedNetwork) error {
-			if !std_slices.ContainsFunc(i.Containers, func(c containers.InspectedNetworkContainer) bool {
-				return c.Name == opts.Container || strings.HasPrefix(c.Id, opts.Container)
-			}) {
-				return nil
-			}
-			return fmt.Errorf("container %s is still connected to network %s", opts.Container, opts.Network)
-		})
-	}
-
-	_, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)
-	return err
-}
-
 func inspectNetwork(ctx context.Context, o containers.NetworkOrchestrator, network string) (*containers.InspectedNetwork, error) {
 	b := exponentialBackoff(networkInspectionTimeout)
 	return resiliency.RetryGet(ctx, b, func() (*containers.InspectedNetwork, error) {
@@ -319,7 +298,7 @@ func inspectNetwork(ctx context.Context, o containers.NetworkOrchestrator, netwo
 	})
 }
 
-func inspectNetworkIfExists(ctx context.Context, o containers.ContainerOrchestrator, network string) (*containers.InspectedNetwork, error) {
+func inspectNetworkIfExists(ctx context.Context, o containers.InspectNetworks, network string) (*containers.InspectedNetwork, error) {
 	b := exponentialBackoff(networkInspectionTimeout)
 	return resiliency.RetryGet(ctx, b, func() (*containers.InspectedNetwork, error) {
 		networks, err := o.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{network}})
@@ -449,9 +428,13 @@ func removeVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeNa
 	return err
 }
 
-func createVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeName string) (*containers.InspectedVolume, error) {
+func createVolume(
+	ctx context.Context,
+	o containers.VolumeOrchestrator,
+	options containers.CreateVolumeOptions,
+) (*containers.InspectedVolume, error) {
 	action := func(ctx context.Context) error {
-		err := o.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName})
+		err := o.CreateVolume(ctx, options)
 
 		if errors.Is(err, containers.ErrAlreadyExists) {
 			return backoff.Permanent(err)
@@ -461,7 +444,7 @@ func createVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeNa
 	}
 
 	verify := func(ctx context.Context) (*containers.InspectedVolume, error) {
-		return inspectContainerVolume(ctx, o, volumeName)
+		return inspectContainerVolume(ctx, o, options.Name)
 	}
 
 	inspected, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)
@@ -469,9 +452,9 @@ func createVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeNa
 }
 
 // Returns the host address and port for the given service producer port.
-// The spec is checked for a matching apiv1.ContainerPort in the spec, first by matching on apiv1.ContainerPort.HostPort,
-// and if unsuccessful, by matching on apiv1.ContainerPort.ContainerPort.
-// If a matching ContainerPort is found in the spec, and that matching ContainerPort has a HostPort property set
+// The spec is checked for a matching port, first by matching on the host port, and if
+// unsuccessful, by matching on the container port.
+// If a matching port is found in the spec, and that matching port has a HostPort property set
 // (i.e. host port is not auto-assigned), the host address and port in the spec are returned.
 // Otherwise the function takes the inspected container and searches for port config that matches the service producer port
 // (on the container side). If found, corresponding host port and host IP are returned.
@@ -481,17 +464,26 @@ func getHostAddressAndPortForContainerPort(
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
 ) (string, int32, error) {
-	var matchedPort apiv1.ContainerPort
+	return getHostAddressAndPortForPorts(v1PortsToCreateContainerPorts(ctrSpec.Ports), serviceProducerPort, inspected, log)
+}
+
+func getHostAddressAndPortForPorts(
+	ports []containers.CreateContainerPort,
+	serviceProducerPort int32,
+	inspected *containers.InspectedContainer,
+	log logr.Logger,
+) (string, int32, error) {
+	var matchedPort containers.CreateContainerPort
 	found := false
 
-	matchedByHost := slices.Select(ctrSpec.Ports, func(p apiv1.ContainerPort) bool {
+	matchedByHost := slices.Select(ports, func(p containers.CreateContainerPort) bool {
 		return p.HostPort == serviceProducerPort
 	})
 	if len(matchedByHost) > 0 {
 		matchedPort = matchedByHost[0]
 		found = true
 	} else {
-		matchedByContainer := slices.Select(ctrSpec.Ports, func(p apiv1.ContainerPort) bool {
+		matchedByContainer := slices.Select(ports, func(p containers.CreateContainerPort) bool {
 			return p.ContainerPort == serviceProducerPort
 		})
 		if len(matchedByContainer) > 0 {
@@ -559,10 +551,10 @@ func ensureBaseImageForLayers(
 	ctx context.Context,
 	o containers.ContainerOrchestrator,
 	image string,
-	pullPolicy apiv1.PullPolicy,
+	pullPolicy containers.ImagePullPolicy,
 	log logr.Logger,
 ) (*containers.InspectedImage, error) {
-	if pullPolicy == apiv1.PullPolicyAlways {
+	if pullPolicy == containers.PullPolicyAlways {
 		log.V(1).Info("Pulling base image (pull policy: always)", "Image", image)
 		_, pullErr := o.PullImage(ctx, containers.PullImageOptions{Image: image})
 		if pullErr != nil {
@@ -580,12 +572,12 @@ func ensureBaseImageForLayers(
 		return nil, fmt.Errorf("inspecting base image %q: %w", image, inspectErr)
 	}
 
-	if pullPolicy == apiv1.PullPolicyNever {
+	if pullPolicy == containers.PullPolicyNever {
 		return nil, fmt.Errorf("base image %q not available locally (pull policy: never): %w", image, inspectErr)
 	}
 
 	// Default / "missing" behavior: image not found, so pull and retry inspect
-	if pullPolicy != apiv1.PullPolicyAlways {
+	if pullPolicy != containers.PullPolicyAlways {
 		log.V(1).Info("Base image not found locally, pulling", "Image", image)
 		_, pullErr := o.PullImage(ctx, containers.PullImageOptions{Image: image})
 		if pullErr != nil {

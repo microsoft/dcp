@@ -1,0 +1,1206 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+package controllers
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	controller "sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/resiliency"
+)
+
+const (
+	physicalContainerNetworkConnectionContainerRefField = ".spec.containerRef"
+	physicalContainerNetworkConnectionNetworkRefField   = ".spec.networkRef"
+)
+
+var (
+	physicalContainerNetworkFinalizer string = fmt.Sprintf("%s/physicalcontainernetwork-reconciler", apiv2.GroupVersion.Group)
+
+	physicalContainerNetworkDataInitializers = map[physicalContainerNetworkState]physicalContainerNetworkDataInitializerFunc{
+		physicalContainerNetworkStateResolve:             handlePhysicalContainerNetworkResolve,
+		physicalContainerNetworkStateCreate:              handlePhysicalContainerNetworkCreating,
+		physicalContainerNetworkStateCreated:             handlePhysicalContainerNetworkCreated,
+		physicalContainerNetworkStateReplaced:            handlePhysicalContainerNetworkCreated,
+		physicalContainerNetworkStateCreateRetry:         handlePhysicalContainerNetworkRecoverableCreateFailed,
+		physicalContainerNetworkStateReplaceRetry:        handlePhysicalContainerNetworkRecoverableCreateFailed,
+		physicalContainerNetworkStateCreateFailed:        handlePhysicalContainerNetworkCreateFailed,
+		physicalContainerNetworkStateReplacementRejected: handlePhysicalContainerNetworkBuiltInNetworkNotRemovable,
+		physicalContainerNetworkStateReady:               handlePhysicalContainerNetworkReady,
+		physicalContainerNetworkStateMissing:             handlePhysicalContainerNetworkUnknown,
+		physicalContainerNetworkStateInspectFailed:       handlePhysicalContainerNetworkUnknown,
+		physicalContainerNetworkStateRemove:              handlePhysicalContainerNetworkRemovalInProgress,
+		physicalContainerNetworkStateRemoveRetry:         handlePhysicalContainerNetworkRemovalFailed,
+		physicalContainerNetworkStateRemoved:             handlePhysicalContainerNetworkRemovalCompleted,
+		physicalContainerNetworkStateInvalid:             handlePhysicalContainerNetworkTerminal,
+		0:                                                handleUnknownPhysicalContainerNetworkDataReason,
+	}
+)
+
+type physicalContainerNetworkDataInitializerFunc = stateInitializerFunc[
+	apiv2.PhysicalContainerNetwork, *apiv2.PhysicalContainerNetwork,
+	PhysicalContainerNetworkReconciler, *PhysicalContainerNetworkReconciler,
+	physicalContainerNetworkState,
+	physicalContainerNetworkData, *physicalContainerNetworkData,
+]
+
+type PhysicalContainerNetworkReconciler struct {
+	*ReconcilerBase[apiv2.PhysicalContainerNetwork, *apiv2.PhysicalContainerNetwork]
+
+	orchestrator   containers.NetworkAttachmentOrchestrator
+	networkData    *ObjectStateMap[physicalContainerNetworkDataStateKey, physicalContainerNetworkData, *physicalContainerNetworkData, *apiv2.PhysicalContainerNetwork]
+	operationQueue *resiliency.WorkQueue
+}
+
+func NewPhysicalContainerNetworkReconciler(
+	lifetimeCtx context.Context,
+	client ctrl_client.Client,
+	noCacheClient ctrl_client.Reader,
+	log logr.Logger,
+	orchestrator containers.NetworkAttachmentOrchestrator,
+) *PhysicalContainerNetworkReconciler {
+	return &PhysicalContainerNetworkReconciler{
+		ReconcilerBase: NewReconcilerBase[apiv2.PhysicalContainerNetwork](client, noCacheClient, log, lifetimeCtx),
+		orchestrator:   orchestrator,
+		networkData:    NewObjectStateMap[physicalContainerNetworkDataStateKey, physicalContainerNetworkData, *physicalContainerNetworkData, *apiv2.PhysicalContainerNetwork](),
+		operationQueue: resiliency.NewWorkQueue(lifetimeCtx, MaxConcurrentReconciles),
+	}
+}
+
+func (r *PhysicalContainerNetworkReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
+	indexer := mgr.GetFieldIndexer()
+	containerRefIndexErr := indexer.IndexField(
+		context.Background(),
+		&apiv2.PhysicalContainerNetworkConnection{},
+		physicalContainerNetworkConnectionContainerRefField,
+		func(rawObj ctrl_client.Object) []string {
+			connection := rawObj.(*apiv2.PhysicalContainerNetworkConnection)
+			if connection.Spec.ContainerRef == "" {
+				return nil
+			}
+			containerName := commonapi.AsNamespacedName(connection.Spec.ContainerRef, connection.Namespace)
+			return []string{containerName.Name}
+		},
+	)
+	if containerRefIndexErr != nil {
+		return fmt.Errorf("index PhysicalContainerNetworkConnections by container reference: %w", containerRefIndexErr)
+	}
+
+	networkRefIndexErr := indexer.IndexField(
+		context.Background(),
+		&apiv2.PhysicalContainerNetworkConnection{},
+		physicalContainerNetworkConnectionNetworkRefField,
+		func(rawObj ctrl_client.Object) []string {
+			connection := rawObj.(*apiv2.PhysicalContainerNetworkConnection)
+			if connection.Spec.NetworkRef == "" {
+				return nil
+			}
+			networkName := commonapi.AsNamespacedName(connection.Spec.NetworkRef, connection.Namespace)
+			return []string{networkName.Name}
+		},
+	)
+	if networkRefIndexErr != nil {
+		return fmt.Errorf("index PhysicalContainerNetworkConnections by network reference: %w", networkRefIndexErr)
+	}
+
+	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
+		For(&apiv2.PhysicalContainerNetwork{}).
+		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.PhysicalContainerNetworkList{})), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.PhysicalContainerNetworkConnection{}, handler.EnqueueRequestsFromMapFunc(r.networkForPhysicalContainerNetworkConnection), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.PhysicalContainer{}, handler.EnqueueRequestsFromMapFunc(r.networksForPhysicalContainer), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		WatchesRawSource(r.GetReconciliationEventSource()).
+		Named(name).
+		Complete(r)
+}
+
+func (r *PhysicalContainerNetworkReconciler) networkForPhysicalContainerNetworkConnection(
+	_ context.Context,
+	obj ctrl_client.Object,
+) []reconcile.Request {
+	connection := obj.(*apiv2.PhysicalContainerNetworkConnection)
+	if connection.Spec.NetworkRef == "" {
+		return nil
+	}
+	return []reconcile.Request{{
+		NamespacedName: commonapi.AsNamespacedName(connection.Spec.NetworkRef, connection.Namespace),
+	}}
+}
+
+func (r *PhysicalContainerNetworkReconciler) networksForPhysicalContainer(
+	ctx context.Context,
+	obj ctrl_client.Object,
+) []reconcile.Request {
+	connections := apiv2.PhysicalContainerNetworkConnectionList{}
+	listErr := r.List(
+		ctx,
+		&connections,
+		ctrl_client.InNamespace(obj.GetNamespace()),
+		ctrl_client.MatchingFields{physicalContainerNetworkConnectionContainerRefField: obj.GetName()},
+	)
+	if listErr != nil {
+		r.Log.Error(listErr, "Failed to list PhysicalContainerNetworkConnections for PhysicalContainer", "PhysicalContainer", obj.GetName())
+		return nil
+	}
+
+	networkNames := make(map[types.NamespacedName]struct{}, len(connections.Items))
+	requests := make([]reconcile.Request, 0, len(connections.Items))
+	for i := range connections.Items {
+		networkRef := connections.Items[i].Spec.NetworkRef
+		if networkRef == "" {
+			continue
+		}
+		networkName := commonapi.AsNamespacedName(networkRef, connections.Items[i].Namespace)
+		if _, found := networkNames[networkName]; found {
+			continue
+		}
+		networkNames[networkName] = struct{}{}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: networkName,
+		})
+	}
+	return requests
+}
+
+func (r *PhysicalContainerNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	reader, log := r.StartReconciliation(req)
+
+	if ctx.Err() != nil {
+		log.V(1).Info("Request context expired, nothing to do...")
+		return ctrl.Result{}, nil
+	}
+
+	network := apiv2.PhysicalContainerNetwork{}
+	getErr := reader.Get(ctx, req.NamespacedName, &network)
+	if getErr != nil {
+		if apierrors.IsNotFound(getErr) {
+			log.V(1).Info("PhysicalContainerNetwork not found, nothing to do...")
+			missingUID, missingData := r.networkData.BorrowByNamespacedName(req.NamespacedName)
+			if missingData != nil {
+				missing := &apiv2.PhysicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{UID: types.UID(missingUID)}}
+				defer logger.ReleaseResourceLog(missing.GetResourceId())
+			}
+			// The finalizer normally guarantees the deletion is observed, but drop any lingering
+			// state in case the object disappeared without it (for example a forced deletion).
+			r.networkData.DeleteByNamespacedName(req.NamespacedName)
+			getNotFoundCounter.Add(ctx, 1)
+			return ctrl.Result{}, nil
+		}
+
+		log.Error(getErr, "Failed to Get() the PhysicalContainerNetwork")
+		getFailedCounter.Add(ctx, 1)
+		return ctrl.Result{}, getErr
+	}
+	getSucceededCounter.Add(ctx, 1)
+	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, network.GetResourceId())
+	if owner := metav1.GetControllerOf(&network); owner != nil &&
+		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainerNetwork" && owner.UID != "" {
+		logicalOwner := &apiv2.LogicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}
+		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, logicalOwner.GetResourceId())
+		if forwardErr != nil {
+			log.Error(forwardErr, "Failed to attach logical network system log stream")
+		} else {
+			log = forwardedLog
+		}
+	}
+
+	r.networkData.RunDeferredOps(req.NamespacedName, &network)
+	_, data := r.networkData.BorrowByNamespacedName(network.NamespacedName())
+
+	var change objectChange
+	reconciliationDelay := StandardDelay
+	patch := ctrl_client.MergeFromWithOptions(network.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
+
+	if !network.DeletionTimestamp.IsZero() && !data.operationInProgress() {
+		change, reconciliationDelay = r.handleDeletionRequest(ctx, &network, data, log)
+	} else {
+		change = ensureFinalizer(&network, physicalContainerNetworkFinalizer, log)
+		if change == noChange {
+			change, reconciliationDelay = r.managePhysicalContainerNetwork(ctx, &network, data, log)
+		}
+	}
+
+	return r.SaveChangesWithDelay(ctx, &network, patch, change, reconciliationDelay, nil, log)
+}
+
+func (r *PhysicalContainerNetworkReconciler) managePhysicalContainerNetwork(
+	ctx context.Context,
+	network *apiv2.PhysicalContainerNetwork,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) (objectChange, AdditionalReconciliationDelay) {
+	if data == nil {
+		namespaceReady, namespaceReason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, network.Namespace)
+		if !namespaceReady {
+			namespaceChange := noChange
+			namespacePhase := apiv2.PhysicalContainerNetworkPhasePending
+			namespaceMessage := namespaceReadinessMessage(network.Namespace, namespaceReason)
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to get namespace", "Namespace", network.Namespace)
+				namespacePhase = apiv2.PhysicalContainerNetworkPhaseUnknown
+				namespaceMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+				namespaceChange |= additionalReconciliationNeeded
+			}
+			namespaceChange |= setValue(&network.Status.Phase, namespacePhase)
+			namespaceChange |= setCondition(&network.Status.Conditions, apiv2.ConditionReady,
+				network.Generation, metav1.ConditionFalse, namespaceReason, namespaceMessage)
+			return namespaceChange, StandardDelay
+		}
+		data = &physicalContainerNetworkData{state: physicalContainerNetworkStateResolve}
+		r.networkData.Store(network.NamespacedName(), physicalContainerNetworkDataKey(network), data.Clone())
+	}
+	handler := getStateInitializer(physicalContainerNetworkDataInitializers, data.state, log)
+	change := handler(ctx, r, network, data.state, data, log)
+	_ = r.networkData.Update(network.NamespacedName(), physicalContainerNetworkDataKey(network), data)
+	dataChange, delay, valid := data.applyTo(network)
+	if !valid {
+		log.Error(fmt.Errorf("invalid physical container network state %v", data.state),
+			"PhysicalContainerNetwork reached invalid reconciliation state")
+	}
+	return change | dataChange, delay
+}
+
+func handlePhysicalContainerNetworkResolve(
+	ctx context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	_ physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+
+	networkID := network.Spec.NetworkID
+	if networkID == "" {
+		networkID = data.networkID
+	}
+	if networkID == "" {
+		return reconciler.schedulePhysicalContainerNetworkCreate(network, data, log)
+	}
+	data.networkID = networkID
+	inspected, inspectErr := inspectPhysicalContainerNetwork(ctx, reconciler.orchestrator, networkID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerNetworkStateMissing, ""
+		return additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect resolved network", "NetworkID", networkID)
+		data.state, data.failureMessage = physicalContainerNetworkStateInspectFailed, inspectErr.Error()
+		return additionalReconciliationNeeded
+	}
+	data.state, data.networkID, data.failureMessage = physicalContainerNetworkStateReady, inspected.Id, ""
+	return applyReadyPhysicalContainerNetworkStatus(network, inspected) | additionalReconciliationNeeded
+}
+
+func handlePhysicalContainerNetworkReady(
+	ctx context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	_ physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	networkID := data.networkID
+	inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, reconciler.orchestrator, networkID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state = physicalContainerNetworkStateMissing
+		data.networkID = networkID
+		data.failureMessage = ""
+		return additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect container network", "NetworkID", networkID)
+		data.state = physicalContainerNetworkStateInspectFailed
+		data.networkID = networkID
+		data.failureMessage = fmt.Sprintf("Failed to inspect container network: %v", inspectErr)
+		return noChange
+	}
+
+	data.state = physicalContainerNetworkStateReady
+	data.networkID = inspectedNetwork.Id
+	data.failureMessage = ""
+	change := applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)
+	change |= reconciler.ensurePhysicalContainerNetworkConnections(ctx, network, data, inspectedNetwork, log)
+	return change
+}
+
+func handlePhysicalContainerNetworkUnknown(
+	ctx context.Context, reconciler *PhysicalContainerNetworkReconciler, _ *apiv2.PhysicalContainerNetwork,
+	_ physicalContainerNetworkState, data *physicalContainerNetworkData, log logr.Logger,
+) objectChange {
+	_, inspectErr := inspectPhysicalContainerNetwork(ctx, reconciler.orchestrator, data.networkID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerNetworkStateMissing, ""
+		return noChange
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect unavailable network", "NetworkID", data.networkID)
+		data.state = physicalContainerNetworkStateInspectFailed
+		data.failureMessage = fmt.Sprintf("Failed to inspect container network: %v", inspectErr)
+		return noChange
+	}
+	data.state, data.failureMessage = physicalContainerNetworkStateReady, ""
+	return additionalReconciliationNeeded
+}
+
+func (r *PhysicalContainerNetworkReconciler) schedulePhysicalContainerNetworkCreate(
+	network *apiv2.PhysicalContainerNetwork,
+	currentData *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	stateKey := physicalContainerNetworkDataKey(network)
+	networkConfig := network.Spec.Network
+	data := &physicalContainerNetworkData{
+		state: physicalContainerNetworkStateCreate, workInProgress: true,
+	}
+	if !r.networkData.Update(network.NamespacedName(), stateKey, data) {
+		return additionalReconciliationNeeded
+	}
+	currentData.UpdateFrom(data)
+	networkSnapshot := network.DeepCopy()
+	dataSnapshot := data.Clone()
+	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
+		r.createPhysicalContainerNetwork(operationCtx, networkSnapshot, stateKey, dataSnapshot, log)
+	})
+	if enqueueErr != nil {
+		log.Error(enqueueErr, "Failed to queue PhysicalContainerNetwork create", "NetworkName", networkConfig.NetworkName)
+		data.state = physicalContainerNetworkStateCreateFailed
+		data.workInProgress = false
+		data.failureMessage = fmt.Sprintf("Failed to queue container network create: %v", enqueueErr)
+		currentData.UpdateFrom(data)
+		return noChange
+	}
+
+	log.V(1).Info("Queued PhysicalContainerNetwork create", "NetworkName", networkConfig.NetworkName)
+	return noChange
+}
+
+func (r *PhysicalContainerNetworkReconciler) createPhysicalContainerNetwork(
+	ctx context.Context,
+	network *apiv2.PhysicalContainerNetwork,
+	stateKey physicalContainerNetworkDataStateKey,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) {
+	networkConfig := network.Spec.Network
+	if networkConfig.ReplaceExisting {
+		replaced, replaceErr := r.replacePhysicalContainerNetwork(ctx, network, data, log)
+		if replaceErr != nil {
+			log.Error(replaceErr, "Failed to replace existing container network", "NetworkName", networkConfig.NetworkName)
+
+			data.state = physicalContainerNetworkStateReplaceRetry
+			data.failureMessage = fmt.Sprintf("Failed to replace existing container network: %v", replaceErr)
+			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			r.queuePhysicalContainerNetworkDataResult(network, stateKey, data)
+			return
+		}
+		if !replaced {
+			r.queuePhysicalContainerNetworkDataResult(network, stateKey, data)
+			return
+		}
+	}
+
+	networkID, createErr := r.orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name:   networkConfig.NetworkName,
+		IPv6:   networkConfig.IPv6,
+		Labels: physicalContainerNetworkCreationLabels(network, log),
+	})
+	applyPhysicalContainerNetworkCreateResult(network, data, networkID, createErr, log)
+	r.queuePhysicalContainerNetworkDataResult(network, stateKey, data)
+}
+
+func (r *PhysicalContainerNetworkReconciler) replacePhysicalContainerNetwork(
+	ctx context.Context,
+	network *apiv2.PhysicalContainerNetwork,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) (bool, error) {
+	networkConfig := network.Spec.Network
+	inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, networkConfig.NetworkName)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		return true, nil
+	}
+	if inspectErr != nil {
+		return false, fmt.Errorf("inspect container network %q: %w", networkConfig.NetworkName, inspectErr)
+	}
+	if inspectedNetwork.Id == "" {
+		return false, fmt.Errorf("inspect container network %q returned an empty ID", networkConfig.NetworkName)
+	}
+	if r.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
+
+		data.state = physicalContainerNetworkStateReplacementRejected
+		data.networkID = inspectedNetwork.Id
+		data.failureMessage = fmt.Sprintf("Container network %q is built in and cannot be replaced.", inspectedNetwork.Name)
+		data.retryAfter = time.Time{}
+		return false, nil
+	}
+	if physicalContainerNetworkBelongsToResource(inspectedNetwork, network) {
+
+		data.state = physicalContainerNetworkStateCreated
+		data.networkID = inspectedNetwork.Id
+		data.failureMessage = ""
+		data.retryAfter = time.Time{}
+		log.V(1).Info("Adopted container network created by an earlier attempt", "NetworkID", inspectedNetwork.Id)
+		return false, nil
+	}
+
+	removeErr := r.removeRuntimeNetwork(ctx, inspectedNetwork.Id, log)
+	if removeErr != nil {
+		return false, fmt.Errorf("remove container network %q: %w", inspectedNetwork.Id, removeErr)
+	}
+
+	log.V(1).Info(
+		"Removed existing container network before replacement",
+		"NetworkID", inspectedNetwork.Id,
+		"NetworkName", inspectedNetwork.Name,
+	)
+	return true, nil
+}
+
+func applyPhysicalContainerNetworkCreateResult(
+	network *apiv2.PhysicalContainerNetwork,
+	data *physicalContainerNetworkData,
+	networkID string,
+	createErr error,
+	log logr.Logger,
+) {
+	networkConfig := network.Spec.Network
+	if createErr != nil {
+		log.Error(createErr, "Container network create returned an error; reconciliation will verify the outcome", "NetworkName", networkConfig.NetworkName)
+		data.state = physicalContainerNetworkStateCreateRetry
+		data.failureMessage = fmt.Sprintf("Container network create returned an error: %v", createErr)
+		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+	} else if networkID == "" {
+		log.Error(errors.New("container network create succeeded without returning a network ID"), "Container network create succeeded without returning a network ID", "NetworkName", networkConfig.NetworkName)
+
+		data.state = physicalContainerNetworkStateCreateFailed
+		data.failureMessage = "Container network create succeeded without returning a network ID."
+		data.retryAfter = time.Time{}
+	} else {
+
+		data.state = physicalContainerNetworkStateCreated
+		data.networkID = networkID
+		data.failureMessage = ""
+		data.retryAfter = time.Time{}
+	}
+}
+
+func (r *PhysicalContainerNetworkReconciler) queuePhysicalContainerNetworkDataResult(
+	network *apiv2.PhysicalContainerNetwork,
+	stateKey physicalContainerNetworkDataStateKey,
+	result *physicalContainerNetworkData,
+) {
+	result.workInProgress = false
+
+	queued := r.networkData.QueueDeferredOpForStateKey(network.NamespacedName(), stateKey, func(name types.NamespacedName, currentStateKey physicalContainerNetworkDataStateKey, _ *apiv2.PhysicalContainerNetwork) {
+		_ = r.networkData.Update(name, currentStateKey, result)
+	})
+	if queued {
+		r.ScheduleReconciliation(network.NamespacedName())
+	}
+}
+
+func handlePhysicalContainerNetworkCreating(
+	ctx context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	state physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	if data.state != physicalContainerNetworkStateCreate {
+		return handleUnknownPhysicalContainerNetworkDataReason(ctx, reconciler, network, state, data, log)
+	}
+
+	log.V(1).Info("Container network creation is still in progress")
+	return noChange
+}
+
+func handlePhysicalContainerNetworkCreated(
+	ctx context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	_ physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	if data.state != physicalContainerNetworkStateCreated && data.state != physicalContainerNetworkStateReplaced {
+		return handleUnknownPhysicalContainerNetworkDataReason(ctx, reconciler, network, physicalContainerNetworkStateCreate, data, log)
+	}
+
+	networkID := data.networkID
+	log.V(1).Info("Container network created; saving network status", "NetworkID", networkID)
+	inspected, inspectErr := inspectPhysicalContainerNetwork(ctx, reconciler.orchestrator, networkID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerNetworkStateMissing, ""
+		return additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect created network", "NetworkID", networkID)
+		data.state, data.failureMessage = physicalContainerNetworkStateInspectFailed, inspectErr.Error()
+		return additionalReconciliationNeeded
+	}
+	data.state, data.networkID, data.failureMessage = physicalContainerNetworkStateReady, inspected.Id, ""
+	change := applyReadyPhysicalContainerNetworkStatus(network, inspected)
+	change |= reconciler.ensurePhysicalContainerNetworkConnections(ctx, network, data, inspected, log)
+	return change
+}
+
+func handlePhysicalContainerNetworkCreateFailed(
+	_ context.Context,
+	_ *PhysicalContainerNetworkReconciler,
+	_ *apiv2.PhysicalContainerNetwork,
+	_ physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	log.V(1).Info("Container network creation failed; saving network status", "Message", data.failureMessage)
+	// The failure is terminal: spec is immutable, so no further reconciliation can make progress.
+	return noChange
+}
+
+func handlePhysicalContainerNetworkBuiltInNetworkNotRemovable(
+	ctx context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	_ physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	if data.state != physicalContainerNetworkStateReplacementRejected {
+		return handleUnknownPhysicalContainerNetworkDataReason(ctx, reconciler, network, data.state, data, log)
+	}
+
+	log.V(1).Info("Built-in container network cannot be removed; saving network status", "NetworkID", data.networkID)
+	inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, reconciler.orchestrator, data.networkID)
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect built-in container network", "NetworkID", data.networkID)
+		return noChange
+	}
+
+	change := applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)
+	change &^= additionalReconciliationNeeded
+	return change
+}
+
+func handlePhysicalContainerNetworkRecoverableCreateFailed(
+	ctx context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	state physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	if data.state != physicalContainerNetworkStateCreateRetry && data.state != physicalContainerNetworkStateReplaceRetry {
+		return handleUnknownPhysicalContainerNetworkDataReason(ctx, reconciler, network, state, data, log)
+	}
+
+	networkConfig := network.Spec.Network
+	if time.Now().Before(data.retryAfter) {
+		return additionalReconciliationNeeded
+	}
+
+	inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, reconciler.orchestrator, networkConfig.NetworkName)
+	if inspectErr == nil {
+		if networkConfig.ReplaceExisting &&
+			reconciler.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
+
+			data.state = physicalContainerNetworkStateReplacementRejected
+			data.networkID = inspectedNetwork.Id
+			data.failureMessage = fmt.Sprintf(
+				"Container network %q is built in and cannot be replaced.",
+				inspectedNetwork.Name,
+			)
+			data.retryAfter = time.Time{}
+			return noChange
+		}
+
+		belongsToResource := physicalContainerNetworkBelongsToResource(inspectedNetwork, network)
+		if !belongsToResource && !networkConfig.ReplaceExisting {
+
+			data.state = physicalContainerNetworkStateCreateFailed
+			data.failureMessage = fmt.Sprintf("Container network name %q is already in use.", networkConfig.NetworkName)
+			data.retryAfter = time.Time{}
+			return noChange
+		}
+		if !belongsToResource {
+			log.V(1).Info("Retrying container network replacement", "NetworkID", inspectedNetwork.Id, "NetworkName", inspectedNetwork.Name)
+			return reconciler.schedulePhysicalContainerNetworkCreate(network, data, log)
+		}
+
+		previousFailure := data.failureMessage
+		data.state = physicalContainerNetworkStateCreated
+		data.networkID = inspectedNetwork.Id
+		data.failureMessage = ""
+		data.retryAfter = time.Time{}
+		log.Info("Verified container network created by an earlier attempt", "NetworkID", inspectedNetwork.Id, "PreviousFailure", previousFailure)
+		return additionalReconciliationNeeded
+	}
+	if !errors.Is(inspectErr, containers.ErrNotFound) {
+		log.Error(inspectErr, "Failed to verify container network creation outcome", "NetworkName", networkConfig.NetworkName)
+		data.failureMessage = fmt.Sprintf("Failed to verify whether container network creation succeeded: %v", inspectErr)
+		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		return additionalReconciliationNeeded
+	}
+
+	log.V(1).Info("Retrying container network creation", "NetworkName", networkConfig.NetworkName)
+	return reconciler.schedulePhysicalContainerNetworkCreate(network, data, log)
+}
+
+func handleUnknownPhysicalContainerNetworkDataReason(
+	_ context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	state physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+
+	data.state = physicalContainerNetworkStateInvalid
+	data.workInProgress = false
+	data.failureMessage = fmt.Sprintf("Physical container network reached invalid reconciliation state %v.", state)
+	log.Error(fmt.Errorf("invalid physical network state %v", state), "Container network operation reached invalid state")
+	return noChange
+}
+
+func handlePhysicalContainerNetworkTerminal(
+	_ context.Context,
+	_ *PhysicalContainerNetworkReconciler,
+	_ *apiv2.PhysicalContainerNetwork,
+	_ physicalContainerNetworkState,
+	_ *physicalContainerNetworkData,
+	_ logr.Logger,
+) objectChange {
+	return noChange
+}
+
+func (r *PhysicalContainerNetworkReconciler) handleDeletionRequest(
+	ctx context.Context,
+	network *apiv2.PhysicalContainerNetwork,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) (change objectChange, delay AdditionalReconciliationDelay) {
+	delay = StandardDelay
+	if data == nil {
+		defer logger.ReleaseResourceLog(network.GetResourceId())
+		return deleteFinalizer(network, physicalContainerNetworkFinalizer, log), delay
+	}
+	defer func() {
+		if data != nil {
+			_ = r.networkData.Update(network.NamespacedName(), physicalContainerNetworkDataKey(network), data)
+			dataChange, projectionDelay, valid := data.applyTo(network)
+			change |= dataChange
+			delay = projectionDelay
+			if !valid {
+				log.Error(fmt.Errorf("invalid physical container network state %v", data.state),
+					"PhysicalContainerNetwork reached invalid reconciliation state")
+			}
+		}
+	}()
+	if data.state == physicalContainerNetworkStateRemove || data.state == physicalContainerNetworkStateRemoveRetry || data.state == physicalContainerNetworkStateRemoved {
+		change = handlePhysicalContainerNetworkRemovalState(ctx, r, network, data.state, data, log)
+		if !hasFinalizer(network, physicalContainerNetworkFinalizer) {
+			data = nil
+		}
+		return change, delay
+	}
+	networkConfig := network.Spec.Network
+	createFailed := data.state == physicalContainerNetworkStateCreateFailed ||
+		data.state == physicalContainerNetworkStateReplacementRejected
+	if networkConfig == nil || networkConfig.RetainRuntimeNetwork || createFailed {
+		dataChange, _, valid := data.applyTo(network)
+		if !valid || dataChange&statusChanged != 0 {
+			return dataChange | additionalReconciliationNeeded, delay
+		}
+		r.networkData.DeleteByNamespacedName(network.NamespacedName())
+		data = nil
+		defer logger.ReleaseResourceLog(network.GetResourceId())
+		return deleteFinalizer(network, physicalContainerNetworkFinalizer, log), delay
+	}
+
+	networkID := data.networkID
+	resolveOwnedNetworkByName := networkID == ""
+	return r.schedulePhysicalContainerNetworkRemoval(network, data, networkID, resolveOwnedNetworkByName, log), delay
+}
+
+func handlePhysicalContainerNetworkRemovalState(
+	ctx context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	state physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	switch data.state {
+	case physicalContainerNetworkStateRemove:
+		return handlePhysicalContainerNetworkRemovalInProgress(ctx, reconciler, network, state, data, log)
+	case physicalContainerNetworkStateRemoveRetry:
+		return handlePhysicalContainerNetworkRemovalFailed(ctx, reconciler, network, state, data, log)
+	case physicalContainerNetworkStateRemoved:
+		return handlePhysicalContainerNetworkRemovalCompleted(ctx, reconciler, network, state, data, log)
+	default:
+		return handleUnknownPhysicalContainerNetworkDataReason(ctx, reconciler, network, state, data, log)
+	}
+}
+
+func handlePhysicalContainerNetworkRemovalInProgress(
+	ctx context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	state physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	if data.state != physicalContainerNetworkStateRemove {
+		return handleUnknownPhysicalContainerNetworkDataReason(ctx, reconciler, network, state, data, log)
+	}
+
+	log.V(1).Info("Container network removal is still in progress", "NetworkID", data.networkID)
+	return additionalReconciliationNeeded
+}
+
+func handlePhysicalContainerNetworkRemovalFailed(
+	ctx context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	state physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	if data.state != physicalContainerNetworkStateRemoveRetry {
+		return handleUnknownPhysicalContainerNetworkDataReason(ctx, reconciler, network, state, data, log)
+	}
+
+	if time.Now().Before(data.retryAfter) {
+		return additionalReconciliationNeeded
+	}
+	return reconciler.schedulePhysicalContainerNetworkRemoval(network, data, data.networkID, data.resolveByName, log)
+}
+
+func handlePhysicalContainerNetworkRemovalCompleted(
+	ctx context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	state physicalContainerNetworkState,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	if data.state != physicalContainerNetworkStateRemoved {
+		return handleUnknownPhysicalContainerNetworkDataReason(ctx, reconciler, network, state, data, log)
+	}
+
+	dataChange, _, valid := data.applyTo(network)
+	if !valid || dataChange&statusChanged != 0 {
+		return dataChange | additionalReconciliationNeeded
+	}
+	reconciler.networkData.DeleteByNamespacedName(network.NamespacedName())
+	defer logger.ReleaseResourceLog(network.GetResourceId())
+	return deleteFinalizer(network, physicalContainerNetworkFinalizer, log)
+}
+
+func (r *PhysicalContainerNetworkReconciler) schedulePhysicalContainerNetworkRemoval(
+	network *apiv2.PhysicalContainerNetwork,
+	currentData *physicalContainerNetworkData,
+	networkID string,
+	resolveOwnedNetworkByName bool,
+	log logr.Logger,
+) objectChange {
+	stateKey := physicalContainerNetworkDataKey(network)
+	data := &physicalContainerNetworkData{
+		state: physicalContainerNetworkStateRemove,
+
+		networkID:     networkID,
+		resolveByName: resolveOwnedNetworkByName, workInProgress: true,
+	}
+	if !r.networkData.Update(network.NamespacedName(), stateKey, data) {
+		return additionalReconciliationNeeded
+	}
+	currentData.UpdateFrom(data)
+	networkSnapshot := network.DeepCopy()
+	dataSnapshot := data.Clone()
+	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
+		r.removePhysicalContainerNetwork(operationCtx, networkSnapshot, stateKey, dataSnapshot, log)
+	})
+	if enqueueErr == nil {
+		log.V(1).Info("Queued PhysicalContainerNetwork removal", "NetworkID", networkID)
+		return additionalReconciliationNeeded
+	}
+
+	log.Error(enqueueErr, "Failed to queue PhysicalContainerNetwork removal", "NetworkID", networkID)
+	data.state = physicalContainerNetworkStateRemoveRetry
+	data.workInProgress = false
+	data.failureMessage = fmt.Sprintf("Failed to queue container network removal: %v", enqueueErr)
+	data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+	currentData.UpdateFrom(data)
+	return additionalReconciliationNeeded
+}
+
+func (r *PhysicalContainerNetworkReconciler) removePhysicalContainerNetwork(
+	ctx context.Context,
+	network *apiv2.PhysicalContainerNetwork,
+	stateKey physicalContainerNetworkDataStateKey,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) {
+	networkID := data.networkID
+	var removeErr error
+	if data.resolveByName {
+		inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, network.Spec.Network.NetworkName)
+		switch {
+		case errors.Is(inspectErr, containers.ErrNotFound):
+			networkID = ""
+		case inspectErr != nil:
+			removeErr = fmt.Errorf("verify whether container network creation succeeded: %w", inspectErr)
+		case !physicalContainerNetworkBelongsToResource(inspectedNetwork, network):
+			networkID = ""
+		case inspectedNetwork.Id == "":
+			removeErr = errors.New("owned container network inspection returned an empty ID")
+		default:
+			networkID = inspectedNetwork.Id
+		}
+	}
+
+	if removeErr == nil && networkID != "" {
+		removeErr = r.removeRuntimeNetwork(ctx, networkID, log)
+	}
+
+	data.networkID = networkID
+	if removeErr != nil {
+		log.Error(removeErr, "Failed to remove container network", "NetworkID", networkID)
+
+		data.state = physicalContainerNetworkStateRemoveRetry
+		data.failureMessage = fmt.Sprintf("Failed to remove container network: %v", removeErr)
+		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+	} else {
+
+		data.state = physicalContainerNetworkStateRemoved
+		data.failureMessage = ""
+		data.retryAfter = time.Time{}
+	}
+	r.queuePhysicalContainerNetworkDataResult(network, stateKey, data)
+}
+
+// Disconnects all attached containers and removes the container network.
+func (r *PhysicalContainerNetworkReconciler) removeRuntimeNetwork(ctx context.Context, networkID string, log logr.Logger) error {
+	inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, networkID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		return nil
+	}
+	if inspectErr != nil {
+		return fmt.Errorf("inspect container network before removal: %w", inspectErr)
+	}
+
+	if r.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
+		log.V(1).Info(
+			"Skipping removal of built-in container network",
+			"NetworkID", inspectedNetwork.Id,
+			"NetworkName", inspectedNetwork.Name,
+		)
+		return nil
+	}
+
+	listedContainers, listErr := r.orchestrator.ListContainers(ctx, containers.ListContainersOptions{
+		All: true,
+		Filters: containers.ListContainersFilters{
+			NetworkFilters: []string{inspectedNetwork.Id},
+		},
+	})
+	if listErr != nil {
+		return fmt.Errorf("list containers attached to container network: %w", listErr)
+	}
+
+	attachedContainerIDs := make(map[string]struct{}, len(inspectedNetwork.Containers)+len(listedContainers))
+	for _, attachedContainer := range inspectedNetwork.Containers {
+		attachedContainerIDs[attachedContainer.Id] = struct{}{}
+	}
+	for _, listedContainer := range listedContainers {
+		attachedContainerIDs[listedContainer.Id] = struct{}{}
+	}
+
+	var disconnectErrors error
+	for containerID := range attachedContainerIDs {
+		disconnectErr := r.orchestrator.DisconnectNetwork(ctx, containers.DisconnectNetworkOptions{
+			Network:   inspectedNetwork.Id,
+			Container: containerID,
+			Force:     true,
+		})
+		if disconnectErr != nil && !errors.Is(disconnectErr, containers.ErrNotFound) {
+			disconnectErrors = errors.Join(disconnectErrors, disconnectErr)
+		}
+	}
+	if disconnectErrors != nil {
+		return fmt.Errorf("disconnect all containers from container network: %w", disconnectErrors)
+	}
+
+	_, removeErr := r.orchestrator.RemoveNetworks(ctx, containers.RemoveNetworksOptions{
+		Networks: []string{networkID},
+	})
+	if removeErr == nil || errors.Is(removeErr, containers.ErrNotFound) {
+		return nil
+	}
+
+	return fmt.Errorf("remove container network: %w", removeErr)
+}
+
+func inspectPhysicalContainerNetwork(ctx context.Context, orchestrator containers.NetworkOrchestrator, network string) (*containers.InspectedNetwork, error) {
+	inspectedNetworks, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{network},
+	})
+	// Orchestrators report ErrIncomplete alongside successfully inspected networks, so prefer the
+	// result over the error.
+	if len(inspectedNetworks) > 0 {
+		return &inspectedNetworks[0], nil
+	}
+	if inspectErr != nil {
+		return nil, inspectErr
+	}
+
+	return nil, containers.ErrNotFound
+}
+
+type desiredPhysicalContainerNetworkConnection struct {
+	containerID string
+	aliases     []string
+}
+
+func (r *PhysicalContainerNetworkReconciler) ensurePhysicalContainerNetworkConnections(
+	ctx context.Context,
+	network *apiv2.PhysicalContainerNetwork,
+	data *physicalContainerNetworkData,
+	inspectedNetwork *containers.InspectedNetwork,
+	log logr.Logger,
+) objectChange {
+	connections := apiv2.PhysicalContainerNetworkConnectionList{}
+	listErr := r.List(
+		ctx,
+		&connections,
+		ctrl_client.InNamespace(network.Namespace),
+		ctrl_client.MatchingFields{physicalContainerNetworkConnectionNetworkRefField: network.Name},
+	)
+	if listErr != nil {
+		log.Error(listErr, "Failed to list PhysicalContainerNetworkConnections")
+		return additionalReconciliationNeeded
+	}
+
+	if data.connections == nil {
+		data.connections = make(map[string]int)
+	}
+
+	runtimeStatus := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
+	if !runtimeStatus.IsHealthy() {
+		return additionalReconciliationNeeded
+	}
+
+	desiredConnections := make(map[string]*desiredPhysicalContainerNetworkConnection, len(connections.Items))
+	for i := range connections.Items {
+		connection := &connections.Items[i]
+		container := apiv2.PhysicalContainer{}
+		containerName := commonapi.AsNamespacedName(connection.Spec.ContainerRef, connection.Namespace)
+		containerLookupErr := r.Get(ctx, containerName, &container)
+		switch {
+		case apierrors.IsNotFound(containerLookupErr):
+			continue
+		case containerLookupErr != nil:
+			log.Error(containerLookupErr, "Failed to get referenced PhysicalContainer", "PhysicalContainer", containerName)
+			return additionalReconciliationNeeded
+		case container.Status.ContainerID == "":
+			continue
+		}
+
+		containerID := container.Status.ContainerID
+		desiredConnection := desiredConnections[containerID]
+		if desiredConnection == nil {
+			desiredConnection = &desiredPhysicalContainerNetworkConnection{
+				containerID: containerID,
+			}
+			desiredConnections[containerID] = desiredConnection
+		}
+		desiredConnection.aliases = appendUniqueStrings(desiredConnection.aliases, connection.Spec.Aliases...)
+	}
+
+	connectedContainers := physicalContainerNetworkContainerIDs(inspectedNetwork)
+	change := noChange
+	membershipOperationAttempted := false
+	for containerID := range data.connections {
+		if _, desired := desiredConnections[containerID]; desired {
+			continue
+		}
+		if !physicalContainerNetworkContainsContainer(connectedContainers, containerID) {
+			delete(data.connections, containerID)
+			continue
+		}
+
+		membershipOperationAttempted = true
+		disconnectErr := r.orchestrator.DisconnectNetwork(ctx, containers.DisconnectNetworkOptions{
+			Network:   inspectedNetwork.Id,
+			Container: containerID,
+		})
+		if disconnectErr != nil && !errors.Is(disconnectErr, containers.ErrNotFound) {
+			data.connections[containerID]++
+			if data.connections[containerID]%logAfterFailures == 0 {
+				log.Error(disconnectErr, "Could not disconnect a physical container from the network", "ContainerID", containerID)
+			}
+			change |= additionalReconciliationNeeded
+			continue
+		}
+		delete(data.connections, containerID)
+	}
+
+	for containerID, desiredConnection := range desiredConnections {
+		if physicalContainerNetworkContainsContainer(connectedContainers, containerID) {
+			data.connections[containerID] = 0
+			continue
+		}
+
+		membershipOperationAttempted = true
+		connectErr := r.orchestrator.ConnectNetwork(ctx, containers.ConnectNetworkOptions{
+			Network:   inspectedNetwork.Id,
+			Container: containerID,
+			Aliases:   desiredConnection.aliases,
+		})
+		if connectErr != nil &&
+			!errors.Is(connectErr, containers.ErrAlreadyExists) &&
+			!errors.Is(connectErr, containers.ErrNotFound) {
+			data.connections[containerID]++
+			if data.connections[containerID]%logAfterFailures == 0 {
+				log.Error(connectErr, "Could not connect a physical container to the network", "ContainerID", containerID)
+			}
+			change |= additionalReconciliationNeeded
+			continue
+		}
+		data.connections[containerID] = 0
+	}
+
+	verifiedNetwork := inspectedNetwork
+	if membershipOperationAttempted {
+		var verifyErr error
+		verifiedNetwork, verifyErr = inspectPhysicalContainerNetwork(ctx, r.orchestrator, inspectedNetwork.Id)
+		if verifyErr != nil {
+			log.Error(verifyErr, "Could not verify physical container network state")
+			return change | additionalReconciliationNeeded
+		}
+	}
+
+	change |= setPhysicalContainerNetworkContainerIDs(&network.Status.ContainerIDs, verifiedNetwork.Containers)
+	verifiedContainerIDs := physicalContainerNetworkContainerIDs(verifiedNetwork)
+	connected := 0
+	for containerID := range desiredConnections {
+		if physicalContainerNetworkContainsContainer(verifiedContainerIDs, containerID) {
+			connected++
+			data.connections[containerID] = 0
+		}
+	}
+
+	if connected < len(desiredConnections) {
+		log.V(1).Info("Not all expected physical containers are connected to the network, retrying...", "Expected", len(desiredConnections), "Found", connected)
+		change |= additionalReconciliationNeeded
+	} else if membershipOperationAttempted {
+		log.Info("All expected physical containers are connected to the network", "Expected", len(desiredConnections), "Found", connected)
+	}
+
+	return change
+}
+
+func physicalContainerNetworkContainerIDs(network *containers.InspectedNetwork) map[string]struct{} {
+	containerIDs := make(map[string]struct{}, len(network.Containers))
+	for _, container := range network.Containers {
+		containerIDs[container.Id] = struct{}{}
+	}
+	return containerIDs
+}
+
+func appendUniqueStrings(destination []string, values ...string) []string {
+	for _, value := range values {
+		if slices.Contains(destination, value) {
+			continue
+		}
+		destination = append(destination, value)
+	}
+	return destination
+}
+
+func physicalContainerNetworkContainsContainer(containerIDs map[string]struct{}, containerID string) bool {
+	if containerID == "" {
+		return false
+	}
+
+	_, found := containerIDs[containerID]
+	return found
+}
+
+func physicalContainerNetworkCreationLabels(network *apiv2.PhysicalContainerNetwork, log logr.Logger) map[string]string {
+	networkConfig := network.Spec.Network
+	creationLabels := physicalResourceCreationLabels(
+		networkConfig.Labels,
+		networkConfig.RetainRuntimeNetwork,
+		network.UID,
+		log,
+	)
+	return v2LabelsToMap(creationLabels)
+}
+
+func physicalContainerNetworkBelongsToResource(
+	inspectedNetwork *containers.InspectedNetwork,
+	network *apiv2.PhysicalContainerNetwork,
+) bool {
+	return network.UID != "" && inspectedNetwork.Labels[uidLabel] == string(network.UID)
+}
+
+func applyReadyPhysicalContainerNetworkStatus(network *apiv2.PhysicalContainerNetwork, inspectedNetwork *containers.InspectedNetwork) objectChange {
+	change := setValue(&network.Status.NetworkID, inspectedNetwork.Id)
+	change |= setValue(&network.Status.NetworkName, inspectedNetwork.Name)
+	change |= setValue(&network.Status.Driver, inspectedNetwork.Driver)
+	change |= setValue(&network.Status.IPv6, inspectedNetwork.IPv6)
+	change |= setPhysicalContainerNetworkAddresses(&network.Status.Subnets, inspectedNetwork.Subnets)
+	change |= setPhysicalContainerNetworkAddresses(&network.Status.Gateways, inspectedNetwork.Gateways)
+	change |= setPhysicalContainerNetworkContainerIDs(&network.Status.ContainerIDs, inspectedNetwork.Containers)
+	change |= setTimestamp(&network.Status.CreatedAt, metav1.NewMicroTime(inspectedNetwork.CreatedAt))
+	change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseReady)
+	change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionTrue, apiv2.PhysicalContainerNetworkReasonNetworkAvailable, "Container network is available.")
+	// Keep polling slowly so a network removed outside of DCP does not leave a stale Ready status.
+	return change | additionalReconciliationNeeded
+}
+
+func setPhysicalContainerNetworkContainerIDs(target *[]string, networkContainers []containers.InspectedNetworkContainer) objectChange {
+	containerIDs := make([]string, len(networkContainers))
+	for i := range networkContainers {
+		containerIDs[i] = networkContainers[i].Id
+	}
+	slices.Sort(containerIDs)
+	if slices.Equal(*target, containerIDs) {
+		return noChange
+	}
+
+	*target = containerIDs
+	return statusChanged
+}
+
+func setPhysicalContainerNetworkAddresses(target *[]string, addresses []string) objectChange {
+	if slices.Equal(*target, addresses) {
+		return noChange
+	}
+
+	*target = append([]string{}, addresses...)
+	return statusChanged
+}

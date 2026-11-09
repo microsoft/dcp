@@ -61,3 +61,33 @@ func TestUnifyLogsOrdersByName(t *testing.T) {
 
 	require.Equal(t, expectedLines, actualLines)
 }
+
+func TestCreateSessionLogOutputFileTruncatesExistingFile(t *testing.T) {
+	t.Parallel()
+
+	workingDirectory, workingDirectoryErr := os.Getwd()
+	require.NoError(t, workingDirectoryErr)
+	tempDirectory, tempDirectoryErr := os.MkdirTemp(workingDirectory, "session-log-output-test-*")
+	require.NoError(t, tempDirectoryErr)
+	t.Cleanup(func() {
+		require.NoError(t, os.RemoveAll(tempDirectory))
+	})
+	absolutePath := filepath.Join(tempDirectory, "session.log")
+	path, relativePathErr := filepath.Rel(workingDirectory, absolutePath)
+	require.NoError(t, relativePathErr)
+	initialFile, initialCreateErr := createSessionLogOutputFile(path)
+	require.NoError(t, initialCreateErr)
+	_, initialWriteErr := initialFile.WriteString("existing")
+	require.NoError(t, initialWriteErr)
+	require.NoError(t, initialFile.Close())
+
+	replacementFile, replacementCreateErr := createSessionLogOutputFile(path)
+	require.NoError(t, replacementCreateErr)
+	_, replacementWriteErr := replacementFile.WriteString("new")
+	require.NoError(t, replacementWriteErr)
+	require.NoError(t, replacementFile.Close())
+
+	contents, readErr := os.ReadFile(absolutePath)
+	require.NoError(t, readErr)
+	require.Equal(t, "new", string(contents))
+}

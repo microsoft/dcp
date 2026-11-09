@@ -10,8 +10,10 @@ package dcpproc_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,7 +21,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	ps "github.com/shirou/gopsutil/v4/process"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -67,20 +68,21 @@ func TestStopProcessTreeDeliversSIGINT(t *testing.T) {
 	process.ForkFromParent(childrenCmd)
 	require.NoError(t, childrenCmd.Start(), "delay tree should start without error")
 
-	pid := process.Uint32_ToPidT(uint32(childrenCmd.Process.Pid))
-	childIdentityTime := process.ProcessIdentityTime(pid)
+	childHandle, childHandleErr := process.ProcessHandleFromCmd(childrenCmd)
+	require.NoError(t, childHandleErr)
+	childIdentityTime := childHandle.IdentityTime
 	require.False(t, childIdentityTime.IsZero(), "process identity time should not be zero")
 
 	int_testutil.EnsureProcessTree(
 		t,
-		process.ProcessTreeItem{Pid: pid, IdentityTime: childIdentityTime},
+		childHandle,
 		expectedCount,
 		testTimeout/3,
 	)
 
 	// Snapshot the full tree and open handles BEFORE stopping so that the process objects
 	// remain queryable (via GetExitCodeProcess) even after the processes terminate.
-	tree, treeErr := process.GetProcessTree(process.ProcessTreeItem{Pid: pid, IdentityTime: childIdentityTime})
+	tree, treeErr := process.GetProcessTree(testCtx, childHandle)
 	require.NoError(t, treeErr)
 
 	handles := openProcessHandles(t, tree)
@@ -132,16 +134,21 @@ func TestStopProcessTreeSkipDescendantsLeavesForkedChildRunning(t *testing.T) {
 	process.ForkFromParent(rootCmd)
 	require.NoError(t, rootCmd.Start(), "delay root process should start without error")
 
-	rootPid := process.Uint32_ToPidT(uint32(rootCmd.Process.Pid))
-	rootIdentityTime := process.ProcessIdentityTime(rootPid)
+	rootItem, rootHandleErr := process.ProcessHandleFromCmd(rootCmd)
+	require.NoError(t, rootHandleErr)
+	rootIdentityTime := rootItem.IdentityTime
 	require.False(t, rootIdentityTime.IsZero(), "root process identity time should not be zero")
-	rootItem := process.ProcessTreeItem{Pid: rootPid, IdentityTime: rootIdentityTime}
 
 	forkedChild := requireDelayDescendant(t, rootItem, testTimeout/3)
 	cleanupExecutor := process.NewOSExecutor(logr.Discard())
 	defer func() {
-		_ = cleanupExecutor.StopProcess(forkedChild.Pid, forkedChild.IdentityTime)
-		_ = cleanupExecutor.StopProcess(rootItem.Pid, rootItem.IdentityTime)
+		childCleanupCtx, childCleanupCancel := process.WithDetachedStopTimeout(testCtx)
+		_ = cleanupExecutor.StopProcess(childCleanupCtx, forkedChild)
+		childCleanupCancel()
+		rootCleanupCtx, rootCleanupCancel := process.WithDetachedStopTimeout(testCtx)
+		_ = cleanupExecutor.StopProcess(rootCleanupCtx, rootItem)
+		rootCleanupCancel()
+		cleanupExecutor.Dispose()
 		_ = rootCmd.Wait()
 	}()
 
@@ -184,7 +191,7 @@ func logCommandOutput(t *testing.T, name string, stdout *bytes.Buffer, stderr *b
 // openProcessHandles opens a PROCESS_QUERY_LIMITED_INFORMATION handle for each delay process
 // in the tree. Holding these handles prevents Windows from releasing the process objects before
 // we can query their exit codes. The console host process is intentionally skipped.
-func openProcessHandles(t *testing.T, tree []process.ProcessTreeItem) map[process.Pid_t]syscall.Handle {
+func openProcessHandles(t *testing.T, tree []process.ProcessHandle) map[process.Pid_t]syscall.Handle {
 	t.Helper()
 	handles := make(map[process.Pid_t]syscall.Handle, len(tree))
 	for _, item := range tree {
@@ -204,7 +211,7 @@ func openProcessHandles(t *testing.T, tree []process.ProcessTreeItem) map[proces
 	return handles
 }
 
-func getProcessInfo(t *testing.T, item process.ProcessTreeItem) (uint32, string) {
+func getProcessInfo(t *testing.T, item process.ProcessHandle) (uint32, string) {
 	t.Helper()
 
 	osPid, processName, processInfoErr := tryGetProcessInfo(item)
@@ -213,26 +220,35 @@ func getProcessInfo(t *testing.T, item process.ProcessTreeItem) (uint32, string)
 	return osPid, processName
 }
 
-func tryGetProcessInfo(item process.ProcessTreeItem) (uint32, string, error) {
+func tryGetProcessInfo(item process.ProcessHandle) (uint32, string, error) {
 	osPid, pidErr := process.PidT_ToUint32(item.Pid)
 	if pidErr != nil {
 		return 0, "", fmt.Errorf("could not convert PID %d to Windows PID: %w", item.Pid, pidErr)
 	}
 
-	psProcess, processErr := ps.NewProcess(int32(osPid))
-	if processErr != nil {
-		return 0, "", fmt.Errorf("could not inspect process PID %d: %w", osPid, processErr)
+	foundProcess, findErr := item.OsProcess()
+	if findErr != nil {
+		return 0, "", fmt.Errorf("could not inspect process PID %d: %w", osPid, findErr)
 	}
-
-	processName, nameErr := psProcess.Name()
-	if nameErr != nil {
-		return 0, "", fmt.Errorf("could not get process name for PID %d: %w", osPid, nameErr)
+	var processName string
+	var nameErr error
+	handleErr := foundProcess.WithHandle(func(nativeHandle uintptr) {
+		buffer := make([]uint16, 32768)
+		size := uint32(len(buffer))
+		nameErr = windows.QueryFullProcessImageName(windows.Handle(nativeHandle), 0, &buffer[0], &size)
+		if nameErr == nil {
+			processName = filepath.Base(windows.UTF16ToString(buffer[:size]))
+		}
+	})
+	inspectionErr := errors.Join(handleErr, nameErr, foundProcess.Release())
+	if inspectionErr != nil {
+		return 0, "", fmt.Errorf("could not get process name for PID %d: %w", osPid, inspectionErr)
 	}
 
 	return osPid, processName, nil
 }
 
-func openProcessHandle(t *testing.T, item process.ProcessTreeItem) syscall.Handle {
+func openProcessHandle(t *testing.T, item process.ProcessHandle) syscall.Handle {
 	t.Helper()
 
 	osPid, pidErr := process.PidT_ToUint32(item.Pid)
@@ -243,16 +259,16 @@ func openProcessHandle(t *testing.T, item process.ProcessTreeItem) syscall.Handl
 	return handle
 }
 
-func requireDelayDescendant(t *testing.T, root process.ProcessTreeItem, timeout time.Duration) process.ProcessTreeItem {
+func requireDelayDescendant(t *testing.T, root process.ProcessHandle, timeout time.Duration) process.ProcessHandle {
 	t.Helper()
 
 	waitCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	var descendant process.ProcessTreeItem
+	var descendant process.ProcessHandle
 	pollErr := wait.PollUntilContextCancel(waitCtx, 100*time.Millisecond, true,
 		func(_ context.Context) (bool, error) {
-			tree, treeErr := process.GetProcessTree(root)
+			tree, treeErr := process.GetProcessTree(waitCtx, root)
 			if treeErr != nil {
 				return false, treeErr
 			}

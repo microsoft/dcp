@@ -17,12 +17,13 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/go-logr/logr"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/queue"
@@ -67,8 +68,8 @@ const (
 )
 
 // A "UDP stream" binds the client with the Endpoint that is serving it.
-// Packets sent by the client will be forwarded to the Endpoint using dedicated PacketConn connection.
-// Packets received from that PacketConn will be sent back to the client.
+// Packets sent by the client will be forwarded using a dedicated connected UDP socket.
+// Only packets from the selected Endpoint will be sent back to the client.
 type udpStream struct {
 	clientAddr net.Addr                              // Address of the client that is being served by this stream
 	packets    *queue.ConcurrentBoundedQueue[[]byte] // Queue of packets from the client
@@ -80,7 +81,7 @@ type udpStream struct {
 // netProxy is an in-process implementation of the Proxy interface that uses
 // the standard library's net package to proxy TCP and UDP connections.
 type netProxy struct {
-	mode          apiv1.PortProtocol
+	mode          commonapi.PortProtocol
 	listenAddress string
 	listenPort    int32
 
@@ -102,12 +103,12 @@ type netProxy struct {
 	lock        sync.Locker
 }
 
-func NewRuntimeProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) Proxy {
+func NewRuntimeProxy(mode commonapi.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) Proxy {
 	return newNetProxy(mode, listenAddress, listenPort, lifetimeCtx, log)
 }
 
-func newNetProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) *netProxy {
-	if mode != apiv1.TCP && mode != apiv1.UDP {
+func newNetProxy(mode commonapi.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) *netProxy {
+	if mode != commonapi.PortProtocolTCP && mode != commonapi.PortProtocolUDP {
 		panic(fmt.Errorf("unsupported proxy mode: %s", mode))
 	}
 
@@ -165,7 +166,7 @@ func (p *netProxy) Start() error {
 
 	lc := net.ListenConfig{}
 	switch p.mode {
-	case apiv1.TCP:
+	case commonapi.PortProtocolTCP:
 		tcpListener, err := lc.Listen(p.lifetimeCtx, "tcp", networking.AddressAndPort(p.listenAddress, p.listenPort))
 		if err != nil {
 			_ = p.setState(ProxyStateAny, ProxyStateFailed)
@@ -177,7 +178,7 @@ func (p *netProxy) Start() error {
 		p.effectivePort = int32(tcpAddr.Port)
 
 		go p.runTCP(tcpListener)
-	case apiv1.UDP:
+	case commonapi.PortProtocolUDP:
 		udpListener, err := lc.ListenPacket(p.lifetimeCtx, "udp", networking.AddressAndPort(p.listenAddress, p.listenPort))
 		if err != nil {
 			_ = p.setState(ProxyStateAny, ProxyStateFailed)
@@ -204,7 +205,7 @@ func (p *netProxy) Configure(newConfig ProxyConfig) error {
 	// but the call to Configure might come during shutdown, so we do not return an error in that case.
 	if state != ProxyStateFinished {
 		p.endpointConfigLoadedChannel.In <- newConfig.Clone()
-		if p.mode == apiv1.UDP {
+		if p.mode == commonapi.PortProtocolUDP {
 			p.shutdownAllUDPStreams()
 		}
 		if state == ProxyStateRunning {
@@ -598,38 +599,41 @@ func (p *netProxy) shutdownUDPStream(clientAddr net.Addr) {
 
 	if stream.ctx != nil {
 		stream.cancel()
-		// Endpoint streaming goroutine will close the stream listener.
+		// The endpoint streaming goroutine will close the backend connection.
 	}
 }
 
 func (p *netProxy) tryStartingUDPStream(stream udpStream, proxyConn net.PacketConn, config ProxyConfig) bool {
-	endpoint, err := chooseEndpoint(&config)
-	if err != nil {
+	endpoint, endpointErr := chooseEndpoint(&config)
+	if endpointErr != nil {
 		// No endpoints yet
 		return false
 	}
-	endpointAddr, err := net.ResolveUDPAddr("udp", networking.AddressAndPort(endpoint.Address, endpoint.Port))
-	if err != nil {
-		p.log.Error(err, "Could not resolve endpoint address", "EndpointAddress", endpoint.Address, "EndpointPort", endpoint.Port)
+	endpointAddr, resolveErr := net.ResolveUDPAddr("udp", networking.AddressAndPort(endpoint.Address, endpoint.Port))
+	if resolveErr != nil {
+		p.log.Error(resolveErr, "Could not resolve endpoint address", "EndpointAddress", endpoint.Address, "EndpointPort", endpoint.Port)
 		return false
 	}
 
-	lc := net.ListenConfig{}
+	// Match TCP's backend binding and pin the UDP peer without changing endpoint resolution.
+	dialer := net.Dialer{}
+	dialContext, cancelDial := context.WithTimeout(p.lifetimeCtx, p.connectionTimeout)
+	defer cancelDial()
+	backendConn, dialErr := dialer.DialContext(dialContext, "udp", endpointAddr.String())
+	if dialErr != nil {
+		p.log.Error(dialErr, "Could not connect to UDP endpoint for client", "ClientAddr", stream.clientAddr.String(),
+			"EndpointAddress", endpoint.Address, "EndpointPort", endpoint.Port)
+		return false
+	}
+
 	ctx, cancel := context.WithCancel(p.lifetimeCtx)
-	streamListener, err := lc.ListenPacket(ctx, "udp", fmt.Sprintf("%s:", p.listenAddress))
-	if err != nil {
-		p.log.Error(err, "Could not create an endpoint listener for client", "ClientAddr", stream.clientAddr.String())
-		cancel()
-		return false
-	}
-
 	stream.ctx = ctx
 	stream.cancel = cancel
 	p.udpStreams.Store(stream.clientAddr.String(), stream)
 
-	// TODO: log the UDP stream shape: client addr -> proxy conn addr (proxy) stream listener addr -> endpoint addr
-	go p.streamClientPackets(stream, streamListener, endpointAddr)
-	go p.streamEndpointPackets(stream, streamListener, proxyConn)
+	// TODO: log the UDP stream shape: client addr -> proxy conn addr (proxy) backend conn addr -> endpoint addr
+	go p.streamClientPackets(stream, backendConn)
+	go p.streamEndpointPackets(stream, backendConn, proxyConn)
 	return true
 }
 
@@ -668,8 +672,7 @@ func (p *netProxy) getPacketQueue(clientAddr net.Addr, proxyConn net.PacketConn,
 
 func (p *netProxy) streamClientPackets(
 	stream udpStream,
-	streamListener net.PacketConn,
-	endpointAddr *net.UDPAddr,
+	backendConn net.Conn,
 ) {
 	newPackets := stream.packets.NewData()
 
@@ -690,21 +693,24 @@ func (p *netProxy) streamClientPackets(
 					break
 				}
 
-				if err := streamListener.SetWriteDeadline(time.Now().Add(p.writeTimeout)); err != nil {
-					p.log.V(1).Info("Error setting write deadline for UDP endpoint connection", "Error", err.Error(), "EndpointAddress", endpointAddr.String())
+				if err := backendConn.SetWriteDeadline(time.Now().Add(p.writeTimeout)); err != nil {
+					p.log.V(1).Info("Error setting write deadline for UDP endpoint connection", "Error", err.Error(), "EndpointAddress", backendConn.RemoteAddr().String())
 					p.shutdownUDPStream(stream.clientAddr)
 					return
 				}
 
-				written, err := streamListener.WriteTo(buf, endpointAddr)
+				written, err := backendConn.Write(buf)
 				if err != nil {
 					// Handle write deadline exceeded like any other (unexpected) error for UDP connections
-					p.log.V(1).Info("Error writing to UDP endpoint connection", "Error", err.Error(), "EndpointAddress", endpointAddr.String())
+					p.log.V(1).Info("Error writing to UDP endpoint connection", "Error", err.Error(), "EndpointAddress", backendConn.RemoteAddr().String())
+					if errors.Is(err, syscall.ECONNREFUSED) {
+						continue
+					}
 					p.shutdownUDPStream(stream.clientAddr)
 					return
 				}
 				if written != len(buf) {
-					p.log.V(1).Info("UDP endpoint connection write did not transmit the whole packet", "BytesSubmitted", len(buf), "BytesWritten", written, "EndpointAddress", endpointAddr.String())
+					p.log.V(1).Info("UDP endpoint connection write did not transmit the whole packet", "BytesSubmitted", len(buf), "BytesWritten", written, "EndpointAddress", backendConn.RemoteAddr().String())
 					p.shutdownUDPStream(stream.clientAddr)
 					return
 				}
@@ -717,28 +723,31 @@ func (p *netProxy) streamClientPackets(
 
 func (p *netProxy) streamEndpointPackets(
 	stream udpStream,
-	streamListener net.PacketConn,
+	backendConn net.Conn,
 	proxyConn net.PacketConn,
 ) {
 	buffer := make([]byte, UdpPacketBufferSize)
-	defer streamListener.Close()
+	defer backendConn.Close()
 
 	for {
 		if stream.ctx.Err() != nil {
 			return
 		}
 
-		if err := streamListener.SetReadDeadline(time.Now().Add(p.readTimeout)); err != nil {
-			p.log.V(1).Info("Error setting read deadline for UDP endpoint connection", "Error", err.Error(), "EndpointConnectionAddress", streamListener.LocalAddr().String())
+		if err := backendConn.SetReadDeadline(time.Now().Add(p.readTimeout)); err != nil {
+			p.log.V(1).Info("Error setting read deadline for UDP endpoint connection", "Error", err.Error(), "EndpointConnectionAddress", backendConn.LocalAddr().String())
 			p.shutdownUDPStream(stream.clientAddr)
 			return
 		}
 
-		bytesRead, _, readErr := streamListener.ReadFrom(buffer)
+		bytesRead, readErr := backendConn.Read(buffer)
 		if errors.Is(readErr, os.ErrDeadlineExceeded) {
 			continue
+		} else if errors.Is(readErr, syscall.ECONNREFUSED) {
+			p.log.V(1).Info("UDP endpoint refused a datagram", "Error", readErr.Error(), "EndpointConnectionAddress", backendConn.LocalAddr().String())
+			continue
 		} else if readErr != nil {
-			p.log.Info("Error reading UDP packet from proxy UDP connection", "Error", readErr.Error(), "EndpointConnectionAddress", streamListener.LocalAddr().String())
+			p.log.Info("Error reading UDP packet from proxy UDP connection", "Error", readErr.Error(), "EndpointConnectionAddress", backendConn.LocalAddr().String())
 			p.shutdownUDPStream(stream.clientAddr)
 			return
 		}

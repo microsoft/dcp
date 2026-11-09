@@ -19,8 +19,8 @@ import (
 
 	"github.com/go-logr/logr"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/ports"
@@ -29,7 +29,7 @@ import (
 
 type stateStorePortAllocationConfig struct {
 	store                 *statestore.Store
-	owner                 process.ProcessTreeItem
+	owner                 process.ProcessHandle
 	mode                  string
 	portRanges            indexedPortRanges
 	allowEphemeralOverlap bool
@@ -84,7 +84,7 @@ func getStateStorePortAllocationConfig(log logr.Logger) (*stateStorePortAllocati
 	}, false, nil
 }
 
-func allocatePortFromStateStoreRange(ctx context.Context, protocol apiv1.PortProtocol, address string, log logr.Logger) (int32, error, bool) {
+func allocatePortFromStateStoreRange(ctx context.Context, protocol commonapi.PortProtocol, address string, log logr.Logger) (int32, error, bool) {
 	config, shouldFallback, configErr := getStateStorePortAllocationConfig(log)
 	if configErr != nil {
 		return 0, configErr, shouldFallback
@@ -121,7 +121,7 @@ func allocatePortFromStateStoreRange(ctx context.Context, protocol apiv1.PortPro
 func reserveStateStoreCandidateIfBindable(
 	ctx context.Context,
 	config *stateStorePortAllocationConfig,
-	protocol apiv1.PortProtocol,
+	protocol commonapi.PortProtocol,
 	address string,
 	port int32,
 ) (bool, error) {
@@ -147,7 +147,7 @@ func reserveStateStoreCandidateIfBindable(
 	return true, reserveErr
 }
 
-func checkPortAvailableWithStateStore(ctx context.Context, protocol apiv1.PortProtocol, address string, port int32, log logr.Logger) (error, bool) {
+func checkPortAvailableWithStateStore(ctx context.Context, protocol commonapi.PortProtocol, address string, port int32, log logr.Logger) (error, bool) {
 	normalizedAddress, addressErr := NormalizePortAllocationAddress(address)
 	if addressErr != nil {
 		return addressErr, false
@@ -182,7 +182,7 @@ func reserveSpecificStateStorePort(ctx context.Context, binding ports.Binding, b
 	defer stateStorePortReservationLock.Unlock()
 
 	if requireBindable {
-		checkErr := checkPortCurrentlyBindable(apiv1.PortProtocol(binding.Protocol), bindAddress, binding.Port)
+		checkErr := checkPortCurrentlyBindable(commonapi.PortProtocol(binding.Protocol), bindAddress, binding.Port)
 		if checkErr != nil {
 			return checkErr, false
 		}
@@ -225,7 +225,7 @@ func releaseSpecificPortWithStateStore(ctx context.Context, binding ports.Bindin
 	return nil, false
 }
 
-func stateStorePortReservationRequest(binding ports.Binding, owner process.ProcessTreeItem) statestore.PortReservationRequest {
+func stateStorePortReservationRequest(binding ports.Binding, owner process.ProcessHandle) statestore.PortReservationRequest {
 	return statestore.PortReservationRequest{
 		Binding:      binding,
 		OwnerProcess: owner,

@@ -18,10 +18,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	std_maps "maps"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	std_slices "slices"
 	"strings"
 	"sync"
 	"time"
@@ -63,26 +65,58 @@ const (
 	MaxRandomHostPort int = 50000
 )
 
+type testContainerOperation uint8
+
+const (
+	operationCreateContainer testContainerOperation = iota
+	operationPostCreateContainer
+	operationRemoveContainer
+	operationPullImage
+	operationInspectImage
+	operationBuildImage
+	operationCreateNetwork
+	operationPostCreateNetwork
+	operationInspectNetwork
+	operationCreateVolume
+	operationPostCreateVolume
+	operationRemoveVolume
+	operationPostRemoveVolume
+	operationInspectVolume
+	operationExecContainer
+)
+
+type testContainerOperationKey struct {
+	operation  testContainerOperation
+	resourceID string
+}
+
+// TestContainerOrchestrator simulates container runtime operations for tests.
+// Tests sharing an orchestrator must use unique runtime identifiers when configuring operation behavior.
 type TestContainerOrchestrator struct {
-	runtimeHealthy          bool
-	volumes                 map[string]containerVolume
-	networks                map[string]*containerNetwork
-	images                  []*testImage
-	pullImageErr            error
-	containers              map[string]*testContainer
-	startupLogs             map[string]containerStartupLogs
-	containersToFail        map[string]containerExit
-	containersToHealthcheck map[string]containers.ContainerHealthcheck
-	execs                   map[string]*containerExec
-	createFiles             map[string][]*containerCreateFile
-	containerEventsWatcher  *pubsub.SubscriptionSet[containers.EventMessage]
-	networkEventsWatcher    *pubsub.SubscriptionSet[containers.EventMessage]
-	attachHandler           ContainerAttachHandler
-	socketServer            *http.Server
-	socketFilePath          string
-	mutex                   *sync.Mutex
-	lifetimeCtx             context.Context
-	log                     logr.Logger
+	runtimeHealthy           bool
+	volumes                  map[string]containerVolume
+	networks                 map[string]*containerNetwork
+	images                   []*testImage
+	pullImageErr             error
+	containers               map[string]*testContainer
+	startupLogs              map[string]containerStartupLogs
+	containersToFail         map[string]containerExit
+	containersToHealthcheck  map[string]containers.ContainerHealthcheck
+	execs                    map[string]*containerExec
+	execExitCodes            map[string]int32
+	createFiles              map[string][]*containerCreateFile
+	operationCallCounts      map[testContainerOperationKey]int
+	operationBlocks          map[testContainerOperationKey]chan struct{}
+	operationErrors          map[testContainerOperationKey][]error
+	operationResultOmissions map[testContainerOperationKey]bool
+	containerEventsWatcher   *pubsub.SubscriptionSet[containers.EventMessage]
+	networkEventsWatcher     *pubsub.SubscriptionSet[containers.EventMessage]
+	attachHandler            ContainerAttachHandler
+	socketServer             *http.Server
+	socketFilePath           string
+	mutex                    *sync.Mutex
+	lifetimeCtx              context.Context
+	log                      logr.Logger
 }
 
 // ContainerAttachHandler is the signature used by dispatchers/tests to provide
@@ -106,10 +140,12 @@ type containerStartupLogs struct {
 }
 
 type containerExec struct {
-	stdout   io.WriteCloser
-	stderr   io.WriteCloser
-	exited   bool
-	exitChan chan int32
+	options          containers.ExecContainerOptions
+	stdout           io.WriteCloser
+	stderr           io.WriteCloser
+	exited           bool
+	exitChan         chan int32
+	stopCancellation func() bool
 }
 
 type containerCreateFile struct {
@@ -181,15 +217,19 @@ func NewTestContainerOrchestrator(
 				created:   now,
 			},
 		},
-		containers:              map[string]*testContainer{},
-		execs:                   map[string]*containerExec{},
-		startupLogs:             map[string]containerStartupLogs{},
-		containersToFail:        map[string]containerExit{},
-		containersToHealthcheck: map[string]containers.ContainerHealthcheck{},
-		createFiles:             map[string][]*containerCreateFile{},
-		mutex:                   &sync.Mutex{},
-		lifetimeCtx:             lifetimeCtx,
-		log:                     log,
+		containers:               map[string]*testContainer{},
+		execs:                    map[string]*containerExec{},
+		startupLogs:              map[string]containerStartupLogs{},
+		containersToFail:         map[string]containerExit{},
+		containersToHealthcheck:  map[string]containers.ContainerHealthcheck{},
+		createFiles:              map[string][]*containerCreateFile{},
+		operationCallCounts:      map[testContainerOperationKey]int{},
+		operationBlocks:          map[testContainerOperationKey]chan struct{}{},
+		operationErrors:          map[testContainerOperationKey][]error{},
+		operationResultOmissions: map[testContainerOperationKey]bool{},
+		mutex:                    &sync.Mutex{},
+		lifetimeCtx:              lifetimeCtx,
+		log:                      log,
 	}
 
 	to.containerEventsWatcher = pubsub.NewSubscriptionSet(to.doWatchContainers, lifetimeCtx)
@@ -473,7 +513,7 @@ func (to *TestContainerOrchestrator) handleContainerMergePatchRequest(resp http.
 	switch {
 
 	case isValidStopRequest():
-		stopErr := to.doStopContainer(req.Context(), foundContainer, stoppingOnly)
+		stopEvents, stopErr := to.doStopContainer(req.Context(), foundContainer, stoppingOnly)
 		if stopErr != nil {
 			if errors.Is(stopErr, containers.ErrNotFound) {
 				http.Error(resp, "container not found", http.StatusNotFound)
@@ -481,6 +521,9 @@ func (to *TestContainerOrchestrator) handleContainerMergePatchRequest(resp http.
 				http.Error(resp, stopErr.Error(), http.StatusInternalServerError)
 			}
 		} else {
+			to.mutex.Unlock()
+			to.notifyContainerEvents(stopEvents)
+			to.mutex.Lock()
 			resp.WriteHeader(http.StatusNoContent) // Indicating success
 		}
 
@@ -628,6 +671,7 @@ func (obj withId) matches(name string) bool {
 type containerVolume struct {
 	name    string
 	created time.Time
+	labels  map[string]string
 }
 
 type containerNetwork struct {
@@ -657,6 +701,7 @@ type testContainer struct {
 	ExitCode       int32                                `json:"exitCode,omitempty"`
 	Ports          map[string][]TestContainerPortConfig `json:"ports,omitempty"`
 	Networks       []string                             `json:"networks,omitempty"`
+	Mounts         []containers.VolumeMount             `json:"mounts,omitempty"`
 	NetworkAliases map[string][]string                  `json:"networkAliases,omitempty"`
 	Args           []string                             `json:"args,omitempty"`
 	Env            map[string]string                    `json:"env,omitempty"`
@@ -680,10 +725,6 @@ type testImage struct {
 
 func getID() string {
 	return uuid.New().String()
-}
-
-func (*TestContainerOrchestrator) IsDefault() bool {
-	return true
 }
 
 func (*TestContainerOrchestrator) Name() string {
@@ -719,9 +760,16 @@ func (to *TestContainerOrchestrator) GetDiagnostics(ctx context.Context) (contai
 }
 
 func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
+	if operationErr := to.recordOperation(ctx, operationCreateVolume, options.Name); operationErr != nil {
+		return operationErr
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if !to.runtimeHealthy {
 		return errRuntimeUnhealthy
 	}
@@ -730,12 +778,27 @@ func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, options c
 		return containers.ErrAlreadyExists
 	}
 
-	to.volumes[options.Name] = containerVolume{name: options.Name, created: time.Now().UTC()}
+	to.volumes[options.Name] = containerVolume{
+		name:    options.Name,
+		created: time.Now().UTC(),
+		labels: maps.Map[string, string, string](options.Labels, func(_ string, value string) string {
+			return value
+		}),
+	}
 
-	return nil
+	key := testContainerOperationKey{operation: operationPostCreateVolume, resourceID: options.Name}
+	return to.nextOperationErrorLocked(key)
 }
 
 func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
+	var operationErr error
+	for _, name := range options.Volumes {
+		operationErr = errors.Join(operationErr, to.recordOperation(ctx, operationRemoveVolume, name))
+	}
+	if operationErr != nil {
+		return nil, operationErr
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -756,6 +819,16 @@ func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, options 
 			continue
 		}
 
+		inUse := slices.Any(maps.Values(to.containers), func(container *testContainer) bool {
+			return slices.Any(container.Mounts, func(mount containers.VolumeMount) bool {
+				return mount.Type == containers.NamedVolumeMount && mount.Source == name
+			})
+		})
+		if inUse {
+			err = errors.Join(err, containers.ErrObjectInUse)
+			continue
+		}
+
 		removed = append(removed, name)
 	}
 
@@ -767,10 +840,16 @@ func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, options 
 		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all volumes were removed, expected %d but got %d", len(options.Volumes), len(removed))))
 	}
 
+	for _, volume := range options.Volumes {
+		key := testContainerOperationKey{operation: operationPostRemoveVolume, resourceID: volume}
+		err = errors.Join(err, to.nextOperationErrorLocked(key))
+	}
 	return removed, err
 }
 
 func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, options containers.InspectVolumesOptions) ([]containers.InspectedVolume, error) {
+	to.recordInspectVolumesOperation(options.Volumes)
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -797,8 +876,10 @@ func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, options
 			Driver:     "local",
 			MountPoint: "",
 			Scope:      "local",
-			Labels:     map[string]string{},
-			CreatedAt:  volume.created,
+			Labels: maps.Map[string, string, string](volume.labels, func(_ string, value string) string {
+				return value
+			}),
+			CreatedAt: volume.created,
 		})
 	}
 
@@ -807,6 +888,30 @@ func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, options
 	}
 
 	return result, err
+}
+
+func (to *TestContainerOrchestrator) ListVolumes(ctx context.Context, options containers.ListVolumesOptions) ([]containers.ListedVolume, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
+
+	result := []containers.ListedVolume{}
+	for _, volume := range to.volumes {
+		matches := slices.All(options.Filters.LabelFilters, func(label containers.LabelFilter) bool {
+			value, found := volume.labels[label.Key]
+			return found && (label.Value == "" || value == label.Value)
+		})
+		if matches {
+			result = append(result, containers.ListedVolume{Name: volume.name})
+		}
+	}
+	return result, nil
 }
 
 func (to *TestContainerOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
@@ -818,6 +923,10 @@ func (to *TestContainerOrchestrator) WatchNetworks(sink chan<- containers.EventM
 }
 
 func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
+	if err := to.recordOperation(ctx, operationCreateNetwork, options.Name); err != nil {
+		return "", err
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -857,6 +966,11 @@ func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options 
 		Actor:  containers.EventActor{ID: id.ID},
 	})
 
+	postCreateKey := testContainerOperationKey{operation: operationPostCreateNetwork, resourceID: options.Name}
+	if postCreateErr := to.nextOperationErrorLocked(postCreateKey); postCreateErr != nil {
+		return "", postCreateErr
+	}
+
 	return id.ID, nil
 }
 
@@ -876,25 +990,30 @@ func (to *TestContainerOrchestrator) RemoveNetworks(ctx context.Context, options
 	names := []string{}
 	ids := []string{}
 	for _, name := range options.Networks {
+		matched := false
 		for _, network := range to.networks {
-			if network.matches(name) {
-				if network.isDefault {
-					err = errors.Join(err, fmt.Errorf("cannot remove default network: %s", name))
-					continue
-				}
-
-				if len(network.containers) > 0 {
-					err = errors.Join(err, fmt.Errorf("cannot remove network with containers"))
-					continue
-				}
-
-				names = append(names, network.Name)
-				ids = append(ids, network.ID)
+			if !network.matches(name) {
+				continue
 			}
 
-			if !options.Force {
-				err = errors.Join(err, fmt.Errorf("network %s not found", name))
+			matched = true
+			if network.isDefault {
+				err = errors.Join(err, fmt.Errorf("cannot remove default network: %s", name))
+				break
 			}
+
+			if len(network.containers) > 0 {
+				err = errors.Join(err, fmt.Errorf("cannot remove network with containers"))
+				break
+			}
+
+			names = append(names, network.Name)
+			ids = append(ids, network.ID)
+			break
+		}
+
+		if !matched && !options.Force {
+			err = errors.Join(err, fmt.Errorf("network %s not found", name))
 		}
 	}
 
@@ -918,6 +1037,8 @@ func (to *TestContainerOrchestrator) RemoveNetworks(ctx context.Context, options
 }
 
 func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
+	to.recordInspectNetworksOperation(options.Networks)
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -962,7 +1083,7 @@ func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, option
 					Gateways:   network.gateways,
 					Subnets:    network.subnets,
 					Containers: connectedContainers,
-					Labels:     map[string]string{},
+					Labels:     maps.Map[string, string, string](network.labels, func(_ string, value string) string { return value }),
 					CreatedAt:  network.created,
 				})
 			}
@@ -1136,7 +1257,350 @@ func (to *TestContainerOrchestrator) DefaultNetworkName() string {
 	return "bridge"
 }
 
+func (*TestContainerOrchestrator) IsBuiltInNetwork(networkName string) bool {
+	return networkName == "bridge" || networkName == "host" || networkName == "none"
+}
+
+func (to *TestContainerOrchestrator) BlockCreateContainer(name string) func() {
+	return to.blockOperation(operationCreateContainer, name)
+}
+
+func (to *TestContainerOrchestrator) FailNextCreateContainer(name string, createErr error) {
+	if createErr == nil {
+		createErr = errors.New("simulated container create failure")
+	}
+
+	to.queueOperationError(operationCreateContainer, name, createErr)
+}
+
+func (to *TestContainerOrchestrator) FailNextCreateContainerAfterCreation(name string, createErr error) {
+	if createErr == nil {
+		createErr = errors.New("simulated post-create container failure")
+	}
+
+	to.queueOperationError(operationPostCreateContainer, name, createErr)
+}
+
+func (to *TestContainerOrchestrator) CreateContainerCallCount(name string) int {
+	return to.operationCallCount(operationCreateContainer, name)
+}
+
+func (to *TestContainerOrchestrator) FailNextRemoveContainer(name string, removeErr error) {
+	if removeErr == nil {
+		removeErr = errors.New("simulated container removal failure")
+	}
+
+	to.queueOperationError(operationRemoveContainer, name, removeErr)
+}
+
+// BlockRemoveContainerAfterFailures queues removal failures and blocks subsequent attempts until released.
+func (to *TestContainerOrchestrator) BlockRemoveContainerAfterFailures(name string, failures ...error) func() {
+	queuedFailures := make([]error, len(failures))
+	for index, failure := range failures {
+		if failure == nil {
+			queuedFailures[index] = errors.New("simulated container removal failure")
+		} else {
+			queuedFailures[index] = failure
+		}
+	}
+	return to.blockOperation(operationRemoveContainer, name, queuedFailures...)
+}
+
+func (to *TestContainerOrchestrator) RemoveContainerCallCount(name string) int {
+	return to.operationCallCount(operationRemoveContainer, name)
+}
+
+func (to *TestContainerOrchestrator) recordRemoveContainerOperationLocked(name string) (chan struct{}, error) {
+	key := testContainerOperationKey{operation: operationRemoveContainer, resourceID: name}
+	to.operationCallCounts[key]++
+	return to.operationBlocks[key], to.nextOperationErrorLocked(key)
+}
+
+func (to *TestContainerOrchestrator) FailInspectImage(image string, inspectErr error) func() {
+	if inspectErr == nil {
+		inspectErr = errors.New("simulated image inspection failure")
+	}
+
+	key := testContainerOperationKey{operation: operationInspectImage, resourceID: image}
+	to.mutex.Lock()
+	to.operationErrors[key] = []error{inspectErr}
+	to.mutex.Unlock()
+
+	var clearOnce sync.Once
+	return func() {
+		clearOnce.Do(func() {
+			to.mutex.Lock()
+			defer to.mutex.Unlock()
+
+			delete(to.operationErrors, key)
+		})
+	}
+}
+
+func (to *TestContainerOrchestrator) inspectImageErrorLocked(imageID string, image *testImage) error {
+	imageKey := testContainerOperationKey{operation: operationInspectImage, resourceID: imageID}
+	if inspectErr := to.firstOperationErrorLocked(imageKey); inspectErr != nil {
+		return inspectErr
+	}
+	for _, tag := range image.tags {
+		tagKey := testContainerOperationKey{operation: operationInspectImage, resourceID: tag}
+		if inspectErr := to.firstOperationErrorLocked(tagKey); inspectErr != nil {
+			return inspectErr
+		}
+	}
+	return nil
+}
+
+func (to *TestContainerOrchestrator) BlockPullImage(image string) func() {
+	return to.blockOperation(operationPullImage, image)
+}
+
+func (to *TestContainerOrchestrator) OmitPullImageID(image string) func() {
+	return to.omitOperationResult(operationPullImage, image)
+}
+
+func (to *TestContainerOrchestrator) FailNextPullImage(image string, pullErr error) {
+	if pullErr == nil {
+		pullErr = errors.New("simulated image pull failure")
+	}
+
+	to.queueOperationError(operationPullImage, image, pullErr)
+}
+
+func (to *TestContainerOrchestrator) PullImageCallCount(image string) int {
+	return to.operationCallCount(operationPullImage, image)
+}
+
+func (to *TestContainerOrchestrator) BlockBuildImage(tag string) func() {
+	return to.blockOperation(operationBuildImage, tag)
+}
+
+func (to *TestContainerOrchestrator) OmitBuildImageID(tag string) func() {
+	return to.omitOperationResult(operationBuildImage, tag)
+}
+
+func (to *TestContainerOrchestrator) BuildImageCallCount(tag string) int {
+	return to.operationCallCount(operationBuildImage, tag)
+}
+
+func (to *TestContainerOrchestrator) BlockCreateVolume(name string) func() {
+	return to.blockOperation(operationCreateVolume, name)
+}
+
+// FailNextCreateVolumeAfterCreation simulates a runtime create whose result is uncertain to the caller.
+func (to *TestContainerOrchestrator) FailNextCreateVolumeAfterCreation(name string, createErr error) {
+	if createErr == nil {
+		createErr = errors.New("simulated volume create failure")
+	}
+
+	to.queueOperationError(operationPostCreateVolume, name, createErr)
+}
+
+func (to *TestContainerOrchestrator) CreateVolumeCallCount(name string) int {
+	return to.operationCallCount(operationCreateVolume, name)
+}
+
+func (to *TestContainerOrchestrator) InspectVolumeCallCount(volume string) int {
+	return to.operationCallCount(operationInspectVolume, volume)
+}
+
+func (to *TestContainerOrchestrator) FailNextRemoveVolume(name string, removeErr error) {
+	if removeErr == nil {
+		removeErr = errors.New("simulated volume removal failure")
+	}
+	to.queueOperationError(operationRemoveVolume, name, removeErr)
+}
+
+// FailNextRemoveVolumeAfterRemoval simulates a runtime removal whose result is uncertain to the caller.
+func (to *TestContainerOrchestrator) FailNextRemoveVolumeAfterRemoval(name string, removeErr error) {
+	if removeErr == nil {
+		removeErr = errors.New("simulated lost volume removal response")
+	}
+
+	to.queueOperationError(operationPostRemoveVolume, name, removeErr)
+}
+
+func (to *TestContainerOrchestrator) RemoveVolumeCallCount(name string) int {
+	return to.operationCallCount(operationRemoveVolume, name)
+}
+
+func (to *TestContainerOrchestrator) BlockCreateNetwork(name string) func() {
+	return to.blockOperation(operationCreateNetwork, name)
+}
+
+// FailNextCreateNetworkAfterCreation simulates a runtime create whose result is uncertain to the caller.
+func (to *TestContainerOrchestrator) FailNextCreateNetworkAfterCreation(name string, createErr error) {
+	if createErr == nil {
+		createErr = errors.New("simulated network create failure")
+	}
+
+	to.queueOperationError(operationPostCreateNetwork, name, createErr)
+}
+
+func (to *TestContainerOrchestrator) CreateNetworkCallCount(name string) int {
+	return to.operationCallCount(operationCreateNetwork, name)
+}
+
+// InspectNetworkCallCount reports how many times the network was inspected, by ID or by name.
+func (to *TestContainerOrchestrator) InspectNetworkCallCount(network string) int {
+	return to.operationCallCount(operationInspectNetwork, network)
+}
+
+func (to *TestContainerOrchestrator) recordInspectNetworksOperation(networks []string) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	for _, network := range networks {
+		key := testContainerOperationKey{operation: operationInspectNetwork, resourceID: network}
+		to.operationCallCounts[key]++
+	}
+}
+
+func (to *TestContainerOrchestrator) recordInspectVolumesOperation(volumes []string) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	for _, volume := range volumes {
+		key := testContainerOperationKey{operation: operationInspectVolume, resourceID: volume}
+		to.operationCallCounts[key]++
+	}
+}
+
+func (to *TestContainerOrchestrator) blockOperation(operation testContainerOperation, resourceID string, initialErrors ...error) func() {
+	key := testContainerOperationKey{operation: operation, resourceID: resourceID}
+	block := make(chan struct{})
+	to.mutex.Lock()
+	to.operationBlocks[key] = block
+	if len(initialErrors) > 0 {
+		to.operationErrors[key] = append(to.operationErrors[key], initialErrors...)
+	}
+	to.mutex.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			to.mutex.Lock()
+			if to.operationBlocks[key] == block {
+				delete(to.operationBlocks, key)
+			}
+			to.mutex.Unlock()
+			close(block)
+		})
+	}
+}
+
+func (to *TestContainerOrchestrator) omitOperationResult(operation testContainerOperation, resourceID string) func() {
+	key := testContainerOperationKey{operation: operation, resourceID: resourceID}
+	to.mutex.Lock()
+	to.operationResultOmissions[key] = true
+	to.mutex.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			to.mutex.Lock()
+			defer to.mutex.Unlock()
+
+			delete(to.operationResultOmissions, key)
+		})
+	}
+}
+
+func (to *TestContainerOrchestrator) queueOperationError(operation testContainerOperation, resourceID string, operationErr error) {
+	key := testContainerOperationKey{operation: operation, resourceID: resourceID}
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	to.operationErrors[key] = append(to.operationErrors[key], operationErr)
+}
+
+func (to *TestContainerOrchestrator) operationCallCount(operation testContainerOperation, resourceID string) int {
+	key := testContainerOperationKey{operation: operation, resourceID: resourceID}
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	return to.operationCallCounts[key]
+}
+
+func (to *TestContainerOrchestrator) firstOperationErrorLocked(key testContainerOperationKey) error {
+	if len(to.operationErrors[key]) == 0 {
+		return nil
+	}
+
+	return to.operationErrors[key][0]
+}
+
+func (to *TestContainerOrchestrator) nextOperationErrorLocked(key testContainerOperationKey) error {
+	operationErr := to.firstOperationErrorLocked(key)
+	if operationErr == nil {
+		return nil
+	}
+
+	to.operationErrors[key] = to.operationErrors[key][1:]
+	if len(to.operationErrors[key]) == 0 {
+		delete(to.operationErrors, key)
+	}
+	return operationErr
+}
+
+func (to *TestContainerOrchestrator) recordOperation(ctx context.Context, operation testContainerOperation, resourceID string) error {
+	key := testContainerOperationKey{operation: operation, resourceID: resourceID}
+	to.mutex.Lock()
+	to.operationCallCounts[key]++
+	block := to.operationBlocks[key]
+	operationErr := to.nextOperationErrorLocked(key)
+	to.mutex.Unlock()
+
+	if operationErr != nil {
+		return operationErr
+	}
+	return waitForBlockedOperation(ctx, block)
+}
+
+func (to *TestContainerOrchestrator) recordBuildImageOperation(ctx context.Context, tags []string) error {
+	to.mutex.Lock()
+	var block chan struct{}
+	for _, tag := range tags {
+		key := testContainerOperationKey{operation: operationBuildImage, resourceID: tag}
+		to.operationCallCounts[key]++
+		if block == nil {
+			block = to.operationBlocks[key]
+		}
+	}
+	to.mutex.Unlock()
+
+	return waitForBlockedOperation(ctx, block)
+}
+
+func waitForBlockedOperation(ctx context.Context, block chan struct{}) error {
+	if block == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-block:
+		return nil
+	}
+}
+
 func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
+	if options.StdOutStream != nil {
+		defer func() { _ = options.StdOutStream.Close() }()
+		if _, writeErr := fmt.Fprintln(options.StdOutStream, "Building image"); writeErr != nil {
+			return writeErr
+		}
+	}
+	if options.StdErrStream != nil {
+		defer func() { _ = options.StdErrStream.Close() }()
+		if _, writeErr := fmt.Fprintln(options.StdErrStream, "Preparing build context"); writeErr != nil {
+			return writeErr
+		}
+	}
+	if err := to.recordBuildImageOperation(ctx, options.Tags); err != nil {
+		return err
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -1148,29 +1612,41 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 		return errRuntimeUnhealthy
 	}
 
+	for _, existingImage := range to.images {
+		remainingTags := make([]string, 0, len(existingImage.tags))
+		for _, existingTag := range existingImage.tags {
+			if !slices.Contains(options.Tags, existingTag) {
+				remainingTags = append(remainingTags, existingTag)
+			}
+		}
+		existingImage.tags = remainingTags
+	}
+
 	guid := uuid.New().String()
+	omitImageID := slices.Any(options.Tags, func(tag string) bool {
+		key := testContainerOperationKey{operation: operationBuildImage, resourceID: tag}
+		return to.operationResultOmissions[key]
+	})
 	image := &testImage{
 		id:      guid,
 		digest:  toDigest(sha256.Sum256([]byte(guid))),
-		tags:    options.Tags,
+		tags:    std_slices.Clone(options.Tags),
 		secrets: map[string]string{},
-		labels: maps.SliceToMap(options.Labels, func(label apiv1.ContainerLabel) (string, string) {
-			return label.Key, label.Value
-		}),
+		labels:  std_maps.Clone(options.Labels),
 	}
 
 	for _, secret := range options.Secrets {
-		if secret.Type == apiv1.EnvSecret && secret.Value != "" {
+		if secret.Type == containers.EnvSecret && secret.Value != "" {
 			image.secrets[secret.ID] = secret.Value
 		}
 	}
 
 	to.images = append(to.images, image)
 
-	if options.IidFile != "" {
-		err := usvc_io.WriteFile(options.IidFile, []byte(guid), osutil.PermissionOwnerReadWriteOthersRead)
-		if err != nil {
-			return err
+	if options.IidFile != "" && !omitImageID {
+		writeErr := usvc_io.WriteFile(options.IidFile, []byte(guid), osutil.PermissionOnlyOwnerReadWrite)
+		if writeErr != nil {
+			return writeErr
 		}
 	}
 
@@ -1198,13 +1674,17 @@ func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, options 
 			err = errors.Join(err, containers.ErrNotFound)
 			continue
 		}
+		if inspectErr := to.inspectImageErrorLocked(imageId, image); inspectErr != nil {
+			err = errors.Join(err, inspectErr)
+			continue
+		}
 
 		// CONSIDER: surface mock image build data via inspection
 
 		result = append(result, containers.InspectedImage{
 			Id:     image.id,
-			Labels: image.labels,
-			Tags:   image.tags,
+			Labels: std_maps.Clone(image.labels),
+			Tags:   std_slices.Clone(image.tags),
 			Digest: image.digest,
 		})
 	}
@@ -1217,6 +1697,22 @@ func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, options 
 }
 
 func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options containers.PullImageOptions) (string, error) {
+	if options.StdOutStream != nil {
+		defer func() { _ = options.StdOutStream.Close() }()
+		if _, writeErr := fmt.Fprintln(options.StdOutStream, "Pulling image", options.Image); writeErr != nil {
+			return "", writeErr
+		}
+	}
+	if options.StdErrStream != nil {
+		defer func() { _ = options.StdErrStream.Close() }()
+		if _, writeErr := fmt.Fprintln(options.StdErrStream, "Resolving image manifest"); writeErr != nil {
+			return "", writeErr
+		}
+	}
+	if err := to.recordOperation(ctx, operationPullImage, options.Image); err != nil {
+		return "", err
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -1234,6 +1730,11 @@ func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options cont
 
 	image, found := to.findImage(options.Image)
 	if found {
+		key := testContainerOperationKey{operation: operationPullImage, resourceID: options.Image}
+		omitImageID := to.operationResultOmissions[key]
+		if omitImageID {
+			return "", nil
+		}
 		return image.id, nil
 	}
 
@@ -1250,10 +1751,49 @@ func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options cont
 	} else {
 		image.digest = toDigest(sha256.Sum256([]byte(guid)))
 	}
-
 	to.images = append(to.images, image)
 
+	key := testContainerOperationKey{operation: operationPullImage, resourceID: options.Image}
+	omitImageID := to.operationResultOmissions[key]
+	if omitImageID {
+		return "", nil
+	}
 	return image.id, nil
+}
+
+func (to *TestContainerOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {
+	return containers.RemoveImagesSequentially(ctx, options, func(ctx context.Context, imageRef string, _ bool) error {
+		to.mutex.Lock()
+		defer to.mutex.Unlock()
+
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if !to.runtimeHealthy {
+			return errRuntimeUnhealthy
+		}
+
+		imageIndex := slices.IndexFunc(to.images, func(image *testImage) bool {
+			return image.id == imageRef || slices.Contains(image.tags, imageRef)
+		})
+		if imageIndex < 0 {
+			return containers.ErrNotFound
+		}
+
+		image := to.images[imageIndex]
+		if image.id == imageRef {
+			to.images = std_slices.Delete(to.images, imageIndex, imageIndex+1)
+			return nil
+		}
+
+		tagIndex := slices.Index(image.tags, imageRef)
+		image.tags = std_slices.Delete(image.tags, tagIndex, tagIndex+1)
+		if len(image.tags) == 0 {
+			to.images = std_slices.Delete(to.images, imageIndex, imageIndex+1)
+		}
+
+		return nil
+	})
 }
 
 func (to *TestContainerOrchestrator) FailPullImage(pullImageErr error) {
@@ -1286,6 +1826,17 @@ func (to *TestContainerOrchestrator) findImage(id string) (*testImage, bool) {
 	}
 }
 
+func (to *TestContainerOrchestrator) containerMatches(container *testContainer, name string) bool {
+	if container.matches(name) || strings.HasPrefix(container.Image, name) {
+		return true
+	}
+
+	image, found := to.findImage(container.Image)
+	return found && slices.Any(image.tags, func(tag string) bool {
+		return strings.HasPrefix(tag, name)
+	})
+}
+
 func toDigest(sha [32]byte) string {
 	return fmt.Sprintf("sha256:%s", hex.EncodeToString(sha[:]))
 }
@@ -1306,8 +1857,16 @@ func (to *TestContainerOrchestrator) WatchContainers(sink chan<- containers.Even
 }
 
 func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, options containers.CreateContainerOptions) (string, error) {
+	if err := to.recordOperation(ctx, operationCreateContainer, options.Name); err != nil {
+		return "", err
+	}
+
 	to.mutex.Lock()
-	defer to.mutex.Unlock()
+	var events []containers.EventMessage
+	defer func() {
+		to.mutex.Unlock()
+		to.notifyContainerEvents(events)
+	}()
 
 	if ctx.Err() != nil {
 		return "", ctx.Err()
@@ -1317,52 +1876,90 @@ func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, option
 		return "", errRuntimeUnhealthy
 	}
 
-	container, err := to.doCreateContainer(ctx, options)
+	createNetworks, err := to.resolveCreateContainerNetworks(options)
 	if err != nil {
 		return "", err
 	}
 
-	effectiveNetwork := options.Network
-	if effectiveNetwork == "" {
-		effectiveNetwork = to.DefaultNetworkName()
+	container, createEvent, err := to.doCreateContainer(ctx, options)
+	if err != nil {
+		return "", err
+	}
+	events = append(events, createEvent)
+	postCreateKey := testContainerOperationKey{operation: operationPostCreateContainer, resourceID: options.Name}
+	if postCreateErr := to.nextOperationErrorLocked(postCreateKey); postCreateErr != nil {
+		return container.ID, postCreateErr
 	}
 
-	allNetworks := maps.Values(to.networks)
-	i := slices.IndexFunc(allNetworks, func(n *containerNetwork) bool {
-		return n.matches(effectiveNetwork)
-	})
-	if i < 0 {
-		return "", errors.Join(containers.ErrNotFound, fmt.Errorf("network %s not found", effectiveNetwork))
-	}
-	net := allNetworks[i]
-
-	connectOpts := containers.ConnectNetworkOptions{
-		Network:   net.ID,
-		Container: container.ID,
-		Aliases:   options.NetworkAliases,
-	}
-	if err = to.doConnectNetwork(ctx, net, container, connectOpts); err != nil {
-		return container.ID, err
+	for _, createNetwork := range createNetworks {
+		connectOpts := containers.ConnectNetworkOptions{
+			Network:   createNetwork.network.ID,
+			Container: container.ID,
+			Aliases:   createNetwork.aliases,
+		}
+		if err = to.doConnectNetwork(ctx, createNetwork.network, container, connectOpts); err != nil {
+			return container.ID, err
+		}
 	}
 
 	return container.ID, nil
 }
 
-func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, options containers.CreateContainerOptions) (*testContainer, error) {
+type resolvedCreateContainerNetwork struct {
+	network *containerNetwork
+	aliases []string
+}
+
+func (to *TestContainerOrchestrator) resolveCreateContainerNetworks(options containers.CreateContainerOptions) ([]resolvedCreateContainerNetwork, error) {
+	requestedNetworks := options.Networks
+	if len(requestedNetworks) == 0 {
+		requestedNetworks = []containers.CreateContainerNetworkOptions{
+			{Name: to.DefaultNetworkName()},
+		}
+	}
+
+	allNetworks := maps.Values(to.networks)
+	resolvedNetworks := make([]resolvedCreateContainerNetwork, 0, len(requestedNetworks))
+	for _, requestedNetwork := range requestedNetworks {
+		requestedNetworkName := requestedNetwork.Name
+		if len(requestedNetwork.Aliases) > 0 {
+			// Docker CLI lowercases the full name=...,alias=... field when parsing long --network syntax, we mimic this behavior here
+			requestedNetworkName = strings.ToLower(requestedNetworkName)
+		}
+
+		index := slices.IndexFunc(allNetworks, func(n *containerNetwork) bool {
+			return n.matches(requestedNetworkName)
+		})
+		if index < 0 {
+			return nil, errors.Join(containers.ErrNotFound, fmt.Errorf("network %s not found", requestedNetworkName))
+		}
+
+		aliases := make([]string, len(requestedNetwork.Aliases))
+		copy(aliases, requestedNetwork.Aliases)
+		resolvedNetworks = append(resolvedNetworks, resolvedCreateContainerNetwork{
+			network: allNetworks[index],
+			aliases: aliases,
+		})
+	}
+
+	return resolvedNetworks, nil
+}
+
+func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, options containers.CreateContainerOptions) (*testContainer, containers.EventMessage, error) {
 	if ctx.Err() != nil {
-		return nil, ctx.Err()
+		return nil, containers.EventMessage{}, ctx.Err()
 	}
 
 	name := options.Name
 	if name != "" {
 		for _, existing := range to.containers {
 			if existing.Name == name {
-				return nil, containers.ErrAlreadyExists
+				return nil, containers.EventMessage{}, containers.ErrAlreadyExists
 			}
 		}
 	} else {
 		if randomName, err := to.getRandomName(); err != nil {
-			return nil, err
+			return nil, containers.EventMessage{}, err
 		} else {
 			name = randomName
 		}
@@ -1376,14 +1973,29 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 		CreatedAt:      time.Now().UTC(),
 		Status:         containers.ContainerStatusCreated,
 		Networks:       []string{},
+		Mounts:         []containers.VolumeMount{},
 		NetworkAliases: map[string][]string{},
 		Ports:          map[string][]TestContainerPortConfig{},
-		Args:           options.Args,
+		Args:           options.Command,
 		Env:            map[string]string{},
 		Labels:         map[string]string{},
 		healthcheck:    options.Healthcheck,
 		stdoutLog:      testutil.NewBufferWriter(),
 		stderrLog:      testutil.NewBufferWriter(),
+	}
+
+	for _, mount := range options.VolumeMounts {
+		container.Mounts = append(container.Mounts, containers.VolumeMount{
+			Type:     mount.Type,
+			Source:   mount.Source,
+			Target:   mount.Target,
+			ReadOnly: mount.ReadOnly,
+		})
+		if mount.Type == containers.NamedVolumeMount {
+			if _, found := to.volumes[mount.Source]; !found {
+				to.volumes[mount.Source] = containerVolume{name: mount.Source, created: time.Now().UTC()}
+			}
+		}
 	}
 
 	for ctr, healthcheck := range to.containersToHealthcheck {
@@ -1407,7 +2019,7 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 		if port.HostPort == 0 {
 			i, randErr := randdata.MakeRandomInt64(int64(MaxRandomHostPort) - int64(MinRandomHostPort))
 			if randErr != nil {
-				return nil, randErr
+				return nil, containers.EventMessage{}, randErr
 			}
 			hostPort = int32(MinRandomHostPort) + int32(i)
 		}
@@ -1428,28 +2040,31 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 		}
 	}
 
-	for _, label := range options.Labels {
-		container.Labels[label.Key] = label.Value
+	for key, value := range options.Labels {
+		container.Labels[key] = value
 	}
 
 	to.containers[id.ID] = &container
 
-	// Notify listeners that we've created the container
-	to.containerEventsWatcher.Notify(containers.EventMessage{
+	createEvent := containers.EventMessage{
 		Source: containers.EventSourceContainer,
 		Action: containers.EventActionCreate,
 		Actor:  containers.EventActor{ID: id.ID},
 		Attributes: map[string]string{
 			ContainerNameAttribute: name,
 		},
-	})
+	}
 
-	return &container, nil
+	return &container, createEvent, nil
 }
 
 func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, options containers.StartContainersOptions) ([]string, error) {
 	to.mutex.Lock()
-	defer to.mutex.Unlock()
+	var events []containers.EventMessage
+	defer func() {
+		to.mutex.Unlock()
+		to.notifyContainerEvents(events)
+	}()
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -1479,10 +2094,13 @@ func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, option
 	}
 
 	for _, container := range containersToStart {
-		id, startErr := to.doStartContainer(ctx, container, options.StreamCommandOptions)
+		id, startEvent, startErr := to.doStartContainer(ctx, container, options.StreamCommandOptions)
 		if startErr != nil {
 			err = errors.Join(err, startErr)
 			continue
+		}
+		if startEvent != nil {
+			events = append(events, *startEvent)
 		}
 
 		result = append(result, id)
@@ -1495,7 +2113,7 @@ func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, option
 	return result, err
 }
 
-func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, container *testContainer, streamOptions containers.StreamCommandOptions) (string, error) {
+func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, container *testContainer, streamOptions containers.StreamCommandOptions) (string, *containers.EventMessage, error) {
 	streamIfPossible := func(err error) error {
 		if streamOptions.StdErrStream != nil {
 			_, writeErr := streamOptions.StdErrStream.Write([]byte(err.Error()))
@@ -1505,21 +2123,21 @@ func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, conta
 	}
 
 	if ctx.Err() != nil {
-		return "", streamIfPossible(ctx.Err())
+		return "", nil, streamIfPossible(ctx.Err())
 	}
 
 	if container.Status != containers.ContainerStatusCreated && container.Status != containers.ContainerStatusExited && container.Status != containers.ContainerStatusPaused {
-		return "", streamIfPossible(fmt.Errorf("container is not in a state to be started"))
+		return "", nil, streamIfPossible(fmt.Errorf("container is not in a state to be started"))
 	}
 
 	for name, exit := range to.containersToFail {
-		if container.matches(name) || strings.HasPrefix(container.Image, name) {
-			return container.ID, streamIfPossible(fmt.Errorf("container failed to start: %s", exit.stdErr))
+		if to.containerMatches(container, name) {
+			return container.ID, nil, streamIfPossible(fmt.Errorf("container failed to start: %s", exit.stdErr))
 		}
 	}
 
 	for name, containerStartupLogs := range to.startupLogs {
-		if container.matches(name) || strings.HasPrefix(container.Image, name) {
+		if to.containerMatches(container, name) {
 			var startupLogsWriteErrors error
 
 			if len(containerStartupLogs.stdout) > 0 && streamOptions.StdOutStream != nil {
@@ -1533,7 +2151,7 @@ func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, conta
 			}
 
 			if startupLogsWriteErrors != nil {
-				return "", streamIfPossible(startupLogsWriteErrors)
+				return "", nil, streamIfPossible(startupLogsWriteErrors)
 			} else {
 				delete(to.startupLogs, name)
 				break
@@ -1544,22 +2162,25 @@ func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, conta
 	container.Status = containers.ContainerStatusRunning
 	container.StartedAt = time.Now().UTC()
 
-	// Notify listeners that we've started the container
-	to.containerEventsWatcher.Notify(containers.EventMessage{
+	startEvent := containers.EventMessage{
 		Source: containers.EventSourceContainer,
 		Action: containers.EventActionStart,
 		Actor:  containers.EventActor{ID: container.ID},
 		Attributes: map[string]string{
 			ContainerNameAttribute: container.Name,
 		},
-	})
+	}
 
-	return container.ID, nil
+	return container.ID, &startEvent, nil
 }
 
 func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options containers.RunContainerOptions) (string, error) {
 	to.mutex.Lock()
-	defer to.mutex.Unlock()
+	var events []containers.EventMessage
+	defer func() {
+		to.mutex.Unlock()
+		to.notifyContainerEvents(events)
+	}()
 
 	if ctx.Err() != nil {
 		return "", ctx.Err()
@@ -1569,42 +2190,43 @@ func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options c
 		return "", errRuntimeUnhealthy
 	}
 
-	container, err := to.doCreateContainer(ctx, options.CreateContainerOptions)
+	createNetworks, err := to.resolveCreateContainerNetworks(options.CreateContainerOptions)
 	if err != nil {
 		return "", err
 	}
 
-	effectiveNetwork := options.Network
-	if effectiveNetwork == "" {
-		effectiveNetwork = to.DefaultNetworkName()
+	container, createEvent, err := to.doCreateContainer(ctx, options.CreateContainerOptions)
+	if err != nil {
+		return "", err
+	}
+	events = append(events, createEvent)
+
+	for _, createNetwork := range createNetworks {
+		connectOpts := containers.ConnectNetworkOptions{
+			Network:   createNetwork.network.ID,
+			Container: container.ID,
+			Aliases:   createNetwork.aliases,
+		}
+		if err = to.doConnectNetwork(ctx, createNetwork.network, container, connectOpts); err != nil {
+			return container.ID, err
+		}
 	}
 
-	allNetworks := maps.Values(to.networks)
-	i := slices.IndexFunc(allNetworks, func(n *containerNetwork) bool {
-		return n.matches(effectiveNetwork)
-	})
-	if i < 0 {
-		return "", errors.Join(containers.ErrNotFound, fmt.Errorf("network %s not found", effectiveNetwork))
-	}
-	net := allNetworks[i]
-
-	connectOpts := containers.ConnectNetworkOptions{
-		Network:   net.ID,
-		Container: container.ID,
-		Aliases:   options.NetworkAliases,
-	}
-	if err = to.doConnectNetwork(ctx, net, container, connectOpts); err != nil {
+	var startEvent *containers.EventMessage
+	if _, startEvent, err = to.doStartContainer(ctx, container, options.StreamCommandOptions); err != nil {
 		return container.ID, err
 	}
-
-	if _, err = to.doStartContainer(ctx, container, options.StreamCommandOptions); err != nil {
-		return container.ID, err
+	if startEvent != nil {
+		events = append(events, *startEvent)
 	}
 
 	return container.ID, nil
 }
 
 func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
+	if operationErr := to.recordOperation(ctx, operationExecContainer, options.Command); operationErr != nil {
+		return nil, operationErr
+	}
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -1626,6 +2248,9 @@ func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options 
 	if foundContainer == nil {
 		return nil, containers.ErrNotFound
 	}
+	if foundContainer.Status != containers.ContainerStatusRunning {
+		return nil, fmt.Errorf("container is not running")
+	}
 
 	execKey := fmt.Sprintf("%s:%s", foundContainer.ID, options.Command)
 	if _, found := to.execs[execKey]; found {
@@ -1634,14 +2259,83 @@ func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options 
 
 	exitCodeChan := make(chan int32, 1)
 
-	to.execs[fmt.Sprintf("%s:%s", foundContainer.ID, options.Command)] = &containerExec{
+	execution := &containerExec{
+		options:  options,
 		stdout:   options.StdOutStream,
 		stderr:   options.StdErrStream,
 		exited:   false,
 		exitChan: exitCodeChan,
 	}
+	to.execs[execKey] = execution
+	execution.stopCancellation = context.AfterFunc(ctx, func() {
+		to.mutex.Lock()
+		defer to.mutex.Unlock()
+		if !execution.exited {
+			execution.finish(-1)
+		}
+	})
+	if exitCode, complete := to.execExitCodes[options.Command]; complete {
+		delete(to.execExitCodes, options.Command)
+		execution.finish(exitCode)
+	}
 
 	return exitCodeChan, nil
+}
+
+// GetContainerExecOptions returns a copy of the recorded invocation without its output writers.
+func (to *TestContainerOrchestrator) GetContainerExecOptions(containerID, command string) (containers.ExecContainerOptions, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+	execution, found := to.execs[containerID+":"+command]
+	if !found {
+		return containers.ExecContainerOptions{}, containers.ErrNotFound
+	}
+	options := execution.options
+	options.Args = append([]string(nil), options.Args...)
+	options.Env = append([]containers.EnvVar(nil), options.Env...)
+	options.EnvFiles = append([]string(nil), options.EnvFiles...)
+	options.StreamCommandOptions = containers.StreamCommandOptions{}
+	return options, nil
+}
+
+// CompleteNextExecContainer completes the next launch before returning its exit channel.
+func (to *TestContainerOrchestrator) CompleteNextExecContainer(command string, exitCode int32) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+	if to.execExitCodes == nil {
+		to.execExitCodes = make(map[string]int32)
+	}
+	to.execExitCodes[command] = exitCode
+}
+
+// BlockExecContainer blocks command launch until released or its context is cancelled.
+func (to *TestContainerOrchestrator) BlockExecContainer(command string) func() {
+	return to.blockOperation(operationExecContainer, command)
+}
+
+// FailNextExecContainer injects a launch failure for the command.
+func (to *TestContainerOrchestrator) FailNextExecContainer(command string, launchErr error) {
+	to.queueOperationError(operationExecContainer, command, launchErr)
+}
+
+// ExecContainerCallCount reports launch attempts for the command.
+func (to *TestContainerOrchestrator) ExecContainerCallCount(command string) int {
+	return to.operationCallCount(operationExecContainer, command)
+}
+
+func (execution *containerExec) finish(exitCode int32) {
+	if execution.stopCancellation != nil {
+		execution.stopCancellation()
+	}
+	if execution.stdout != nil {
+		_ = execution.stdout.Close()
+	}
+	if execution.stderr != nil {
+		_ = execution.stderr.Close()
+	}
+	execution.exited = true
+	execution.exitChan <- exitCode
+	close(execution.exitChan)
 }
 
 // SetContainerAttachHandler installs the handler invoked from AttachContainer.
@@ -1714,7 +2408,12 @@ func (to *TestContainerOrchestrator) AttachContainer(
 	return ptp, nil
 }
 
-func (to *TestContainerOrchestrator) fireAttachExitHandlers(container *testContainer, exitCode int32) {
+func (to *TestContainerOrchestrator) finishContainerExecutions(container *testContainer, execExitCode, attachExitCode int32) {
+	for key, execution := range to.execs {
+		if strings.HasPrefix(key, container.ID+":") && !execution.exited {
+			execution.finish(execExitCode)
+		}
+	}
 	if len(container.terminalProcesses) == 0 {
 		return
 	}
@@ -1726,14 +2425,18 @@ func (to *TestContainerOrchestrator) fireAttachExitHandlers(container *testConta
 			// Already fired by another path (e.g. TestProcessExecutor.StopProcess).
 			continue
 		default:
-			tproc.ExitHandler.OnProcessExited(tproc.PID, exitCode, nil)
+			tproc.ExitHandler.OnProcessExited(tproc.Handle.Pid, attachExitCode, nil)
 		}
 	}
 }
 
 func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, options containers.StopContainersOptions) ([]string, error) {
 	to.mutex.Lock()
-	defer to.mutex.Unlock()
+	var events []containers.EventMessage
+	defer func() {
+		to.mutex.Unlock()
+		to.notifyContainerEvents(events)
+	}()
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -1766,10 +2469,12 @@ func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, options
 	var results []string
 
 	for _, container := range containersToStop {
-		if stopErr := to.doStopContainer(ctx, container, stoppingOnly); stopErr != nil {
+		stopEvents, stopErr := to.doStopContainer(ctx, container, stoppingOnly)
+		if stopErr != nil {
 			err = errors.Join(err, fmt.Errorf("failed to stop container '%s': %w", container.ID, stopErr))
 			continue
 		}
+		events = append(events, stopEvents...)
 
 		results = append(results, container.ID)
 	}
@@ -1786,24 +2491,14 @@ type stopContainerAction string
 const stoppingOnly stopContainerAction = "stoppingOnly"
 const stopAndRemove stopContainerAction = "stopAndRemove"
 
-func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, container *testContainer, stopAction stopContainerAction) error {
+func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, container *testContainer, stopAction stopContainerAction) ([]containers.EventMessage, error) {
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 
 	// Stop is a no-op if the container isn't running
 	if container.Status != containers.ContainerStatusRunning {
-		return nil
-	}
-
-	for key, exec := range to.execs {
-		if !exec.exited && strings.HasPrefix(key, fmt.Sprintf("%s:", container.ID)) {
-			// If the execution hasn't already been completed, signal that it should be stopped
-			exec.exitChan <- -1
-			_ = exec.stdout.Close()
-			_ = exec.stderr.Close()
-			close(exec.exitChan)
-		}
+		return nil, nil
 	}
 
 	container.Status = containers.ContainerStatusExited
@@ -1813,36 +2508,50 @@ func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, contai
 
 	// Mirror production: container stopping causes any attach process to exit,
 	// which in turn drives the terminal bridge shutdown.
-	to.fireAttachExitHandlers(container, container.ExitCode)
+	to.finishContainerExecutions(container, -1, container.ExitCode)
 
-	// Notify listeners that we've stopped the container
-	to.containerEventsWatcher.Notify(containers.EventMessage{
+	stopEvent := containers.EventMessage{
 		Source: containers.EventSourceContainer,
 		Action: containers.EventActionStop,
 		Actor:  containers.EventActor{ID: container.ID},
 		Attributes: map[string]string{
 			ContainerNameAttribute: container.Name,
 		},
-	})
+	}
+	events := []containers.EventMessage{stopEvent}
 
 	if stopAction == stoppingOnly {
-		// For testing purposes we want to differentiate between a stop and a remove
-		to.containerEventsWatcher.Notify(containers.EventMessage{
+		stopWithoutRemoveEvent := containers.EventMessage{
 			Source: containers.EventSourcePlugin,
 			Action: TestEventActionStopWithoutRemove,
 			Actor:  containers.EventActor{ID: container.ID},
 			Attributes: map[string]string{
 				ContainerNameAttribute: container.Name,
 			},
-		})
+		}
+		events = append(events, stopWithoutRemoveEvent)
 	}
 
-	return nil
+	return events, nil
 }
 
 func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, options containers.RemoveContainersOptions) ([]string, error) {
+	return to.removeContainers(ctx, options, true)
+}
+
+func (to *TestContainerOrchestrator) RemoveContainersWithoutEvents(ctx context.Context, options containers.RemoveContainersOptions) ([]string, error) {
+	return to.removeContainers(ctx, options, false)
+}
+
+func (to *TestContainerOrchestrator) removeContainers(ctx context.Context, options containers.RemoveContainersOptions, notifyEvents bool) ([]string, error) {
 	to.mutex.Lock()
-	defer to.mutex.Unlock()
+	var events []containers.EventMessage
+	defer func() {
+		to.mutex.Unlock()
+		if notifyEvents {
+			to.notifyContainerEvents(events)
+		}
+	}()
 
 	if len(options.Containers) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
@@ -1876,18 +2585,56 @@ func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, optio
 
 	for i := range containersToRemove {
 		container := containersToRemove[i]
-		if options.Force {
-			if stopErr := to.doStopContainer(ctx, container, stopAndRemove); stopErr != nil {
-				err = errors.Join(err, fmt.Errorf("failed to stop container '%s': %w", container.ID, stopErr))
+		if to.containers[container.ID] != container {
+			err = errors.Join(err, containers.ErrNotFound)
+			continue
+		}
+		if !to.runtimeHealthy {
+			if !errors.Is(err, errRuntimeUnhealthy) {
+				err = errors.Join(err, errRuntimeUnhealthy)
+			}
+			continue
+		}
+		block, operationErr := to.recordRemoveContainerOperationLocked(container.Name)
+		if operationErr != nil {
+			err = errors.Join(err, operationErr)
+			continue
+		}
+		if block != nil {
+			// Other operations must remain available while a test controls removal completion.
+			to.mutex.Unlock()
+			blockErr := waitForBlockedOperation(ctx, block)
+			to.mutex.Lock()
+			if blockErr != nil {
+				err = errors.Join(err, blockErr)
+				continue
+			}
+			if to.containers[container.ID] != container {
+				err = errors.Join(err, containers.ErrNotFound)
+				continue
+			}
+			if !to.runtimeHealthy {
+				if !errors.Is(err, errRuntimeUnhealthy) {
+					err = errors.Join(err, errRuntimeUnhealthy)
+				}
 				continue
 			}
 		}
+		if options.Force {
+			stopEvents, stopErr := to.doStopContainer(ctx, container, stopAndRemove)
+			if stopErr != nil {
+				err = errors.Join(err, fmt.Errorf("failed to stop container '%s': %w", container.ID, stopErr))
+				continue
+			}
+			events = append(events, stopEvents...)
+		}
 
-		id, removeErr := to.doRemoveContainer(ctx, container)
+		id, removeEvent, removeErr := to.doRemoveContainer(ctx, container)
 		if removeErr != nil {
 			err = errors.Join(err, fmt.Errorf("failed to remove container '%s': %w", container.ID, removeErr))
 			continue
 		}
+		events = append(events, removeEvent)
 
 		results = append(results, id)
 	}
@@ -1899,19 +2646,19 @@ func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, optio
 	return results, err
 }
 
-func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, container *testContainer) (string, error) {
+func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, container *testContainer) (string, containers.EventMessage, error) {
 	if ctx.Err() != nil {
-		return "", ctx.Err()
+		return "", containers.EventMessage{}, ctx.Err()
 	}
 
 	if container.Status != containers.ContainerStatusExited && container.Status != containers.ContainerStatusCreated && container.Status != containers.ContainerStatusDead {
-		return "", fmt.Errorf("container is not in a state to be removed")
+		return "", containers.EventMessage{}, fmt.Errorf("container is not in a state to be removed")
 	}
 
 	// Best-effort: if a test removes a container without first stopping it (or
 	// while attach handlers are still recorded), still drive the bridge
 	// shutdown so the terminal teardown path runs.
-	to.fireAttachExitHandlers(container, -1)
+	to.finishContainerExecutions(container, -1, -1)
 
 	delete(to.containers, container.ID)
 
@@ -1934,17 +2681,22 @@ func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, cont
 		network.containers = remaining
 	}
 
-	// Notify listeners that we've removed the container
-	to.containerEventsWatcher.Notify(containers.EventMessage{
+	removeEvent := containers.EventMessage{
 		Source: containers.EventSourceContainer,
 		Action: containers.EventActionDestroy,
 		Actor:  containers.EventActor{ID: container.ID},
 		Attributes: map[string]string{
 			ContainerNameAttribute: container.Name,
 		},
-	})
+	}
 
-	return container.ID, nil
+	return container.ID, removeEvent, nil
+}
+
+func (to *TestContainerOrchestrator) notifyContainerEvents(events []containers.EventMessage) {
+	for _, event := range events {
+		to.containerEventsWatcher.Notify(event)
+	}
 }
 
 func (to *TestContainerOrchestrator) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
@@ -1960,6 +2712,24 @@ func (to *TestContainerOrchestrator) ListContainers(ctx context.Context, options
 	}
 
 	filteredContainers := slices.Select(maps.Values(to.containers), func(container *testContainer) bool {
+		if !options.All &&
+			container.Status != containers.ContainerStatusRunning &&
+			container.Status != containers.ContainerStatusPaused &&
+			container.Status != containers.ContainerStatusRestarting &&
+			container.Status != containers.ContainerStatusRemoving {
+			return false
+		}
+
+		if len(options.Filters.NetworkFilters) > 0 &&
+			!slices.Any(options.Filters.NetworkFilters, func(networkFilter string) bool {
+				return slices.Any(container.Networks, func(networkName string) bool {
+					network := to.networks[networkName]
+					return networkName == networkFilter || (network != nil && network.matches(networkFilter))
+				})
+			}) {
+			return false
+		}
+
 		// If there are no label filters, we should include all containers.
 		if len(options.Filters.LabelFilters) == 0 {
 			return true
@@ -2045,6 +2815,7 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, opti
 					Args:        container.Args,
 					Env:         container.Env,
 					Labels:      container.Labels,
+					Mounts:      append([]containers.VolumeMount{}, container.Mounts...),
 					Healthcheck: container.healthcheck.Command,
 					Health:      container.Health,
 				}
@@ -2107,11 +2878,11 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 	certificateHashes := []string{}
 	for _, item := range options.Entries {
 		switch item.Type {
-		case apiv1.FileSystemEntryTypeDir:
+		case containers.FileSystemEntryTypeDir:
 			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addDirectoryErr != nil {
 				return addDirectoryErr
 			}
-		case apiv1.FileSystemEntryTypeSymlink:
+		case containers.FileSystemEntryTypeSymlink:
 			if addSymlinkErr := containers.AddSymlinkToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addSymlinkErr != nil {
 				if item.ContinueOnError {
 					to.log.Error(addSymlinkErr, "Failed to add symlink to tar archive, but continueOnError is set", "SymLink", item)
@@ -2119,7 +2890,7 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 					return addSymlinkErr
 				}
 			}
-		case apiv1.FileSystemEntryTypeOpenSSL:
+		case containers.FileSystemEntryTypeOpenSSL:
 			hash, addCertErr := containers.AddCertificateToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, certificateHashes, to.log)
 			if addCertErr != nil {
 				if item.ContinueOnError {
@@ -2243,7 +3014,7 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 
 			// Mirror production: simulating container exit also drives
 			// terminate of any attached terminal session.
-			to.fireAttachExitHandlers(container, exitCode)
+			to.finishContainerExecutions(container, exitCode, exitCode)
 
 			to.containers[container.ID] = container
 
@@ -2259,6 +3030,81 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 
 			return nil
 		}
+	}
+
+	return containers.ErrNotFound
+}
+
+func (to *TestContainerOrchestrator) SimulateContainerStatus(ctx context.Context, name string, status containers.ContainerStatus) error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
+
+	for _, container := range to.containers {
+		if !container.matches(name) {
+			continue
+		}
+
+		container.Status = status
+		to.containers[container.ID] = container
+		to.containerEventsWatcher.Notify(containers.EventMessage{
+			Source: containers.EventSourceContainer,
+			Action: containers.EventActionUpdate,
+			Actor:  containers.EventActor{ID: container.ID},
+			Attributes: map[string]string{
+				ContainerNameAttribute: name,
+			},
+		})
+		return nil
+	}
+
+	return containers.ErrNotFound
+}
+
+func (to *TestContainerOrchestrator) SimulateContainerPortMappings(
+	ctx context.Context,
+	name string,
+	portMappings containers.InspectedContainerPortMapping,
+) error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
+
+	for _, container := range to.containers {
+		if !container.matches(name) {
+			continue
+		}
+
+		container.Ports = maps.Map[string, []containers.InspectedContainerHostPortConfig, []TestContainerPortConfig](
+			portMappings,
+			func(_ string, hostPorts []containers.InspectedContainerHostPortConfig) []TestContainerPortConfig {
+				return slices.Map[TestContainerPortConfig](hostPorts, func(hostPort containers.InspectedContainerHostPortConfig) TestContainerPortConfig {
+					return TestContainerPortConfig{InspectedContainerHostPortConfig: hostPort}
+				})
+			},
+		)
+		to.containers[container.ID] = container
+		to.containerEventsWatcher.Notify(containers.EventMessage{
+			Source: containers.EventSourceContainer,
+			Action: containers.EventActionUpdate,
+			Actor:  containers.EventActor{ID: container.ID},
+			Attributes: map[string]string{
+				ContainerNameAttribute: name,
+			},
+		})
+		return nil
 	}
 
 	return containers.ErrNotFound
@@ -2363,11 +3209,7 @@ func (to *TestContainerOrchestrator) SimulateContainerExecExit(ctx context.Conte
 		return fmt.Errorf("command is not running; only running commands can emit logs")
 	}
 
-	matchingCommand.exitChan <- exitCode
-	close(matchingCommand.exitChan)
-	_ = matchingCommand.stdout.Close()
-	_ = matchingCommand.stderr.Close()
-	matchingCommand.exited = true
+	matchingCommand.finish(exitCode)
 
 	return nil
 }

@@ -1,0 +1,2200 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+package integration_test
+
+import (
+	"context"
+	"errors"
+	std_slices "slices"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/controllers"
+	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/statestore"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/resiliency"
+	"github.com/microsoft/dcp/pkg/testutil"
+)
+
+type invalidPortMappingContainerOrchestrator struct {
+	containers.ContainerOrchestrator
+	containerName string
+}
+
+func (orchestrator *invalidPortMappingContainerOrchestrator) InspectContainers(
+	ctx context.Context,
+	options containers.InspectContainersOptions,
+) ([]containers.InspectedContainer, error) {
+	inspectedContainers, inspectErr := orchestrator.ContainerOrchestrator.InspectContainers(ctx, options)
+	if inspectErr != nil {
+		return nil, inspectErr
+	}
+
+	for i := range inspectedContainers {
+		if inspectedContainers[i].Name != orchestrator.containerName {
+			continue
+		}
+		if inspectedContainers[i].Ports == nil {
+			inspectedContainers[i].Ports = make(containers.InspectedContainerPortMapping)
+		}
+		inspectedContainers[i].Ports["invalid-port"] = nil
+	}
+
+	return inspectedContainers, nil
+}
+
+// Verifies that physical creation applies runtime configuration and authoritative DCP labels,
+// overriding duplicate caller system labels without changing ordinary user-label precedence.
+func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-create")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "created-image", "created-image")
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "created-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: "v2-pctr-created-container",
+			Command:       []string{"run"},
+			Env: []commonapi.EnvVar{
+				{Name: "TEST_ENV", Value: "test-value"},
+			},
+			Labels: []commonapi.Label{
+				{Key: "logical-label", Value: "caller-first"},
+				{Key: "logical-label", Value: "logical-value"},
+				{Key: "com.microsoft.developer.usvc-dev.uid", Value: "caller-value"},
+				{Key: controllers.PersistentLabel, Value: "caller-value"},
+				{Key: controllers.CreatorProcessIdLabel, Value: "caller-value"},
+				{Key: controllers.CreatorProcessStartTimeLabel, Value: "caller-value"},
+				{Key: "com.microsoft.developer.usvc-dev.uid", Value: "caller-last"},
+				{Key: controllers.PersistentLabel, Value: "caller-last"},
+				{Key: controllers.CreatorProcessIdLabel, Value: "caller-last"},
+				{Key: controllers.CreatorProcessStartTimeLabel, Value: "caller-last"},
+			},
+		},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	require.NotEmpty(t, updatedContainer.Finalizers)
+	require.NotEmpty(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, "v2-pctr-created-container", updatedContainer.Status.ContainerName)
+	require.Equal(t, image.Status.ImageID, updatedContainer.Status.Image)
+	requireReadyCondition(t, updatedContainer.Status.Conditions, metav1.ConditionTrue, "RuntimeContainerRunning")
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedContainer.Status.ContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+	require.Equal(t, image.Status.ImageID, inspectedContainers[0].Image)
+	require.Equal(t, []string{"run"}, inspectedContainers[0].Args)
+	require.Equal(t, "test-value", inspectedContainers[0].Env["TEST_ENV"])
+	require.Equal(t, "logical-value", inspectedContainers[0].Labels["logical-label"])
+	require.Equal(t, string(updatedContainer.UID), inspectedContainers[0].Labels["com.microsoft.developer.usvc-dev.uid"])
+	require.Equal(t, "false", inspectedContainers[0].Labels[controllers.PersistentLabel])
+	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessIdLabel])
+	require.NotEqual(t, "caller-value", inspectedContainers[0].Labels[controllers.CreatorProcessIdLabel])
+	require.NotEqual(t, "caller-last", inspectedContainers[0].Labels[controllers.CreatorProcessIdLabel])
+	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
+	require.NotEqual(t, "caller-value", inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
+	require.NotEqual(t, "caller-last", inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
+	require.Len(t, physicalContainerMonitorProcesses(updatedContainer.Status.ContainerID), 1)
+}
+
+func TestV2PhysicalContainerControllerReconcilesWhenNamespaceBecomesActive(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespaceName := "v2-pctr-wait-namespace"
+	existingContainerID := runExistingTestContainer(t, ctx, "v2-pctr-wait-namespace-runtime", "existing-image")
+	removeRuntimeContainerOnCleanup(t, existingContainerID)
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "waiting-container",
+			Namespace: namespaceName,
+		},
+		Spec: apiv2.PhysicalContainerSpec{ContainerID: existingContainerID},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	pendingContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhasePending)
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalResourceReasonNamespaceNotFound)
+
+	createActiveV2Namespace(t, ctx, namespaceName)
+	runningContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	require.Equal(t, existingContainerID, runningContainer.Status.ContainerID)
+	requireReadyCondition(t, runningContainer.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerReasonRuntimeContainerRunning)
+}
+
+func TestV2PhysicalContainerControllerReconcilesWhenReferencedImageBecomesReady(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-image-watch")
+	imageName := "watched-image"
+	containerName := "v2-pctr-watched-image-container"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "watched-image-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: namespace.Name + "/" + imageName,
+			ContainerName: containerName},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	pendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(container *apiv2.PhysicalContainer) (bool, error) {
+		return container.Status.Phase == apiv2.PhysicalContainerPhasePending && container.Status.ContainerID == "", nil
+	})
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
+	require.Equal(t, 0, containerOrchestrator.CreateContainerCallCount(containerName))
+
+	sourceImage := "watched-source-image"
+	releasePull := containerOrchestrator.BlockPullImage(sourceImage)
+	defer releasePull()
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      imageName,
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: sourceImage}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	pendingContainer = waitObjectAssumesState(t, ctx, container.NamespacedName(), func(container *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(container.Status.Conditions, string(apiv2.ConditionReady))
+		return container.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonDependenciesNotReady &&
+			strings.Contains(readyCondition.Message, "is not ready"), nil
+	})
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
+	releasePull()
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	updatedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, updatedImage.Status.ImageID, updatedContainer.Status.Image)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+}
+
+// Verifies that the PhysicalContainer controller rejects a terminating image even when
+// the image's last reported phase is Ready, without creating a runtime container.
+func TestV2PhysicalContainerControllerRejectsTerminatingImage(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-terminating-image")
+	const hold = "test.dcp.microsoft.com/hold-dependency"
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "image", Namespace: namespace.Name, Finalizers: []string{hold}},
+		Spec:       apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
+	}
+	require.NoError(t, client.Create(ctx, image))
+	image = waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	removeDependencyHoldOnCleanup(t, ctx, image, hold)
+	require.NoError(t, client.Delete(ctx, image))
+	require.NoError(t, client.Get(ctx, image.NamespacedName(), image))
+	require.False(t, image.DeletionTimestamp.IsZero())
+	require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, image.Status.Phase)
+
+	containerName := namespace.Name + "-container"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name, ContainerName: containerName}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	pending := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonDependenciesNotReady) &&
+			strings.Contains(ready.Message, "is terminating"), nil
+	})
+	require.Equal(t, apiv2.PhysicalContainerPhasePending, pending.Status.Phase)
+	requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
+	require.Empty(t, pending.Status.ContainerID)
+	require.Zero(t, containerOrchestrator.CreateContainerCallCount(containerName))
+}
+
+// Verifies that the PhysicalContainer controller rejects a terminating volume even when
+// the volume's last reported phase is Ready, without creating a runtime container.
+func TestV2PhysicalContainerControllerRejectsTerminatingVolume(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-terminating-volume")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "image", namespace.Name+"-image")
+	runtimeVolumeName := namespace.Name + "-volume"
+	require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: runtimeVolumeName}))
+	removeRuntimeVolumeOnCleanup(t, runtimeVolumeName)
+	const hold = "test.dcp.microsoft.com/hold-dependency"
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "volume", Namespace: namespace.Name, Finalizers: []string{hold}},
+		Spec:       apiv2.PhysicalContainerVolumeSpec{VolumeName: runtimeVolumeName},
+	}
+	require.NoError(t, client.Create(ctx, volume))
+	volume = waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
+	removeDependencyHoldOnCleanup(t, ctx, volume, hold)
+	require.NoError(t, client.Delete(ctx, volume))
+	require.NoError(t, client.Get(ctx, volume.NamespacedName(), volume))
+	require.False(t, volume.DeletionTimestamp.IsZero())
+	require.Equal(t, apiv2.PhysicalContainerVolumePhaseReady, volume.Status.Phase)
+
+	containerName := namespace.Name + "-container"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef: image.Name, ContainerName: containerName,
+			VolumeMounts: []apiv2.VolumeMount{{Type: apiv2.NamedVolumeMount, VolumeRef: volume.Name, Target: "/data"}},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	pending := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonDependenciesNotReady) &&
+			strings.Contains(ready.Message, "is terminating"), nil
+	})
+	require.Equal(t, apiv2.PhysicalContainerPhasePending, pending.Status.Phase)
+	requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
+	require.Empty(t, pending.Status.ContainerID)
+	require.Zero(t, containerOrchestrator.CreateContainerCallCount(containerName))
+}
+
+// Verifies that the PhysicalContainer controller rejects a terminating network even when
+// the network's last reported phase is Ready, without creating a runtime container.
+func TestV2PhysicalContainerControllerRejectsTerminatingNetwork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-terminating-network")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "image", namespace.Name+"-image")
+	runtimeNetworkName := namespace.Name + "-network"
+	networkID, networkErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: runtimeNetworkName})
+	require.NoError(t, networkErr)
+	removeRuntimeNetworkOnCleanup(t, runtimeNetworkName)
+	const hold = "test.dcp.microsoft.com/hold-dependency"
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name, Finalizers: []string{hold}},
+		Spec:       apiv2.PhysicalContainerNetworkSpec{NetworkID: networkID},
+	}
+	require.NoError(t, client.Create(ctx, network))
+	network = waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+	removeDependencyHoldOnCleanup(t, ctx, network, hold)
+	require.NoError(t, client.Delete(ctx, network))
+	require.NoError(t, client.Get(ctx, network.NamespacedName(), network))
+	require.False(t, network.DeletionTimestamp.IsZero())
+	require.Equal(t, apiv2.PhysicalContainerNetworkPhaseReady, network.Status.Phase)
+
+	containerName := namespace.Name + "-container"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef: image.Name, ContainerName: containerName,
+			Networks: []apiv2.ContainerNetworkConnectionConfig{{NetworkRef: network.Name}},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	pending := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonDependenciesNotReady) &&
+			strings.Contains(ready.Message, "is terminating"), nil
+	})
+	require.Equal(t, apiv2.PhysicalContainerPhasePending, pending.Status.Phase)
+	requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
+	require.Empty(t, pending.Status.ContainerID)
+	require.Zero(t, containerOrchestrator.CreateContainerCallCount(containerName))
+}
+
+// Verifies that PhysicalContainer checks every volume and network before waiting,
+// so an earlier pending dependency cannot hide a terminal failure in the same or a later group.
+func TestV2PhysicalContainerControllerChecksAllDependenciesBeforeWaiting(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		pendingKind string
+		failedKind  string
+	}{
+		{"volume-before-volume", "volume", "PhysicalContainerVolume"},
+		{"volume-before-network", "volume", "PhysicalContainerNetwork"},
+		{"network-before-network", "network", "PhysicalContainerNetwork"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			server, _, startErr := StartTestEnvironment(t, ctx,
+				PhysicalContainerController|PhysicalContainerImageController|PhysicalContainerNetworkController,
+				t.Name(), t.TempDir())
+			require.NoError(t, startErr)
+			apiClient := server.Client
+			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+			namespace := createV2ExecNamespace(t, ctx, apiClient, "v2-pctr-dependency-order-"+testCase.name)
+			image := &apiv2.PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{Name: "image", Namespace: namespace.Name},
+				Spec:       apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
+			}
+			require.NoError(t, apiClient.Create(ctx, image))
+			waitObjectAssumesStateEx(t, ctx, apiClient, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+				return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+			})
+			config := &apiv2.PhysicalContainerConfig{ContainerName: namespace.Name + "-container", ImageRef: image.Name}
+			pendingRuntimeName := namespace.Name + "-pending"
+			if testCase.pendingKind == "volume" {
+				pendingVolume := &apiv2.PhysicalContainerVolume{
+					ObjectMeta: metav1.ObjectMeta{Name: "pending", Namespace: namespace.Name},
+					Spec:       newRemovablePhysicalContainerVolumeSpec(pendingRuntimeName),
+				}
+				require.NoError(t, apiClient.Create(ctx, pendingVolume))
+				config.VolumeMounts = []apiv2.VolumeMount{{Type: apiv2.NamedVolumeMount, VolumeRef: pendingVolume.Name, Target: "/pending"}}
+			} else {
+				releaseNetwork := orchestrator.BlockCreateNetwork(pendingRuntimeName)
+				defer releaseNetwork()
+				pendingNetwork := &apiv2.PhysicalContainerNetwork{
+					ObjectMeta: metav1.ObjectMeta{Name: "pending", Namespace: namespace.Name},
+					Spec: apiv2.PhysicalContainerNetworkSpec{
+						Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: pendingRuntimeName},
+					},
+				}
+				require.NoError(t, apiClient.Create(ctx, pendingNetwork))
+				config.Networks = []apiv2.ContainerNetworkConnectionConfig{{NetworkRef: pendingNetwork.Name}}
+			}
+			failedRuntimeName := namespace.Name + "-failed"
+			if testCase.failedKind == "PhysicalContainerVolume" {
+				failedVolume := &apiv2.PhysicalContainerVolume{
+					ObjectMeta: metav1.ObjectMeta{Name: "failed", Namespace: namespace.Name},
+					Spec:       newRemovablePhysicalContainerVolumeSpec(failedRuntimeName),
+				}
+				require.NoError(t, apiClient.Create(ctx, failedVolume))
+				// Publish dependency failure through the real API without a volume controller overwriting it.
+				setPhysicalVolumeFailure(t, ctx, apiClient, failedVolume)
+				config.VolumeMounts = append(config.VolumeMounts, apiv2.VolumeMount{
+					Type: apiv2.NamedVolumeMount, VolumeRef: failedVolume.Name, Target: "/failed",
+				})
+			} else {
+				_, createErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: failedRuntimeName})
+				require.NoError(t, createErr)
+				failedNetwork := &apiv2.PhysicalContainerNetwork{
+					ObjectMeta: metav1.ObjectMeta{Name: "failed", Namespace: namespace.Name},
+					Spec: apiv2.PhysicalContainerNetworkSpec{
+						Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: failedRuntimeName},
+					},
+				}
+				require.NoError(t, apiClient.Create(ctx, failedNetwork))
+				waitPhysicalContainerNetworkPhaseEx(t, ctx, apiClient, failedNetwork.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseFailed)
+				config.Networks = append(config.Networks, apiv2.ContainerNetworkConnectionConfig{NetworkRef: failedNetwork.Name})
+			}
+			container := &apiv2.PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+				Spec:       apiv2.PhysicalContainerSpec{Container: config},
+			}
+			require.NoError(t, apiClient.Create(ctx, container))
+			failed := waitObjectAssumesStateEx(t, ctx, apiClient, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+				return current.Status.Phase == apiv2.PhysicalContainerPhaseFailed, nil
+			})
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependencyFailed)
+			failure := apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady))
+			require.Contains(t, failure.Message, testCase.failedKind)
+			require.Contains(t, failure.Message, "CreateFailed")
+			require.Empty(t, failed.Status.ContainerID)
+			require.Zero(t, orchestrator.CreateContainerCallCount(config.ContainerName))
+			require.NoError(t, apiClient.Delete(ctx, container))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, container)
+		})
+	}
+}
+
+type dependencyLookupFailureClient struct {
+	ctrl_client.Client
+	namespace string
+	fail      atomic.Bool
+	attempts  atomic.Uint32
+}
+
+func (apiClient *dependencyLookupFailureClient) Get(
+	ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption,
+) error {
+	if _, network := object.(*apiv2.PhysicalContainerNetwork); network &&
+		key.Namespace == apiClient.namespace && key.Name == "network" && apiClient.fail.Load() {
+		apiClient.attempts.Add(1)
+		return errors.New("network dependency lookup unavailable")
+	}
+	return apiClient.Client.Get(ctx, key, object, options...)
+}
+
+// Verifies that PhysicalContainer surfaces and retries a later dependency lookup error while its
+// image is pending, then resumes waiting when the read recovers without requiring a dependency update.
+func TestV2PhysicalContainerControllerRetriesLaterDependencyLookupFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	const namespaceName = "v2-pctr-dependency-lookup"
+	var lookupClient *dependencyLookupFailureClient
+	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		PhysicalContainerController|PhysicalContainerImageController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+			lookupClient = &dependencyLookupFailureClient{Client: apiClient, namespace: namespaceName}
+			lookupClient.fail.Store(true)
+			return lookupClient
+		}})
+	require.NoError(t, startupErr)
+	orchestrator, isTestOrchestrator := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTestOrchestrator)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceName}}
+	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+	releaseImage := orchestrator.BlockPullImage(namespaceName + "-image")
+	defer releaseImage()
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "image", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: namespaceName + "-image"}},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, image))
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalContainerNetworkSpec{NetworkID: namespaceName + "-network"},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, network))
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ContainerName: namespaceName + "-container", ImageRef: image.Name,
+			Networks: []apiv2.ContainerNetworkConnectionConfig{{NetworkRef: network.Name}},
+		}},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, container))
+	failed := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhaseUnknown &&
+			ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonDependencyLookupFailed), nil
+	})
+	require.Contains(t, apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady)).Message, "network dependency lookup unavailable")
+	require.Positive(t, lookupClient.attempts.Load())
+	lookupClient.fail.Store(false)
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonDependenciesNotReady) &&
+			strings.Contains(ready.Message, "PhysicalContainerImage"), nil
+	})
+	require.Zero(t, orchestrator.CreateContainerCallCount(container.Spec.Container.ContainerName))
+	require.NoError(t, serverInfo.Client.Delete(ctx, container))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, container)
+}
+
+func removeDependencyHoldOnCleanup(t *testing.T, ctx context.Context, dependency ctrl_client.Object, finalizer string) {
+	t.Helper()
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), defaultIntegrationTestTimeout)
+		defer cleanupCancel()
+		cleanupErr := resiliency.RetryExponential(cleanupCtx, func() error {
+			getErr := client.Get(cleanupCtx, ctrl_client.ObjectKeyFromObject(dependency), dependency)
+			if apierrors.IsNotFound(getErr) {
+				return nil
+			}
+			if getErr != nil {
+				return resiliency.Permanent(getErr)
+			}
+			controllerutil.RemoveFinalizer(dependency, finalizer)
+			updateErr := client.Update(cleanupCtx, dependency)
+			if updateErr != nil && !apierrors.IsConflict(updateErr) {
+				return resiliency.Permanent(updateErr)
+			}
+			return updateErr
+		})
+		require.NoError(t, cleanupErr)
+	})
+}
+
+func TestV2PhysicalContainerControllerCreatesContainerWithVolumes(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-volumes")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "volume-image", "volume-image")
+	runtimeVolumeName := "v2-pctr-volume-runtime"
+	require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: runtimeVolumeName}))
+	removeRuntimeVolumeOnCleanup(t, runtimeVolumeName)
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "container-volume",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerVolumeSpec{VolumeName: runtimeVolumeName},
+	}
+	require.NoError(t, client.Create(ctx, volume))
+	waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "volume-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:      image.Name,
+				ContainerName: "v2-pctr-volume-container",
+				VolumeMounts: []apiv2.VolumeMount{
+					{Type: apiv2.NamedVolumeMount, VolumeRef: volume.Name, Target: "/volume", ReadOnly: true},
+					{Type: apiv2.BindMount, Source: "/host/data", Target: "/bind"},
+				},
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedContainer.Status.ContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+	require.Equal(t, []containers.VolumeMount{
+		{Type: containers.NamedVolumeMount, Source: runtimeVolumeName, Target: "/volume", ReadOnly: true},
+		{Type: containers.BindMount, Source: "/host/data", Target: "/bind"},
+	}, inspectedContainers[0].Mounts)
+}
+
+func TestV2PhysicalContainerControllerReconcilesWhenReferencedVolumeBecomesReady(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-volume-watch")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "watched-volume-image", "watched-volume-image")
+	volumeName := "watched-volume"
+	containerName := "v2-pctr-watched-volume-container"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "watched-volume-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:      image.Name,
+				ContainerName: containerName,
+				VolumeMounts: []apiv2.VolumeMount{{
+					Type:      apiv2.NamedVolumeMount,
+					VolumeRef: namespace.Name + "/" + volumeName,
+					Target:    "/data",
+				}},
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	pendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
+		return currentContainer.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonDependenciesNotReady, nil
+	})
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
+	require.Equal(t, 0, containerOrchestrator.CreateContainerCallCount(containerName))
+
+	runtimeVolumeName := "v2-pctr-watched-volume-runtime"
+	releaseCreate := containerOrchestrator.BlockCreateVolume(runtimeVolumeName)
+	defer releaseCreate()
+	removeRuntimeVolumeOnCleanup(t, runtimeVolumeName)
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      volumeName,
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerVolumeSpec{VolumeName: runtimeVolumeName},
+	}
+	require.NoError(t, client.Create(ctx, volume))
+
+	pendingContainer = waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
+		return currentContainer.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonDependenciesNotReady &&
+			strings.Contains(readyCondition.Message, "is not ready"), nil
+	})
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
+	require.Equal(t, 0, containerOrchestrator.CreateContainerCallCount(containerName))
+	releaseCreate()
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedContainer.Status.ContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+	require.Len(t, inspectedContainers[0].Mounts, 1)
+	require.Equal(t, runtimeVolumeName, inspectedContainers[0].Mounts[0].Source)
+}
+
+func TestV2PhysicalContainerControllerRechecksEarlierDependencies(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-rechecks-dependencies")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "rechecked-image", "rechecked-image")
+	volumeName := "rechecked-volume"
+	containerName := "v2-pctr-rechecks-dependencies-container"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "rechecks-dependencies-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:      image.Name,
+				ContainerName: containerName,
+				VolumeMounts: []apiv2.VolumeMount{{
+					Type:      apiv2.NamedVolumeMount,
+					VolumeRef: volumeName,
+					Target:    "/data",
+				}},
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	volumePendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonDependenciesNotReady &&
+			strings.Contains(readyCondition.Message, "PhysicalContainerVolume"), nil
+	})
+	requireReadyCondition(t, volumePendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
+
+	restoreImageInspection := simulateV2PhysicalContainerImageUnavailable(t, ctx, image)
+
+	imagePendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonDependenciesNotReady &&
+			strings.Contains(readyCondition.Message, "PhysicalContainerImage"), nil
+	})
+	requireReadyCondition(t, imagePendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
+	require.Equal(t, 0, containerOrchestrator.CreateContainerCallCount(containerName))
+
+	restoreImageInspection()
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+
+	runtimeVolumeName := "v2-pctr-rechecks-dependencies-volume"
+	require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: runtimeVolumeName}))
+	removeRuntimeVolumeOnCleanup(t, runtimeVolumeName)
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      volumeName,
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerVolumeSpec{VolumeName: runtimeVolumeName},
+	}
+	require.NoError(t, client.Create(ctx, volume))
+	waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+}
+
+func TestV2PhysicalContainerControllerCreatesContainerWithNetworks(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-networks")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "networked-image", "networked-image")
+	networkName := "v2-pctr-networked-runtime"
+	runtimeNetwork, networkErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
+	require.NoError(t, networkErr)
+	removeRuntimeNetworkOnCleanup(t, networkName)
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "networked-network",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{NetworkID: runtimeNetwork},
+	}
+	require.NoError(t, client.Create(ctx, network))
+	waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "networked-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: "v2-pctr-networked-container",
+			Networks: []apiv2.ContainerNetworkConnectionConfig{
+				{
+					NetworkRef: network.Name,
+					Aliases:    []string{"api", "service"},
+				},
+			}},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedContainer.Status.ContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+	require.Len(t, inspectedContainers[0].Networks, 1)
+	require.Equal(t, networkName, inspectedContainers[0].Networks[0].Name)
+	require.ElementsMatch(t, []string{"api", "service"}, inspectedContainers[0].Networks[0].Aliases)
+
+	connections := apiv2.PhysicalContainerNetworkConnectionList{}
+	require.NoError(t, client.List(ctx, &connections, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, connections.Items, 1)
+	require.Equal(t, container.Name, connections.Items[0].Spec.ContainerRef)
+	require.Equal(t, network.Name, connections.Items[0].Spec.NetworkRef)
+	require.ElementsMatch(t, []string{"api", "service"}, connections.Items[0].Spec.Aliases)
+	require.True(t, metav1.IsControlledBy(&connections.Items[0], container))
+}
+
+func TestV2PhysicalContainerControllerWaitsForNetwork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-waits-network")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "waits-network-image", "waits-network-image")
+	networkName := "waited-network"
+	containerName := "v2-pctr-waits-network-container"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "waits-network-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:      image.Name,
+				ContainerName: containerName,
+				Networks: []apiv2.ContainerNetworkConnectionConfig{
+					{NetworkRef: namespace.Name + "/" + networkName},
+				},
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	pendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
+		return currentContainer.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonDependenciesNotReady, nil
+	})
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
+	require.Equal(t, 0, containerOrchestrator.CreateContainerCallCount(containerName))
+
+	runtimeNetworkName := "v2-pctr-waits-network-runtime"
+	removeRuntimeNetworkOnCleanup(t, runtimeNetworkName)
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      networkName,
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: runtimeNetworkName},
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+}
+
+func TestV2PhysicalContainerControllerReportsPortMappings(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-ports")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "ported-image", "ported-image")
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "ported-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: "v2-pctr-ported-container",
+			Ports: []apiv2.ContainerPort{
+				{
+					ContainerPort: 8080,
+				},
+				{
+					ContainerPort: 9090,
+					Protocol:      commonapi.PortProtocolUDP,
+					HostIP:        "127.0.0.2",
+					HostPort:      19090,
+				},
+				{
+					ContainerPort: 9100,
+					RangeSize:     3,
+					HostIP:        "127.0.0.3",
+					HostPort:      19100,
+				},
+			}},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Len(t, updatedContainer.Status.PortMappings, 5)
+
+	firstMapping := updatedContainer.Status.PortMappings[0]
+	require.Equal(t, int32(8080), firstMapping.ContainerPort)
+	require.Equal(t, commonapi.PortProtocolTCP, firstMapping.Protocol)
+	require.NotEmpty(t, firstMapping.HostIP)
+	require.GreaterOrEqual(t, firstMapping.HostPort, int32(ctrl_testutil.MinRandomHostPort))
+	require.LessOrEqual(t, firstMapping.HostPort, int32(ctrl_testutil.MaxRandomHostPort))
+
+	secondMapping := updatedContainer.Status.PortMappings[1]
+	require.Equal(t, int32(9090), secondMapping.ContainerPort)
+	require.Equal(t, commonapi.PortProtocolUDP, secondMapping.Protocol)
+	require.Equal(t, "127.0.0.2", secondMapping.HostIP)
+	require.Equal(t, int32(19090), secondMapping.HostPort)
+
+	thirdMapping := updatedContainer.Status.PortMappings[2]
+	require.Equal(t, int32(9100), thirdMapping.ContainerPort)
+	require.Equal(t, commonapi.PortProtocolTCP, thirdMapping.Protocol)
+	require.Equal(t, "127.0.0.3", thirdMapping.HostIP)
+	require.Equal(t, int32(19100), thirdMapping.HostPort)
+
+	fourthMapping := updatedContainer.Status.PortMappings[3]
+	require.Equal(t, int32(9101), fourthMapping.ContainerPort)
+	require.Equal(t, commonapi.PortProtocolTCP, fourthMapping.Protocol)
+	require.Equal(t, "127.0.0.3", fourthMapping.HostIP)
+	require.Equal(t, int32(19101), fourthMapping.HostPort)
+
+	fifthMapping := updatedContainer.Status.PortMappings[4]
+	require.Equal(t, int32(9102), fifthMapping.ContainerPort)
+	require.Equal(t, commonapi.PortProtocolTCP, fifthMapping.Protocol)
+	require.Equal(t, "127.0.0.3", fifthMapping.HostIP)
+	require.Equal(t, int32(19102), fifthMapping.HostPort)
+}
+
+func TestV2PhysicalContainerControllerPreservesRuntimePhaseOnPortMappingFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const runtimeContainerName = "v2-pctr-invalid-port-runtime"
+	var testContainerOrchestrator *ctrl_testutil.TestContainerOrchestrator
+	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(
+		t,
+		ctx,
+		PhysicalContainerController,
+		t.Name(),
+		t.TempDir(),
+		TestEnvironmentOptions{
+			DecorateContainerOrchestrator: func(
+				orchestrator containers.ContainerOrchestrator,
+				_ *statestore.Store,
+			) containers.ContainerOrchestrator {
+				var isTestContainerOrchestrator bool
+				testContainerOrchestrator, isTestContainerOrchestrator = orchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+				require.True(t, isTestContainerOrchestrator)
+				return &invalidPortMappingContainerOrchestrator{
+					ContainerOrchestrator: orchestrator,
+					containerName:         runtimeContainerName,
+				}
+			},
+		},
+	)
+	require.NoError(t, startupErr)
+
+	runtimeContainerID, runErr := testContainerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:  runtimeContainerName,
+			Image: "existing-image",
+		},
+	})
+	require.NoError(t, runErr)
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), defaultIntegrationTestTimeout)
+		defer cleanupCancel()
+		_, _ = testContainerOrchestrator.RemoveContainersWithoutEvents(cleanupCtx, containers.RemoveContainersOptions{
+			Containers: []string{runtimeContainerID},
+			Force:      true,
+		})
+	}()
+
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-pctr-invalid-port"}}
+	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "invalid-port-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{ContainerID: runtimeContainerID},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, container))
+
+	updatedContainer := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhaseRunning &&
+			readyCondition != nil &&
+			readyCondition.Reason == string(apiv2.PhysicalContainerReasonPortMappingResolutionFailed), nil
+	})
+	requireReadyCondition(
+		t,
+		updatedContainer.Status.Conditions,
+		metav1.ConditionFalse,
+		apiv2.PhysicalContainerReasonPortMappingResolutionFailed,
+	)
+}
+
+func TestV2PhysicalContainerControllerCopiesCreateFilesBeforeStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-files")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "files-image", "files-image")
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "files-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: "v2-pctr-files-container",
+			CreateFiles: []apiv2.CreateFileSystem{
+				{
+					Destination: "/workspace",
+					Entries: []apiv2.FileSystemEntry{
+						{
+							Name:     "hello.txt",
+							Contents: "hello",
+						},
+					},
+				},
+			}},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+
+	files, getFileErr := containerOrchestrator.GetCreatedFiles(updatedContainer.Status.ContainerID)
+	require.NoError(t, getFileErr)
+	require.Len(t, files, 1)
+	require.Equal(t, "/workspace", files[0].Destination)
+	items, itemsErr := files[0].GetTarItems()
+	require.NoError(t, itemsErr)
+	require.Len(t, items, 1)
+}
+
+// Verifies that the PhysicalContainer controller completes stop before creation without
+// creating or starting a runtime container.
+// Verifies that PhysicalContainer waits for its namespace before completing an initial stop
+// without creating a runtime container.
+func TestV2PhysicalContainerControllerCompletesStopBeforeCreation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const namespaceName = "v2-pctr-stop-before-create"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespaceName},
+		Spec: apiv2.PhysicalContainerSpec{
+			Stop: true,
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef: "unused-image", ContainerName: namespaceName + "-runtime",
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	pending := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil && readyCondition.Reason == string(apiv2.PhysicalResourceReasonNamespaceNotFound), nil
+	})
+	require.Empty(t, pending.Status.ContainerID)
+	require.Zero(t, containerOrchestrator.CreateContainerCallCount(container.Spec.Container.ContainerName))
+	createActiveV2Namespace(t, ctx, namespaceName)
+	stopped := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseExited)
+	requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonStopRequested)
+	require.Empty(t, stopped.Status.ContainerID)
+	require.Empty(t, stopped.Status.RuntimeStatus)
+	require.True(t, stopped.Status.StartedAt.IsZero())
+	require.Nil(t, stopped.Status.ExitCode)
+	require.Zero(t, containerOrchestrator.CreateContainerCallCount(container.Spec.Container.ContainerName))
+}
+
+// Verifies that stop acquires an existing replacement target before creation, including
+// after waiting for prerequisites, without creating or removing a runtime container.
+func TestV2PhysicalContainerControllerStopsReplacementBeforeCreation(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name        string
+		initialStop bool
+		replace     bool
+		status      containers.ContainerStatus
+	}{
+		{name: "initial-running", initialStop: true, replace: true, status: containers.ContainerStatusRunning},
+		{name: "initial-exited", initialStop: true, replace: true, status: containers.ContainerStatusExited},
+		{name: "pending-running", replace: true, status: containers.ContainerStatusRunning},
+		{name: "missing", initialStop: true, replace: true},
+		{name: "not-replacing", initialStop: true, status: containers.ContainerStatusRunning},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			namespace := createActiveV2Namespace(t, ctx, "v2-pctr-stop-replace-"+testCase.name)
+			runtimeName := namespace.Name + "-runtime"
+			runtimeID := ""
+			if testCase.status != "" {
+				runtimeID = runExistingTestContainer(t, ctx, runtimeName, "existing-image")
+				if testCase.status != containers.ContainerStatusRunning {
+					require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, runtimeID, testCase.status))
+				}
+			}
+			physical := &apiv2.PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+				Spec: apiv2.PhysicalContainerSpec{
+					Stop: testCase.initialStop,
+					Container: &apiv2.PhysicalContainerConfig{
+						ContainerName: runtimeName, ImageRef: "missing-image",
+						ReplaceExisting: testCase.replace, RetainRuntimeContainer: true,
+					},
+				},
+			}
+			require.NoError(t, client.Create(ctx, physical))
+			if !testCase.initialStop {
+				waitObjectAssumesState(t, ctx, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+					ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+					return ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonDependenciesNotReady), nil
+				})
+				require.NoError(t, retryOnConflictEx(ctx, client, physical.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainer) error {
+					current.Spec.Stop = true
+					return client.Update(updateCtx, current)
+				}))
+			}
+			stopped := waitPhysicalContainerPhase(t, ctx, physical.NamespacedName(), apiv2.PhysicalContainerPhaseExited)
+			if testCase.replace && runtimeID != "" {
+				require.Equal(t, runtimeID, stopped.Status.ContainerID)
+				require.Equal(t, runtimeName, stopped.Status.ContainerName)
+				require.Equal(t, string(containers.ContainerStatusExited), stopped.Status.RuntimeStatus)
+			} else {
+				require.Empty(t, stopped.Status.ContainerID)
+				requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonStopRequested)
+			}
+			require.Zero(t, containerOrchestrator.CreateContainerCallCount(runtimeName))
+			require.Zero(t, containerOrchestrator.RemoveContainerCallCount(runtimeName))
+			require.NoError(t, client.Delete(ctx, physical))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
+			if runtimeID != "" {
+				inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{runtimeID}})
+				require.NoError(t, inspectErr)
+				require.Len(t, inspected, 1)
+				expectedStatus := containers.ContainerStatusExited
+				if !testCase.replace {
+					expectedStatus = testCase.status
+				}
+				require.Equal(t, expectedStatus, inspected[0].Status)
+			}
+		})
+	}
+}
+
+// Verifies that stopping a replacement after terminal dependency failure preserves the failure
+// without claiming or stopping a surviving runtime target or treating an absent target as success.
+func TestV2PhysicalContainerControllerKeepsReplacementDependencyFailureAfterStop(t *testing.T) {
+	t.Parallel()
+	for _, targetExists := range []bool{false, true} {
+		name := "missing"
+		if targetExists {
+			name = "existing"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			namespace := createActiveV2Namespace(t, ctx, "v2-pctr-failed-replacement-stop-"+name)
+			image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "image", namespace.Name+"-image")
+			runtimeName := namespace.Name + "-container"
+			runtimeID := ""
+			if targetExists {
+				runtimeID = runExistingTestContainer(t, ctx, runtimeName, "existing-image")
+			}
+			initialCreates := containerOrchestrator.CreateContainerCallCount(runtimeName)
+			networkName := namespace.Name + "-network"
+			_, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
+			require.NoError(t, createErr)
+			removeRuntimeNetworkOnCleanup(t, networkName)
+			network := &apiv2.PhysicalContainerNetwork{
+				ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+				Spec: apiv2.PhysicalContainerNetworkSpec{
+					Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
+				},
+			}
+			require.NoError(t, client.Create(ctx, network))
+			waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseFailed)
+			physical := &apiv2.PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+				Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+					ContainerName: runtimeName, ImageRef: image.Name, ReplaceExisting: true, RetainRuntimeContainer: true,
+					Networks: []apiv2.ContainerNetworkConnectionConfig{{NetworkRef: network.Name}},
+				}},
+			}
+			require.NoError(t, client.Create(ctx, physical))
+			failed := waitPhysicalContainerPhase(t, ctx, physical.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependencyFailed)
+			failure := *apimeta.FindStatusCondition(failed.Status.Conditions, string(apiv2.ConditionReady))
+			failed.Spec.Stop = true
+			require.NoError(t, client.Update(ctx, failed))
+			require.Never(t, func() bool {
+				current := &apiv2.PhysicalContainer{}
+				getErr := client.Get(ctx, physical.NamespacedName(), current)
+				require.NoError(t, getErr)
+				return current.Status.Phase != apiv2.PhysicalContainerPhaseFailed || current.Status.ContainerID != ""
+			}, 3*time.Second, 100*time.Millisecond)
+			current := &apiv2.PhysicalContainer{}
+			require.NoError(t, client.Get(ctx, physical.NamespacedName(), current))
+			require.Equal(t, failure.Message, apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady)).Message)
+			require.Equal(t, initialCreates, containerOrchestrator.CreateContainerCallCount(runtimeName))
+			require.Zero(t, containerOrchestrator.RemoveContainerCallCount(runtimeName))
+			if targetExists {
+				inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{runtimeID}})
+				require.NoError(t, inspectErr)
+				require.Len(t, inspected, 1)
+				require.Equal(t, containers.ContainerStatusRunning, inspected[0].Status)
+			}
+			require.NoError(t, client.Delete(ctx, physical))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
+		})
+	}
+}
+
+// Verifies that stopping a replacement waits for exclusive runtime tracking rather than
+// stopping a container currently tracked by another physical resource.
+func TestV2PhysicalContainerControllerWaitsToAcquireReplacementForStop(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-stop-replace-owner")
+	runtimeName := namespace.Name + "-runtime"
+	runtimeID := runExistingTestContainer(t, ctx, runtimeName, "existing-image")
+	owner := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalContainerSpec{ContainerID: runtimeID},
+	}
+	require.NoError(t, client.Create(ctx, owner))
+	waitPhysicalContainerPhase(t, ctx, owner.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	physical := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "replacement", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerSpec{
+			Stop: true,
+			Container: &apiv2.PhysicalContainerConfig{
+				ContainerName: runtimeName, ImageRef: "missing-image",
+				ReplaceExisting: true, RetainRuntimeContainer: true,
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, physical))
+	waitObjectAssumesState(t, ctx, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonRuntimeContainerAlreadyTracked), nil
+	})
+	inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{runtimeID}})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspected, 1)
+	require.Equal(t, containers.ContainerStatusRunning, inspected[0].Status)
+	require.NoError(t, client.Delete(ctx, owner))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, owner)
+	stopped := waitPhysicalContainerPhase(t, ctx, physical.NamespacedName(), apiv2.PhysicalContainerPhaseExited)
+	require.Equal(t, runtimeID, stopped.Status.ContainerID)
+	require.Equal(t, string(containers.ContainerStatusExited), stopped.Status.RuntimeStatus)
+	require.Zero(t, containerOrchestrator.CreateContainerCallCount(runtimeName))
+	require.Zero(t, containerOrchestrator.RemoveContainerCallCount(runtimeName))
+}
+
+// Verifies that replacement-target inspection failures remain retryable and do not report
+// a completed stop before the existing runtime has been acquired and stopped.
+func TestV2PhysicalContainerControllerRetriesReplacementStopLookup(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	server, _, startErr := StartTestEnvironmentWithOptions(t, ctx,
+		PhysicalContainerController, t.Name(), t.TempDir(), TestEnvironmentOptions{})
+	require.NoError(t, startErr)
+	orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	defer orchestrator.SetRuntimeHealth(true)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "stop-replacement-inspect"}}
+	require.NoError(t, server.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, server.Client, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+	runtimeName := "stop-replacement-inspect-runtime"
+	runtimeID, runErr := orchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{Name: runtimeName, Image: "existing-image"},
+	})
+	require.NoError(t, runErr)
+	orchestrator.SetRuntimeHealth(false)
+	physical := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "replacement", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerSpec{
+			Stop: true,
+			Container: &apiv2.PhysicalContainerConfig{
+				ContainerName: runtimeName, ImageRef: "missing-image",
+				ReplaceExisting: true, RetainRuntimeContainer: true,
+			},
+		},
+	}
+	require.NoError(t, server.Client.Create(ctx, physical))
+	unavailable := waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerPhaseUnknown, nil
+	})
+	requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerInspectFailed)
+	require.Empty(t, unavailable.Status.ContainerID)
+	orchestrator.SetRuntimeHealth(true)
+	require.NoError(t, retryOnConflictEx(ctx, server.Client, physical.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainer) error {
+		current.Annotations = map[string]string{"test.dcp.microsoft.com/reconcile": "runtime-recovered"}
+		return server.Client.Update(updateCtx, current)
+	}))
+	stopped := waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerPhaseExited, nil
+	})
+	require.Equal(t, runtimeID, stopped.Status.ContainerID)
+	require.Equal(t, string(containers.ContainerStatusExited), stopped.Status.RuntimeStatus)
+	require.Zero(t, orchestrator.CreateContainerCallCount(runtimeName))
+	require.Zero(t, orchestrator.RemoveContainerCallCount(runtimeName))
+	require.NoError(t, server.Client.Delete(ctx, physical))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+}
+
+func TestV2PhysicalContainerControllerDoesNotDuplicateCreateWhileStatusPending(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-create-gate")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "gated-image", "gated-image")
+	containerName := "v2-pctr-create-gated-container"
+	releaseCreate := containerOrchestrator.BlockCreateContainer(containerName)
+	defer releaseCreate()
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gated-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	waitCreateContainerCallCount(t, ctx, containerName, 1)
+
+	require.NoError(t, retryOnConflict[apiv2.PhysicalContainer](ctx, container.NamespacedName(), func(ctx context.Context, currentContainer *apiv2.PhysicalContainer) error {
+		if currentContainer.Annotations == nil {
+			currentContainer.Annotations = map[string]string{}
+		}
+		currentContainer.Annotations["test.dcp.microsoft.com/reconcile"] = "again"
+		return client.Update(ctx, currentContainer)
+	}))
+
+	releaseCreate()
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+}
+
+func TestV2PhysicalContainerControllerRetriesCreateWithoutPartialContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-create-retry-without-partial")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "retry-without-partial-image", "retry-without-partial-image")
+	containerName := "v2-pctr-create-retry-without-partial-container"
+	containerOrchestrator.FailNextCreateContainer(containerName, errors.New("create failed once"))
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "retry-without-partial-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef:      image.Name,
+			ContainerName: containerName,
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	retryPendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonCreateFailed, nil
+	})
+	requireReadyCondition(t, retryPendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateFailed)
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, 2, containerOrchestrator.CreateContainerCallCount(containerName))
+	require.Equal(t, 0, containerOrchestrator.RemoveContainerCallCount(containerName))
+}
+
+func TestV2PhysicalContainerControllerRepreparesDependenciesBeforeCreateRetry(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-reprepare-create-retry")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "reprepare-image", "reprepare-image")
+	containerName := "v2-pctr-reprepare-create-retry-container"
+	containerOrchestrator.FailNextCreateContainer(containerName, errors.New("create failed once"))
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "reprepare-create-retry-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef:      image.Name,
+			ContainerName: containerName,
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	retryPendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonCreateFailed, nil
+	})
+	requireReadyCondition(t, retryPendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateFailed)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+
+	restoreImageInspection := simulateV2PhysicalContainerImageUnavailable(t, ctx, image)
+
+	imagePendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(currentContainer *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(currentContainer.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonDependenciesNotReady, nil
+	})
+	requireReadyCondition(t, imagePendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependenciesNotReady)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+
+	restoreImageInspection()
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, 2, containerOrchestrator.CreateContainerCallCount(containerName))
+}
+
+func TestV2PhysicalContainerControllerRetriesCreateAfterFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-create-retry")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "retry-image", "retry-image")
+	containerName := "v2-pctr-create-retry-container"
+	containerOrchestrator.FailNextCreateContainerAfterCreation(containerName, errors.New("create failed once"))
+	containerOrchestrator.FailNextRemoveContainer(containerName, errors.New("cleanup failed once"))
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "retry-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	waitCreateContainerCallCount(t, ctx, containerName, 1)
+	retryPendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonCreateFailed, nil
+	})
+	requireReadyCondition(t, retryPendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateFailed)
+
+	cleanupPendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonPartialContainerCleanupFailed, nil
+	})
+	requireReadyCondition(t, cleanupPendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonPartialContainerCleanupFailed)
+	waitCreateContainerCallCount(t, ctx, containerName, 2)
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, 2, containerOrchestrator.CreateContainerCallCount(containerName))
+}
+
+func TestV2PhysicalContainerControllerCleansUpPartialContainerAfterTerminalCreateFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-partial-create-failure")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "partial-create-failure-image", "partial-create-failure-image")
+	containerName := "v2-pctr-partial-create-failure-container"
+	containerOrchestrator.FailNextCreateContainerAfterCreation(
+		containerName,
+		errors.Join(containers.ErrCouldNotAllocate, errors.New("failed after creating runtime container")),
+	)
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "partial-create-failure-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	failedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
+	requireReadyCondition(t, failedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateFailed)
+	require.Empty(t, failedContainer.Status.ContainerID)
+	waitContainerMissing(t, ctx, containerName)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+	require.Never(t, func() bool {
+		return containerOrchestrator.CreateContainerCallCount(containerName) > 1
+	}, 3*time.Second, 250*time.Millisecond)
+}
+
+func TestV2PhysicalContainerControllerRetriesPartialContainerCleanupAfterFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-partial-cleanup-retry")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "partial-cleanup-retry-image", "partial-cleanup-retry-image")
+	containerName := "v2-pctr-partial-cleanup-retry-container"
+	containerOrchestrator.FailNextCreateContainerAfterCreation(
+		containerName,
+		errors.Join(containers.ErrCouldNotAllocate, errors.New("failed after creating runtime container")),
+	)
+	containerOrchestrator.FailNextRemoveContainer(containerName, errors.New("remove failed once"))
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "partial-cleanup-retry-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	failedCleanupContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			strings.Contains(readyCondition.Message, "Failed to remove partially created runtime container: remove failed once"), nil
+	})
+	require.NotEmpty(t, failedCleanupContainer.Status.ContainerID)
+	require.Equal(t, apiv2.PhysicalContainerPhaseFailed, failedCleanupContainer.Status.Phase)
+	requireReadyCondition(t, failedCleanupContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonPartialContainerCleanupFailed)
+	require.Equal(t, 1, containerOrchestrator.RemoveContainerCallCount(containerName))
+
+	waitContainerMissing(t, ctx, containerName)
+	failedContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			strings.Contains(readyCondition.Message, "Failed to create physical container:") &&
+			current.Status.ContainerID == "", nil
+	})
+	requireReadyCondition(t, failedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateFailed)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+	require.Equal(t, 2, containerOrchestrator.RemoveContainerCallCount(containerName))
+}
+
+func TestV2PhysicalContainerControllerReappliesPostCreateFailureStatus(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-post-create-failure")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "post-create-failure-image", "post-create-failure-image")
+	containerName := "v2-pctr-post-create-failure-container"
+	containerOrchestrator.FailMatchingContainers(ctx, containerName, 1, "start failed")
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "post-create-failure-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	failedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
+	containerID := failedContainer.Status.ContainerID
+	require.NotEmpty(t, containerID)
+	removeRuntimeContainerOnCleanup(t, containerID)
+	requireReadyCondition(t, failedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonStartFailed)
+
+	require.NoError(t, retryOnConflict[apiv2.PhysicalContainer](ctx, container.NamespacedName(), func(ctx context.Context, currentContainer *apiv2.PhysicalContainer) error {
+		currentContainer.Status.Phase = apiv2.PhysicalContainerPhasePending
+		currentContainer.Status.Conditions = nil
+		return client.Status().Update(ctx, currentContainer)
+	}))
+
+	reappliedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
+	require.Equal(t, containerID, reappliedContainer.Status.ContainerID)
+	requireReadyCondition(t, reappliedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonStartFailed)
+}
+
+func TestV2PhysicalContainerControllerTracksExistingContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-existing")
+	existingContainerID := runExistingTestContainer(t, ctx, "v2-pctr-existing-runtime", "existing-image")
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "existing-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			ContainerID: existingContainerID,
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	require.Equal(t, existingContainerID, updatedContainer.Status.ContainerID)
+	require.Equal(t, "v2-pctr-existing-runtime", updatedContainer.Status.ContainerName)
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{existingContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+	require.NotContains(t, inspectedContainers[0].Labels, controllers.CreatorProcessIdLabel)
+	require.Empty(t, physicalContainerMonitorProcesses(existingContainerID))
+}
+
+func TestV2PhysicalContainerControllerRejectsDuplicateRuntimeContainerOwnership(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-duplicate-owner")
+	existingContainerID := runExistingTestContainer(t, ctx, "v2-pctr-duplicate-owner-runtime", "existing-image")
+	removeRuntimeContainerOnCleanup(t, existingContainerID)
+	firstContainer := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "first-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{ContainerID: existingContainerID},
+	}
+	require.NoError(t, client.Create(ctx, firstContainer))
+	waitPhysicalContainerPhase(t, ctx, firstContainer.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+
+	secondContainer := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "second-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{ContainerID: existingContainerID},
+	}
+	require.NoError(t, client.Create(ctx, secondContainer))
+
+	pendingContainer := waitPhysicalContainerPhase(t, ctx, secondContainer.NamespacedName(), apiv2.PhysicalContainerPhasePending)
+	require.Equal(t, existingContainerID, pendingContainer.Status.ContainerID)
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerAlreadyTracked)
+
+	require.NoError(t, client.Delete(ctx, firstContainer))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, firstContainer)
+
+	runningContainer := waitPhysicalContainerPhase(t, ctx, secondContainer.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	require.Equal(t, existingContainerID, runningContainer.Status.ContainerID)
+	requireReadyCondition(t, runningContainer.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerReasonRuntimeContainerRunning)
+}
+
+// Verifies that PhysicalContainer reports a confirmed absent runtime as Failed rather than Unknown.
+func TestV2PhysicalContainerControllerReportsMissingExistingContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-missing")
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "missing-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			ContainerID: "missing-v2-container-id",
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
+	require.Equal(t, "missing-v2-container-id", updatedContainer.Status.ContainerID)
+	requireReadyCondition(t, updatedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing)
+}
+
+func TestV2PhysicalContainerControllerReportsRuntimePhases(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-runtime-phases")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "runtime-phases-image", "runtime-phases-image")
+	containerName := "v2-pctr-runtime-phases-container"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "runtime-phases-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	runningContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, runningContainer.Status.ContainerID)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, runningContainer.Status.ContainerID, containers.ContainerStatusPaused))
+	pausedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhasePaused)
+	requireReadyCondition(t, pausedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerPaused)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, runningContainer.Status.ContainerID, containers.ContainerStatusRestarting))
+	restartingContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhasePending)
+	requireReadyCondition(t, restartingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerRestarting)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, runningContainer.Status.ContainerID, containers.ContainerStatusRunning))
+	runningContainer = waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	requireReadyCondition(t, runningContainer.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerReasonRuntimeContainerRunning)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, runningContainer.Status.ContainerID, containers.ContainerStatusRemoving))
+	removingContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhasePending)
+	requireReadyCondition(t, removingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerRemoving)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, runningContainer.Status.ContainerID, containers.ContainerStatus("unrecognized")))
+	unknownContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseUnknown)
+	requireReadyCondition(t, unknownContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerStatusUnknown)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, runningContainer.Status.ContainerID, containers.ContainerStatusDead))
+	deadContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseExited)
+	requireReadyCondition(t, deadContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerDead)
+}
+
+// Verifies that PhysicalContainer removes its runtime container and publishes confirmed absence
+// while a logical hold retains the API object for observation.
+func TestV2PhysicalContainerControllerDeletesCreatedContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-delete")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "deleted-created-image", "deleted-created-image")
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "deleted-created-container",
+			Namespace:  namespace.Name,
+			Finalizers: []string{controllers.LogicalBackingFinalizer},
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: "v2-pctr-delete-created"},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	removeDependencyHoldOnCleanup(t, ctx, container, controllers.LogicalBackingFinalizer)
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	containerID := updatedContainer.Status.ContainerID
+	require.NotEmpty(t, containerID)
+
+	require.NoError(t, client.Delete(ctx, updatedContainer))
+	cleaned := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+	})
+	requireReadyCondition(t, cleaned.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing)
+	require.Equal(t, apiv2.PhysicalContainerPhaseFailed, cleaned.Status.Phase)
+	require.Equal(t, containerID, cleaned.Status.ContainerID)
+	waitContainerMissing(t, ctx, containerID)
+	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
+}
+
+// Verifies that PhysicalContainerReconciler reports repeated deletion failures and retains its finalizer until a blocked recovery removal succeeds.
+func TestV2PhysicalContainerControllerReportsDeletionFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-delete-failure")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "delete-failure-image", "delete-failure-image")
+	containerName := "v2-pctr-delete-failure-runtime"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "delete-failure-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef:      image.Name,
+			ContainerName: containerName,
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	runningContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	releaseRemoval := containerOrchestrator.BlockRemoveContainerAfterFailures(
+		containerName, errors.New("remove failed"), errors.New("remove failed"),
+	)
+	t.Cleanup(releaseRemoval)
+	require.NoError(t, client.Delete(ctx, runningContainer))
+
+	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return containerOrchestrator.RemoveContainerCallCount(containerName) >= 3, nil
+	}))
+	failedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseUnknown)
+	requireReadyCondition(t, failedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerRemoveFailed)
+	require.NotEmpty(t, failedContainer.Finalizers)
+	require.Equal(t, 3, containerOrchestrator.RemoveContainerCallCount(containerName))
+	inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{runningContainer.Status.ContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspected, 1)
+
+	releaseRemoval()
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
+	waitContainerMissing(t, ctx, runningContainer.Status.ContainerID)
+	require.Equal(t, 3, containerOrchestrator.RemoveContainerCallCount(containerName))
+}
+
+func TestV2PhysicalContainerControllerPreservesCreatedContainerOnDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-retain")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "retained-created-image", "retained-created-image")
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "retained-created-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName:          "v2-pctr-retain-created",
+			RetainRuntimeContainer: true},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	containerID := updatedContainer.Status.ContainerID
+	require.NotEmpty(t, containerID)
+	removeRuntimeContainerOnCleanup(t, containerID)
+
+	require.NoError(t, client.Delete(ctx, updatedContainer))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{containerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+	require.Equal(t, "true", inspectedContainers[0].Labels[controllers.PersistentLabel])
+	require.Empty(t, physicalContainerMonitorProcesses(containerID))
+}
+
+func TestV2PhysicalContainerControllerScopesRetainedContainerToMonitorProcess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-retained-monitor")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "retained-monitor-image", "retained-monitor-image")
+	monitorPID := int64(12345)
+	monitorTimestamp := metav1.NewMicroTime(time.Now().Add(-time.Minute))
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "retained-monitor-container", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef:               image.Name,
+			ContainerName:          "v2-pctr-retained-monitor",
+			RetainRuntimeContainer: true,
+			MonitorPID:             &monitorPID,
+			MonitorTimestamp:       monitorTimestamp,
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	require.NotNil(t, updatedContainer.Spec.Container.MonitorPID)
+	require.Equal(t, monitorPID, *updatedContainer.Spec.Container.MonitorPID)
+	require.True(t, osutil.Within(monitorTimestamp.Time, updatedContainer.Spec.Container.MonitorTimestamp.Time, 2*time.Microsecond))
+	containerID := updatedContainer.Status.ContainerID
+	removeRuntimeContainerOnCleanup(t, containerID)
+	var monitorProcesses []*internal_testutil.ProcessExecution
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		monitorProcesses = physicalContainerMonitorProcesses(containerID)
+		return len(monitorProcesses) == 1, nil
+	})
+	require.NoError(t, waitErr)
+	require.Len(t, monitorProcesses, 1)
+	require.Contains(t, monitorProcesses[0].Cmd.Args, "--stop-only")
+	require.Contains(t, monitorProcesses[0].Cmd.Args, strconv.FormatInt(monitorPID, 10))
+	require.Contains(t, monitorProcesses[0].Cmd.Args, monitorTimestamp.Time.Format(osutil.RFC3339MiliTimestampFormat))
+}
+
+func physicalContainerMonitorProcesses(containerID string) []*internal_testutil.ProcessExecution {
+	return testProcessExecutor.FindAll([]string{"dcp", "monitor-container"}, "", func(processExecution *internal_testutil.ProcessExecution) bool {
+		return std_slices.Contains(processExecution.Cmd.Args, containerID)
+	})
+}
+
+func TestV2PhysicalContainerControllerPreservesExistingContainerOnDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-preserve")
+	existingContainerID := runExistingTestContainer(t, ctx, "v2-pctr-preserve-runtime", "preserved-image")
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "preserved-existing-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			ContainerID: existingContainerID,
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+
+	require.NoError(t, client.Delete(ctx, container))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{existingContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+}
+
+func TestV2PhysicalContainerControllerRejectsExistingContainerWithoutReplacement(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-existing-conflict")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "conflict-image", "conflict-image")
+	containerName := "v2-pctr-existing-conflict-runtime"
+	existingContainerID := runExistingTestContainer(t, ctx, containerName, "existing-image")
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "conflicting-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	failedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
+	requireReadyCondition(t, failedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateFailed)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+	require.Never(t, func() bool {
+		return containerOrchestrator.CreateContainerCallCount(containerName) > 1
+	}, 3*time.Second, 250*time.Millisecond)
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{existingContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+}
+
+func TestV2PhysicalContainerControllerReplacesExistingContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-replace-existing")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "replacement-image", "replacement-image")
+	containerName := "v2-pctr-replace-existing-runtime"
+	existingContainerID := runExistingTestContainer(t, ctx, containerName, "replaced-image")
+	containerOrchestrator.FailNextRemoveContainer(containerName, errors.New("replace failed once"))
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "replacement-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName:   containerName,
+			ReplaceExisting: true},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	retryPendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonExistingContainerReplacementFailed, nil
+	})
+	requireReadyCondition(t, retryPendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonExistingContainerReplacementFailed)
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	require.NotEqual(t, existingContainerID, updatedContainer.Status.ContainerID)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	waitContainerMissing(t, ctx, existingContainerID)
+
+	require.NoError(t, client.Delete(ctx, updatedContainer))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
+	waitContainerMissing(t, ctx, updatedContainer.Status.ContainerID)
+}
+
+func TestV2PhysicalContainerControllerDoesNotReplaceContainerDuringDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-delete-replace")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "delete-replacement-image", "delete-replacement-image")
+	containerName := "v2-pctr-delete-replace-runtime"
+	existingContainerID := runExistingTestContainer(t, ctx, containerName, "preserved-image")
+	containerOrchestrator.FailNextRemoveContainer(containerName, errors.New("replace failed once"))
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "delete-replacement-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:        image.Name,
+				ContainerName:   containerName,
+				ReplaceExisting: true,
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	retryPendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonExistingContainerReplacementFailed, nil
+	})
+	createCallCount := containerOrchestrator.CreateContainerCallCount(containerName)
+
+	require.NoError(t, client.Delete(ctx, retryPendingContainer))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
+
+	require.Equal(t, createCallCount, containerOrchestrator.CreateContainerCallCount(containerName))
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{existingContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+}
+
+func TestV2PhysicalContainerControllerStopsContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-stop")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "stopped-image", "stopped-image")
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "stopped-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: "v2-pctr-stopped-container"},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	containerID := updatedContainer.Status.ContainerID
+	require.NotEmpty(t, containerID)
+	removeRuntimeContainerOnCleanup(t, containerID)
+
+	updateErr := retryOnConflict[apiv2.PhysicalContainer](ctx, container.NamespacedName(), func(ctx context.Context, currentContainer *apiv2.PhysicalContainer) error {
+		currentContainer.Spec.Stop = true
+		return client.Update(ctx, currentContainer)
+	})
+	require.NoError(t, updateErr)
+
+	updatedContainer = waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseExited)
+	require.Equal(t, containerID, updatedContainer.Status.ContainerID)
+	require.Equal(t, string(containers.ContainerStatusExited), updatedContainer.Status.RuntimeStatus)
+	requireReadyCondition(t, updatedContainer.Status.Conditions, metav1.ConditionFalse, "RuntimeContainerExited")
+}
+
+func TestV2PhysicalContainerControllerTracksRuntimeContainerEvents(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-events")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "event-image", "event-image")
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "event-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: "v2-pctr-event-container"},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	containerID := updatedContainer.Status.ContainerID
+	require.NotEmpty(t, containerID)
+	removeRuntimeContainerOnCleanup(t, containerID)
+
+	_, stopErr := containerOrchestrator.StopContainers(ctx, containers.StopContainersOptions{
+		Containers: []string{containerID},
+	})
+	require.NoError(t, stopErr)
+
+	updatedContainer = waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseExited)
+	require.Equal(t, containerID, updatedContainer.Status.ContainerID)
+	require.Equal(t, string(containers.ContainerStatusExited), updatedContainer.Status.RuntimeStatus)
+}
+
+func waitCreateContainerCallCount(t *testing.T, ctx context.Context, name string, expected int) {
+	t.Helper()
+
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		return containerOrchestrator.CreateContainerCallCount(name) >= expected, nil
+	})
+	require.NoError(t, waitErr)
+}
+
+func simulateV2PhysicalContainerImageUnavailable(
+	t *testing.T,
+	ctx context.Context,
+	image *apiv2.PhysicalContainerImage,
+) func() {
+	t.Helper()
+
+	restoreImageInspection := containerOrchestrator.FailInspectImage(image.Status.ImageID, containers.ErrNotFound)
+	t.Cleanup(restoreImageInspection)
+	require.NoError(t, retryOnConflict[apiv2.PhysicalContainerImage](ctx, image.NamespacedName(), func(ctx context.Context, currentImage *apiv2.PhysicalContainerImage) error {
+		if currentImage.Annotations == nil {
+			currentImage.Annotations = map[string]string{}
+		}
+		currentImage.Annotations["test.dcp.microsoft.com/reconcile"] = "image-unavailable"
+		return client.Update(ctx, currentImage)
+	}))
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
+	return restoreImageInspection
+}
+
+func runExistingTestContainer(t *testing.T, ctx context.Context, name string, image string) string {
+	t.Helper()
+
+	containerID, runErr := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:  name,
+			Image: image,
+		},
+	})
+	require.NoError(t, runErr)
+	removeRuntimeContainerOnCleanup(t, containerID)
+
+	return containerID
+}
+
+func removeRuntimeContainerOnCleanup(t *testing.T, containerID string) {
+	t.Helper()
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), defaultIntegrationTestTimeout)
+		defer cleanupCancel()
+		_, removeErr := containerOrchestrator.RemoveContainersWithoutEvents(cleanupCtx, containers.RemoveContainersOptions{
+			Containers: []string{containerID},
+			Force:      true,
+		})
+		if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
+			require.NoError(t, removeErr)
+		}
+	})
+}
+
+func removeRuntimeNetworkOnCleanup(t *testing.T, networkName string) {
+	t.Helper()
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), defaultIntegrationTestTimeout)
+		defer cleanupCancel()
+		_, removeErr := containerOrchestrator.RemoveNetworks(cleanupCtx, containers.RemoveNetworksOptions{
+			Networks: []string{networkName},
+			Force:    true,
+		})
+		if removeErr == nil || errors.Is(removeErr, containers.ErrNotFound) {
+			return
+		}
+		// Removal reports a partial failure both for a network that is already gone and for one
+		// that could not be removed, so confirm the network is actually absent before ignoring it.
+		inspectedNetworks, inspectErr := containerOrchestrator.InspectNetworks(cleanupCtx, containers.InspectNetworksOptions{
+			Networks: []string{networkName},
+		})
+		if errors.Is(inspectErr, containers.ErrNotFound) || (inspectErr == nil && len(inspectedNetworks) == 0) {
+			return
+		}
+		require.NoError(t, removeErr)
+	})
+}

@@ -21,7 +21,6 @@ import (
 const (
 	DcpUserDir           = ".dcp"
 	DcpExtensionsDir     = "ext"
-	DcpWorkDir           = "dcp-work"
 	DcpExtensionsPathEnv = "DCP_EXTENSIONS_PATH"
 	BuildOutputDir       = "bin"
 )

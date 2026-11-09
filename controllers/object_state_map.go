@@ -130,24 +130,50 @@ func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) UpdateChangingStateKey(namesp
 	return true
 }
 
-// DeleteByNamespacedName() deletes the object state for the given namespaced name.
+// UpdateChangingStateKeyIfUnclaimed is like UpdateChangingStateKey, but does not replace another
+// object's ownership of the new state key. It returns the current owner and whether the update was
+// applied.
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) UpdateChangingStateKeyIfUnclaimed(
+	namespaceName types.NamespacedName,
+	oldStateKey StateKeyT,
+	newStateKey StateKeyT,
+	pos POS,
+) (types.NamespacedName, bool) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	currentStateKey, current, found := m.inner.FindByFirstKey(namespaceName)
+	if !found || currentStateKey != oldStateKey {
+		return types.NamespacedName{}, false
+	}
+
+	currentOwner, _, claimed := m.inner.FindBySecondKey(newStateKey)
+	if claimed && currentOwner != namespaceName {
+		return currentOwner, false
+	}
+
+	updated := POS(current.Clone())
+	madeChanges := updated.UpdateFrom(pos)
+	if !madeChanges && newStateKey == oldStateKey {
+		return namespaceName, false
+	}
+
+	m.inner.DeleteByFirstKey(namespaceName)
+	m.inner.Store(namespaceName, newStateKey, updated)
+	return namespaceName, true
+}
+
+// DeleteByNamespacedName() deletes the object state and queued deferred operations for the given namespaced name.
 func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) DeleteByNamespacedName(namespaceName types.NamespacedName) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 
 	m.inner.DeleteByFirstKey(namespaceName)
-}
-
-// DeleteByStateKey() deletes the object state for the given state key.
-func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) DeleteByStateKey(stateKey StateKeyT) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
-	m.inner.DeleteBySecondKey(stateKey)
+	m.deferredOps.DeleteByFirstKey(namespaceName)
 }
 
 // QueueDeferredOp() queues a deferred operation to be run later (by calling RunDeferredOps()).
-// The operation fails (returning false) if the object state is not found using the given key.
+// The operation fails (returning false) if the object state is not found using the given namespaced name.
 func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) QueueDeferredOp(namespaceName types.NamespacedName, op DeferredMapOperation[StateKeyT, PObj]) bool {
 	m.lock.Lock()
 	defer m.lock.Unlock()
@@ -157,8 +183,34 @@ func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) QueueDeferredOp(namespaceName
 		return false
 	}
 
-	_, ops, opsFound := m.deferredOps.FindByFirstKey(namespaceName)
-	if !opsFound {
+	return m.queueDeferredOpLocked(namespaceName, stateKey, op)
+}
+
+// QueueDeferredOpForStateKey() queues a deferred operation to be run later, but only if the
+// object state is still stored with the expected state key.
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) QueueDeferredOpForStateKey(
+	namespaceName types.NamespacedName,
+	stateKey StateKeyT,
+	op DeferredMapOperation[StateKeyT, PObj],
+) bool {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	return m.queueDeferredOpLocked(namespaceName, stateKey, op)
+}
+
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) queueDeferredOpLocked(
+	namespaceName types.NamespacedName,
+	stateKey StateKeyT,
+	op DeferredMapOperation[StateKeyT, PObj],
+) bool {
+	currentStateKey, _, found := m.inner.FindByFirstKey(namespaceName)
+	if !found || currentStateKey != stateKey {
+		return false
+	}
+
+	deferredStateKey, ops, opsFound := m.deferredOps.FindByFirstKey(namespaceName)
+	if !opsFound || deferredStateKey != stateKey {
 		ops = nil
 	}
 

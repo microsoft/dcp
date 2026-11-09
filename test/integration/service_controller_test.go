@@ -62,7 +62,7 @@ func TestServiceBecomesReady(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  proxyAddress,
 			Port:     proxyPort,
 		},
@@ -125,7 +125,7 @@ func TestServicesBecomeReadyMultipleReplicas(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ServiceSpec{
-					Protocol: apiv1.TCP,
+					Protocol: commonapi.PortProtocolTCP,
 					Address:  "127.32.15.120",
 					Port:     pBecomesReadyMultipleReplicasProcess,
 				},
@@ -143,7 +143,7 @@ func TestServicesBecomeReadyMultipleReplicas(t *testing.T) {
 						},
 						Spec: apiv1.ExecutableSpec{
 							ExecutablePath: "/path/to/ers-becomes-ready-multi-process",
-							Env: []apiv1.EnvVar{
+							Env: []commonapi.EnvVar{
 								{
 									Name:  "PORT",
 									Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, "svc-becomes-ready-multi-process"),
@@ -162,7 +162,7 @@ func TestServicesBecomeReadyMultipleReplicas(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ServiceSpec{
-					Protocol: apiv1.TCP,
+					Protocol: commonapi.PortProtocolTCP,
 					Address:  "127.32.15.121",
 					Port:     pBecomesReadyMultipleReplicasIde,
 				},
@@ -181,7 +181,7 @@ func TestServicesBecomeReadyMultipleReplicas(t *testing.T) {
 						},
 						Spec: apiv1.ExecutableSpec{
 							ExecutablePath: "/path/to/ers-becomes-ready-multi-ide",
-							Env: []apiv1.EnvVar{
+							Env: []commonapi.EnvVar{
 								{
 									Name:  "PORT",
 									Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, "svc-becomes-ready-multi-ide"),
@@ -285,7 +285,7 @@ func TestServiceDelayedCreation(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  "127.10.10.134",
 			Port:     pDelayedCreationService,
 		},
@@ -324,7 +324,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol:              apiv1.TCP,
+			Protocol:              commonapi.PortProtocolTCP,
 			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
 		},
 	}
@@ -347,7 +347,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/" + testName + "-exe",
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "PORT",
 					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, svc.ObjectMeta.Name),
@@ -368,7 +368,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "PORT",
 					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, svc.ObjectMeta.Name),
@@ -416,7 +416,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 	t.Logf("Ensure Executable '%s' is running and has the Service port injected...", exe.ObjectMeta.Name)
 	expectedEnvVar := fmt.Sprintf("PORT=%d", pConsumableAfterLatePortAllocation)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
-		effectiveEnv := slices.Map[string](currentExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		effectiveEnv := slices.Map[string](currentExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 			return fmt.Sprintf("%s=%s", v.Name, v.Value)
 		})
 		running := currentExe.Status.State == apiv1.ExecutableStateRunning
@@ -426,7 +426,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 
 	t.Logf("Ensure Container '%s' is running and has the Service port injected...", ctr.ObjectMeta.Name)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
-		effectiveEnv := slices.Map[string](currentCtr.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		effectiveEnv := slices.Map[string](currentCtr.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 			return fmt.Sprintf("%s=%s", v.Name, v.Value)
 		})
 		running := currentCtr.Status.State == apiv1.ContainerStateRunning
@@ -446,7 +446,7 @@ func TestServiceRandomPort(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 		},
 	}
 
@@ -476,7 +476,7 @@ func TestServiceIPv6Address(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol:              apiv1.TCP,
+			Protocol:              commonapi.PortProtocolTCP,
 			AddressAllocationMode: apiv1.AddressAllocationModeIPv6ZeroOne,
 		},
 	}
@@ -511,7 +511,7 @@ func TestServiceProxyless(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol:              apiv1.TCP,
+			Protocol:              commonapi.PortProtocolTCP,
 			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
 		},
 	}
@@ -565,7 +565,7 @@ func TestServiceProxylessWithMultipleEndpoints(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol:              apiv1.TCP,
+			Protocol:              commonapi.PortProtocolTCP,
 			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
 		},
 	}
@@ -710,7 +710,7 @@ func TestServiceAllAddressesIPv4(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  networking.IPv4AllInterfaceAddress,
 		},
 	}
@@ -745,7 +745,7 @@ func TestServiceAllAddressesIPv6(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  networking.IPv6AllInterfaceAddress,
 		},
 	}
@@ -778,7 +778,7 @@ func TestServiceRetriesProxyStart(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  networking.Localhost,
 			Port:     pRetriesProxyStart,
 		},
@@ -819,7 +819,7 @@ func TestServiceGetsReadyAfterTransientProxyFailure(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  networking.Localhost,
 			Port:     pReadyAfterTransientProxyFailure,
 		},
@@ -875,7 +875,7 @@ func TestBindAllResolvesCorrectInterfaces(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  "*",
 		},
 	}

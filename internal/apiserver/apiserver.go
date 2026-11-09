@@ -24,6 +24,7 @@ import (
 	"k8s.io/apiserver/pkg/server/dynamiccertificates"
 	kubeserverfilters "k8s.io/apiserver/pkg/server/filters"
 	clientgorest "k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 
 	tiltapiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	tiltserverbuilder "github.com/tilt-dev/tilt-apiserver/pkg/server/builder"
@@ -31,8 +32,11 @@ import (
 	tiltstart "github.com/tilt-dev/tilt-apiserver/pkg/server/start"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/logs/containerlogs"
 	"github.com/microsoft/dcp/internal/logs/stdiologs"
+	"github.com/microsoft/dcp/internal/logs/v2resourcelogs"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/notifications"
 	"github.com/microsoft/dcp/internal/telemetry/startupspans"
@@ -55,6 +59,7 @@ type ApiServerRunConfig struct {
 	// It should NOT be assumed that this is identical to the cancellation function for the API server run context.
 	// The API server will be shut down by cancelling the run context, but that in general
 	// happens asynchronously to the call to RequestShutdown().
+	// It must not wait for API server shutdown, since it can be called from an active HTTP request.
 	// Mandatory, must not be nil.
 	RequestShutdown func(ApiServerResourceCleanup)
 
@@ -92,7 +97,13 @@ func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger
 	for _, o := range apiv1.PersistentTypes {
 		apiServer.builder = apiServer.builder.WithResourceMemoryStorage(o, dataFolderPath)
 	}
+	for _, o := range apiv2.PersistentTypes {
+		apiServer.builder = apiServer.builder.WithResourceMemoryStorage(o, dataFolderPath)
+	}
 	for _, o := range apiv1.AddtionalTypes {
+		apiServer.builder = apiServer.builder.WithResource(o)
+	}
+	for _, o := range apiv2.AdditionalTypes {
 		apiServer.builder = apiServer.builder.WithResource(o)
 	}
 	apiServer.builder = apiServer.builder.WithOpenAPIDefinitions(openApiConfigrationName, openApiConfigurationVersion, openapi.GetOpenAPIDefinitions)
@@ -104,12 +115,8 @@ func (s *ApiServer) Name() string {
 	return s.name
 }
 
-// Runs the API server.
-//
-// The passed runCtx is used to control the lifecycle of the API server. When that context is cancelled,
-// the API server should terminate all requests in progress and shut down gracefully.
-//
-
+// Runs the API server. Canceling runCtx starts graceful shutdown and cancels long-running requests.
+// The returned channel closes after finite requests finish or the server shutdown timeout elapses.
 func (s *ApiServer) Run(runCtx context.Context, runConfig ApiServerRunConfig) (<-chan struct{}, error) {
 	log := s.logger.WithName(s.name)
 
@@ -154,7 +161,19 @@ func (s *ApiServer) Run(runCtx context.Context, runConfig ApiServerRunConfig) (<
 		config.GenericConfig.MinRequestTimeout = watchTimeout
 	}
 
-	addDcpHttpHandlers(config, runCtx, log)
+	namespaceWatchClientConfig, namespaceWatchClientConfigErr := clientcmd.NewDefaultClientConfig(
+		*s.config.Config,
+		&clientcmd.ConfigOverrides{},
+	).ClientConfig()
+	if namespaceWatchClientConfigErr != nil {
+		return nil, fmt.Errorf("create V2 Namespace watch client configuration: %w", namespaceWatchClientConfigErr)
+	}
+	dcpclient.ApplyDcpOptions(namespaceWatchClientConfig)
+
+	handlerConfigErr := addDcpHttpHandlers(config, runCtx, namespaceWatchClientConfig, log)
+	if handlerConfigErr != nil {
+		return nil, handlerConfigErr
+	}
 
 	err = configureForLogServing(config, log)
 	if err != nil {
@@ -202,6 +221,10 @@ func (s *ApiServer) Dispose() error {
 	apiv1.ResourceLogStreamers.Range(func(_ schema.GroupVersionResource, rls apiv1.ResourceLogStreamer) bool {
 		allErrors = errors.Join(allErrors, rls.Dispose())
 		return true // Continue iteration
+	})
+	apiv2.ResourceLogStreamers.Range(func(_ schema.GroupVersionResource, streamer apiv2.ResourceLogStreamer) bool {
+		allErrors = errors.Join(allErrors, streamer.Dispose())
+		return true
 	})
 
 	// Remove the kubeconfig file (best effort)
@@ -288,10 +311,14 @@ func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error
 	// The following is necessary for the API server to correctly deserialize log request parameters into LogOptions instance.
 	// (the scheme in ExtraConfig contains DCP type definitions, including LogOptions).
 	disableOpenApiForLogsSubresource(config.GenericConfig, apiv1.PersistentTypes)
+	disableOpenApiForLogsSubresource(config.GenericConfig, apiv2.PersistentTypes)
 
 	err := apiv1.RegisterLogOptionsConversions(config.ExtraConfig.Scheme)
 	if err != nil {
 		return err
+	}
+	if v2ConversionErr := apiv2.RegisterLogOptionsConversions(config.ExtraConfig.Scheme); v2ConversionErr != nil {
+		return v2ConversionErr
 	}
 	config.ExtraConfig.ParameterCodec = apiruntime.NewParameterCodec(config.ExtraConfig.Scheme)
 
@@ -312,6 +339,16 @@ func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error
 		(&apiv1.ContainerExec{}).GetGroupVersionResource(),
 		stdiologs.LogStreamer(),
 	)
+	v2ResourceStreamer := v2resourcelogs.NewLogStreamer(log.WithName("v2-resource-logstreamer"))
+	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainer{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainer{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerImage{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainerNetwork{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalProcess{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalProcess{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerExec{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainerExec{}).GetGroupVersionResource(), v2ResourceStreamer)
 
 	return nil
 }
@@ -343,13 +380,46 @@ func disableOpenApiForLogsSubresource(config *kubeapiserver.RecommendedConfig, o
 	}
 }
 
-func addDcpHttpHandlers(config *tiltapiserver.Config, ctx context.Context, log logr.Logger) {
+func addDcpHttpHandlers(
+	config *tiltapiserver.Config,
+	ctx context.Context,
+	namespaceWatchClientConfig *clientgorest.Config,
+	log logr.Logger,
+) error {
 	originalChainBuilder := config.GenericConfig.BuildHandlerChainFunc
+	namespaceLifecycleGate := newV2NamespaceLifecycleGate()
+	if storageErr := decorateV2NamespaceStorageProviders(config, namespaceLifecycleGate); storageErr != nil {
+		return storageErr
+	}
+	namespaceWatchSource, namespaceWatchSourceErr := newV2NamespaceWatchSource(namespaceWatchClientConfig)
+	if namespaceWatchSourceErr != nil {
+		return namespaceWatchSourceErr
+	}
 	config.GenericConfig.BuildHandlerChainFunc = func(handler http.Handler, c *kubeapiserver.Config) http.Handler {
+		handler = withLongRunningRequestCancellation(handler, ctx, c.LongRunningFunc, log)
 		handler = originalChainBuilder(handler, c)
 		handler = withDcpContextValues(handler, ctx, log)
 		return handler
 	}
+
+	hookErr := config.GenericConfig.AddPostStartHook(
+		"watch-v2-namespace-finalization",
+		func(hookContext kubeapiserver.PostStartHookContext) error {
+			go runV2NamespaceLifecycleWatcher(
+				hookContext,
+				namespaceWatchSource,
+				namespaceLifecycleGate,
+				log.WithName("V2NamespaceLifecycleWatcher"),
+				v2NamespaceWatcherRestartInterval,
+				v2NamespaceWatcherRetryInterval,
+			)
+			return nil
+		},
+	)
+	if hookErr != nil {
+		return fmt.Errorf("register V2 Namespace lifecycle watcher: %w", hookErr)
+	}
+	return nil
 }
 
 func runServerFromCompletedConfig(

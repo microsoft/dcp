@@ -9,19 +9,20 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"path/filepath"
 
 	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
+	"github.com/microsoft/dcp/internal/containers"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -30,6 +31,12 @@ type AdvancedTestEnvironmentInfo struct {
 	ProcessExecutor process.Executor
 	*ctrl_testutil.TestProcessExecutableRunner
 	Log logr.Logger
+}
+
+// AdvancedTestEnvironmentOptions customizes the API server and container orchestrator used by an advanced test environment.
+type AdvancedTestEnvironmentOptions struct {
+	ApiServerFlags        ctrl_testutil.ApiServerFlag
+	ContainerOrchestrator containers.ContainerOrchestrator
 }
 
 // Starts an test environment for advanced tests that use real process executor and true container orchestrator (Docker or Podman).
@@ -44,7 +51,9 @@ func StartAdvancedTestEnvironment(
 	*AdvancedTestEnvironmentInfo,
 	error,
 ) {
-	return StartAdvancedTestEnvironmentWithFlags(ctx, inclCtrl, instanceTag, testTempDir, ctrl_testutil.ApiServerUseTrueContainerOrchestrator)
+	return StartAdvancedTestEnvironmentWithOptions(ctx, inclCtrl, instanceTag, testTempDir, AdvancedTestEnvironmentOptions{
+		ApiServerFlags: ctrl_testutil.ApiServerUseTrueContainerOrchestrator,
+	})
 }
 
 // StartAdvancedTestEnvironmentWithFlags is the same as StartAdvancedTestEnvironment but allows callers to customize the
@@ -61,6 +70,28 @@ func StartAdvancedTestEnvironmentWithFlags(
 	*AdvancedTestEnvironmentInfo,
 	error,
 ) {
+	return StartAdvancedTestEnvironmentWithOptions(ctx, inclCtrl, instanceTag, testTempDir, AdvancedTestEnvironmentOptions{
+		ApiServerFlags: apiServerFlags,
+	})
+}
+
+// StartAdvancedTestEnvironmentWithOptions starts an advanced test environment with explicit options.
+func StartAdvancedTestEnvironmentWithOptions(
+	ctx context.Context,
+	inclCtrl IncludedController,
+	instanceTag string,
+	testTempDir string,
+	options AdvancedTestEnvironmentOptions,
+) (
+	*ctrl_testutil.ApiServerInfo,
+	*AdvancedTestEnvironmentInfo,
+	error,
+) {
+	inclCtrl |= NamespaceController
+	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
+		inclCtrl |= PhysicalContainerImageController | PhysicalContainerController | PhysicalContainerNetworkController
+	}
+
 	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
 	if sessionFolderErr != nil {
 		return nil, nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)
@@ -69,7 +100,10 @@ func StartAdvancedTestEnvironmentWithFlags(
 	log := testutil.NewLogWithResourceSinkForTesting(instanceTag, sessionFolder)
 	ctrl.SetLogger(log)
 
-	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, apiServerFlags, log, sessionFolder)
+	serverInfo, serverErr := ctrl_testutil.StartApiServerWithOptions(ctx, ctrl_testutil.ApiServerOptions{
+		Flags:                 options.ApiServerFlags,
+		ContainerOrchestrator: options.ContainerOrchestrator,
+	}, log, sessionFolder)
 	if serverErr != nil {
 		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
 	}
@@ -113,6 +147,18 @@ func StartAdvancedTestEnvironmentWithFlags(
 		},
 	)
 
+	if inclCtrl&NamespaceController != 0 {
+		namespaceR := controllers.NewNamespaceReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("NamespaceReconciler"),
+		)
+		if err = namespaceR.SetupWithManager(mgr, instanceTag+"-NamespaceReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize Namespace reconciler: %w", err)
+		}
+	}
+
 	if inclCtrl&ExecutableController != 0 {
 		execR := controllers.NewExecutableReconcilerWithConfig(
 			ctx,
@@ -145,11 +191,13 @@ func StartAdvancedTestEnvironmentWithFlags(
 		}
 	}
 
-	if inclCtrl&NetworkController != 0 {
+	harvester := controllers.NewResourceHarvester()
+	if inclCtrl&(NetworkController|LogicalContainerNetworkController) != 0 {
 		// Run the harvester in a separate goroutine to ensure that it does not block controller startup
-		harvester := controllers.NewResourceHarvester()
 		go harvester.Harvest(ctx, serverInfo.ContainerOrchestrator, log.WithName("ResourceCleanup"))
+	}
 
+	if inclCtrl&NetworkController != 0 {
 		networkR := controllers.NewNetworkReconcilerWithConfig(
 			ctx,
 			mgr.GetClient(),
@@ -187,6 +235,136 @@ func StartAdvancedTestEnvironmentWithFlags(
 		}
 	}
 
+	if inclCtrl&LogicalContainerController != 0 {
+		logicalContainerR := controllers.NewLogicalContainerReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("LogicalContainerReconciler"),
+			serverInfo.ContainerOrchestrator,
+			controllers.LogicalContainerReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner,
+			},
+		)
+		if logicalContainerSetupErr := logicalContainerR.SetupWithManager(mgr, instanceTag+"-LogicalContainerReconciler"); logicalContainerSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalContainer reconciler: %w", logicalContainerSetupErr)
+		}
+	}
+
+	if inclCtrl&LogicalContainerNetworkController != 0 {
+		logicalNetworkR := controllers.NewLogicalContainerNetworkReconciler(
+			ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalContainerNetworkReconciler"),
+			serverInfo.ContainerOrchestrator, harvester,
+			controllers.LogicalContainerNetworkReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner,
+			},
+		)
+		if logicalNetworkSetupErr := logicalNetworkR.SetupWithManager(mgr, instanceTag+"-LogicalContainerNetworkReconciler"); logicalNetworkSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalContainerNetwork reconciler: %w", logicalNetworkSetupErr)
+		}
+	}
+
+	outputCleanupQueue := resiliency.NewWorkQueue(ctx, controllers.MaxConcurrentReconciles)
+	if inclCtrl&LogicalProcessController != 0 {
+		logicalProcessR := controllers.NewLogicalProcessReconciler(
+			ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalProcessReconciler"), pe,
+			outputCleanupQueue,
+			controllers.LogicalProcessReconcilerConfig{
+				StateStore: stateStore, ResourceLeaseOwner: leaseOwner,
+			},
+		)
+		if logicalProcessSetupErr := logicalProcessR.SetupWithManager(mgr, instanceTag+"-LogicalProcessReconciler"); logicalProcessSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalProcess reconciler: %w", logicalProcessSetupErr)
+		}
+	}
+
+	if inclCtrl&PhysicalContainerImageController != 0 {
+		physicalContainerImageR := controllers.NewPhysicalContainerImageReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerImageReconciler"),
+			serverInfo.ContainerOrchestrator,
+			outputCleanupQueue,
+			controllers.PhysicalContainerImageReconcilerConfig{StateStore: stateStore, ResourceLeaseOwner: leaseOwner},
+		)
+		if err = physicalContainerImageR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerImageReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerImage reconciler: %w", err)
+		}
+	}
+
+	if inclCtrl&PhysicalContainerController != 0 {
+		physicalContainerR := controllers.NewPhysicalContainerReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerReconciler"),
+			serverInfo.ContainerOrchestrator,
+			pe,
+		)
+		if err = physicalContainerR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainer reconciler: %w", err)
+		}
+	}
+
+	if inclCtrl&PhysicalContainerNetworkController != 0 {
+		physicalContainerNetworkR := controllers.NewPhysicalContainerNetworkReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerNetworkReconciler"),
+			serverInfo.ContainerOrchestrator,
+		)
+		if err = physicalContainerNetworkR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerNetworkReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerNetwork reconciler: %w", err)
+		}
+	}
+
+	if inclCtrl&PhysicalContainerVolumeController != 0 {
+		physicalContainerVolumeR := controllers.NewPhysicalContainerVolumeReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerVolumeReconciler"),
+			serverInfo.ContainerOrchestrator,
+		)
+		if err = physicalContainerVolumeR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerVolumeReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerVolume reconciler: %w", err)
+		}
+	}
+
+	if inclCtrl&PhysicalProcessController != 0 {
+		physicalProcessR := controllers.NewPhysicalProcessReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalProcessReconciler"),
+			pe,
+			outputCleanupQueue,
+		)
+		if err = physicalProcessR.SetupWithManager(mgr, instanceTag+"-PhysicalProcessReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalProcess reconciler: %w", err)
+		}
+	}
+
+	if inclCtrl&PhysicalContainerExecController != 0 {
+		physicalExecR := controllers.NewPhysicalContainerExecReconciler(
+			ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("PhysicalContainerExecReconciler"), serverInfo.ContainerOrchestrator,
+			outputCleanupQueue,
+		)
+		if physicalExecSetupErr := physicalExecR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerExecReconciler"); physicalExecSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerExec reconciler: %w", physicalExecSetupErr)
+		}
+	}
+	if inclCtrl&LogicalContainerExecController != 0 {
+		logicalExecR := controllers.NewLogicalContainerExecReconciler(
+			ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalContainerExecReconciler"),
+		)
+		if logicalExecSetupErr := logicalExecR.SetupWithManager(mgr, instanceTag+"-LogicalContainerExecReconciler"); logicalExecSetupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalContainerExec reconciler: %w", logicalExecSetupErr)
+		}
+	}
+
 	if inclCtrl&ContainerExecController != 0 {
 		containerExecR := controllers.NewContainerExecReconciler(
 			ctx,
@@ -207,12 +385,22 @@ func StartAdvancedTestEnvironmentWithFlags(
 			mgr.GetAPIReader(),
 			log.WithName("VolumeReconciler"),
 			serverInfo.ContainerOrchestrator,
+			controllers.VolumeReconcilerConfig{
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+			},
 		)
 		if err = volumeR.SetupWithManager(mgr, instanceTag+"-VolumeReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
 		}
 	}
 
+	if inclCtrl&LogicalServiceController != 0 {
+		logicalServiceR := controllers.NewLogicalServiceReconciler(ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalServiceReconciler"), nil)
+		if setupErr := logicalServiceR.SetupWithManager(mgr, instanceTag+"-LogicalServiceReconciler"); setupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize LogicalService reconciler: %w", setupErr)
+		}
+	}
 	if inclCtrl&ServiceController != 0 {
 		serviceR := controllers.NewServiceReconciler(
 			ctx,
@@ -231,14 +419,10 @@ func StartAdvancedTestEnvironmentWithFlags(
 
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
 		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
-			Orchestrator:                 serverInfo.ContainerOrchestrator,
 			ProcessExecutor:              pe,
+			BuildContextDir:              sessionFolder,
 			MakeTunnelControlClient:      dcptunproto.NewTunnelControlClient,
 			MaxTunnelPreparationAttempts: 2,
-		}
-
-		if testTempDir != NoSeparateWorkingDir {
-			tprOpts.MostRecentImageBuildsFilePath = filepath.Join(testTempDir, instanceTag+".imglist")
 		}
 
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(

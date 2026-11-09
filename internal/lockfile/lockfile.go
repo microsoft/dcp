@@ -84,7 +84,7 @@ func (l *Lockfile) TryLock(ctx context.Context, retryInterval time.Duration) err
 
 		if file == nil {
 			var openErr error
-			file, openErr = usvc_io.OpenFile(l.path, os.O_CREATE|os.O_RDWR, osutil.PermissionOnlyOwnerReadWrite)
+			file, openErr = usvc_io.EnsureFile(l.path, osutil.PermissionOnlyOwnerReadWrite)
 			if openErr != nil {
 				return false, openErr
 			}

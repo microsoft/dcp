@@ -14,6 +14,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"path/filepath"
@@ -30,6 +32,34 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/security"
 )
+
+func TestKubeconfigWriteErrorExplainsRestrictedDestination(t *testing.T) {
+	t.Parallel()
+
+	restrictedErr := fmt.Errorf(
+		"%w: %w: test rejection",
+		usvc_io.ErrRestrictedFilePolicy,
+		usvc_io.ErrRestrictedFileReparsePoint,
+	)
+
+	writeErr := kubeconfigWriteError(`C:\redirected\kubeconfig`, restrictedErr)
+
+	require.ErrorIs(t, writeErr, usvc_io.ErrRestrictedFilePolicy)
+	require.ErrorIs(t, writeErr, usvc_io.ErrRestrictedFileReparsePoint)
+	require.ErrorContains(t, writeErr, "absolute path on a fixed local ACL-capable drive")
+	require.ErrorContains(t, writeErr, "without junction or symlink ancestors")
+}
+
+func TestKubeconfigWriteErrorPreservesOrdinaryFailure(t *testing.T) {
+	t.Parallel()
+
+	ordinaryErr := errors.New("ordinary failure")
+
+	writeErr := kubeconfigWriteError("kubeconfig", ordinaryErr)
+
+	require.ErrorIs(t, writeErr, ordinaryErr)
+	require.NotErrorIs(t, writeErr, usvc_io.ErrRestrictedFilePolicy)
+}
 
 func TestEnsureKubeconfigData_UsesCertificateFiles(t *testing.T) {
 	certPEM, keyPEM, cert := generateKubeconfigTestSelfSignedCert(t)

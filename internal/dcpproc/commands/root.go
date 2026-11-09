@@ -6,9 +6,7 @@
 package commands
 
 import (
-	"errors"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -25,7 +23,7 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 	rootCmd := &cobra.Command{
 		SilenceErrors: true,
 		Use:           "dcpproc",
-		Short:         "Monitors dcp and cleans up orphaned resources (processes or containers)",
+		Short:         "Monitors dcp and cleans up orphaned resources",
 		Long: `DCP is a developer tool for running multi-service applications.
 
 	It integrates your code, emulators and containers to give you a development environment
@@ -64,6 +62,12 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 		rootCmd.AddCommand(cmd)
 	}
 
+	if cmd, err = NewForkProcessCommand(log.Logger); err != nil {
+		return nil, fmt.Errorf("could not set up 'fork-process' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
+	}
+
 	return rootCmd, nil
 }
 
@@ -71,7 +75,5 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 // indicates that the monitored process is no longer running (either it has already
 // exited, no longer exists, or its PID has been reused by an unrelated process).
 func isMonitorProcessGoneErr(err error) bool {
-	return errors.Is(err, os.ErrProcessDone) ||
-		errors.Is(err, process.ErrorProcessNotFound) ||
-		errors.Is(err, process.ErrProcessIdentityMismatch)
+	return process.IsProcessGoneErr(err)
 }

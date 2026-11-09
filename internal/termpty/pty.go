@@ -16,7 +16,6 @@ import (
 	"io"
 	"math"
 	"os/exec"
-	"time"
 
 	"github.com/microsoft/dcp/pkg/process"
 )
@@ -44,11 +43,8 @@ type PseudoTerminalProcess struct {
 	// The pseudo-terminal for the process.
 	PTY PTY
 
-	// The PID of the process.
-	PID process.Pid_t
-
-	// Identity time for identifying the process.
-	IdentityTime time.Time
+	// Handle identifies the process.
+	Handle process.ProcessHandle
 
 	// StartWaitForExit is a function that starts waiting for the process to exit.
 	StartWaitForExit func()
@@ -61,11 +57,11 @@ type PseudoTerminalProcess struct {
 	Executor process.Executor
 }
 
-func (ptp *PseudoTerminalProcess) Stop(options ...process.ProcessStopOption) error {
+func (ptp *PseudoTerminalProcess) Stop(ctx context.Context, options ...process.ProcessStopOption) error {
 	if ptp.Executor == nil {
 		return errors.New("process executor is not available, cannot stop process") // Should never happen
 	}
-	return ptp.Executor.StopProcess(ptp.PID, ptp.IdentityTime, options...)
+	return ptp.Executor.StopProcess(ctx, ptp.Handle, options...)
 }
 
 // CommandSpec captures data needed to spawn a command attached to a freshly allocated pseudo-terminal.

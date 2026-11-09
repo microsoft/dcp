@@ -42,8 +42,8 @@ func TestStopServiceReleasesProxyPortReservations(t *testing.T) {
 
 	const address = networking.IPv4LocalhostDefaultAddress
 	const port int32 = 26030
-	reserveTestPort(t, ctx, store, owner, apiv1.TCP, address, port)
-	requirePortReserved(t, ctx, store, apiv1.TCP, address, port, owner)
+	reserveTestPort(t, ctx, store, owner, commonapi.PortProtocolTCP, address, port)
+	requirePortReserved(t, ctx, store, commonapi.PortProtocolTCP, address, port, owner)
 
 	serviceName := types.NamespacedName{Name: "test-service", Namespace: metav1.NamespaceNone}
 	stopped := false
@@ -55,7 +55,7 @@ func TestStopServiceReleasesProxyPortReservations(t *testing.T) {
 			{
 				stopProxy: func() { stopped = true },
 				portReservation: ports.Binding{
-					Protocol: string(apiv1.TCP),
+					Protocol: string(commonapi.PortProtocolTCP),
 					IP:       netip.MustParseAddr(address),
 					Port:     port,
 				},
@@ -69,7 +69,7 @@ func TestStopServiceReleasesProxyPortReservations(t *testing.T) {
 	require.True(t, stopped)
 	_, found := r.serviceInfo.Load(serviceName)
 	require.False(t, found)
-	requirePortReleased(t, ctx, store, apiv1.TCP, address, port, owner)
+	requirePortReleased(t, ctx, store, commonapi.PortProtocolTCP, address, port, owner)
 }
 
 func TestStopServiceDoesNotStopProxyWhenReservationReleaseFails(t *testing.T) {
@@ -88,7 +88,7 @@ func TestStopServiceDoesNotStopProxyWhenReservationReleaseFails(t *testing.T) {
 			{
 				stopProxy: func() { stopped = true },
 				portReservation: ports.Binding{
-					Protocol: string(apiv1.TCP),
+					Protocol: string(commonapi.PortProtocolTCP),
 					IP:       netip.MustParseAddr(networking.IPv4LocalhostDefaultAddress),
 					Port:     networking.InvalidPort,
 				},
@@ -119,7 +119,7 @@ func TestServiceDeletionReleasesEndpointPortReservations(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol:              apiv1.TCP,
+			Protocol:              commonapi.PortProtocolTCP,
 			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
 		},
 	}
@@ -175,7 +175,7 @@ func TestEnsureEndpointsForWorkloadReleasesReservationWhenCreateFails(t *testing
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 		},
 	}
 	workload := &apiv1.Container{
@@ -264,7 +264,7 @@ func (o *createFailingEndpointOwner) validateExistingEndpoints(
 	return endpoints, nil, nil
 }
 
-func configureTestPortAllocator(t *testing.T, ctx context.Context) (*statestore.Store, process.ProcessTreeItem) {
+func configureTestPortAllocator(t *testing.T, ctx context.Context) (*statestore.Store, process.ProcessHandle) {
 	t.Helper()
 
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
@@ -279,7 +279,7 @@ func configureTestPortAllocator(t *testing.T, ctx context.Context) (*statestore.
 	require.NoError(t, ownerErr)
 	networking.ConfigureStateStorePortAllocator(store, owner)
 	t.Cleanup(func() {
-		networking.ConfigureStateStorePortAllocator(nil, process.ProcessTreeItem{})
+		networking.ConfigureStateStorePortAllocator(nil, process.ProcessHandle{})
 	})
 	t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
 	return store, owner
@@ -289,8 +289,8 @@ func reserveTestPort(
 	t *testing.T,
 	ctx context.Context,
 	store *statestore.Store,
-	owner process.ProcessTreeItem,
-	protocol apiv1.PortProtocol,
+	owner process.ProcessHandle,
+	protocol commonapi.PortProtocol,
 	address string,
 	port int32,
 ) {
@@ -307,10 +307,10 @@ func requirePortReserved(
 	t *testing.T,
 	ctx context.Context,
 	store *statestore.Store,
-	protocol apiv1.PortProtocol,
+	protocol commonapi.PortProtocol,
 	address string,
 	port int32,
-	owner process.ProcessTreeItem,
+	owner process.ProcessHandle,
 ) {
 	t.Helper()
 
@@ -327,10 +327,10 @@ func requirePortReleased(
 	t *testing.T,
 	ctx context.Context,
 	store *statestore.Store,
-	protocol apiv1.PortProtocol,
+	protocol commonapi.PortProtocol,
 	address string,
 	port int32,
-	owner process.ProcessTreeItem,
+	owner process.ProcessHandle,
 ) {
 	t.Helper()
 

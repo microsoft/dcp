@@ -21,7 +21,7 @@ import (
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
-func EnsureProcessTree(t *testing.T, rootP process.ProcessTreeItem, expectedSize int, timeout time.Duration) {
+func EnsureProcessTree(t *testing.T, rootP process.ProcessHandle, expectedSize int, timeout time.Duration) {
 	processesStartedCtx, processesStartedCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer processesStartedCancelFn()
 
@@ -31,7 +31,7 @@ func EnsureProcessTree(t *testing.T, rootP process.ProcessTreeItem, expectedSize
 		100*time.Millisecond,
 		true, // Don't wait before polling for the first time
 		func(_ context.Context) (bool, error) {
-			processTree, err := process.GetProcessTree(rootP)
+			processTree, err := process.GetProcessTree(processesStartedCtx, rootP)
 			if err != nil {
 				return false, err
 			}

@@ -22,9 +22,9 @@ import (
 	clientcmd "k8s.io/client-go/tools/clientcmd"
 	clientcmd_api "k8s.io/client-go/tools/clientcmd/api"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/randdata"
@@ -74,7 +74,7 @@ func (k *Kubeconfig) Save() error {
 	}
 
 	if writeErr := usvc_io.WriteFile(k.path+string(suffix), contents, osutil.PermissionOnlyOwnerReadWrite); writeErr != nil {
-		return fmt.Errorf("could not write Kubeconfig file: %w", writeErr)
+		return kubeconfigWriteError(k.path, writeErr)
 	}
 
 	if renameErr := os.Rename(k.path+string(suffix), k.path); renameErr != nil {
@@ -82,6 +82,17 @@ func (k *Kubeconfig) Save() error {
 	}
 
 	return nil
+}
+
+func kubeconfigWriteError(path string, writeErr error) error {
+	if errors.Is(writeErr, usvc_io.ErrRestrictedFilePolicy) {
+		return fmt.Errorf(
+			"could not write kubeconfig file %q: %w; choose an absolute path on a fixed local ACL-capable drive without junction or symlink ancestors",
+			path,
+			writeErr,
+		)
+	}
+	return fmt.Errorf("could not write kubeconfig file: %w", writeErr)
 }
 
 // Reads Kubeconfig data and returns the address, port and security token of the current context,
@@ -132,7 +143,11 @@ func getKubeConfigPath(fs *pflag.FlagSet) (string, error) {
 		// If path is empty, this means the user did not pass the --kubeconfig parameter,
 		// so fall back to the "check default location" case.
 		if path != "" {
-			return path, nil
+			absolutePath, absolutePathErr := filepath.Abs(path)
+			if absolutePathErr != nil {
+				return "", fmt.Errorf("could not resolve kubeconfig path %q: %w", path, absolutePathErr)
+			}
+			return absolutePath, nil
 		}
 	}
 
@@ -188,7 +203,7 @@ func getKubeconfig(ctx context.Context, kubeconfigPath string, port int32, gener
 func createKubeconfig(ctx context.Context, port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
 	if port == 0 {
 		newPort, newPortErr := traced(ctx, spanGetFreePort, func() (int32, error) {
-			return networking.GetFreePort(ctx, apiv1.TCP, serverAddress, log)
+			return networking.GetFreePort(ctx, commonapi.PortProtocolTCP, serverAddress, log)
 		})
 		if newPortErr != nil {
 			return nil, nil, newPortErr

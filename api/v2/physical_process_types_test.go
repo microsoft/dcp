@@ -1,0 +1,241 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+package v2
+
+import (
+	"context"
+	"math"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// Verifies that existing process captures require an identity-bound PID reference and absolute
+// paths, support either stream independently, and remain immutable after creation.
+func TestPhysicalProcessExistingCaptureValidation(t *testing.T) {
+	pid := int64(42)
+	process := &PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test"},
+		Spec: PhysicalProcessSpec{PID: &pid, IdentityTimestamp: metav1.NowMicro(),
+			StdoutFile: filepath.Join(t.TempDir(), "original-stdout")}}
+	require.Empty(t, process.Validate(context.Background()))
+	changed := process.DeepCopy()
+	changed.Spec.StderrFile = filepath.Join(t.TempDir(), "original-stderr")
+	require.Empty(t, changed.Validate(context.Background()))
+	require.NotEmpty(t, changed.ValidateUpdate(context.Background(), process))
+	changed.Spec.IdentityTimestamp = metav1.MicroTime{}
+	require.NotEmpty(t, changed.Validate(context.Background()))
+	changed = process.DeepCopy()
+	changed.Spec.StdoutFile = "relative.log"
+	require.NotEmpty(t, changed.Validate(context.Background()))
+	changed = process.DeepCopy()
+	changed.Spec.PID = nil
+	changed.Spec.Process = &PhysicalProcessConfig{ExecutablePath: "program"}
+	require.NotEmpty(t, changed.Validate(context.Background()))
+}
+
+func TestPhysicalProcessValidate(t *testing.T) {
+	validPID := int64(42)
+	zeroPID := int64(0)
+	largePID := int64(math.MaxUint32) + 1
+	monitorPID := int64(43)
+	monitorTimestamp := metav1.NewMicroTime(time.Now().UTC())
+	testCases := []struct {
+		name          string
+		process       PhysicalProcess
+		expectedError string
+	}{
+		{
+			name: "valid created process",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec: PhysicalProcessSpec{
+					Process: &PhysicalProcessConfig{
+						ExecutablePath:   "test-command",
+						Args:             []string{"one", "two"},
+						WorkingDirectory: "/tmp",
+					},
+				},
+			},
+		},
+		{
+			name: "valid tracked process",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec:       PhysicalProcessSpec{PID: &validPID},
+			},
+		},
+		{
+			name: "valid retained process monitor",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec: PhysicalProcessSpec{Process: &PhysicalProcessConfig{
+					ExecutablePath:       "test-command",
+					RetainRuntimeProcess: true,
+					MonitorPID:           &monitorPID,
+					MonitorTimestamp:     monitorTimestamp,
+				}},
+			},
+		},
+		{
+			name: "missing namespace",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process"},
+				Spec:       PhysicalProcessSpec{PID: &validPID},
+			},
+			expectedError: "metadata.namespace",
+		},
+		{
+			name: "missing process source",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+			},
+			expectedError: "spec",
+		},
+		{
+			name: "pid and config",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec: PhysicalProcessSpec{
+					PID:     &validPID,
+					Process: &PhysicalProcessConfig{ExecutablePath: "test-command"},
+				},
+			},
+			expectedError: "spec.process",
+		},
+		{
+			name: "zero pid",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec:       PhysicalProcessSpec{PID: &zeroPID},
+			},
+			expectedError: "spec.pid",
+		},
+		{
+			name: "pid too large",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec:       PhysicalProcessSpec{PID: &largePID},
+			},
+			expectedError: "spec.pid",
+		},
+		{
+			name: "missing executable path",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec:       PhysicalProcessSpec{Process: &PhysicalProcessConfig{}},
+			},
+			expectedError: "spec.process.executablePath",
+		},
+		{
+			name: "whitespace executable path",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec:       PhysicalProcessSpec{Process: &PhysicalProcessConfig{ExecutablePath: " "}},
+			},
+			expectedError: "spec.process.executablePath",
+		},
+		{
+			name: "monitor requires retained process",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec: PhysicalProcessSpec{Process: &PhysicalProcessConfig{
+					ExecutablePath:   "test-command",
+					MonitorPID:       &monitorPID,
+					MonitorTimestamp: monitorTimestamp,
+				}},
+			},
+			expectedError: "spec.process.monitorPID",
+		},
+		{
+			name: "monitor pid requires timestamp",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec: PhysicalProcessSpec{Process: &PhysicalProcessConfig{
+					ExecutablePath:       "test-command",
+					RetainRuntimeProcess: true,
+					MonitorPID:           &monitorPID,
+				}},
+			},
+			expectedError: "spec.process.monitorTimestamp",
+		},
+		{
+			name: "monitor timestamp requires pid",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec: PhysicalProcessSpec{Process: &PhysicalProcessConfig{
+					ExecutablePath:       "test-command",
+					RetainRuntimeProcess: true,
+					MonitorTimestamp:     monitorTimestamp,
+				}},
+			},
+			expectedError: "spec.process.monitorPID",
+		},
+		{
+			name: "monitor pid must be valid",
+			process: PhysicalProcess{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+				Spec: PhysicalProcessSpec{Process: &PhysicalProcessConfig{
+					ExecutablePath:       "test-command",
+					RetainRuntimeProcess: true,
+					MonitorPID:           &zeroPID,
+					MonitorTimestamp:     monitorTimestamp,
+				}},
+			},
+			expectedError: "spec.process.monitorPID",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			errorList := testCase.process.Validate(context.Background())
+			if testCase.expectedError == "" {
+				require.Empty(t, errorList)
+			} else {
+				require.NotEmpty(t, errorList)
+				require.Contains(t, errorList.ToAggregate().Error(), testCase.expectedError)
+			}
+		})
+	}
+}
+
+// Verifies that PhysicalProcess permits monotonic stop requests while keeping process configuration immutable.
+func TestPhysicalProcessValidateUpdate(t *testing.T) {
+	oldProcess := &PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-process", Namespace: "test-namespace"},
+		Spec: PhysicalProcessSpec{
+			Process: &PhysicalProcessConfig{ExecutablePath: "test-command"},
+		},
+	}
+
+	t.Run("allows stop request", func(t *testing.T) {
+		newProcess := oldProcess.DeepCopy()
+		newProcess.Spec.Stop = true
+		require.Empty(t, newProcess.ValidateUpdate(context.Background(), oldProcess))
+	})
+
+	t.Run("rejects clearing stop request", func(t *testing.T) {
+		stoppedProcess := oldProcess.DeepCopy()
+		stoppedProcess.Spec.Stop = true
+		newProcess := stoppedProcess.DeepCopy()
+		newProcess.Spec.Stop = false
+		require.Error(t, newProcess.ValidateUpdate(context.Background(), stoppedProcess).ToAggregate())
+	})
+
+	t.Run("rejects creation field changes", func(t *testing.T) {
+		newProcess := oldProcess.DeepCopy()
+		newProcess.Spec.Process.Args = []string{"changed"}
+		require.Error(t, newProcess.ValidateUpdate(context.Background(), oldProcess).ToAggregate())
+	})
+
+	t.Run("rejects ambient environment changes", func(t *testing.T) {
+		newProcess := oldProcess.DeepCopy()
+		newProcess.Spec.Process.AmbientEnvironment.Behavior = EnvironmentBehaviorDoNotInherit
+		require.NotEmpty(t, newProcess.ValidateUpdate(context.Background(), oldProcess))
+	})
+}

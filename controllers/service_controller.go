@@ -34,6 +34,7 @@ import (
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/proxy"
 	"github.com/microsoft/dcp/internal/telemetry"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/pointers"
@@ -215,7 +216,7 @@ func reserveDeclaredServicePort(ctx context.Context, svc *apiv1.Service, log log
 		return noChange
 	}
 
-	requestedServiceAddress, requestedAddressErr := getRequestedServiceAddress(svc)
+	requestedServiceAddress, requestedAddressErr := getRequestedServiceAddress(svc.Spec.Address, string(svc.Spec.AddressAllocationMode))
 	if requestedAddressErr != nil {
 		log.Error(requestedAddressErr, "Could not determine requested service address for port reservation")
 		return additionalReconciliationNeeded
@@ -244,7 +245,7 @@ func releaseDeclaredServicePort(ctx context.Context, svc *apiv1.Service, log log
 		return noChange
 	}
 
-	requestedServiceAddress, requestedAddressErr := getRequestedServiceAddress(svc)
+	requestedServiceAddress, requestedAddressErr := getRequestedServiceAddress(svc.Spec.Address, string(svc.Spec.AddressAllocationMode))
 	if requestedAddressErr != nil {
 		log.Error(requestedAddressErr, "Could not determine requested service address for port release")
 		return additionalReconciliationNeeded
@@ -481,7 +482,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		psd = &serviceData{}
 	}
 
-	requestedServiceAddress, requestedAddressErr := getRequestedServiceAddress(svc)
+	requestedServiceAddress, requestedAddressErr := getRequestedServiceAddress(svc.Spec.Address, string(svc.Spec.AddressAllocationMode))
 
 	if found && requestedAddressErr == nil && len(psd.proxies) > 0 {
 		svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(psd.proxies, requestedServiceAddress)
@@ -505,7 +506,8 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		return psd, requestedAddressErr
 	}
 
-	proxies, portAllocationErr := r.getProxyData(ctx, svc, requestedServiceAddress, log)
+	proxyLog := r.Log.WithName("Proxy").WithValues("Service", svc.NamespacedName(), logger.RESOURCE_LOG_STREAM_ID, svc.GetResourceId())
+	proxies, portAllocationErr := allocateServiceProxies(r.LifetimeCtx, r.config.CreateProxy, svc.Spec.Protocol, svc.Spec.Port, requestedServiceAddress, proxyLog)
 	if portAllocationErr != nil {
 		releaseErr := stopProxiesAndReleasePortReservations(ctx, proxies, log)
 		if releaseErr != nil {
@@ -541,23 +543,21 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 }
 
 // Allocates (but does not start) proxy instances for the given service.
-func (r *ServiceReconciler) getProxyData(ctx context.Context, svc *apiv1.Service, requestedServiceAddress string, log logr.Logger) ([]proxyInstanceData, error) {
+func allocateServiceProxies(
+	lifetimeCtx context.Context, createProxy proxy.ProxyFactory, protocol commonapi.PortProtocol,
+	requestedPort int32, requestedServiceAddress string, log logr.Logger,
+) ([]proxyInstanceData, error) {
 	proxies := []proxyInstanceData{}
 	var getProxyPort func(proxyAddress string) (int32, error)
-	if svc.Spec.Port == 0 {
+	if requestedPort == 0 {
 		getProxyPort = func(proxyAddress string) (int32, error) {
-			return networking.GetFreePort(ctx, svc.Spec.Protocol, proxyAddress, log)
+			return networking.GetFreePort(lifetimeCtx, protocol, proxyAddress, log)
 		}
 	} else {
 		getProxyPort = func(_ string) (int32, error) {
-			return svc.Spec.Port, nil
+			return requestedPort, nil
 		}
 	}
-
-	// We do not want to use the passed-in logger for the proxy because it has reconciliation-specific data
-	// which does not make sense in the context of the proxy.
-	// The resulting log name will be "dcpctrl.ServiceReconciler.Proxy".
-	proxyLog := r.Log.WithName("Proxy").WithValues("Service", svc.NamespacedName()).WithValues(logger.RESOURCE_LOG_STREAM_ID, svc.GetResourceId())
 
 	var portAllocationErr error = nil
 
@@ -589,7 +589,7 @@ func (r *ServiceReconciler) getProxyData(ctx context.Context, svc *apiv1.Service
 
 		if usingSamePort {
 			proxyPort = lastPort
-			err = networking.CheckPortAvailable(ctx, svc.Spec.Protocol, proxyInstanceAddress, proxyPort, log)
+			err = networking.CheckPortAvailable(lifetimeCtx, protocol, proxyInstanceAddress, proxyPort, log)
 			if err != nil {
 				usingSamePort = false
 				log.Info("Could not use the same port for all addresses associated with requested service address, service will be reachable only using specific IP address",
@@ -613,12 +613,12 @@ func (r *ServiceReconciler) getProxyData(ctx context.Context, svc *apiv1.Service
 			continue
 		}
 
-		proxyCtx, cancelFunc := context.WithCancel(r.LifetimeCtx)
+		proxyCtx, cancelFunc := context.WithCancel(lifetimeCtx)
 		proxies = append(proxies, proxyInstanceData{
-			proxy:     r.config.CreateProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, proxyLog),
+			proxy:     createProxy(protocol, proxyInstanceAddress, proxyPort, proxyCtx, log),
 			stopProxy: cancelFunc,
 			portReservation: ports.Binding{
-				Protocol: string(svc.Spec.Protocol),
+				Protocol: string(protocol),
 				IP:       proxyReservationIP,
 				Port:     proxyPort,
 			},
@@ -680,16 +680,16 @@ func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceDa
 	return sourceProxy.EffectiveAddress(), sourceProxy.EffectivePort()
 }
 
-func getRequestedServiceAddress(svc *apiv1.Service) (string, error) {
-	requestedServiceAddress := svc.Spec.Address
+func getRequestedServiceAddress(address string, allocationMode string) (string, error) {
+	requestedServiceAddress := address
 
 	if requestedServiceAddress == "" {
-		switch svc.Spec.AddressAllocationMode {
-		case apiv1.AddressAllocationModeLocalhost, "":
+		switch allocationMode {
+		case string(apiv1.AddressAllocationModeLocalhost), "":
 			requestedServiceAddress = networking.Localhost
-		case apiv1.AddressAllocationModeIPv4ZeroOne:
+		case string(apiv1.AddressAllocationModeIPv4ZeroOne):
 			requestedServiceAddress = networking.IPv4LocalhostDefaultAddress
-		case apiv1.AddressAllocationModeIPv4Loopback:
+		case string(apiv1.AddressAllocationModeIPv4Loopback):
 			// Use the standard LookupIP implementation because we want to specifically limit to IPv4 addresses
 			ips, err := net.LookupIP(networking.Localhost)
 			if err != nil {
@@ -705,21 +705,21 @@ func getRequestedServiceAddress(svc *apiv1.Service) (string, error) {
 				return "", fmt.Errorf("could not obtain valid IP address(es) for 'localhost': %w", err)
 			}
 			requestedServiceAddress = networking.IpToString(ips[rand.Intn(len(ips))])
-		case apiv1.AddressAllocationModeIPv6ZeroOne:
+		case string(apiv1.AddressAllocationModeIPv6ZeroOne):
 			requestedServiceAddress = networking.IPv6LocalhostDefaultAddress
-		case apiv1.AddressAllocationModeAllInterfaces:
+		case string(apiv1.AddressAllocationModeAllInterfaces):
 			hostname, hostnameErr := networking.Hostname()
 			if hostnameErr != nil {
 				requestedServiceAddress = networking.Localhost
 			} else {
 				requestedServiceAddress = hostname
 			}
-		case apiv1.AddressAllocationModeIPv4AllInterfaces:
+		case string(apiv1.AddressAllocationModeIPv4AllInterfaces):
 			requestedServiceAddress = networking.IPv4AllInterfaceAddress
-		case apiv1.AddressAllocationModeIPv6AllInterfaces:
+		case string(apiv1.AddressAllocationModeIPv6AllInterfaces):
 			requestedServiceAddress = networking.IPv6AllInterfaceAddress
 		default:
-			return "", fmt.Errorf("unsupported address allocation mode: %s", svc.Spec.AddressAllocationMode)
+			return "", fmt.Errorf("unsupported address allocation mode: %s", allocationMode)
 		}
 	}
 

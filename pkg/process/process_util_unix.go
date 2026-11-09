@@ -23,15 +23,13 @@ func DecoupleFromParent(cmd *exec.Cmd) {
 	cmd.SysProcAttr = sysProcAttr
 }
 
-// Use separate process group so this process exit will not affect the children.
-// This is the same as DecoupleFromParent on Unix systems.
+// Use a separate session so this process exit and terminal signals will not affect the children.
 func ForkFromParent(cmd *exec.Cmd) {
 	sysProcAttr := cmd.SysProcAttr
 	if sysProcAttr == nil {
 		sysProcAttr = &syscall.SysProcAttr{}
 	}
-	sysProcAttr.Setpgid = true
-	sysProcAttr.Pgid = 0
+	sysProcAttr.Setsid = true
 
 	cmd.SysProcAttr = sysProcAttr
 }

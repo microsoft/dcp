@@ -16,12 +16,12 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
-func allocateRandomEphemeralPortWithMruFile(ctx context.Context, protocol apiv1.PortProtocol, address string, log logr.Logger) (int32, error) {
+func allocateRandomEphemeralPortWithMruFile(ctx context.Context, protocol commonapi.PortProtocol, address string, log logr.Logger) (int32, error) {
 	portFileLock.Lock()
 	portFileErr := ensurePackageMruPortFile(log)
 	portFileLock.Unlock()
@@ -100,7 +100,7 @@ func allocateRandomEphemeralPortWithMruFile(ctx context.Context, protocol apiv1.
 	}
 }
 
-func checkPortAvailableWithMruFile(ctx context.Context, protocol apiv1.PortProtocol, address string, port int32, log logr.Logger) error {
+func checkPortAvailableWithMruFile(ctx context.Context, protocol commonapi.PortProtocol, address string, port int32, log logr.Logger) error {
 	portFileLock.Lock()
 	defer portFileLock.Unlock()
 
@@ -202,8 +202,8 @@ func releaseSpecificPortWithMruFile(ctx context.Context, address string, port in
 	return nil
 }
 
-func checkPortCurrentlyBindable(protocol apiv1.PortProtocol, address string, port int32) error {
-	if protocol == apiv1.UDP {
+func checkPortCurrentlyBindable(protocol commonapi.PortProtocol, address string, port int32) error {
+	if protocol == commonapi.PortProtocolUDP {
 		udpaddr, err := net.ResolveUDPAddr("udp", AddressAndPort(address, port))
 		if err != nil {
 			return err
@@ -230,8 +230,8 @@ func checkPortCurrentlyBindable(protocol apiv1.PortProtocol, address string, por
 	}
 }
 
-func getRandomEphemeralPort(protocol apiv1.PortProtocol, address string) (int32, error) {
-	if protocol == apiv1.UDP {
+func getRandomEphemeralPort(protocol commonapi.PortProtocol, address string) (int32, error) {
+	if protocol == commonapi.PortProtocolUDP {
 		udpaddr, err := net.ResolveUDPAddr("udp", AddressAndPort(address, 0))
 		if err != nil {
 			return 0, err

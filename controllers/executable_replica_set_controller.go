@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	apiv1 "github.com/microsoft/dcp/api/v1"
-	"github.com/microsoft/dcp/pkg/syncmap"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -21,6 +19,9 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 type ExecutableReplicaSetState string

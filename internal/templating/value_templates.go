@@ -52,7 +52,8 @@ func IsTransientTemplateError(err error) bool {
 	var ePort errServiceNotAssignedPort
 	var eAddress errServiceNotAssignedAddress
 	var eDoesNotExist errServiceDoesNotExist
-	return errors.As(err, &ePort) || errors.As(err, &eAddress) || errors.As(err, &eDoesNotExist)
+	var eLookup errV2ServiceLookup
+	return errors.As(err, &ePort) || errors.As(err, &eAddress) || errors.As(err, &eDoesNotExist) || errors.As(err, &eLookup)
 }
 
 // Creates a template for evaluating a value of a spec field of a Container or Executable.
@@ -155,6 +156,12 @@ func ExecuteTemplate(
 	substitutionContext string,
 	log logr.Logger,
 ) (string, error) {
+	// The most common case is a spec value that does not contain any template actions,
+	// so we can return it as-is without having to clone, parse, and execute the template.
+	if !strings.Contains(input, "{{") {
+		return input, nil
+	}
+
 	// We need to clone the template because if the input is empty, parsing is an no-op
 	// and we will end up with data from previous template run.
 	commonTmpl, err := tmpl.Clone()

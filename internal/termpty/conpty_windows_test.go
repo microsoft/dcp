@@ -21,6 +21,7 @@ package termpty_test
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"testing"
 
@@ -40,12 +41,40 @@ func TestStartProcessWithTerminal_StdoutFromChild(t *testing.T) {
 
 	sp := startTermchildWithPTY(t, ctx, "--print", "hello-from-child")
 
-	out, err := readUntil(ctx, sp.PTY, "hello-from-child")
-	require.NoError(t, err, "expected to see 'hello-from-child'; got: %q", out)
+	_ = requireReadUntil(t, ctx, sp, "hello-from-child")
 
 	ei := awaitExit(t, ctx, sp.ExitHandler)
 	require.NoError(t, ei.Err)
 	require.Equal(t, int32(0), ei.ExitCode)
+}
+
+func TestStartProcessWithTerminal_GraphicsPassthrough(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("DCP_CONPTY_PATH") == "" {
+		t.Skip("graphics passthrough requires a standalone ConPTY payload via DCP_CONPTY_PATH")
+	}
+
+	for _, tc := range []struct {
+		name     string
+		sequence string
+	}{
+		{"kitty", "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\"},
+		{"sixel", "\x1bPq\"1;1;1;1#0;2;100;0;0#0@\x1b\\"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+			defer cancel()
+
+			sp := startTermchildWithPTY(t, ctx, "--print", tc.sequence)
+			out, readErr := readUntil(ctx, sp.PTY, tc.sequence)
+			require.NoError(t, readErr, "graphics sequence was not passed through: %q", out)
+
+			exitInfo := awaitExit(t, ctx, sp.ExitHandler)
+			require.NoError(t, exitInfo.Err)
+			require.Equal(t, int32(0), exitInfo.ExitCode)
+		})
+	}
 }
 
 // TestStartProcessWithTerminal_StderrFromChild verifies that the child's
@@ -58,8 +87,7 @@ func TestStartProcessWithTerminal_StderrFromChild(t *testing.T) {
 
 	sp := startTermchildWithPTY(t, ctx, "--print-stderr", "boom-from-stderr")
 
-	out, err := readUntil(ctx, sp.PTY, "boom-from-stderr")
-	require.NoError(t, err, "expected to see 'boom-from-stderr'; got: %q", out)
+	_ = requireReadUntil(t, ctx, sp, "boom-from-stderr")
 
 	ei := awaitExit(t, ctx, sp.ExitHandler)
 	require.NoError(t, ei.Err)
@@ -126,18 +154,15 @@ func TestStartProcessWithTerminal_AbnormalExitCode(t *testing.T) {
 // exit notification. The child blocks in --wait so the only path to exit is
 // signal delivery (or forced termination) initiated by the executor.
 //
-// Windows-specific behavior: OSExecutor first attempts a graceful shutdown by
-// calling GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, processGroupID). That
-// API only signals processes that share the SAME console as the caller. The
-// test process runs in its own console (or none at all), while the ConPTY
-// child runs attached to a separate conhost.exe — they do not share a
-// console, so the CTRL_BREAK signal never reaches the child. The executor's
-// graceful-stop timeout therefore elapses and it falls back to
-// os.Process.Kill, which on Windows is TerminateProcess(handle, 1) and
-// yields exit code 1.
+// Windows-specific behavior: the ConPTY waitable reports
+// WindowsConsoleAvailabilityUnavailable. OSExecutor therefore does not call
+// GenerateConsoleCtrlEvent: CTRL_C_EVENT and CTRL_BREAK_EVENT target classic
+// console topology and cannot reach a ConPTY process. The executor waits for
+// the six-second unconfirmed-delivery fallback, then calls os.Process.Kill,
+// which uses TerminateProcess(handle, 1) and yields exit code 1.
 //
-// In other words, on Windows this scenario currently exercises the executor
-// escalation path more than the graceful shutdown path.
+// In other words, this scenario exercises the console-availability-aware escalation path
+// rather than pretending that a classic-console control event was delivered.
 // Routing signals through the pseudo-console (e.g. writing 0x03 to the PTY input) would be
 // a public-API change to either internal/termpty or pkg/process,
 // and might be considered for future DCP release.
@@ -158,37 +183,7 @@ func TestStartProcessWithTerminal_ContextCancellationStopsProcess(t *testing.T) 
 
 	ei := awaitExit(t, testCtx, sp.ExitHandler)
 	require.Equal(t, int32(1), ei.ExitCode,
-		"expected exit code 1 from TerminateProcess fallback (CTRL_BREAK does not cross consoles), got %d", ei.ExitCode)
-}
-
-// TestStartProcessWithTerminal_BreakIgnoredEscalatesToKill verifies that when
-// the child ignores CTRL_BREAK_EVENT, the executor escalates to forced
-// termination (proc.Kill -> TerminateProcess) within a bounded time and
-// still produces an exit notification. TerminateProcess uses exit code 1.
-func TestStartProcessWithTerminal_BreakIgnoredEscalatesToKill(t *testing.T) {
-	t.Parallel()
-	testCtx, testCancel := testutil.GetTestContext(t, defaultTestTimeout)
-	defer testCancel()
-
-	procCtx, procCancel := context.WithCancel(testCtx)
-	defer procCancel()
-
-	sp := startTermchildWithPTY(t, procCtx,
-		"--ignore-sigterm",
-		"--print", "READY",
-		"--wait",
-	)
-
-	out, err := readUntil(testCtx, sp.PTY, "READY")
-	require.NoError(t, err, "expected READY marker; got: %q", out)
-
-	procCancel()
-
-	ei := awaitExit(t, testCtx, sp.ExitHandler)
-	// Go's os.Process.Kill on Windows calls TerminateProcess(handle, 1),
-	// which yields exit code 1.
-	require.Equal(t, int32(1), ei.ExitCode,
-		"expected exit code 1 from TerminateProcess after CTRL_BREAK was ignored, got %d", ei.ExitCode)
+		"expected exit code 1 from the ConPTY no-console TerminateProcess fallback, got %d", ei.ExitCode)
 }
 
 // TestStartProcessWithTerminal_PTYCloseDeliversCloseEvent verifies that
@@ -231,7 +226,7 @@ func TestStartProcessWithTerminal_PTYCloseDeliversCloseEvent(t *testing.T) {
 //
 // Windows-specific behavior: unlike Unix, where the master end of the PTY
 // returns EOF/EIO once the slave side is closed (which the kernel does on
-// child exit), ConPTY's output pipe is owned by conhost.exe and only closes
+// child exit), ConPTY's output pipe is owned by the console host and only closes
 // when the host calls ClosePseudoConsole. The child's exit alone is not
 // sufficient to unblock a pending read on the output pipe; the test
 // therefore closes the PTY before asserting that subsequent reads fail.
@@ -250,7 +245,7 @@ func TestStartProcessWithTerminal_NormalExitWithPTYStillOpen(t *testing.T) {
 	require.Equal(t, int32(0), ei.ExitCode)
 
 	// On Windows the ConPTY output pipe stays open until the host closes
-	// it; closing the PTY here releases conhost's hold on the write end.
+	// it; closing the PTY here releases the console host's hold on the write end.
 	require.NoError(t, sp.PTY.Close())
 
 	// Drain any residual bytes and then assert the read terminates with an

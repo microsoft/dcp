@@ -1,0 +1,204 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+package dcpproc_test
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	int_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/testutil"
+)
+
+// Verifies that fork-process starts a detached command and reports its live process identity.
+func TestForkProcessStartsDetachedCommand(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	t.Cleanup(testCancel)
+
+	forkedProcess := startForkedDelay(t, testCtx)
+
+	require.False(t, forkedProcess.IdentityTime.IsZero(), "forked process start time should not be zero")
+	checkExecutor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
+	defer checkExecutor.Dispose()
+	require.NoError(t, checkExecutor.CheckProcessRunning(forkedProcess))
+}
+
+// Verifies that fork-process propagates natural child exit codes and keeps stdout PID-only,
+// whether or not child cleanup is enabled.
+func TestForkProcessExitsWithChildExitCode(t *testing.T) {
+	for _, cleanupEnabled := range []bool{false, true} {
+		for _, exitCode := range []int{0, 7} {
+			t.Run(fmt.Sprintf("cleanup=%t,exit=%d", cleanupEnabled, exitCode), func(t *testing.T) {
+				t.Parallel()
+				testCtx, testCancel := testutil.GetTestContext(t, 0)
+				defer testCancel()
+				dcpProc, dcpProcErr := getDcpProcExecutablePath()
+				require.NoError(t, dcpProcErr)
+				delayToolPath, toolPathErr := int_testutil.GetTestToolPath("delay")
+				require.NoError(t, toolPathErr)
+				cmdArgs := forkProcessArgsForCurrentProcess(t, delayToolPath,
+					"--delay=100ms", "--report-ready", "--exit-code="+strconv.Itoa(exitCode))
+				if cleanupEnabled {
+					cmdArgs = append([]string{"fork-process", "--enable-child-cleanup"}, cmdArgs[1:]...)
+				}
+				dcpProcCmd := exec.CommandContext(testCtx, dcpProc, cmdArgs...)
+				var stdout, stderr bytes.Buffer
+				dcpProcCmd.Stdout = &stdout
+				dcpProcCmd.Stderr = &stderr
+				runErr := dcpProcCmd.Run()
+				if exitCode == 0 {
+					require.NoError(t, runErr, stderr.String())
+				} else {
+					var exitErr *exec.ExitError
+					require.True(t, errors.As(runErr, &exitErr), stderr.String())
+					require.Equal(t, exitCode, exitErr.ExitCode(), stderr.String())
+				}
+				_ = parseForkedPid(t, stdout.String())
+				require.NotContains(t, stderr.String(), "Ran to completion", "child stderr must not be forwarded")
+			})
+		}
+	}
+}
+
+// Verifies that default fork-process leaves the detached child alive when its monitored owner exits.
+func TestForkProcessExitsWhenMonitoredParentExits(t *testing.T) {
+	t.Parallel()
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	t.Cleanup(testCancel)
+
+	dcpProc, dcpProcErr := getDcpProcExecutablePath()
+	require.NoError(t, dcpProcErr)
+
+	delayToolPath, toolPathErr := int_testutil.GetTestToolPath("delay")
+	require.NoError(t, toolPathErr)
+
+	parentCmd := exec.CommandContext(testCtx, delayToolPath, "--delay=30s")
+	require.NoError(t, parentCmd.Start(), "parent command should start without error")
+	t.Cleanup(func() {
+		_ = parentCmd.Process.Kill()
+		_ = parentCmd.Wait()
+	})
+
+	parentHandle, parentHandleErr := process.ProcessHandleFromCmd(parentCmd)
+	require.NoError(t, parentHandleErr)
+	require.False(t, parentHandle.IdentityTime.IsZero(), "parent process start time should not be zero")
+
+	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
+		"fork-process",
+		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
+		"--monitor-identity-time", parentHandle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+		"--monitor-interval", "1",
+		"--",
+		delayToolPath,
+		"--delay=30s",
+	)
+	stdoutPipe, pipeErr := dcpProcCmd.StdoutPipe()
+	require.NoError(t, pipeErr)
+	var stderr bytes.Buffer
+	dcpProcCmd.Stderr = &stderr
+
+	require.NoError(t, dcpProcCmd.Start(), "dcp fork-process should start without error")
+
+	stdoutText, readErr := bufio.NewReader(stdoutPipe).ReadString('\n')
+	require.NoError(t, readErr, "dcp fork-process should print a child PID")
+	childPid := parseForkedPid(t, stdoutText)
+	childHandle, childHandleErr := process.FindProcessHandle(childPid)
+	require.NoError(t, childHandleErr)
+	require.False(t, childHandle.IdentityTime.IsZero(), "forked process %d should be running", childPid)
+
+	cleanupExecutor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(testCtx)
+		defer cleanupCancel()
+		_ = cleanupExecutor.StopProcess(cleanupCtx, childHandle)
+		cleanupExecutor.Dispose()
+	})
+
+	require.NoError(t, parentCmd.Process.Kill(), "parent command should stop without error")
+	_ = parentCmd.Wait()
+
+	require.NoError(t, dcpProcCmd.Wait(), "dcp fork-process should exit cleanly when the monitored parent exits; stderr: %s", stderr.String())
+	require.NoError(t, cleanupExecutor.CheckProcessRunning(childHandle), "fork-process should not stop the detached child")
+}
+
+func startForkedDelay(t *testing.T, testCtx context.Context) process.ProcessHandle {
+	t.Helper()
+
+	dcpProc, dcpProcErr := getDcpProcExecutablePath()
+	require.NoError(t, dcpProcErr)
+
+	delayToolPath, toolPathErr := int_testutil.GetTestToolPath("delay")
+	require.NoError(t, toolPathErr)
+
+	cmdArgs := append([]string{"fork-process", "--", delayToolPath}, "--delay=30s")
+	dcpProcCmd := exec.CommandContext(testCtx, dcpProc, cmdArgs...)
+	var stdout, stderr bytes.Buffer
+	dcpProcCmd.Stdout = &stdout
+	dcpProcCmd.Stderr = &stderr
+
+	runErr := dcpProcCmd.Run()
+	require.NoError(t, runErr, "dcp fork-process should exit cleanly; stderr: %s", stderr.String())
+
+	pid := parseForkedPid(t, stdout.String())
+	var handle process.ProcessHandle
+	cleanupExecutor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(testCtx)
+		defer cleanupCancel()
+		_ = cleanupExecutor.StopProcess(cleanupCtx, handle)
+		cleanupExecutor.Dispose()
+	})
+
+	var handleErr error
+	handle, handleErr = process.FindProcessHandle(pid)
+	require.NoError(t, handleErr)
+	require.False(t, handle.IdentityTime.IsZero(), "forked process %d should still be running", pid)
+
+	return handle
+}
+
+func forkProcessArgsForCurrentProcess(t *testing.T, childArgs ...string) []string {
+	t.Helper()
+
+	currentPid := process.Pid_t(os.Getpid())
+	currentHandle, handleErr := process.FindProcessHandle(currentPid)
+	require.NoError(t, handleErr)
+	require.False(t, currentHandle.IdentityTime.IsZero(), "current process start time should not be zero")
+
+	args := []string{
+		"fork-process",
+		"--monitor", fmt.Sprint(os.Getpid()),
+		"--monitor-identity-time", currentHandle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+		"--",
+	}
+	args = append(args, childArgs...)
+	return args
+}
+
+func parseForkedPid(t *testing.T, stdoutText string) process.Pid_t {
+	t.Helper()
+
+	childPid, parseErr := strconv.ParseInt(strings.TrimSpace(stdoutText), 10, 64)
+	require.NoError(t, parseErr, "dcp fork-process should print only a child PID, got %q", stdoutText)
+
+	return process.Pid_t(childPid)
+}

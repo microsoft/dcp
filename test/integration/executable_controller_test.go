@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
+	"os/exec"
 	"reflect"
 	"regexp"
 	std_slices "slices"
@@ -182,10 +184,9 @@ func TestNoExistingPersistentExecutableStopWithoutStart(t *testing.T) {
 	t.Logf("Creating persistent Executable '%s' with Start=false and Stop=true", exe.ObjectMeta.Name)
 	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
 
-	t.Logf("Waiting for Executable '%s' to be observed without failing to start", exe.ObjectMeta.Name)
+	t.Logf("Waiting for Executable '%s' to report a terminal state", exe.ObjectMeta.Name)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
-		require.NotEqual(t, apiv1.ExecutableStateFailedToStart, currentExe.Status.State, "Stop-only Executable should not fail startup when no persistent process exists")
-		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateEmpty, nil
+		return currentExe.Status.State == apiv1.ExecutableStateFailedToStart && !currentExe.Status.FinishTimestamp.IsZero(), nil
 	})
 
 	startedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
@@ -298,7 +299,7 @@ func TestStalePersistentExecutableStopWithUnresolvedTemplate(t *testing.T) {
 			Persistent:     true,
 			Start:          &shouldStart,
 			Stop:           true,
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "MISSING_SERVICE_PORT",
 					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, testName+"-missing-service"),
@@ -329,6 +330,297 @@ func TestStalePersistentExecutableStopWithUnresolvedTemplate(t *testing.T) {
 
 	_, err = testStateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
 	require.ErrorIs(t, err, statestore.ErrPersistentProcessNotFound, "stale persistent process record should be deleted")
+}
+
+func TestExecutableModePersistentDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-mode-persistent-deletion"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModePersistent,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	pid, processErr := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, processErr, "Executable process could not be started")
+
+	t.Logf("Deleting Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	}), "Executable object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &exe)
+
+	pe, found := testProcessExecutor.FindByPid(pid)
+	require.True(t, found, "expected process to still be tracked")
+	require.True(t, pe.Running(), "persistent mode should leave the process running")
+}
+
+func TestExecutableCleanupModeStopsExistingProcessOnDelete(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-cleanup-mode-stops-existing"
+	serverInfo, teInfo, startupErr := StartTestEnvironment(
+		t,
+		ctx,
+		ExecutableController,
+		testName,
+		t.TempDir(),
+	)
+	require.NoError(t, startupErr, "could not start test environment")
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+		},
+	}
+
+	cmd := exec.Command(exe.Spec.ExecutablePath)
+	handle, _, startProcessErr := teInfo.TestProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startProcessErr, "could not seed process execution")
+	t.Cleanup(func() {
+		_ = teInfo.TestProcessExecutor.StopProcess(context.Background(), handle)
+	})
+	pid := handle.Pid
+	identityTime := handle.IdentityTime
+
+	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
+	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
+
+	upsertErr := teInfo.StateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      lifecycleKey,
+		PID:               pid,
+		IdentityTime:      identityTime,
+		RunID:             strconv.Itoa(int(pid)),
+		StdOutFile:        fmt.Sprintf("%s.out", exe.Name),
+		StdErrFile:        fmt.Sprintf("%s.err", exe.Name),
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, upsertErr, "could not seed persistent process record")
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, serverInfo.Client.Create(ctx, &exe), "Could not create Executable")
+
+	updatedExe := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+	})
+	require.Equal(t, strconv.Itoa(int(pid)), updatedExe.Status.ExecutionID, "Executable should adopt the seeded process")
+
+	t.Logf("Deleting Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflictEx(ctx, serverInfo.Client, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return serverInfo.Client.Delete(ctx, currentExe)
+	}), "Executable object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &exe)
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		processExecution, found := teInfo.TestProcessExecutor.FindByPid(pid)
+		return found && processExecution.Finished(), nil
+	})
+	require.NoError(t, err, "process was not stopped")
+}
+
+func TestExecutableCleanupModeDeletedBeforeAdoptionStopsExistingProcess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-cleanup-mode-delete-before-adopt"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+		},
+	}
+
+	cmd := exec.Command(exe.Spec.ExecutablePath)
+	handle, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startProcessErr, "could not seed process execution")
+	t.Cleanup(func() {
+		_ = testProcessExecutor.StopProcess(context.Background(), handle)
+	})
+	pid := handle.Pid
+	identityTime := handle.IdentityTime
+
+	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
+	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
+
+	upsertErr := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      lifecycleKey,
+		PID:               pid,
+		IdentityTime:      identityTime,
+		RunID:             strconv.Itoa(int(pid)),
+		StdOutFile:        fmt.Sprintf("%s.out", exe.Name),
+		StdErrFile:        fmt.Sprintf("%s.err", exe.Name),
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, upsertErr, "could not seed persistent process record")
+
+	leaseOwner := process.ProcessHandle{Pid: process.Pid_t(1), IdentityTime: time.Now()}
+	lease, leaseErr := testStateStore.AcquireResourceLease(ctx, &exe, leaseOwner, time.Minute)
+	require.NoError(t, leaseErr, "could not acquire persistent process lease")
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateEmpty, nil
+	})
+
+	t.Logf("Deleting Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	}), "Executable object could not be deleted")
+
+	require.NoError(t, lease.Release(context.WithoutCancel(ctx)), "could not release persistent process lease")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &exe)
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		processExecution, found := testProcessExecutor.FindByPid(pid)
+		return found && processExecution.Finished(), nil
+	})
+	require.NoError(t, err, "process was not stopped")
+}
+
+func TestExecutablePersistentFieldOverridesCleanupMode(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-persistent-overrides-cleanup"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+			Persistent:     true,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	pid, processErr := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, processErr, "Executable process could not be started")
+
+	t.Logf("Deleting Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	}), "Executable object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &exe)
+
+	pe, found := testProcessExecutor.FindByPid(pid)
+	require.True(t, found, "expected process to still be tracked")
+	require.True(t, pe.Running(), "persistent=true should override cleanup mode and leave the process running")
+}
+
+func TestExecutableCleanupModeReportsNotFoundWhenProcessRecordMissing(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-cleanup-mode-missing"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateNotFound, nil
+	})
+
+	startedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
+	require.Empty(t, startedProcesses, "cleanup mode should not start a missing process")
+}
+
+func TestExecutableCleanupModeAdoptsProcessRecordCreatedAfterNotFound(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-cleanup-mode-late-record"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateNotFound, nil
+	})
+
+	cmd := exec.Command(exe.Spec.ExecutablePath)
+	handle, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startProcessErr, "could not seed process execution")
+	t.Cleanup(func() {
+		_ = testProcessExecutor.StopProcess(context.Background(), handle)
+	})
+	pid := handle.Pid
+	identityTime := handle.IdentityTime
+
+	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
+	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
+
+	upsertErr := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      lifecycleKey,
+		PID:               pid,
+		IdentityTime:      identityTime,
+		RunID:             strconv.Itoa(int(pid)),
+		StdOutFile:        fmt.Sprintf("%s.out", exe.Name),
+		StdErrFile:        fmt.Sprintf("%s.err", exe.Name),
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, upsertErr, "could not seed persistent process record")
+
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+	})
+	require.Equal(t, strconv.Itoa(int(pid)), updatedExe.Status.ExecutionID, "Executable should adopt the late persistent process record")
 }
 
 // Ensure exit code of processes/run sessions are captured correctly
@@ -438,6 +730,42 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 			require.NoError(t, err, "Exit codes could not be captured for Executable")
 		})
 	}
+}
+
+func TestPersistentExecutableRecordsWorkloadID(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(t, ctx, ExecutableController, "PersistentExecutableWorkloadID", t.TempDir(), TestEnvironmentOptions{
+		WorkloadID: "workload-a",
+	})
+	require.NoError(t, envStartErr)
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "persistent-executable-workload-id",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/persistent-executable-workload-id",
+			Mode:           apiv1.ExecutableModePersistent,
+		},
+	}
+	require.NoError(t, teInfo.StateStore.DeletePersistentProcess(ctx, exe.GetLeaseKey()))
+
+	require.NoError(t, serverInfo.Client.Create(ctx, &exe))
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		runningProcessesWithPath := teInfo.TestProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *internal_testutil.ProcessExecution) bool {
+			return pe.Running()
+		})
+		return len(runningProcessesWithPath) == 1, nil
+	})
+	require.NoError(t, err)
+
+	record, getErr := teInfo.StateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
+	require.NoError(t, getErr)
+	require.Equal(t, commonapi.WorkloadID("workload-a"), record.WorkloadID)
 }
 
 // Verifies that when an IDE run completes synchronously during startup (the IDE delivers a
@@ -601,8 +929,10 @@ func TestExecutableStopState(t *testing.T) {
 	}
 }
 
-// Ensure the run is terminated if Executable is deleted
+// Verifies that deleting an Executable terminates its run and removes process-run output files.
 func TestExecutableDeletion(t *testing.T) {
+	t.Setenv(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS, "")
+
 	type testcase struct {
 		description      string
 		exe              *apiv1.Executable
@@ -637,6 +967,19 @@ func TestExecutableDeletion(t *testing.T) {
 				}
 				err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, processKilled)
 				require.NoError(t, err, "Process was not terminated as expected")
+				outputErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+					for _, path := range []string{exe.Status.StdOutFile, exe.Status.StdErrFile} {
+						_, statErr := os.Stat(path)
+						if statErr == nil {
+							return false, nil
+						}
+						if !errors.Is(statErr, os.ErrNotExist) {
+							return false, statErr
+						}
+					}
+					return true, nil
+				})
+				require.NoError(t, outputErr, "Executable output files were not removed")
 			},
 		},
 		{
@@ -671,8 +1014,6 @@ func TestExecutableDeletion(t *testing.T) {
 		},
 	}
 
-	t.Parallel()
-
 	for _, tc := range testcases {
 		t.Run(tc.description, func(t *testing.T) {
 			t.Parallel()
@@ -686,10 +1027,13 @@ func TestExecutableDeletion(t *testing.T) {
 
 			t.Logf("Waiting for Executable '%s' run to start...", tc.exe.ObjectMeta.Name)
 			tc.verifyExeRunning(ctx, t, tc.exe)
-
 			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(tc.exe), func(currentExe *apiv1.Executable) (bool, error) {
-				return currentExe.Status.State != "", nil
+				return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
 			})
+			if updatedExe.Spec.ExecutionType != apiv1.ExecutionTypeIDE {
+				require.FileExists(t, updatedExe.Status.StdOutFile)
+				require.FileExists(t, updatedExe.Status.StdErrFile)
+			}
 
 			t.Logf("Deleting Executable '%s' object...", tc.exe.ObjectMeta.Name)
 			err := retryOnConflict(ctx, updatedExe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
@@ -698,9 +1042,10 @@ func TestExecutableDeletion(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unable to delete Executable: %v", err)
 			}
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, updatedExe)
 
 			t.Logf("Waiting for process associated with Executable '%s' to be killed...", tc.exe.ObjectMeta.Name)
-			tc.verifyRunEnded(ctx, t, tc.exe)
+			tc.verifyRunEnded(ctx, t, updatedExe)
 		})
 	}
 }
@@ -755,15 +1100,8 @@ func TestPersistentExecutableStopsProcessWhenProcessRecordUpdateFails(t *testing
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, ExecutableController, t.Name(), t.TempDir())
+	serverInfo, teInfo, startupErr := StartTestEnvironment(t, ctx, ExecutableController, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Test environment could not be started")
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
 
 	exe := &apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
@@ -970,7 +1308,7 @@ func TestExecutableStartupFallbackPreservesStartupParameters(t *testing.T) {
 			ExecutionType:          apiv1.ExecutionTypeIDE,
 			FallbackExecutionTypes: []apiv1.ExecutionType{apiv1.ExecutionTypeProcess},
 			Args:                   expectedArgs,
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{Name: expectedEnvName, Value: expectedEnvValue},
 			},
 		},
@@ -1038,7 +1376,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  "127.22.33.44",
 			Port:     7732,
 		},
@@ -1056,7 +1394,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-executable-serving-port-injected-env-var",
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "SVC_PORT",
 					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
@@ -1082,7 +1420,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	require.True(t, slices.Contains(effectiveEnv, "SVC_PORT=7733"), "The Executable '%s' effective environment does not contain expected port information. The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
@@ -1125,7 +1463,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ServiceSpec{
-					Protocol: apiv1.TCP,
+					Protocol: commonapi.PortProtocolTCP,
 					Address:  "127.22.33.45",
 					Port:     7740,
 				},
@@ -1145,7 +1483,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "/path/to/" + exeName,
-					Env: []apiv1.EnvVar{
+					Env: []commonapi.EnvVar{
 						{
 							Name:  "SVC_PORT",
 							Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
@@ -1201,7 +1539,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 				return len(currentExe.Status.EffectiveEnv) > 0, nil
 			})
-			effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+			effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 				return fmt.Sprintf("%s=%s", v.Name, v.Value)
 			})
 			expectedEnvVar := fmt.Sprintf("SVC_PORT=%d", port)
@@ -1247,7 +1585,7 @@ func TestExecutableServingPortInjectedViaStartupParameter(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ServiceSpec{
-					Protocol: apiv1.TCP,
+					Protocol: commonapi.PortProtocolTCP,
 					Address:  "127.22.33.66",
 					Port:     7745,
 				},
@@ -1325,7 +1663,7 @@ func TestExecutableServingPortAllocatedInjectedViaStartupParameter(t *testing.T)
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  "127.22.31.31",
 			Port:     7492,
 		},
@@ -1407,7 +1745,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.PortProtocolTCP,
 				Address:  IPAddr,
 				Port:     11740,
 			},
@@ -1418,7 +1756,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.PortProtocolTCP,
 				Address:  IPAddr,
 				Port:     11741,
 			},
@@ -1429,7 +1767,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.PortProtocolTCP,
 				Address:  IPAddr,
 				Port:     11742,
 			},
@@ -1440,7 +1778,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.PortProtocolTCP,
 				Address:  IPAddr,
 				Port:     11743,
 			},
@@ -1483,7 +1821,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-executable-multiple-serving-ports-injected",
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "SVC_A_PORT",
 					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, services["svc-a"].ObjectMeta.Name),
@@ -1518,7 +1856,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	expectedEnvVar := fmt.Sprintf("SVC_A_PORT=%d", svcAExpectedPort)
@@ -1626,7 +1964,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  "127.22.33.45",
 			Port:     expectedPort,
 		},
@@ -1643,7 +1981,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-client-executable-port-for-injected",
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "UPSTREAM_SVC_PORT",
 					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, svc.ObjectMeta.Name),
@@ -1664,7 +2002,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	expectedEnvVar := fmt.Sprintf("UPSTREAM_SVC_PORT=%d", expectedPort)
@@ -1690,7 +2028,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/" + testName,
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "PRODUCED_SVC_PORT",
 					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, producedSvcName),
@@ -1718,7 +2056,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  "127.22.33.45",
 		},
 	}
@@ -1729,7 +2067,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  "127.22.33.45",
 			Port:     26021,
 		},
@@ -1747,7 +2085,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 	})
 
 	t.Logf("Ensure the Executable.Status.EffectiveEnv contains injected ports...")
-	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	require.True(t, slices.Contains(effectiveEnv, "PRODUCED_SVC_PORT=26020"), "The Executable '%s' effective environment does not contain expected port information (PRODUCED_SVC_PORT variable). The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
@@ -1773,7 +2111,7 @@ func TestExecutableDeletionWhileStarting(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/" + testName,
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "SVC_PORT",
 					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, nonExistentSvcName),
@@ -1834,7 +2172,7 @@ func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
 				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "/path/to/" + exeName,
-					Env: []apiv1.EnvVar{
+					Env: []commonapi.EnvVar{
 						{
 							Name:  "EXE_NAME",
 							Value: `{{- .Name -}}`,
@@ -1884,7 +2222,7 @@ func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
 			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 				return len(currentExe.Status.EffectiveEnv) > 0, nil
 			})
-			effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+			effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 				return fmt.Sprintf("%s=%s", v.Name, v.Value)
 			})
 			expectedEnvVar := fmt.Sprintf("EXE_NAME=%s", updatedExe.Name)
@@ -1948,7 +2286,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ServiceSpec{
-					Protocol: apiv1.TCP,
+					Protocol: commonapi.PortProtocolTCP,
 					Address:  tc.address,
 				},
 			}
@@ -1972,7 +2310,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "/path/to/test-executable-using-all-interface-address-exe-" + tc.name,
-					Env: []apiv1.EnvVar{
+					Env: []commonapi.EnvVar{
 						{
 							Name:  "LISTENING_PORT",
 							Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
@@ -2015,7 +2353,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 				return len(currentExe.Status.EffectiveEnv) > 0, nil
 			})
-			envVars := maps.SliceToMap(updatedExe.Status.EffectiveEnv, func(ev apiv1.EnvVar) (string, string) { return ev.Name, ev.Value })
+			envVars := maps.SliceToMap(updatedExe.Status.EffectiveEnv, func(ev commonapi.EnvVar) (string, string) { return ev.Name, ev.Value })
 			svcPort, svcPortErr := strconv.Atoi(envVars["LISTENING_PORT"])
 			require.NoError(t, svcPortErr, "The listening port used by the Executable '%s' (%s) is not a valid integer", exe.ObjectMeta.Name, envVars["LISTENING_PORT"])
 			require.True(t, networking.IsValidPort(svcPort), "The port used by the Executable '%s' (%s) is not valid", exe.ObjectMeta.Name, svcPort)
@@ -2031,7 +2369,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "/path/to/test-executable-using-all-interface-address-client-" + tc.name,
-					Env: []apiv1.EnvVar{
+					Env: []commonapi.EnvVar{
 						{
 							Name:  "SVC_PORT",
 							Value: fmt.Sprintf(`{{- portFor "%s" -}}`, svc.ObjectMeta.Name),
@@ -2056,7 +2394,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 			updatedClientExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&clientExe), func(currentExe *apiv1.Executable) (bool, error) {
 				return len(currentExe.Status.EffectiveEnv) > 0, nil
 			})
-			clientEnvVars := maps.SliceToMap(updatedClientExe.Status.EffectiveEnv, func(ev apiv1.EnvVar) (string, string) { return ev.Name, ev.Value })
+			clientEnvVars := maps.SliceToMap(updatedClientExe.Status.EffectiveEnv, func(ev commonapi.EnvVar) (string, string) { return ev.Name, ev.Value })
 			svcPort, svcPortErr = strconv.Atoi(clientEnvVars["SVC_PORT"])
 			require.NoError(t, svcPortErr, "The listening port used by the client Executable '%s' (%s) is not a valid integer", clientExe.ObjectMeta.Name, clientEnvVars["SVC_PORT"])
 			require.Equal(t, updatedSvc.Status.EffectivePort, int32(svcPort), "The port used by the client Executable '%s' to cnnect to service %s is not the same as service effective port", clientExe.ObjectMeta.Name, svc.ObjectMeta.Name)
@@ -2082,7 +2420,7 @@ func TestExecutableEnvironmentVariablesHandling(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-executable-environment-variables-handling",
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "AlphaVar",
 					Value: `alpha var pascal case`,
@@ -2110,11 +2448,11 @@ func TestExecutableEnvironmentVariablesHandling(t *testing.T) {
 
 	if osutil.IsWindows() {
 		// There should be just one "alpha var"
-		require.Equal(t, 1, slices.LenIf(updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) bool {
+		require.Equal(t, 1, slices.LenIf(updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) bool {
 			return v.Name == "AlphaVar" || v.Name == "alphavar"
 		}))
 	} else {
-		require.Equal(t, 2, slices.LenIf(updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) bool {
+		require.Equal(t, 2, slices.LenIf(updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) bool {
 			return v.Name == "AlphaVar" || v.Name == "alphavar"
 		}))
 	}
@@ -2135,7 +2473,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  IPAddr,
 			Port:     26010,
 		},
@@ -2158,7 +2496,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/" + testName + "-server",
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "ADDRESS",
 					Value: fmt.Sprintf(`{{- addressForServing "%s" -}}`, svc.ObjectMeta.Name),
@@ -2179,7 +2517,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&server), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	expectedEnvVar := fmt.Sprintf("ADDRESS=%s", IPAddr)
@@ -3179,7 +3517,7 @@ func TestExecutableLogsRejectedWhenTerminalConfigured(t *testing.T) {
 		pe process.Executor,
 		spec *termpty.CommandSpec,
 	) (*termpty.PseudoTerminalProcess, error) {
-		_, _, _, startErr := pe.StartProcess(ctx, spec.Cmd, process.NewConcurrentProcessExitHandler(), spec.CreationFlags, nil)
+		_, _, startErr := pe.StartProcess(ctx, spec.Cmd, process.NewConcurrentProcessExitHandler(), spec.CreationFlags, nil)
 		return nil, startErr
 	})
 
@@ -3233,7 +3571,8 @@ func TestExecutableLogsRejectedWhenTerminalConfigured(t *testing.T) {
 	require.NoError(t, logsErr, "System logs should remain available for terminal-backed Executable '%s'", exeName)
 }
 
-// Verify that logs in follow mode end when Executable is deleted
+// Verify that logs in follow mode include output written after deletion is requested
+// and then end when Executable is deleted.
 func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -3271,6 +3610,8 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 			select {
 			case <-finishExecution.Wait():
 			case <-pe.Signal:
+				_, stdoutErr = pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line after delete")))
+				require.NoError(t, stdoutErr, "Could not write delete-requested line to stdout of Executable '%s'", exeName)
 			}
 			return 0
 		},
@@ -3304,6 +3645,11 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 	t.Logf("Deleting Executable '%s'...", exeName)
 	err = client.Delete(ctx, &exe)
 	require.NoError(t, err, "Could not delete Executable '%s'", exeName)
+
+	t.Logf("Ensure log stream for Executable '%s' includes output written after deletion was requested...", exeName)
+	gotLine = scanner.Scan()
+	require.True(t, gotLine, "Could not read delete-requested line from log stream for Executable '%s', the reported error was %v", exeName, scanner.Err())
+	require.Equal(t, "Standard output log line after delete", scanner.Text(), "Delete-requested log line does not match expected content for Executable '%s'", exeName)
 
 	t.Logf("Ensure log stream for Executable '%s' has ended...", exeName)
 	gotLine = scanner.Scan()
@@ -3774,7 +4120,7 @@ func TestExecutableDeleteParallel(t *testing.T) {
 	}
 }
 
-// Ensures that if stopping of an Executable fails, the Executable ends up in Unknown state.
+// Verifies that a failed stop leaves an Executable in Unknown state.
 func TestExecutableStopFailureCausesUnknownState(t *testing.T) {
 	t.Parallel()
 
@@ -3795,35 +4141,39 @@ func TestExecutableStopFailureCausesUnknownState(t *testing.T) {
 	psc := internal_testutil.ProcessSearchCriteria{
 		Command: []string{exe.Spec.ExecutablePath},
 	}
+	t.Logf("Creating Executable '%s'...", exeName)
+	createErr := client.Create(ctx, &exe)
+	require.NoError(t, createErr, "Could not create Executable '%s'", exeName)
+
+	t.Logf("Ensure Executable '%s' is running...", exeName)
+	running := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+	})
+	require.NotNil(t, running.Status.PID)
+	pid, convertErr := process.Int64_ToPidT(*running.Status.PID)
+	require.NoError(t, convertErr)
+	handle, handleErr := testProcessExecutor.FindProcessHandle(pid)
+	require.NoError(t, handleErr)
 	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: psc,
-		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
-			return 0 // Is not going to be used really, because of StopError
-		},
-		StopError: func(_ *internal_testutil.ProcessExecution) error {
+		StopError: func(*internal_testutil.ProcessExecution) error {
 			return fmt.Errorf("simulated stop failure for Executable '%s'", exeName)
 		},
 	})
-	defer testProcessExecutor.RemoveAutoExecution(psc)
-
-	t.Logf("Creating Executable '%s'...", exeName)
-	err := client.Create(ctx, &exe)
-	require.NoError(t, err, "Could not create Executable '%s'", exeName)
-
-	t.Logf("Ensure Executable '%s' is running...", exeName)
-	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
-		return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+	t.Cleanup(func() {
+		testProcessExecutor.RemoveAutoExecution(psc)
+		require.NoError(t, testProcessExecutor.StopProcess(context.WithoutCancel(ctx), handle))
 	})
 
 	t.Logf("Stopping Executable '%s'...", exeName)
-	err = retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+	stopErr := retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
 		exePatch := currentExe.DeepCopy()
 		exePatch.Spec.Stop = true
 		return client.Patch(ctx, exePatch, ctrl_client.MergeFromWithOptions(currentExe, ctrl_client.MergeFromWithOptimisticLock{}))
 	})
-	require.NoError(t, err, "Could not stop Executable '%s'", exeName)
+	require.NoError(t, stopErr, "Could not stop Executable '%s'", exeName)
 
-	t.Logf("Ensure Executable '%s' is in Unknown state (becasue of simulated stop error)...", exeName)
+	t.Logf("Ensure Executable '%s' is in Unknown state (because of simulated stop error)...", exeName)
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return currentExe.Status.State == apiv1.ExecutableStateUnknown, nil
 	})
@@ -3861,7 +4211,7 @@ func TestExecutableHttpHealthProbePortInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  healthEndpointAddr,
 			Port:     healthEndpointPort,
 		},
@@ -3942,7 +4292,7 @@ func TestExecutableHttpHealthProbePortAllocatedAndInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Port:     7227,
 		},
 	}
@@ -3979,7 +4329,7 @@ func TestExecutableHttpHealthProbePortAllocatedAndInjected(t *testing.T) {
 					},
 				},
 			},
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "ADDRESS",
 					Value: fmt.Sprintf(`{{- addressForServing "%s" -}}`, svc.ObjectMeta.Name),
@@ -3998,13 +4348,13 @@ func TestExecutableHttpHealthProbePortAllocatedAndInjected(t *testing.T) {
 
 	t.Logf("Read port and address  for serving the service from Executable's '%s' effective environment...", exe.ObjectMeta.Name)
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
-		hasAddress := slices.Any(currentExe.Status.EffectiveEnv, func(env apiv1.EnvVar) bool { return env.Name == "ADDRESS" })
-		hasPort := slices.Any(currentExe.Status.EffectiveEnv, func(env apiv1.EnvVar) bool { return env.Name == "PORT" })
+		hasAddress := slices.Any(currentExe.Status.EffectiveEnv, func(env commonapi.EnvVar) bool { return env.Name == "ADDRESS" })
+		hasPort := slices.Any(currentExe.Status.EffectiveEnv, func(env commonapi.EnvVar) bool { return env.Name == "PORT" })
 		return hasAddress && hasPort, nil
 	})
-	i := slices.IndexFunc(updatedExe.Status.EffectiveEnv, func(env apiv1.EnvVar) bool { return env.Name == "ADDRESS" })
+	i := slices.IndexFunc(updatedExe.Status.EffectiveEnv, func(env commonapi.EnvVar) bool { return env.Name == "ADDRESS" })
 	servingAddress := updatedExe.Status.EffectiveEnv[i].Value
-	i = slices.IndexFunc(updatedExe.Status.EffectiveEnv, func(env apiv1.EnvVar) bool { return env.Name == "PORT" })
+	i = slices.IndexFunc(updatedExe.Status.EffectiveEnv, func(env commonapi.EnvVar) bool { return env.Name == "PORT" })
 	servingPort, servingPortErr := strconv.Atoi(updatedExe.Status.EffectiveEnv[i].Value)
 	require.NoError(t, servingPortErr)
 
@@ -4117,7 +4467,7 @@ func TestExecutableHttpHealthProbePortsInjectedAfterServiceCreated(t *testing.T)
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  healthEndpointAddr,
 			Port:     healthEndpointPort,
 		},

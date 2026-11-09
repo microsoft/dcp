@@ -11,52 +11,58 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 )
 
-func CurrentResourceLeaseOwner() (process.ProcessTreeItem, error) {
+func CurrentResourceLeaseOwner() (process.ProcessHandle, error) {
 	currentProcess, currentProcessErr := process.This()
 	if currentProcessErr != nil {
-		return process.ProcessTreeItem{}, fmt.Errorf("could not get current process identity: %w", currentProcessErr)
+		return process.ProcessHandle{}, fmt.Errorf("could not get current process identity: %w", currentProcessErr)
 	}
 
 	return normalizeResourceLeaseOwner(currentProcess)
 }
 
-func normalizeResourceLeaseOwner(owner process.ProcessTreeItem) (process.ProcessTreeItem, error) {
+func normalizeResourceLeaseOwner(owner process.ProcessHandle) (process.ProcessHandle, error) {
 	if owner.Pid <= 0 {
-		return process.ProcessTreeItem{}, fmt.Errorf("resource lease owner process ID must be positive")
+		return process.ProcessHandle{}, fmt.Errorf("resource lease owner process ID must be positive")
 	}
 	if owner.IdentityTime.IsZero() {
-		return process.ProcessTreeItem{}, fmt.Errorf("resource lease owner process identity time cannot be zero")
+		return process.ProcessHandle{}, fmt.Errorf("resource lease owner process identity time cannot be zero")
 	}
 
-	return process.ProcessTreeItem{
+	return process.ProcessHandle{
 		Pid:          owner.Pid,
 		IdentityTime: owner.IdentityTime.UTC(),
 	}, nil
 }
 
-func resourceLeaseOwnerFromDB(ownerPID int64, ownerIdentityTime string) (process.ProcessTreeItem, error) {
+func resourceLeaseOwnerFromDB(ownerPID int64, ownerIdentityTime string) (process.ProcessHandle, error) {
 	pid, pidConvertErr := process.Int64_ToPidT(ownerPID)
 	if pidConvertErr != nil {
-		return process.ProcessTreeItem{}, fmt.Errorf("could not convert resource lease owner process ID: %w", pidConvertErr)
+		return process.ProcessHandle{}, fmt.Errorf("could not convert resource lease owner process ID: %w", pidConvertErr)
 	}
 	identityTime, identityTimeErr := timeFromString(ownerIdentityTime)
 	if identityTimeErr != nil {
-		return process.ProcessTreeItem{}, fmt.Errorf("could not parse resource lease owner process identity time: %w", identityTimeErr)
+		return process.ProcessHandle{}, fmt.Errorf("could not parse resource lease owner process identity time: %w", identityTimeErr)
 	}
 
-	owner := process.ProcessTreeItem{
+	owner := process.ProcessHandle{
 		Pid:          pid,
 		IdentityTime: identityTime,
 	}
 	return normalizeResourceLeaseOwner(owner)
 }
 
-func resourceLeaseOwnerIsActive(owner process.ProcessTreeItem) bool {
+func (s *Store) resourceLeaseOwnerIsActive(owner process.ProcessHandle) bool {
 	normalizedOwner, normalizeErr := normalizeResourceLeaseOwner(owner)
 	if normalizeErr != nil {
 		return false
 	}
 
-	_, findErr := process.FindProcess(normalizedOwner.Pid, normalizedOwner.IdentityTime)
-	return findErr == nil
+	ownerProcess, findErr := normalizedOwner.OsProcess()
+	if findErr != nil {
+		return false
+	}
+	if releaseErr := ownerProcess.Release(); releaseErr != nil {
+		s.log.Error(releaseErr, "Could not release resource lease owner process reference", "PID", normalizedOwner.Pid)
+	}
+	return true
 }

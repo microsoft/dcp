@@ -7,12 +7,12 @@ package logger
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	stdslices "slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
@@ -28,17 +28,26 @@ const (
 	// sink will track the resource ID value and use it to route a copy of log entries to a separate log file named based on the resource ID (i.e. resource-<resource_id>.log).
 	// This log file will contain only the log entries pertaining to that specific resource ID, allowing system logs pertaining to a given resource to be retrieved in isolation.
 	RESOURCE_LOG_STREAM_ID = "resource_log_stream_id"
+
+	resourceSinkRetryInterval = time.Minute
 )
 
 var (
 	resourceLoggerLock     = &sync.Mutex{}
 	resourceLoggerDisabled = &atomic.Bool{}
 	resourceSinks          = map[string]*resourceFileSink{}
+	resourceSinkFailures   = map[string]resourceFileSinkFailure{}
+	resourceSinkNow        = time.Now
 	tempDir                = usvc_io.DcpTempDir()
 )
 
+type resourceFileSinkFailure struct {
+	folder     string
+	retryAfter time.Time
+}
+
 type resourceFileSink struct {
-	file   *os.File
+	file   *usvc_io.AppendFile
 	logger logr.Logger
 	flush  func()
 }
@@ -61,38 +70,73 @@ func makeResourceLogPath(resourceId string, dir string) string {
 
 func ReleaseResourceLog(resourceId string) {
 	resourceLoggerLock.Lock()
-	defer resourceLoggerLock.Unlock()
-
-	if sink, found := resourceSinks[resourceId]; found {
-		// Flush any buffered log entries to the file
-		sink.flush()
-		// We're making a best effort to close the file, but don't care if the operation failed
-		_ = sink.file.Close()
+	sink, found := resourceSinks[resourceId]
+	if found {
 		delete(resourceSinks, resourceId)
+	}
+	delete(resourceSinkFailures, resourceId)
+	resourceLoggerLock.Unlock()
+
+	if found {
+		sink.flush()
+		_ = sink.file.Close()
+	}
+}
+
+func ReleaseResourceLogsInFolder(folder string) {
+	if folder == "" {
+		return
+	}
+
+	resourceLoggerLock.Lock()
+
+	sinksToRelease := []*resourceFileSink{}
+	for resourceId, sink := range resourceSinks {
+		if osutil.SameCleanPath(filepath.Dir(sink.file.Name()), folder) {
+			sinksToRelease = append(sinksToRelease, sink)
+			delete(resourceSinks, resourceId)
+		}
+	}
+	for resourceId, failure := range resourceSinkFailures {
+		if osutil.SameCleanPath(failure.folder, folder) {
+			delete(resourceSinkFailures, resourceId)
+		}
+	}
+	resourceLoggerLock.Unlock()
+
+	for _, sink := range sinksToRelease {
+		sink.flush()
+		_ = sink.file.Close()
 	}
 }
 
 func ReleaseAllResourceLogs() {
 	resourceLoggerLock.Lock()
-	defer resourceLoggerLock.Unlock()
 
 	resourceLoggerDisabled.Store(true)
 
-	wg := &sync.WaitGroup{}
-	wg.Add(len(resourceSinks))
+	sinksToRelease := make([]*resourceFileSink, 0, len(resourceSinks))
+	for _, sink := range resourceSinks {
+		sinksToRelease = append(sinksToRelease, sink)
+	}
 
-	for resourceId, sink := range resourceSinks {
-		go func(resourceId string, sink *resourceFileSink) {
+	// Clear out all resource sinks
+	resourceSinks = map[string]*resourceFileSink{}
+	resourceSinkFailures = map[string]resourceFileSinkFailure{}
+	resourceLoggerLock.Unlock()
+
+	wg := &sync.WaitGroup{}
+	wg.Add(len(sinksToRelease))
+
+	for _, sink := range sinksToRelease {
+		go func(sink *resourceFileSink) {
 			defer wg.Done()
 			// Flush any buffered log entries to the file
 			sink.flush()
 			// We're making a best effort to close the file, but don't care if the operation failed
 			_ = sink.file.Close()
-		}(resourceId, sink)
+		}(sink)
 	}
-
-	// Clear out all resource sinks
-	resourceSinks = map[string]*resourceFileSink{}
 
 	wg.Wait()
 }
@@ -104,6 +148,63 @@ type resourceSink struct {
 	atomicLevel               zap.AtomicLevel
 	innerSink                 logr.LogSink
 	resourceLogFolderOverride string
+}
+
+// WithAdditionalResourceStream derives a logger that also writes to the given resource stream.
+// The primary resource binding and the original logger are unchanged.
+// An existing resource sink and a nonempty stream ID are required.
+func WithAdditionalResourceStream(log logr.Logger, resourceID string) (logr.Logger, error) {
+	if resourceID == "" {
+		return log, fmt.Errorf("additional resource stream ID must not be empty")
+	}
+	if hasResourceStream(log.GetSink(), resourceID) {
+		return log, nil
+	}
+	derivedSink, deriveErr := addResourceStream(log.GetSink(), resourceID)
+	if deriveErr != nil {
+		return log, deriveErr
+	}
+	return log.WithSink(derivedSink), nil
+}
+
+func addResourceStream(sink logr.LogSink, resourceID string) (logr.LogSink, error) {
+	switch current := sink.(type) {
+	case *resourceSink:
+		additional := newResourceSink(current.atomicLevel, current.innerSink, current.resourceLogFolderOverride)
+		additional.resourceId = resourceID
+		additional.resourceName = current.resourceName
+		additional.values = stdslices.Clone(current.values)
+		derived := *current
+		derived.innerSink = additional
+		return &derived, nil
+	case *filterSink:
+		inner, innerErr := addResourceStream(current.innerSink, resourceID)
+		if innerErr != nil {
+			return nil, innerErr
+		}
+		derived := *current
+		derived.innerSink = inner
+		return &derived, nil
+	default:
+		return nil, fmt.Errorf("logger does not contain a resource sink")
+	}
+}
+
+func hasResourceStream(sink logr.LogSink, resourceID string) bool {
+	for sink != nil {
+		switch current := sink.(type) {
+		case *resourceSink:
+			if current.resourceId == resourceID {
+				return true
+			}
+			sink = current.innerSink
+		case *filterSink:
+			sink = current.innerSink
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func newResourceSink(atomicLevel zap.AtomicLevel, innerSink logr.LogSink, resourceLogFolderOverride string) *resourceSink {
@@ -119,12 +220,17 @@ func newResourceSink(atomicLevel zap.AtomicLevel, innerSink logr.LogSink, resour
 
 func (s *resourceSink) Flush() {
 	resourceLoggerLock.Lock()
-	defer resourceLoggerLock.Unlock()
+
+	sinksToFlush := make([]*resourceFileSink, 0, len(resourceSinks))
+	for _, sink := range resourceSinks {
+		sinksToFlush = append(sinksToFlush, sink)
+	}
+	resourceLoggerLock.Unlock()
 
 	wg := &sync.WaitGroup{}
-	wg.Add(len(resourceSinks))
+	wg.Add(len(sinksToFlush))
 
-	for _, sink := range resourceSinks {
+	for _, sink := range sinksToFlush {
 		go func(rfs *resourceFileSink) {
 			defer wg.Done()
 			rfs.flush()
@@ -143,14 +249,18 @@ func (s *resourceSink) Enabled(level int) bool {
 func (s *resourceSink) Error(err error, msg string, keysAndValues ...any) {
 	s.innerSink.Error(err, msg, keysAndValues...)
 
-	s.writeResourceError(s.resourceId, err, msg, keysAndValues...)
+	if !hasResourceStream(s.innerSink, s.resourceId) {
+		s.writeResourceError(s.resourceId, err, msg, keysAndValues...)
+	}
 }
 
 // Info implements logr.LogSink.
 func (s *resourceSink) Info(level int, msg string, keysAndValues ...any) {
 	s.innerSink.Info(level, msg, keysAndValues...)
 
-	s.writeResourceInfo(s.resourceId, level, msg, keysAndValues...)
+	if !hasResourceStream(s.innerSink, s.resourceId) {
+		s.writeResourceInfo(s.resourceId, level, msg, keysAndValues...)
+	}
 }
 
 // Init implements logr.LogSink.
@@ -160,12 +270,13 @@ func (s *resourceSink) Init(info logr.RuntimeInfo) {
 
 // WithName implements logr.LogSink.
 func (s *resourceSink) WithName(name string) logr.LogSink {
+	resourceName := name
 	if s.resourceName != "" {
-		name = s.resourceName + "." + name
+		resourceName = s.resourceName + "." + name
 	}
 
 	newSink := &resourceSink{
-		resourceName:              name,
+		resourceName:              resourceName,
 		resourceId:                s.resourceId,
 		values:                    s.values,
 		atomicLevel:               zap.NewAtomicLevel(),
@@ -206,7 +317,7 @@ func (s *resourceSink) writeResourceError(resourceId string, err error, msg stri
 	sink := s.getSink(resourceId)
 
 	if sink != nil {
-		sink.logger.WithValues(s.values...).GetSink().Error(err, msg, keysAndValues...)
+		sink.logger.WithName(s.resourceName).WithValues(s.values...).GetSink().Error(err, msg, keysAndValues...)
 	}
 }
 
@@ -214,7 +325,7 @@ func (s *resourceSink) writeResourceInfo(resourceId string, level int, msg strin
 	sink := s.getSink(resourceId)
 
 	if sink != nil {
-		sink.logger.WithValues(s.values...).GetSink().Info(level, msg, keysAndValues...)
+		sink.logger.WithName(s.resourceName).WithValues(s.values...).GetSink().Info(level, msg, keysAndValues...)
 	}
 }
 
@@ -230,7 +341,14 @@ func (s *resourceSink) getSink(resourceId string) *resourceFileSink {
 	}
 
 	resourceLoggerLock.Lock()
-	defer resourceLoggerLock.Unlock()
+	var sinkErr error
+	defer func() {
+		resourceLoggerLock.Unlock()
+		if sinkErr != nil {
+			// Reporting through a nested sink can reacquire resourceLoggerLock.
+			s.innerSink.Error(sinkErr, "Could not create resource log file", "ResourceID", resourceId)
+		}
+	}()
 
 	if resourceLoggerDisabled.Load() {
 		// Resource logging is disabled, nothing to do
@@ -238,12 +356,21 @@ func (s *resourceSink) getSink(resourceId string) *resourceFileSink {
 	}
 
 	sink, found := resourceSinks[resourceId]
-	var sinkErr error
 	if !found {
+		if failure, failed := resourceSinkFailures[resourceId]; failed && resourceSinkNow().Before(failure.retryAfter) {
+			return nil
+		}
+
 		// Create a new sink if one doesn't exist
 		sink, sinkErr = s.newResourceFileSink(resourceId)
 		if sinkErr == nil {
 			resourceSinks[resourceId] = sink
+			delete(resourceSinkFailures, resourceId)
+		} else {
+			resourceSinkFailures[resourceId] = resourceFileSinkFailure{
+				folder:     absoluteResourceLogFolder(s.resourceLogFolderOverride),
+				retryAfter: resourceSinkNow().Add(resourceSinkRetryInterval),
+			}
 		}
 	}
 
@@ -251,8 +378,11 @@ func (s *resourceSink) getSink(resourceId string) *resourceFileSink {
 }
 
 func (s *resourceSink) newResourceFileSink(resourceId string) (*resourceFileSink, error) {
-	resourceLogPath := makeResourceLogPath(resourceId, s.resourceLogFolderOverride)
-	file, err := usvc_io.OpenFile(resourceLogPath, os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
+	resourceLogPath, absolutePathErr := filepath.Abs(makeResourceLogPath(resourceId, s.resourceLogFolderOverride))
+	if absolutePathErr != nil {
+		return nil, fmt.Errorf("could not resolve resource log path: %w", absolutePathErr)
+	}
+	file, err := usvc_io.OpenOrCreateFileForAppending(resourceLogPath, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		return nil, err
 	}
@@ -270,9 +400,20 @@ func (s *resourceSink) newResourceFileSink(resourceId string) (*resourceFileSink
 
 	return &resourceFileSink{
 		file:   file,
-		logger: zapr.NewLogger(zapLogger).WithName(s.resourceName),
+		logger: zapr.NewLogger(zapLogger),
 		flush:  func() { _ = zapLogger.Sync() },
 	}, nil
+}
+
+func absoluteResourceLogFolder(folder string) string {
+	if folder == "" {
+		folder = tempDir
+	}
+	absoluteFolder, absoluteFolderErr := filepath.Abs(folder)
+	if absoluteFolderErr != nil {
+		return filepath.Clean(folder)
+	}
+	return absoluteFolder
 }
 
 var _ logr.LogSink = (*resourceSink)(nil)

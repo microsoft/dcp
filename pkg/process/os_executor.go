@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
+
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/maps"
@@ -28,11 +30,6 @@ const (
 	waitReasonNone       waitReason = 0x0
 	waitReasonMonitoring waitReason = 0x1
 	waitReasonStopping   waitReason = 0x2
-
-	// Timeout for getting a confirmation that the child process has exited (return of a wait() call).
-	// Must be greater that 2 * signalAndWaitTimeout, because in worst case we might send up to two signals
-	// and then time out checking if the process exited.
-	waitForProcessExitTimeout = 15 * time.Second
 )
 
 var (
@@ -40,16 +37,63 @@ var (
 )
 
 type waitState struct {
-	waitable    Waitable      // The waitable that is being waited on
-	waitEndedCh chan struct{} // A channel that gets closed when the wait ends
-	waitErr     error         // The result of the process wait. Not valid until waitEndedCh is closed.
-	waitEnded   time.Time     // The time when the wait function ended. Zero if the wait is still in progress.
-	reason      waitReason    // The reason why are waiting on the process
+	waitable               Waitable      // The waitable that is being waited on
+	waitEndedCh            chan struct{} // A channel that gets closed when the wait ends
+	waitErr                error         // The result of the process wait. Not valid until waitEndedCh is closed.
+	waitEnded              time.Time     // The time when the wait function ended. Zero if the wait is still in progress.
+	reason                 waitReason    // The reason why are waiting on the process
+	waitStarted            bool
+	forceKillUsed          bool
+	winConsoleAvailability WindowsConsoleAvailability
 }
 
-type WaitKey struct {
-	Pid       Pid_t
-	StartedAt time.Time
+type osExecutorBase struct {
+	procsWaiting           map[ProcessHandle]*waitState
+	disposed               bool
+	lock                   sync.Locker
+	log                    logr.Logger
+	lifetimeCtx            context.Context
+	lifetimeCtxCancel      context.CancelFunc
+	startLifetimeCtx       context.Context
+	startLifetimeCtxCancel context.CancelCauseFunc
+	startsInFlight         sync.WaitGroup
+}
+
+func newOSExecutorBase(log logr.Logger) *osExecutorBase {
+	lifetimeCtx, lifetimeCtxCancel := context.WithCancel(context.Background())
+	startLifetimeCtx, startLifetimeCtxCancel := context.WithCancelCause(context.Background())
+	return &osExecutorBase{
+		procsWaiting:           make(map[ProcessHandle]*waitState),
+		disposed:               false,
+		lock:                   &sync.Mutex{},
+		log:                    log.WithName("os-executor"),
+		lifetimeCtx:            lifetimeCtx,
+		lifetimeCtxCancel:      lifetimeCtxCancel,
+		startLifetimeCtx:       startLifetimeCtx,
+		startLifetimeCtxCancel: startLifetimeCtxCancel,
+	}
+}
+
+func (e *OSExecutor) beginProcessStart(parent context.Context) (context.Context, func(), error) {
+	e.acquireLock()
+	if e.disposed {
+		e.releaseLock()
+		return nil, nil, ErrDisposed
+	}
+	e.startsInFlight.Add(1)
+	startLifetimeCtx := e.startLifetimeCtx
+	e.releaseLock()
+
+	startCtx, cancelStart := context.WithCancelCause(parent)
+	stopLifetimeCancellation := context.AfterFunc(startLifetimeCtx, func() {
+		cancelStart(context.Cause(startLifetimeCtx))
+	})
+	finishStart := func() {
+		stopLifetimeCancellation()
+		cancelStart(nil)
+		e.startsInFlight.Done()
+	}
+	return startCtx, finishStart, nil
 }
 
 func (e *OSExecutor) StartProcess(
@@ -58,22 +102,23 @@ func (e *OSExecutor) StartProcess(
 	handler ProcessExitHandler,
 	flags ProcessCreationFlag,
 	sysCreateProcess SysCreateProcessFunc,
-) (Pid_t, time.Time, func(), error) {
-	e.acquireLock()
-	if e.disposed {
-		e.releaseLock()
-		return UnknownPID, time.Time{}, nil, ErrDisposed
+) (ProcessHandle, func(), error) {
+	startCtx, finishStart, admissionErr := e.beginProcessStart(ctx)
+	if admissionErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, nil, admissionErr
 	}
-	e.releaseLock()
+	defer finishStart()
 
-	pid, processIdentityTime, waitable, err := e.startProcess(cmd, flags, sysCreateProcess)
-	if err != nil {
-		return UnknownPID, time.Time{}, nil, err
+	handle, waitable, startProcessErr := e.startProcess(startCtx, cmd, flags, sysCreateProcess)
+	if startProcessErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, nil, startProcessErr
 	}
+
+	pid := handle.Pid
 
 	// Get the wait result channel, but do not actually start waiting
 	// This also has the effect of tying the wait for this process to the command that started it.
-	ws, _ := e.tryStartWaiting(pid, processIdentityTime, waitable, waitReasonNone)
+	ws, _ := e.tryStartWaiting(handle, waitable, waitReasonNone)
 
 	// Start the goroutine that waits for the context to expire.
 	go func() {
@@ -88,31 +133,31 @@ func (e *OSExecutor) StartProcess(
 			}
 
 		case <-ctx.Done():
-			_, shouldStopProcess := e.tryStartWaiting(pid, processIdentityTime, waitable, waitReasonStopping)
-			var stopProcessErr error = nil
-
-			if shouldStopProcess {
-				// CONSIDER: having an option to specify whether to shut down the process when the context expires.
-				log := e.log.WithValues(
-					"PID", pid,
-					"Command", cmd.Path,
-					"Args", cmd.Args[1:],
-				)
-				log.Info("Context expired, stopping process...")
-				stopProcessErr = e.stopProcessInternal(pid, processIdentityTime, optIsResponsibleForStopping)
-				if stopProcessErr != nil {
-					log.Error(stopProcessErr, "Could not stop process upon context expiration")
-					if handler != nil {
-						// Let the caller know that the process did not stop upon context expiration
-						handler.OnProcessExited(pid, UnknownExitCode, errors.Join(stopProcessErr, ctx.Err()))
-					}
-
-					// There is no point waiting for the result if the process could not be stopped and we reported the error.
-					break
+			cleanupCtx, cleanupCancel := WithDetachedStopTimeout(ctx)
+			defer cleanupCancel()
+			_, _ = e.tryStartWaiting(handle, waitable, waitReasonMonitoring)
+			cleanupLog := e.log.WithValues("PID", pid, "Command", cmd.Path, "Args", cmd.Args[1:])
+			cleanupLog.Info("Context expired, stopping process...")
+			stopProcessErr := e.stopProcessInternal(cleanupCtx, handle, processStopOptions{opts: optNone})
+			if IsProcessGoneErr(stopProcessErr) {
+				stopProcessErr = nil
+			}
+			if stopProcessErr != nil {
+				cleanupLog.Error(stopProcessErr, "Could not stop process upon context expiration")
+				if handler != nil {
+					handler.OnProcessExited(pid, UnknownExitCode, errors.Join(stopProcessErr, ctx.Err()))
 				}
+				break
 			}
 
-			<-ws.waitEndedCh
+			select {
+			case <-ws.waitEndedCh:
+			case <-cleanupCtx.Done():
+				if handler != nil {
+					handler.OnProcessExited(pid, UnknownExitCode, cleanupCtx.Err())
+				}
+				return
+			}
 
 			if handler != nil {
 				exitCode, execError := getProcessExecResult(ws.waitErr, ws.waitable, cmd)
@@ -122,37 +167,33 @@ func (e *OSExecutor) StartProcess(
 	}()
 
 	startWaitingForProcessExit := func() {
-		_, _ = e.tryStartWaiting(pid, processIdentityTime, waitable, waitReasonMonitoring)
+		_, _ = e.tryStartWaiting(handle, waitable, waitReasonMonitoring)
 	}
 
-	return pid, processIdentityTime, startWaitingForProcessExit, nil
+	return handle, startWaitingForProcessExit, nil
 }
 
-func (e *OSExecutor) StartAndForget(cmd *exec.Cmd, flags ProcessCreationFlag) (Pid_t, time.Time, error) {
-	e.acquireLock()
-	if e.disposed {
-		e.releaseLock()
-		return UnknownPID, time.Time{}, ErrDisposed
+func (e *OSExecutor) StartAndForget(cmd *exec.Cmd, flags ProcessCreationFlag) (ProcessHandle, error) {
+	startCtx, finishStart, admissionErr := e.beginProcessStart(context.Background())
+	if admissionErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, admissionErr
 	}
-	e.releaseLock()
+	defer finishStart()
 
-	pid, processStartTime, waitable, err := e.startProcess(cmd, flags, nil)
-	if err != nil {
-		return UnknownPID, time.Time{}, err
+	handle, waitable, startProcessErr := e.startProcess(startCtx, cmd, flags, nil)
+	if startProcessErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, startProcessErr
 	}
 
 	// We have to wait (not cmd.Process.Release()) because if we don't, then if the child process exits
-	// before the parent process exist, the child becomes a zombie (on non-Windows platforms).
-	if waitable != nil {
-		go func() {
-			_ = waitable.Wait()
-		}()
-	}
+	// before the parent process exits, the child becomes a zombie on non-Windows platforms. Keeping the
+	// regular wait state also retains the small amount of launch topology needed by a later Windows stop.
+	_, _ = e.tryStartWaiting(handle, waitable, waitReasonMonitoring)
 
-	return pid, processStartTime, nil
+	return handle, nil
 }
 
-func (e *OSExecutor) StopProcess(pid Pid_t, processStartTime time.Time, options ...ProcessStopOption) error {
+func (e *OSExecutor) StopProcess(ctx context.Context, handle ProcessHandle, options ...ProcessStopOption) error {
 	e.acquireLock()
 	if e.disposed {
 		e.releaseLock()
@@ -161,38 +202,56 @@ func (e *OSExecutor) StopProcess(pid Pid_t, processStartTime time.Time, options 
 	e.releaseLock()
 
 	stopOptions := newProcessStopOptions(options)
-	return e.stopProcessInternal(pid, processStartTime, stopOptions.opts)
+	return e.stopProcessInternal(ctx, handle, stopOptions)
 }
 
-// Returns the PID, process identity time (to distinguish between process instances with the same PID), and error.
+// Returns the process handle, waitable process, and error.
 func (e *OSExecutor) startProcess(
+	ctx context.Context,
 	cmd *exec.Cmd,
 	flags ProcessCreationFlag,
 	sysCreateProcess SysCreateProcessFunc,
-) (Pid_t, time.Time, Waitable, error) {
+) (ProcessHandle, Waitable, error) {
 	e.prepareProcessStart(cmd, flags)
+	winConsoleAvailability := windowsConsoleAvailabilityForCmd(cmd)
+	if cancellationErr := context.Cause(ctx); cancellationErr != nil {
+		return ProcessHandle{Pid: UnknownPID}, nil, cancellationErr
+	}
 
-	var pid Pid_t
+	var handle ProcessHandle
 	var waitable Waitable
 
 	if sysCreateProcess != nil {
 		var sysCreateErr error
-		pid, waitable, sysCreateErr = sysCreateProcess(cmd)
+		handle, waitable, sysCreateErr = sysCreateProcess(ctx, cmd)
 		if sysCreateErr != nil {
-			return UnknownPID, time.Time{}, nil, sysCreateErr
+			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(context.Cause(ctx), sysCreateErr)
 		}
 		if waitable == nil {
-			return UnknownPID, time.Time{}, nil, fmt.Errorf("sysCreateProcess returned nil waitable")
+			return ProcessHandle{Pid: UnknownPID}, nil, fmt.Errorf("%w: sysCreateProcess returned nil waitable", ErrProcessStartUncertain)
+		}
+		if handleErr := handle.Validate(); handleErr != nil {
+			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(
+				fmt.Errorf("sysCreateProcess returned an incomplete identity: %w", handleErr),
+				abortStartedProcess(waitable))
 		}
 	} else {
-		if err := cmd.Start(); err != nil {
-			return UnknownPID, time.Time{}, nil, err
+		if cmdStartErr := cmd.Start(); cmdStartErr != nil {
+			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(context.Cause(ctx), cmdStartErr)
 		}
-		osPid := cmd.Process.Pid
-		pid = Uint32_ToPidT(uint32(osPid))
-		waitable = &waitableCmd{cmd, flags}
+		waitable = &waitableCmd{
+			Cmd:                    cmd,
+			flags:                  flags,
+			winConsoleAvailability: winConsoleAvailability,
+		}
+		var handleErr error
+		handle, handleErr = ProcessHandleFromCmd(cmd)
+		if handleErr != nil {
+			return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(handleErr, abortStartedProcess(waitable))
+		}
 	}
 
+	pid := handle.Pid
 	startLog := e.log.WithValues(
 		"PID", pid,
 		"Command", cmd.Path,
@@ -200,23 +259,36 @@ func (e *OSExecutor) startProcess(
 		"CreationFlags", flags,
 	)
 
-	processIdentityTime := ProcessIdentityTime(pid)
+	abortForCancellation := func(cancellationErr error) (ProcessHandle, Waitable, error) {
+		abortErr := abortStartedProcess(waitable)
+		if abortErr != nil {
+			startLog.Error(abortErr, "Could not roll back process after start cancellation")
+		}
+		return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(cancellationErr, abortErr)
+	}
 
-	startCompletionErr := e.completeProcessStart(pid, processIdentityTime, flags)
+	if cancellationErr := context.Cause(ctx); cancellationErr != nil {
+		return abortForCancellation(cancellationErr)
+	}
+
+	startCompletionErr := e.completeProcessStart(handle, flags)
 	if startCompletionErr != nil {
 		startLog.Error(startCompletionErr, "Could not complete process start")
 
-		// If we could not complete the process start, we need to stop the process.
-		// Do not try graceful stop (no optTrySignal), just kill it immediately.
-		if stopErr := e.stopProcessInternal(pid, processIdentityTime, optIsResponsibleForStopping); stopErr != nil {
-			startLog.Error(stopErr, "Could not stop process after failed start")
+		abortErr := abortStartedProcess(waitable)
+		if abortErr != nil {
+			startLog.Error(abortErr, "Could not roll back process after failed start")
 		}
+		return ProcessHandle{Pid: UnknownPID}, nil, errors.Join(
+			fmt.Errorf("could not complete process start: %w", startCompletionErr), abortErr)
+	}
 
-		return UnknownPID, time.Time{}, nil, fmt.Errorf("could not complete process start: %w", startCompletionErr)
+	if cancellationErr := context.Cause(ctx); cancellationErr != nil {
+		return abortForCancellation(cancellationErr)
 	}
 
 	startLog.V(1).Info("Process started successfully", "PID", pid)
-	return pid, processIdentityTime, waitable, nil
+	return handle, waitable, nil
 }
 
 // Atomically starts waiting on the passed waitable if noting is already waiting in association with the process
@@ -225,12 +297,13 @@ func (e *OSExecutor) startProcess(
 // Returns the waitState object associated with the process, and a boolean indicating whether the caller
 // is the first one to indicate that the reason for the wait is "stopping the process",
 // and thus IT is the caller that must stop the process.
-func (e *OSExecutor) tryStartWaiting(pid Pid_t, startTime time.Time, waitable Waitable, reason waitReason) (*waitState, bool) {
+func (e *OSExecutor) tryStartWaiting(handle ProcessHandle, waitable Waitable, reason waitReason) (*waitState, bool) {
 	e.acquireLock()
 	defer e.releaseLock()
 
-	ws, found := e.procsWaiting[WaitKey{pid, startTime}]
+	ws, found := e.procsWaiting[handle]
 	callerShouldStopProcess := false
+	reportedWinConsoleAvailability := waitableWindowsConsoleAvailability(waitable)
 
 	if found {
 		if !ws.waitEnded.IsZero() {
@@ -240,32 +313,85 @@ func (e *OSExecutor) tryStartWaiting(pid Pid_t, startTime time.Time, waitable Wa
 		}
 
 		callerShouldStopProcess = (reason&waitReasonStopping) != 0 && (ws.reason&waitReasonStopping) == 0
+		if callerShouldStopProcess {
+			ws.forceKillUsed = false
+		}
 
-		mustStartWaiting := ws.reason == waitReasonNone && reason != waitReasonNone
+		if ws.waitable == nil {
+			ws.waitable = waitable
+		}
+		if ws.winConsoleAvailability == WindowsConsoleAvailabilityUnknown &&
+			reportedWinConsoleAvailability != WindowsConsoleAvailabilityUnknown {
+			ws.winConsoleAvailability = reportedWinConsoleAvailability
+		}
+		mustStartWaiting := !ws.waitStarted && reason != waitReasonNone
 		ws.reason |= reason
 
 		if mustStartWaiting {
-			// Prefer the waitable associated with process start, if available.
-			effectiveWaitable := ws.waitable
-			if effectiveWaitable == nil {
-				effectiveWaitable = waitable
-			}
-			go e.doWait(ws, effectiveWaitable, pid)
+			ws.waitStarted = true
+			go e.doWait(ws, ws.waitable, handle.Pid)
 		}
 	} else {
 		callerShouldStopProcess = (reason & waitReasonStopping) != 0
 		ws = &waitState{
-			waitable:    waitable,
-			waitEndedCh: make(chan struct{}),
-			reason:      reason,
+			waitable:               waitable,
+			waitEndedCh:            make(chan struct{}),
+			reason:                 reason,
+			waitStarted:            reason != waitReasonNone,
+			winConsoleAvailability: reportedWinConsoleAvailability,
 		}
-		e.procsWaiting[WaitKey{pid, startTime}] = ws
+		e.procsWaiting[handle] = ws
 		if reason != waitReasonNone {
-			go e.doWait(ws, waitable, pid)
+			go e.doWait(ws, waitable, handle.Pid)
 		}
 	}
 
 	return ws, callerShouldStopProcess
+}
+
+func waitableWindowsConsoleAvailability(waitable Waitable) WindowsConsoleAvailability {
+	source, reportsAvailability := waitable.(WindowsConsoleAvailabilitySource)
+	if !reportsAvailability {
+		return WindowsConsoleAvailabilityUnknown
+	}
+
+	availability := source.WindowsConsoleAvailability()
+	switch availability {
+	case WindowsConsoleAvailabilityUnknown,
+		WindowsConsoleAvailabilityInherited,
+		WindowsConsoleAvailabilityRequiresAttach,
+		WindowsConsoleAvailabilityUnavailable:
+		return availability
+	default:
+		return WindowsConsoleAvailabilityUnknown
+	}
+}
+
+// Starts an existing executor-owned wait without claiming stop ownership.
+func (e *OSExecutor) ensureTrackedWaitStarted(handle ProcessHandle) {
+	e.acquireLock()
+	defer e.releaseLock()
+
+	ws, found := e.procsWaiting[handle]
+	if !found || ws.waitStarted || ws.waitable == nil || !ws.waitEnded.IsZero() {
+		return
+	}
+
+	ws.waitStarted = true
+	ws.reason |= waitReasonMonitoring
+	go e.doWait(ws, ws.waitable, handle.Pid)
+}
+
+func (e *OSExecutor) finishStopAttempt(ws *waitState) {
+	e.acquireLock()
+	defer e.releaseLock()
+	ws.reason &^= waitReasonStopping
+}
+
+func (e *OSExecutor) markForceKillUsed(ws *waitState) {
+	e.acquireLock()
+	defer e.releaseLock()
+	ws.forceKillUsed = true
 }
 
 func (e *OSExecutor) doWait(ws *waitState, waitable Waitable, pid Pid_t) {
@@ -281,6 +407,66 @@ func (e *OSExecutor) doWait(ws *waitState, waitable Waitable, pid Pid_t) {
 	close(ws.waitEndedCh)
 }
 
+func waitForTrackedProcessExit(ctx context.Context, pid Pid_t, ws *waitState, waitTimeout time.Duration) error {
+	var timeoutCh <-chan time.Time
+	var timer *time.Timer
+	if waitTimeout > 0 {
+		timer = time.NewTimer(waitTimeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+
+	case <-ws.waitEndedCh:
+		return trackedProcessWaitResult(pid, ws)
+
+	case <-timeoutCh:
+		return ErrTimedOutWaitingForProcessToStop
+	}
+}
+
+func trackedProcessWaitResult(pid Pid_t, ws *waitState) error {
+	if ws.waitErr == nil || IsEarlyProcessExitError(ws.waitErr) {
+		return nil
+	}
+
+	return fmt.Errorf("could not wait for process %d to exit: %w", pid, ws.waitErr)
+}
+
+func waitForProcessStopConfirmation(
+	ctx context.Context,
+	processEndedCh <-chan struct{},
+	stopErr error,
+	waitTimeout time.Duration,
+) error {
+	if errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
+		return ErrTimedOutWaitingForProcessToStop
+	}
+	if processEndedCh == nil {
+		return nil
+	}
+
+	var timeoutCh <-chan time.Time
+	var timer *time.Timer
+	if waitTimeout > 0 {
+		timer = time.NewTimer(waitTimeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-processEndedCh:
+		return nil
+	case <-timeoutCh:
+		return ErrTimedOutWaitingForProcessToStop
+	}
+}
+
 // Returns the process execution error and process exit code depending on the result
 // of a process wait operation.
 func getProcessExecResult(waitErr error, w Waitable, cmd *exec.Cmd) (int32, error) {
@@ -291,6 +477,8 @@ func getProcessExecResult(waitErr error, w Waitable, cmd *exec.Cmd) (int32, erro
 	case waitErr == nil && haveEcs:
 		return ecs.ExitCode(), nil
 	case waitErr == nil && cmd.ProcessState != nil:
+		return int32(cmd.ProcessState.ExitCode()), nil
+	case errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil:
 		return int32(cmd.ProcessState.ExitCode()), nil
 	case waitErr != nil && errors.As(waitErr, &ee):
 		return int32(ee.ExitCode()), nil
@@ -311,7 +499,7 @@ func (e *OSExecutor) acquireLock() {
 	}
 
 	// Only keep wait states that correspond to processes that are still running, or the ones that completed recently
-	e.procsWaiting = maps.Select(e.procsWaiting, func(_ WaitKey, ws *waitState) bool {
+	e.procsWaiting = maps.Select(e.procsWaiting, func(_ ProcessHandle, ws *waitState) bool {
 		return ws.waitEnded.IsZero() || time.Since(ws.waitEnded) < maxCompletedDuration
 	})
 }
@@ -320,97 +508,267 @@ func (e *OSExecutor) releaseLock() {
 	e.lock.Unlock()
 }
 
-func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) error {
-	procTreeLog := e.log.WithValues("Root", pid)
+func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHandle, options processStopOptions) error {
+	return e.stopProcessTreeInternal(ctx, handle, options, GetProcessTree)
+}
 
-	stopRootProcess := func() (<-chan struct{}, error, error) {
-		procEndedCh, stopErr := e.stopSingleProcess(pid, processStartTime, opts|optNotFoundIsError|optTrySignal|optWaitForStdio)
-		if stopErr != nil && !errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
+// stopProcessTreeInternal stops a verified process tree root-first.
+//
+// The root process gets the first graceful-stop opportunity and may escalate to a force kill.
+// If the root exits gracefully, verified descendants are given the remainder of the shared
+// graceful-stop budget to stop concurrently. If the root required a force kill, or the graceful
+// budget expires, remaining descendants are force-killed concurrently during the final bounded
+// cleanup phase. Caller cancellation stops further work. Every signal and kill revalidates the
+// target process identity before acting.
+func (e *OSExecutor) stopProcessTreeInternal(
+	ctx context.Context,
+	handle ProcessHandle,
+	options processStopOptions,
+	resolveProcessTree func(context.Context, ProcessHandle) ([]ProcessHandle, error),
+) error {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	if handleErr := handle.Validate(); handleErr != nil {
+		return handleErr
+	}
+	opts := options.opts
+	e.ensureTrackedWaitStarted(handle)
+
+	graceCtx, graceCancel := context.WithTimeout(ctx, gracefulProcessStopTimeout)
+	defer graceCancel()
+
+	procTreeLog := e.log.WithValues("Root", handle.Pid)
+	notifyRootExit := func() {
+		if options.afterRootExit == nil || !IsProcessGoneErr(e.CheckProcessRunning(handle)) {
+			return
+		}
+		options.afterRootExit()
+		options.afterRootExit = nil
+	}
+	rootWasVerified := false
+
+	stopRootProcess := func(stopCtx context.Context, rootOpts processStoppingOpts) (singleProcessStopResult, error, error) {
+		stopResult, stopErr := e.stopSingleProcess(stopCtx, handle, rootOpts|optNotFoundIsError|optWaitForStdio)
+		if rootWasVerified && IsProcessGoneErr(stopErr) {
+			return singleProcessStopResult{waitEndedCh: makeClosedChan()}, nil, nil
+		}
+		if stopErr != nil &&
+			!errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) &&
+			!errors.Is(stopErr, context.DeadlineExceeded) {
 			// If the root process cannot be stopped (and it is not just a timeout error), don't bother with the rest of the tree.
 			procTreeLog.Error(stopErr, "Could not stop root process")
-			return nil, stopErr, stopErr
+			return singleProcessStopResult{}, stopErr, stopErr
 		}
 
-		return procEndedCh, stopErr, nil
+		return stopResult, stopErr, nil
 	}
 
-	waitForRootProcessToEnd := func(procEndedCh <-chan struct{}, stopErr error) error {
-		if errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
-			// Do not bother waiting for the confirmation of root process exit, it probably is not going to happen
-			// if a timeout occurred already...
+	waitForRootProcessToEnd := func(waitCtx context.Context, procEndedCh <-chan struct{}, stopErr error) error {
+		waitErr := waitForProcessStopConfirmation(waitCtx, procEndedCh, stopErr, processStopTimeout)
+		switch {
+		case errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop):
 			procTreeLog.V(1).Info("Timed out waiting for root process to stop")
-			return ErrTimedOutWaitingForProcessToStop
-		}
-
-		select {
-		case <-procEndedCh:
+		case procEndedCh == nil:
+			procTreeLog.V(1).Info("Skipping root process exit confirmation because no wait channel is available")
+		case waitErr == nil:
 			procTreeLog.Info("Root process has stopped")
-			return nil
-
-		case <-time.After(waitForProcessExitTimeout):
+		case errors.Is(waitErr, ErrTimedOutWaitingForProcessToStop):
 			procTreeLog.Error(ErrTimedOutWaitingForProcessToStop, "Did not get confirmation that the root process has stopped before timeout elapsed")
-			return ErrTimedOutWaitingForProcessToStop
 		}
+		return waitErr
+	}
+
+	gracefulRootOpts := opts | optTrySignal | optWaitForGracefulDeadline
+	forceProcessOpts := opts &^ (optNotFoundIsError | optTrySignal | optSignalConsoleGroup | optGracefulOnly | optWaitForGracefulDeadline)
+
+	forceRootAfterIncompleteEnumeration := func(treeErr error) error {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return errors.Join(treeErr, contextErr)
+		}
+
+		forceCtx, forceCancel := context.WithTimeout(ctx, signalAndWaitTimeout)
+		defer forceCancel()
+		rootResult, rootStopErr := e.stopSingleProcess(
+			forceCtx,
+			handle,
+			forceProcessOpts|optWaitForStdio,
+		)
+		if rootStopErr != nil &&
+			!errors.Is(rootStopErr, ErrTimedOutWaitingForProcessToStop) &&
+			!errors.Is(rootStopErr, context.DeadlineExceeded) {
+			return errors.Join(
+				fmt.Errorf("%w: process tree enumeration did not complete before the graceful-stop deadline", ErrIncompleteProcessTree),
+				treeErr,
+				rootStopErr,
+			)
+		}
+		rootWaitErr := waitForRootProcessToEnd(forceCtx, rootResult.waitEndedCh, rootStopErr)
+		incompleteErr := fmt.Errorf(
+			"%w: process tree enumeration did not complete before the graceful-stop deadline",
+			ErrIncompleteProcessTree,
+		)
+		return errors.Join(incompleteErr, treeErr, rootStopErr, rootWaitErr)
 	}
 
 	if (opts & optSkipDescendants) != 0 {
 		procTreeLog.V(1).Info("Stopping root process without enumerating descendants")
-		procEndedCh, stopErr, rootStopErr := stopRootProcess()
+		rootResult, stopErr, rootStopErr := stopRootProcess(graceCtx, gracefulRootOpts)
 		if rootStopErr != nil {
 			return rootStopErr
 		}
+		if stopErr == nil && !rootResult.forceKillUsed {
+			notifyRootExit()
+			return waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, nil)
+		}
+		if contextErr := ctx.Err(); contextErr != nil {
+			return errors.Join(stopErr, contextErr)
+		}
 
-		return waitForRootProcessToEnd(procEndedCh, stopErr)
+		forceCtx, forceCancel := context.WithTimeout(ctx, signalAndWaitTimeout)
+		defer forceCancel()
+		if stopErr != nil {
+			var fatalForceErr error
+			rootResult, stopErr, fatalForceErr = stopRootProcess(forceCtx, forceProcessOpts)
+			if fatalForceErr != nil {
+				return errors.Join(stopErr, fatalForceErr)
+			}
+		}
+
+		return waitForRootProcessToEnd(forceCtx, rootResult.waitEndedCh, stopErr)
 	}
 
-	tree, err := GetProcessTree(ProcessTreeItem{pid, processStartTime})
-	if err != nil {
-		return fmt.Errorf("could not get process tree for process %d: %w", pid, err)
+	tree, treeErr := resolveProcessTree(graceCtx, handle)
+	if treeErr != nil && !errors.Is(treeErr, ErrIncompleteProcessTree) {
+		if errors.Is(treeErr, context.DeadlineExceeded) && ctx.Err() == nil {
+			procTreeLog.Error(treeErr, "Process tree enumeration exceeded the graceful-stop deadline; force-stopping only the root")
+			return forceRootAfterIncompleteEnumeration(treeErr)
+		}
+		return fmt.Errorf("could not get process tree for process %d: %w", handle.Pid, treeErr)
 	}
+	if errors.Is(treeErr, ErrIncompleteProcessTree) {
+		procTreeLog.Error(
+			treeErr,
+			"Process tree enumeration was incomplete; stopping verified processes, but descendant cleanup remains uncertain",
+		)
+	}
+	if len(tree) == 0 {
+		return fmt.Errorf("could not get a verified root for process %d: %w", handle.Pid, treeErr)
+	}
+	handle = tree[0]
+	rootWasVerified = true
 
-	procTreeLog.V(1).Info("Stopping process tree...", "Root", pid, "Tree", getIDs(tree))
+	procTreeLog.V(1).Info("Stopping process tree...", "Root", handle.Pid, "Tree", getIDs(tree))
 
-	procEndedCh, stopErr, rootStopErr := stopRootProcess()
-	if rootStopErr != nil {
-		return rootStopErr
+	rootResult, rootStopErr, fatalRootStopErr := stopRootProcess(graceCtx, gracefulRootOpts)
+	if fatalRootStopErr != nil {
+		return errors.Join(treeErr, fatalRootStopErr)
+	}
+	if rootStopErr == nil && !rootResult.forceKillUsed {
+		notifyRootExit()
 	}
 
 	tree = tree[1:] // We have processed the root
-	if len(tree) == 0 {
-		procTreeLog.V(1).Info("The root process has no children")
-		return waitForRootProcessToEnd(procEndedCh, stopErr)
-	}
 
-	procTreeLog.V(1).Info("Make sure children of the root processes are gone...")
-	childStoppingErrors := slices.MapConcurrent[error](tree, func(p ProcessTreeItem) error {
-		// Retry stopping the child process as we occasionally see transient "Access Denied" errors.
-		const childStopTimeout = 2 * time.Second
-		childLog := procTreeLog.WithValues("Child", p.Pid)
-
-		retryErr := resiliency.RetryExponentialWithTimeout(context.Background(), childStopTimeout, func() error {
-			childLog.V(1).Info("Stopping child process...")
-
-			_, childStopErr := e.stopSingleProcess(p.Pid, p.IdentityTime, opts&^optNotFoundIsError)
-			if childStopErr != nil {
-				childLog.V(1).Info("Error stopping child process", "Error", childStopErr.Error())
-			} else {
-				childLog.V(1).Info("Child process has been stopped (or is gone)")
+	stopChildren := func(
+		stopCtx context.Context,
+		childOpts processStoppingOpts,
+		retry bool,
+		action string,
+	) []error {
+		procTreeLog.V(1).Info(action)
+		childStoppingErrors := slices.MapConcurrent[error](tree, func(childHandle ProcessHandle) error {
+			childLog := procTreeLog.WithValues("Child", childHandle.Pid)
+			stopChild := func() error {
+				childLog.V(1).Info("Stopping child process...")
+				_, childStopErr := e.stopSingleProcess(stopCtx, childHandle, childOpts)
+				if childStopErr != nil {
+					childLog.V(1).Info("Error stopping child process", "Error", childStopErr.Error())
+				} else {
+					childLog.V(1).Info("Child process has been stopped (or is gone)")
+				}
+				return childStopErr
 			}
 
+			var childStopErr error
+			if retry {
+				// Retry force-killing the child process as we occasionally see transient "Access Denied" errors.
+				const childStopTimeout = 2 * time.Second
+				childStopErr = resiliency.RetryExponentialWithTimeout(stopCtx, childStopTimeout, stopChild)
+			} else {
+				childStopErr = stopChild()
+			}
+			if childStopErr != nil {
+				childLog.V(1).Info("Could not stop child process", "Error", childStopErr.Error())
+			}
 			return childStopErr
-		})
+		}, slices.MaxConcurrency)
 
-		if retryErr != nil {
-			childLog.Error(err, "Could not stop child process")
+		return slices.Select(childStoppingErrors, func(stopErr error) bool { return stopErr != nil })
+	}
+
+	if len(tree) == 0 && rootStopErr == nil && !rootResult.forceKillUsed {
+		procTreeLog.V(1).Info("The root process has no children")
+		return errors.Join(treeErr, waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, nil))
+	}
+
+	forceDescendants := rootResult.forceKillUsed || rootStopErr != nil || graceCtx.Err() != nil
+
+	if len(tree) > 0 && !forceDescendants {
+		gracefulChildOpts := opts &^ (optNotFoundIsError | optSignalConsoleGroup | optWaitForGracefulDeadline)
+		gracefulChildOpts |= optGracefulOnly | optTrySignal
+
+		gracefulChildErrors := stopChildren(
+			graceCtx,
+			gracefulChildOpts,
+			false,
+			"Giving child processes the remaining graceful-stop budget...",
+		)
+		forceDescendants = len(gracefulChildErrors) > 0 || graceCtx.Err() != nil
+		if !forceDescendants {
+			procTreeLog.V(1).Info("All child processes stopped gracefully")
+			rootWaitErr := waitForRootProcessToEnd(ctx, rootResult.waitEndedCh, rootStopErr)
+			return errors.Join(treeErr, rootWaitErr)
 		}
-		return retryErr
 
-	}, slices.MaxConcurrency)
+		procTreeLog.V(1).Info("The graceful-stop budget expired before all child processes stopped")
+	}
 
-	childStoppingErrors = slices.Select(childStoppingErrors, func(e error) bool { return e != nil })
+	if contextErr := ctx.Err(); contextErr != nil {
+		return errors.Join(treeErr, rootStopErr, contextErr)
+	}
+
+	if rootResult.forceKillUsed {
+		procTreeLog.V(1).Info("The root process required a force kill; force-killing remaining child processes")
+	}
+
+	forceCtx, forceCancel := context.WithTimeout(ctx, signalAndWaitTimeout)
+	defer forceCancel()
+
+	if rootStopErr != nil {
+		var fatalRootForceErr error
+		var forceRootResult singleProcessStopResult
+		forceRootResult, rootStopErr, fatalRootForceErr = stopRootProcess(forceCtx, forceProcessOpts)
+		if forceRootResult.waitEndedCh != nil {
+			rootResult = forceRootResult
+		}
+		if fatalRootForceErr != nil {
+			procTreeLog.Error(fatalRootForceErr, "Could not force-kill root process")
+		}
+	}
+
+	var childStoppingErrors []error
+	if len(tree) > 0 && forceDescendants {
+		childStoppingErrors = stopChildren(
+			forceCtx,
+			forceProcessOpts,
+			true,
+			"Force-killing remaining child processes...",
+		)
+	}
 	if len(childStoppingErrors) > 0 {
-		procTreeLog.V(1).Error(errors.Join(childStoppingErrors...), "Some child processes could not be stopped")
-	} else {
+		procTreeLog.V(1).Error(logger.SummarizeErrors(childStoppingErrors), "Some child processes could not be stopped")
+	} else if len(tree) > 0 {
 		procTreeLog.V(1).Info("All child processes have stopped")
 	}
 
@@ -422,9 +780,32 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, 
 	//     b. we have a time-of-check vs time-of-use problem  with the process tree, which is a snapshot,
 	//        and may be out-of-date for processes spawn children vigorously,
 	// So that is why the following wait operation employs a timeout.
-	rootWaitErr := waitForRootProcessToEnd(procEndedCh, stopErr)
+	rootWaitErr := waitForRootProcessToEnd(forceCtx, rootResult.waitEndedCh, rootStopErr)
 
-	return errors.Join(append([]error{rootWaitErr}, childStoppingErrors...)...)
+	return joinProcessTreeStopErrors(treeErr, rootStopErr, rootWaitErr, childStoppingErrors)
+}
+
+func joinProcessTreeStopErrors(
+	treeErr error,
+	rootStopErr error,
+	rootWaitErr error,
+	childStoppingErrors []error,
+) error {
+	var descendantCleanupErr error
+	if len(childStoppingErrors) > 0 {
+		descendantCleanupErr = fmt.Errorf(
+			"%w: one or more descendant processes could not be confirmed stopped",
+			ErrIncompleteProcessTree,
+		)
+	}
+
+	return errors.Join(
+		treeErr,
+		rootStopErr,
+		rootWaitErr,
+		descendantCleanupErr,
+		logger.SummarizeErrors(childStoppingErrors),
+	)
 }
 
 var maxConcurrentProcessStops = runtime.NumCPU() * 5
@@ -437,12 +818,20 @@ func (e *OSExecutor) Dispose() {
 		return
 	}
 	e.disposed = true
+	e.releaseLock()
+
+	e.startLifetimeCtxCancel(ErrDisposed)
+	e.startsInFlight.Wait()
+	defer e.lifetimeCtxCancel()
+
 	// Make a shallow copy of the waiting processes map so we can safely iterate over it while stopping processes.
+	e.acquireLock()
 	currentProcs := stdlib_maps.Clone(e.procsWaiting)
 	e.releaseLock()
 
 	if len(currentProcs) == 0 {
 		e.log.V(1).Info("No processes to stop during executor disposal")
+		e.completeDispose()
 		return
 	} else {
 		e.log.V(1).Info("Stopping processes during executor disposal...", "Count", len(currentProcs))
@@ -452,7 +841,7 @@ func (e *OSExecutor) Dispose() {
 	wg.Add(len(currentProcs))
 	sem := concurrency.NewSemaphoreWithCount(uint(maxConcurrentProcessStops))
 
-	for wk, ws := range currentProcs {
+	for handle, ws := range currentProcs {
 		<-sem.Wait().Chan
 
 		go func() {
@@ -472,14 +861,24 @@ func (e *OSExecutor) Dispose() {
 
 			if flags&CreationFlagEnsureKillOnDispose == CreationFlagEnsureKillOnDispose {
 				// Best effort to stop the process.
-				e.log.V(1).Info("Stopping process during executor disposal...", "PID", wk.Pid, "Command", waitable.Info())
-				stopErr := e.stopProcessInternal(wk.Pid, wk.StartedAt, optIsResponsibleForStopping|optTrySignal)
+				e.log.V(1).Info("Stopping process during executor disposal...", "PID", handle.Pid, "Command", waitable.Info())
+				// One 15-second deadline bounds the graceful phase for the whole tree. On Windows,
+				// a process uses that full remaining deadline only after CTRL_C_EVENT or
+				// CTRL_BREAK_EVENT delivery is confirmed; foreign-console, ConPTY, detached, and
+				// unknown-descendant cases use the six-second passive fallback before force-kill.
+				cleanupCtx, cleanupCancel := WithStopTimeout(context.Background())
+				defer cleanupCancel()
+				stopErr := e.stopProcessInternal(
+					cleanupCtx,
+					handle,
+					processStopOptions{opts: optIsResponsibleForStopping},
+				)
 				if stopErr != nil {
-					e.log.Error(stopErr, "Could not stop process during executor disposal", "PID", wk.Pid, "Command", waitable.Info())
+					e.log.Error(stopErr, "Could not stop process during executor disposal", "PID", handle.Pid, "Command", waitable.Info())
 				}
 			} else {
 				// Just make sure we called wait() so the process does not become a zombie.
-				_, _ = e.tryStartWaiting(wk.Pid, wk.StartedAt, waitable, waitReasonMonitoring)
+				_, _ = e.tryStartWaiting(handle, waitable, waitReasonMonitoring)
 			}
 		}()
 	}
@@ -490,7 +889,27 @@ func (e *OSExecutor) Dispose() {
 	e.log.V(1).Info("Process executor disposed")
 }
 
+func (e *OSExecutor) CheckProcessRunning(handle ProcessHandle) error {
+	proc, err := handle.OsProcess()
+	if err != nil {
+		return err
+	}
+	if releaseErr := proc.Release(); releaseErr != nil {
+		e.log.Error(releaseErr, "Failed to release process handle", "PID", handle.Pid)
+	}
+	return nil
+}
+
+func (e *OSExecutor) FindProcessHandle(pid Pid_t) (ProcessHandle, error) {
+	return FindProcessHandle(pid)
+}
+
 type processStoppingOpts uint16
+
+type singleProcessStopResult struct {
+	waitEndedCh   <-chan struct{}
+	forceKillUsed bool
+}
 
 const (
 	optNone            processStoppingOpts = 0
@@ -510,6 +929,16 @@ const (
 	// Skips descendant enumeration and cleanup after stopping the root process.
 	// Descendants may still receive signals sent to a shared console or process group.
 	optSkipDescendants processStoppingOpts = 0x20
+
+	// Attempts graceful stopping without escalating to a force kill. The caller is responsible
+	// for force-killing the process later if the graceful-stop context expires.
+	optGracefulOnly processStoppingOpts = 0x40
+
+	// Uses the caller's context deadline instead of the per-signal timeout for graceful waiting.
+	// On Windows this applies only after CTRL_C_EVENT or CTRL_BREAK_EVENT delivery is confirmed;
+	// otherwise the six-second passive fallback applies. Unlike optGracefulOnly, a graceful
+	// signal dispatch failure may still fall back to a force kill.
+	optWaitForGracefulDeadline processStoppingOpts = 0x80
 )
 
 func makeClosedChan() chan struct{} {

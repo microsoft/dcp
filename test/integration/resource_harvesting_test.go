@@ -8,8 +8,10 @@ package integration_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/stretchr/testify/require"
+
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
@@ -17,9 +19,10 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/testutil"
-	"github.com/stretchr/testify/require"
 )
 
+// Verifies that resource harvesting preserves live-creator resources and removes abandoned networks,
+// even when a stale network creator identity shares the PID of a live creator.
 func TestUnusedNetworkHarvesting(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -67,14 +70,38 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 
 	_, containerCreateErr := co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "non-dcp-container-1",
-			Network: netPersistentWithContainer,
+			Name: prefix + "non-dcp-container-1",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netPersistentWithContainer},
+			},
 		},
 	})
 	require.NoError(t, containerCreateErr)
 
 	procThis, procThisErr := process.This()
 	require.NoError(t, procThisErr)
+
+	// Cache the live identity during container harvesting before inspecting the stale network identity.
+	liveCreatorContainerID, liveCreatorContainerErr := co.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name: prefix + "live-creator-container",
+			Labels: map[string]string{
+				controllers.PersistentLabel:              "false",
+				controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procThis.Pid),
+				controllers.CreatorProcessStartTimeLabel: procThis.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+			},
+		},
+	})
+	require.NoError(t, liveCreatorContainerErr)
+	_, staleCreatorNetworkErr := co.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: prefix + "stale-creator-with-reused-pid",
+		Labels: map[string]string{
+			controllers.PersistentLabel:              "false",
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procThis.Pid),
+			controllers.CreatorProcessStartTimeLabel: procThis.IdentityTime.Add(-time.Second).Format(osutil.RFC3339MiliTimestampFormat),
+		},
+	})
+	require.NoError(t, staleCreatorNetworkErr)
 
 	// Network that is used by existing process (should be preserved)
 	const netUsedByExistingProcess = prefix + "used-by-existing-process"
@@ -101,15 +128,19 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "non-dcp-container-2",
-			Network: netWithNonDcpContainers,
+			Name: prefix + "non-dcp-container-2",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithNonDcpContainers},
+			},
 		},
 	})
 	require.NoError(t, containerCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "non-dcp-container-3",
-			Network: netWithNonDcpContainers,
+			Name: prefix + "non-dcp-container-3",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithNonDcpContainers},
+			},
 		},
 	})
 	require.NoError(t, containerCreateErr)
@@ -127,31 +158,24 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "dcp-container-1",
-			Network: netWithMixedContainers,
-			ContainerSpec: apiv1.ContainerSpec{
-				Labels: []apiv1.ContainerLabel{
-					{
-						Key:   controllers.PersistentLabel,
-						Value: "false",
-					},
-					{
-						Key:   controllers.CreatorProcessIdLabel,
-						Value: fmt.Sprintf("%d", procNonExistent.Pid),
-					},
-					{
-						Key:   controllers.CreatorProcessStartTimeLabel,
-						Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-					},
-				},
+			Name: prefix + "dcp-container-1",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithMixedContainers},
+			},
+			Labels: map[string]string{
+				controllers.PersistentLabel:              "false",
+				controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+				controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			},
 		},
 	})
 	require.NoError(t, containerCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "non-dcp-container-4",
-			Network: netWithMixedContainers,
+			Name: prefix + "non-dcp-container-4",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithMixedContainers},
+			},
 		},
 	})
 	require.NoError(t, containerCreateErr)
@@ -169,23 +193,14 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "abandoned-persistent-container",
-			Network: netWithAbandonedPersistentContainer,
-			ContainerSpec: apiv1.ContainerSpec{
-				Labels: []apiv1.ContainerLabel{
-					{
-						Key:   controllers.PersistentLabel,
-						Value: "true",
-					},
-					{
-						Key:   controllers.CreatorProcessIdLabel,
-						Value: fmt.Sprintf("%d", procNonExistent.Pid),
-					},
-					{
-						Key:   controllers.CreatorProcessStartTimeLabel,
-						Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-					},
-				},
+			Name: prefix + "abandoned-persistent-container",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithAbandonedPersistentContainer},
+			},
+			Labels: map[string]string{
+				controllers.PersistentLabel:              "true",
+				controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+				controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			},
 		},
 	})
@@ -204,46 +219,28 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "dcp-container-2",
-			Network: netWithDcpContainers,
-			ContainerSpec: apiv1.ContainerSpec{
-				Labels: []apiv1.ContainerLabel{
-					{
-						Key:   controllers.PersistentLabel,
-						Value: "false",
-					},
-					{
-						Key:   controllers.CreatorProcessIdLabel,
-						Value: fmt.Sprintf("%d", procNonExistent.Pid),
-					},
-					{
-						Key:   controllers.CreatorProcessStartTimeLabel,
-						Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-					},
-				},
+			Name: prefix + "dcp-container-2",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithDcpContainers},
+			},
+			Labels: map[string]string{
+				controllers.PersistentLabel:              "false",
+				controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+				controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			},
 		},
 	})
 	require.NoError(t, containerCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "dcp-container-3",
-			Network: netWithDcpContainers,
-			ContainerSpec: apiv1.ContainerSpec{
-				Labels: []apiv1.ContainerLabel{
-					{
-						Key:   controllers.PersistentLabel,
-						Value: "false",
-					},
-					{
-						Key:   controllers.CreatorProcessIdLabel,
-						Value: fmt.Sprintf("%d", procNonExistent.Pid),
-					},
-					{
-						Key:   controllers.CreatorProcessStartTimeLabel,
-						Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-					},
-				},
+			Name: prefix + "dcp-container-3",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithDcpContainers},
+			},
+			Labels: map[string]string{
+				controllers.PersistentLabel:              "false",
+				controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+				controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			},
 		},
 	})
@@ -277,6 +274,13 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.True(t, harvester.TryProtectNetwork(ctx, protectedPersistentNetwork), "could not protect network")
 	harvester.Harvest(ctx, co, log)
 
+	liveContainers, inspectLiveContainerErr := co.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{liveCreatorContainerID},
+	})
+	require.NoError(t, inspectLiveContainerErr)
+	require.Len(t, liveContainers, 1)
+	require.Equal(t, containers.ContainerStatusRunning, liveContainers[0].Status)
+
 	remaining, listNetworksErr := co.ListNetworks(ctx, containers.ListNetworksOptions{})
 	require.NoError(t, listNetworksErr, "could not list networks")
 	remainingNames := slices.Map[string](remaining, func(n containers.ListedNetwork) string {
@@ -294,4 +298,82 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 		"host",
 		"none",
 	}, remainingNames, "unexpected networks remaining")
+}
+
+func TestUnusedVolumeHarvesting(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	log := testutil.NewLogForTesting(t.Name())
+	orchestrator, orchestratorErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	defer func() {
+		require.NoError(t, orchestrator.Close())
+	}()
+
+	missingProcess := nonExistentProcess(t)
+	thisProcess, thisProcessErr := process.This()
+	require.NoError(t, thisProcessErr)
+	labels := func(persistent bool, processHandle process.ProcessHandle) map[string]string {
+		return map[string]string{
+			controllers.PersistentLabel:              fmt.Sprintf("%t", persistent),
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", processHandle.Pid),
+			controllers.CreatorProcessStartTimeLabel: processHandle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+		}
+	}
+
+	const prefix = "unused-volume-harvesting-"
+	const noLabels = prefix + "no-labels"
+	const persistent = prefix + "persistent"
+	const liveCreator = prefix + "live-creator"
+	const abandoned = prefix + "abandoned"
+	const abandonedInUse = prefix + "abandoned-in-use"
+	const abandonedWithAbandonedContainer = prefix + "abandoned-with-abandoned-container"
+
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: noLabels}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: persistent, Labels: labels(true, missingProcess)}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: liveCreator, Labels: labels(false, thisProcess)}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: abandoned, Labels: labels(false, missingProcess)}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: abandonedInUse, Labels: labels(false, missingProcess)}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: abandonedWithAbandonedContainer, Labels: labels(false, missingProcess)}))
+
+	_, nonDCPContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name: "volume-harvesting-non-dcp-container",
+		VolumeMounts: []containers.CreateContainerVolumeMount{{
+			Type:   containers.NamedVolumeMount,
+			Source: abandonedInUse,
+			Target: "/data",
+		}},
+	})
+	require.NoError(t, nonDCPContainerErr)
+	_, abandonedContainerErr := orchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name: "volume-harvesting-abandoned-container",
+			VolumeMounts: []containers.CreateContainerVolumeMount{{
+				Type:   containers.NamedVolumeMount,
+				Source: abandonedWithAbandonedContainer,
+				Target: "/data",
+			}},
+			Labels: map[string]string{
+				controllers.PersistentLabel:              "false",
+				controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", missingProcess.Pid),
+				controllers.CreatorProcessStartTimeLabel: missingProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+			},
+		},
+	})
+	require.NoError(t, abandonedContainerErr)
+
+	controllers.NewResourceHarvester().Harvest(ctx, orchestrator, log)
+
+	remainingVolumes, listErr := orchestrator.ListVolumes(ctx, containers.ListVolumesOptions{})
+	require.NoError(t, listErr)
+	require.ElementsMatch(t, []string{
+		noLabels,
+		persistent,
+		liveCreator,
+		abandonedInUse,
+	}, slices.Map[string](remainingVolumes, func(volume containers.ListedVolume) string {
+		return volume.Name
+	}))
 }

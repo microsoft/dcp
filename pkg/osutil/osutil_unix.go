@@ -11,6 +11,11 @@ import (
 	"os"
 )
 
+// MaxUnixSocketPathLen is a conservative upper bound on the length of a Unix
+// domain socket path. The kernel sun_path buffer is 108 bytes on Linux and 104
+// on macOS/BSD; we use the smaller limit minus one for the null terminator.
+const MaxUnixSocketPathLen = 103
+
 func IsAdmin() (bool, error) {
 	if os.Getuid() == 0 {
 		return true, nil

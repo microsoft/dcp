@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/exerunners"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/termpty"
 	"github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -142,9 +143,19 @@ func (r *TestProcessExecutableRunner) ReleaseRun(ctx context.Context, runID cont
 	return r.inner.ReleaseRun(ctx, runID, log)
 }
 
+func (r *TestProcessExecutableRunner) DeleteRunOutput(ctx context.Context, runID controllers.RunID, stdoutPath, stderrPath string) error {
+	outputRunner, ok := r.inner.(controllers.ExecutableOutputCleanupRunner)
+	if !ok {
+		return fmt.Errorf("inner test process runner does not support output cleanup")
+	}
+
+	return outputRunner.DeleteRunOutput(ctx, runID, stdoutPath, stderrPath)
+}
+
 func (r *TestProcessExecutableRunner) AdoptRun(
 	ctx context.Context,
-	run controllers.ExecutableRunAdoptionInfo,
+	exe *apiv1.Executable,
+	record *statestore.PersistentProcessRecord,
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
 ) error {
@@ -153,8 +164,27 @@ func (r *TestProcessExecutableRunner) AdoptRun(
 		return fmt.Errorf("inner test process runner does not support persistent run adoption")
 	}
 
-	return persistentRunner.AdoptRun(ctx, run, runChangeHandler, log)
+	return persistentRunner.AdoptRun(ctx, exe, record, runChangeHandler, log)
+}
+
+func (r *TestProcessExecutableRunner) StopPersistentProcess(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error {
+	persistentRunner, ok := r.inner.(controllers.PersistentExecutableRunner)
+	if !ok {
+		return fmt.Errorf("inner test process runner does not support persistent process stop")
+	}
+
+	return persistentRunner.StopPersistentProcess(ctx, exe, record, log)
+}
+
+func (r *TestProcessExecutableRunner) CheckProcessRunning(handle process.ProcessHandle) error {
+	persistentRunner, ok := r.inner.(controllers.PersistentExecutableRunner)
+	if !ok {
+		return fmt.Errorf("inner test process runner does not support persistent process liveness checks")
+	}
+
+	return persistentRunner.CheckProcessRunning(handle)
 }
 
 var _ controllers.ExecutableRunner = (*TestProcessExecutableRunner)(nil)
 var _ controllers.PersistentExecutableRunner = (*TestProcessExecutableRunner)(nil)
+var _ controllers.ExecutableOutputCleanupRunner = (*TestProcessExecutableRunner)(nil)

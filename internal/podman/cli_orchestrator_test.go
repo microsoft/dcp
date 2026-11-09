@@ -7,13 +7,21 @@ package podman
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/require"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/pubsub"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 func TestInspectedContainerDeserialization(t *testing.T) {
@@ -71,18 +79,747 @@ func TestInspectedContainerDeserialization(t *testing.T) {
 	}, ct.Networks)
 }
 
+func TestUnmarshalInspectedNetworkReportsIPv6(t *testing.T) {
+	t.Parallel()
+
+	var network containers.InspectedNetwork
+	unmarshalErr := unmarshalNetwork(&podmanInspectedNetwork{
+		Id:         "network-id",
+		Name:       "ipv6-network",
+		Driver:     "bridge",
+		EnableIPv6: true,
+	}, &network)
+
+	require.NoError(t, unmarshalErr)
+	require.True(t, network.IPv6)
+}
+
+func TestApplyListContainersOptions(t *testing.T) {
+	t.Parallel()
+
+	args := applyListContainersOptions(
+		[]string{"container", "ls", "--no-trunc"},
+		containers.ListContainersOptions{
+			All: true,
+			Filters: containers.ListContainersFilters{
+				LabelFilters:   []containers.LabelFilter{{Key: "owner", Value: "dcp"}},
+				NetworkFilters: []string{"network-id"},
+			},
+		},
+	)
+
+	require.Equal(t, []string{
+		"container", "ls", "--no-trunc", "--all",
+		"--filter", "label=owner=dcp",
+		"--filter", "network=network-id",
+	}, args)
+}
+
+func TestUnmarshalListedContainerUsesFirstName(t *testing.T) {
+	t.Parallel()
+
+	var listed containers.ListedContainer
+	unmarshalErr := unmarshalListedContainer(&podmanListedContainer{
+		Id:    "container-id",
+		Names: []string{"container-name", "alternate-name"},
+	}, &listed)
+
+	require.NoError(t, unmarshalErr)
+	require.Equal(t, "container-id", listed.Id)
+	require.Equal(t, "container-name", listed.Name)
+}
+
+func TestPodmanNetworkEventConversion(t *testing.T) {
+	t.Parallel()
+
+	orchestrator := &PodmanCliOrchestrator{
+		networkIDs: make(map[string]networkIDCacheEntry),
+	}
+	orchestrator.rememberNetworkID("network-name", "network-id")
+
+	var event podmanEventMessage
+	unmarshalErr := json.Unmarshal([]byte(`{
+		"ID": "container-id",
+		"Name": "container-name",
+		"Network": "network-name",
+		"Status": "connect",
+		"Type": "network",
+		"Attributes": {"driver": "bridge"}
+	}`), &event)
+	require.NoError(t, unmarshalErr)
+
+	converted, convertErr := orchestrator.toNetworkEventMessage(&event)
+	require.NoError(t, convertErr)
+	require.Equal(t, containers.EventSourceNetwork, converted.Source)
+	require.Equal(t, containers.EventActionConnect, converted.Action)
+	require.Equal(t, "network-id", converted.Actor.ID)
+	require.Equal(t, "container-id", converted.Attributes["container"])
+	require.Equal(t, "container-name", converted.Attributes["name"])
+	require.Equal(t, "network-name", converted.Attributes["network"])
+	require.Equal(t, "bridge", converted.Attributes["driver"])
+}
+
+func TestPodmanNetworkEventsArgsReplayFromWatchStart(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, []string{
+		"events",
+		"--since", "3.5s",
+		"--filter", "type=network",
+		"--format", "json",
+	}, podmanNetworkEventsArgs(3500*time.Millisecond))
+}
+
+func TestPodmanNetworkRemoveEventIsNormalized(t *testing.T) {
+	t.Parallel()
+
+	orchestrator := &PodmanCliOrchestrator{
+		networkIDs: make(map[string]networkIDCacheEntry),
+	}
+	event := podmanEventMessage{
+		Source:  containers.EventSourceNetwork,
+		ID:      "network-id",
+		Name:    "network-name",
+		Action:  containers.EventAction("remove"),
+		Network: "network-name",
+	}
+
+	converted, convertErr := orchestrator.toNetworkEventMessage(&event)
+	require.NoError(t, convertErr)
+	require.Equal(t, containers.EventActionDestroy, converted.Action)
+	require.Equal(t, "network-id", converted.Actor.ID)
+}
+
+func TestPodmanContainerRemoveEventIsNormalized(t *testing.T) {
+	t.Parallel()
+
+	event := podmanEventMessage{
+		Source: containers.EventSourceContainer,
+		ID:     "container-id",
+		Name:   "container-name",
+		Action: containers.EventActionRemove,
+	}
+
+	converted := event.ToEventMessage()
+	require.Equal(t, containers.EventSourceContainer, converted.Source)
+	require.Equal(t, containers.EventActionDestroy, converted.Action)
+	require.Equal(t, "container-id", converted.Actor.ID)
+	require.Equal(t, "container-name", converted.Attributes["name"])
+}
+
+func TestPodmanNetworkEventCacheHandlesNameReuse(t *testing.T) {
+	t.Parallel()
+
+	orchestrator := &PodmanCliOrchestrator{
+		networkIDs: make(map[string]networkIDCacheEntry),
+	}
+	orchestrator.rememberNetworkID("network-name", "old-network-id")
+
+	created, createErr := orchestrator.toNetworkEventMessage(&podmanEventMessage{
+		Source: containers.EventSourceNetwork,
+		ID:     "new-network-id",
+		Name:   "network-name",
+		Action: containers.EventActionCreate,
+	})
+	require.NoError(t, createErr)
+	require.Equal(t, "new-network-id", created.Actor.ID)
+
+	connected, connectErr := orchestrator.toNetworkEventMessage(&podmanEventMessage{
+		Source:  containers.EventSourceNetwork,
+		ID:      "container-id",
+		Network: "network-name",
+		Action:  containers.EventActionConnect,
+	})
+	require.NoError(t, connectErr)
+	require.Equal(t, "new-network-id", connected.Actor.ID)
+
+	destroyed, destroyErr := orchestrator.toNetworkEventMessage(&podmanEventMessage{
+		Source: containers.EventSourceNetwork,
+		ID:     "new-network-id",
+		Name:   "network-name",
+		Action: containers.EventActionRemove,
+	})
+	require.NoError(t, destroyErr)
+	require.Equal(t, containers.EventActionDestroy, destroyed.Action)
+	require.Equal(t, "new-network-id", destroyed.Actor.ID)
+
+	_, found := orchestrator.cachedNetworkID("network-name")
+	require.False(t, found)
+}
+
+func TestCreateNetworkReturnsInspectedID(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, executor.Close())
+	})
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"podman", "network", "create", "network-name"},
+		},
+		RunCommand: func(*internal_testutil.ProcessExecution) int32 {
+			return 0
+		},
+	})
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"podman", "network", "inspect", "--format", "json", "network-name"},
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			_, writeErr := execution.Cmd.Stdout.Write([]byte(`[{"name":"network-name","id":"network-id"}]`))
+			require.NoError(t, writeErr)
+			return 0
+		},
+	})
+
+	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+	networkID, createErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: "network-name",
+	})
+
+	require.NoError(t, createErr)
+	require.Equal(t, "network-id", networkID)
+	require.Len(t, executor.FindAll([]string{"podman", "network", "create", "network-name"}, "", nil), 1)
+	require.Len(t, executor.FindAll([]string{"podman", "network", "inspect", "--format", "json", "network-name"}, "", nil), 1)
+	cachedNetworkID, found := orchestrator.(*PodmanCliOrchestrator).cachedNetworkID("network-name")
+	require.True(t, found)
+	require.Equal(t, "network-id", cachedNetworkID)
+}
+
+func TestListNetworksRemembersIDs(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, executor.Close())
+	})
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"podman", "network", "ls", "--format", "json"},
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			_, writeErr := execution.Cmd.Stdout.Write([]byte(`[{"name":"network-name","id":"network-id"}]`))
+			require.NoError(t, writeErr)
+			return 0
+		},
+	})
+
+	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor).(*PodmanCliOrchestrator)
+	networks, listErr := orchestrator.ListNetworks(ctx, containers.ListNetworksOptions{})
+
+	require.NoError(t, listErr)
+	require.Len(t, networks, 1)
+	cachedNetworkID, found := orchestrator.cachedNetworkID("network-name")
+	require.True(t, found)
+	require.Equal(t, "network-id", cachedNetworkID)
+}
+
+func TestInspectNetworksDoesNotOverwriteNewerCacheEntry(t *testing.T) {
+	t.Parallel()
+
+	testDelayedNetworkLookupDoesNotOverwriteNewerCacheEntry(
+		t,
+		[]string{"podman", "network", "inspect", "--format", "json", "network-name"},
+		`[{"name":"network-name","id":"old-network-id"}]`,
+		func(ctx context.Context, orchestrator *PodmanCliOrchestrator) error {
+			_, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+				Networks: []string{"network-name"},
+			})
+			return inspectErr
+		},
+	)
+}
+
+func TestListNetworksDoesNotOverwriteNewerCacheEntry(t *testing.T) {
+	t.Parallel()
+
+	testDelayedNetworkLookupDoesNotOverwriteNewerCacheEntry(
+		t,
+		[]string{"podman", "network", "ls", "--format", "json"},
+		`[{"name":"network-name","id":"old-network-id"}]`,
+		func(ctx context.Context, orchestrator *PodmanCliOrchestrator) error {
+			_, listErr := orchestrator.ListNetworks(ctx, containers.ListNetworksOptions{})
+			return listErr
+		},
+	)
+}
+
+func testDelayedNetworkLookupDoesNotOverwriteNewerCacheEntry(
+	t *testing.T,
+	command []string,
+	output string,
+	lookup func(context.Context, *PodmanCliOrchestrator) error,
+) {
+	t.Helper()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, executor.Close())
+	})
+
+	lookupEntered := make(chan struct{})
+	releaseLookup := make(chan struct{})
+	var releaseLookupOnce sync.Once
+	releaseLookupFunc := func() {
+		releaseLookupOnce.Do(func() {
+			close(releaseLookup)
+		})
+	}
+	t.Cleanup(releaseLookupFunc)
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: command,
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			close(lookupEntered)
+			<-releaseLookup
+			_, writeErr := execution.Cmd.Stdout.Write([]byte(output))
+			require.NoError(t, writeErr)
+			return 0
+		},
+	})
+
+	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor).(*PodmanCliOrchestrator)
+	orchestrator.rememberNetworkID("network-name", "old-network-id")
+
+	lookupResults := make(chan error, 1)
+	go func() {
+		lookupResults <- lookup(ctx, orchestrator)
+	}()
+
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case <-lookupEntered:
+	}
+
+	destroyed, destroyErr := orchestrator.toNetworkEventMessage(&podmanEventMessage{
+		Source: containers.EventSourceNetwork,
+		ID:     "old-network-id",
+		Name:   "network-name",
+		Action: containers.EventActionRemove,
+	})
+	require.NoError(t, destroyErr)
+	require.Equal(t, "old-network-id", destroyed.Actor.ID)
+
+	created, createErr := orchestrator.toNetworkEventMessage(&podmanEventMessage{
+		Source: containers.EventSourceNetwork,
+		ID:     "new-network-id",
+		Name:   "network-name",
+		Action: containers.EventActionCreate,
+	})
+	require.NoError(t, createErr)
+	require.Equal(t, "new-network-id", created.Actor.ID)
+
+	releaseLookupFunc()
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case lookupErr := <-lookupResults:
+		require.NoError(t, lookupErr)
+	}
+
+	cachedNetworkID, found := orchestrator.cachedNetworkID("network-name")
+	require.True(t, found)
+	require.Equal(t, "new-network-id", cachedNetworkID)
+	require.Len(t, executor.FindAll(command, "", nil), 1)
+}
+
+func TestBuildImageUsesIIDFile(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, executor.Close())
+	})
+	expectedCommand := []string{
+		"podman", "build",
+		"--iidfile", "image.iid",
+		"-t", "image:tag",
+		"context",
+	}
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: expectedCommand,
+		},
+		RunCommand: func(*internal_testutil.ProcessExecution) int32 {
+			return 0
+		},
+	})
+
+	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+	buildErr := orchestrator.BuildImage(ctx, containers.BuildImageOptions{
+		IidFile: "image.iid",
+		ContainerBuildContext: &containers.ContainerBuildContext{
+			Context: "context",
+			Tags:    []string{"image:tag"},
+		},
+	})
+
+	require.NoError(t, buildErr)
+	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
+}
+
+// Verifies that PullImage captures human-readable output and retries transient identity inspection
+// failures without repeating the successful pull.
+func TestPullImageStreamsOutputAndRetriesInspection(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, executor.Close())
+	})
+	expectedCommand := []string{
+		"podman", "image", "pull", "example.test/test/image:latest",
+	}
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: expectedCommand,
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			_, writeErr := execution.Cmd.Stderr.Write([]byte("Copying blob layer\n"))
+			require.NoError(t, writeErr)
+			return 0
+		},
+	})
+	inspectCommand := []string{"podman", "image", "inspect", "--format", "json", "example.test/test/image:latest"}
+	var inspectionAttempts atomic.Int32
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{Command: inspectCommand},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			if inspectionAttempts.Add(1) <= 2 {
+				_, stderrErr := execution.Cmd.Stderr.Write([]byte("Error: example.test/test/image:latest: image not known\n"))
+				require.NoError(t, stderrErr)
+				return 1
+			}
+			_, writeErr := execution.Cmd.Stdout.Write([]byte("[{\"Id\":\"sha256:image-id\"}]\n"))
+			require.NoError(t, writeErr)
+			return 0
+		},
+	})
+	var output bytes.Buffer
+
+	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+	imageID, pullErr := orchestrator.PullImage(ctx, containers.PullImageOptions{
+		Image:                "example.test/test/image:latest",
+		StreamCommandOptions: containers.StreamCommandOptions{StdErrStream: usvc_io.NopWriteCloser(&output)},
+	})
+
+	require.NoError(t, pullErr)
+	require.Equal(t, "sha256:image-id", imageID)
+	require.Equal(t, "Copying blob layer\n", output.String())
+	require.Len(t, executor.FindAll(inspectCommand, "", nil), 3)
+	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
+}
+
+// Verifies that PullImage preserves failed-command diagnostics, closes both output streams,
+// and does not inspect or return an image identity after a failed pull.
+func TestPullImageFailurePreservesDiagnosticsAndClosesStreams(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() { require.NoError(t, executor.Close()) })
+	pullCommand := []string{"podman", "image", "pull", "example.test/image:latest"}
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{Command: pullCommand},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			_, stdoutErr := execution.Cmd.Stdout.Write([]byte("Pulling layers\n"))
+			require.NoError(t, stdoutErr)
+			_, stderrErr := execution.Cmd.Stderr.Write([]byte("registry connection failed\n"))
+			require.NoError(t, stderrErr)
+			return 1
+		},
+	})
+	stdout, stderr := testutil.NewBufferWriter(), testutil.NewBufferWriter()
+	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+	imageID, pullErr := orchestrator.PullImage(ctx, containers.PullImageOptions{
+		Image:                "example.test/image:latest",
+		StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
+	})
+	require.ErrorContains(t, pullErr, "non-zero exit code 1")
+	require.Empty(t, imageID)
+	require.Equal(t, "Pulling layers\n", string(stdout.Bytes()))
+	require.Equal(t, "registry connection failed\n", string(stderr.Bytes()))
+	select {
+	case <-stdout.Closed():
+	default:
+		require.FailNow(t, "pull did not close stdout")
+	}
+	select {
+	case <-stderr.Closed():
+	default:
+		require.FailNow(t, "pull did not close stderr")
+	}
+	require.Len(t, executor.FindAll(pullCommand, "", nil), 1)
+	require.Empty(t, executor.FindAll([]string{"podman", "image", "inspect", "--format", "json", "example.test/image:latest"}, "", nil))
+}
+
+func TestResolveNetworkEventMessageInspectsCacheMiss(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, executor.Close())
+	})
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"podman", "network", "inspect", "--format", "json", "network-name"},
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			_, writeErr := execution.Cmd.Stdout.Write([]byte(`[{"name":"network-name","id":"network-id"}]`))
+			require.NoError(t, writeErr)
+			return 0
+		},
+	})
+
+	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor).(*PodmanCliOrchestrator)
+	_, cacheMissErr, resolution := orchestrator.normalizeNetworkEventMessage(&podmanEventMessage{
+		Source:  containers.EventSourceNetwork,
+		ID:      "container-id",
+		Network: "network-name",
+		Action:  containers.EventActionConnect,
+	})
+	require.ErrorIs(t, cacheMissErr, errNetworkIDNotCached)
+	require.NotNil(t, resolution)
+	message, resolveErr := orchestrator.resolveNetworkEventMessage(ctx, &podmanEventMessage{
+		Source:  containers.EventSourceNetwork,
+		ID:      "container-id",
+		Network: "network-name",
+		Action:  containers.EventActionConnect,
+	}, *resolution)
+
+	require.NoError(t, resolveErr)
+	require.Equal(t, "network-id", message.Actor.ID)
+	require.Equal(t, "container-id", message.Attributes["container"])
+	require.Len(t, executor.FindAll([]string{"podman", "network", "inspect", "--format", "json", "network-name"}, "", nil), 1)
+}
+
+func TestResolveNetworkEventMessageDoesNotOverwriteNewerCacheEntry(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, executor.Close())
+	})
+	inspectEntered := make(chan struct{})
+	releaseInspect := make(chan struct{})
+	var releaseInspectOnce sync.Once
+	releaseInspectFunc := func() {
+		releaseInspectOnce.Do(func() {
+			close(releaseInspect)
+		})
+	}
+	t.Cleanup(releaseInspectFunc)
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"podman", "network", "inspect", "--format", "json", "network-name"},
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			close(inspectEntered)
+			<-releaseInspect
+			_, writeErr := execution.Cmd.Stdout.Write([]byte(`[{"name":"network-name","id":"old-network-id"}]`))
+			require.NoError(t, writeErr)
+			return 0
+		},
+	})
+
+	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor).(*PodmanCliOrchestrator)
+	event := podmanEventMessage{
+		Source:  containers.EventSourceNetwork,
+		ID:      "container-id",
+		Network: "network-name",
+		Action:  containers.EventActionConnect,
+	}
+	_, cacheMissErr, resolution := orchestrator.normalizeNetworkEventMessage(&event)
+	require.ErrorIs(t, cacheMissErr, errNetworkIDNotCached)
+	require.NotNil(t, resolution)
+
+	type resolutionResult struct {
+		message containers.EventMessage
+		err     error
+	}
+	resolutionResults := make(chan resolutionResult, 1)
+	go func() {
+		message, resolveErr := orchestrator.resolveNetworkEventMessage(ctx, &event, *resolution)
+		resolutionResults <- resolutionResult{message: message, err: resolveErr}
+	}()
+
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case <-inspectEntered:
+	}
+
+	created, createErr := orchestrator.toNetworkEventMessage(&podmanEventMessage{
+		Source: containers.EventSourceNetwork,
+		ID:     "new-network-id",
+		Name:   "network-name",
+		Action: containers.EventActionCreate,
+	})
+	require.NoError(t, createErr)
+	require.Equal(t, "new-network-id", created.Actor.ID)
+	releaseInspectFunc()
+
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case result := <-resolutionResults:
+		require.Error(t, result.err)
+		require.Equal(t, "network-name", result.message.Actor.ID)
+	}
+	cachedNetworkID, found := orchestrator.cachedNetworkID("network-name")
+	require.True(t, found)
+	require.Equal(t, "new-network-id", cachedNetworkID)
+}
+
+func TestResolveAndNotifyNetworkEventDeliversUnresolvedEventOnFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, executor.Close())
+	})
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"podman", "network", "inspect", "--format", "json", "network-name"},
+		},
+		RunCommand: func(*internal_testutil.ProcessExecution) int32 {
+			return 1
+		},
+	})
+
+	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor).(*PodmanCliOrchestrator)
+	subscriptions := pubsub.NewSubscriptionSet[containers.EventMessage](nil, t.Context())
+	events := make(chan containers.EventMessage, 1)
+	subscription := subscriptions.Subscribe(events)
+	t.Cleanup(subscription.Cancel)
+	orchestrator.networkEventResolutionSlots <- struct{}{}
+	_, cacheMissErr, resolution := orchestrator.normalizeNetworkEventMessage(&podmanEventMessage{
+		Source:  containers.EventSourceNetwork,
+		ID:      "container-id",
+		Network: "network-name",
+		Action:  containers.EventActionDisconnect,
+	})
+	require.ErrorIs(t, cacheMissErr, errNetworkIDNotCached)
+	require.NotNil(t, resolution)
+
+	orchestrator.resolveAndNotifyNetworkEvent(ctx, subscriptions, podmanEventMessage{
+		Source:  containers.EventSourceNetwork,
+		ID:      "container-id",
+		Network: "network-name",
+		Action:  containers.EventActionDisconnect,
+	}, "event data", *resolution)
+
+	select {
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	case event := <-events:
+		require.Equal(t, "network-name", event.Actor.ID)
+		require.Equal(t, "container-id", event.Attributes["container"])
+	}
+	require.Empty(t, orchestrator.networkEventResolutionSlots)
+}
+
+func TestBackgroundStatusUpdatesRefresh(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, executor.Close())
+	})
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"podman", "container", "ls", "--last", "1", "--quiet"},
+		},
+		RunCommand: func(*internal_testutil.ProcessExecution) int32 {
+			return 0
+		},
+	})
+	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+	backgroundCtx, backgroundCancel := context.WithCancel(ctx)
+	defer backgroundCancel()
+	orchestrator.EnsureBackgroundStatusUpdates(backgroundCtx)
+
+	statusCommand := []string{"podman", "container", "ls", "--last", "1", "--quiet"}
+	_, refreshErr := internal_testutil.WaitForCommand(executor, ctx, statusCommand, "", nil)
+	require.NoError(t, refreshErr)
+
+	status := orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
+	require.True(t, status.IsHealthy(), "expected healthy cached status: %+v", status)
+	require.Len(t, executor.FindAll(statusCommand, "", nil), 1)
+}
+
+func TestRemoveImagesReturnsRequestedIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, executor.Close())
+	})
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"podman", "image", "rm", "--force"},
+		},
+		RunCommand: func(*internal_testutil.ProcessExecution) int32 {
+			return 0
+		},
+	})
+
+	orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+	requested := []string{"example.test/first:latest", "sha256:0123456789"}
+	removed, removeErr := orchestrator.RemoveImages(ctx, containers.RemoveImagesOptions{
+		Images: requested,
+		Force:  true,
+	})
+
+	require.NoError(t, removeErr)
+	require.Equal(t, requested, removed)
+	require.Len(t, executor.FindAll([]string{"podman", "image", "rm", "--force"}, "", nil), len(requested))
+}
+
+func TestIsBuiltInNetwork(t *testing.T) {
+	t.Parallel()
+
+	orchestrator := &PodmanCliOrchestrator{}
+	require.True(t, orchestrator.IsBuiltInNetwork("podman"))
+	require.False(t, orchestrator.IsBuiltInNetwork("bridge"))
+	require.False(t, orchestrator.IsBuiltInNetwork("host"))
+	require.False(t, orchestrator.IsBuiltInNetwork("none"))
+	require.False(t, orchestrator.IsBuiltInNetwork("application"))
+}
+
 func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
-		mount    apiv1.VolumeMount
+		mount    containers.CreateContainerVolumeMount
 		wantArgs []string
 	}{
 		{
 			name: "named volume includes src",
-			mount: apiv1.VolumeMount{
-				Type:   apiv1.NamedVolumeMount,
+			mount: containers.CreateContainerVolumeMount{
+				Type:   containers.NamedVolumeMount,
 				Source: "myvolume",
 				Target: "/data",
 			},
@@ -90,8 +827,8 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "anonymous volume omits src",
-			mount: apiv1.VolumeMount{
-				Type:   apiv1.NamedVolumeMount,
+			mount: containers.CreateContainerVolumeMount{
+				Type:   containers.NamedVolumeMount,
 				Source: "",
 				Target: "/data",
 			},
@@ -99,8 +836,8 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "named volume readonly",
-			mount: apiv1.VolumeMount{
-				Type:     apiv1.NamedVolumeMount,
+			mount: containers.CreateContainerVolumeMount{
+				Type:     containers.NamedVolumeMount,
 				Source:   "myvolume",
 				Target:   "/data",
 				ReadOnly: true,
@@ -109,8 +846,8 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "anonymous volume readonly",
-			mount: apiv1.VolumeMount{
-				Type:     apiv1.NamedVolumeMount,
+			mount: containers.CreateContainerVolumeMount{
+				Type:     containers.NamedVolumeMount,
 				Source:   "",
 				Target:   "/data",
 				ReadOnly: true,
@@ -123,8 +860,67 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			options := containers.CreateContainerOptions{}
-			options.VolumeMounts = []apiv1.VolumeMount{tc.mount}
+			options.VolumeMounts = []containers.CreateContainerVolumeMount{tc.mount}
 			args := applyCreateContainerOptions([]string{}, options)
+			require.Equal(t, tc.wantArgs, args)
+		})
+	}
+}
+
+func TestApplyCreateContainerOptionsNetworks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		options  containers.CreateContainerOptions
+		wantArgs []string
+	}{
+		{
+			name: "single network without aliases",
+			options: containers.CreateContainerOptions{
+				Networks: []containers.CreateContainerNetworkOptions{
+					{Name: "network-a"},
+				},
+			},
+			wantArgs: []string{"--network", "network-a"},
+		},
+		{
+			name: "single network with aliases",
+			options: containers.CreateContainerOptions{
+				Networks: []containers.CreateContainerNetworkOptions{
+					{
+						Name:    "network-a",
+						Aliases: []string{"alias-a", "alias-b"},
+					},
+				},
+			},
+			wantArgs: []string{"--network", "network-a:alias=alias-a,alias=alias-b"},
+		},
+		{
+			name: "multiple networks with aliases",
+			options: containers.CreateContainerOptions{
+				Networks: []containers.CreateContainerNetworkOptions{
+					{
+						Name:    "network-a",
+						Aliases: []string{"alias-a", "alias-b"},
+					},
+					{
+						Name:    "network-b",
+						Aliases: []string{"alias-c"},
+					},
+				},
+			},
+			wantArgs: []string{
+				"--network", "network-a:alias=alias-a,alias=alias-b",
+				"--network", "network-b:alias=alias-c",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			args := applyCreateContainerOptions([]string{}, tc.options)
 			require.Equal(t, tc.wantArgs, args)
 		})
 	}

@@ -63,6 +63,8 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 		rootCmd.AddCommand(cmd)
 	}
 
+	rootCmd.AddCommand(NewCleanupCommand(log))
+
 	// Add dcpctrl sub-commands
 	rootCmd.AddCommand(dcpctrl_cmds.NewRunControllersCommand(log))
 
@@ -81,6 +83,12 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 
 	if cmd, err = dcpproc_cmds.NewStopProcessTreeCommand(log.Logger); err != nil {
 		return nil, fmt.Errorf("could not set up 'stop-process-tree' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
+	}
+
+	if cmd, err = dcpproc_cmds.NewForkProcessCommand(log.Logger); err != nil {
+		return nil, fmt.Errorf("could not set up 'fork-process' command: %w", err)
 	} else {
 		rootCmd.AddCommand(cmd)
 	}

@@ -64,7 +64,7 @@ var (
 	portRangeOverlapReported  bool
 	packageMruPortFile        *mruPortFile
 	packageStateStore         *statestore.Store
-	packageStateStoreOwner    process.ProcessTreeItem
+	packageStateStoreOwner    process.ProcessHandle
 	programInstanceID         string
 	ipVersionPreference       IpVersionPreference
 	getAllLocalIpsOnce        func() ([]net.IP, error)
@@ -109,7 +109,7 @@ func init() {
 	}
 }
 
-func ConfigureStateStorePortAllocator(store *statestore.Store, owner process.ProcessTreeItem) {
+func ConfigureStateStorePortAllocator(store *statestore.Store, owner process.ProcessHandle) {
 	portAllocatorLock.Lock()
 	defer portAllocatorLock.Unlock()
 
