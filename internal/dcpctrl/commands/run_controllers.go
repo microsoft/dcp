@@ -473,7 +473,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 				close(mgrRunResultCh)
 			}()
 
-			mgrRunErr = mgr.Start(ctrlCtx)
+			mgrRunErr = controllers.StartControllerManager(ctrlCtx, mgr)
 		}()
 
 		<-ctrlCtx.Done()
