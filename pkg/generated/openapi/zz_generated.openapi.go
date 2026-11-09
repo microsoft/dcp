@@ -4067,7 +4067,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 					},
 					"errorMessage": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Human-readable explanation for why the tunnel preparation failed (if it did).",
+							Description: "Human-readable explanation for the current tunnel failure, if any.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

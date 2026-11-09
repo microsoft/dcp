@@ -84,6 +84,9 @@ const (
 
 	// Tunnel is being prepared, or is waiting for required services to become ready.
 	TunnelStateNotReady TunnelState = "NotReady"
+
+	// Tunnel deletion has been requested and is being retried. Existing streams may remain active.
+	TunnelStateDeleting TunnelState = "Deleting"
 )
 
 // TunnelConfiguration defines a single tunnel enabled by a ContainerNetworkTunnelProxy.
@@ -123,7 +126,7 @@ type TunnelStatus struct {
 	// Current state of the tunnel.
 	State TunnelState `json:"state"`
 
-	// Human-readable explanation for why the tunnel preparation failed (if it did).
+	// Human-readable explanation for the current tunnel failure, if any.
 	ErrorMessage string `json:"errorMessage,omitempty"`
 
 	// Addresses on the container network that client proxy is listening on for this tunnel.

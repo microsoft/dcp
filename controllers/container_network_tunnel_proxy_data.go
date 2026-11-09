@@ -184,7 +184,7 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 
 	updated := false
 
-	if tpd.clientPhysicalUID != other.clientPhysicalUID {
+	if other.clientPhysicalUID != "" && tpd.clientPhysicalUID != other.clientPhysicalUID {
 		tpd.clientPhysicalUID = other.clientPhysicalUID
 		updated = true
 	}

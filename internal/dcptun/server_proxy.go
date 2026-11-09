@@ -336,6 +336,16 @@ func (sp *ServerProxy) runStreamsConnection(deadline time.Time) (bool, error) {
 		}
 		return false, headerErr
 	}
+	if headers == nil {
+		_, recvErr := newStreamsConn.Recv()
+		if attemptCtx.Err() != nil {
+			return false, context.Cause(attemptCtx)
+		}
+		if recvErr == nil {
+			return false, status.Error(codes.DataLoss, "tunnel control stream ended before readiness without reporting a status")
+		}
+		return false, recvErr
+	}
 	if !establishmentWatchdog.Stop() {
 		return false, context.DeadlineExceeded
 	}

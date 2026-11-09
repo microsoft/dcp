@@ -56,6 +56,7 @@ type TestEnvironmentInfo struct {
 type TestEnvironmentOptions struct {
 	DecoratePhysicalProcessExecutor func(process.Executor) process.Executor
 	ConfigureTunnelProxy            func(*controllers.ContainerNetworkTunnelProxyReconcilerConfig)
+	DecorateTunnelProxyClient       func(ctrl_client.Client) ctrl_client.Client
 	DecorateAPIClient               func(ctrl_client.Client) ctrl_client.Client
 	WorkloadID                      commonapi.WorkloadID
 	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
@@ -494,6 +495,13 @@ func StartTestEnvironmentWithOptions(
 	var tcc *ctrl_testutil.TestTunnelControlClient
 
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
+		tunnelProxyClient := mgr.GetClient()
+		if options.DecorateTunnelProxyClient != nil {
+			tunnelProxyClient = options.DecorateTunnelProxyClient(tunnelProxyClient)
+			if tunnelProxyClient == nil {
+				return nil, nil, fmt.Errorf("tunnel proxy API client decorator returned nil")
+			}
+		}
 		tcc = ctrl_testutil.NewTestTunnelControlClient()
 		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
 			ProcessExecutor:              pex,
@@ -507,7 +515,7 @@ func StartTestEnvironmentWithOptions(
 
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(
 			ctx,
-			mgr.GetClient(),
+			tunnelProxyClient,
 			mgr.GetAPIReader(),
 			tprOpts,
 			log.WithName("TunnelProxyReconciler"),

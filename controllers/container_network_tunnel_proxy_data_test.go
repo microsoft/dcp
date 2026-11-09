@@ -117,6 +117,12 @@ func TestContainerNetworkTunnelProxyDataRecoveryGeneration(t *testing.T) {
 	clone.publishedPorts["service"] = 45003
 	require.Equal(t, int32(45002), current.publishedPorts["service"])
 
+	missingIdentity := current.Clone()
+	missingIdentity.clientPhysicalUID = ""
+	missingIdentity.Message = "state update without physical identity"
+	require.True(t, current.UpdateFrom(missingIdentity))
+	require.Equal(t, types.UID("current-container"), current.clientPhysicalUID)
+
 	stale := current.Clone()
 	stale.pairGeneration = 1
 	stale.State = apiv1.ContainerNetworkTunnelProxyStateFailed

@@ -248,9 +248,9 @@ func (cp *ClientProxy) DeleteTunnel(ctx context.Context, tr *proto.TunnelRef) (*
 			break
 		}
 	}
+	_ = td.listener.Close()
 	if len(td.streams) == 0 {
 		td.tunnelCtxCancel()
-		_ = td.listener.Close()
 		delete(cp.tunnels, tid)
 	}
 

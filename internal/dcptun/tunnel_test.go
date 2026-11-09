@@ -92,6 +92,70 @@ func TestTunnelServerAndClientProxies(t *testing.T) {
 	require.NoError(t, tunnelDeleteErr)
 }
 
+// Verifies that deleting a tunnel releases its listener for immediate rebinding
+// while preserving data streams that were already established.
+func TestTunnelDeletionReleasesListenerAndPreservesStreams(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{})
+	defer pair.cleanup()
+	echoListener, echoPort := setupEchoServer(t)
+	defer echoListener.Close()
+
+	request := &proto.TunnelReq{
+		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:         stdproto.Int32(int32(echoPort)),
+		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+	}
+	original, prepareErr := pair.control.PrepareTunnel(ctx, request)
+	require.NoError(t, prepareErr)
+
+	var dialer net.Dialer
+	existingConnection, dialErr := dialer.DialContext(
+		ctx,
+		"tcp",
+		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, original.GetClientProxyPort()),
+	)
+	require.NoError(t, dialErr)
+	defer existingConnection.Close()
+	deadline, hasDeadline := ctx.Deadline()
+	require.True(t, hasDeadline)
+	require.NoError(t, existingConnection.SetDeadline(deadline))
+	existingReader := bufio.NewReader(existingConnection)
+	roundTripExisting := func(message string) {
+		_, writeErr := io.WriteString(existingConnection, message)
+		require.NoError(t, writeErr)
+		reply, readErr := existingReader.ReadString('\n')
+		require.NoError(t, readErr)
+		require.Equal(t, message, reply)
+	}
+	roundTripExisting("before deletion\n")
+
+	_, deleteErr := pair.control.DeleteTunnel(ctx, original.GetTunnelRef())
+	require.NoError(t, deleteErr)
+	roundTripExisting("after deletion\n")
+
+	replacement, replacementErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{
+		ServerAddress:      request.ServerAddress,
+		ServerPort:         request.ServerPort,
+		ClientProxyAddress: request.ClientProxyAddress,
+		ClientProxyPort:    stdproto.Int32(original.GetClientProxyPort()),
+	})
+	require.NoError(t, replacementErr)
+	require.NotEqual(t, original.GetTunnelRef().GetTunnelId(), replacement.GetTunnelRef().GetTunnelId())
+	require.Equal(t, original.GetClientProxyPort(), replacement.GetClientProxyPort())
+	require.NoError(t, doRoundTrip(
+		ctx,
+		networking.IPv4LocalhostDefaultAddress,
+		replacement.GetClientProxyPort(),
+		10*time.Second,
+		func() []byte { return []byte("replacement stream\n") },
+	))
+	roundTripExisting("old stream remains active\n")
+}
+
 // Runs 100 simultaneous clients making requests to a single server behind the proxy
 // until the context is cancelled (after 30 seconds).
 // The test verifies that the tunnel can handle at least 5000 connections
@@ -718,6 +782,42 @@ func TestTunnelControlReconnectBudgetBoundsReadiness(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("The abandoned control RPC handler did not stop")
 	}
+}
+
+// Verifies that a trailers-only transient failure before readiness is recovered
+// using the RPC status returned by Recv rather than failing the proxy pair.
+func TestTunnelControlReconnectsAfterHeaderlessTransientFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	var attempts atomic.Uint32
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{
+		server: ServerProxyConfig{ReconnectTimeout: 3 * time.Second},
+		controlServerInterceptor: func(server any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+			if attempts.Add(1) == 1 {
+				return status.Error(codes.Unavailable, "transient readiness failure")
+			}
+			return handler(server, stream)
+		},
+	})
+	defer pair.cleanup()
+	echoListener, echoPort := setupEchoServer(t)
+	defer echoListener.Close()
+
+	spec, prepareErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{
+		ServerPort: stdproto.Int32(int32(echoPort)),
+	})
+	require.NoError(t, prepareErr)
+	require.NoError(t, doRoundTrip(
+		ctx,
+		networking.IPv4LocalhostDefaultAddress,
+		spec.GetClientProxyPort(),
+		10*time.Second,
+		func() []byte { return []byte("reconnected after headerless failure\n") },
+	))
+	require.GreaterOrEqual(t, attempts.Load(), uint32(2))
+	require.NoError(t, pair.server.Err())
 }
 
 // Verifies that cancelling an ambiguous stream handshake closes its pending
