@@ -224,6 +224,9 @@ func (runtime *projectDebugRuntime) launch(
 		execution.status.Conditions = debugConditions("LaunchFailed", launchErr.Error(), false, project.Generation)
 		publishErr := runtime.publish(project, execution.status.DeepCopy(), nil)
 		execution.statusMu.Unlock()
+		if execution.handle.Pid > 0 {
+			return execution, nil, errors.Join(launchErr, publishErr)
+		}
 		return nil, nil, errors.Join(launchErr, publishErr)
 	}
 	args := append([]string(nil), project.Spec.DebugAdapter.Args...)

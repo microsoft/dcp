@@ -185,40 +185,69 @@ func TestProjectDebugServingWaitsForPrerequisites(t *testing.T) {
 	}
 }
 
-// Verifies that failed TCP transport setup returns before upgrade and stops the launched process,
-// with terminal execution/session observations and no retained idle provider.
+// Verifies that failed TCP setup returns before upgrade and retains an unfinished provider
+// fence when cleanup is unconfirmed, while confirmed cleanup permits a subsequent launch.
 func TestProjectDebugServingSetupTimeout(t *testing.T) {
-	ctx, cancel := testutil.GetTestContext(t, time.Minute)
-	defer cancel()
-	apiClient, config, executor := startDebugServingTest(t, ctx)
-	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "stall")
-	require.NoError(t, apiClient.Delete(ctx, project))
-	project.ResourceVersion, project.UID = "", ""
-	project.Spec.DebugAdapter.ConnectionTimeout = &metav1.Duration{Duration: 100 * time.Millisecond}
-	project.Status = apiv2.ProjectStatus{}
-	require.NoError(t, apiClient.Create(ctx, project))
-	project.Status.Debug = &apiv2.ProjectDebugStatus{PrerequisitesReady: true}
-	require.NoError(t, apiClient.Status().Update(ctx, project))
-	connection, connectErr := connectDebugServing(ctx, config, project)
-	require.Error(t, connectErr)
-	require.Nil(t, connection)
-	var observed *apiv2.Project
-	pollErr := wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		current := &apiv2.Project{}
-		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
-			return false, getErr
-		}
-		if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 1 || len(current.Status.Debug.Executions) != 1 {
-			return false, nil
-		}
-		observed = current
-		return current.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseFailed &&
-			current.Status.Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseFailed, nil
-	})
-	require.NotNil(t, observed)
-	require.NoError(t, pollErr, "last observed debug status: %+v", observed.Status.Debug)
-	for _, execution := range executor.FindAll([]string{"test-adapter"}, "", nil) {
-		require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(process.NewHandle(execution.PID, execution.StartedAt))))
+	for _, unconfirmed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unconfirmed=%t", unconfirmed), func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			defer cancel()
+			apiClient, config, executor := startDebugServingTest(t, ctx)
+			project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "stall")
+			require.NoError(t, apiClient.Delete(ctx, project))
+			project.ResourceVersion, project.UID = "", ""
+			project.Spec.DebugAdapter.ConnectionTimeout = &metav1.Duration{Duration: 100 * time.Millisecond}
+			project.Status = apiv2.ProjectStatus{}
+			require.NoError(t, apiClient.Create(ctx, project))
+			project.Status.Debug = &apiv2.ProjectDebugStatus{PrerequisitesReady: true}
+			require.NoError(t, apiClient.Status().Update(ctx, project))
+			executor.unconfirmed.Store(unconfirmed)
+			defer executor.unconfirmed.Store(false)
+			for attempt := 1; attempt <= 2; attempt++ {
+				connectCtx, cancelConnect := context.WithTimeout(ctx, time.Second)
+				connection, connectErr := connectDebugServing(connectCtx, config, project)
+				cancelConnect()
+				if connection != nil {
+					require.NoError(t, connection.Close())
+				}
+				require.Error(t, connectErr)
+				expectedExecutions := attempt
+				if unconfirmed {
+					expectedExecutions = 1
+				}
+				executions := executor.FindAll([]string{"test-adapter"}, "", nil)
+				require.Len(t, executions, expectedExecutions)
+				require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+					current := &apiv2.Project{}
+					if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
+						return false, getErr
+					}
+					if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != attempt ||
+						len(current.Status.Debug.Executions) != expectedExecutions {
+						return false, nil
+					}
+					for _, session := range current.Status.Debug.Sessions {
+						if session.Phase != apiv2.ProjectDebugPhaseFailed {
+							return false, nil
+						}
+					}
+					for _, observed := range current.Status.Debug.Executions {
+						if observed.Phase != apiv2.ProjectDebugPhaseFailed || observed.FinishedAt.IsZero() != unconfirmed {
+							return false, nil
+						}
+					}
+					return true, nil
+				}))
+				for _, execution := range executions {
+					handle := process.NewHandle(execution.PID, execution.StartedAt)
+					require.True(t, process.IsProcessGoneErr(executor.TestProcessExecutor.CheckProcessRunning(handle)),
+						"injected uncertainty must not leak fixture processes")
+					if unconfirmed {
+						require.NoError(t, executor.CheckProcessRunning(handle))
+					}
+				}
+			}
+		})
 	}
 }
 
