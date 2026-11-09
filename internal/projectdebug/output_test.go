@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -147,6 +148,7 @@ func (writer *blockedDebugForwardingWriter) Write([]byte) (int, error) {
 
 // Verifies that host and container-exec output allows independent completion under backpressure,
 // and that overflow fails a blocked session and permits execution cleanup without client reads.
+// The childless echo fixture may exit during tree enumeration; its captured identity must still be gone.
 func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 	for _, placement := range []apiv2.DebugAdapterPlacement{apiv2.DebugAdapterPlacementHost, apiv2.DebugAdapterPlacementContainer} {
 		for _, overflow := range []bool{false, true} {
@@ -216,6 +218,8 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 					stopErr := execution.stop()
 					if overflow && placement == apiv2.DebugAdapterPlacementContainer {
 						require.ErrorContains(t, stopErr, "in-container adapter termination is unconfirmed")
+					} else if overflow && errors.Is(stopErr, process.ErrIncompleteProcessTree) {
+						require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(adapterHandle)))
 					} else {
 						require.NoError(t, stopErr)
 					}
@@ -284,6 +288,8 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 					stopErr := execution.stop()
 					if placement == apiv2.DebugAdapterPlacementContainer {
 						require.ErrorContains(t, stopErr, "in-container adapter termination is unconfirmed")
+					} else if errors.Is(stopErr, process.ErrIncompleteProcessTree) {
+						require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(adapterHandle)))
 					} else {
 						require.NoError(t, stopErr)
 					}
