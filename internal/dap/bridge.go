@@ -59,7 +59,7 @@ func (writer *messageWriter) send(message Message, local bool) error {
 	if message.text("type") == "request" {
 		command := message.text("command")
 		if command == "cancel" {
-			if cancelErr := writer.remapCancellation(message); cancelErr != nil {
+			if cancelErr := writer.remapRequestID(message, "arguments", true); cancelErr != nil {
 				return cancelErr
 			}
 		}
@@ -88,39 +88,54 @@ func (writer *messageWriter) send(message Message, local bool) error {
 	return writer.transport.WriteMessage(message)
 }
 
-func (writer *messageWriter) remapCancellation(message Message) error {
-	if len(message["arguments"]) == 0 {
+func (writer *messageWriter) remapRequestID(message Message, field string, toWire bool) error {
+	if len(message[field]) == 0 {
 		return nil
 	}
-	var arguments map[string]json.RawMessage
-	if decodeErr := json.Unmarshal(message["arguments"], &arguments); decodeErr != nil {
-		return fmt.Errorf("decode DAP cancellation: %w", decodeErr)
+	var properties map[string]json.RawMessage
+	if decodeErr := json.Unmarshal(message[field], &properties); decodeErr != nil {
+		return fmt.Errorf("decode DAP %s request reference: %w", field, decodeErr)
 	}
-	if raw, exists := arguments["requestId"]; exists {
-		var original int64
-		if decodeErr := json.Unmarshal(raw, &original); decodeErr != nil {
-			return fmt.Errorf("decode DAP cancellation requestId: %w", decodeErr)
+	if raw, exists := properties["requestId"]; exists {
+		var reference int64
+		if decodeErr := json.Unmarshal(raw, &reference); decodeErr != nil {
+			return fmt.Errorf("decode DAP %s requestId: %w", field, decodeErr)
 		}
-		wire := int64(0) // No outstanding match: preserve cancel's no-op semantics.
+		if reference <= 0 {
+			return fmt.Errorf("invalid DAP %s requestId", field)
+		}
+		mapped := int64(0)
 		writer.mapMu.Lock()
-		for sequence, identity := range writer.requests {
-			if !identity.local && identity.original == original {
-				wire = sequence
-				break
+		if toWire {
+			for sequence, identity := range writer.requests {
+				if !identity.local && identity.original == reference {
+					mapped = sequence
+					break
+				}
 			}
+		} else if identity, found := writer.requests[reference]; found && !identity.local {
+			mapped = identity.original
 		}
 		writer.mapMu.Unlock()
-		arguments["requestId"] = json.RawMessage(fmt.Sprint(wire))
-		encoded, encodeErr := json.Marshal(arguments)
-		if encodeErr != nil {
-			return fmt.Errorf("encode DAP cancellation: %w", encodeErr)
+		if mapped != 0 {
+			properties["requestId"] = json.RawMessage(fmt.Sprint(mapped))
+		} else {
+			// Cancellation without a request is a no-op; progress can be unassociated.
+			delete(properties, "requestId")
 		}
-		message["arguments"] = encoded
+		encoded, encodeErr := json.Marshal(properties)
+		if encodeErr != nil {
+			return fmt.Errorf("encode DAP %s request reference: %w", field, encodeErr)
+		}
+		message[field] = encoded
 	}
 	return nil
 }
 
 func (writer *messageWriter) remap(message Message) (bool, bool, error) {
+	if message.text("type") == "event" && message.text("event") == "progressStart" {
+		return true, false, writer.remapRequestID(message, "body", false)
+	}
 	if message.text("type") != "response" {
 		return true, false, nil
 	}

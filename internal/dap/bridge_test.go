@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -192,6 +193,105 @@ func TestBridgeRemapsBidirectionalRequests(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
+// Verifies that Bridge translates progress and cancellation request references in both directions,
+// preserves opaque IDs, and retains request mappings until their out-of-order responses arrive.
+func TestBridgeRemapsProgressAndCancellation(t *testing.T) {
+	t.Parallel()
+	for _, direction := range []Direction{ClientToAdapter, AdapterToClient} {
+		t.Run(fmt.Sprint(direction), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			defer cancel()
+			client, adapter, done := bridgeEndpoints(t, ctx, time.Second, nil)
+			source, destination := client, adapter
+			if direction == AdapterToClient {
+				source, destination = adapter, client
+			}
+			for index := int64(0); index < 2; index++ {
+				require.NoError(t, source.WriteMessage(testRequest(71+index, "customExtension")))
+				request, requestErr := destination.ReadMessage()
+				require.NoError(t, requestErr)
+				require.EqualValues(t, index+1, request.number("seq"))
+			}
+			progress := Message{
+				"seq": json.RawMessage("91"), "type": json.RawMessage(`"event"`),
+				"event": json.RawMessage(`"progressStart"`),
+				"body":  json.RawMessage(`{"progressId":"2","requestId":2,"title":"Working","cancellable":true,"extension":{"requestId":2}}`),
+			}
+			require.NoError(t, destination.WriteMessage(progress))
+			forwardedProgress, progressErr := source.ReadMessage()
+			require.NoError(t, progressErr)
+			require.JSONEq(t, `{"progressId":"2","requestId":72,"title":"Working","cancellable":true,"extension":{"requestId":2}}`,
+				string(forwardedProgress["body"]))
+			cancellation := testRequest(73, "cancel")
+			cancellation["arguments"] = json.RawMessage(`{"requestId":72,"progressId":"2","extension":{"requestId":72}}`)
+			require.NoError(t, source.WriteMessage(cancellation))
+			forwardedCancel, cancelErr := destination.ReadMessage()
+			require.NoError(t, cancelErr)
+			require.JSONEq(t, `{"requestId":2,"progressId":"2","extension":{"requestId":72}}`, string(forwardedCancel["arguments"]))
+			require.NoError(t, destination.WriteMessage(testResponse(92, forwardedCancel.number("seq"), "cancel")))
+			cancelResponse, cancelResponseErr := source.ReadMessage()
+			require.NoError(t, cancelResponseErr)
+			require.EqualValues(t, 73, cancelResponse.number("request_seq"))
+			require.NoError(t, destination.WriteMessage(progress))
+			repeatedProgress, repeatedProgressErr := source.ReadMessage()
+			require.NoError(t, repeatedProgressErr)
+			require.JSONEq(t, string(forwardedProgress["body"]), string(repeatedProgress["body"]))
+			for _, request := range []int64{2, 1} {
+				require.NoError(t, destination.WriteMessage(testResponse(93+request, request, "customExtension")))
+				response, responseErr := source.ReadMessage()
+				require.NoError(t, responseErr)
+				require.EqualValues(t, 70+request, response.number("request_seq"))
+			}
+			require.NoError(t, destination.WriteMessage(progress))
+			unmatchedProgress, unmatchedProgressErr := source.ReadMessage()
+			require.NoError(t, unmatchedProgressErr)
+			require.JSONEq(t, `{"progressId":"2","title":"Working","cancellable":true,"extension":{"requestId":2}}`,
+				string(unmatchedProgress["body"]))
+			progress["body"] = json.RawMessage(`{"progressId":"2","title":"General work","threadId":2,"extension":{"requestId":2}}`)
+			require.NoError(t, destination.WriteMessage(progress))
+			unassociatedProgress, unassociatedProgressErr := source.ReadMessage()
+			require.NoError(t, unassociatedProgressErr)
+			require.JSONEq(t, string(progress["body"]), string(unassociatedProgress["body"]))
+			cancellation.setNumber("seq", 74)
+			require.NoError(t, source.WriteMessage(cancellation))
+			staleCancel, staleCancelErr := destination.ReadMessage()
+			require.NoError(t, staleCancelErr)
+			require.JSONEq(t, `{"progressId":"2","extension":{"requestId":72}}`, string(staleCancel["arguments"]))
+			require.NoError(t, adapter.Close())
+			require.NoError(t, <-done)
+		})
+	}
+}
+
+// Verifies that Bridge rejects malformed standard request references explicitly in progress
+// events and cancellation requests rather than forwarding invalid or ambiguous correlations.
+func TestBridgeRejectsInvalidRequestReferences(t *testing.T) {
+	t.Parallel()
+	for _, cancellation := range []bool{false, true} {
+		for _, reference := range []string{`"invalid"`, `null`, `0`, `-1`, `1.5`} {
+			t.Run(fmt.Sprintf("cancel=%t/requestId=%s", cancellation, reference), func(t *testing.T) {
+				t.Parallel()
+				ctx, cancel := testutil.GetTestContext(t, 0)
+				defer cancel()
+				client, adapter, done := bridgeEndpoints(t, ctx, time.Second, nil)
+				properties := json.RawMessage(`{"requestId":` + reference + `}`)
+				if cancellation {
+					message := testRequest(71, "cancel")
+					message["arguments"] = properties
+					require.NoError(t, client.WriteMessage(message))
+				} else {
+					require.NoError(t, adapter.WriteMessage(Message{
+						"seq": json.RawMessage("71"), "type": json.RawMessage(`"event"`),
+						"event": json.RawMessage(`"progressStart"`), "body": properties,
+					}))
+				}
+				require.ErrorContains(t, <-done, "requestId")
+			})
+		}
+	}
+}
+
 // Verifies that deletion injects one ordered disconnect, consumes its private response, and
 // forwards final adapter events before EOF without synthesizing completion messages.
 func TestBridgeResourceShutdownDrainsFinalEvents(t *testing.T) {
@@ -204,6 +304,15 @@ func TestBridgeResourceShutdownDrainsFinalEvents(t *testing.T) {
 	request, readErr := adapter.ReadMessage()
 	require.NoError(t, readErr)
 	require.Equal(t, "disconnect", request.text("command"))
+	progress := Message{
+		"seq": json.RawMessage("4"), "type": json.RawMessage(`"event"`),
+		"event": json.RawMessage(`"progressStart"`),
+		"body":  json.RawMessage(fmt.Sprintf(`{"progressId":"shutdown","title":"Disconnecting","requestId":%d}`, request.number("seq"))),
+	}
+	require.NoError(t, adapter.WriteMessage(progress))
+	forwardedProgress, progressErr := client.ReadMessage()
+	require.NoError(t, progressErr)
+	require.JSONEq(t, `{"progressId":"shutdown","title":"Disconnecting"}`, string(forwardedProgress["body"]))
 	require.NoError(t, adapter.WriteMessage(testResponse(5, request.number("seq"), "disconnect")))
 	require.NoError(t, adapter.WriteMessage(Message{
 		"seq": json.RawMessage("6"), "type": json.RawMessage(`"event"`),
