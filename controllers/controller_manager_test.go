@@ -8,13 +8,19 @@ package controllers
 import (
 	"context"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	clientgorest "k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
+	ctrl_cache "sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/cache/informertest"
 	ctrl_manager "sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -29,6 +35,13 @@ type managerStartupTest struct {
 	run     func(context.Context) error
 }
 
+type managerStartupGateCache struct {
+	*informertest.FakeInformers
+	started          chan context.Context
+	cacheSyncStarted chan struct{}
+	releaseCacheSync chan struct{}
+}
+
 func (mgr *managerStartupTest) Start(ctx context.Context) error {
 	mgr.started <- ctx
 	return mgr.run(ctx)
@@ -36,6 +49,22 @@ func (mgr *managerStartupTest) Start(ctx context.Context) error {
 
 func (mgr *managerStartupTest) Elected() <-chan struct{} {
 	return mgr.elected
+}
+
+func (startupCache *managerStartupGateCache) Start(ctx context.Context) error {
+	startupCache.started <- ctx
+	<-ctx.Done()
+	return nil
+}
+
+func (startupCache *managerStartupGateCache) WaitForCacheSync(ctx context.Context) bool {
+	close(startupCache.cacheSyncStarted)
+	select {
+	case <-startupCache.releaseCacheSync:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // Verifies that NewControllerManagerOptions retains context values without inheriting cancellation or deadlines and disables leader election.
@@ -57,6 +86,87 @@ func TestControllerManagerOptionsDetachCancellation(t *testing.T) {
 	require.Nil(t, context.Cause(baseCtx))
 	_, hasDeadline := baseCtx.Deadline()
 	require.False(t, hasDeadline)
+}
+
+// Verifies that StartControllerManager defers cancellation until a real manager completes cache readiness and then shuts down its cache.
+func TestControllerManagerStartupUsesRealManagerCacheReadiness(t *testing.T) {
+	testCtx, cancelTest := testutil.GetTestContext(t, 0)
+	defer cancelTest()
+	lifetimeCtx, cancelLifetime := context.WithCancel(testCtx)
+	defer cancelLifetime()
+
+	startupCache := &managerStartupGateCache{
+		FakeInformers:    &informertest.FakeInformers{},
+		started:          make(chan context.Context, 1),
+		cacheSyncStarted: make(chan struct{}),
+		releaseCacheSync: make(chan struct{}),
+	}
+	var releaseCacheSyncOnce sync.Once
+	releaseCacheSync := func() {
+		releaseCacheSyncOnce.Do(func() {
+			close(startupCache.releaseCacheSync)
+		})
+	}
+	defer releaseCacheSync()
+
+	options := NewControllerManagerOptions(lifetimeCtx, runtime.NewScheme(), logr.Discard())
+	options.MapperProvider = func(*clientgorest.Config, *http.Client) (apimeta.RESTMapper, error) {
+		return apimeta.NewDefaultRESTMapper(nil), nil
+	}
+	options.NewCache = func(*clientgorest.Config, ctrl_cache.Options) (ctrl_cache.Cache, error) {
+		return startupCache, nil
+	}
+	mgr, managerCreateErr := ctrl.NewManager(&clientgorest.Config{Host: "https://127.0.0.1"}, options)
+	require.NoError(t, managerCreateErr)
+
+	startResult := make(chan error, 1)
+	go func() {
+		startResult <- StartControllerManager(lifetimeCtx, mgr)
+	}()
+
+	var cacheCtx context.Context
+	select {
+	case cacheCtx = <-startupCache.started:
+	case <-testCtx.Done():
+		t.Fatal(testCtx.Err())
+	}
+	select {
+	case <-startupCache.cacheSyncStarted:
+	case <-testCtx.Done():
+		t.Fatal(testCtx.Err())
+	}
+	select {
+	case <-mgr.Elected():
+		t.Fatal("manager reported election before cache readiness")
+	default:
+	}
+
+	cancelLifetime()
+	require.NoError(t, cacheCtx.Err())
+	select {
+	case startErr := <-startResult:
+		t.Fatalf("manager returned before cache readiness: %v", startErr)
+	default:
+	}
+	select {
+	case <-mgr.Elected():
+		t.Fatal("manager reported election while cache readiness was blocked")
+	default:
+	}
+
+	releaseCacheSync()
+	select {
+	case startErr := <-startResult:
+		require.NoError(t, startErr)
+	case <-testCtx.Done():
+		t.Fatal(testCtx.Err())
+	}
+	select {
+	case <-mgr.Elected():
+	default:
+		t.Fatal("manager did not report election after cache readiness")
+	}
+	require.ErrorIs(t, cacheCtx.Err(), context.Canceled)
 }
 
 // Verifies that StartControllerManager skips startup for already-cancelled callers and preserves expired deadline errors.
