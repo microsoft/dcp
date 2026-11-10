@@ -470,6 +470,9 @@ func TestForkProcessCleanupSkipsStopAfterObservedChildExit(t *testing.T) {
 	}
 	childProcess, childProcessErr := child.OsProcess()
 	require.NoError(t, childProcessErr)
+	defer func() {
+		require.NoError(t, childProcess.Release())
+	}()
 	require.NoError(t, childProcess.Kill())
 	var runErr error
 	select {
