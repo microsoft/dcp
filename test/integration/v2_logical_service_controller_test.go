@@ -165,9 +165,10 @@ func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 					Spec: apiv2.LogicalServiceSpec{Protocol: protocol, Address: "127.0.0.1"}}
 				require.NoError(t, apiClient.Create(ctx, service))
 				pending := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-					return current.Status.Phase == apiv2.LogicalServicePhasePending && len(current.Status.EffectiveAddresses) == 1, nil
+					return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current) &&
+						len(current.Status.EffectiveAddresses) == 1, nil
 				})
-				requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonWaitingForEndpoints)
+				requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
 				addresses := slices.Clone(pending.Status.EffectiveAddresses)
 				require.Equal(t, "127.0.0.1", addresses[0].Address)
 				require.Positive(t, addresses[0].Port)
@@ -182,9 +183,9 @@ func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 						Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}, {Address: "[::1]", Port: 61001}}}}
 				require.NoError(t, apiClient.Create(ctx, endpoint))
 				ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-					return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+					return logicalServiceReady(current), nil
 				})
-				requireReadyCondition(t, ready.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalServiceReasonReady)
+				requireReadyCondition(t, ready.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalServiceReasonRunning)
 				require.Equal(t, addresses, ready.Status.EffectiveAddresses)
 				require.Equal(t, []proxy.Endpoint{{Address: "127.0.0.1", Port: 61000}, {Address: "[::1]", Port: 61001}},
 					listeners[0].configuration().Endpoints)
@@ -192,14 +193,14 @@ func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 				endpoint.Spec.Addresses = []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 62000}}
 				endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
 				waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-					return current.Status.Phase == apiv2.LogicalServicePhaseReady &&
+					return logicalServiceReady(current) &&
 						slices.Equal(listeners[0].configuration().Endpoints, []proxy.Endpoint{{Address: "127.0.0.1", Port: 62000}}), nil
 				})
 				require.NoError(t, apiClient.Delete(ctx, endpoint))
 				withoutEndpoints := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-					return current.Status.Phase == apiv2.LogicalServicePhasePending, nil
+					return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current), nil
 				})
-				requireReadyCondition(t, withoutEndpoints.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonWaitingForEndpoints)
+				requireReadyCondition(t, withoutEndpoints.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
 				require.Equal(t, addresses, withoutEndpoints.Status.EffectiveAddresses)
 				require.Empty(t, listeners[0].configuration().Endpoints)
 				require.NoError(t, listeners[0].lifetimeCtx.Err())
@@ -256,7 +257,7 @@ func TestV2LogicalServicePreservesUDPStreamAcrossReconciliation(t *testing.T) {
 		}}}}
 	require.NoError(t, apiClient.Create(ctx, endpoint))
 	ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+		return logicalServiceReady(current), nil
 	})
 	listeners := recorder.snapshot()
 	require.Len(t, listeners, 1)
@@ -298,7 +299,7 @@ func TestV2LogicalServicePreservesUDPStreamAcrossReconciliation(t *testing.T) {
 	endpoint.Spec.Addresses[0].Port = int32(nextBackend.LocalAddr().(*net.UDPAddr).Port)
 	endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
 	waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalServicePhaseReady &&
+		return logicalServiceReady(current) &&
 			slices.Equal(listener.configuration().Endpoints, []proxy.Endpoint{{
 				Address: "127.0.0.1", Port: endpoint.Spec.Addresses[0].Port,
 			}}), nil
@@ -350,7 +351,7 @@ func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 					Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}}}}
 				require.NoError(t, apiClient.Create(ctx, endpoint))
 				ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-					return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+					return logicalServiceReady(current), nil
 				})
 				originals := recorder.snapshot()
 				require.NotEmpty(t, originals)
@@ -361,15 +362,12 @@ func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 				original := originals[0]
 				original.stopProxy()
 				expectedAddresses := slices.Clone(ready.Status.EffectiveAddresses[1:])
-				expectedPhase := apiv2.LogicalServicePhaseUnknown
-				if len(expectedAddresses) == 0 {
-					expectedPhase = apiv2.LogicalServicePhaseFailed
-				}
+				expectedPhase := apiv2.LogicalServicePhaseFailed
 				degraded := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 					return current.Status.Phase == expectedPhase &&
 						slices.Equal(current.Status.EffectiveAddresses, expectedAddresses), nil
 				})
-				requireReadyCondition(t, degraded.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonProxyListenerUnavailable)
+				requireReadyCondition(t, degraded.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonMissing)
 				require.ErrorIs(t, original.lifetimeCtx.Err(), context.Canceled)
 				require.Len(t, recorder.snapshot(), len(originals))
 				for healthyIndex, healthy := range originals[1:] {
@@ -400,7 +398,7 @@ func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 				failed := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalServicePhaseFailed && len(current.Status.EffectiveAddresses) == 0, nil
 				})
-				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonProxyListenerUnavailable)
+				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonMissing)
 				waitControllerIdle(t, ctx, &observer.lastServiceRead)
 				require.Len(t, recorder.snapshot(), len(originals))
 
@@ -409,7 +407,7 @@ func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 				recreated := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: service.Name, Namespace: namespace.Name}, Spec: service.Spec}
 				require.NoError(t, apiClient.Create(ctx, recreated))
 				recovered := waitObjectAssumesStateEx(t, ctx, apiClient, recreated.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-					return current.Status.Phase == apiv2.LogicalServicePhaseReady &&
+					return logicalServiceReady(current) &&
 						len(current.Status.EffectiveAddresses) == len(originals), nil
 				})
 				require.NotEqual(t, ready.UID, recovered.UID)
@@ -444,7 +442,7 @@ func TestV2LogicalServiceRetriesConfigurationWithoutReplacingListener(t *testing
 				Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}}}}
 			require.NoError(t, apiClient.Create(ctx, endpoint))
 			ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+				return logicalServiceReady(current), nil
 			})
 			listeners := recorder.snapshot()
 			require.Len(t, listeners, 1)
@@ -457,11 +455,11 @@ func TestV2LogicalServiceRetriesConfigurationWithoutReplacingListener(t *testing
 				return current.Status.Phase == apiv2.LogicalServicePhaseUnknown &&
 					slices.Equal(current.Status.EffectiveAddresses, ready.Status.EffectiveAddresses), nil
 			})
-			requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonProxyConfigurationFailed)
+			requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonLookupFailed)
 			require.NoError(t, listener.lifetimeCtx.Err())
 			listener.failConfiguration.Store(false)
 			waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalServicePhaseReady &&
+				return logicalServiceReady(current) &&
 					listener.configurationCalls.Load() >= configurationCount+2 &&
 					slices.Equal(current.Status.EffectiveAddresses, ready.Status.EffectiveAddresses) &&
 					slices.Equal(listener.configuration().Endpoints, []proxy.Endpoint{{Address: "127.0.0.1", Port: endpoint.Spec.Addresses[0].Port}}), nil
@@ -494,7 +492,7 @@ func TestV2LogicalServiceRetriesInitialListenerStartup(t *testing.T) {
 	pending := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 		return len(current.Status.EffectiveAddresses) == 1, nil
 	})
-	require.Equal(t, apiv2.LogicalServicePhasePending, pending.Status.Phase)
+	require.Equal(t, apiv2.LogicalServicePhaseRunning, pending.Status.Phase)
 	listeners := recorder.snapshot()
 	require.Len(t, listeners, 2)
 	require.ErrorIs(t, listeners[0].lifetimeCtx.Err(), context.Canceled)
@@ -544,7 +542,7 @@ func TestV2LogicalServiceStopsRetryingExhaustedListenerStartup(t *testing.T) {
 	failed := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalServicePhaseFailed, nil
 	})
-	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonProxyConfigurationFailed)
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonFailedToStart)
 	failureMessage := "start service listener: service proxy startup unavailable"
 	require.Equal(t, failureMessage, failed.Status.Conditions[0].Message)
 	previousRead := observer.lastServiceRead.Load()
@@ -590,7 +588,8 @@ func TestV2LogicalServicePublishesAllListenerAddresses(t *testing.T) {
 	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name}}
 	require.NoError(t, apiClient.Create(ctx, service))
 	pending := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalServicePhasePending && len(current.Status.EffectiveAddresses) == len(ips), nil
+		return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current) &&
+			len(current.Status.EffectiveAddresses) == len(ips), nil
 	})
 	listeners := recorder.snapshot()
 	require.Len(t, listeners, len(ips))
@@ -606,7 +605,7 @@ func TestV2LogicalServicePublishesAllListenerAddresses(t *testing.T) {
 		Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 62000}}}}
 	require.NoError(t, apiClient.Create(ctx, endpoint))
 	ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+		return logicalServiceReady(current), nil
 	})
 	require.ElementsMatch(t, expected, ready.Status.EffectiveAddresses)
 	for _, listener := range listeners {
@@ -649,7 +648,7 @@ func TestV2LogicalServiceProxylessKeepsSelectedProducer(t *testing.T) {
 			Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 64000}, {Address: "[::1]", Port: 64001}}}}
 	require.NoError(t, apiClient.Create(ctx, selected))
 	first := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.ProxylessEndpointRef == selected.Name && current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+		return current.Status.ProxylessEndpointRef == selected.Name && logicalServiceReady(current), nil
 	})
 	require.Equal(t, selected.Spec.Addresses, first.Status.EffectiveAddresses)
 	earlier := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "aaa", Namespace: namespace.Name},
@@ -661,7 +660,7 @@ func TestV2LogicalServiceProxylessKeepsSelectedProducer(t *testing.T) {
 	updated := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 		return current.Status.ProxylessEndpointRef == selected.Name && slices.Equal(current.Status.EffectiveAddresses, selected.Spec.Addresses), nil
 	})
-	requireReadyCondition(t, updated.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalServiceReasonEndpointSelected)
+	requireReadyCondition(t, updated.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalServiceReasonRunning)
 	require.NoError(t, apiClient.Delete(ctx, selected))
 	failover := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 		return current.Status.ProxylessEndpointRef == earlier.Name, nil
@@ -673,9 +672,11 @@ func TestV2LogicalServiceProxylessKeepsSelectedProducer(t *testing.T) {
 	require.NoError(t, apiClient.Update(ctx, selected))
 	require.NoError(t, apiClient.Delete(ctx, earlier))
 	empty := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalServicePhasePending && current.Status.ProxylessEndpointRef == "", nil
+		return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current) &&
+			current.Status.ProxylessEndpointRef == "", nil
 	})
 	require.Empty(t, empty.Status.EffectiveAddresses)
+	requireReadyCondition(t, empty.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
 	require.Empty(t, recorder.snapshot())
 	require.NoError(t, apiClient.Delete(ctx, namespace))
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, apiClient, namespace)

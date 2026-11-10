@@ -135,6 +135,7 @@ func (r *LogicalContainerNetworkReconciler) Reconcile(ctx context.Context, req c
 
 	patch := ctrl_client.MergeFromWithOptions(network.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 	var change objectChange
+
 	delay := StandardDelay
 
 	if !network.DeletionTimestamp.IsZero() {
@@ -157,15 +158,18 @@ func (r *LogicalContainerNetworkReconciler) manageLogicalContainerNetwork(
 		if !namespaceReady {
 			change := noChange
 			phase := apiv2.LogicalContainerNetworkPhasePending
+			reason := apiv2.LogicalContainerNetworkReasonStarting
 			message := namespaceReadinessMessage(network.Namespace, namespaceReason)
 			if namespaceErr != nil {
+
 				log.Error(namespaceErr, "Failed to get namespace", "Namespace", network.Namespace)
 				phase, message = apiv2.LogicalContainerNetworkPhaseUnknown, fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+				reason = apiv2.LogicalContainerNetworkReasonLookupFailed
 				change |= additionalReconciliationNeeded
 			}
 			change |= setValue(&network.Status.Phase, phase)
 			change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation,
-				metav1.ConditionFalse, namespaceReason, message)
+				metav1.ConditionFalse, reason, message)
 			return change, StandardDelay
 		}
 		data = &logicalContainerNetworkData{state: logicalContainerNetworkStatePending}
@@ -188,11 +192,12 @@ func handleLogicalContainerNetworkPending(
 	if time.Now().Before(data.retryAfter) {
 		return additionalReconciliationNeeded
 	}
-	data.reconcileErr = nil
+
 	data.reason, data.message, data.retryAfter = "", "", time.Time{}
 	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, data, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
 	if lookupErr != nil {
+
 		log.Error(lookupErr, "Failed to discover backing physical network")
 		return additionalReconciliationNeeded
 	}
@@ -211,18 +216,21 @@ func handleLogicalContainerNetworkPending(
 		mode := network.Spec.EffectiveMode()
 		if mode == apiv2.LogicalContainerNetworkModePersistent && data.lease == nil {
 			if reconciler.config.StateStore == nil {
-				data.state, data.reason, data.message = logicalContainerNetworkStatePreparationFailed, apiv2.LogicalResourceReasonStateStoreNotConfigured, "State store is not configured."
+				data.state, data.reason, data.message = logicalContainerNetworkStatePreparationFailed, apiv2.LogicalContainerNetworkReasonFailedToStart, "State store is not configured."
 				log.Error(errors.New(data.message), "Cannot prepare persistent logical network")
 				return noChange
 			}
 			lease, leaseErr := reconciler.config.StateStore.AcquireResourceLease(ctx, network,
 				reconciler.config.ResourceLeaseOwner, resourceLeaseRevalidationInterval, statestore.ExclusiveResourceLease)
 			if leaseErr != nil {
-				data.reason, data.reconcileErr, data.message = apiv2.LogicalResourceReasonLeaseAcquisitionFailed, leaseErr, leaseErr.Error()
+
+				data.reason, data.message = apiv2.LogicalContainerNetworkReasonStarting, leaseErr.Error()
 				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 				if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
 					logResourceLeaseHeld(log, leaseErr, network.GetLeaseKey(), "Persistent network creation lease is held, retrying")
-					data.reason = apiv2.LogicalResourceReasonLeaseHeld
+					data.reason = apiv2.LogicalContainerNetworkReasonStarting
+
+					return additionalReconciliationNeeded
 				} else {
 					log.Error(leaseErr, "Failed to acquire persistent logical network lease")
 				}
@@ -241,20 +249,20 @@ func handleLogicalContainerNetworkPending(
 			}
 			if inspectErr != nil && !errors.Is(inspectErr, containers.ErrNotFound) {
 				log.Error(inspectErr, "Failed to inspect logical network by name")
-				data.reason, data.reconcileErr, data.message = apiv2.LogicalContainerNetworkReasonRuntimeLookupFailed, inspectErr, inspectErr.Error()
+				data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonLookupFailed, inspectErr.Error()
 				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 				return additionalReconciliationNeeded
 			}
 			if inspectErr == nil {
 				if !isNetworkSafeToReuse {
-					data.reason, data.message = apiv2.LogicalContainerNetworkReasonHarvestingInProgress, "Waiting for resource harvesting before reusing the container network."
+					data.reason, data.message = apiv2.LogicalContainerNetworkReasonStarting, "Waiting for resource harvesting before reusing the container network."
 					return additionalReconciliationNeeded
 				}
 				inspected = inspection
 			}
 		}
 		if mode == apiv2.LogicalContainerNetworkModeExisting && inspected == nil {
-			data.reason, data.message = apiv2.LogicalContainerNetworkReasonExistingNetworkNotFound, fmt.Sprintf("Container network %q was not found.", network.Spec.NetworkName)
+			data.reason, data.message = apiv2.LogicalContainerNetworkReasonStarting, fmt.Sprintf("Container network %q was not found.", network.Spec.NetworkName)
 			data.retryAfter = time.Now().Add(delayDurations[MonitoringDelay].Duration)
 			return additionalReconciliationNeeded
 		}
@@ -267,8 +275,9 @@ func handleLogicalContainerNetworkPending(
 		if mode != apiv2.LogicalContainerNetworkModeExisting && (inspected == nil || managed) {
 			desiredKey, _, keyErr := network.Spec.GetLifecycleKey()
 			if keyErr != nil {
+
 				log.Error(keyErr, "Failed to calculate logical network lifecycle key")
-				data.state, data.reason, data.message = logicalContainerNetworkStatePreparationFailed, apiv2.LogicalResourceReasonLifecycleKeyCalculationFailed, keyErr.Error()
+				data.state, data.reason, data.message = logicalContainerNetworkStatePreparationFailed, apiv2.LogicalContainerNetworkReasonFailedToStart, keyErr.Error()
 				return noChange
 			}
 			replaceExisting = inspected != nil && lifecycleKey != desiredKey
@@ -283,8 +292,9 @@ func handleLogicalContainerNetworkPending(
 			if networkName == "" {
 				generatedName, _, nameErr := MakeUniqueName(network.Name)
 				if nameErr != nil {
+
 					log.Error(nameErr, "Failed to generate container network name")
-					data.reason, data.reconcileErr, data.message = apiv2.LogicalResourceReasonLifecyclePreparationFailed, nameErr, nameErr.Error()
+					data.reason, data.message = apiv2.LogicalContainerNetworkReasonStarting, nameErr.Error()
 					return additionalReconciliationNeeded
 				}
 				networkName = generatedName
@@ -304,8 +314,9 @@ func handleLogicalContainerNetworkPending(
 		if data.lease != nil {
 			verifyErr := reconciler.config.StateStore.VerifyResourceLeaseHeld(ctx, network, reconciler.config.ResourceLeaseOwner)
 			if verifyErr != nil {
+
 				log.Error(verifyErr, "Failed to verify persistent network creation lease")
-				data.state, data.reason, data.message = logicalContainerNetworkStatePreparationFailed, apiv2.LogicalResourceReasonLeaseLost, verifyErr.Error()
+				data.state, data.reason, data.message = logicalContainerNetworkStatePreparationFailed, apiv2.LogicalContainerNetworkReasonFailedToStart, verifyErr.Error()
 				return noChange
 			}
 		}
@@ -324,15 +335,15 @@ func handleLogicalContainerNetworkPending(
 			}
 		}
 		if createErr != nil {
+
 			log.Error(createErr, "Failed to prepare PhysicalContainerNetwork")
 			// AlreadyExists here means an invalid existing physical network; valid ones are returned without an error.
 			if apierrors.IsAlreadyExists(createErr) {
-				data.state, data.reason, data.message = logicalContainerNetworkStatePreparationFailed, apiv2.LogicalContainerNetworkReasonPhysicalNetworkPreparationFailed, createErr.Error()
-				data.reconcileErr = nil
+				data.state, data.reason, data.message = logicalContainerNetworkStatePreparationFailed, apiv2.LogicalContainerNetworkReasonFailedToStart, createErr.Error()
 				return noChange
 			}
-			if data.state != logicalContainerNetworkStateUnknown {
-				data.reconcileErr, data.message = createErr, createErr.Error()
+			if !data.terminal() {
+				data.message = createErr.Error()
 			}
 			return additionalReconciliationNeeded
 		}
@@ -372,6 +383,7 @@ func (r *LogicalContainerNetworkReconciler) createPhysicalContainerNetwork(
 		}
 		existing := &apiv2.PhysicalContainerNetwork{}
 		if lookupErr := r.NoCacheClient.Get(ctx, physical.NamespacedName(), existing); lookupErr != nil {
+			data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonLookupFailed, lookupErr.Error()
 			return physical, fmt.Errorf("get existing physical network: %w", lookupErr)
 		}
 		if identityErr := validatePhysicalResourceIdentity(network, existing, data.physicalNetworkUID); identityErr != nil {
@@ -392,7 +404,9 @@ func (r *LogicalContainerNetworkReconciler) findLogicalNetworkBacking(
 	listErr := reader.List(ctx, &children, listOptions...)
 	if listErr != nil {
 		lookupErr := fmt.Errorf("list owned physical networks: %w", listErr)
-		data.reason, data.message, data.reconcileErr = apiv2.LogicalContainerNetworkReasonPhysicalNetworkLookupFailed, lookupErr.Error(), lookupErr
+		if !data.terminal() {
+			data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonLookupFailed, lookupErr.Error()
+		}
 		return nil, lookupErr
 	}
 	var owned *apiv2.PhysicalContainerNetwork
@@ -403,7 +417,7 @@ func (r *LogicalContainerNetworkReconciler) findLogicalNetworkBacking(
 		}
 		if owned != nil {
 			multipleErr := fmt.Errorf("%w: more than one PhysicalContainerNetwork belongs to %q", errMultipleLogicalNetworkBackings, network.NamespacedName())
-			data.state, data.reason, data.message, data.reconcileErr = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonMultiplePhysicalNetworks, multipleErr.Error(), nil
+			data.failMissing(multipleErr.Error())
 			return nil, multipleErr
 		}
 		owned = child
@@ -412,10 +426,15 @@ func (r *LogicalContainerNetworkReconciler) findLogicalNetworkBacking(
 		data.unobservedChildren.observeCached(owned)
 		if (data.physicalNetworkUID != "" && owned.UID != data.physicalNetworkUID) || !hasFinalizer(owned, LogicalBackingFinalizer) {
 			identityErr := fmt.Errorf("physical network %q UID or logical hold changed", owned.NamespacedName())
-			data.state, data.reason, data.message, data.reconcileErr = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonPhysicalNetworkChanged, identityErr.Error(), nil
+			data.failMissing(identityErr.Error())
 			return nil, identityErr
 		}
 		data.physicalNetworkUID = owned.UID
+		if !owned.DeletionTimestamp.IsZero() && !data.terminal() {
+			deletionErr := fmt.Errorf("the owned PhysicalContainerNetwork %q is being deleted", owned.NamespacedName())
+			data.failMissing(deletionErr.Error())
+			return nil, deletionErr
+		}
 	}
 	return owned, nil
 }
@@ -424,25 +443,22 @@ func handleLogicalContainerNetworkReady(
 	ctx context.Context, reconciler *LogicalContainerNetworkReconciler, network *apiv2.LogicalContainerNetwork,
 	_ logicalContainerNetworkState, data *logicalContainerNetworkData, log logr.Logger,
 ) objectChange {
-	data.reconcileErr = nil
+
 	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, data, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
 	if lookupErr != nil {
+
 		log.Error(lookupErr, "Failed to observe backing physical network")
 		return additionalReconciliationNeeded
 	}
 	if physical == nil {
-		data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonPhysicalNetworkMissing, "The backing PhysicalContainerNetwork is no longer available."
+		data.failMissing("The backing PhysicalContainerNetwork is no longer available.")
 		return additionalReconciliationNeeded
 	}
 	change := setValue(&network.Status.PhysicalNetworkRef, physical.Name)
 	change |= applyLogicalContainerNetworkPhysicalDetails(network, &physical.Status)
-	observedState := logicalContainerNetworkBackingState(physical)
-	if observedState != logicalContainerNetworkStateReady {
-		data.state, data.reason, data.message = observedState, "", ""
-		if ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
-			data.message = fmt.Sprintf("PhysicalContainerNetwork reports %s: %s", ready.Reason, ready.Message)
-		}
+	data.updateLifecycleFromPhysicalContainerNetwork(physical)
+	if data.state != logicalContainerNetworkStateReady {
 		return change | additionalReconciliationNeeded
 	}
 	data.reason, data.message = "", ""
@@ -453,10 +469,11 @@ func handleLogicalContainerNetworkCreating(
 	ctx context.Context, reconciler *LogicalContainerNetworkReconciler, network *apiv2.LogicalContainerNetwork,
 	_ logicalContainerNetworkState, data *logicalContainerNetworkData, log logr.Logger,
 ) objectChange {
-	data.reconcileErr = nil
+
 	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, data, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
 	if lookupErr != nil {
+
 		log.Error(lookupErr, "Failed to get creating network backing")
 		return additionalReconciliationNeeded
 	}
@@ -466,10 +483,7 @@ func handleLogicalContainerNetworkCreating(
 	}
 	change := setValue(&network.Status.PhysicalNetworkRef, physical.Name)
 	change |= applyLogicalContainerNetworkPhysicalDetails(network, &physical.Status)
-	data.state, data.reason, data.message = logicalContainerNetworkBackingState(physical), "", ""
-	if ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady)); ready != nil {
-		data.message = fmt.Sprintf("PhysicalContainerNetwork reports %s: %s", ready.Reason, ready.Message)
-	}
+	data.updateLifecycleFromPhysicalContainerNetwork(physical)
 	change |= reconciler.settleLogicalNetworkObservedLease(ctx, network, data, physical, log)
 	if data.state != logicalContainerNetworkStateCreating {
 		change |= additionalReconciliationNeeded
@@ -481,15 +495,16 @@ func handleLogicalContainerNetworkTerminal(
 	ctx context.Context, reconciler *LogicalContainerNetworkReconciler, network *apiv2.LogicalContainerNetwork,
 	_ logicalContainerNetworkState, data *logicalContainerNetworkData, log logr.Logger,
 ) objectChange {
+
 	change := noChange
 	if data.lease != nil {
 		data.leaseFailureMessage = ""
+
 		change |= reconciler.settleLogicalNetworkLease(ctx, network, data, nil, log)
 	}
 	if data.physicalNetworkUID == "" {
 		return change
 	}
-	data.reconcileErr = nil
 	lookupData := *data
 	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, &lookupData, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
@@ -553,21 +568,30 @@ func handleLogicalContainerNetworkUnknown(
 	ctx context.Context, reconciler *LogicalContainerNetworkReconciler, network *apiv2.LogicalContainerNetwork,
 	state logicalContainerNetworkState, data *logicalContainerNetworkData, log logr.Logger,
 ) objectChange {
+
 	if state != logicalContainerNetworkStateUnknown {
 		log.Error(fmt.Errorf("unknown logical network state %v", state), "LogicalContainerNetwork has an invalid reconciliation state")
-		data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.PhysicalResourceReasonOperationStateInvalid, "Logical network reached an invalid reconciliation state."
+		data.failMissing("Logical network reached an invalid reconciliation state.")
+		return additionalReconciliationNeeded
 	}
-	data.reconcileErr = nil
 	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, data, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
 	if lookupErr != nil {
+
 		log.Error(lookupErr, "Failed to get unknown network backing")
-		if data.lease != nil && data.reconcileErr == nil {
+		if data.lease != nil && data.terminal() {
 			return reconciler.settleLogicalNetworkLease(ctx, network, data, nil, log)
 		}
 		return noChange
 	}
 	if physical == nil {
+		pendingBacking := logicalChildIdentity{resource: (&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource(), name: "logical-" + string(network.UID)}
+		_, awaitingObservation := data.unobservedChildren[pendingBacking]
+		if !data.started && (data.physicalNetworkUID == "" || awaitingObservation) {
+			data.state, data.reason, data.message = logicalContainerNetworkStatePending, apiv2.LogicalContainerNetworkReasonStarting, "Waiting to observe the owned PhysicalContainerNetwork."
+			return additionalReconciliationNeeded
+		}
+		data.failMissing("The backing PhysicalContainerNetwork is no longer available.")
 		if data.lease != nil {
 			return reconciler.settleLogicalNetworkLease(ctx, network, data, nil, log)
 		}
@@ -575,9 +599,8 @@ func handleLogicalContainerNetworkUnknown(
 	}
 	change := applyLogicalContainerNetworkPhysicalDetails(network, &physical.Status)
 	change |= reconciler.settleLogicalNetworkObservedLease(ctx, network, data, physical, log)
-	observedState := logicalContainerNetworkBackingState(physical)
-	if observedState != logicalContainerNetworkStateUnknown {
-		data.state, data.reason, data.message = observedState, "", ""
+	data.updateLifecycleFromPhysicalContainerNetwork(physical)
+	if data.state != logicalContainerNetworkStateUnknown {
 		change |= additionalReconciliationNeeded
 	}
 	return change
@@ -588,10 +611,11 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 ) (change objectChange, delay AdditionalReconciliationDelay) {
 	delay = StandardDelay
 	if data == nil {
-		data = &logicalContainerNetworkData{state: logicalContainerNetworkStateDelete}
+		data = &logicalContainerNetworkData{state: logicalContainerNetworkStatePending}
 		data.unobservedChildren.recordCreateAttempt(&apiv2.PhysicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(network.UID)}})
 		r.networkData.Store(network.NamespacedName(), network.UID, data.Clone())
 	}
+
 	defer func() {
 		if data != nil {
 			_ = r.networkData.Update(network.NamespacedName(), network.UID, data)
@@ -603,18 +627,25 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 			}
 		}
 	}()
-	data.state, data.reason, data.message, data.reconcileErr = logicalContainerNetworkStateDelete, "", "", nil
 	var children apiv2.PhysicalContainerNetworkList
 	listErr := r.List(ctx, &children, ctrl_client.InNamespace(network.Namespace),
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
 	if listErr != nil {
+
 		log.Error(listErr, "Failed to list physical networks before deletion")
-		data.reconcileErr, data.message = listErr, listErr.Error()
+		if !data.terminal() {
+			data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonLookupFailed, listErr.Error()
+		}
+
 		return additionalReconciliationNeeded, delay
 	}
 	if confirmationErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, network, data.unobservedChildren, &children.Items); confirmationErr != nil {
+
 		log.Error(confirmationErr, "Failed to resolve unobserved physical networks before deletion")
-		data.reconcileErr, data.message = confirmationErr, confirmationErr.Error()
+		if !data.terminal() {
+			data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonLookupFailed, confirmationErr.Error()
+		}
+
 		return additionalReconciliationNeeded, delay
 	}
 	if len(children.Items) != 0 {
@@ -629,7 +660,7 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 				deleteErr := r.Delete(ctx, physical, ctrl_client.Preconditions{UID: &uid})
 				if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
 					log.Error(deleteErr, "Failed to request physical network deletion")
-					data.reconcileErr, data.message = deleteErr, deleteErr.Error()
+
 					waiting = true
 				}
 			}
@@ -655,25 +686,26 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 					}
 				}
 			}
-			return r.settleLogicalNetworkLease(ctx, network, data, record, log), delay
+			return additionalReconciliationNeeded | r.settleLogicalNetworkLease(ctx, network, data, record, log), delay
 		}
 		for i := range children.Items {
 			physical := &children.Items[i]
 			releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, physical)
 			if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
 				log.Error(releaseErr, "Failed to release logical network backing")
-				data.reconcileErr, data.message = releaseErr, releaseErr.Error()
+
 			}
 		}
 		return additionalReconciliationNeeded, delay
 	}
 	if data.lease != nil {
-		return r.settleLogicalNetworkLease(ctx, network, data, nil, log), delay
+		return additionalReconciliationNeeded | r.settleLogicalNetworkLease(ctx, network, data, nil, log), delay
 	}
 	discardErr := r.discardLogicalContainerNetworkData(ctx, network.NamespacedName())
 	if discardErr != nil {
+
 		log.Error(discardErr, "Failed to discard logical network state")
-		data.reconcileErr, data.message = discardErr, discardErr.Error()
+
 		return additionalReconciliationNeeded, delay
 	}
 	data = nil

@@ -25,6 +25,17 @@ type logicalChildConfirmationReader struct {
 	calls []types.NamespacedName
 }
 
+// Verifies that logicalBackingStatusMessage retains backing identity and detailed reasons in
+// messages without requiring those details in the logical resource's public reason vocabulary.
+func TestLogicalBackingStatusMessage(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "PhysicalProcess has not reported its state.", logicalBackingStatusMessage("PhysicalProcess", nil))
+	require.Equal(t, "PhysicalProcess reports LaunchFailed: executable unavailable",
+		logicalBackingStatusMessage("PhysicalProcess", []metav1.Condition{{
+			Type: string(apiv2.ConditionReady), Reason: "LaunchFailed", Message: "executable unavailable",
+		}}))
+}
+
 func (reader *logicalChildConfirmationReader) Get(
 	ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption,
 ) error {

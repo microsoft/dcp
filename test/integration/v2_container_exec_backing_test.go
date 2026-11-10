@@ -132,7 +132,7 @@ func TestV2ContainerExecDeletionPreservesDurableDisposition(t *testing.T) {
 		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: "exec-durable-cleanup"}}}
 	require.NoError(t, server.Client.Create(ctx, logical))
 	running := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseRunning, nil
 	})
 	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalExecRef, Namespace: target.Namespace}}
 	require.NoError(t, server.Client.Get(ctx, physical.NamespacedName(), physical))
@@ -231,7 +231,7 @@ func TestV2LogicalContainerExecRetriesOwnerObservation(t *testing.T) {
 		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: "exec-observation-retry"}}}
 	require.NoError(t, server.Client.Create(ctx, logical))
 	running := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseRunning, nil
 	})
 	decorated.failObservation.Store(true)
 	defer decorated.failObservation.Store(false)
@@ -239,11 +239,11 @@ func TestV2LogicalContainerExecRetriesOwnerObservation(t *testing.T) {
 		ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"test.dcp.microsoft.com/reconcile":"observe"}}}`))))
 	waitContainerExecSignal(t, ctx, decorated.observation)
 	waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhasePending, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseUnknown, nil
 	})
 	decorated.failObservation.Store(false)
 	recovered := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseRunning, nil
 	})
 	require.Equal(t, running.Status.PhysicalExecRef, recovered.Status.PhysicalExecRef)
 	require.Equal(t, running.Status.RuntimeLogs.UID, recovered.Status.RuntimeLogs.UID)
@@ -317,7 +317,7 @@ func TestV2ContainerExecOutputCleanupDoesNotBlockDeletion(t *testing.T) {
 	require.NoError(t, server.Client.Create(ctx, logical))
 	require.NoError(t, server.Client.Create(ctx, physical))
 	runningLogical := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseRunning, nil
 	})
 	runningPhysical := waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
 		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil

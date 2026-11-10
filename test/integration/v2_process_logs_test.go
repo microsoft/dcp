@@ -356,7 +356,7 @@ func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T)
 			waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 				return current.Status.Phase == apiv2.LogicalProcessPhaseFailed &&
-					ready != nil && ready.Reason == string(apiv2.LogicalProcessReasonPhysicalProcessMissing), nil
+					ready != nil && ready.Reason == string(apiv2.LogicalProcessReasonMissing), nil
 			})
 			require.NoError(t, apiClient.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, resource)
@@ -424,7 +424,7 @@ func TestV2ProcessTerminalOutcomeSurvivesBackingDeletion(t *testing.T) {
 		return current.Spec.Stop && ready != nil && ready.ObservedGeneration == current.Generation, nil
 	})
 	require.Equal(t, apiv2.LogicalProcessPhaseExited, unchanged.Status.Phase)
-	requireReadyCondition(t, unchanged.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonExited)
+	requireReadyCondition(t, unchanged.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonCompleted)
 	require.Equal(t, completed.Status.RuntimeLogs, unchanged.Status.RuntimeLogs)
 }
 

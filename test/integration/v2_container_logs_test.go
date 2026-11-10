@@ -316,7 +316,7 @@ func TestV2ContainerStartupLogsCompleteAfterPreparationFailure(t *testing.T) {
 			failed := waitObjectAssumesState(t, ctx, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				return current.Status.Phase == apiv2.LogicalContainerPhaseFailed, nil
 			})
-			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonLogicalNetworkFailed)
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonFailedToStart)
 			require.Empty(t, failed.Status.PhysicalContainerRef)
 			waitPullImageCallCount(t, ctx, source, 1)
 			draining := waitObjectAssumesState(t, ctx, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
@@ -352,7 +352,7 @@ func TestV2ContainerStartupLogsCompleteAfterPreparationFailure(t *testing.T) {
 			}
 			require.NoError(t, client.Get(ctx, logical.NamespacedName(), failed))
 			require.Equal(t, apiv2.LogicalContainerPhaseFailed, failed.Status.Phase)
-			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonLogicalNetworkFailed)
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonFailedToStart)
 			require.Equal(t, image.GetLogSource(), failed.Status.StartupLogs)
 			require.Zero(t, containerOrchestrator.CreateContainerCallCount(logical.Spec.ContainerName))
 			require.NoError(t, client.Delete(ctx, logical))
@@ -496,7 +496,7 @@ func TestV2LogicalContainerLogFollowerKeepsBackingUntilLogicalDeletion(t *testin
 		return !current.DeletionTimestamp.IsZero(), nil
 	})
 	unknown := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerPhaseUnknown, nil
+		return current.Status.Phase == apiv2.LogicalContainerPhaseFailed, nil
 	})
 	require.Equal(t, running.Status.RuntimeLogs, unknown.Status.RuntimeLogs)
 	require.NoError(t, orchestrator.SimulateContainerLogging(runtimeID, apiv1.LogStreamSourceStdout, []byte("held\n")))

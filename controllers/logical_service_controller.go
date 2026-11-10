@@ -41,6 +41,9 @@ type logicalServiceData struct {
 	attempts              uint32
 	startupFailureMessage string
 	selectedUID           types.UID
+	started               bool
+	failureReason         apiv2.ConditionReason
+	failureMessage        string
 }
 
 // LogicalServiceReconciler owns proxy listeners and projects listener or endpoint-selected addresses.
@@ -125,20 +128,25 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 	status := apiv2.LogicalServiceStatus{Phase: apiv2.LogicalServicePhasePending, Conditions: slices.Clone(service.Status.Conditions)}
 	ready, reason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, service.Namespace)
 	message := namespaceReadinessMessage(service.Namespace, reason)
+	reason = apiv2.LogicalServiceReasonStarting
 	requeue := false
+	available := false
 	switch {
 	case len(data.proxies) == 0 && data.attempts >= MaxServiceStartAttempts:
 		status.Phase = apiv2.LogicalServicePhaseFailed
-		reason, message = apiv2.LogicalServiceReasonProxyConfigurationFailed, data.startupFailureMessage
+		reason, message = apiv2.LogicalServiceReasonFailedToStart, data.startupFailureMessage
 	case len(data.proxies) > 0 && !slices.ContainsFunc(data.proxies, func(listener proxyInstanceData) bool {
 		return listener.proxy.State() == proxy.ProxyStateRunning
 	}):
 		status.Phase = apiv2.LogicalServicePhaseFailed
-		reason, message = apiv2.LogicalServiceReasonProxyListenerUnavailable, "Service listeners have stopped; recreate the service to allocate new listeners."
+		reason, message = apiv2.LogicalServiceReasonMissing, "Service listeners have stopped; recreate the service to allocate new listeners."
 	case !ready:
 		if namespaceErr != nil {
 			log.Error(namespaceErr, "Failed to check service namespace")
 			message, requeue = namespaceErr.Error(), true
+			status.Phase, reason = apiv2.LogicalServicePhaseUnknown, apiv2.LogicalServiceReasonLookupFailed
+		} else if data.started {
+			status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonRunning
 		}
 	default:
 		var endpoints apiv2.ServiceEndpointList
@@ -147,7 +155,8 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		})
 		if listErr != nil {
 			log.Error(listErr, "Failed to list service endpoints")
-			reason, message, requeue = apiv2.LogicalServiceReasonEndpointLookupFailed, listErr.Error(), true
+			reason, message, requeue = apiv2.LogicalServiceReasonLookupFailed, listErr.Error(), true
+			status.Phase = apiv2.LogicalServicePhaseUnknown
 			break
 		}
 		endpoints.Items = slices.DeleteFunc(endpoints.Items, func(endpoint apiv2.ServiceEndpoint) bool { return !endpoint.DeletionTimestamp.IsZero() })
@@ -169,11 +178,15 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 				endpoint := &endpoints.Items[selected]
 				data.selectedUID = endpoint.UID
 				status.EffectiveAddresses = slices.Clone(endpoint.Spec.Addresses)
-				status.ProxylessEndpointRef, status.Phase = endpoint.Name, apiv2.LogicalServicePhaseReady
-				reason, message = apiv2.LogicalServiceReasonEndpointSelected, "The selected endpoint's addresses are available."
+				status.ProxylessEndpointRef, status.Phase = endpoint.Name, apiv2.LogicalServicePhaseRunning
+				reason, message = apiv2.LogicalServiceReasonRunning, "The selected endpoint's addresses are available."
+				data.started, available = true, true
 			} else {
 				data.selectedUID = ""
-				reason, message = apiv2.LogicalServiceReasonWaitingForEndpoints, "The service has no available endpoints."
+				reason, message = apiv2.LogicalServiceReasonStarting, "The service has no available endpoints."
+				if data.started {
+					status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonRunning
+				}
 			}
 			break
 		}
@@ -190,30 +203,38 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			if len(data.proxies) == 0 {
 				data.startupFailureMessage = proxyErr.Error()
 			}
-			reason, message, requeue = apiv2.LogicalServiceReasonProxyConfigurationFailed, proxyErr.Error(), true
+			reason, message, requeue = apiv2.LogicalServiceReasonStarting, proxyErr.Error(), true
 			if len(data.proxies) > 0 {
-				status.Phase = apiv2.LogicalServicePhaseUnknown
+				status.Phase, reason = apiv2.LogicalServicePhaseUnknown, apiv2.LogicalServiceReasonLookupFailed
 			}
 			if len(status.EffectiveAddresses) == 0 && (len(data.proxies) > 0 || data.attempts >= MaxServiceStartAttempts) {
 				status.Phase, requeue = apiv2.LogicalServicePhaseFailed, false
+				reason = apiv2.LogicalServiceReasonFailedToStart
+				if data.started {
+					reason = apiv2.LogicalServiceReasonMissing
+				}
 			}
 			break
 		}
 		if len(status.EffectiveAddresses) < len(data.proxies) {
-			status.Phase = apiv2.LogicalServicePhaseUnknown
-			if len(status.EffectiveAddresses) == 0 {
-				status.Phase = apiv2.LogicalServicePhaseFailed
-			}
-			reason, message = apiv2.LogicalServiceReasonProxyListenerUnavailable, "Service listeners have stopped; recreate the service to allocate new listeners."
+			status.Phase = apiv2.LogicalServicePhaseFailed
+			reason, message = apiv2.LogicalServiceReasonMissing, "Service listeners have stopped; recreate the service to allocate new listeners."
 			break
 		}
-		reason, message = apiv2.LogicalServiceReasonWaitingForEndpoints, "Listeners are allocated; the service has no available endpoints."
+		data.started = true
+		status.Phase, reason, message = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonRunning,
+			"Listeners are running; the service has no available endpoints."
 		if len(endpoints.Items) > 0 {
-			status.Phase, reason, message = apiv2.LogicalServicePhaseReady, apiv2.LogicalServiceReasonReady, "Listeners and endpoints are available."
+			available, message = true, "Listeners and endpoints are available."
 		}
 	}
+	if data.failureReason != "" {
+		status.Phase, reason, message = apiv2.LogicalServicePhaseFailed, data.failureReason, data.failureMessage
+	} else if status.Phase == apiv2.LogicalServicePhaseFailed {
+		data.failureReason, data.failureMessage = reason, message
+	}
 	conditionStatus := metav1.ConditionFalse
-	if status.Phase == apiv2.LogicalServicePhaseReady {
+	if available {
 		conditionStatus = metav1.ConditionTrue
 	}
 	setCondition(&status.Conditions, apiv2.ConditionReady, service.Generation, conditionStatus, reason, message)

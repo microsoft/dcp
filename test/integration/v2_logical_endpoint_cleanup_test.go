@@ -9,12 +9,14 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -84,6 +86,7 @@ func (apiClient *endpointStopFailureClient) Patch(
 
 // Verifies that Stop withdraws logical endpoints despite backing lookup or stop-patch failures,
 // while endpoint deletion failures do not block physical Stop and withdrawal retries preserve the service.
+// A failed container stop request preserves Running, whereas failed backing observation reports Unknown.
 func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
@@ -125,7 +128,7 @@ func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 					decorated.fail.Store(false)
 				}
 				service := waitObjectAssumesStateEx(t, ctx, apiClient, workload.service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-					return current.Status.Phase == apiv2.LogicalServicePhasePending, nil
+					return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current), nil
 				})
 				require.Equal(t, workload.service.UID, service.UID)
 				require.Equal(t, workload.service.Status.EffectiveAddresses, service.Status.EffectiveAddresses)
@@ -143,10 +146,32 @@ func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 					if physical, isProcess := workload.backing.(*apiv2.PhysicalProcess); isProcess {
 						require.False(t, physical.Spec.Stop)
 						require.Equal(t, apiv2.PhysicalProcessPhaseRunning, physical.Status.Phase)
+						observed := waitObjectAssumesStateEx(t, ctx, apiClient, ctrl_client.ObjectKeyFromObject(workload.logical), func(current *apiv2.LogicalProcess) (bool, error) {
+							ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+							return ready != nil && ready.ObservedGeneration == current.Generation && current.Spec.Stop, nil
+						})
+						if failure == "stop" {
+							require.Equal(t, apiv2.LogicalProcessPhaseRunning, observed.Status.Phase)
+							requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalProcessReasonRunning)
+						} else {
+							require.Equal(t, apiv2.LogicalProcessPhaseUnknown, observed.Status.Phase)
+							requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonLookupFailed)
+						}
 					} else {
 						physical := workload.backing.(*apiv2.PhysicalContainer)
 						require.False(t, physical.Spec.Stop)
 						require.Equal(t, apiv2.PhysicalContainerPhaseRunning, physical.Status.Phase)
+						observed := waitObjectAssumesStateEx(t, ctx, apiClient, ctrl_client.ObjectKeyFromObject(workload.logical), func(current *apiv2.LogicalContainer) (bool, error) {
+							ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+							return ready != nil && ready.ObservedGeneration == current.Generation && current.Spec.Stop, nil
+						})
+						if failure == "stop" {
+							require.Equal(t, apiv2.LogicalContainerPhaseRunning, observed.Status.Phase)
+							requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerReasonRunning)
+						} else {
+							require.Equal(t, apiv2.LogicalContainerPhaseUnknown, observed.Status.Phase)
+							requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonLookupFailed)
+						}
 					}
 				}
 				decorated.failStop.Store(false)
@@ -198,8 +223,10 @@ func TestV2LogicalProcessTerminalHandlerIgnoresLaterStop(t *testing.T) {
 	exited := waitObjectAssumesStateEx(t, ctx, apiClient, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
 	})
+	requireReadyCondition(t, exited.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonCompleted)
+	require.Contains(t, apimeta.FindStatusCondition(exited.Status.Conditions, string(apiv2.ConditionReady)).Message, "17")
 	waitObjectAssumesStateEx(t, ctx, apiClient, workload.service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalServicePhasePending, nil
+		return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current), nil
 	})
 	require.NoError(t, apiClient.Patch(ctx, logical,
 		ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
@@ -217,7 +244,15 @@ func TestV2LogicalProcessTerminalHandlerIgnoresLaterStop(t *testing.T) {
 	defer decorated.failLookup.Store(false)
 	reconcileTerminalObservationAndWaitForIdle(t, ctx, apiClient, decorated, observed)
 	require.Equal(t, expectedStatus, observed.Status)
+	lookupAttempts := decorated.lookupAttempts.Load()
+	require.NoError(t, apiClient.Delete(ctx, observed))
+	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return decorated.lookupAttempts.Load() > lookupAttempts, nil
+	}))
+	require.NoError(t, apiClient.Get(ctx, observed.NamespacedName(), observed))
+	require.Equal(t, expectedStatus, observed.Status)
 	decorated.failLookup.Store(false)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, observed)
 	require.NoError(t, apiClient.Delete(ctx, namespace))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
 }
@@ -266,9 +301,11 @@ func TestV2LogicalContainerTerminalHandlerIgnoresLaterStop(t *testing.T) {
 						Container: &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name}}}}
 				require.NoError(t, apiClient.Create(ctx, logical))
 				logical = waitObjectAssumesStateEx(t, ctx, apiClient, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-					return current.Status.ContainerID != "" && len(current.Status.Conditions) > 0 &&
-						current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonPersistenceFailed), nil
+					ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+					return current.Status.ContainerID != "" && current.Status.Phase == apiv2.LogicalContainerPhaseRunning &&
+						ready != nil && strings.Contains(ready.Message, "namespace workload lookup unavailable"), nil
 				})
+				requireReadyCondition(t, logical.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerReasonRunning)
 				require.NoError(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, logical, environment.ResourceLeaseOwner))
 			} else {
 				workload = createEndpointCleanupWorkload(t, ctx, apiClient, namespace.Name, "container")
@@ -283,14 +320,18 @@ func TestV2LogicalContainerTerminalHandlerIgnoresLaterStop(t *testing.T) {
 			} else if terminal != "preparation" {
 				orchestrator, simulated := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 				require.True(t, simulated)
-				require.NoError(t, orchestrator.SimulateContainerStatus(ctx, logical.Status.ContainerID, containers.ContainerStatusExited))
+				require.NoError(t, orchestrator.SimulateContainerExit(ctx, logical.Status.ContainerID, 17))
 			}
-			waitObjectAssumesStateEx(t, ctx, apiClient, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+			terminalContainer := waitObjectAssumesStateEx(t, ctx, apiClient, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				return current.Status.Phase == expectedPhase, nil
 			})
+			if expectedPhase == apiv2.LogicalContainerPhaseExited {
+				requireReadyCondition(t, terminalContainer.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonCompleted)
+				require.Contains(t, apimeta.FindStatusCondition(terminalContainer.Status.Conditions, string(apiv2.ConditionReady)).Message, "17")
+			}
 			if workload.service != nil {
 				waitObjectAssumesStateEx(t, ctx, apiClient, workload.service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-					return current.Status.Phase == apiv2.LogicalServicePhasePending, nil
+					return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current), nil
 				})
 			}
 			require.NoError(t, apiClient.Patch(ctx, logical,
@@ -385,7 +426,7 @@ func createEndpointCleanupWorkload(
 	require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing))
 	workload.service = waitObjectAssumesStateEx(t, ctx, apiClient, types.NamespacedName{Name: "workload-http", Namespace: namespace},
 		func(current *apiv2.LogicalService) (bool, error) {
-			return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+			return logicalServiceReady(current), nil
 		})
 	return workload
 }
@@ -464,14 +505,14 @@ func TestV2LogicalEndpointDeletionDoesNotWaitForBackingCleanup(t *testing.T) {
 					logicalName := ctrl_client.ObjectKeyFromObject(workload.logical)
 					if _, isProcess := workload.logical.(*apiv2.LogicalProcess); isProcess {
 						pending := waitObjectAssumesStateEx(t, ctx, apiClient, logicalName, func(current *apiv2.LogicalProcess) (bool, error) {
-							return current.Status.Phase == apiv2.LogicalProcessPhasePending, nil
+							return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
 						})
-						requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonDeletingPhysicalProcess)
+						requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonStopped)
 					} else {
 						pending := waitObjectAssumesStateEx(t, ctx, apiClient, logicalName, func(current *apiv2.LogicalContainer) (bool, error) {
-							return current.Status.Phase == apiv2.LogicalContainerPhasePending, nil
+							return current.Status.Phase == apiv2.LogicalContainerPhaseExited, nil
 						})
-						requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonDeletingPhysicalResources)
+						requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonStopped)
 					}
 					var pending apiv2.ServiceEndpointList
 					require.NoError(t, apiClient.List(ctx, &pending, ctrl_client.InNamespace(namespace.Name)))
@@ -483,7 +524,7 @@ func TestV2LogicalEndpointDeletionDoesNotWaitForBackingCleanup(t *testing.T) {
 					deletionClient.fail.Store(false)
 				}
 				waitObjectAssumesStateEx(t, ctx, apiClient, workload.service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-					return current.Status.Phase == apiv2.LogicalServicePhasePending, nil
+					return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current), nil
 				})
 				var endpoints apiv2.ServiceEndpointList
 				require.NoError(t, apiClient.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
@@ -575,18 +616,12 @@ func TestV2LogicalEndpointsWithdrawOnTerminalState(t *testing.T) {
 						if terminal == "exit" {
 							return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
 						}
-						if terminal == "invalid" {
-							return current.Status.Phase == apiv2.LogicalProcessPhaseUnknown, nil
-						}
 						return current.Status.Phase == apiv2.LogicalProcessPhaseFailed, nil
 					})
 				} else {
 					waitObjectAssumesStateEx(t, ctx, apiClient, ctrl_client.ObjectKeyFromObject(workload.logical), func(current *apiv2.LogicalContainer) (bool, error) {
 						if terminal == "exit" {
 							return current.Status.Phase == apiv2.LogicalContainerPhaseExited, nil
-						}
-						if terminal == "invalid" {
-							return current.Status.Phase == apiv2.LogicalContainerPhaseUnknown, nil
 						}
 						return current.Status.Phase == apiv2.LogicalContainerPhaseFailed, nil
 					})
@@ -596,7 +631,7 @@ func TestV2LogicalEndpointsWithdrawOnTerminalState(t *testing.T) {
 					deletionClient.fail.Store(false)
 				}
 				service := waitObjectAssumesStateEx(t, ctx, apiClient, workload.service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-					return current.Status.Phase == apiv2.LogicalServicePhasePending, nil
+					return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current), nil
 				})
 				require.Equal(t, workload.service.UID, service.UID)
 				require.Equal(t, workload.service.Status.EffectiveAddresses, service.Status.EffectiveAddresses)

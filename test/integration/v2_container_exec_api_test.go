@@ -75,7 +75,7 @@ type containerExecStatusConflictWriter struct {
 
 func (writer *containerExecStatusConflictWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
 	if execution, logical := obj.(*apiv2.LogicalContainerExec); logical &&
-		execution.Status.Phase == apiv2.ContainerExecPhaseFailed && execution.Status.RuntimeLogs != nil &&
+		execution.Status.Phase == apiv2.LogicalContainerExecPhaseFailed && execution.Status.RuntimeLogs != nil &&
 		execution.Status.RuntimeLogs.Complete && !execution.Status.RuntimeLogs.Available &&
 		writer.client.conflicted.CompareAndSwap(false, true) {
 		return apierrors.NewConflict(schema.GroupResource{Group: apiv2.GroupName, Resource: "logicalcontainerexecs"},
@@ -134,16 +134,17 @@ func TestV2ContainerExecMissingBackingProjectionSurvivesStatusConflict(t *testin
 		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: "v2-exec-status-conflict-command"}}}
 	require.NoError(t, apiClient.Create(ctx, resource))
 	running := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseRunning, nil
 	})
 	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalExecRef, Namespace: target.Namespace}}
 	forceRemoveLogicalContainerExecBacking(t, ctx, apiClient, physical)
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerExec](t, ctx, apiClient, physical)
 	failed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseFailed, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseFailed &&
+			current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete && !current.Status.RuntimeLogs.Available, nil
 	})
 	require.True(t, conflictClient.conflicted.Load())
-	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonPhysicalExecutionChanged)
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonMissing)
 	require.Equal(t, &apiv2.LogSource{Name: running.Status.PhysicalExecRef, UID: running.Status.RuntimeLogs.UID, Complete: true}, failed.Status.RuntimeLogs)
 }
 
@@ -203,7 +204,7 @@ func TestV2ContainerExecLogicalOnlyFollowerCompletesOnBackingCleanup(t *testing.
 		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: "v2-exec-logical-only-follow-command"}}}
 	require.NoError(t, apiClient.Create(ctx, resource))
 	running := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseRunning, nil
 	})
 	orchestrator, isSimulated := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, isSimulated)
@@ -222,8 +223,10 @@ func TestV2ContainerExecLogicalOnlyFollowerCompletesOnBackingCleanup(t *testing.
 	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalExecRef, Namespace: resource.Namespace}}
 	require.NoError(t, apiClient.Delete(ctx, physical))
 	exited := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseExited, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseFailed &&
+			current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete, nil
 	})
+	requireReadyCondition(t, exited.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonMissing)
 	require.True(t, exited.Status.RuntimeLogs.Complete)
 	require.NoError(t, apiClient.Get(ctx, physical.NamespacedName(), physical))
 	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)

@@ -5229,12 +5229,12 @@ func schema_microsoft_dcp_api_v2_LogicalContainerExecStatus(ref common.Reference
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "LogicalContainerExecStatus projects the immediate physical execution.",
+				Description: "LogicalContainerExecStatus describes logical lifecycle and the immediate physical execution.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"phase": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase summarizes the execution lifecycle.",
+							Description: "Phase summarizes execution lifecycle independently of physical launch progress.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -5247,7 +5247,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerExecStatus(ref common.Reference
 					},
 					"finishedAt": {
 						SchemaProps: spec.SchemaProps{
-							Description: "FinishedAt is when attached execution completion or a terminal startup failure was observed.",
+							Description: "FinishedAt is when completion or terminal startup failure was observed.",
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
@@ -5268,7 +5268,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerExecStatus(ref common.Reference
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Conditions describe prerequisite readiness and execution progress.",
+							Description: "Conditions describe readiness; messages carry prerequisite and runtime details.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -6680,7 +6680,7 @@ func schema_microsoft_dcp_api_v2_LogicalServiceStatus(ref common.ReferenceCallba
 				Properties: map[string]spec.Schema{
 					"phase": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase summarizes service availability without implying a network reachability probe.",
+							Description: "Phase summarizes service lifecycle independently of current endpoint availability.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

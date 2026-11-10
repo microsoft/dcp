@@ -37,15 +37,17 @@ func TestConditionReasonsPreserveStatusValues(t *testing.T) {
 		reason ConditionReason
 		value  string
 	}{
-		{LogicalContainerReasonStopping, "ContainerStopping"},
-		{LogicalProcessReasonStopping, "ProcessStopping"},
-		{LogicalContainerNetworkReasonNetworkAvailable, "NetworkAvailable"},
-		{LogicalServiceReasonReady, "ServiceReady"},
+		{LogicalContainerReasonStarting, "Starting"},
+		{LogicalContainerReasonStopping, "Stopping"},
+		{LogicalProcessReasonStopped, "Stopped"},
+		{LogicalContainerNetworkReasonReady, "Ready"},
+		{LogicalServiceReasonRunning, "Running"},
 		{ContainerExecReasonContainerUnavailable, "ContainerUnavailable"},
 		{ContainerExecReasonStopping, "Stopping"},
-		{LogicalContainerExecReasonPhysicalExecutionChanged, "PhysicalExecutionChanged"},
-		{LogicalResourceReasonTemplateEvaluationFailed, "TemplateEvaluationFailed"},
-		{LogicalResourceReasonPortPreparationFailed, "PortPreparationFailed"},
+		{LogicalContainerExecReasonMissing, "Missing"},
+		{LogicalContainerExecReasonCompleted, "Completed"},
+		{LogicalProcessReasonFailedToStart, "FailedToStart"},
+		{LogicalContainerNetworkReasonLookupFailed, "LookupFailed"},
 		{PhysicalContainerReasonResolvingRuntimeContainer, "ResolvingRuntimeContainer"},
 	} {
 		t.Run(testCase.value, func(t *testing.T) {

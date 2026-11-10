@@ -24,21 +24,32 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
+// LogicalContainerExecPhase summarizes the lifecycle of a logical container execution.
+type LogicalContainerExecPhase string
+
 const (
-	// LogicalContainerExecReasonPhysicalExecutionPreparationFailed indicates that the physical execution could not be prepared.
-	LogicalContainerExecReasonPhysicalExecutionPreparationFailed ConditionReason = "PhysicalExecutionPreparationFailed"
-	// LogicalContainerExecReasonPhysicalExecutionChanged indicates that the physical execution identity, owner, or configuration changed.
-	LogicalContainerExecReasonPhysicalExecutionChanged ConditionReason = "PhysicalExecutionChanged"
-	// LogicalContainerExecReasonPhysicalExecutionNotReady indicates that the physical execution has not become ready.
-	LogicalContainerExecReasonPhysicalExecutionNotReady ConditionReason = "PhysicalExecutionNotReady"
-	// LogicalContainerExecReasonPhysicalExecutionLookupFailed indicates that the physical execution could not be read.
-	LogicalContainerExecReasonPhysicalExecutionLookupFailed ConditionReason = "PhysicalExecutionLookupFailed"
-	// LogicalContainerExecReasonPhysicalExecutionDeletionFailed indicates that physical execution cleanup failed.
-	LogicalContainerExecReasonPhysicalExecutionDeletionFailed ConditionReason = "PhysicalExecutionDeletionFailed"
-	// LogicalContainerExecReasonPhysicalExecutionFailed indicates that the physical execution failed.
-	LogicalContainerExecReasonPhysicalExecutionFailed ConditionReason = "PhysicalExecutionFailed"
-	// LogicalContainerExecReasonDeletingPhysicalExecution indicates that the owned physical execution is being removed.
-	LogicalContainerExecReasonDeletingPhysicalExecution ConditionReason = "DeletingPhysicalExecution"
+	LogicalContainerExecPhasePending LogicalContainerExecPhase = "Pending"
+	LogicalContainerExecPhaseRunning LogicalContainerExecPhase = "Running"
+	LogicalContainerExecPhaseExited  LogicalContainerExecPhase = "Exited"
+	LogicalContainerExecPhaseFailed  LogicalContainerExecPhase = "Failed"
+	LogicalContainerExecPhaseUnknown LogicalContainerExecPhase = "Unknown"
+
+	// LogicalContainerExecReasonStarting qualifies Pending while prerequisites and launch are in progress.
+	LogicalContainerExecReasonStarting ConditionReason = "Starting"
+	// LogicalContainerExecReasonRunning indicates that the attached execution is running.
+	LogicalContainerExecReasonRunning ConditionReason = "Running"
+	// LogicalContainerExecReasonStopping indicates that DCP is cancelling the attached execution.
+	LogicalContainerExecReasonStopping ConditionReason = "Stopping"
+	// LogicalContainerExecReasonCompleted indicates that the attached execution completed on its own.
+	LogicalContainerExecReasonCompleted ConditionReason = "Completed"
+	// LogicalContainerExecReasonStopped indicates that DCP cancelled the attached execution.
+	LogicalContainerExecReasonStopped ConditionReason = "Stopped"
+	// LogicalContainerExecReasonFailedToStart indicates that execution startup could not complete.
+	LogicalContainerExecReasonFailedToStart ConditionReason = "FailedToStart"
+	// LogicalContainerExecReasonMissing indicates that a previously running execution is unavailable or no longer owned.
+	LogicalContainerExecReasonMissing ConditionReason = "Missing"
+	// LogicalContainerExecReasonLookupFailed indicates that current state cannot be confirmed.
+	LogicalContainerExecReasonLookupFailed ConditionReason = "LookupFailed"
 )
 
 // LogicalContainerExecSpec describes one command execution against a logical container.
@@ -51,10 +62,23 @@ type LogicalContainerExecSpec struct {
 	Execution ContainerExecConfig `json:"execution"`
 }
 
-// LogicalContainerExecStatus projects the immediate physical execution.
+// LogicalContainerExecStatus describes logical lifecycle and the immediate physical execution.
 // +k8s:openapi-gen=true
 type LogicalContainerExecStatus struct {
-	ContainerExecStatus `json:",inline"`
+	// Phase summarizes execution lifecycle independently of physical launch progress.
+	// +kubebuilder:validation:Enum=Pending;Running;Exited;Failed;Unknown
+	Phase LogicalContainerExecPhase `json:"phase,omitempty"`
+	// StartedAt is when the runtime accepted the attached command launch.
+	// It does not confirm that the command inside the container started successfully.
+	StartedAt metav1.MicroTime `json:"startedAt,omitempty"`
+	// FinishedAt is when completion or terminal startup failure was observed.
+	FinishedAt metav1.MicroTime `json:"finishedAt,omitempty"`
+	// ExitCode is the exit code reported by the runtime command, when available.
+	ExitCode *int32 `json:"exitCode,omitempty"`
+	// Conditions describe readiness; messages carry prerequisite and runtime details.
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// PhysicalExecRef identifies the same-namespace backing PhysicalContainerExec.
 	PhysicalExecRef string `json:"physicalExecRef,omitempty"`
 	// ContainerID is the runtime container identity selected by the physical execution.

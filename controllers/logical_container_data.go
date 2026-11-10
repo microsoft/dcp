@@ -23,12 +23,13 @@ import (
 type logicalContainerState int
 
 func logicalContainerBackingState(physical *apiv2.PhysicalContainer) logicalContainerState {
-	if !physical.DeletionTimestamp.IsZero() {
-		return logicalContainerStateUnknown
-	}
+	ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
 	switch physical.Status.Phase {
+	case apiv2.PhysicalContainerPhasePending:
+		if ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonStopRequested) {
+			return logicalContainerStateStopping
+		}
 	case apiv2.PhysicalContainerPhaseRunning:
-		ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
 		if ready != nil && ready.Status == metav1.ConditionTrue {
 			return logicalContainerStateRunning
 		}
@@ -47,12 +48,10 @@ func logicalContainerBackingState(physical *apiv2.PhysicalContainer) logicalCont
 const (
 	logicalContainerStatePending logicalContainerState = iota + 1
 	logicalContainerStatePreparationFailed
-	logicalContainerStateDelete
 	logicalContainerStateExited
 	logicalContainerStateFailed
 	logicalContainerStatePaused
 	logicalContainerStateRunning
-	logicalContainerStateStopFailed
 	logicalContainerStateStopped
 	logicalContainerStateStopping
 	logicalContainerStateUnknown
@@ -67,8 +66,6 @@ func (state logicalContainerState) String() string {
 		return "Pending"
 	case logicalContainerStatePreparationFailed:
 		return "PreparationFailed"
-	case logicalContainerStateDelete:
-		return "Delete"
 	case logicalContainerStateExited:
 		return "Exited"
 	case logicalContainerStateFailed:
@@ -77,8 +74,6 @@ func (state logicalContainerState) String() string {
 		return "Paused"
 	case logicalContainerStateRunning:
 		return "Running"
-	case logicalContainerStateStopFailed:
-		return "StopFailed"
 	case logicalContainerStateStopped:
 		return "Stopped"
 	case logicalContainerStateStopping:
@@ -97,8 +92,8 @@ type logicalContainerData struct {
 	reason     apiv2.ConditionReason
 	message    string
 	retryAfter time.Time
-	// Most recent coordination error, retained until the next attempt.
-	reconcileErr error
+	// Records successful startup independently of temporary observation failures.
+	started bool
 	// Effective launch values and handed-off port selections.
 	effectiveCommand []string
 	effectiveEnv     []commonapi.EnvVar
@@ -109,8 +104,7 @@ type logicalContainerData struct {
 	physicalImageUID     types.UID
 	unobservedChildren   unobservedLogicalChildren
 	lease                *statestore.ResourceLease
-	// Lease settlement failures are independent of the original reconciliation failure.
-	leaseFailureMessage string
+	leaseFailureMessage  string
 }
 
 func (data *logicalContainerData) Clone() *logicalContainerData {
@@ -133,6 +127,55 @@ func (data *logicalContainerData) UpdateFrom(other *logicalContainerData) bool {
 	}
 	*data = *other.Clone()
 	return true
+}
+
+func (data *logicalContainerData) terminal() bool {
+	switch data.state {
+	case logicalContainerStatePreparationFailed, logicalContainerStateExited, logicalContainerStateFailed,
+		logicalContainerStateStopped:
+		return true
+	default:
+		return false
+	}
+}
+
+func (data *logicalContainerData) failMissing(message string) {
+	data.state, data.reason, data.message = logicalContainerStateFailed,
+		apiv2.LogicalContainerReasonFailedToStart, message
+	if data.started {
+		data.reason = apiv2.LogicalContainerReasonMissing
+	}
+}
+
+func (data *logicalContainerData) updateLifecycleFromPhysicalContainer(physical *apiv2.PhysicalContainer) {
+	data.state, data.reason, data.message = logicalContainerBackingState(physical), "", logicalBackingStatusMessage("PhysicalContainer", physical.Status.Conditions)
+	switch data.state {
+	case logicalContainerStateCreating:
+		if data.started {
+			data.state = logicalContainerStateUnknown
+		}
+	case logicalContainerStateRunning, logicalContainerStatePaused:
+		data.started = true
+	case logicalContainerStateStopping:
+		if !data.started {
+			data.state = logicalContainerStateCreating
+		}
+	case logicalContainerStateExited:
+		data.reason = apiv2.LogicalContainerReasonCompleted
+		if physical.Spec.Stop {
+			data.state, data.reason = logicalContainerStateStopped, apiv2.LogicalContainerReasonStopped
+		}
+		if physical.Status.ExitCode != nil {
+			data.message = fmt.Sprintf("The backing container exited with code %d.", *physical.Status.ExitCode)
+		}
+	case logicalContainerStateFailed:
+		data.failMissing(data.message)
+	case logicalContainerStateUnknown:
+		if ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady)); ready != nil &&
+			ready.Reason == string(apiv2.PhysicalContainerReasonRuntimeContainerMissing) {
+			data.failMissing(ready.Message)
+		}
+	}
 }
 
 func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (objectChange, AdditionalReconciliationDelay, bool) {
@@ -160,36 +203,18 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 	if data.physicalContainerUID == "" {
 		change |= applyLogicalContainerBackingStatus(container, &apiv2.PhysicalContainer{})
 	}
-	if _, valid := logicalContainerProjections.project(data.state); valid &&
-		(data.reconcileErr != nil || data.leaseFailureMessage != "") {
-		phase := apiv2.LogicalContainerPhaseUnknown
-		if data.state == logicalContainerStateStopping || data.state == logicalContainerStateStopped ||
-			data.state == logicalContainerStateStopFailed {
-			phase = apiv2.LogicalContainerPhaseStopping
-		}
-		reason, message := data.reason, data.message
-		if reason == "" {
-			switch data.state {
-			case logicalContainerStatePending:
-				reason = apiv2.LogicalContainerReasonPhysicalResourcePreparationFailed
-			case logicalContainerStateDelete:
-				reason = apiv2.LogicalContainerReasonPhysicalResourceDeletionFailed
-			default:
-				reason = apiv2.LogicalContainerReasonPhysicalContainerLookupFailed
-			}
-		}
-		if data.leaseFailureMessage != "" {
-			reason, message = apiv2.LogicalResourceReasonPersistenceFailed, data.leaseFailureMessage
-		}
-		change |= setValue(&container.Status.Phase, phase)
-		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation,
-			metav1.ConditionFalse, reason, message)
-		return change | additionalReconciliationNeeded, LongDelay, true
+	message := data.message
+	if !data.terminal() && data.leaseFailureMessage != "" {
+		message = data.leaseFailureMessage
 	}
 	projectionChange, delay, valid := logicalContainerProjections.applyWithReason(
-		data.state, data.reason, data.message,
+		data.state, data.reason, message,
 		&container.Status.Phase, &container.Status.Conditions, container.Generation,
 	)
+	if !data.terminal() && data.leaseFailureMessage != "" {
+		projectionChange |= additionalReconciliationNeeded
+		delay = LongDelay
+	}
 	if data.state == logicalContainerStatePending && !data.retryAfter.IsZero() {
 		projectionChange |= additionalReconciliationNeeded
 		delay = MonitoringDelay
@@ -202,51 +227,43 @@ var logicalContainerProjections = physicalResourceProjectionTable[logicalContain
 	projections: map[logicalContainerState]physicalResourceProjection[apiv2.LogicalContainerPhase]{
 		logicalContainerStatePending: {
 			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.LogicalContainerReasonPhysicalResourcePreparationPending,
+			conditionReason: apiv2.LogicalContainerReasonStarting,
 		},
 		logicalContainerStatePreparationFailed: {
 			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.LogicalContainerReasonPhysicalResourcePreparationFailed,
+			conditionReason: apiv2.LogicalContainerReasonFailedToStart,
 		},
 		logicalContainerStateCreating: {
 			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.LogicalContainerReasonPhysicalContainerNotReady,
+			conditionReason: apiv2.LogicalContainerReasonStarting,
 		},
 		logicalContainerStateRunning: {
 			phase: apiv2.LogicalContainerPhaseRunning, conditionStatus: metav1.ConditionTrue,
 			conditionReason: apiv2.LogicalContainerReasonRunning, message: "The logical container is running.",
 		},
 		logicalContainerStatePaused: {
-			phase: apiv2.LogicalContainerPhasePaused, conditionStatus: metav1.ConditionFalse,
+			phase: apiv2.LogicalContainerPhaseRunning, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.LogicalContainerReasonPaused, message: "The logical container is paused.",
 		},
 		logicalContainerStateExited: {
 			phase: apiv2.LogicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.LogicalContainerReasonExited, message: "The logical container has exited.",
+			conditionReason: apiv2.LogicalContainerReasonCompleted, message: "The logical container has exited.",
 		},
 		logicalContainerStateFailed: {
 			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.LogicalContainerReasonPhysicalContainerFailed,
+			conditionReason: apiv2.LogicalContainerReasonFailedToStart,
 		},
 		logicalContainerStateUnknown: {
 			phase: apiv2.LogicalContainerPhaseUnknown, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.LogicalContainerReasonPhysicalContainerStateUnknown,
+			conditionReason: apiv2.LogicalContainerReasonLookupFailed, requeue: true, requeueDelay: LongDelay,
 		},
 		logicalContainerStateStopping: {
-			phase: apiv2.LogicalContainerPhaseStopping, conditionStatus: metav1.ConditionFalse,
+			phase: apiv2.LogicalContainerPhaseRunning, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.LogicalContainerReasonStopping, message: "Waiting for the physical controller to stop the runtime container.",
 		},
 		logicalContainerStateStopped: {
 			phase: apiv2.LogicalContainerPhaseExited, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.LogicalContainerReasonStopped, message: "The logical container has stopped.",
-		},
-		logicalContainerStateStopFailed: {
-			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.LogicalContainerReasonPhysicalContainerFailed,
-		},
-		logicalContainerStateDelete: {
-			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.LogicalContainerReasonDeletingPhysicalResources, requeue: true,
 		},
 	},
 }

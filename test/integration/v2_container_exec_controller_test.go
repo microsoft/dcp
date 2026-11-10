@@ -63,7 +63,7 @@ func TestV2ContainerExecRunsWithSharedOutput(t *testing.T) {
 			}},
 	}
 	require.NoError(t, client.Create(ctx, resource))
-	running := waitV2LogicalExecPhase(t, ctx, resource, apiv2.ContainerExecPhaseRunning)
+	running := waitV2LogicalExecPhase(t, ctx, resource, apiv2.LogicalContainerExecPhaseRunning)
 	var physical apiv2.PhysicalContainerExec
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: target.Namespace, Name: running.Status.PhysicalExecRef}, &physical))
 	require.Equal(t, resource.Spec.Execution, physical.Spec.Execution)
@@ -101,12 +101,13 @@ func TestV2ContainerExecRunsWithSharedOutput(t *testing.T) {
 	remaining, remainingErr := io.ReadAll(follow)
 	require.NoError(t, remainingErr)
 	require.Empty(t, remaining)
-	exited := waitV2LogicalExecPhase(t, ctx, resource, apiv2.ContainerExecPhaseExited)
+	exited := waitV2LogicalExecPhase(t, ctx, resource, apiv2.LogicalContainerExecPhaseExited)
 	require.Equal(t, int32(23), *exited.Status.ExitCode)
 	require.False(t, exited.Status.StartedAt.IsZero())
 	require.False(t, exited.Status.FinishedAt.IsZero())
 	require.True(t, exited.Status.RuntimeLogs.Complete)
-	requireReadyCondition(t, exited.Status.Conditions, metav1.ConditionFalse, apiv2.ContainerExecReasonExited)
+	requireReadyCondition(t, exited.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonCompleted)
+	require.Contains(t, apimeta.FindStatusCondition(exited.Status.Conditions, string(apiv2.ConditionReady)).Message, "23")
 	require.Equal(t, 1, containerOrchestrator.ExecContainerCallCount(resource.Spec.Execution.Command))
 	waitPhysicalContainerPhase(t, ctx, types.NamespacedName{Namespace: target.Namespace, Name: target.Status.PhysicalContainerRef}, apiv2.PhysicalContainerPhaseRunning)
 }
@@ -146,19 +147,21 @@ func TestV2LogicalContainerExecWaitsForPrerequisites(t *testing.T) {
 	require.NoError(t, client.Create(ctx, resource))
 	waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
 		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return condition != nil && condition.Reason == string(apiv2.PhysicalResourceReasonNamespaceNotFound), nil
+		return condition != nil && condition.Reason == string(apiv2.LogicalContainerExecReasonStarting), nil
 	})
 	createActiveV2Namespace(t, ctx, namespace)
 	waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
 		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return condition != nil && condition.Reason == string(apiv2.ContainerExecReasonContainerNotFound), nil
+		return condition != nil && condition.Reason == string(apiv2.LogicalContainerExecReasonStarting) &&
+			condition.Message == "Waiting for the target LogicalContainer.", nil
 	})
 	target := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: namespace},
 		Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{ImageRef: "pending-image"}}}
 	require.NoError(t, client.Create(ctx, target))
 	pending := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
 		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return condition != nil && condition.Reason == string(apiv2.ContainerExecReasonContainerNotReady), nil
+		return condition != nil && condition.Reason == string(apiv2.LogicalContainerExecReasonStarting) &&
+			condition.Message == "Waiting for logical container readiness.", nil
 	})
 	require.Empty(t, pending.Status.PhysicalExecRef)
 	require.Zero(t, containerOrchestrator.ExecContainerCallCount(resource.Spec.Execution.Command))
@@ -166,7 +169,7 @@ func TestV2LogicalContainerExecWaitsForPrerequisites(t *testing.T) {
 	require.NoError(t, client.List(ctx, &executions, ctrl_client.InNamespace(namespace)))
 	require.Empty(t, executions.Items)
 	createReadyV2PhysicalContainerImage(t, ctx, namespace, "pending-image", namespace+"-image")
-	waitV2LogicalExecPhase(t, ctx, resource, apiv2.ContainerExecPhaseRunning)
+	waitV2LogicalExecPhase(t, ctx, resource, apiv2.LogicalContainerExecPhaseRunning)
 }
 
 // Verifies that terminal container execution launch failure remains terminal across updates,
@@ -194,9 +197,9 @@ func TestV2ContainerExecLaunchFailureIsTerminal(t *testing.T) {
 		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: command}}}
 	require.NoError(t, apiClient.Create(ctx, resource))
 	failed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseFailed, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseFailed, nil
 	})
-	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ContainerExecReasonLaunchFailed)
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonFailedToStart)
 	require.True(t, failed.Status.RuntimeLogs.Complete)
 	require.Nil(t, failed.Status.ExitCode)
 	for _, source := range []string{"system", "stdout"} {
@@ -234,6 +237,15 @@ func TestV2ContainerExecLaunchFailureIsTerminal(t *testing.T) {
 	defer decorated.failLookup.Store(false)
 	reconcileTerminalObservationAndWaitForIdle(t, ctx, apiClient, decorated, failed)
 	require.Equal(t, expectedStatus, failed.Status)
+	lookupAttempts := decorated.lookupAttempts.Load()
+	require.NoError(t, apiClient.Delete(ctx, failed))
+	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return decorated.lookupAttempts.Load() > lookupAttempts, nil
+	}))
+	require.NoError(t, apiClient.Get(ctx, failed.NamespacedName(), failed))
+	require.Equal(t, expectedStatus, failed.Status)
+	decorated.failLookup.Store(false)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, failed)
 }
 
 // Verifies that deleting a running or in-flight LogicalContainerExec cancels its attached
@@ -263,7 +275,7 @@ func TestV2ContainerExecDeletionSettlesAttachedExecution(t *testing.T) {
 				})
 				require.NoError(t, waitErr)
 			} else {
-				waitV2LogicalExecPhase(t, ctx, resource, apiv2.ContainerExecPhaseRunning)
+				waitV2LogicalExecPhase(t, ctx, resource, apiv2.LogicalContainerExecPhaseRunning)
 			}
 			require.NoError(t, client.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted[apiv2.LogicalContainerExec](t, ctx, client, resource)
@@ -286,12 +298,15 @@ func TestV2LogicalContainerExecDoesNotRecreateMissingBacking(t *testing.T) {
 	resource := &apiv2.LogicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: "execution", Namespace: target.Namespace},
 		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: "v2-exec-missing-backing-command"}}}
 	require.NoError(t, client.Create(ctx, resource))
-	running := waitV2LogicalExecPhase(t, ctx, resource, apiv2.ContainerExecPhaseRunning)
+	running := waitV2LogicalExecPhase(t, ctx, resource, apiv2.LogicalContainerExecPhaseRunning)
 	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalExecRef, Namespace: target.Namespace}}
 	forceRemoveLogicalContainerExecBacking(t, ctx, client, physical)
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerExec](t, ctx, client, physical)
-	failed := waitV2LogicalExecPhase(t, ctx, resource, apiv2.ContainerExecPhaseFailed)
-	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonPhysicalExecutionChanged)
+	failed := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseFailed &&
+			current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete && !current.Status.RuntimeLogs.Available, nil
+	})
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonMissing)
 	require.NotNil(t, failed.Status.RuntimeLogs)
 	require.Equal(t, running.Status.RuntimeLogs.UID, failed.Status.RuntimeLogs.UID)
 	require.True(t, failed.Status.RuntimeLogs.Complete)
@@ -312,7 +327,7 @@ func TestV2ContainerExecNamespaceCleanup(t *testing.T) {
 		Spec: apiv2.PhysicalContainerExecSpec{ContainerRef: target.Status.PhysicalContainerRef, Execution: apiv2.ContainerExecConfig{Command: "v2-exec-namespace-physical"}}}
 	require.NoError(t, client.Create(ctx, logical))
 	require.NoError(t, client.Create(ctx, physical))
-	waitV2LogicalExecPhase(t, ctx, logical, apiv2.ContainerExecPhaseRunning)
+	waitV2LogicalExecPhase(t, ctx, logical, apiv2.LogicalContainerExecPhaseRunning)
 	waitObjectAssumesState(t, ctx, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
 		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
 	})
@@ -413,9 +428,9 @@ func TestV2ContainerExecRejectsStoppingOrExitedTargets(t *testing.T) {
 			require.NoError(t, apiClient.Create(ctx, logical))
 			require.NoError(t, apiClient.Create(ctx, physical))
 			failed := waitObjectAssumesStateEx(t, ctx, apiClient, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-				return current.Status.Phase == apiv2.ContainerExecPhaseFailed, nil
+				return current.Status.Phase == apiv2.LogicalContainerExecPhaseFailed, nil
 			})
-			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ContainerExecReasonContainerUnavailable)
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonFailedToStart)
 			require.False(t, failed.Status.FinishedAt.IsZero())
 			failedPhysical := waitObjectAssumesStateEx(t, ctx, apiClient, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
 				return current.Status.Phase == apiv2.ContainerExecPhaseFailed, nil
@@ -443,12 +458,12 @@ func TestV2ContainerExecCompletesWhenContainerExits(t *testing.T) {
 	resource := &apiv2.LogicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: "execution", Namespace: target.Namespace},
 		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: "v2-exec-container-exit-command"}}}
 	require.NoError(t, client.Create(ctx, resource))
-	waitV2LogicalExecPhase(t, ctx, resource, apiv2.ContainerExecPhaseRunning)
+	waitV2LogicalExecPhase(t, ctx, resource, apiv2.LogicalContainerExecPhaseRunning)
 	require.NoError(t, retryOnConflict(ctx, target.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
 		current.Spec.Stop = true
 		return client.Update(updateCtx, current)
 	}))
-	exited := waitV2LogicalExecPhase(t, ctx, resource, apiv2.ContainerExecPhaseExited)
+	exited := waitV2LogicalExecPhase(t, ctx, resource, apiv2.LogicalContainerExecPhaseExited)
 	require.True(t, exited.Status.RuntimeLogs.Complete)
 	require.Equal(t, 1, containerOrchestrator.ExecContainerCallCount(resource.Spec.Execution.Command))
 }
@@ -481,7 +496,7 @@ func createV2ExecTarget(t *testing.T, ctx context.Context, apiClient ctrl_client
 	})
 }
 
-func waitV2LogicalExecPhase(t *testing.T, ctx context.Context, resource *apiv2.LogicalContainerExec, phase apiv2.ContainerExecPhase) *apiv2.LogicalContainerExec {
+func waitV2LogicalExecPhase(t *testing.T, ctx context.Context, resource *apiv2.LogicalContainerExec, phase apiv2.LogicalContainerExecPhase) *apiv2.LogicalContainerExec {
 	t.Helper()
 	return waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
 		return current.Status.Phase == phase, nil

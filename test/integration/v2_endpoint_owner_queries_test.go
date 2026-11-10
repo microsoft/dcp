@@ -170,13 +170,13 @@ func TestV2LogicalEndpointOwnerQueries(t *testing.T) {
 				waitObjectAssumesStateEx(t, ctx, apiClient, workloadName, func(current *apiv2.LogicalProcess) (bool, error) {
 					condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 					return current.Status.Phase == apiv2.LogicalProcessPhasePending && condition != nil &&
-						condition.Reason == string(apiv2.LogicalResourceReasonPortPreparationPending), nil
+						condition.Reason == string(apiv2.ConditionReason("Starting")), nil
 				})
 			} else {
 				waitObjectAssumesStateEx(t, ctx, apiClient, workloadName, func(current *apiv2.LogicalContainer) (bool, error) {
 					condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 					return current.Status.Phase == apiv2.LogicalContainerPhasePending && condition != nil &&
-						condition.Reason == string(apiv2.LogicalResourceReasonPortPreparationPending), nil
+						condition.Reason == string(apiv2.ConditionReason("Starting")), nil
 				})
 			}
 			indexed.hideOwned.Store(true)
@@ -185,7 +185,7 @@ func TestV2LogicalEndpointOwnerQueries(t *testing.T) {
 				return metav1.IsControlledBy(current, workload), nil
 			})
 			ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+				return logicalServiceReady(current), nil
 			})
 			require.NotEmpty(t, ready.Status.EffectiveAddresses)
 			require.NoError(t, apiClient.Get(ctx, collision.NamespacedName(), stored))

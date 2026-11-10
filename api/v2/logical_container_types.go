@@ -69,64 +69,32 @@ func (mode LogicalContainerMode) ShouldCreateIfMissing() bool {
 type LogicalContainerPhase string
 
 const (
+	// LogicalContainerReasonStarting qualifies Pending while prerequisites and startup are in progress.
+	LogicalContainerReasonStarting ConditionReason = "Starting"
 	// LogicalContainerReasonRunning indicates that the backing container is running.
-	LogicalContainerReasonRunning ConditionReason = "ContainerRunning"
+	LogicalContainerReasonRunning ConditionReason = "Running"
 	// LogicalContainerReasonPaused indicates that the backing container is paused.
-	LogicalContainerReasonPaused ConditionReason = "ContainerPaused"
-	// LogicalContainerReasonExited indicates that the backing container has exited.
-	LogicalContainerReasonExited ConditionReason = "ContainerExited"
+	LogicalContainerReasonPaused ConditionReason = "Paused"
+	// LogicalContainerReasonCompleted indicates that the backing container exited on its own.
+	LogicalContainerReasonCompleted ConditionReason = "Completed"
 	// LogicalContainerReasonStopping indicates that container termination has been requested.
-	LogicalContainerReasonStopping ConditionReason = "ContainerStopping"
+	LogicalContainerReasonStopping ConditionReason = "Stopping"
 	// LogicalContainerReasonStopped indicates that container termination has completed.
-	LogicalContainerReasonStopped ConditionReason = "ContainerStopped"
-	// LogicalContainerReasonRuntimeLookupFailed indicates that runtime container inspection failed.
-	LogicalContainerReasonRuntimeLookupFailed ConditionReason = "ContainerLookupFailed"
-	// LogicalContainerReasonExistingContainerNotFound indicates that an existing-mode target is absent.
-	LogicalContainerReasonExistingContainerNotFound ConditionReason = "ExistingContainerNotFound"
-	// LogicalContainerReasonPhysicalResourcePreparationPending indicates that physical declarations are not prepared.
-	LogicalContainerReasonPhysicalResourcePreparationPending ConditionReason = "PhysicalResourcePreparationPending"
-	// LogicalContainerReasonPhysicalResourcePreparationFailed indicates that physical declaration preparation failed.
-	LogicalContainerReasonPhysicalResourcePreparationFailed ConditionReason = "PhysicalResourcePreparationFailed"
-	// LogicalContainerReasonPhysicalResourceDeletionFailed indicates that physical declaration cleanup failed.
-	LogicalContainerReasonPhysicalResourceDeletionFailed ConditionReason = "PhysicalResourceDeletionFailed"
-	// LogicalContainerReasonPhysicalContainerLookupFailed indicates that the physical container could not be read.
-	LogicalContainerReasonPhysicalContainerLookupFailed ConditionReason = "PhysicalContainerLookupFailed"
-	// LogicalContainerReasonPhysicalContainerNotReady indicates that the physical container has not become ready.
-	LogicalContainerReasonPhysicalContainerNotReady ConditionReason = "PhysicalContainerNotReady"
-	// LogicalContainerReasonPhysicalContainerFailed indicates that the physical container failed.
-	LogicalContainerReasonPhysicalContainerFailed ConditionReason = "PhysicalContainerFailed"
-	// LogicalContainerReasonPhysicalContainerStateUnknown indicates that the physical container state is unknown.
-	LogicalContainerReasonPhysicalContainerStateUnknown ConditionReason = "PhysicalContainerStateUnknown"
-	// LogicalContainerReasonPhysicalContainerChanged indicates that the physical container identity or hold changed.
-	LogicalContainerReasonPhysicalContainerChanged ConditionReason = "PhysicalContainerChanged"
-	// LogicalContainerReasonMultiplePhysicalContainers indicates that more than one owned physical container was found.
-	LogicalContainerReasonMultiplePhysicalContainers ConditionReason = "MultiplePhysicalContainers"
-	// LogicalContainerReasonPhysicalImageLookupFailed indicates that the startup image could not be read.
-	LogicalContainerReasonPhysicalImageLookupFailed ConditionReason = "PhysicalImageLookupFailed"
-	// LogicalContainerReasonPhysicalImageChanged indicates that the startup image identity or hold changed.
-	LogicalContainerReasonPhysicalImageChanged ConditionReason = "PhysicalImageChanged"
-	// LogicalContainerReasonMultiplePhysicalImages indicates that more than one owned startup image was found.
-	LogicalContainerReasonMultiplePhysicalImages ConditionReason = "MultiplePhysicalImages"
-	// LogicalContainerReasonLogicalNetworkFailed indicates that a referenced logical network failed.
-	LogicalContainerReasonLogicalNetworkFailed ConditionReason = "LogicalNetworkFailed"
-	// LogicalContainerReasonStopRequestFailed indicates that Stop could not be forwarded to the physical container.
-	LogicalContainerReasonStopRequestFailed ConditionReason = "StopRequestFailed"
-	// LogicalContainerReasonDeletingPhysicalResources indicates that owned physical declarations are being removed.
-	LogicalContainerReasonDeletingPhysicalResources ConditionReason = "DeletingPhysicalResources"
+	LogicalContainerReasonStopped ConditionReason = "Stopped"
+	// LogicalContainerReasonFailedToStart indicates that startup could not complete.
+	LogicalContainerReasonFailedToStart ConditionReason = "FailedToStart"
+	// LogicalContainerReasonMissing indicates that a previously running backing is unavailable or no longer owned.
+	LogicalContainerReasonMissing ConditionReason = "Missing"
+	// LogicalContainerReasonLookupFailed indicates that current state cannot be confirmed.
+	LogicalContainerReasonLookupFailed ConditionReason = "LookupFailed"
 )
 
 const (
 	// LogicalContainerPhasePending indicates that the container is waiting for prerequisites or startup.
 	LogicalContainerPhasePending LogicalContainerPhase = "Pending"
 
-	// LogicalContainerPhaseRunning indicates that the container is running.
+	// LogicalContainerPhaseRunning indicates that startup succeeded, including while paused or stopping.
 	LogicalContainerPhaseRunning LogicalContainerPhase = "Running"
-
-	// LogicalContainerPhasePaused indicates that the container is paused.
-	LogicalContainerPhasePaused LogicalContainerPhase = "Paused"
-
-	// LogicalContainerPhaseStopping indicates that stop is requested and has not completed.
-	LogicalContainerPhaseStopping LogicalContainerPhase = "Stopping"
 
 	// LogicalContainerPhaseExited indicates that the container has exited.
 	LogicalContainerPhaseExited LogicalContainerPhase = "Exited"
@@ -329,7 +297,7 @@ type LogicalContainerStatus struct {
 	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
 
 	// Phase summarizes the container lifecycle.
-	// +kubebuilder:validation:Enum=Pending;Running;Paused;Stopping;Exited;Unknown;Failed
+	// +kubebuilder:validation:Enum=Pending;Running;Exited;Unknown;Failed
 	// +optional
 	Phase LogicalContainerPhase `json:"phase,omitempty"`
 

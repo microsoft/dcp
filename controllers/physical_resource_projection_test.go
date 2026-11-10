@@ -181,26 +181,15 @@ func TestV2ProjectedStatesHaveHandlers(t *testing.T) {
 	assertProjectedStateHandlers(t, physicalProcessProjections, physicalProcessDataHandlers)
 	assertProjectedStateHandlers(t, physicalContainerExecProjections, physicalContainerExecDataHandlers)
 	for state := range logicalContainerExecProjections.projections {
-		if state != logicalContainerExecStateDelete {
-			require.Contains(t, logicalContainerExecDataHandlers, state)
-		}
+		require.Contains(t, logicalContainerExecDataHandlers, state)
 	}
 	for state := range logicalContainerProjections.projections {
-		if state == logicalContainerStateDelete {
-			continue
-		}
 		require.Contains(t, logicalContainerDataHandlers, state)
 	}
 	for state := range logicalContainerNetworkProjections.projections {
-		if state == logicalContainerNetworkStateDelete {
-			continue
-		}
 		require.Contains(t, logicalContainerNetworkDataHandlers, state)
 	}
 	for state := range logicalProcessProjections.projections {
-		if state == logicalProcessStateDelete {
-			continue
-		}
 		require.Contains(t, logicalProcessDataHandlers, state)
 	}
 }

@@ -52,44 +52,30 @@ const (
 type LogicalProcessPhase string
 
 const (
-	// LogicalProcessReasonPreparingLifecycle indicates that process lifecycle inputs are being prepared.
-	LogicalProcessReasonPreparingLifecycle ConditionReason = "PreparingLifecycle"
+	// LogicalProcessReasonStarting qualifies Pending while prerequisites and startup are in progress.
+	LogicalProcessReasonStarting ConditionReason = "Starting"
 	// LogicalProcessReasonRunning indicates that the backing process is running.
-	LogicalProcessReasonRunning ConditionReason = "ProcessRunning"
-	// LogicalProcessReasonExited indicates that the backing process has exited.
-	LogicalProcessReasonExited ConditionReason = "ProcessExited"
+	LogicalProcessReasonRunning ConditionReason = "Running"
+	// LogicalProcessReasonCompleted indicates that the backing process exited on its own.
+	LogicalProcessReasonCompleted ConditionReason = "Completed"
 	// LogicalProcessReasonStopping indicates that process termination has been requested.
-	LogicalProcessReasonStopping ConditionReason = "ProcessStopping"
-	// LogicalProcessReasonPhysicalProcessPreparationPending indicates that the physical process declaration is not prepared.
-	LogicalProcessReasonPhysicalProcessPreparationPending ConditionReason = "PhysicalProcessPreparationPending"
-	// LogicalProcessReasonPhysicalProcessPreparationFailed indicates that physical process preparation failed.
-	LogicalProcessReasonPhysicalProcessPreparationFailed ConditionReason = "PhysicalProcessPreparationFailed"
-	// LogicalProcessReasonPhysicalProcessDeletionFailed indicates that physical process cleanup failed.
-	LogicalProcessReasonPhysicalProcessDeletionFailed ConditionReason = "PhysicalProcessDeletionFailed"
-	// LogicalProcessReasonPhysicalProcessLookupFailed indicates that the physical process could not be read.
-	LogicalProcessReasonPhysicalProcessLookupFailed ConditionReason = "PhysicalProcessLookupFailed"
-	// LogicalProcessReasonPhysicalProcessNotReady indicates that the physical process has not become ready.
-	LogicalProcessReasonPhysicalProcessNotReady ConditionReason = "PhysicalProcessNotReady"
-	// LogicalProcessReasonPhysicalProcessFailed indicates that the physical process failed.
-	LogicalProcessReasonPhysicalProcessFailed ConditionReason = "PhysicalProcessFailed"
-	// LogicalProcessReasonPhysicalProcessStateUnknown indicates that the physical process state is unknown.
-	LogicalProcessReasonPhysicalProcessStateUnknown ConditionReason = "PhysicalProcessStateUnknown"
-	// LogicalProcessReasonPhysicalProcessMissing indicates that a previously observed physical process is absent.
-	LogicalProcessReasonPhysicalProcessMissing ConditionReason = "PhysicalProcessMissing"
-	// LogicalProcessReasonPhysicalProcessChanged indicates that the physical process identity, owner, or hold changed.
-	LogicalProcessReasonPhysicalProcessChanged ConditionReason = "PhysicalProcessChanged"
-	// LogicalProcessReasonPhysicalProcessTerminating indicates that the physical process is being deleted.
-	LogicalProcessReasonPhysicalProcessTerminating ConditionReason = "PhysicalProcessTerminating"
-	// LogicalProcessReasonDeletingPhysicalProcess indicates that owned physical processes are being removed.
-	LogicalProcessReasonDeletingPhysicalProcess ConditionReason = "DeletingPhysicalProcess"
+	LogicalProcessReasonStopping ConditionReason = "Stopping"
+	// LogicalProcessReasonStopped indicates that DCP terminated the process.
+	LogicalProcessReasonStopped ConditionReason = "Stopped"
+	// LogicalProcessReasonFailedToStart indicates that startup could not complete.
+	LogicalProcessReasonFailedToStart ConditionReason = "FailedToStart"
+	// LogicalProcessReasonMissing indicates that a previously running backing is unavailable or no longer owned.
+	LogicalProcessReasonMissing ConditionReason = "Missing"
+	// LogicalProcessReasonLookupFailed indicates that current state cannot be confirmed.
+	LogicalProcessReasonLookupFailed ConditionReason = "LookupFailed"
 )
 
 const (
 	// LogicalProcessPhasePending indicates that the process is waiting for prerequisites or launch.
 	LogicalProcessPhasePending LogicalProcessPhase = "Pending"
-	// LogicalProcessPhaseRunning indicates that the process is running.
+	// LogicalProcessPhaseRunning indicates that startup succeeded, including while stopping.
 	LogicalProcessPhaseRunning LogicalProcessPhase = "Running"
-	// LogicalProcessPhaseExited indicates that the process has exited or the referenced identity is missing.
+	// LogicalProcessPhaseExited indicates that process completion or requested termination was observed.
 	LogicalProcessPhaseExited LogicalProcessPhase = "Exited"
 	// LogicalProcessPhaseUnknown indicates that process state cannot be determined.
 	LogicalProcessPhaseUnknown LogicalProcessPhase = "Unknown"

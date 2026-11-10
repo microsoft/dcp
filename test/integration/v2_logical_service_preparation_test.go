@@ -115,9 +115,9 @@ func TestV2LogicalEndpointPublicationLifecycle(t *testing.T) {
 				pending := waitObjectAssumesStateEx(t, ctx, apiClient, workloadName, func(current *apiv2.LogicalProcess) (bool, error) {
 					condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 					return current.Status.Phase == apiv2.LogicalProcessPhasePending && current.Status.PID != nil &&
-						condition != nil && condition.Reason == string(apiv2.LogicalResourceReasonPortPreparationPending), nil
+						condition != nil && condition.Reason == string(apiv2.ConditionReason("Starting")), nil
 				})
-				requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalResourceReasonPortPreparationPending)
+				requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.ConditionReason("Starting"))
 				physical := &apiv2.PhysicalProcess{}
 				require.NoError(t, apiClient.Get(ctx, types.NamespacedName{Name: pending.Status.PhysicalProcessRef, Namespace: namespace.Name}, physical))
 				require.Equal(t, apiv2.PhysicalProcessPhaseRunning, physical.Status.Phase)
@@ -131,9 +131,9 @@ func TestV2LogicalEndpointPublicationLifecycle(t *testing.T) {
 				pending := waitObjectAssumesStateEx(t, ctx, apiClient, workloadName, func(current *apiv2.LogicalContainer) (bool, error) {
 					condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 					return current.Status.Phase == apiv2.LogicalContainerPhasePending && current.Status.ContainerID != "" &&
-						condition != nil && condition.Reason == string(apiv2.LogicalResourceReasonPortPreparationPending), nil
+						condition != nil && condition.Reason == string(apiv2.ConditionReason("Starting")), nil
 				})
-				requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalResourceReasonPortPreparationPending)
+				requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.ConditionReason("Starting"))
 				physical := &apiv2.PhysicalContainer{}
 				require.NoError(t, apiClient.Get(ctx, types.NamespacedName{Name: pending.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
 				require.Equal(t, apiv2.PhysicalContainerPhaseRunning, physical.Status.Phase)
@@ -166,16 +166,16 @@ func TestV2LogicalEndpointPublicationLifecycle(t *testing.T) {
 			require.NoError(t, apiClient.Get(ctx, workloadName, logical))
 			if process, isProcess := logical.(*apiv2.LogicalProcess); isProcess {
 				require.Equal(t, apiv2.LogicalProcessPhasePending, process.Status.Phase)
-				requireReadyCondition(t, process.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalResourceReasonPortPreparationPending)
+				requireReadyCondition(t, process.Status.Conditions, metav1.ConditionFalse, apiv2.ConditionReason("Starting"))
 			} else {
 				container := logical.(*apiv2.LogicalContainer)
 				require.Equal(t, apiv2.LogicalContainerPhasePending, container.Status.Phase)
-				requireReadyCondition(t, container.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalResourceReasonPortPreparationPending)
+				requireReadyCondition(t, container.Status.Conditions, metav1.ConditionFalse, apiv2.ConditionReason("Starting"))
 			}
 			current.Finalizers = nil
 			require.NoError(t, apiClient.Update(ctx, current))
 			ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(currentService *apiv2.LogicalService) (bool, error) {
-				return currentService.Status.Phase == apiv2.LogicalServicePhaseReady && len(currentService.Status.EffectiveAddresses) == 1 &&
+				return logicalServiceReady(currentService) && len(currentService.Status.EffectiveAddresses) == 1 &&
 					currentService.Status.EffectiveAddresses[0].Port == stale.Spec.Addresses[0].Port-1, nil
 			})
 			replacement := &apiv2.ServiceEndpoint{}
@@ -212,7 +212,7 @@ func TestV2LogicalEndpointPublicationLifecycle(t *testing.T) {
 			}
 			decorated.failCreate.Store(false)
 			recovered := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(currentService *apiv2.LogicalService) (bool, error) {
-				return currentService.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+				return logicalServiceReady(currentService), nil
 			})
 			require.Equal(t, ready.UID, recovered.UID)
 			require.Equal(t, ready.Status.EffectiveAddresses, recovered.Status.EffectiveAddresses)
@@ -301,7 +301,8 @@ func TestV2LogicalServicePreparationRecoversOnLaterReconciliation(t *testing.T) 
 				require.NoError(t, apiClient.Create(ctx, process))
 				waitObjectAssumesStateEx(t, ctx, apiClient, name, func(current *apiv2.LogicalProcess) (bool, error) {
 					return lookupReader.failures.Load() > 0 && current.Status.PhysicalProcessRef == "" &&
-						len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonPortPreparationPending), nil
+						current.Status.Phase == apiv2.LogicalProcessPhasePending && len(current.Status.Conditions) > 0 &&
+						current.Status.Conditions[0].Reason == string(apiv2.LogicalProcessReasonStarting), nil
 				})
 			} else {
 				container := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: name.Name, Namespace: name.Namespace},
@@ -314,7 +315,8 @@ func TestV2LogicalServicePreparationRecoversOnLaterReconciliation(t *testing.T) 
 				require.NoError(t, apiClient.Create(ctx, container))
 				waitObjectAssumesStateEx(t, ctx, apiClient, name, func(current *apiv2.LogicalContainer) (bool, error) {
 					return lookupReader.failures.Load() > 0 && current.Status.PhysicalContainerRef == "" &&
-						len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonPortPreparationPending), nil
+						current.Status.Phase == apiv2.LogicalContainerPhasePending && len(current.Status.Conditions) > 0 &&
+						current.Status.Conditions[0].Reason == string(apiv2.LogicalContainerReasonStarting), nil
 				})
 			}
 			var services apiv2.LogicalServiceList
@@ -361,7 +363,7 @@ func TestV2LogicalServicePreparationRecoversOnLaterReconciliation(t *testing.T) 
 				require.Equal(t, arguments, running.Spec.Container.Command)
 			}
 			waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+				return logicalServiceReady(current), nil
 			})
 			require.NoError(t, apiClient.Delete(ctx, namespace))
 			ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, apiClient, namespace)
@@ -445,7 +447,7 @@ func TestV2LogicalServiceTemplateSurvivesWorkloadReplacement(t *testing.T) {
 					parentUID = resource.GetUID()
 					if instance < 2 {
 						service := waitObjectAssumesState(t, ctx, serviceName, func(current *apiv2.LogicalService) (bool, error) {
-							return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+							return logicalServiceReady(current), nil
 						})
 						if instance == 0 {
 							serviceUID, retainedAddresses, retainedSpec = service.UID, service.Status.EffectiveAddresses, service.Spec.DeepCopy()
@@ -468,7 +470,7 @@ func TestV2LogicalServiceTemplateSurvivesWorkloadReplacement(t *testing.T) {
 						ctrl_testutil.WaitObjectDeleted[apiv2.LogicalContainer](t, ctx, client, current)
 					}
 					service := waitObjectAssumesState(t, ctx, serviceName, func(current *apiv2.LogicalService) (bool, error) {
-						return current.Status.Phase == apiv2.LogicalServicePhasePending, nil
+						return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current), nil
 					})
 					require.Equal(t, serviceUID, service.UID)
 					require.Equal(t, retainedAddresses, service.Status.EffectiveAddresses)
@@ -512,7 +514,7 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 				require.NoError(t, client.Create(ctx, resource))
 				waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalProcess) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalProcessPhasePending && len(current.Status.Conditions) > 0 &&
-						current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed) && current.Status.PhysicalProcessRef == "", nil
+						current.Status.Conditions[0].Reason == string(apiv2.LogicalProcessReasonStarting) && current.Status.PhysicalProcessRef == "", nil
 				})
 			} else {
 				resource := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: name.Name, Namespace: name.Namespace},
@@ -522,7 +524,7 @@ func TestV2LogicalValuesWaitForReferencedService(t *testing.T) {
 				require.NoError(t, client.Create(ctx, resource))
 				waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalContainer) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalContainerPhasePending && len(current.Status.Conditions) > 0 &&
-						current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed) && current.Status.PhysicalContainerRef == "", nil
+						current.Status.Conditions[0].Reason == string(apiv2.LogicalContainerReasonStarting) && current.Status.PhysicalContainerRef == "", nil
 				})
 			}
 
@@ -583,7 +585,7 @@ func TestV2LogicalProcessFamilySelectorsResolveLocalhost(t *testing.T) {
 			waitLogicalProcessPhase(t, ctx, producer.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
 			serviceName := types.NamespacedName{Name: "producer-http", Namespace: namespace.Name}
 			published := waitObjectAssumesState(t, ctx, serviceName, func(current *apiv2.LogicalService) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+				return logicalServiceReady(current), nil
 			})
 			require.Equal(t, []apiv2.ServiceAddress{{Address: networking.Localhost, Port: 8080}}, published.Status.EffectiveAddresses)
 			addressTemplate := fmt.Sprintf(`{{addressFor %q %q}}`, serviceName.Name, family)
@@ -648,7 +650,7 @@ func TestV2LogicalValuesRejectInvalidServiceReferences(t *testing.T) {
 						require.NoError(t, client.Create(ctx, resource))
 						failed := waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalProcess) (bool, error) {
 							return current.Status.Phase == apiv2.LogicalProcessPhaseFailed && len(current.Status.Conditions) > 0 &&
-								current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
+								current.Status.Conditions[0].Reason == string(apiv2.ConditionReason("FailedToStart")), nil
 						})
 						require.Contains(t, failed.Status.Conditions[0].Message, "invalid service reference")
 						require.Empty(t, failed.Status.PhysicalProcessRef)
@@ -661,7 +663,7 @@ func TestV2LogicalValuesRejectInvalidServiceReferences(t *testing.T) {
 						require.NoError(t, client.Create(ctx, resource))
 						failed := waitObjectAssumesState(t, ctx, name, func(current *apiv2.LogicalContainer) (bool, error) {
 							return current.Status.Phase == apiv2.LogicalContainerPhaseFailed && len(current.Status.Conditions) > 0 &&
-								current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
+								current.Status.Conditions[0].Reason == string(apiv2.ConditionReason("FailedToStart")), nil
 						})
 						require.Contains(t, failed.Status.Conditions[0].Message, "invalid service reference")
 						require.Empty(t, failed.Status.PhysicalContainerRef)
@@ -747,25 +749,26 @@ func TestV2LogicalProcessPreparationLifecycle(t *testing.T) {
 					}
 					value := "{{"
 					expectedPhase := apiv2.LogicalProcessPhaseFailed
-					expectedReason := apiv2.LogicalResourceReasonTemplateEvaluationFailed
+					expectedReason := apiv2.ConditionReason("FailedToStart")
 					var dependency *apiv2.LogicalService
 					var releaseDependency func()
 					var incompatibleService *apiv2.LogicalService
 					if outcome == "waiting" {
 						value = `{{portFor "missing"}}`
 						expectedPhase = apiv2.LogicalProcessPhasePending
+						expectedReason = apiv2.LogicalProcessReasonStarting
 					} else if strings.HasPrefix(outcome, "terminating") {
 						dependency, releaseDependency = createTerminatingPreparationService(t, ctx, namespace.Name)
 						value = `{{portFor "dependency"}}`
 						if outcome == "terminating-port" {
 							value = "literal"
-							expectedReason = apiv2.LogicalResourceReasonPortPreparationFailed
+							expectedReason = apiv2.ConditionReason("FailedToStart")
 							replacementSpec.Ports = []apiv2.LogicalProcessPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{
 								Name: "http", ServiceRef: dependency.Name,
 							}, Port: 8080}}
 						}
 					} else if outcome == "mismatch" {
-						value, expectedReason = "literal", apiv2.LogicalResourceReasonPortPreparationFailed
+						value, expectedReason = "literal", apiv2.ConditionReason("FailedToStart")
 						incompatibleService = &apiv2.LogicalService{
 							ObjectMeta: metav1.ObjectMeta{Name: first.Name + "-management", Namespace: namespace.Name},
 							Spec:       apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless, Protocol: commonapi.PortProtocolUDP},
@@ -891,25 +894,26 @@ func TestV2LogicalContainerPreparationLifecycle(t *testing.T) {
 					}
 					value := "{{"
 					expectedPhase := apiv2.LogicalContainerPhaseFailed
-					expectedReason := apiv2.LogicalResourceReasonTemplateEvaluationFailed
+					expectedReason := apiv2.ConditionReason("FailedToStart")
 					var dependency *apiv2.LogicalService
 					var releaseDependency func()
 					var incompatibleService *apiv2.LogicalService
 					if outcome == "waiting" {
 						value = `{{portFor "missing"}}`
 						expectedPhase = apiv2.LogicalContainerPhasePending
+						expectedReason = apiv2.LogicalContainerReasonStarting
 					} else if strings.HasPrefix(outcome, "terminating") {
 						dependency, releaseDependency = createTerminatingPreparationService(t, ctx, namespace.Name)
 						value = `{{portFor "dependency"}}`
 						if outcome == "terminating-port" {
 							value = "literal"
-							expectedReason = apiv2.LogicalResourceReasonPortPreparationFailed
+							expectedReason = apiv2.ConditionReason("FailedToStart")
 							replacementSpec.Ports = []apiv2.LogicalContainerPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{
 								Name: "http", ServiceRef: dependency.Name,
 							}, ContainerPort: 8080}}
 						}
 					} else if outcome == "mismatch" {
-						value, expectedReason = "literal", apiv2.LogicalResourceReasonPortPreparationFailed
+						value, expectedReason = "literal", apiv2.ConditionReason("FailedToStart")
 						incompatibleService = &apiv2.LogicalService{
 							ObjectMeta: metav1.ObjectMeta{Name: first.Name + "-management", Namespace: namespace.Name},
 							Spec:       apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless, Protocol: commonapi.PortProtocolUDP},

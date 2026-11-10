@@ -189,7 +189,7 @@ func TestServiceResourcesValidateDuringShutdown(t *testing.T) {
 	require.Contains(t, service.Validate(context.Background()).ToAggregate().Error(), commonapi.ErrResourceCreationProhibited.Error())
 	require.Contains(t, endpoint.Validate(context.Background()).ToAggregate().Error(), commonapi.ErrResourceCreationProhibited.Error())
 	updated := service.DeepCopy()
-	updated.Status.Phase = LogicalServicePhaseReady
+	updated.Status.Phase = LogicalServicePhaseRunning
 	require.Empty(t, updated.ValidateUpdate(context.Background(), service))
 	deletionTime := metav1.Now()
 	service.DeletionTimestamp, endpoint.DeletionTimestamp = &deletionTime, &deletionTime
@@ -234,8 +234,8 @@ func TestLogicalServiceJSONAndDeepCopy(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: "test-namespace"},
 		Spec:       LogicalServiceSpec{Address: "localhost", Port: 5000},
 		Status: LogicalServiceStatus{
-			Phase: LogicalServicePhaseReady, EffectiveAddresses: addresses,
-			Conditions: []metav1.Condition{{Type: string(ConditionReady), Status: metav1.ConditionTrue, Reason: string(LogicalServiceReasonReady)}},
+			Phase: LogicalServicePhaseRunning, EffectiveAddresses: addresses,
+			Conditions: []metav1.Condition{{Type: string(ConditionReady), Status: metav1.ConditionTrue, Reason: string(LogicalServiceReasonRunning)}},
 		},
 	}
 	encoded, encodeErr := json.Marshal(service)
@@ -262,7 +262,7 @@ func TestLogicalServiceJSONAndDeepCopy(t *testing.T) {
 	copied.Status.Conditions[0].Reason = "Changed"
 	require.Equal(t, int32(5000), service.Spec.Port)
 	require.Equal(t, "[::1]", service.Status.EffectiveAddresses[1].Address)
-	require.Equal(t, string(LogicalServiceReasonReady), service.Status.Conditions[0].Reason)
+	require.Equal(t, string(LogicalServiceReasonRunning), service.Status.Conditions[0].Reason)
 	projected := &LogicalService{}
 	service.Status.CopyTo(projected)
 	projected.Status.EffectiveAddresses[0].Port++

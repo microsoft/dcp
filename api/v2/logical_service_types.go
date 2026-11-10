@@ -22,31 +22,29 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
-// LogicalServicePhase summarizes the availability of a logical service.
+// LogicalServicePhase summarizes the lifecycle of a logical service.
 type LogicalServicePhase string
 
 const (
-	// LogicalServiceReasonEndpointLookupFailed indicates that service endpoints could not be listed.
-	LogicalServiceReasonEndpointLookupFailed ConditionReason = "EndpointLookupFailed"
-	// LogicalServiceReasonEndpointSelected indicates that a proxyless endpoint has been selected.
-	LogicalServiceReasonEndpointSelected ConditionReason = "EndpointSelected"
-	// LogicalServiceReasonWaitingForEndpoints indicates that the service has no available endpoints.
-	LogicalServiceReasonWaitingForEndpoints ConditionReason = "WaitingForEndpoints"
-	// LogicalServiceReasonProxyConfigurationFailed indicates that listener startup or route configuration failed.
-	LogicalServiceReasonProxyConfigurationFailed ConditionReason = "ProxyConfigurationFailed"
-	// LogicalServiceReasonProxyListenerUnavailable indicates that service listeners have stopped.
-	LogicalServiceReasonProxyListenerUnavailable ConditionReason = "ProxyListenerUnavailable"
-	// LogicalServiceReasonReady indicates that listeners and endpoints are available.
-	LogicalServiceReasonReady ConditionReason = "ServiceReady"
+	// LogicalServiceReasonStarting qualifies Pending while allocation or endpoint availability is pending.
+	LogicalServiceReasonStarting ConditionReason = "Starting"
+	// LogicalServiceReasonRunning indicates that listeners or proxyless endpoint selection started successfully.
+	LogicalServiceReasonRunning ConditionReason = "Running"
+	// LogicalServiceReasonFailedToStart indicates that listener startup could not complete.
+	LogicalServiceReasonFailedToStart ConditionReason = "FailedToStart"
+	// LogicalServiceReasonMissing indicates that allocated listeners are no longer available.
+	LogicalServiceReasonMissing ConditionReason = "Missing"
+	// LogicalServiceReasonLookupFailed indicates that current availability cannot be confirmed.
+	LogicalServiceReasonLookupFailed ConditionReason = "LookupFailed"
 )
 
 const (
-	// LogicalServicePhasePending indicates that the service is waiting for allocation or endpoints.
+	// LogicalServicePhasePending indicates that listeners or initial proxyless endpoint selection are starting.
 	LogicalServicePhasePending LogicalServicePhase = "Pending"
 
-	// LogicalServicePhaseReady indicates that the service has usable addresses and an endpoint.
-	// It does not indicate that network reachability has been probed.
-	LogicalServicePhaseReady LogicalServicePhase = "Ready"
+	// LogicalServicePhaseRunning indicates that startup succeeded, independently of current endpoint availability.
+	// The Ready condition indicates whether listeners and endpoints are usable, without probing reachability.
+	LogicalServicePhaseRunning LogicalServicePhase = "Running"
 
 	// LogicalServicePhaseUnknown indicates that service availability cannot be determined.
 	LogicalServicePhaseUnknown LogicalServicePhase = "Unknown"
@@ -158,8 +156,8 @@ func (config *LogicalServiceSpec) Validate(configPath *field.Path) field.ErrorLi
 // LogicalServiceStatus describes observed service availability and all of its effective addresses.
 // +k8s:openapi-gen=true
 type LogicalServiceStatus struct {
-	// Phase summarizes service availability without implying a network reachability probe.
-	// +kubebuilder:validation:Enum=Pending;Ready;Unknown;Failed
+	// Phase summarizes service lifecycle independently of current endpoint availability.
+	// +kubebuilder:validation:Enum=Pending;Running;Unknown;Failed
 	Phase LogicalServicePhase `json:"phase,omitempty"`
 
 	// EffectiveAddresses contains the usable addresses and their individual ports.
