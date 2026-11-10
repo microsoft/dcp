@@ -9,8 +9,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -32,6 +35,7 @@ import (
 	"github.com/microsoft/dcp/internal/dcptun"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -132,7 +136,7 @@ func TestV2LogicalContainerTunnelProxyLifecycle(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	server, _, proxy := startLogicalTunnelApplication(t, ctx, TestEnvironmentOptions{})
+	server, environment, proxy := startLogicalTunnelApplication(t, ctx, TestEnvironmentOptions{})
 	require.NoError(t, server.Client.Create(ctx, proxy))
 	running := waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseRunning &&
@@ -149,6 +153,8 @@ func TestV2LogicalContainerTunnelProxyLifecycle(t *testing.T) {
 		require.Contains(t, child.GetFinalizers(), controllers.LogicalBackingFinalizer)
 	}
 	require.Equal(t, []string{proxy.Spec.BaseImage}, image.Spec.Image.Build.BaseImages)
+	require.True(t, image.Spec.RemoveBuildContextArchive)
+	require.Equal(t, environment.SessionFolder, filepath.Dir(image.Spec.Image.Build.ContextArchive.Source))
 	require.Equal(t, proxy.Spec.Aliases, container.Spec.Container.Networks[0].Aliases)
 	require.Contains(t, hostProcess.Spec.Process.Args, "--control-callback")
 	endpointName := types.NamespacedName{Namespace: proxy.Namespace, Name: "logical-" + string(proxy.UID) + "-http"}
@@ -459,6 +465,117 @@ func (boundary *tunnelCreateResponseLoss) Create(ctx context.Context, object ctr
 		return errors.New("injected lost physical create response")
 	}
 	return createErr
+}
+
+type tunnelImageCreateRetryClient struct {
+	ctrl_client.Client
+	commitFirst bool
+	committed   atomic.Bool
+	released    atomic.Bool
+	archives    chan string
+}
+
+func (boundary *tunnelImageCreateRetryClient) Create(ctx context.Context, object ctrl_client.Object, options ...ctrl_client.CreateOption) error {
+	image, isImage := object.(*apiv2.PhysicalContainerImage)
+	owner := metav1.GetControllerOf(object)
+	if !isImage || owner == nil || owner.Kind != "LogicalContainerTunnelProxy" || boundary.released.Load() {
+		return boundary.Client.Create(ctx, object, options...)
+	}
+	select {
+	case boundary.archives <- image.Spec.Image.Build.ContextArchive.Source:
+	default:
+	}
+	if boundary.commitFirst && boundary.committed.CompareAndSwap(false, true) {
+		if createErr := boundary.Client.Create(ctx, object, options...); createErr != nil {
+			return createErr
+		}
+		object.SetUID("")
+	}
+	return errors.New("injected tunnel image create response failure")
+}
+
+func (boundary *tunnelImageCreateRetryClient) List(ctx context.Context, objects ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+	listErr := boundary.Client.List(ctx, objects, options...)
+	if listErr == nil && !boundary.released.Load() {
+		listOptions := (&ctrl_client.ListOptions{}).ApplyOptions(options)
+		if images, isImageList := objects.(*apiv2.PhysicalContainerImageList); isImageList && listOptions.FieldSelector != nil {
+			images.Items = nil
+		}
+	}
+	return listErr
+}
+
+// Verifies that LogicalContainerTunnelProxy reuses one test-session archive across uncertain image creates,
+// preserves it during image acquisition, and delegates cleanup to the physical image after handoff.
+func TestV2LogicalContainerTunnelProxyBuildArchiveLifecycle(t *testing.T) {
+	for _, scenario := range []struct {
+		name        string
+		commitFirst bool
+		deleteEarly bool
+	}{
+		{name: "running"},
+		{name: "running-after-lost-response", commitFirst: true},
+		{name: "deleted-before-create", deleteEarly: true},
+		{name: "deleted-after-lost-response", commitFirst: true, deleteEarly: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			buildRelease := make(chan struct{})
+			releaseBuild := sync.OnceFunc(func() { close(buildRelease) })
+			defer releaseBuild()
+			var boundary *tunnelImageCreateRetryClient
+			server, environment, proxy := startLogicalTunnelApplication(t, ctx, TestEnvironmentOptions{
+				DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+					boundary = &tunnelImageCreateRetryClient{Client: client, commitFirst: scenario.commitFirst, archives: make(chan string, 2)}
+					return boundary
+				},
+				DecorateContainerOrchestrator: func(inner containers.ContainerOrchestrator, _ *statestore.Store) containers.ContainerOrchestrator {
+					return &archiveBuildOrchestrator{ContainerOrchestrator: inner, started: make(chan struct{}),
+						cancelled: make(chan struct{}), release: buildRelease}
+				},
+			})
+			defer boundary.released.Store(true)
+			environment.addAfterShutdown(func() { require.NoDirExists(t, environment.SessionFolder) })
+			require.NoError(t, server.Client.Create(ctx, proxy))
+			var sources []string
+			for len(sources) < 2 {
+				select {
+				case source := <-boundary.archives:
+					sources = append(sources, source)
+				case <-ctx.Done():
+					t.Fatal("image declaration was not retried")
+				}
+			}
+			require.Equal(t, sources[0], sources[1], "retries must reuse the prepared archive")
+			require.Equal(t, environment.SessionFolder, filepath.Dir(sources[0]))
+			require.FileExists(t, sources[0])
+			archives, globErr := filepath.Glob(filepath.Join(environment.SessionFolder, "dcptun-build-context-*.tar"))
+			require.NoError(t, globErr)
+			require.Equal(t, []string{sources[0]}, archives)
+			if !scenario.deleteEarly {
+				boundary.released.Store(true)
+				releaseBuild()
+				waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
+					_, statErr := os.Stat(sources[0])
+					if statErr != nil && !os.IsNotExist(statErr) {
+						return false, statErr
+					}
+					return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseRunning &&
+						len(current.Status.TunnelStatuses) == 1 && current.Status.TunnelStatuses[0].State == apiv2.LogicalContainerTunnelStateReady &&
+						os.IsNotExist(statErr), nil
+				})
+			}
+			require.NoError(t, server.Client.Delete(ctx, proxy))
+			releaseBuild()
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, proxy)
+			require.NoFileExists(t, sources[0])
+			remaining, remainingErr := filepath.Glob(filepath.Join(environment.SessionFolder, "dcptun-build-context-*.tar"))
+			require.NoError(t, remainingErr)
+			require.Empty(t, remaining)
+		})
+	}
 }
 
 // Verifies that LogicalContainerTunnelProxy recovers lost physical create responses without launching duplicate backings.

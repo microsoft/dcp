@@ -96,6 +96,8 @@ func TestPrepareClientProxyImageBuildBaseImage(t *testing.T) {
 	require.NoError(t, defaultErr)
 	customPlan, customErr := dcptun.PrepareClientProxyImageBuild(t.Context(), directory, "example.com/base:custom")
 	require.NoError(t, customErr)
+	require.Equal(t, directory, filepath.Dir(defaultPlan.BuildContextArchive.Source))
+	require.Equal(t, directory, filepath.Dir(customPlan.BuildContextArchive.Source))
 	require.NotEqual(t, defaultPlan.Image, customPlan.Image)
 	require.NotEqual(t, defaultPlan.BuildContextDigest, customPlan.BuildContextDigest)
 	archive, archiveErr := containers.OpenBuildContextArchive(t.Context(), customPlan.BuildContextArchive)

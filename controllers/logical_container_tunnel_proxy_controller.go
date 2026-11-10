@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -254,6 +255,9 @@ func (r *LogicalContainerTunnelProxyReconciler) discardLogicalTunnelProxyData(na
 			return closeErr
 		}
 	}
+	if cleanupErr := removeLogicalTunnelProxyBuildContext(data); cleanupErr != nil {
+		return cleanupErr
+	}
 	r.proxies.DeleteByNamespacedName(name)
 	logger.ReleaseResourceLog((&apiv2.LogicalContainerTunnelProxy{ObjectMeta: metav1.ObjectMeta{UID: uid}}).GetResourceId())
 	return nil
@@ -301,14 +305,18 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainerImage(
 		if baseImage == "" {
 			baseImage = dcptun.DefaultBaseImage
 		}
-		plan, planErr := dcptun.PrepareClientProxyImageBuild(ctx, r.config.BuildContextDir, baseImage)
-		if planErr != nil {
-			log.Error(planErr, "Failed to prepare tunnel image build context")
-			return nil, change | additionalReconciliationNeeded
+		if data.imageBuildPlan == nil {
+			plan, planErr := dcptun.PrepareClientProxyImageBuild(ctx, r.config.BuildContextDir, baseImage)
+			if planErr != nil {
+				log.Error(planErr, "Failed to prepare tunnel image build context")
+				return nil, change | additionalReconciliationNeeded
+			}
+			data.imageBuildPlan = &plan
 		}
+		plan := data.imageBuildPlan
 		desiredImage := &apiv2.PhysicalContainerImage{
 			ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(proxy.UID), Namespace: proxy.Namespace},
-			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
+			Spec: apiv2.PhysicalContainerImageSpec{RemoveBuildContextArchive: true, Image: &apiv2.PhysicalContainerImageConfig{
 				Image: plan.Image, PullPolicy: apiv2.PullPolicyBestEffort, BuildPolicy: apiv2.BuildPolicyIfNeeded,
 				Build: &apiv2.ContainerBuildContext{Digest: plan.BuildContextDigest, Dockerfile: plan.Dockerfile, BaseImages: []string{baseImage},
 					ContextArchive: &apiv2.ContainerBuildContextArchive{Source: plan.BuildContextArchive.Source, SHA256: plan.BuildContextArchive.SHA256}},
@@ -335,13 +343,35 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainerImage(
 		}
 		image = createdImage
 		change |= applyLogicalTunnelProxyImageStatus(proxy, image)
-		removeUnusedTunnelProxyBuildContext(plan.BuildContextArchive.Source, createdImage, log)
 	}
 	if data.imageUID == "" {
 		data.message = "Waiting to observe the owned PhysicalContainerImage."
 		return nil, change | additionalReconciliationNeeded
 	}
+	if data.imageBuildPlan != nil {
+		archive := image.Spec.Image.Build.ContextArchive
+		if archive != nil && archive.Source == data.imageBuildPlan.BuildContextArchive.Source {
+			if image.Spec.RemoveBuildContextArchive {
+				data.imageBuildPlan = nil
+			}
+		} else if cleanupErr := removeLogicalTunnelProxyBuildContext(data); cleanupErr != nil {
+			log.Error(cleanupErr, "Failed to remove unused tunnel image build context")
+			return nil, change | additionalReconciliationNeeded
+		}
+	}
 	return image, change
+}
+
+func removeLogicalTunnelProxyBuildContext(data *logicalTunnelProxyData) error {
+	if data.imageBuildPlan == nil {
+		return nil
+	}
+	source := data.imageBuildPlan.BuildContextArchive.Source
+	if removeErr := os.Remove(source); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return fmt.Errorf("remove tunnel image build context %q: %w", source, removeErr)
+	}
+	data.imageBuildPlan = nil
+	return nil
 }
 
 // ensurePhysicalContainer finds or declares the owned container and observes its startup.

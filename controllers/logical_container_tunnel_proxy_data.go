@@ -47,6 +47,7 @@ type logicalTunnelProxyData struct {
 	containerUID         types.UID
 	imageUID             types.UID
 	processUID           types.UID
+	imageBuildPlan       *dcptun.ClientProxyImageBuildPlan
 	unobservedChildren   unobservedLogicalChildren
 	security             dcptun.TunnelProxySecurityConfig
 	control              *dcptun.ReverseControlConnection
@@ -56,6 +57,14 @@ type logicalTunnelProxyData struct {
 
 func (data *logicalTunnelProxyData) Clone() *logicalTunnelProxyData {
 	cloned := *data
+	if data.imageBuildPlan != nil {
+		plan := *data.imageBuildPlan
+		if plan.BuildContextArchive != nil {
+			archive := *plan.BuildContextArchive
+			plan.BuildContextArchive = &archive
+		}
+		cloned.imageBuildPlan = &plan
+	}
 	cloned.unobservedChildren = maps.Clone(data.unobservedChildren)
 	cloned.tunnels = maps.Clone(data.tunnels)
 	for name, record := range cloned.tunnels {

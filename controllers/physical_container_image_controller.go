@@ -241,10 +241,15 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 		}
 		change |= setValue(&image.Status.LogsComplete, true)
 		if change&statusChanged == 0 {
-			change = deleteFinalizer(&image, physicalContainerImageFinalizer, log)
-			if !hasFinalizer(&image, LogicalBackingFinalizer) {
-				r.discardPhysicalContainerImageData(image.NamespacedName(), data, log)
-				defer logger.ReleaseResourceLog(image.GetResourceId())
+			if cleanupErr := removePhysicalContainerImageBuildContext(&image); cleanupErr != nil {
+				log.Error(cleanupErr, "Failed to remove owned image build context archive")
+				change |= additionalReconciliationNeeded
+			} else {
+				change = deleteFinalizer(&image, physicalContainerImageFinalizer, log)
+				if !hasFinalizer(&image, LogicalBackingFinalizer) {
+					r.discardPhysicalContainerImageData(image.NamespacedName(), data, log)
+					defer logger.ReleaseResourceLog(image.GetResourceId())
+				}
 			}
 		}
 		if change != noChange {
@@ -319,11 +324,28 @@ func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(
 		log.Error(fmt.Errorf("invalid physical container image state %v", data.state),
 			"PhysicalContainerImage reached invalid reconciliation state")
 	}
-	if data.logsComplete() && data.startupStdout != nil {
-		data.startupStdout.CloseAndLog(logs.CaptureFileCloseDefault, log)
-		data.startupStderr.CloseAndLog(logs.CaptureFileCloseDefault, log)
+	if data.logsComplete() {
+		if data.startupStdout != nil {
+			data.startupStdout.CloseAndLog(logs.CaptureFileCloseDefault, log)
+			data.startupStderr.CloseAndLog(logs.CaptureFileCloseDefault, log)
+		}
+		if cleanupErr := removePhysicalContainerImageBuildContext(image); cleanupErr != nil {
+			log.Error(cleanupErr, "Failed to remove owned image build context archive")
+			change |= additionalReconciliationNeeded
+		}
 	}
 	return change | dataChange, delay
+}
+
+func removePhysicalContainerImageBuildContext(image *apiv2.PhysicalContainerImage) error {
+	if !image.Spec.RemoveBuildContextArchive {
+		return nil
+	}
+	source := image.Spec.Image.Build.ContextArchive.Source
+	if removeErr := os.Remove(source); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return fmt.Errorf("remove owned image build context archive %q: %w", source, removeErr)
+	}
+	return nil
 }
 
 func handlePhysicalContainerImageResolve(

@@ -7939,6 +7939,13 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerImageSpec(ref common.Reference
 							Ref:         ref(v2.PhysicalContainerImageConfig{}.OpenAPIModelName()),
 						},
 					},
+					"removeBuildContextArchive": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RemoveBuildContextArchive transfers ownership of image.build.contextArchive.source to this resource. The file is removed after acquisition completes or fails terminally, or after in-flight work settles during deletion. Defaults to false; an owned archive must not be shared with other resources.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},
