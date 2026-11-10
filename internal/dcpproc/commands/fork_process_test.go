@@ -14,14 +14,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	cmds "github.com/microsoft/dcp/internal/commands"
 	int_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -33,6 +37,7 @@ type forkStartExecutor struct {
 	afterStart       func(process.ProcessHandle)
 	mismatchIdentity bool
 	stopFailure      error
+	stopCalls        atomic.Int32
 }
 
 func (executor *forkStartExecutor) StartProcess(
@@ -49,10 +54,71 @@ func (executor *forkStartExecutor) StartProcess(
 }
 
 func (executor *forkStartExecutor) StopProcess(ctx context.Context, handle process.ProcessHandle, options ...process.ProcessStopOption) error {
+	executor.stopCalls.Add(1)
 	if executor.stopFailure != nil {
 		return executor.stopFailure
 	}
 	return executor.Executor.StopProcess(ctx, handle, options...)
+}
+
+type recordingForkLogSink struct {
+	lock     sync.Mutex
+	messages []string
+}
+
+func (sink *recordingForkLogSink) Init(logr.RuntimeInfo) {
+}
+
+func (sink *recordingForkLogSink) Enabled(int) bool {
+	return true
+}
+
+func (sink *recordingForkLogSink) Info(_ int, message string, _ ...any) {
+	sink.record(message)
+}
+
+func (sink *recordingForkLogSink) Error(_ error, message string, _ ...any) {
+	sink.record(message)
+}
+
+func (sink *recordingForkLogSink) WithValues(...any) logr.LogSink {
+	return sink
+}
+
+func (sink *recordingForkLogSink) WithName(string) logr.LogSink {
+	return sink
+}
+
+func (sink *recordingForkLogSink) record(message string) {
+	sink.lock.Lock()
+	defer sink.lock.Unlock()
+	sink.messages = append(sink.messages, message)
+}
+
+func (sink *recordingForkLogSink) recordedMessages() []string {
+	sink.lock.Lock()
+	defer sink.lock.Unlock()
+	return append([]string(nil), sink.messages...)
+}
+
+func (sink *recordingForkLogSink) hasMessagePrefix(prefix string) bool {
+	for _, message := range sink.recordedMessages() {
+		if strings.HasPrefix(message, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+const ownerExitLogPrefix = "Monitored process exited"
+
+type forkedProcessSupervisor func(*cobra.Command, *exec.Cmd, context.Context, process.Executor, logr.Logger) error
+
+func supervisorForMode(cleanupEnabled bool) forkedProcessSupervisor {
+	if cleanupEnabled {
+		return superviseForkedProcessWithCleanup
+	}
+	return superviseForkedProcess
 }
 
 type failedForkPidWriter struct {
@@ -101,8 +167,8 @@ func (writer *observedForkPidWriter) Write(payload []byte) (int, error) {
 	return len(payload), nil
 }
 
-// Verifies that runForkedProcess applies opt-in root cleanup when owner exit or command
-// cancellation occurs during real process creation, without changing default fork behavior.
+// Verifies that the fork-process supervisors stop the child (in cleanup mode only) when owner exit or command
+// cancellation occurs during real process creation, and that owner exit is logged only if the owner actually exited.
 func TestForkProcessCleanupDuringStartup(t *testing.T) {
 	for _, cancellation := range []bool{false, true} {
 		for _, cleanupEnabled := range []bool{false, true} {
@@ -121,7 +187,7 @@ func TestForkProcessCleanupDuringStartup(t *testing.T) {
 				require.NoError(t, command.Flags().Set("monitor", strconv.FormatInt(int64(owner.Pid), 10)))
 				require.NoError(t, command.Flags().Set("monitor-identity-time", owner.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)))
 				require.NoError(t, command.Flags().Set("monitor-interval", "1"))
-				ownerCtx, ownerCancel, monitorErr := monitorForkOwner(command, logr.Discard())
+				ownerCtx, ownerCancel, monitorErr := cmds.MonitorPidFromFlags(commandCtx, logr.Discard())
 				require.NoError(t, monitorErr)
 				defer ownerCancel()
 				var output bytes.Buffer
@@ -148,14 +214,16 @@ func TestForkProcessCleanupDuringStartup(t *testing.T) {
 					}
 					<-ownerCtx.Done()
 				}}
-				options := &forkProcessOptions{enableChildCleanup: cleanupEnabled}
-				runErr := runForkedProcess(command, childCmd, ownerCtx, options, startExecutor, logr.Discard())
+				sink := &recordingForkLogSink{}
+				runErr := supervisorForMode(cleanupEnabled)(command, childCmd, ownerCtx, startExecutor, logr.New(sink))
 				if cancellation {
 					require.ErrorIs(t, runErr, context.Canceled)
+					require.False(t, sink.hasMessagePrefix(ownerExitLogPrefix), "cancellation must not be logged as owner exit: %v", sink.recordedMessages())
 				} else {
 					require.NoError(t, runErr)
+					require.True(t, sink.hasMessagePrefix(ownerExitLogPrefix), "owner exit was not logged: %v", sink.recordedMessages())
 				}
-				if options.enableChildCleanup {
+				if cleanupEnabled {
 					require.Empty(t, output.String(), "a child retired during startup should not be handed off")
 					require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(child)))
 				} else {
@@ -171,8 +239,9 @@ func TestForkProcessCleanupDuringStartup(t *testing.T) {
 	}
 }
 
-// Verifies that runForkedProcess stops its child when owner exit or command cancellation occurs
-// while PID output is blocked, while permitting the best-effort write to finish later.
+// Verifies that superviseForkedProcessWithCleanup stops its child when owner exit or command cancellation occurs
+// while PID output is blocked, logs owner exit only if the owner actually exited, and lets the best-effort write
+// finish later.
 func TestForkProcessCleanupDuringBlockedPidHandoff(t *testing.T) {
 	for _, cancellation := range []bool{false, true} {
 		t.Run("cancel="+strconv.FormatBool(cancellation), func(t *testing.T) {
@@ -190,7 +259,7 @@ func TestForkProcessCleanupDuringBlockedPidHandoff(t *testing.T) {
 			require.NoError(t, command.Flags().Set("monitor", strconv.FormatInt(int64(owner.Pid), 10)))
 			require.NoError(t, command.Flags().Set("monitor-identity-time", owner.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)))
 			require.NoError(t, command.Flags().Set("monitor-interval", "1"))
-			ownerCtx, ownerCancel, monitorErr := monitorForkOwner(command, logr.Discard())
+			ownerCtx, ownerCancel, monitorErr := cmds.MonitorPidFromFlags(commandCtx, logr.Discard())
 			require.NoError(t, monitorErr)
 			defer ownerCancel()
 			writer := newBlockingForkPidWriter()
@@ -201,16 +270,10 @@ func TestForkProcessCleanupDuringBlockedPidHandoff(t *testing.T) {
 				afterStart: func(handle process.ProcessHandle) { child = handle },
 			}
 			childCmd := forkTestDelayCommand(t, "--delay=2m")
+			sink := &recordingForkLogSink{}
 			runResultCh := make(chan error, 1)
 			go func() {
-				runResultCh <- runForkedProcess(
-					command,
-					childCmd,
-					ownerCtx,
-					&forkProcessOptions{enableChildCleanup: true},
-					startExecutor,
-					logr.Discard(),
-				)
+				runResultCh <- superviseForkedProcessWithCleanup(command, childCmd, ownerCtx, startExecutor, logr.New(sink))
 			}()
 			select {
 			case <-writer.started:
@@ -230,8 +293,10 @@ func TestForkProcessCleanupDuringBlockedPidHandoff(t *testing.T) {
 			}
 			if cancellation {
 				require.ErrorIs(t, runErr, context.Canceled)
+				require.False(t, sink.hasMessagePrefix(ownerExitLogPrefix), "cancellation must not be logged as owner exit: %v", sink.recordedMessages())
 			} else {
 				require.NoError(t, runErr)
+				require.True(t, sink.hasMessagePrefix(ownerExitLogPrefix), "owner exit was not logged: %v", sink.recordedMessages())
 			}
 			require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(child)))
 			close(writer.release)
@@ -245,8 +310,8 @@ func TestForkProcessCleanupDuringBlockedPidHandoff(t *testing.T) {
 	}
 }
 
-// Verifies that runForkedProcess returns terminal owner-monitoring failures only when cleanup is
-// enabled, preserving the existing successful default-mode behavior.
+// Verifies that the fork-process supervisors return terminal owner-monitoring failures, without logging them
+// as owner exit, only when cleanup is enabled, preserving the existing successful default-mode behavior.
 func TestForkProcessReturnsOwnerMonitoringFailure(t *testing.T) {
 	for _, cleanupEnabled := range []bool{false, true} {
 		t.Run("cleanup="+strconv.FormatBool(cleanupEnabled), func(t *testing.T) {
@@ -268,16 +333,10 @@ func TestForkProcessReturnsOwnerMonitoringFailure(t *testing.T) {
 				afterStart: func(handle process.ProcessHandle) { child = handle },
 			}
 			childCmd := forkTestDelayCommand(t, "--delay=2m")
+			sink := &recordingForkLogSink{}
 			runResultCh := make(chan error, 1)
 			go func() {
-				runResultCh <- runForkedProcess(
-					command,
-					childCmd,
-					monitorCtx,
-					&forkProcessOptions{enableChildCleanup: cleanupEnabled},
-					startExecutor,
-					logr.Discard(),
-				)
+				runResultCh <- supervisorForMode(cleanupEnabled)(command, childCmd, monitorCtx, startExecutor, logr.New(sink))
 			}()
 			select {
 			case <-writer.written:
@@ -295,6 +354,7 @@ func TestForkProcessReturnsOwnerMonitoringFailure(t *testing.T) {
 			if cleanupEnabled {
 				require.ErrorIs(t, runErr, monitorErr)
 				require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(child)))
+				require.False(t, sink.hasMessagePrefix(ownerExitLogPrefix), "monitoring failure must not be logged as owner exit: %v", sink.recordedMessages())
 			} else {
 				require.NoError(t, runErr)
 				require.NoError(t, executor.CheckProcessRunning(child))
@@ -303,8 +363,8 @@ func TestForkProcessReturnsOwnerMonitoringFailure(t *testing.T) {
 	}
 }
 
-// Verifies that runForkedProcess rolls back a failed PID handoff only when cleanup is enabled,
-// leaves descendants alone, and surfaces both output and cleanup failures.
+// Verifies that the fork-process supervisors roll back a failed PID handoff only when cleanup is enabled,
+// leave descendants alone, and surface both output and cleanup failures.
 func TestForkProcessFailedPidHandoffCleanup(t *testing.T) {
 	for _, cleanupMode := range []string{"disabled", "enabled", "stop-failed"} {
 		t.Run(cleanupMode, func(t *testing.T) {
@@ -337,8 +397,7 @@ func TestForkProcessFailedPidHandoffCleanup(t *testing.T) {
 			if cleanupMode == "stop-failed" {
 				startExecutor.stopFailure = stopErr
 			}
-			options := &forkProcessOptions{enableChildCleanup: cleanupMode != "disabled"}
-			runErr := runForkedProcess(command, childCmd, testCtx, options, startExecutor, logr.Discard())
+			runErr := supervisorForMode(cleanupMode != "disabled")(command, childCmd, testCtx, startExecutor, logr.Discard())
 			require.ErrorIs(t, runErr, writeErr)
 			if cleanupMode == "stop-failed" {
 				require.ErrorIs(t, runErr, stopErr)
@@ -356,7 +415,7 @@ func TestForkProcessFailedPidHandoffCleanup(t *testing.T) {
 	}
 }
 
-// Verifies that runForkedProcess keeps the original child identity when cleanup runs,
+// Verifies that superviseForkedProcessWithCleanup keeps the original child identity when cleanup runs,
 // so a live process using the same PID with a different identity is not stopped.
 func TestForkProcessCleanupPreservesChildIdentity(t *testing.T) {
 	testCtx, testCancel := testutil.GetTestContext(t, 0)
@@ -374,32 +433,163 @@ func TestForkProcessCleanupPreservesChildIdentity(t *testing.T) {
 		Executor: executor, mismatchIdentity: true,
 		afterStart: func(handle process.ProcessHandle) { actualChild = handle },
 	}
-	runErr := runForkedProcess(command, forkTestDelayCommand(t, "--delay=2m"), testCtx,
-		&forkProcessOptions{enableChildCleanup: true}, startExecutor, logr.Discard())
+	runErr := superviseForkedProcessWithCleanup(command, forkTestDelayCommand(t, "--delay=2m"), testCtx, startExecutor, logr.Discard())
 	require.ErrorIs(t, runErr, writeErr)
 	require.NoError(t, executor.CheckProcessRunning(actualChild), "cleanup must not recapture identity from a bare PID")
 }
 
-// Verifies that fork-process accepts cleanup only with a monitor and that rejected watch,
-// status, and supervisor flags remain absent.
-func TestForkProcessCleanupFlagValidation(t *testing.T) {
+// Verifies that superviseForkedProcessWithCleanup does not try to stop a child process whose exit it observed,
+// including a child process killed by a signal, and returns the child exit code.
+func TestForkProcessCleanupSkipsStopAfterObservedChildExit(t *testing.T) {
+	testCtx, testCancel := testutil.GetTestContext(t, 0)
+	defer testCancel()
+	command, commandErr := NewForkProcessCommand(logr.Discard())
+	require.NoError(t, commandErr)
+	command.SetContext(testCtx)
+	writer := &observedForkPidWriter{written: make(chan struct{})}
+	command.SetOut(writer)
+	executor := process.NewOSExecutor(logr.Discard())
+	defer executor.Dispose()
+	var child process.ProcessHandle
+	defer func() { stopForkTestProcess(testCtx, executor, child) }()
+	stopErr := errors.New("injected process stop failure")
+	startExecutor := &forkStartExecutor{
+		Executor:    executor,
+		afterStart:  func(handle process.ProcessHandle) { child = handle },
+		stopFailure: stopErr,
+	}
+	childCmd := forkTestDelayCommand(t, "--delay=2m")
+	runResultCh := make(chan error, 1)
+	go func() {
+		runResultCh <- superviseForkedProcessWithCleanup(command, childCmd, testCtx, startExecutor, logr.Discard())
+	}()
+	select {
+	case <-writer.written:
+	case <-testCtx.Done():
+		t.Fatal(testCtx.Err())
+	}
+	childProcess, childProcessErr := child.OsProcess()
+	require.NoError(t, childProcessErr)
+	require.NoError(t, childProcess.Kill())
+	var runErr error
+	select {
+	case runErr = <-runResultCh:
+	case <-testCtx.Done():
+		t.Fatal(testCtx.Err())
+	}
+	var exitCodeErr interface{ ExitCode() int }
+	require.ErrorAs(t, runErr, &exitCodeErr)
+	expectedExitCode := int(process.UnknownExitCode) // A process killed by a signal has no exit code.
+	if osutil.IsWindows() {
+		expectedExitCode = 1 // Process.Kill() terminates the process with exit code 1.
+	}
+	require.Equal(t, expectedExitCode, exitCodeErr.ExitCode())
+	require.NotErrorIs(t, runErr, stopErr)
+	require.Zero(t, startExecutor.stopCalls.Load(), "an exited child process must not be stopped")
+}
+
+// Verifies that fork-process accepts cleanup only with a monitor, fails without starting the child process when
+// the --monitor value is unusable (with or without cleanup), and that rejected watch, status, and supervisor flags
+// remain absent.
+func TestForkProcessFlagValidation(t *testing.T) {
 	for _, testCase := range []struct {
 		args []string
 		err  string
 	}{
 		{args: []string{"--enable-child-cleanup"}, err: "--enable-child-cleanup requires --monitor"},
+		{args: []string{"--monitor=0"}, err: "invalid process handle"},
+		{args: []string{"--monitor=-1"}, err: "invalid process handle"},
 		{args: []string{"--monitor=0", "--enable-child-cleanup"}, err: "invalid process handle"},
+		{args: []string{"--monitor=-1", "--enable-child-cleanup"}, err: "invalid process handle"},
 	} {
 		command, commandErr := NewForkProcessCommand(logr.Discard())
 		require.NoError(t, commandErr)
-		command.SetOut(io.Discard)
+		var output bytes.Buffer
+		command.SetOut(&output)
 		command.SetErr(io.Discard)
 		command.SetArgs(append(testCase.args, "--", "unused-command"))
 		runErr := command.ExecuteContext(context.Background())
-		require.ErrorContains(t, runErr, testCase.err)
+		require.ErrorContains(t, runErr, testCase.err, "args: %v", testCase.args)
+		require.Empty(t, output.String(), "args: %v", testCase.args)
 		for _, removedFlag := range []string{"watch", "status-file", "watch-supervisor"} {
 			require.Nil(t, command.Flags().Lookup(removedFlag))
 		}
+	}
+}
+
+// Verifies that fork-process returns the cancellation error without starting the child process when it is
+// cancelled before the child process starts, with or without cleanup.
+func TestForkProcessCancelledBeforeStart(t *testing.T) {
+	owner, ownerErr := process.FindProcessHandle(process.Pid_t(os.Getpid()))
+	require.NoError(t, ownerErr)
+	for _, cleanupEnabled := range []bool{false, true} {
+		t.Run("cleanup="+strconv.FormatBool(cleanupEnabled), func(t *testing.T) {
+			commandCtx, commandCancel := context.WithCancel(context.Background())
+			commandCancel()
+			command, commandErr := NewForkProcessCommand(logr.Discard())
+			require.NoError(t, commandErr)
+			var output bytes.Buffer
+			command.SetOut(&output)
+			command.SetErr(io.Discard)
+			args := []string{
+				"--monitor", strconv.FormatInt(int64(owner.Pid), 10),
+				"--monitor-identity-time", owner.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+			}
+			if cleanupEnabled {
+				args = append(args, "--enable-child-cleanup")
+			}
+			// Starting a missing command would fail with a different error.
+			command.SetArgs(append(args, "--", filepath.Join(t.TempDir(), "missing-command")))
+			runErr := command.ExecuteContext(commandCtx)
+			require.ErrorIs(t, runErr, context.Canceled)
+			require.Empty(t, output.String())
+		})
+	}
+}
+
+// Verifies that forkOwnerMonitorResult and ownerExitedOutcome report command cancellation and owner monitoring
+// failures as errors without an owner exit diagnostic, and treat owner exit, including a gone or reused owner PID,
+// as success that is logged.
+func TestForkOwnerMonitorResult(t *testing.T) {
+	monitorFailure := errors.New("injected owner monitoring failure")
+	for _, testCase := range []struct {
+		name          string
+		cancelCommand bool
+		ownerCause    error
+		expectedErr   error
+	}{
+		{name: "owner-exited", ownerCause: context.Canceled},
+		{name: "owner-gone", ownerCause: &process.ErrProcessNotFound{Pid: 1234}},
+		{name: "owner-pid-reused", ownerCause: process.ErrProcessIdentityMismatch},
+		{name: "monitoring-failed", ownerCause: monitorFailure, expectedErr: monitorFailure},
+		{name: "command-cancelled", cancelCommand: true, expectedErr: context.Canceled},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			commandCtx, commandCancel := context.WithCancel(context.Background())
+			defer commandCancel()
+			ownerCtx, ownerCancel := context.WithCancelCause(commandCtx)
+			defer ownerCancel(nil)
+			if testCase.cancelCommand {
+				commandCancel()
+			} else {
+				ownerCancel(testCase.ownerCause)
+			}
+
+			resultErr := forkOwnerMonitorResult(commandCtx, ownerCtx)
+			outcome := ownerExitedOutcome(commandCtx, ownerCtx, 1234, "Monitored process exited")
+			sink := &recordingForkLogSink{}
+			outcome.logDiagnostic(logr.New(sink))
+			require.False(t, outcome.childExited)
+			if testCase.expectedErr == nil {
+				require.NoError(t, resultErr)
+				require.NoError(t, outcome.err)
+				require.Equal(t, []string{"Monitored process exited"}, sink.recordedMessages())
+			} else {
+				require.ErrorIs(t, resultErr, testCase.expectedErr)
+				require.ErrorIs(t, outcome.err, testCase.expectedErr)
+				require.Empty(t, sink.recordedMessages())
+			}
+		})
 	}
 }
 
