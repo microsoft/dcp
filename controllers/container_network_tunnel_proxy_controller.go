@@ -686,7 +686,7 @@ func ensureTunnelProxyRunningState(
 	}
 
 	change := r.manageTunnels(ctx, tunnelProxy, pd, log)
-	ensureEndpointsForWorkload(ctx, r, tunnelProxy, nil, pd, log)
+	change |= ensureEndpointsForWorkload(ctx, r, tunnelProxy, nil, pd, log)
 
 	return change | pd.applyTo(tunnelProxy)
 }
@@ -2135,6 +2135,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 		tunnelProxyCleanupUnconfirmedCounter.Add(context.Background(), 1)
 	}
 	pd.cleanupCompleted = cleanupCompleted
+	if cleanupCompleted {
+		releaseWorkloadEndpointPortReservations(ctx, proxyObjectID, log)
+	}
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) cleanupClientPhysicalResources(

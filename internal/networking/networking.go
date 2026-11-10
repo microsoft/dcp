@@ -65,6 +65,10 @@ var (
 	packageMruPortFile        *mruPortFile
 	packageStateStore         *statestore.Store
 	packageStateStoreOwner    process.ProcessHandle
+	stateStoreConfig          *stateStorePortAllocationConfig
+	stateStoreConfigFallback  bool
+	stateStoreConfigErr       error
+	stateStoreConfigLoaded    bool
 	programInstanceID         string
 	ipVersionPreference       IpVersionPreference
 	getAllLocalIpsOnce        func() ([]net.IP, error)
@@ -115,6 +119,8 @@ func ConfigureStateStorePortAllocator(store *statestore.Store, owner process.Pro
 
 	packageStateStore = store
 	packageStateStoreOwner = owner
+	stateStoreConfig = nil
+	stateStoreConfigLoaded = false
 }
 
 // Wrap the standard net.LookupIP method to filter for supported IP address types
@@ -234,6 +240,8 @@ func getAllLocalIps() ([]net.IP, error) {
 	return allLocalIps, nil
 }
 
+// GetEphemeralPortRange returns the system ephemeral port range. The boolean is true when
+// OS discovery succeeded; otherwise the returned range contains the platform defaults.
 func GetEphemeralPortRange() (int, int, bool) {
 	ephemeralRange, matched := getEphemeralPortRangeOnce()
 	return ephemeralRange.Start, ephemeralRange.End, matched

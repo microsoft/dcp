@@ -25,6 +25,7 @@ import (
 	"github.com/microsoft/dcp/internal/dcpproc"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/proxy"
 	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
@@ -61,6 +62,9 @@ type TestEnvironmentOptions struct {
 	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
 	DecorateAPIReader               func(ctrl_client.Reader) ctrl_client.Reader
 	CreateLogicalServiceProxy       proxy.ProxyFactory
+	CreateServiceProxy              proxy.ProxyFactory
+	// ConfigurePortAllocator uses this environment's SQLite store. Tests using it must not run in parallel.
+	ConfigurePortAllocator bool
 }
 
 func (tei *TestEnvironmentInfo) addAfterShutdown(callback func()) {
@@ -186,6 +190,9 @@ func StartTestEnvironmentWithOptions(
 	// This is initially set to allow quick and clean shutdown if some of the initialization code below fails,
 	// but we will reset when the manager starts.
 	managerDone := concurrency.NewAutoResetEvent(true)
+	if options.ConfigurePortAllocator {
+		networking.ConfigureStateStorePortAllocator(stateStore, leaseOwner)
+	}
 
 	_ = context.AfterFunc(ctx, func() {
 		// We are going to stop the API server only after all the controller manager is done.
@@ -197,6 +204,9 @@ func StartTestEnvironmentWithOptions(
 			log.Error(tpeCloseErr, "Failed to close the test process executor")
 		}
 
+		if options.ConfigurePortAllocator {
+			networking.ConfigureStateStorePortAllocator(nil, process.ProcessHandle{})
+		}
 		stateStoreCleanup()
 		serverInfo.Dispose()
 	})
@@ -504,6 +514,10 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 	if inclCtrl&ServiceController != 0 {
+		createServiceProxy := options.CreateServiceProxy
+		if createServiceProxy == nil {
+			createServiceProxy = ctrl_testutil.NewTestProxy
+		}
 		serviceR := controllers.NewServiceReconciler(
 			ctx,
 			mgr.GetClient(),
@@ -511,7 +525,7 @@ func StartTestEnvironmentWithOptions(
 			log.WithName("ServiceReconciler"),
 			controllers.ServiceReconcilerConfig{
 				ProcessExecutor:               pex,
-				CreateProxy:                   ctrl_testutil.NewTestProxy,
+				CreateProxy:                   createServiceProxy,
 				AdditionalReconciliationDelay: controllers.TestDelay,
 			},
 		)

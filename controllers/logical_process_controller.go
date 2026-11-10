@@ -851,6 +851,8 @@ func (r *LogicalProcessReconciler) prepareLogicalProcessValues(
 	if resource.Spec.Stop {
 		return nil
 	}
+	releaseLogicalPortReservations(ctx, data.ports, log)
+	data.ports = nil
 	requests := make([]logicalPortRequest, len(resource.Spec.Ports))
 	for portIndex, port := range resource.Spec.Ports {
 		requests[portIndex] = logicalPortRequest{binding: port.LogicalServiceBinding, address: port.Address, port: port.Port}
@@ -872,6 +874,9 @@ func (r *LogicalProcessReconciler) prepareLogicalProcessValues(
 		arguments, environment, evaluationErr := templating.EvaluateV2Values(
 			ctx, r.NoCacheClient, resource, servingPorts(ports), config.Args, config.Env, osutil.IsWindows())
 		if evaluationErr != nil {
+			for _, port := range ports {
+				port.reservations.Release(ctx, log)
+			}
 			log.Error(evaluationErr, "Failed to evaluate logical process values")
 			data.reason, data.message = apiv2.LogicalResourceReasonTemplateEvaluationFailed, evaluationErr.Error()
 			if !templating.IsTransientTemplateError(evaluationErr) {
@@ -1053,6 +1058,7 @@ func (r *LogicalProcessReconciler) discardLogicalProcessData(ctx context.Context
 		}
 	}
 	missing := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{UID: uid}}
+	releaseLogicalPortReservations(ctx, data.ports, r.Log)
 	defer logger.ReleaseResourceLog(missing.GetResourceId())
 	r.processData.DeleteByNamespacedName(name)
 	return nil

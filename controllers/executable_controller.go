@@ -478,7 +478,7 @@ func ensureExecutableRunningState(
 
 	// Ensure the status matches the current state.
 	change |= runInfo.ApplyTo(exe, log)
-	r.enableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
+	change |= r.enableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
 	return change
 }
 
@@ -545,6 +545,9 @@ func ensureExecutableFinalState(
 
 	change |= runInfo.ApplyTo(exe, log) // Ensure the status matches the current state.
 	r.disableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
+	if desiredState == apiv1.ExecutableStateFinished || desiredState == apiv1.ExecutableStateTerminated {
+		releaseWorkloadEndpointPortReservations(ctx, exe.UID, log)
+	}
 	return change
 }
 
@@ -974,6 +977,9 @@ func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo
 		}
 
 		stopErr := runner.StopRun(cleanupCtx, runInfo.RunID, log)
+		if stopErr == nil {
+			releaseWorkloadEndpointPortReservations(cleanupCtx, exe.UID, log)
+		}
 
 		// If the stop fails, we are not sure if the Executable is still running or not,
 		// so we queue the transition to the unknown state. But if the stop succeeds,
@@ -1040,6 +1046,9 @@ func (r *ExecutableReconciler) releaseExecutableResources(
 	log logr.Logger,
 ) {
 	r.releaseExecutableControllerResources(ctx, exe, log)
+	if runInfo != nil && (runInfo.ExeState == apiv1.ExecutableStateFinished || runInfo.ExeState == apiv1.ExecutableStateTerminated) {
+		releaseWorkloadEndpointPortReservations(ctx, exe.UID, log)
+	}
 	if !r.runnerOwnsOutputDeletion(ctx, exe, runInfo, log) {
 		r.deleteOutputFiles(exe, log)
 	}
@@ -1097,8 +1106,8 @@ func (r *ExecutableReconciler) enableEndpointsAndHealthProbes(
 	exe *apiv1.Executable,
 	runInfo *ExecutableRunInfo,
 	log logr.Logger,
-) {
-	ensureEndpointsForWorkload(ctx, r, exe, runInfo.ReservedPorts, struct{}{}, log)
+) objectChange {
+	change := ensureEndpointsForWorkload(ctx, r, exe, runInfo.ReservedPorts, struct{}{}, log)
 
 	if len(exe.Spec.HealthProbes) > 0 && pointers.NotTrue(runInfo.healthProbesEnabled) {
 		log.V(1).Info("Enabling health probes for Executable...")
@@ -1113,6 +1122,7 @@ func (r *ExecutableReconciler) enableEndpointsAndHealthProbes(
 			log.Error(probeErr, "Could not enable health probes for Executable")
 		}
 	}
+	return change
 }
 
 func (r *ExecutableReconciler) disableEndpointsAndHealthProbes(
@@ -1205,10 +1215,6 @@ func (r *ExecutableReconciler) createEndpoints(
 	case networking.IPv6AllInterfaceAddress:
 		// Similar to the IPv4 case, we choose the IPv6 localhost address.
 		address = networking.IPv6LocalhostDefaultAddress
-	}
-
-	if reserveErr := reserveServiceProducerEndpointPort(ctx, r, serviceProducer, address, serviceProducer.Port, log); reserveErr != nil {
-		return nil, reserveErr
 	}
 
 	endpointExists := slices.Any(existingEndpoints, func(ep *apiv1.Endpoint) bool {

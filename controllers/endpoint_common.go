@@ -29,6 +29,15 @@ import (
 // The cache of endpoints created for a given workload and service combination.
 var workloadEndpointCache *syncmap.Map[ServiceWorkloadEndpointKey, []apiv1.Endpoint] = &syncmap.Map[ServiceWorkloadEndpointKey, []apiv1.Endpoint]{}
 
+type endpointPortReservationKey struct {
+	owner   types.UID
+	service types.NamespacedName
+	address string
+	port    int32
+}
+
+var endpointPortReservations syncmap.Map[endpointPortReservationKey, *networking.PortReservationSet]
+
 type ServiceWorkloadEndpointKey struct {
 	commonapi.NamespacedNameWithKind
 	ServiceName string
@@ -76,24 +85,39 @@ func SetupEndpointIndexWithManager(mgr ctrl.Manager) error {
 func reserveServiceProducerEndpointPort(
 	ctx context.Context,
 	client ctrl_client.Client,
+	owner ctrl_client.Object,
 	serviceProducer commonapi.ServiceProducer,
 	address string,
 	port int32,
 	log logr.Logger,
-) error {
+) (objectChange, error) {
+	key := endpointPortReservationKey{owner: owner.GetUID(), service: serviceProducer.ServiceNamespacedName(), address: address, port: port}
 	var svc apiv1.Service
 	if getErr := client.Get(ctx, serviceProducer.ServiceNamespacedName(), &svc); getErr != nil {
 		if apierrors.IsNotFound(getErr) {
-			return nil
+			if _, retained := endpointPortReservations.Load(key); retained {
+				return noChange, nil // The producer retains its original binding after Service deletion.
+			}
+			log.V(1).Info("Deferring Endpoint port reservation until its Service is available",
+				"Service", serviceProducer.ServiceNamespacedName().String())
+			return additionalReconciliationNeeded, nil
 		}
-		return getErr
+		return noChange, fmt.Errorf("could not get Service for Endpoint port reservation: %w", getErr)
 	}
 
 	ip, ipErr := portReservationIP(address)
 	if ipErr != nil {
-		return ipErr
+		return noChange, ipErr
 	}
-	return networking.ReserveSpecificPort(ctx, ports.Binding{Protocol: string(svc.Spec.Protocol), IP: ip, Port: port}, log)
+	reservations, retained := endpointPortReservations.Load(key)
+	if !retained {
+		reservations = &networking.PortReservationSet{}
+	}
+	if reserveErr := reservations.Reserve(ctx, ports.Binding{Protocol: string(svc.Spec.Protocol), IP: ip, Port: port}, log); reserveErr != nil {
+		return noChange, reserveErr
+	}
+	endpointPortReservations.Store(key, reservations)
+	return noChange, nil
 }
 
 func portReservationIP(address string) (netip.Addr, error) {
@@ -108,39 +132,14 @@ func portReservationIP(address string) (netip.Addr, error) {
 	return ip, nil
 }
 
-func releaseEndpointPortReservation(ctx context.Context, client ctrl_client.Client, endpoint *apiv1.Endpoint, log logr.Logger) error {
-	var svc apiv1.Service
-	if getErr := client.Get(ctx, types.NamespacedName{Namespace: endpoint.Spec.ServiceNamespace, Name: endpoint.Spec.ServiceName}, &svc); getErr != nil {
-		if !apierrors.IsNotFound(getErr) {
-			log.Error(getErr, "Could not get Service for Endpoint port release",
-				"Endpoint", endpoint.NamespacedName().String(),
-				"ServiceNamespace", endpoint.Spec.ServiceNamespace,
-				"ServiceName", endpoint.Spec.ServiceName,
-			)
-			return getErr
+func releaseWorkloadEndpointPortReservations(ctx context.Context, ownerUID types.UID, log logr.Logger) {
+	endpointPortReservations.Range(func(key endpointPortReservationKey, reservations *networking.PortReservationSet) bool {
+		if key.owner == ownerUID {
+			endpointPortReservations.Delete(key)
+			reservations.Release(ctx, log)
 		}
-		return nil
-	}
-
-	return releaseEndpointPortReservationForProtocol(ctx, svc.Spec.Protocol, endpoint, log)
-}
-
-func releaseEndpointPortReservationForProtocol(ctx context.Context, protocol commonapi.PortProtocol, endpoint *apiv1.Endpoint, log logr.Logger) error {
-	ip, ipErr := portReservationIP(endpoint.Spec.Address)
-	if ipErr != nil {
-		return ipErr
-	}
-
-	releaseErr := networking.ReleaseSpecificPort(ctx, ports.Binding{Protocol: string(protocol), IP: ip, Port: endpoint.Spec.Port}, log)
-	if releaseErr != nil {
-		log.Error(releaseErr, "Could not release Endpoint port reservation",
-			"Endpoint", endpoint.NamespacedName().String(),
-			"Address", endpoint.Spec.Address,
-			"Port", endpoint.Spec.Port,
-		)
-		return releaseErr
-	}
-	return nil
+		return true
+	})
 }
 
 // Attempts to create Endpoint objects for all Services exposed by the given workload object (owner parameter).
@@ -156,16 +155,17 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 	reservedServicePorts map[types.NamespacedName]int32,
 	ecc EndpointCreationContext,
 	log logr.Logger,
-) {
+) objectChange {
 	serviceProducers, err := commonapi.GetServiceProducersForObject(owner, log)
 	if err != nil || len(serviceProducers) == 0 {
-		return
+		return noChange
 	}
+	change := noChange
 
 	var el apiv1.EndpointList
 	if err = r.List(ctx, &el, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{commonapi.WorkloadOwnerKey: string(owner.GetUID())}); err != nil {
 		log.Error(err, "Failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())
-		return
+		return additionalReconciliationNeeded
 	}
 	childEndpoints := toEndpointPointers(el.Items)
 
@@ -210,6 +210,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 			existingEndpoints, invalidEndpoints, verr = r.validateExistingEndpoints(ctx, owner, serviceProducer, existingEndpoints, ecc, log)
 			if verr != nil {
 				svcLog.Error(verr, "Could not validate existing Endpoint object(s)")
+				change |= additionalReconciliationNeeded
 				continue
 			}
 		}
@@ -222,8 +223,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 						"Endpoint", endpoint.NamespacedName().String(),
 					)
 					existingEndpoints = append(existingEndpoints, endpoint)
-				} else {
-					_ = releaseEndpointPortReservation(ctx, r, endpoint, svcLog)
+					change |= additionalReconciliationNeeded
 				}
 			}
 		}
@@ -238,19 +238,30 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 
 		if err != nil {
 			svcLog.Error(err, "Could not create Endpoint object(s)")
+			change |= additionalReconciliationNeeded
 			continue
 		}
 
 		if len(newEndpoints) == 0 {
 			svcLog.V(1).Info("Endpoint(s) already exist for this workload and Service combination")
-			continue
 		}
 
 		var createdEndpoints []*apiv1.Endpoint
-		for _, endpoint := range newEndpoints {
+		for endpointIndex, endpoint := range append(existingEndpoints, newEndpoints...) {
+			reservationChange, reservationErr := reserveServiceProducerEndpointPort(
+				ctx, r, owner, serviceProducer, endpoint.Spec.Address, endpoint.Spec.Port, svcLog)
+			change |= reservationChange
+			if reservationErr != nil {
+				svcLog.Error(reservationErr, "Could not reserve Endpoint port")
+				change |= additionalReconciliationNeeded
+				continue
+			}
+			if endpointIndex < len(existingEndpoints) {
+				continue
+			}
 			if err = ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
 				svcLog.Error(err, "Failed to set owner for Endpoint")
-				_ = releaseEndpointPortReservation(ctx, r, endpoint, svcLog)
+				change |= additionalReconciliationNeeded
 				continue // Try to persist other endpoints
 			}
 
@@ -259,7 +270,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 				if !apiv1.ResourceCreationProhibited.Load() {
 					svcLog.Error(err, "Could not persist Endpoint object")
 				}
-				_ = releaseEndpointPortReservation(ctx, r, endpoint, svcLog)
+				change |= additionalReconciliationNeeded
 				continue
 			}
 
@@ -276,6 +287,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 			workloadEndpointCache.Store(sweKey, toEndpointValues(append(existingEndpoints, createdEndpoints...)))
 		}
 	}
+	return change
 }
 
 // Removes all Endpoint objects associated with the given workload object (owner parameter).
@@ -292,8 +304,6 @@ func removeEndpointsForWorkload(ctx context.Context, r ctrl_client.Client, owner
 				"Endpoint", endpoint.NamespacedName().String(),
 				"Workload", owner.NamespacedName().String(),
 			)
-		} else {
-			_ = releaseEndpointPortReservation(ctx, r, &endpoint, log)
 		}
 
 		sweKey := ServiceWorkloadEndpointKey{

@@ -710,7 +710,7 @@ func ensureContainerRunningState(
 			log.V(1).Info("Container is not running, delaying Endpoint creation...")
 			change |= additionalReconciliationNeeded
 		} else {
-			r.enableEndpointsAndHealthProbes(ctx, container, rcd, inspected, log)
+			change |= r.enableEndpointsAndHealthProbes(ctx, container, rcd, inspected, log)
 		}
 	}
 
@@ -745,6 +745,7 @@ func ensureContainerExitedState(ctx context.Context,
 	rcd.closeStartupLogFiles(log)
 	rcd.closeTerminalResources(ctx, r.config.ProcessExecutor, log)
 	r.disableEndpointsAndHealthProbes(ctx, container, rcd, log)
+	releaseWorkloadEndpointPortReservations(ctx, container.UID, log)
 
 	log.V(1).Info("Inspecting container resource...")
 	inspected, err := inspectContainer(ctx, r.orchestrator, string(rcd.containerID))
@@ -1981,6 +1982,7 @@ func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd 
 				rcd.updateFromInspectedContainer(inspected)
 			}
 			rcd.containerState = apiv1.ContainerStateExited
+			releaseWorkloadEndpointPortReservations(stopCtx, container.UID, log)
 		}
 
 		rcMap := r.runningContainers
@@ -2010,13 +2012,19 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	}
 
 	// We want to stop the container first to give it a chance to clean up
-	_ = r.removeExistingContainer(ctx, rcd.containerID, nil, log)
+	removeErr := r.removeExistingContainer(ctx, rcd.containerID, nil, log)
+	if removeErr == nil || errors.Is(removeErr, containers.ErrNotFound) {
+		releaseWorkloadEndpointPortReservations(ctx, container.UID, log)
+	}
 }
 
 // Removes all resources associated with the Container object, both DCP-managed, as well as orchestrator-managed,
 // including the running container.
 func (r *ContainerReconciler) cleanupContainerResources(ctx context.Context, container *apiv1.Container, rcd *runningContainerData, log logr.Logger) {
 	r.cleanupDcpContainerResources(ctx, container, log)
+	if rcd.containerState == apiv1.ContainerStateExited {
+		releaseWorkloadEndpointPortReservations(ctx, container.UID, log)
+	}
 	r.removeContainerNetworkConnections(ctx, container, log)
 	r.deleteContainer(ctx, container, rcd, log)
 	logger.ReleaseResourceLog(container.GetResourceId())
@@ -2168,7 +2176,7 @@ func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
 	rcd *runningContainerData,
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
-) {
+) objectChange {
 	if len(ctr.Spec.HealthProbes) > 0 && pointers.NotTrue(rcd.healthProbesEnabled) {
 		log.V(1).Info("Enabling health probes for Container...")
 		pointers.Make(&rcd.healthProbesEnabled, true)
@@ -2178,7 +2186,7 @@ func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
 			log.Error(probeErr, "Could not enable health probes for Container")
 		}
 	}
-	ensureEndpointsForWorkload(ctx, r, ctr, nil, inspected, log)
+	return ensureEndpointsForWorkload(ctx, r, ctr, nil, inspected, log)
 }
 
 // NETWORKING SUPPORT METHODS
@@ -2515,10 +2523,6 @@ func (r *ContainerReconciler) createEndpoints(
 		log.Error(err, "Could not determine host address and port for container port")
 		return nil, err
 	}
-	if reserveErr := reserveServiceProducerEndpointPort(ctx, r, serviceProducer, hostAddress, hostPort, log); reserveErr != nil {
-		return nil, reserveErr
-	}
-
 	endpointExists := slices.Any(existingEndpoints, func(ep *apiv1.Endpoint) bool {
 		return ep.Spec.ServiceName == serviceProducer.ServiceName &&
 			ep.Spec.ServiceNamespace == owner.GetNamespace() &&

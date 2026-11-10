@@ -11,7 +11,6 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/microsoft/dcp/pkg/commonapi"
-	"github.com/microsoft/dcp/pkg/ports"
 )
 
 // Gets a free TCP or UDP port for a given address (defaults to localhost).
@@ -22,7 +21,7 @@ func GetFreePort(ctx context.Context, protocol commonapi.PortProtocol, address s
 		return 0, addressErr
 	}
 
-	stateStorePort, stateStoreErr, shouldFallback := allocatePortFromStateStoreRange(ctx, protocol, address, log)
+	stateStorePort, _, shouldFallback, stateStoreErr := allocatePortFromStateStoreRange(ctx, protocol, address, log)
 	if stateStoreErr == nil {
 		return stateStorePort, nil
 	}
@@ -39,7 +38,7 @@ func CheckPortAvailable(ctx context.Context, protocol commonapi.PortProtocol, ad
 		return addressErr
 	}
 
-	stateStoreErr, shouldFallback := checkPortAvailableWithStateStore(ctx, protocol, address, port, log)
+	_, shouldFallback, stateStoreErr := checkPortAvailableWithStateStore(ctx, protocol, address, port, log)
 	if stateStoreErr == nil {
 		return nil
 	}
@@ -50,30 +49,4 @@ func CheckPortAvailable(ctx context.Context, protocol commonapi.PortProtocol, ad
 		log.V(1).Info("Warning: state store port availability check failed, falling back to MRU port availability check", "Error", stateStoreErr.Error())
 	}
 	return checkPortAvailableWithMruFile(ctx, protocol, address, port, log)
-}
-
-func ReserveSpecificPort(ctx context.Context, binding ports.Binding, log logr.Logger) error {
-	stateStoreErr, shouldFallback := reserveSpecificPortWithStateStore(ctx, binding, log)
-	if stateStoreErr == nil {
-		return nil
-	}
-	if !shouldFallback {
-		return stateStoreErr
-	}
-	if stateStoreErr != nil {
-		log.V(1).Info("Warning: state store port reservation failed, continuing without MRU reservation", "Error", stateStoreErr.Error())
-	}
-	return nil
-}
-
-func ReleaseSpecificPort(ctx context.Context, binding ports.Binding, log logr.Logger) error {
-	stateStoreErr, shouldFallback := releaseSpecificPortWithStateStore(ctx, binding, log)
-	if stateStoreErr == nil {
-		return nil
-	}
-	if !shouldFallback {
-		return stateStoreErr
-	}
-	log.V(1).Info("Warning: state store port release failed, falling back to MRU port release", "Error", stateStoreErr.Error())
-	return releaseSpecificPortWithMruFile(ctx, addrToAddressString(binding.IP), binding.Port, log)
 }

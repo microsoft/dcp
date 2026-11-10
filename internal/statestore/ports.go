@@ -24,7 +24,7 @@ const (
 	ipv6AddressBytes = 16
 )
 
-var ErrPortReservationHeld = errors.New("port reservation is held by another owner")
+var ErrPortReservationHeld = errors.New("port reservation conflicts with an active reservation")
 
 // PortReservation describes a state-store claim on a protocol/IP/port tuple by a DCP owner process.
 type PortReservation struct {
@@ -40,14 +40,15 @@ type PortReservationRequest struct {
 	OwnerProcess process.ProcessHandle
 }
 
-// PortReservationHeldError reports the conflicting active reservation when a requested
-// protocol/IP/port tuple is already held by another DCP owner.
+// PortReservationHeldError reports the active reservation conflicting with a requested binding.
 type PortReservationHeldError struct {
 	Reservation PortReservation
 }
 
 func (e *PortReservationHeldError) Error() string {
-	return fmt.Sprintf("%s: %s/%s/%d", ErrPortReservationHeld, e.Reservation.Protocol, e.Reservation.IP, e.Reservation.Port)
+	return fmt.Sprintf("%s: %s/%s/%d owned by process %d (%s)", ErrPortReservationHeld,
+		e.Reservation.Protocol, e.Reservation.IP, e.Reservation.Port,
+		e.Reservation.OwnerProcess.Pid, timeString(e.Reservation.OwnerProcess.IdentityTime))
 }
 
 func (e *PortReservationHeldError) Unwrap() error {
