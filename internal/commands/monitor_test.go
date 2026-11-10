@@ -9,14 +9,17 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 
 	int_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -134,6 +137,46 @@ func TestMonitorPidCancelsBeforeTerminalLogging(t *testing.T) {
 	case <-testCtx.Done():
 		t.Fatal(testCtx.Err())
 	}
+}
+
+// Verifies that MonitorPidFromFlags monitors the process selected by the monitor flags, reports unusable
+// --monitor values (including -1) as errors with an already cancelled context, and that GetMonitorContextFromFlags
+// still treats -1 as having no process to monitor.
+func TestMonitorPidFromFlags(t *testing.T) {
+	savedPid, savedStartTime, savedInterval := monitorPid, monitorProcessStartTime, monitorInterval
+	t.Cleanup(func() {
+		monitorPid, monitorProcessStartTime, monitorInterval = savedPid, savedStartTime, savedInterval
+	})
+	currentHandle, handleErr := process.FindProcessHandle(process.Pid_t(os.Getpid()))
+	require.NoError(t, handleErr)
+	identityTime := currentHandle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)
+
+	parseMonitorFlags(t, "--monitor", strconv.FormatInt(int64(currentHandle.Pid), 10), "--monitor-identity-time", identityTime)
+	monitorCtx, monitorCancel, monitorErr := MonitorPidFromFlags(context.Background(), logr.Discard())
+	require.NoError(t, monitorErr)
+	require.NoError(t, monitorCtx.Err(), "a running monitored process must not cancel the monitor context")
+	monitorCancel()
+	require.ErrorIs(t, context.Cause(monitorCtx), context.Canceled)
+
+	for _, unusablePid := range []string{"0", "-1"} {
+		parseMonitorFlags(t, "--monitor", unusablePid, "--monitor-identity-time", identityTime)
+		unusableCtx, unusableCancel, unusableErr := MonitorPidFromFlags(context.Background(), logr.Discard())
+		require.ErrorIs(t, unusableErr, process.ErrInvalidProcessHandle, "--monitor=%s", unusablePid)
+		require.Error(t, unusableCtx.Err(), "--monitor=%s", unusablePid)
+		unusableCancel()
+	}
+
+	parseMonitorFlags(t, "--monitor", "-1")
+	unmonitoredCtx, unmonitoredCancel := GetMonitorContextFromFlags(context.Background(), logr.Discard())
+	require.NoError(t, unmonitoredCtx.Err())
+	unmonitoredCancel()
+}
+
+func parseMonitorFlags(t *testing.T, args ...string) {
+	t.Helper()
+	command := &cobra.Command{Use: "monitor-flags-test"}
+	AddMonitorFlags(command)
+	require.NoError(t, command.ParseFlags(args))
 }
 
 var _ logr.LogSink = (*blockingMonitorLogSink)(nil)
