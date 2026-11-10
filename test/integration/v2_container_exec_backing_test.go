@@ -41,6 +41,7 @@ type execBackingClient struct {
 	loseCleanupResponse atomic.Bool
 	cleanupResponseLost atomic.Bool
 	failObservation     atomic.Bool
+	observationFailures atomic.Uint32
 	failNamespace       atomic.Bool
 	observation         chan struct{}
 	observationOnce     sync.Once
@@ -59,6 +60,7 @@ func (client *execBackingClient) Status() ctrl_client.SubResourceWriter {
 
 func (client *execBackingClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
 	if _, executions := list.(*apiv2.PhysicalContainerExecList); executions && client.failObservation.Load() {
+		client.observationFailures.Add(1)
 		client.observationOnce.Do(func() { close(client.observation) })
 		return errors.New("execution observation unavailable")
 	}
@@ -213,8 +215,8 @@ func TestV2ContainerExecDisposalFailureDoesNotBlockDeletion(t *testing.T) {
 	require.NoError(t, captureErr, "failed output deletion must not block resource finalization")
 }
 
-// Verifies that logical exec retries observation errors without losing its selected backing
-// or launching another execution when cached owner observation resumes.
+// Verifies that LogicalContainerExec preserves Running and its selected backing during API read failures,
+// then reports completion and cleans up the original execution after observation recovers.
 func TestV2LogicalContainerExecRetriesOwnerObservation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -238,18 +240,30 @@ func TestV2LogicalContainerExecRetriesOwnerObservation(t *testing.T) {
 	require.NoError(t, server.Client.Patch(ctx, logical,
 		ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"test.dcp.microsoft.com/reconcile":"observe"}}}`))))
 	waitContainerExecSignal(t, ctx, decorated.observation)
-	waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerExecPhaseUnknown, nil
-	})
+	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return decorated.observationFailures.Load() >= 2, nil
+	}))
+	require.NoError(t, server.Client.Get(ctx, logical.NamespacedName(), logical))
+	require.Equal(t, apiv2.LogicalContainerExecPhaseRunning, logical.Status.Phase)
+	requireReadyCondition(t, logical.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerExecReasonRunning)
+	require.Equal(t, running.Status.PhysicalExecRef, logical.Status.PhysicalExecRef)
+	require.Equal(t, running.Status.ContainerID, logical.Status.ContainerID)
 	decorated.failObservation.Store(false)
-	recovered := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerExecPhaseRunning, nil
-	})
-	require.Equal(t, running.Status.PhysicalExecRef, recovered.Status.PhysicalExecRef)
-	require.Equal(t, running.Status.RuntimeLogs.UID, recovered.Status.RuntimeLogs.UID)
 	orchestrator, simulated := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, simulated)
+	require.NoError(t, orchestrator.SimulateContainerExecExit(ctx, target.Status.ContainerID, logical.Spec.Execution.Command, 23))
+	recovered := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseExited, nil
+	})
+	requireReadyCondition(t, recovered.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonCompleted)
+	require.Equal(t, int32(23), *recovered.Status.ExitCode)
+	require.Equal(t, running.Status.PhysicalExecRef, recovered.Status.PhysicalExecRef)
+	require.Equal(t, running.Status.RuntimeLogs.UID, recovered.Status.RuntimeLogs.UID)
 	require.Equal(t, 1, orchestrator.ExecContainerCallCount(logical.Spec.Execution.Command))
+	require.NoError(t, server.Client.Delete(ctx, logical))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
+	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: recovered.Status.PhysicalExecRef, Namespace: logical.Namespace}}
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
 }
 
 // Verifies that physical exec deletion bypasses failed namespace admission and durably

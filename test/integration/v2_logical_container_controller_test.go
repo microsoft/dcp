@@ -9,9 +9,11 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -381,6 +383,41 @@ func TestV2LogicalContainerControllerCompletesStopBeforeCreation(t *testing.T) {
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: pending.Status.PhysicalContainerRef}, physical))
 	require.Equal(t, apiv2.PhysicalContainerPhaseExited, physical.Status.Phase)
 	requireReadyCondition(t, physical.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonStopRequested)
+}
+
+// Verifies that LogicalContainer observes a Stop update while waiting for an existing container,
+// without waiting for the fallback polling interval before observing the requested change.
+func TestV2LogicalContainerControllerObservesStopWhileWaitingForExistingContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-logical-existing-stop-update")
+	resource := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerSpec{
+			Mode: apiv2.LogicalContainerModeExisting, ContainerName: namespace.Name + "-runtime",
+		},
+	}
+	require.NoError(t, client.Create(ctx, resource))
+	waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return ready != nil && ready.Message == fmt.Sprintf("Runtime container %q was not found.", resource.Spec.ContainerName), nil
+	})
+	// The Stop watch must not wait for the 30-second existing-container polling interval.
+	stopCtx, stopCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer stopCancel()
+	require.NoError(t, retryOnConflict(stopCtx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
+		current.Spec.Stop = true
+		return client.Update(updateCtx, current)
+	}))
+	observed := waitObjectAssumesState(t, stopCtx, resource.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerPhaseExited, nil
+	})
+	require.Equal(t, apiv2.LogicalContainerPhaseExited, observed.Status.Phase)
+	requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonStopped)
+	require.Zero(t, containerOrchestrator.CreateContainerCallCount(resource.Spec.ContainerName))
+	require.NoError(t, client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
 }
 
 // Verifies that the LogicalContainer controller completes stop for a never-started persistent

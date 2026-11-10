@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"reflect"
 	std_slices "slices"
-	"time"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -333,11 +332,7 @@ func handleLogicalContainerPending(
 	ctx context.Context, reconciler *LogicalContainerReconciler, container *apiv2.LogicalContainer,
 	_ logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
-	if time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
-	}
 	data.reason, data.message = "", ""
-	data.retryAfter = time.Time{}
 
 	physical, lookupErr := reconciler.findPhysicalContainer(ctx, container, data, reconciler.Client, container.UID)
 	if lookupErr != nil {
@@ -390,7 +385,6 @@ func handleLogicalContainerPending(
 
 				data.reason = apiv2.LogicalContainerReasonStarting
 				data.message = leaseErr.Error()
-				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 				if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
 					logResourceLeaseHeld(log, leaseErr, container.GetLeaseKey(), "Persistent container is being updated by another DCP instance, retrying")
 					data.reason = apiv2.LogicalContainerReasonStarting
@@ -412,7 +406,6 @@ func handleLogicalContainerPending(
 			if inspectErr != nil && !errors.Is(inspectErr, containers.ErrNotFound) {
 				log.Error(inspectErr, "Failed to inspect logical container by name")
 				data.state, data.reason, data.message = logicalContainerStateUnknown, apiv2.LogicalContainerReasonLookupFailed, inspectErr.Error()
-				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 				return additionalReconciliationNeeded
 			}
 			if inspectErr == nil {
@@ -431,7 +424,6 @@ func handleLogicalContainerPending(
 		if inspected == nil && !mode.ShouldCreateIfMissing() {
 			data.reason = apiv2.LogicalContainerReasonStarting
 			data.message = fmt.Sprintf("Runtime container %q was not found.", container.Spec.ContainerName)
-			data.retryAfter = time.Now().Add(delayDurations[MonitoringDelay].Duration)
 			return additionalReconciliationNeeded
 		}
 
@@ -685,7 +677,6 @@ func (r *LogicalContainerReconciler) createPhysicalContainerImage(
 		}
 		existing := &apiv2.PhysicalContainerImage{}
 		if lookupErr := r.NoCacheClient.Get(ctx, image.NamespacedName(), existing); lookupErr != nil {
-			data.state, data.reason, data.message = logicalContainerStateUnknown, apiv2.LogicalContainerReasonLookupFailed, lookupErr.Error()
 			return image, fmt.Errorf("get existing physical image: %w", lookupErr)
 		}
 		if identityErr := validatePhysicalResourceIdentity(container, existing, data.physicalImageUID); identityErr != nil {
@@ -724,7 +715,6 @@ func (r *LogicalContainerReconciler) createPhysicalContainer(
 		}
 		existing := &apiv2.PhysicalContainer{}
 		if lookupErr := r.NoCacheClient.Get(ctx, physical.NamespacedName(), existing); lookupErr != nil {
-			data.state, data.reason, data.message = logicalContainerStateUnknown, apiv2.LogicalContainerReasonLookupFailed, lookupErr.Error()
 			return physical, fmt.Errorf("get existing physical container: %w", lookupErr)
 		}
 		if identityErr := validatePhysicalResourceIdentity(container, existing, data.physicalContainerUID); identityErr != nil {
@@ -764,9 +754,6 @@ func (r *LogicalContainerReconciler) findPhysicalContainer(
 		ctrl_client.MatchingFields{logicalContainerOwnerUIDField: string(ownerUID)})
 	if listErr != nil {
 		lookupErr := fmt.Errorf("list owned physical containers: %w", listErr)
-		if !data.terminal() {
-			data.state, data.reason, data.message = logicalContainerStateUnknown, apiv2.LogicalContainerReasonLookupFailed, lookupErr.Error()
-		}
 		return nil, lookupErr
 	}
 	var owned *apiv2.PhysicalContainer
@@ -812,9 +799,6 @@ func (r *LogicalContainerReconciler) findPhysicalContainerImage(
 		ctrl_client.MatchingFields{logicalContainerOwnerUIDField: string(ownerUID)})
 	if listErr != nil {
 		lookupErr := fmt.Errorf("list owned physical images: %w", listErr)
-		if !data.terminal() {
-			data.state, data.reason, data.message = logicalContainerStateUnknown, apiv2.LogicalContainerReasonLookupFailed, lookupErr.Error()
-		}
 		return nil, lookupErr
 	}
 	var owned *apiv2.PhysicalContainerImage
@@ -1246,18 +1230,12 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 	var physicals apiv2.PhysicalContainerList
 	containerListErr := r.List(ctx, &physicals, options...)
 	if containerListErr != nil {
-		if !data.terminal() {
-			data.state, data.reason, data.message = logicalContainerStateUnknown, apiv2.LogicalContainerReasonLookupFailed, containerListErr.Error()
-		}
 
 		log.Error(containerListErr, "Failed to list physical containers before deletion")
 
 		return additionalReconciliationNeeded, delay
 	}
 	if confirmationErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, container, data.unobservedChildren, &physicals.Items); confirmationErr != nil {
-		if !data.terminal() {
-			data.state, data.reason, data.message = logicalContainerStateUnknown, apiv2.LogicalContainerReasonLookupFailed, confirmationErr.Error()
-		}
 
 		log.Error(confirmationErr, "Failed to resolve unobserved physical containers before deletion")
 
@@ -1330,18 +1308,12 @@ func (r *LogicalContainerReconciler) handleDeletionRequest(
 	var images apiv2.PhysicalContainerImageList
 	imageListErr := r.List(ctx, &images, options...)
 	if imageListErr != nil {
-		if !data.terminal() {
-			data.state, data.reason, data.message = logicalContainerStateUnknown, apiv2.LogicalContainerReasonLookupFailed, imageListErr.Error()
-		}
 
 		log.Error(imageListErr, "Failed to list physical images before deletion")
 
 		return additionalReconciliationNeeded, delay
 	}
 	if confirmationErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, container, data.unobservedChildren, &images.Items); confirmationErr != nil {
-		if !data.terminal() {
-			data.state, data.reason, data.message = logicalContainerStateUnknown, apiv2.LogicalContainerReasonLookupFailed, confirmationErr.Error()
-		}
 
 		log.Error(confirmationErr, "Failed to resolve unobserved physical images before deletion")
 
@@ -1434,17 +1406,12 @@ func (r *LogicalContainerReconciler) settleLogicalContainerLease(
 	if data.lease == nil {
 		return noChange
 	}
-	if data.leaseFailureMessage != "" && time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
-	}
-
 	data.leaseFailureMessage = ""
 	if record != nil {
 		workloadID, workloadErr := dcpclient.ResolveNamespaceWorkloadID(ctx, r.NoCacheClient, container.Namespace, r.config.WorkloadID)
 		if workloadErr != nil {
 			log.Error(workloadErr, "Failed to resolve persistent logical container workload ID")
 			data.leaseFailureMessage = fmt.Sprintf("Failed to resolve persistent container workload ID: %v", workloadErr)
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 			return additionalReconciliationNeeded
 		}
 		if workloadID != "" {
@@ -1453,14 +1420,12 @@ func (r *LogicalContainerReconciler) settleLogicalContainerLease(
 			if verifyErr != nil {
 				log.Error(verifyErr, "Failed to verify persistent logical container lease before recording ownership")
 				data.leaseFailureMessage = fmt.Sprintf("Failed to verify persistent container lease: %v", verifyErr)
-				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 				return additionalReconciliationNeeded
 			}
 			recordErr := r.config.StateStore.UpsertPersistentContainer(ctx, *record)
 			if recordErr != nil {
 				log.Error(recordErr, "Failed to record persistent logical container")
 				data.leaseFailureMessage = fmt.Sprintf("Failed to record persistent container: %v", recordErr)
-				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 				return additionalReconciliationNeeded
 			}
 		}
@@ -1469,10 +1434,8 @@ func (r *LogicalContainerReconciler) settleLogicalContainerLease(
 	if releaseErr != nil && !errors.Is(releaseErr, statestore.ErrResourceLeaseNotHeld) {
 		log.Error(releaseErr, "Failed to release persistent logical container startup lease")
 		data.leaseFailureMessage = fmt.Sprintf("Failed to release persistent container lease: %v", releaseErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		return additionalReconciliationNeeded
 	}
 	data.lease = nil
-	data.retryAfter = time.Time{}
 	return noChange
 }

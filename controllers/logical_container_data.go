@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"time"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -88,10 +87,9 @@ func (state logicalContainerState) String() string {
 }
 
 type logicalContainerData struct {
-	state      logicalContainerState
-	reason     apiv2.ConditionReason
-	message    string
-	retryAfter time.Time
+	state   logicalContainerState
+	reason  apiv2.ConditionReason
+	message string
 	// Records successful startup independently of temporary observation failures.
 	started bool
 	// Effective launch values and handed-off port selections.
@@ -211,14 +209,6 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 		data.state, data.reason, message,
 		&container.Status.Phase, &container.Status.Conditions, container.Generation,
 	)
-	if !data.terminal() && data.leaseFailureMessage != "" {
-		projectionChange |= additionalReconciliationNeeded
-		delay = LongDelay
-	}
-	if data.state == logicalContainerStatePending && !data.retryAfter.IsZero() {
-		projectionChange |= additionalReconciliationNeeded
-		delay = MonitoringDelay
-	}
 	return change | projectionChange, delay, valid
 }
 

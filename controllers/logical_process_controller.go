@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"time"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -193,10 +192,7 @@ func handleLogicalProcessPreparation(
 	ctx context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
-	if time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
-	}
-	data.reason, data.message, data.retryAfter = "", "", time.Time{}
+	data.reason, data.message = "", ""
 	physical, lookupErr := reconciler.findPhysicalProcess(ctx, resource, data, "")
 	if lookupErr != nil && !apierrors.IsNotFound(lookupErr) {
 		log.Error(lookupErr, "Failed to discover prepared physical process")
@@ -217,21 +213,14 @@ func handleLogicalProcessPreparation(
 		}
 		return additionalReconciliationNeeded
 	}
-	reconciler.prepareLogicalProcess(ctx, resource, data, log)
-	if data.state != logicalProcessStatePhysical {
-		return noChange
-	}
-	return additionalReconciliationNeeded
+	return reconciler.prepareLogicalProcess(ctx, resource, data, log)
 }
 
 func handleLogicalProcessPhysical(
 	ctx context.Context, reconciler *LogicalProcessReconciler, resource *apiv2.LogicalProcess,
 	_ logicalProcessState, data *logicalProcessData, log logr.Logger,
 ) objectChange {
-	if time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
-	}
-	data.reason, data.message, data.retryAfter = "", "", time.Time{}
+	data.reason, data.message = "", ""
 	existing, lookupErr := reconciler.findPhysicalProcess(ctx, resource, data, "")
 	if lookupErr != nil && (!apierrors.IsNotFound(lookupErr) || data.physicalUID != "") {
 		log.Error(lookupErr, "Failed to discover physical process before handoff")
@@ -440,7 +429,6 @@ func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
 			creationCollision = createErr
 			getErr = r.NoCacheClient.Get(ctx, physical.NamespacedName(), physical)
 			if getErr != nil {
-				data.state, data.reason, data.message = logicalProcessStateUnknown, apiv2.LogicalProcessReasonLookupFailed, getErr.Error()
 				return nil, fmt.Errorf("get existing physical process: %w", getErr)
 			}
 			if identityErr := validatePhysicalResourceIdentity(resource, physical, expectedUID); identityErr != nil {
@@ -664,9 +652,6 @@ func (r *LogicalProcessReconciler) findPhysicalProcess(
 	listErr := r.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace),
 		ctrl_client.MatchingFields{logicalProcessOwnerUIDField: string(resource.UID)})
 	if listErr != nil {
-		if !data.terminal() {
-			data.state, data.reason, data.message = logicalProcessStateUnknown, apiv2.LogicalProcessReasonLookupFailed, listErr.Error()
-		}
 		return nil, listErr
 	}
 	found := false
@@ -685,10 +670,6 @@ func (r *LogicalProcessReconciler) findPhysicalProcess(
 				if expectedUID != "" && suffix == "" {
 					data.failMissing("The backing PhysicalProcess no longer exists; the logical process cannot recover.")
 					data.state = logicalProcessStateMissing
-				}
-			} else {
-				if !data.terminal() {
-					data.state, data.reason, data.message = logicalProcessStateUnknown, apiv2.LogicalProcessReasonLookupFailed, getErr.Error()
 				}
 			}
 			return nil, getErr
@@ -751,9 +732,6 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 	if listErr != nil {
 
 		log.Error(listErr, "Failed to list physical processes before deletion")
-		if !data.terminal() {
-			data.state, data.reason, data.message = logicalProcessStateUnknown, apiv2.LogicalProcessReasonLookupFailed, listErr.Error()
-		}
 
 		return additionalReconciliationNeeded, delay
 	}
@@ -761,9 +739,6 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 	if confirmationErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, resource, data.unobservedChildren, &children.Items); confirmationErr != nil {
 
 		log.Error(confirmationErr, "Failed to resolve unobserved physical processes before deletion")
-		if !data.terminal() {
-			data.state, data.reason, data.message = logicalProcessStateUnknown, apiv2.LogicalProcessReasonLookupFailed, confirmationErr.Error()
-		}
 
 		return additionalReconciliationNeeded, delay
 	}
@@ -933,10 +908,10 @@ func (r *LogicalProcessReconciler) prepareLogicalProcessValues(
 
 func (r *LogicalProcessReconciler) prepareLogicalProcess(
 	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData, log logr.Logger,
-) {
+) objectChange {
 	if resource.Spec.EffectiveMode() == apiv2.LogicalProcessModeExisting {
 		data.lifecycleKey, data.state = resource.Spec.LifecycleKey, logicalProcessStatePhysical
-		return
+		return additionalReconciliationNeeded
 	}
 	if data.lifecycleKey == "" {
 		data.lifecycleKey = resource.Spec.LifecycleKey
@@ -947,13 +922,13 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 		if keyErr != nil {
 			log.Error(keyErr, "Failed to calculate logical process lifecycle key")
 			data.state, data.message = logicalProcessStatePrepareFailed, keyErr.Error()
-			return
+			return noChange
 		}
 		data.lifecycleKey = key
 	}
 	if resource.Spec.EffectiveMode() != apiv2.LogicalProcessModePersistent {
 		data.state = logicalProcessStatePhysical
-		return
+		return additionalReconciliationNeeded
 	}
 	preparationErr := func() error {
 		if r.config.StateStore == nil {
@@ -991,19 +966,16 @@ func (r *LogicalProcessReconciler) prepareLogicalProcess(
 		log.Error(preparationErr, "Failed to prepare persistent logical process")
 		data.message = preparationErr.Error()
 		data.reason = apiv2.LogicalProcessReasonStarting
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-		return
+		return additionalReconciliationNeeded
 	}
 	data.state = logicalProcessStatePhysical
+	return additionalReconciliationNeeded
 }
 
 func (r *LogicalProcessReconciler) persistLogicalProcess(
 	ctx context.Context, resource *apiv2.LogicalProcess, data *logicalProcessData,
 	physical *apiv2.PhysicalProcess, log logr.Logger,
 ) objectChange {
-	if data.leaseFailureMessage != "" && time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
-	}
 	data.leaseFailureMessage = ""
 	if physical != nil {
 		ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
@@ -1081,10 +1053,8 @@ func (r *LogicalProcessReconciler) persistLogicalProcess(
 	if persistErr != nil {
 		log.Error(persistErr, "Failed to settle persistent logical process ownership")
 		data.leaseFailureMessage = persistErr.Error()
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		return additionalReconciliationNeeded
 	}
-	data.retryAfter = time.Time{}
 	return noChange
 }
 

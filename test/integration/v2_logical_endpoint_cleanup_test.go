@@ -86,7 +86,7 @@ func (apiClient *endpointStopFailureClient) Patch(
 
 // Verifies that Stop withdraws logical endpoints despite backing lookup or stop-patch failures,
 // while endpoint deletion failures do not block physical Stop and withdrawal retries preserve the service.
-// A failed container stop request preserves Running, whereas failed backing observation reports Unknown.
+// Failed stop requests and API lookups preserve the observed Running lifecycle.
 func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
@@ -150,13 +150,8 @@ func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 							ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 							return ready != nil && ready.ObservedGeneration == current.Generation && current.Spec.Stop, nil
 						})
-						if failure == "stop" {
-							require.Equal(t, apiv2.LogicalProcessPhaseRunning, observed.Status.Phase)
-							requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalProcessReasonRunning)
-						} else {
-							require.Equal(t, apiv2.LogicalProcessPhaseUnknown, observed.Status.Phase)
-							requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonLookupFailed)
-						}
+						require.Equal(t, apiv2.LogicalProcessPhaseRunning, observed.Status.Phase)
+						requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalProcessReasonRunning)
 					} else {
 						physical := workload.backing.(*apiv2.PhysicalContainer)
 						require.False(t, physical.Spec.Stop)
@@ -165,13 +160,8 @@ func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 							ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 							return ready != nil && ready.ObservedGeneration == current.Generation && current.Spec.Stop, nil
 						})
-						if failure == "stop" {
-							require.Equal(t, apiv2.LogicalContainerPhaseRunning, observed.Status.Phase)
-							requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerReasonRunning)
-						} else {
-							require.Equal(t, apiv2.LogicalContainerPhaseUnknown, observed.Status.Phase)
-							requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonLookupFailed)
-						}
+						require.Equal(t, apiv2.LogicalContainerPhaseRunning, observed.Status.Phase)
+						requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerReasonRunning)
 					}
 				}
 				decorated.failStop.Store(false)

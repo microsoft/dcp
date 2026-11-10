@@ -45,6 +45,22 @@ type recordedServiceProxy struct {
 	failStart          bool
 }
 
+type serviceEndpointLookupFailureClient struct {
+	ctrl_client.Client
+	fail     atomic.Bool
+	failures atomic.Uint32
+}
+
+func (apiClient *serviceEndpointLookupFailureClient) List(
+	ctx context.Context, objects ctrl_client.ObjectList, options ...ctrl_client.ListOption,
+) error {
+	if _, endpoints := objects.(*apiv2.ServiceEndpointList); endpoints && apiClient.fail.Load() {
+		apiClient.failures.Add(1)
+		return errors.New("service endpoint lookup unavailable")
+	}
+	return apiClient.Client.List(ctx, objects, options...)
+}
+
 func (recorded *recordedServiceProxy) Start() error {
 	if recorded.failStart {
 		return errors.New("service proxy startup unavailable")
@@ -419,7 +435,75 @@ func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 	}
 }
 
-// Verifies that LogicalService retries a route-configuration failure on its existing listener
+// Verifies that LogicalService preserves startup or Running lifecycle during failed endpoint reads,
+// then recovers readiness without replacing an established listener.
+func TestV2LogicalServicePreservesLifecycleDuringEndpointLookupFailure(t *testing.T) {
+	t.Parallel()
+	for _, stage := range []string{"startup", "running"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			recorder := &serviceProxyRecorder{}
+			var decorated *serviceEndpointLookupFailureClient
+			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalServiceController, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{
+					CreateLogicalServiceProxy: recorder.create,
+					DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+						decorated = &serviceEndpointLookupFailureClient{Client: apiClient}
+						return decorated
+					},
+				})
+			require.NoError(t, startupErr)
+			apiClient := server.Client
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "service-endpoint-read"}}
+			require.NoError(t, apiClient.Create(ctx, namespace))
+			service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
+				Spec: apiv2.LogicalServiceSpec{Address: "127.0.0.1"}}
+			endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: namespace.Name},
+				Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}}}}
+			require.NoError(t, apiClient.Create(ctx, endpoint))
+			decorated.fail.Store(stage == "startup")
+			defer decorated.fail.Store(false)
+			require.NoError(t, apiClient.Create(ctx, service))
+			var listeners []*recordedServiceProxy
+			if stage == "running" {
+				waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+					return logicalServiceReady(current), nil
+				})
+				listeners = recorder.snapshot()
+				require.Len(t, listeners, 1)
+				decorated.fail.Store(true)
+				require.NoError(t, apiClient.Patch(ctx, service,
+					ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"test-lookup":"retry"}}}`))))
+			}
+			unavailable := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+				return decorated.failures.Load() >= 2 && !logicalServiceReady(current) &&
+					len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Message == "service endpoint lookup unavailable", nil
+			})
+			if stage == "startup" {
+				require.Equal(t, apiv2.LogicalServicePhasePending, unavailable.Status.Phase)
+				requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonStarting)
+			} else {
+				require.Equal(t, apiv2.LogicalServicePhaseRunning, unavailable.Status.Phase)
+				requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
+			}
+			decorated.fail.Store(false)
+			waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+				return logicalServiceReady(current), nil
+			})
+			recoveredListeners := recorder.snapshot()
+			require.Len(t, recoveredListeners, 1)
+			if stage == "running" {
+				require.Same(t, listeners[0], recoveredListeners[0])
+			}
+			require.NoError(t, apiClient.Delete(ctx, namespace))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
+		})
+	}
+}
+
+// Verifies that LogicalService retries a route-configuration failure while remaining Running
 // without changing its frontend address or cancelling the listener lifetime.
 func TestV2LogicalServiceRetriesConfigurationWithoutReplacingListener(t *testing.T) {
 	t.Parallel()
@@ -452,10 +536,12 @@ func TestV2LogicalServiceRetriesConfigurationWithoutReplacingListener(t *testing
 			endpoint.Spec.Addresses[0].Port++
 			endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
 			unavailable := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalServicePhaseUnknown &&
+				return listener.configurationCalls.Load() >= configurationCount+2 && !logicalServiceReady(current) &&
+					current.Status.Phase == apiv2.LogicalServicePhaseRunning &&
 					slices.Equal(current.Status.EffectiveAddresses, ready.Status.EffectiveAddresses), nil
 			})
-			requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonLookupFailed)
+			requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
+			require.Contains(t, unavailable.Status.Conditions[0].Message, "configuration unavailable")
 			require.NoError(t, listener.lifetimeCtx.Err())
 			listener.failConfiguration.Store(false)
 			waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {

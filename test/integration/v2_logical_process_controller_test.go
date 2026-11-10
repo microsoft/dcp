@@ -290,7 +290,7 @@ func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 	require.NoError(t, client.Create(ctx, resource))
 	pending := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return condition != nil && condition.Reason == string(apiv2.LogicalProcessReasonStarting), nil
+		return condition != nil && condition.Reason == string(apiv2.PhysicalResourceReasonNamespaceNotFound), nil
 	})
 	require.Empty(t, pending.Status.PhysicalProcessRef)
 	createActiveV2Namespace(t, ctx, resource.Namespace)
@@ -325,7 +325,7 @@ func TestV2LogicalProcessControllerDeletesBeforeNamespaceAdmission(t *testing.T)
 	require.NoError(t, client.Create(ctx, resource))
 	pending := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == string(apiv2.LogicalProcessReasonStarting), nil
+		return ready != nil && ready.Reason == string(apiv2.PhysicalResourceReasonNamespaceNotFound), nil
 	})
 	require.Empty(t, pending.Status.LifecycleKey)
 	require.Empty(t, pending.Status.PhysicalProcessRef)
@@ -468,9 +468,9 @@ func TestV2LogicalProcessControllerRetriesBackingObservation(t *testing.T) {
 	unavailable := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return ready != nil && ready.ObservedGeneration == current.Generation &&
-			ready.Reason == string(apiv2.LogicalProcessReasonLookupFailed), nil
+			ready.Reason == string(apiv2.LogicalProcessReasonRunning), nil
 	})
-	require.Equal(t, apiv2.LogicalProcessPhaseUnknown, unavailable.Status.Phase)
+	require.Equal(t, apiv2.LogicalProcessPhaseRunning, unavailable.Status.Phase)
 	require.Equal(t, running.Status.PID, unavailable.Status.PID)
 	require.Equal(t, running.Status.PhysicalProcessRef, unavailable.Status.PhysicalProcessRef)
 	require.Equal(t, running.Status.RuntimeLogs, unavailable.Status.RuntimeLogs)

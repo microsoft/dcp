@@ -155,8 +155,10 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		})
 		if listErr != nil {
 			log.Error(listErr, "Failed to list service endpoints")
-			reason, message, requeue = apiv2.LogicalServiceReasonLookupFailed, listErr.Error(), true
-			status.Phase = apiv2.LogicalServicePhaseUnknown
+			message, requeue = listErr.Error(), true
+			if data.started {
+				status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonRunning
+			}
 			break
 		}
 		endpoints.Items = slices.DeleteFunc(endpoints.Items, func(endpoint apiv2.ServiceEndpoint) bool { return !endpoint.DeletionTimestamp.IsZero() })
@@ -204,8 +206,8 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 				data.startupFailureMessage = proxyErr.Error()
 			}
 			reason, message, requeue = apiv2.LogicalServiceReasonStarting, proxyErr.Error(), true
-			if len(data.proxies) > 0 {
-				status.Phase, reason = apiv2.LogicalServicePhaseUnknown, apiv2.LogicalServiceReasonLookupFailed
+			if data.started {
+				status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonRunning
 			}
 			if len(status.EffectiveAddresses) == 0 && (len(data.proxies) > 0 || data.attempts >= MaxServiceStartAttempts) {
 				status.Phase, requeue = apiv2.LogicalServicePhaseFailed, false

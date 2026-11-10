@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"time"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -70,7 +69,6 @@ type logicalContainerNetworkData struct {
 	state               logicalContainerNetworkState
 	reason              apiv2.ConditionReason
 	message             string
-	retryAfter          time.Time
 	lifecycleKey        string
 	physicalNetworkUID  types.UID
 	unobservedChildren  unobservedLogicalChildren
@@ -141,14 +139,6 @@ func (data *logicalContainerNetworkData) applyTo(network *apiv2.LogicalContainer
 	}
 	projectionChange, delay, valid := logicalContainerNetworkProjections.applyWithReason(
 		data.state, data.reason, message, &network.Status.Phase, &network.Status.Conditions, network.Generation)
-	if !data.terminal() && data.leaseFailureMessage != "" {
-		projectionChange |= additionalReconciliationNeeded
-		delay = LongDelay
-	}
-	if data.state == logicalContainerNetworkStatePending && !data.retryAfter.IsZero() {
-		projectionChange |= additionalReconciliationNeeded
-		delay = MonitoringDelay
-	}
 	return change | projectionChange, delay, valid
 }
 

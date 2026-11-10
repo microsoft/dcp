@@ -219,6 +219,7 @@ type logicalObservationGate struct {
 	containerCreationBlocked atomic.Bool
 	containerLookupBlocked   atomic.Bool
 	imageLookupBlocked       atomic.Bool
+	lookupFailures           atomic.Uint32
 }
 
 // Verifies owner-based discovery independently of child names, terminal duplicate detection,
@@ -409,9 +410,11 @@ func (client *logicalObservationGate) List(ctx context.Context, list ctrl_client
 		return nil
 	}
 	if _, isContainerList := list.(*apiv2.PhysicalContainerList); isContainerList && client.containerLookupBlocked.Load() {
+		client.lookupFailures.Add(1)
 		return fmt.Errorf("injected owned container lookup failure")
 	}
 	if _, isImageList := list.(*apiv2.PhysicalContainerImageList); isImageList && client.imageLookupBlocked.Load() {
+		client.lookupFailures.Add(1)
 		return fmt.Errorf("injected owned image lookup failure")
 	}
 	if images, isImageList := list.(*apiv2.PhysicalContainerImageList); isImageList && client.imagesHidden.Load() {
@@ -563,8 +566,8 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 	}
 }
 
-// Verifies that transient container/image lookup failures preserve logical backing identity during
-// running, stopping, and deletion, report the relevant diagnostic, and recover when observation resumes.
+// Verifies that LogicalContainer preserves lifecycle and backing identity through API lookup failures
+// during running, stop requests, and deletion, then recovers without creating another backing.
 func TestV2LogicalContainerRetriesBackingLookup(t *testing.T) {
 	t.Parallel()
 	for _, action := range []string{"running", "running-image", "stopping", "deleting"} {
@@ -601,13 +604,7 @@ func TestV2LogicalContainerRetriesBackingLookup(t *testing.T) {
 			})
 			gate.containerLookupBlocked.Store(action != "running-image")
 			gate.imageLookupBlocked.Store(action == "running-image")
-			expectedPhase := apiv2.LogicalContainerPhaseUnknown
-			var expectedReason apiv2.ConditionReason = apiv2.LogicalContainerReasonLookupFailed
-			if action == "running-image" {
-				expectedReason = apiv2.LogicalContainerReasonLookupFailed
-			}
 			if action == "deleting" {
-				expectedReason = apiv2.LogicalContainerReasonLookupFailed
 				require.NoError(t, server.Client.Delete(ctx, logical))
 			} else {
 				require.NoError(t, retryOnConflictEx(ctx, server.Client, logical.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
@@ -620,9 +617,10 @@ func TestV2LogicalContainerRetriesBackingLookup(t *testing.T) {
 			}
 			waiting := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-				return current.Status.Phase == expectedPhase && ready != nil && ready.Reason == string(expectedReason), nil
+				return gate.lookupFailures.Load() >= 2 && current.Status.Phase == apiv2.LogicalContainerPhaseRunning &&
+					ready != nil && ready.Reason == string(apiv2.LogicalContainerReasonRunning), nil
 			})
-			requireReadyCondition(t, waiting.Status.Conditions, metav1.ConditionFalse, expectedReason)
+			requireReadyCondition(t, waiting.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerReasonRunning)
 			require.Equal(t, running.Status.ContainerID, waiting.Status.ContainerID)
 			require.Equal(t, running.Status.PhysicalContainerRef, waiting.Status.PhysicalContainerRef)
 			gate.containerLookupBlocked.Store(false)

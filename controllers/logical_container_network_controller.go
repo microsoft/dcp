@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -189,11 +188,7 @@ func handleLogicalContainerNetworkPending(
 	ctx context.Context, reconciler *LogicalContainerNetworkReconciler, network *apiv2.LogicalContainerNetwork,
 	_ logicalContainerNetworkState, data *logicalContainerNetworkData, log logr.Logger,
 ) objectChange {
-	if time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
-	}
-
-	data.reason, data.message, data.retryAfter = "", "", time.Time{}
+	data.reason, data.message = "", ""
 	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, data, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
 	if lookupErr != nil {
@@ -225,7 +220,6 @@ func handleLogicalContainerNetworkPending(
 			if leaseErr != nil {
 
 				data.reason, data.message = apiv2.LogicalContainerNetworkReasonStarting, leaseErr.Error()
-				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 				if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
 					logResourceLeaseHeld(log, leaseErr, network.GetLeaseKey(), "Persistent network creation lease is held, retrying")
 					data.reason = apiv2.LogicalContainerNetworkReasonStarting
@@ -250,7 +244,6 @@ func handleLogicalContainerNetworkPending(
 			if inspectErr != nil && !errors.Is(inspectErr, containers.ErrNotFound) {
 				log.Error(inspectErr, "Failed to inspect logical network by name")
 				data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonLookupFailed, inspectErr.Error()
-				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 				return additionalReconciliationNeeded
 			}
 			if inspectErr == nil {
@@ -263,7 +256,6 @@ func handleLogicalContainerNetworkPending(
 		}
 		if mode == apiv2.LogicalContainerNetworkModeExisting && inspected == nil {
 			data.reason, data.message = apiv2.LogicalContainerNetworkReasonStarting, fmt.Sprintf("Container network %q was not found.", network.Spec.NetworkName)
-			data.retryAfter = time.Now().Add(delayDurations[MonitoringDelay].Duration)
 			return additionalReconciliationNeeded
 		}
 		lifecycleKey, networkID, managed := "", "", false
@@ -383,7 +375,6 @@ func (r *LogicalContainerNetworkReconciler) createPhysicalContainerNetwork(
 		}
 		existing := &apiv2.PhysicalContainerNetwork{}
 		if lookupErr := r.NoCacheClient.Get(ctx, physical.NamespacedName(), existing); lookupErr != nil {
-			data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonLookupFailed, lookupErr.Error()
 			return physical, fmt.Errorf("get existing physical network: %w", lookupErr)
 		}
 		if identityErr := validatePhysicalResourceIdentity(network, existing, data.physicalNetworkUID); identityErr != nil {
@@ -404,9 +395,6 @@ func (r *LogicalContainerNetworkReconciler) findLogicalNetworkBacking(
 	listErr := reader.List(ctx, &children, listOptions...)
 	if listErr != nil {
 		lookupErr := fmt.Errorf("list owned physical networks: %w", listErr)
-		if !data.terminal() {
-			data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonLookupFailed, lookupErr.Error()
-		}
 		return nil, lookupErr
 	}
 	var owned *apiv2.PhysicalContainerNetwork
@@ -633,18 +621,12 @@ func (r *LogicalContainerNetworkReconciler) handleDeletionRequest(
 	if listErr != nil {
 
 		log.Error(listErr, "Failed to list physical networks before deletion")
-		if !data.terminal() {
-			data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonLookupFailed, listErr.Error()
-		}
 
 		return additionalReconciliationNeeded, delay
 	}
 	if confirmationErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, network, data.unobservedChildren, &children.Items); confirmationErr != nil {
 
 		log.Error(confirmationErr, "Failed to resolve unobserved physical networks before deletion")
-		if !data.terminal() {
-			data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonLookupFailed, confirmationErr.Error()
-		}
 
 		return additionalReconciliationNeeded, delay
 	}
@@ -736,16 +718,12 @@ func (r *LogicalContainerNetworkReconciler) settleLogicalNetworkLease(
 	if data.lease == nil {
 		return noChange
 	}
-	if data.leaseFailureMessage != "" && time.Now().Before(data.retryAfter) {
-		return additionalReconciliationNeeded
-	}
 	data.leaseFailureMessage = ""
 	if record != nil {
 		workloadID, resolveErr := dcpclient.ResolveNamespaceWorkloadID(ctx, r.NoCacheClient, network.Namespace, r.config.WorkloadID)
 		if resolveErr != nil {
 			log.Error(resolveErr, "Failed to resolve persistent network workload ownership")
 			data.leaseFailureMessage = fmt.Sprintf("Failed to resolve persistent network workload ownership: %v", resolveErr)
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 			return additionalReconciliationNeeded
 		}
 		if workloadID != "" {
@@ -753,7 +731,6 @@ func (r *LogicalContainerNetworkReconciler) settleLogicalNetworkLease(
 			if verifyErr != nil {
 				log.Error(verifyErr, "Failed to verify persistent network lease before recording ownership")
 				data.leaseFailureMessage = fmt.Sprintf("Failed to verify persistent network lease: %v", verifyErr)
-				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 				return additionalReconciliationNeeded
 			}
 			record.WorkloadID = workloadID
@@ -761,7 +738,6 @@ func (r *LogicalContainerNetworkReconciler) settleLogicalNetworkLease(
 			if recordErr != nil {
 				log.Error(recordErr, "Failed to record persistent logical network")
 				data.leaseFailureMessage = fmt.Sprintf("Failed to record persistent network: %v", recordErr)
-				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 				return additionalReconciliationNeeded
 			}
 		}
@@ -770,9 +746,8 @@ func (r *LogicalContainerNetworkReconciler) settleLogicalNetworkLease(
 	if releaseErr != nil && !errors.Is(releaseErr, statestore.ErrResourceLeaseNotHeld) {
 		log.Error(releaseErr, "Failed to release persistent network creation lease")
 		data.leaseFailureMessage = fmt.Sprintf("Failed to release persistent network lease: %v", releaseErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		return additionalReconciliationNeeded
 	}
-	data.lease, data.retryAfter = nil, time.Time{}
+	data.lease = nil
 	return noChange
 }

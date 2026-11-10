@@ -374,6 +374,54 @@ func TestV2LogicalContainerNetworkControllerPreservesAdoptedKeyAfterUndecodedCre
 	require.Len(t, retained, 1)
 }
 
+// Verifies that LogicalContainerNetwork preserves its ready lifecycle and pinned backing during API
+// lookup failures, then completes deletion after observation recovers.
+func TestV2LogicalContainerNetworkControllerRetriesBackingLookup(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	var decorated *endpointStopFailureClient
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		LogicalContainerNetworkController|PhysicalContainerNetworkController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+			decorated = &endpointStopFailureClient{endpointDeletionFailureClient: &endpointDeletionFailureClient{Client: apiClient}}
+			return decorated
+		}})
+	require.NoError(t, startupErr)
+	apiClient := server.Client
+	namespace := createV2ExecNamespace(t, ctx, apiClient, "v2-network-lookup-retry")
+	network := &apiv2.LogicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerNetworkSpec{Network: &apiv2.LogicalContainerNetworkConfig{}}}
+	require.NoError(t, apiClient.Create(ctx, network))
+	ready := waitObjectAssumesStateEx(t, ctx, apiClient, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+	})
+	physical := &apiv2.PhysicalContainerNetwork{}
+	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: ready.Status.PhysicalNetworkRef}
+	require.NoError(t, apiClient.Get(ctx, physicalName, physical))
+	physicalUID := physical.UID
+	decorated.failLookup.Store(true)
+	defer decorated.failLookup.Store(false)
+	require.NoError(t, apiClient.Patch(ctx, network,
+		ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"test-lookup":"retry"}}}`))))
+	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return decorated.lookupAttempts.Load() >= 2, nil
+	}))
+	require.NoError(t, apiClient.Get(ctx, network.NamespacedName(), network))
+	require.Equal(t, apiv2.LogicalContainerNetworkPhaseReady, network.Status.Phase)
+	requireReadyCondition(t, network.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerNetworkReasonReady)
+	require.Equal(t, ready.Status.NetworkID, network.Status.NetworkID)
+	require.Equal(t, ready.Status.PhysicalNetworkRef, network.Status.PhysicalNetworkRef)
+	decorated.failLookup.Store(false)
+	var backings apiv2.PhysicalContainerNetworkList
+	require.NoError(t, apiClient.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, backings.Items, 1)
+	require.Equal(t, physicalUID, backings.Items[0].UID)
+	require.NoError(t, apiClient.Delete(ctx, network))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, network)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, physical)
+}
+
 // Verifies that LogicalContainerNetwork discovers an uncertain-create backing by owner, fails
 // on duplicate ownership, and deletes all owned children despite an empty cached owner list.
 func TestV2LogicalContainerNetworkControllerDiscoversOwnedBackings(t *testing.T) {

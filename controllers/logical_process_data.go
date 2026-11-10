@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"time"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -135,7 +134,6 @@ type logicalProcessData struct {
 	state               logicalProcessState
 	reason              apiv2.ConditionReason
 	message             string
-	retryAfter          time.Time
 	started             bool
 	effectiveArgs       []string
 	effectiveEnv        []commonapi.EnvVar
@@ -251,11 +249,6 @@ func (data *logicalProcessData) applyTo(resource *apiv2.LogicalProcess) (objectC
 		data.state, data.reason, message,
 		&resource.Status.Phase, &resource.Status.Conditions, resource.Generation,
 	)
-	if !data.terminal() && data.leaseFailureMessage != "" ||
-		((data.state == logicalProcessStatePrepare || data.state == logicalProcessStatePhysical) && !data.retryAfter.IsZero()) {
-		projectionChange |= additionalReconciliationNeeded
-		delay = LongDelay
-	}
 	return change | projectionChange, delay, valid
 }
 
