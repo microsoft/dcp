@@ -160,10 +160,11 @@ func (writer *messageWriter) remap(message Message) (bool, bool, error) {
 // Bridge forwards DAP while preserving extension payloads and request correlation in both directions.
 // On ErrShutdownRequested it injects disconnect unless disconnect was already forwarded, allowing
 // final messages to drain until adapter EOF or grace expiry. Other cancellation and client loss fail.
+// Execution exit or upstream read completion starts a bounded final-output drain.
 // It never synthesizes application exit or terminated events.
 // Observe runs before forwarding, after response correlation, and must be bounded and leave messages unchanged.
 // Private shutdown replies and uncorrelated responses are not observed.
-func Bridge(ctx context.Context, client, adapter Transport, exited <-chan struct{}, grace time.Duration, observe func(Direction, Message) error) error {
+func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-chan struct{}, grace time.Duration, observe func(Direction, Message) error) error {
 	toAdapter, toClient := newMessageWriter(adapter), newMessageWriter(client)
 	type result struct {
 		client bool
@@ -247,6 +248,14 @@ func Bridge(ctx context.Context, client, adapter Transport, exited <-chan struct
 		}
 	}()
 	drainExpired := make(chan struct{})
+	startDrain := func() {
+		exited, readDone = nil, nil
+		drainTimer = time.AfterFunc(2*time.Second, func() {
+			close(drainExpired)
+			_ = client.Close()
+			_ = adapter.Close()
+		})
+	}
 forwarding:
 	for {
 		select {
@@ -260,12 +269,9 @@ forwarding:
 		case <-drainExpired:
 			return fmt.Errorf("debug adapter output drain timed out")
 		case <-exited:
-			exited = nil
-			drainTimer = time.AfterFunc(2*time.Second, func() {
-				close(drainExpired)
-				_ = client.Close()
-				_ = adapter.Close()
-			})
+			startDrain()
+		case <-readDone:
+			startDrain()
 		case <-ctx.Done():
 			if !errors.Is(context.Cause(ctx), ErrShutdownRequested) {
 				return context.Cause(ctx)

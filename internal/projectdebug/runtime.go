@@ -46,7 +46,6 @@ type projectDebugRuntime struct {
 	mu                   sync.Mutex
 	providers            map[types.UID]*projectDebugProvider
 	findContainerRuntime func(context.Context, string) (containers.ExecContainers, error)
-	currentProject       func(context.Context, *apiv2.Project) (*apiv2.Project, error)
 }
 
 type projectDebugProvider struct {
@@ -77,10 +76,11 @@ type projectDebugExecution struct {
 type projectDebugTransport struct {
 	io.Reader
 	io.Writer
-	close   func() error
-	failure context.Context
-	once    sync.Once
-	err     error
+	close    func() error
+	failure  context.Context
+	readDone <-chan struct{}
+	once     sync.Once
+	err      error
 }
 
 func (transport *projectDebugTransport) Close() error {
@@ -201,7 +201,7 @@ func (runtime *projectDebugRuntime) launch(
 	var listener net.Listener
 	var transport *projectDebugTransport
 	var cmd *exec.Cmd
-	var stdout *projectDebugOutput
+	var stdout *io.PipeWriter
 	fail := func(launchErr error) (*projectDebugExecution, *projectDebugTransport, error) {
 		if listener != nil {
 			_ = listener.Close()
@@ -209,7 +209,7 @@ func (runtime *projectDebugRuntime) launch(
 		if transport != nil {
 			launchErr = errors.Join(launchErr, transport.Close())
 		} else if stdout != nil {
-			launchErr = errors.Join(launchErr, stdout.detach())
+			launchErr = errors.Join(launchErr, stdout.Close())
 		}
 		if execution.handle.Pid > 0 {
 			launchErr = errors.Join(launchErr, execution.stop())
@@ -260,15 +260,16 @@ func (runtime *projectDebugRuntime) launch(
 		logger.RESOURCE_LOG_STREAM_ID, project.GetResourceId(), "Project", project.NamespacedName(), "Execution", string(id))}
 	cmd.Stderr = diagnostic
 	if mode == apiv2.DebugAdapterModeStdio {
-		stdout = newProjectDebugOutput(projectDebugOutputLimit)
 		stdin, stdinErr := cmd.StdinPipe()
 		if stdinErr != nil {
 			return fail(stdinErr)
 		}
+		reader, output := io.Pipe()
+		stdout = output
 		cmd.Stdout = stdout
-		transport = &projectDebugTransport{Reader: stdout.reader, Writer: stdin, failure: stdout.failure, close: func() error {
+		transport = &projectDebugTransport{Reader: reader, Writer: stdin, close: func() error {
 			var closeErrors error
-			closeErrors = errors.Join(closeErrors, stdout.detach())
+			closeErrors = errors.Join(closeErrors, stdout.Close(), reader.Close())
 			// Executor admission can fail before exec.Cmd.Start takes ownership of its child-side pipe.
 			for _, closer := range []io.Closer{stdin, cmd.Stdin.(io.Closer)} {
 				closeErr := closer.Close()
@@ -356,13 +357,13 @@ func (runtime *projectDebugRuntime) launchContainer(
 	setupCtx, executionCtx context.Context, project *apiv2.Project, execution *projectDebugExecution,
 ) (*projectDebugExecution, *projectDebugTransport, error) {
 	var transport *projectDebugTransport
-	var stdout *projectDebugOutput
+	var stdout *io.PipeWriter
 	started := false
 	fail := func(launchErr error) (*projectDebugExecution, *projectDebugTransport, error) {
 		if transport != nil {
 			launchErr = errors.Join(launchErr, transport.Close())
 		} else if stdout != nil {
-			launchErr = errors.Join(launchErr, stdout.detach())
+			launchErr = errors.Join(launchErr, stdout.Close())
 		}
 		if started {
 			launchErr = errors.Join(launchErr, execution.stop())
@@ -391,13 +392,6 @@ func (runtime *projectDebugRuntime) launchContainer(
 	if orchestrator == nil {
 		return fail(fmt.Errorf("selected container runtime returned no exec implementation"))
 	}
-	current, currentErr := runtime.currentProject(setupCtx, project)
-	if currentErr != nil {
-		return fail(currentErr)
-	}
-	if current.Status.Debug == nil || !current.Status.Debug.PrerequisitesReady {
-		return fail(fmt.Errorf("project container prerequisites changed before adapter execution"))
-	}
 	var environment []containers.EnvVar
 	for _, entry := range project.Spec.DebugAdapter.Env {
 		environment = append(environment, containers.EnvVar{Name: entry.Name, Value: entry.Value})
@@ -410,14 +404,15 @@ func (runtime *projectDebugRuntime) launchContainer(
 		StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: usvc_io.NopWriteCloser(diagnostic), StdErrStream: usvc_io.NopWriteCloser(diagnostic)},
 	}
 	if project.Spec.DebugAdapter.EffectiveMode() == apiv2.DebugAdapterModeStdio {
-		stdout = newProjectDebugOutput(projectDebugOutputLimit)
 		stdin, input, pipeErr := os.Pipe()
 		if pipeErr != nil {
 			return fail(fmt.Errorf("create container adapter input pipe: %w", pipeErr))
 		}
+		reader, output := io.Pipe()
+		stdout = output
 		options.StdInStream, options.StdOutStream = stdin, stdout
-		transport = &projectDebugTransport{Reader: stdout.reader, Writer: input, failure: stdout.failure, close: func() error {
-			closeErrors := stdout.detach()
+		transport = &projectDebugTransport{Reader: reader, Writer: input, close: func() error {
+			closeErrors := errors.Join(stdout.Close(), reader.Close())
 			for _, closer := range []io.Closer{stdin, input} {
 				closeErr := closer.Close()
 				if !errors.Is(closeErr, os.ErrClosed) && !errors.Is(closeErr, io.ErrClosedPipe) {

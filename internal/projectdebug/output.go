@@ -16,55 +16,30 @@ import (
 // Allow eight maximum-sized DAP messages of unread output before failing a stalled session.
 const projectDebugOutputLimit = 64 * 1024 * 1024
 
-// projectDebugOutput buffers adapter output without blocking on client consumption.
-// Overflow fails the session independently of the forwarding worker.
-type projectDebugOutput struct {
-	io.WriteCloser
-	reader  io.ReadCloser
-	failure context.Context
-	fail    context.CancelCauseFunc
-}
-
-func newProjectDebugOutput(limit uint) *projectDebugOutput {
-	reader, writer := usvc_io.NewBufferedPipeWithOverflowLimit(limit)
-	failure, fail := context.WithCancelCause(context.Background())
-	return &projectDebugOutput{reader: reader, WriteCloser: writer, failure: failure, fail: fail}
-}
-
-func (output *projectDebugOutput) Write(payload []byte) (int, error) {
-	count, writeErr := output.WriteCloser.Write(payload)
-	if errors.Is(writeErr, usvc_io.ErrBufferFull) {
-		output.fail(writeErr)
-	}
-	return count, writeErr
-}
-
-func (output *projectDebugOutput) detach() error {
-	return errors.Join(output.Close(), output.reader.Close())
-}
-
-// bufferProjectDebugTransport applies the same output policy to network adapter connections.
+// bufferProjectDebugTransport consumes stdio and network output with one bounded session policy.
+// Upstream completion starts final-output draining independently of execution lifetime.
 func bufferProjectDebugTransport(transport *projectDebugTransport) *projectDebugTransport {
-	output := newProjectDebugOutput(projectDebugOutputLimit)
+	reader, writer := usvc_io.NewBufferedPipeWithOverflowLimit(projectDebugOutputLimit)
+	failure, fail := context.WithCancelCause(context.Background())
 	done := make(chan struct{})
 	stopping := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, copyErr := io.Copy(output, transport.Reader)
+		_, copyErr := io.Copy(writer, transport.Reader)
 		if copyErr != nil {
 			select {
 			case <-stopping:
 			default:
-				output.fail(copyErr)
+				fail(copyErr)
 			}
 		}
-		_ = output.Close()
+		_ = writer.Close()
 	}()
 	return &projectDebugTransport{
-		Reader: output.reader, Writer: transport.Writer, failure: output.failure,
+		Reader: reader, Writer: transport.Writer, failure: failure, readDone: done,
 		close: func() error {
 			close(stopping)
-			closeErr := errors.Join(transport.Close(), output.detach())
+			closeErr := errors.Join(transport.Close(), writer.Close(), reader.Close())
 			<-done
 			return closeErr
 		},

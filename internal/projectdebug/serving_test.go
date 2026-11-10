@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -746,6 +747,74 @@ func TestProjectDebugServingFencesUnconfirmedCleanup(t *testing.T) {
 	require.Len(t, executor.FindAll([]string{"test-adapter"}, "", nil), 1)
 }
 
+// Verifies that closing one shared-provider TCP connection bounds final output to a slow client
+// without stopping the provider or disrupting a sibling session.
+func TestProjectDebugServingSharedConnectionEOFBoundsDrain(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	apiClient, config, executor := startDebugServingTest(t, ctx)
+	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen")
+	first, firstErr := connectDebugServing(ctx, config, project)
+	require.NoError(t, firstErr)
+	defer first.Close()
+	second, secondErr := connectDebugServing(ctx, config, project)
+	require.NoError(t, secondErr)
+	defer second.Close()
+	exchangeDebugBytes(t, ctx, first)
+	exchangeDebugBytes(t, ctx, second)
+	secured, securedOK := first.UnderlyingConn().(*tls.Conn)
+	require.True(t, securedOK)
+	socket, socketOK := secured.NetConn().(*net.TCPConn)
+	require.True(t, socketOK)
+	require.NoError(t, socket.SetReadBuffer(1024))
+	deadline, hasDeadline := ctx.Deadline()
+	require.True(t, hasDeadline)
+	require.NoError(t, first.SetWriteDeadline(deadline))
+	var frame bytes.Buffer
+	payload, encodeErr := json.Marshal(strings.Repeat("x", 7*1024*1024))
+	require.NoError(t, encodeErr)
+	require.NoError(t, dap.WriteMessage(&frame, dap.Message{
+		"seq": json.RawMessage("71"), "type": json.RawMessage(`"request"`),
+		"command": json.RawMessage(`"customExtension"`), "arguments": payload,
+	}))
+	require.NoError(t, first.WriteMessage(websocket.BinaryMessage, frame.Bytes()))
+	frame.Reset()
+	require.NoError(t, dap.WriteMessage(&frame, dap.Message{
+		"seq": json.RawMessage("72"), "type": json.RawMessage(`"request"`),
+		"command": json.RawMessage(`"disconnect"`), "arguments": json.RawMessage(`{}`),
+	}))
+	require.NoError(t, first.WriteMessage(websocket.BinaryMessage, frame.Bytes()))
+	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+		current := &apiv2.Project{}
+		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
+			return false, getErr
+		}
+		if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 2 || len(current.Status.Debug.Executions) != 1 {
+			return false, nil
+		}
+		var failed, running int
+		for _, session := range current.Status.Debug.Sessions {
+			if session.Phase == apiv2.ProjectDebugPhaseFailed {
+				require.NotEmpty(t, session.Conditions)
+				require.Contains(t, session.Conditions[0].Message, "output drain timed out")
+				failed++
+			} else if session.Phase == apiv2.ProjectDebugPhaseRunning {
+				running++
+			}
+		}
+		return failed == 1 && running == 1 && current.Status.Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseRunning, nil
+	}))
+	exchangeDebugBytes(t, ctx, second)
+	executions := executor.FindAll([]string{"test-adapter"}, "", nil)
+	require.Len(t, executions, 1)
+	handle := process.NewHandle(executions[0].PID, executions[0].StartedAt)
+	require.NoError(t, executor.CheckProcessRunning(handle))
+	closeDebugServing(t, second)
+	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
+		return process.IsProcessGoneErr(executor.CheckProcessRunning(handle)), nil
+	}))
+}
+
 // Verifies that the actual debug subresource launches per-stream stdio/callback adapters or one
 // shared TCP-connect provider, relays unmodified DAP bytes, and cleans the provider only on final release.
 func TestProjectDebugServingTransportsAndSharing(t *testing.T) {
@@ -1096,6 +1165,9 @@ func TestProjectDebugServingContainerAdapters(t *testing.T) {
 						[]byte(`{"status":{"containerID":"replacement"}}`))); patchErr != nil {
 						return nil, patchErr
 					}
+					<-lookupCtx.Done()
+					require.ErrorContains(t, context.Cause(lookupCtx), "prepared container identity changed")
+					return nil, lookupCtx.Err()
 				}
 				return containerExec, nil
 			}

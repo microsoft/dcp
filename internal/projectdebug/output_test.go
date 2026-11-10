@@ -33,54 +33,6 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that projectDebugOutput rejects writes after detach rather than silently discarding them.
-func TestProjectDebugOutputDetachClosesProducer(t *testing.T) {
-	t.Parallel()
-	output := newProjectDebugOutput(projectDebugOutputLimit)
-	defer func() { require.NoError(t, output.detach()) }()
-	_, initialErr := output.Write([]byte("pending"))
-	require.NoError(t, initialErr)
-	require.NoError(t, output.detach())
-	count, writeErr := output.Write([]byte("closed"))
-	require.ErrorIs(t, writeErr, io.ErrClosedPipe)
-	require.Zero(t, count)
-	require.NoError(t, output.detach())
-}
-
-// Verifies that projectDebugOutput accepts exactly 64 MiB of unread data without a consumer,
-// then signals overflow independently of reads and preserves the failure after closure.
-func TestProjectDebugOutputOverflowLimit(t *testing.T) {
-	output := newProjectDebugOutput(projectDebugOutputLimit)
-	defer func() { require.NoError(t, output.detach()) }()
-	chunk := bytes.Repeat([]byte("x"), 64*1024)
-	for written := 0; written < 64*1024*1024; written += len(chunk) {
-		count, writeErr := output.Write(chunk)
-		require.NoError(t, writeErr)
-		require.Equal(t, len(chunk), count)
-	}
-	require.NoError(t, output.failure.Err())
-	count, overflowErr := output.Write([]byte("x"))
-	require.Zero(t, count)
-	require.ErrorIs(t, overflowErr, usvc_io.ErrBufferFull)
-	require.ErrorIs(t, context.Cause(output.failure), usvc_io.ErrBufferFull)
-	require.NoError(t, output.Close())
-	_, readErr := output.reader.Read(chunk)
-	require.ErrorIs(t, readErr, usvc_io.ErrBufferFull)
-}
-
-// Verifies that normal adapter completion preserves every buffered stdout byte before EOF.
-func TestProjectDebugOutputCompletionDrains(t *testing.T) {
-	t.Parallel()
-	output := newProjectDebugOutput(projectDebugOutputLimit)
-	defer func() { require.NoError(t, output.detach()) }()
-	_, writeErr := output.Write([]byte("final DAP results"))
-	require.NoError(t, writeErr)
-	require.NoError(t, output.Close())
-	payload, readErr := io.ReadAll(output.reader)
-	require.NoError(t, readErr)
-	require.Equal(t, "final DAP results", string(payload))
-}
-
 // Verifies that network adapter buffering fails independently of downstream reads on overflow,
 // joins its reader on close, and preserves ordinary buffered output through EOF.
 func TestProjectDebugNetworkOutputBuffer(t *testing.T) {
@@ -146,6 +98,68 @@ func (writer *blockedDebugForwardingWriter) Write([]byte) (int, error) {
 	return 0, io.ErrClosedPipe
 }
 
+// Verifies that the common stdio/TCP buffer bounds blocked final-output forwarding on upstream
+// EOF even while the adapter execution remains live.
+func TestProjectDebugConnectionEOFFinishesBlockedSession(t *testing.T) {
+	t.Parallel()
+	for _, stdio := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stdio=%t", stdio), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			defer cancel()
+			var source io.ReadCloser
+			var upstream io.WriteCloser
+			if stdio {
+				source, upstream = io.Pipe()
+			} else {
+				source, upstream = net.Pipe()
+			}
+			transport := bufferProjectDebugTransport(&projectDebugTransport{
+				Reader: source, Writer: io.Discard, close: source.Close,
+			})
+			defer transport.Close()
+			defer upstream.Close()
+			executionDone := make(chan struct{})
+			input, inputWriter := io.Pipe()
+			defer inputWriter.Close()
+			blocked := &blockedDebugForwardingWriter{entered: make(chan struct{}), closed: make(chan struct{})}
+			client := &projectDebugTransport{Reader: input, Writer: blocked, close: func() error {
+				close(blocked.closed)
+				return input.Close()
+			}}
+			defer client.Close()
+			completed := make(chan error, 1)
+			go func() {
+				completed <- dap.Bridge(ctx,
+					&debugDAPTransport{reader: bufio.NewReader(client), writer: client, close: client.Close},
+					&debugDAPTransport{reader: bufio.NewReader(transport), writer: transport, close: transport.Close},
+					executionDone, transport.readDone, apiv2.ProjectDebugShutdownGrace, nil)
+			}()
+			require.NoError(t, dap.WriteMessage(upstream, dap.Message{
+				"seq": json.RawMessage("1"), "type": json.RawMessage(`"event"`),
+				"event": json.RawMessage(`"terminated"`),
+			}))
+			select {
+			case <-blocked.entered:
+			case <-ctx.Done():
+				t.Fatal("final output did not reach blocked client")
+			}
+			require.NoError(t, upstream.Close())
+			select {
+			case bridgeErr := <-completed:
+				require.ErrorContains(t, bridgeErr, "output drain timed out")
+			case <-ctx.Done():
+				t.Fatal("connection EOF left final output blocked")
+			}
+			select {
+			case <-executionDone:
+				t.Fatal("session completion ended its shared execution")
+			default:
+			}
+		})
+	}
+}
+
 // Verifies that host and container-exec output allows independent completion under backpressure,
 // and that overflow fails a blocked session and permits execution cleanup without client reads.
 // The childless echo fixture may exit during tree enumeration; its captured identity must still be gone.
@@ -180,16 +194,8 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 					project.Status.ContainerID, project.Status.ContainerRuntime = "native-cli-target", "native-cli-runtime"
 					project.Status.Debug = &apiv2.ProjectDebugStatus{PrerequisitesReady: true}
 					require.NoError(t, apiClient.Status().Update(ctx, project))
-					debugRuntime.currentProject = func(currentCtx context.Context, expected *apiv2.Project) (*apiv2.Project, error) {
-						current := &apiv2.Project{}
-						if currentErr := apiClient.Get(currentCtx, expected.NamespacedName(), current); currentErr != nil {
-							return nil, currentErr
-						}
-						require.Equal(t, expected.UID, current.UID)
-						return current, nil
-					}
 					containerExec := &containerAdapterExecutor{run: func(execCtx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
-						require.IsType(t, (*projectDebugOutput)(nil), options.StdOutStream)
+						require.IsType(t, (*io.PipeWriter)(nil), options.StdOutStream)
 						cmd := exec.Command(options.Command, options.Args...)
 						cmd.Stdin, cmd.Stdout, cmd.Stderr = options.StdInStream, options.StdOutStream, options.StdErrStream
 						exits := make(chan int32, 1)
@@ -210,6 +216,7 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 				}
 				execution, adapterStream, launchErr := debugRuntime.launch(ctx, project, apiv2.DebugAdapterModeStdio)
 				require.NoError(t, launchErr)
+				adapterStream = bufferProjectDebugTransport(adapterStream)
 				if placement == apiv2.DebugAdapterPlacementHost {
 					adapterHandle = execution.handle
 				}
@@ -242,7 +249,7 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 				defer stopOutputFailure()
 				go func() {
 					defer close(completed)
-					completed <- dap.Bridge(bridgeCtx, client, adapter, execution.done, apiv2.ProjectDebugShutdownGrace, nil)
+					completed <- dap.Bridge(bridgeCtx, client, adapter, execution.done, adapterStream.readDone, apiv2.ProjectDebugShutdownGrace, nil)
 				}()
 				t.Cleanup(func() {
 					_ = clientStream.Close()
