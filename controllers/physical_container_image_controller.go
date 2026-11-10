@@ -351,7 +351,7 @@ func handlePhysicalContainerImageResolve(
 		return noChange
 	}
 	if data.imageID != "" {
-		return reconciler.inspectPhysicalContainerImageOperationResult(ctx, data, log)
+		return reconciler.capturePhysicalContainerImageInspectionResult(ctx, data, log)
 	}
 
 	data.state = physicalContainerImageStateResolve
@@ -391,7 +391,7 @@ func handlePhysicalContainerImageOperation(
 		return handleUnknownPhysicalContainerImageState(ctx, reconciler, image, state, data, log)
 	}
 
-	return reconciler.inspectPhysicalContainerImageOperationResult(ctx, data, log)
+	return reconciler.capturePhysicalContainerImageInspectionResult(ctx, data, log)
 }
 
 func handlePhysicalContainerImageReady(
@@ -403,7 +403,7 @@ func handlePhysicalContainerImageReady(
 	log logr.Logger,
 ) objectChange {
 	if data.imageID != "" {
-		return reconciler.inspectPhysicalContainerImageOperationResult(ctx, data, log)
+		return reconciler.capturePhysicalContainerImageInspectionResult(ctx, data, log)
 	}
 
 	data.state = physicalContainerImageStateResolve
@@ -421,15 +421,15 @@ func handlePhysicalContainerImageUnknown(
 		data.state = physicalContainerImageStateResolve
 		return additionalReconciliationNeeded
 	}
-	return reconciler.inspectPhysicalContainerImageOperationResult(ctx, data, log)
+	return reconciler.capturePhysicalContainerImageInspectionResult(ctx, data, log)
 }
 
-func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperationResult(
+func (r *PhysicalContainerImageReconciler) capturePhysicalContainerImageInspectionResult(
 	ctx context.Context,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
-	inspectedImage, inspectErr := r.inspectPhysicalContainerImageOnce(ctx, data, data.imageID, !data.imageIDVerified)
+	inspectedImage, inspectErr := r.inspectPhysicalContainerImage(ctx, data, data.imageID, !data.imageIDVerified, log)
 	if ctx.Err() != nil {
 		return noChange
 	}
@@ -456,7 +456,7 @@ func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperatio
 		return noChange
 	}
 	if inspectErr != nil {
-		log.Error(inspectErr, "Failed to inspect completed PhysicalContainerImage operation", "ImageID", data.imageID)
+		log.Error(inspectErr, "Failed to inspect PhysicalContainerImage", "ImageID", data.imageID)
 		data.state = physicalContainerImageStateInspectFailed
 		data.failureMessage = fmt.Sprintf("Failed to inspect image: %v", inspectErr)
 		return noChange
@@ -467,7 +467,7 @@ func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperatio
 	data.digest = inspectedImage.Digest
 	data.tags = slices.Clone(inspectedImage.Tags)
 	data.failureMessage = ""
-	log.V(1).Info("PhysicalContainerImage operation completed; saving image status", "ImageID", data.imageID)
+	log.V(1).Info("PhysicalContainerImage inspection completed; saving image status", "ImageID", data.imageID)
 	return noChange
 }
 
@@ -1202,58 +1202,35 @@ func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImage(
 	ctx context.Context, data *physicalContainerImageData, image string, retryNotFound bool, log logr.Logger,
 ) (*containers.InspectedImage, error) {
 	return resiliency.RetryGet(ctx, backoff.NewConstantBackOff(imageInspectionRetryInterval), func() (*containers.InspectedImage, error) {
-		inspected, inspectErr := r.inspectPhysicalContainerImageOnce(ctx, data, image, retryNotFound)
-		if inspectErr == nil {
-			return inspected, nil
+		inspectedImages, inspectErr := r.orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
+			Images: []string{image},
+		})
+		if inspectErr == nil && len(inspectedImages) == 0 {
+			inspectErr = containers.ErrNotFound
 		}
-		if ctx.Err() != nil || errors.Is(inspectErr, containers.ErrRuntimeNotHealthy) ||
-			errors.Is(inspectErr, errPhysicalContainerImageInspectionExhausted) ||
+		if inspectErr == nil {
+			data.inspectionFailures, data.inspectionFailureReason = 0, ""
+			return &inspectedImages[0], nil
+		}
+		if ctx.Err() != nil {
+			return nil, resiliency.Permanent(ctx.Err())
+		}
+		if errors.Is(inspectErr, containers.ErrRuntimeNotHealthy) ||
 			(errors.Is(inspectErr, containers.ErrNotFound) && !retryNotFound) {
 			return nil, resiliency.Permanent(inspectErr)
 		}
-		log.V(1).Info("Image inspection failed, retrying", "Image", image, "Attempt", data.inspectionFailures, "Error", inspectErr)
-		return inspected, inspectErr
-	})
-}
-
-func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOnce(
-	ctx context.Context, data *physicalContainerImageData, image string, countNotFound bool,
-) (*containers.InspectedImage, error) {
-	inspected, inspectErr := inspectPhysicalContainerImage(ctx, r.orchestrator, image)
-	if inspectErr == nil {
-		data.inspectionFailures, data.inspectionFailureReason = 0, ""
-		return inspected, nil
-	}
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	if errors.Is(inspectErr, containers.ErrRuntimeNotHealthy) || (errors.Is(inspectErr, containers.ErrNotFound) && !countNotFound) {
-		return nil, inspectErr
-	}
-	data.inspectionFailures++
-	if data.inspectionFailures > imageInspectionRetryLimit {
-		data.inspectionFailureReason = apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed
-		if errors.Is(inspectErr, containers.ErrNotFound) {
-			data.inspectionFailureReason = apiv2.PhysicalContainerImageReasonLocalImageNotFound
+		data.inspectionFailures++
+		if data.inspectionFailures > imageInspectionRetryLimit {
+			data.inspectionFailureReason = apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed
+			if errors.Is(inspectErr, containers.ErrNotFound) {
+				data.inspectionFailureReason = apiv2.PhysicalContainerImageReasonLocalImageNotFound
+			}
+			return nil, resiliency.Permanent(fmt.Errorf("inspect image %q failed after %d attempts: %w",
+				image, data.inspectionFailures, errors.Join(errPhysicalContainerImageInspectionExhausted, inspectErr)))
 		}
-		return nil, fmt.Errorf("inspect image %q failed after %d attempts: %w",
-			image, data.inspectionFailures, errors.Join(errPhysicalContainerImageInspectionExhausted, inspectErr))
-	}
-	return nil, inspectErr
-}
-
-func inspectPhysicalContainerImage(ctx context.Context, orchestrator containers.ImageOrchestrator, image string) (*containers.InspectedImage, error) {
-	inspectedImages, inspectErr := orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
-		Images: []string{image},
-	})
-	if inspectErr != nil {
+		log.V(1).Info("Image inspection failed, retrying", "Image", image, "Attempt", data.inspectionFailures, "Error", inspectErr)
 		return nil, inspectErr
-	}
-	if len(inspectedImages) == 0 {
-		return nil, containers.ErrNotFound
-	}
-
-	return &inspectedImages[0], nil
+	})
 }
 
 func physicalContainerImageOutputTag(image *apiv2.PhysicalContainerImage) string {
