@@ -740,29 +740,32 @@ func (r *LogicalContainerTunnelProxyReconciler) observeTunnelPair(
 		data.failMissing(strings.Join(missing, " "))
 		return change, false
 	}
-	if !observeTunnelContainer(container, data) {
-		return change, false
-	}
-	if !server.DeletionTimestamp.IsZero() {
+	switch {
+	case !container.DeletionTimestamp.IsZero():
+		data.failMissing("The owned PhysicalContainer is being deleted.")
+	case !server.DeletionTimestamp.IsZero():
 		data.failMissing("The owned PhysicalProcess is being deleted.")
-		return change, false
-	}
-	switch server.Status.Phase {
-	case apiv2.PhysicalProcessPhaseExited:
+	case container.Status.Phase == apiv2.PhysicalContainerPhaseExited:
+		data.stopAfterExit(tunnelBackingExitMessage("Client container", container.Status.ExitCode))
+	case container.Status.Phase == apiv2.PhysicalContainerPhaseFailed:
+		data.failMissing("Client container is unavailable: " + physicalResourceStatusMessage(container.Status.Conditions))
+	case server.Status.Phase == apiv2.PhysicalProcessPhaseExited:
 		data.stopAfterExit(tunnelBackingExitMessage("Host server process", server.Status.ExitCode))
-		return change, false
-	case apiv2.PhysicalProcessPhaseFailed:
+	case server.Status.Phase == apiv2.PhysicalProcessPhaseFailed:
 		data.failMissing("Host server process is unavailable: " + physicalResourceStatusMessage(server.Status.Conditions))
-		return change, false
-	case apiv2.PhysicalProcessPhaseRunning:
-		return change, true
-	case apiv2.PhysicalProcessPhaseUnknown:
+	case container.Status.Phase == apiv2.PhysicalContainerPhaseUnknown:
+		data.state, data.reason, data.message = logicalTunnelProxyUnknown, apiv2.LogicalContainerTunnelProxyReasonLookupFailed,
+			"Client container state is unknown: "+physicalResourceStatusMessage(container.Status.Conditions)
+	case server.Status.Phase == apiv2.PhysicalProcessPhaseUnknown:
 		data.state, data.reason, data.message = logicalTunnelProxyUnknown, apiv2.LogicalContainerTunnelProxyReasonLookupFailed,
 			"Server process state is unknown: "+physicalResourceStatusMessage(server.Status.Conditions)
-		return change, false
-	default:
-		return change, false
+	case container.Status.Phase == apiv2.PhysicalContainerPhasePaused && server.Status.Phase == apiv2.PhysicalProcessPhaseRunning:
+		data.state, data.reason, data.message = logicalTunnelProxyRunning, apiv2.LogicalContainerTunnelProxyReasonPaused,
+			"The client container is paused."
+	case container.Status.Phase == apiv2.PhysicalContainerPhaseRunning && server.Status.Phase == apiv2.PhysicalProcessPhaseRunning:
+		return change, container.Status.ContainerID != ""
 	}
+	return change, false
 }
 
 func handleLogicalTunnelProxyRunning(

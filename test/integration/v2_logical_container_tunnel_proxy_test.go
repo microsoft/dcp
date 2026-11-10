@@ -186,30 +186,61 @@ func TestV2LogicalContainerTunnelProxyLifecycle(t *testing.T) {
 	require.NoError(t, server.Client.Get(ctx, clientService.NamespacedName(), &apiv2.LogicalService{}))
 }
 
-// Verifies that LogicalContainerTunnelProxy reports Exited with Completed, withdraws endpoints, and stops its peer backing after the server process exits.
+// Verifies that LogicalContainerTunnelProxy observes server exit while its client is running, paused, or unknown,
+// reports Exited with Completed, withdraws endpoints, and stops the client backing.
 func TestV2LogicalContainerTunnelProxyServerExit(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-	server, environment, proxy := startLogicalTunnelApplication(t, ctx, TestEnvironmentOptions{})
-	require.NoError(t, server.Client.Create(ctx, proxy))
-	running := waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseRunning && len(current.Status.TunnelStatuses) > 0, nil
-	})
-	pid, pidErr := process.Int64_ToPidT(*running.Status.PID)
-	require.NoError(t, pidErr)
-	environment.SimulateProcessExit(t, pid, 1)
-	waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
-		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseExited && condition != nil &&
-			condition.Reason == string(apiv2.LogicalContainerTunnelProxyReasonCompleted) &&
-			strings.Contains(condition.Message, "Host server process exited with code 1") &&
-			current.Status.TunnelStatuses[0].State == apiv2.LogicalContainerTunnelStateFailed, nil
-	})
-	waitObjectAssumesStateEx(t, ctx, server.Client, types.NamespacedName{Namespace: proxy.Namespace, Name: running.Status.PhysicalContainerRef},
-		func(current *apiv2.PhysicalContainer) (bool, error) { return current.Spec.Stop, nil })
-	require.NoError(t, server.Client.Delete(ctx, proxy))
-	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, proxy)
+	for _, scenario := range []string{"running", "paused", "unknown"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			server, environment, proxy := startLogicalTunnelApplication(t, ctx, TestEnvironmentOptions{})
+			require.NoError(t, server.Client.Create(ctx, proxy))
+			running := waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
+				return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseRunning &&
+					len(current.Status.TunnelStatuses) == 1 && current.Status.TunnelStatuses[0].State == apiv2.LogicalContainerTunnelStateReady, nil
+			})
+			endpoint := waitObjectAssumesStateEx(t, ctx, server.Client,
+				types.NamespacedName{Namespace: proxy.Namespace, Name: "logical-" + string(proxy.UID) + "-http"},
+				func(current *apiv2.ServiceEndpoint) (bool, error) { return len(current.Spec.Addresses) > 0, nil })
+			if scenario != "running" {
+				runtime := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+				clientState, expectedReason := containers.ContainerStatusPaused, apiv2.LogicalContainerTunnelProxyReasonPaused
+				if scenario == "unknown" {
+					clientState, expectedReason = containers.ContainerStatus("test-unrecognized"), apiv2.LogicalContainerTunnelProxyReasonLookupFailed
+				}
+				require.NoError(t, runtime.SimulateContainerStatus(ctx, running.Status.ContainerID, clientState))
+				waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
+					return tunnelProxyReadyReason(current) == expectedReason, nil
+				})
+			}
+			pid, pidErr := process.Int64_ToPidT(*running.Status.PID)
+			require.NoError(t, pidErr)
+			environment.SimulateProcessExit(t, pid, 1)
+			waitObjectAssumesStateEx(t, ctx, server.Client, types.NamespacedName{Namespace: proxy.Namespace, Name: running.Status.PhysicalContainerRef},
+				func(current *apiv2.PhysicalContainer) (bool, error) { return current.Spec.Stop, nil })
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, endpoint)
+			if scenario != "running" {
+				waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
+					condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+					return tunnelProxyReadyReason(current) == apiv2.LogicalContainerTunnelProxyReasonStopping && condition != nil &&
+						strings.Contains(condition.Message, "Host server process exited with code 1"), nil
+				})
+				// The test runtime only auto-stops running containers.
+				runtime := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+				require.NoError(t, runtime.SimulateContainerExit(ctx, running.Status.ContainerID, 0))
+			}
+			waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
+				condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+				return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseExited && condition != nil &&
+					condition.Reason == string(apiv2.LogicalContainerTunnelProxyReasonCompleted) &&
+					strings.Contains(condition.Message, "Host server process exited with code 1") &&
+					current.Status.TunnelStatuses[0].State == apiv2.LogicalContainerTunnelStateFailed, nil
+			})
+			require.NoError(t, server.Client.Delete(ctx, proxy))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, proxy)
+		})
+	}
 }
 
 type tunnelImageDeletionClient struct {
@@ -667,8 +698,9 @@ type tunnelChildVisibilityClient struct {
 	hidden           atomic.Bool
 	lookupError      atomic.Bool
 	lookupFailures   atomic.Uint32
-	creates          atomic.Uint32
+	createdOnce      atomic.Bool
 	created          chan ctrl_client.Object
+	hiddenChild      chan struct{}
 }
 
 func (boundary *tunnelChildVisibilityClient) Create(ctx context.Context, object ctrl_client.Object, options ...ctrl_client.CreateOption) error {
@@ -678,10 +710,6 @@ func (boundary *tunnelChildVisibilityClient) Create(ctx context.Context, object 
 	owner := metav1.GetControllerOf(object)
 	target := owner != nil && owner.Kind == "LogicalContainerTunnelProxy" &&
 		((isImage && boundary.kind == "image") || (isContainer && boundary.kind == "container") || (isProcess && boundary.kind == "process"))
-	var attempt uint32
-	if target {
-		attempt = boundary.creates.Add(1)
-	}
 	createErr := boundary.Client.Create(ctx, object, options...)
 	if createErr != nil || !target || !boundary.hidden.Load() {
 		return createErr
@@ -690,7 +718,7 @@ func (boundary *tunnelChildVisibilityClient) Create(ctx context.Context, object 
 	if isImage || boundary.undecodedProcess {
 		object.SetUID("")
 	}
-	if attempt == 1 {
+	if boundary.createdOnce.CompareAndSwap(false, true) {
 		boundary.created <- committed
 	}
 	if isProcess && !boundary.undecodedProcess {
@@ -712,26 +740,36 @@ func (boundary *tunnelChildVisibilityClient) List(ctx context.Context, objects c
 	if listOptions.FieldSelector == nil {
 		return nil
 	}
+	childHidden := false
 	switch children := objects.(type) {
 	case *apiv2.PhysicalContainerList:
 		if boundary.kind == "container" || boundary.kind == "all" {
+			childHidden = len(children.Items) > 0
 			children.Items = nil
 		}
 	case *apiv2.PhysicalContainerImageList:
 		if boundary.kind == "image" || boundary.kind == "all" {
+			childHidden = len(children.Items) > 0
 			children.Items = nil
 		}
 	case *apiv2.PhysicalProcessList:
 		if boundary.kind == "process" || boundary.kind == "all" {
+			childHidden = len(children.Items) > 0
 			children.Items = nil
+		}
+	}
+	if childHidden {
+		select {
+		case boundary.hiddenChild <- struct{}{}:
+		default:
 		}
 	}
 	return nil
 }
 
-// Verifies that an undecoded image create delays container declaration and known container/process UIDs prevent duplicate creation during cache lag.
-// After a successful process declaration without a decoded UID, Starting only observes the child and never reissues Create.
-func TestV2LogicalContainerTunnelProxyWaitsForBackingIdentity(t *testing.T) {
+// Verifies that LogicalContainerTunnelProxy reaches Running with its original owned backings after delayed visibility
+// or incomplete Create responses, without duplicate physical resources, and remains deletable.
+func TestV2LogicalContainerTunnelProxyRecoversBackingVisibility(t *testing.T) {
 	for _, scenario := range []struct {
 		name             string
 		kind             string
@@ -750,7 +788,7 @@ func TestV2LogicalContainerTunnelProxyWaitsForBackingIdentity(t *testing.T) {
 			server, _, proxy := startLogicalTunnelApplication(t, ctx, TestEnvironmentOptions{
 				DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
 					boundary = &tunnelChildVisibilityClient{Client: client, kind: scenario.kind, undecodedProcess: scenario.undecodedProcess,
-						created: make(chan ctrl_client.Object, 1)}
+						created: make(chan ctrl_client.Object, 1), hiddenChild: make(chan struct{}, 1)}
 					boundary.hidden.Store(true)
 					return boundary
 				},
@@ -763,33 +801,25 @@ func TestV2LogicalContainerTunnelProxyWaitsForBackingIdentity(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("physical child was not created")
 			}
-			expectedChild := "PhysicalContainerImage"
-			switch scenario.kind {
-			case "container":
-				expectedChild = "PhysicalContainer"
-			case "process":
-				expectedChild = "PhysicalProcess"
-			}
-			waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
-				condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-				return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhasePending && condition != nil &&
-					condition.Reason == string(apiv2.LogicalContainerTunnelProxyReasonStarting) && strings.Contains(condition.Message, expectedChild), nil
-			})
-			require.Equal(t, uint32(1), boundary.creates.Load())
-			if scenario.kind == "image" {
-				var containers apiv2.PhysicalContainerList
-				require.NoError(t, server.Client.List(ctx, &containers, ctrl_client.InNamespace(proxy.Namespace)))
-				require.Empty(t, containers.Items)
-				var processes apiv2.PhysicalProcessList
-				require.NoError(t, server.Client.List(ctx, &processes, ctrl_client.InNamespace(proxy.Namespace)))
-				require.Empty(t, processes.Items)
+			select {
+			case <-boundary.hiddenChild:
+			case <-ctx.Done():
+				t.Fatal("physical child visibility was not delayed")
 			}
 			boundary.hidden.Store(false)
 			waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseRunning, nil
+				return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseRunning &&
+					len(current.Status.TunnelStatuses) == 1 && current.Status.TunnelStatuses[0].State == apiv2.LogicalContainerTunnelStateReady, nil
 			})
-			if scenario.kind != "image" {
-				require.Equal(t, uint32(1), boundary.creates.Load())
+			recovered := committed.DeepCopyObject().(ctrl_client.Object)
+			require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(committed), recovered))
+			require.Equal(t, committed.GetUID(), recovered.GetUID())
+			require.True(t, metav1.IsControlledBy(recovered, proxy))
+			for _, list := range []ctrl_client.ObjectList{&apiv2.PhysicalContainerImageList{}, &apiv2.PhysicalContainerList{}, &apiv2.PhysicalProcessList{}} {
+				require.NoError(t, server.Client.List(ctx, list, ctrl_client.InNamespace(proxy.Namespace)))
+				backings, extractErr := apimeta.ExtractList(list)
+				require.NoError(t, extractErr)
+				require.Len(t, backings, 1)
 			}
 			require.NoError(t, server.Client.Delete(ctx, proxy))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, proxy)
