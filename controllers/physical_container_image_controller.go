@@ -214,16 +214,7 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 	}
 	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, image.GetResourceId())
-	if owner := metav1.GetControllerOf(&image); owner != nil &&
-		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainer" && owner.UID != "" {
-		logicalOwner := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}
-		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, logicalOwner.GetResourceId())
-		if forwardErr != nil {
-			log.Error(forwardErr, "Failed to attach logical container system log stream")
-		} else {
-			log = forwardedLog
-		}
-	}
+	log = withOwnerResourceLog(log, &image, r.Scheme())
 
 	r.imageData.RunDeferredOps(req.NamespacedName, &image)
 	_, data := r.imageData.BorrowByNamespacedName(image.NamespacedName())

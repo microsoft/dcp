@@ -114,6 +114,12 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.LogicalContainerPort{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalContainerPort(ref),
 		v2.LogicalContainerSpec{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalContainerSpec(ref),
 		v2.LogicalContainerStatus{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref),
+		v2.LogicalContainerTunnel{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_LogicalContainerTunnel(ref),
+		v2.LogicalContainerTunnelProxy{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_LogicalContainerTunnelProxy(ref),
+		v2.LogicalContainerTunnelProxyList{}.OpenAPIModelName():         schema_microsoft_dcp_api_v2_LogicalContainerTunnelProxyList(ref),
+		v2.LogicalContainerTunnelProxySpec{}.OpenAPIModelName():         schema_microsoft_dcp_api_v2_LogicalContainerTunnelProxySpec(ref),
+		v2.LogicalContainerTunnelProxyStatus{}.OpenAPIModelName():       schema_microsoft_dcp_api_v2_LogicalContainerTunnelProxyStatus(ref),
+		v2.LogicalContainerTunnelStatus{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_LogicalContainerTunnelStatus(ref),
 		v2.LogicalPortStatus{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v2_LogicalPortStatus(ref),
 		v2.LogicalProcess{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v2_LogicalProcess(ref),
 		v2.LogicalProcessConfig{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_LogicalProcessConfig(ref),
@@ -6028,6 +6034,395 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 		},
 		Dependencies: []string{
 			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerTunnel(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerTunnel connects a container-network listener to a host service.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name uniquely identifies the tunnel within the proxy.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"serverServiceRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ServerServiceRef identifies the host LogicalService using <name> or <namespace>/<name>. Cross-namespace references are not supported. Only TCP services are supported.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"clientServiceRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ClientServiceRef identifies the Proxyless LogicalService published on the container network. Uses <name> or <namespace>/<name>; cross-namespace references are not supported.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name", "serverServiceRef", "clientServiceRef"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerTunnelProxy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerTunnelProxy forwards connections from a container network to host services.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.LogicalContainerTunnelProxySpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.LogicalContainerTunnelProxyStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalContainerTunnelProxySpec{}.OpenAPIModelName(), v2.LogicalContainerTunnelProxyStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerTunnelProxyList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerTunnelProxyList contains logical container tunnel proxies.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalContainerTunnelProxy{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalContainerTunnelProxy{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerTunnelProxySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerTunnelProxySpec declares a proxy pair and its mutable tunnel collection.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"networkRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NetworkRef identifies a LogicalContainerNetwork using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"aliases": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Aliases are DNS names for the client proxy on the container network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"baseImage": {
+						SchemaProps: spec.SchemaProps{
+							Description: "BaseImage overrides the client proxy's base image, defaulting to mcr.microsoft.com/azurelinux/base/core:3.0.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"tunnels": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Tunnels can be added or removed; an existing tunnel definition cannot be changed.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalContainerTunnel{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"networkRef"},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalContainerTunnel{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerTunnelProxyStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerTunnelProxyStatus describes the proxy pair and its tunnels.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase summarizes proxy-pair availability.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"physicalContainerRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PhysicalContainerRef identifies the same-namespace client PhysicalContainer.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"physicalImageRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PhysicalImageRef identifies the same-namespace client PhysicalContainerImage.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"physicalProcessRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PhysicalProcessRef identifies the same-namespace server PhysicalProcess.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerID identifies the observed client runtime container.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"image": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Image is the observed client image reference.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PID identifies the observed host server process.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"tunnelStatuses": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "TunnelStatuses describes the tunnels currently managed by this proxy.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalContainerTunnelStatus{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"tunnelConfigurationVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TunnelConfigurationVersion increases when the observed tunnel configuration changes.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions report readiness and reconciliation diagnostics.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogicalContainerTunnelStatus{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_LogicalContainerTunnelStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "LogicalContainerTunnelStatus describes one container-to-host tunnel.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name matches the tunnel declaration.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"tunnelID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TunnelID identifies the prepared tunnel in dcptun.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"state": {
+						SchemaProps: spec.SchemaProps{
+							Description: "State describes listener availability.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"errorMessage": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ErrorMessage describes terminal preparation failure.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"clientProxyAddresses": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "ClientProxyAddresses are the listener addresses inside the container network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"clientProxyPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ClientProxyPort is the listener port inside the container network.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"timestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timestamp records the last tunnel status change.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"name", "state", "timestamp"},
+			},
+		},
+		Dependencies: []string{
+			metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 

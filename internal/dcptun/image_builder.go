@@ -52,7 +52,7 @@ type ClientProxyImageBuildPlan struct {
 
 // PrepareClientProxyImageBuild creates the build input for the shared tunnel proxy
 // PhysicalContainerImage.
-func PrepareClientProxyImageBuild(ctx context.Context, buildContextDir string) (ClientProxyImageBuildPlan, error) {
+func PrepareClientProxyImageBuild(ctx context.Context, buildContextDir string, baseImages ...string) (ClientProxyImageBuildPlan, error) {
 	if buildContextDir == "" {
 		return ClientProxyImageBuildPlan{}, fmt.Errorf("build context directory is required")
 	}
@@ -67,8 +67,19 @@ func PrepareClientProxyImageBuild(ctx context.Context, buildContextDir string) (
 		return ClientProxyImageBuildPlan{}, fmt.Errorf("failed to compute current executable hash: %w", hashErr)
 	}
 
+	baseImage := DefaultBaseImage
+	if len(baseImages) > 1 {
+		return ClientProxyImageBuildPlan{}, fmt.Errorf("at most one base image is supported")
+	}
+	if len(baseImages) == 1 && baseImages[0] != "" {
+		baseImage = baseImages[0]
+	}
 	imageName := clientProxyImageName(clientBinaryHash)
-	dockerfileContent := clientProxyDockerfileContent()
+	if baseImage != DefaultBaseImage {
+		baseHash := sha256.Sum256([]byte(baseImage))
+		imageName += fmt.Sprintf("-%x", baseHash[:8])
+	}
+	dockerfileContent := clientProxyDockerfileContent(baseImage)
 	buildContextDigest, digestErr := clientProxyBuildContextDigest(dockerfileContent, clientBinaryHash)
 	if digestErr != nil {
 		return ClientProxyImageBuildPlan{}, digestErr
@@ -199,7 +210,7 @@ func setupImageBuildContextArchive(
 	}, nil
 }
 
-func clientProxyDockerfileContent() string {
+func clientProxyDockerfileContent(baseImage string) string {
 	return fmt.Sprintf(`
 FROM %s
 
@@ -208,7 +219,7 @@ COPY --chmod=0755 %s %[3]s
 
 # Set the entrypoint to the dcptun client
 ENTRYPOINT ["%[3]s"]
-`, DefaultBaseImage, ClientBinaryName, ClientProxyBinaryPath)
+`, baseImage, ClientBinaryName, ClientProxyBinaryPath)
 }
 
 func clientProxyBuildContextDigest(dockerfileContent string, clientBinaryHash string) (string, error) {

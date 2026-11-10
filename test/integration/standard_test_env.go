@@ -126,6 +126,9 @@ func StartTestEnvironmentWithOptions(
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
 		inclCtrl |= PhysicalContainerImageController | PhysicalContainerController | PhysicalContainerNetworkController
 	}
+	if inclCtrl&LogicalContainerTunnelProxyController != 0 {
+		inclCtrl |= PhysicalContainerImageController | PhysicalContainerController | PhysicalProcessController | PhysicalContainerNetworkController | LogicalContainerNetworkController
+	}
 
 	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
 	if sessionFolderErr != nil {
@@ -323,7 +326,7 @@ func StartTestEnvironmentWithOptions(
 
 	outputCleanupQueue := resiliency.NewWorkQueue(ctx, controllers.MaxConcurrentReconciles)
 	controllerAPIReader := mgr.GetAPIReader()
-	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController|LogicalContainerExecController|PhysicalContainerController|PhysicalContainerExecController) != 0 && options.DecorateAPIReader != nil {
+	if inclCtrl&(LogicalContainerController|LogicalContainerNetworkController|LogicalProcessController|LogicalContainerExecController|PhysicalContainerController|PhysicalContainerExecController|LogicalContainerTunnelProxyController) != 0 && options.DecorateAPIReader != nil {
 		controllerAPIReader = options.DecorateAPIReader(controllerAPIReader)
 		if controllerAPIReader == nil {
 			return nil, nil, fmt.Errorf("api reader decorator returned nil")
@@ -521,16 +524,17 @@ func StartTestEnvironmentWithOptions(
 	}
 
 	var tcc *ctrl_testutil.TestTunnelControlClient
+	if inclCtrl&(ContainerNetworkTunnelProxyController|LogicalContainerTunnelProxyController) != 0 {
+		tcc = ctrl_testutil.NewTestTunnelControlClient()
+	}
 
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
-		tcc = ctrl_testutil.NewTestTunnelControlClient()
 		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
 			ProcessExecutor:              pex,
 			BuildContextDir:              sessionFolder,
 			MakeTunnelControlClient:      func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
 			MaxTunnelPreparationAttempts: 2,
 		}
-
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(
 			ctx,
 			mgr.GetClient(),
@@ -540,6 +544,19 @@ func StartTestEnvironmentWithOptions(
 		)
 		if err = tunnelProxyR.SetupWithManager(mgr, instanceTag+"-ContainerNetworkTunnelProxyReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize ContainerNetworkTunnelProxy reconciler: %w", err)
+		}
+	}
+
+	if inclCtrl&LogicalContainerTunnelProxyController != 0 {
+		logicalTunnelR := controllers.NewLogicalContainerTunnelProxyReconciler(
+			ctx, mgr.GetClient(), controllerAPIReader, log.WithName("LogicalContainerTunnelProxyReconciler"),
+			controllers.LogicalContainerTunnelProxyReconcilerConfig{
+				BuildContextDir: sessionFolder, MaxTunnelPreparationAttempts: 2,
+				MakeTunnelControlClient: func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
+			},
+		)
+		if setupErr := logicalTunnelR.SetupWithManager(mgr, instanceTag+"-LogicalContainerTunnelProxyReconciler"); setupErr != nil {
+			return nil, nil, fmt.Errorf("initialize LogicalContainerTunnelProxy reconciler: %w", setupErr)
 		}
 	}
 
