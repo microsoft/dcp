@@ -196,6 +196,63 @@ func (apiClient *projectBackingClient) List(ctx context.Context, list ctrl_clien
 	return nil
 }
 
+// Verifies that Project retains its terminal Failed state and original diagnostic after backing
+// disappearance or identity replacement, while still completing missing log sources.
+func TestV2ProjectFailureSurvivesBackingChanges(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"missing", "replaced"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			server, _, startupErr := StartTestEnvironment(t, ctx, projectTestControllers, t.Name(), t.TempDir())
+			require.NoError(t, startupErr)
+			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-failed-"+scenario)
+			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+					LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
+				}}}
+			require.NoError(t, server.Client.Create(ctx, resource))
+			prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+			require.NoError(t, orchestrator.SimulateContainerStatus(ctx, prepared.Status.ContainerID, containers.ContainerStatusDead))
+			failed := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
+			physical := &apiv2.PhysicalContainer{}
+			require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
+			replacement := physical.DeepCopy()
+			replacement.ObjectMeta = metav1.ObjectMeta{Name: physical.Name, Namespace: namespace.Name,
+				OwnerReferences: physical.OwnerReferences, Finalizers: physical.Finalizers}
+			require.NoError(t, server.Client.Delete(ctx, physical))
+			removeProjectBackingHold(t, ctx, server.Client, physical)
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+			if scenario == "replaced" {
+				require.NoError(t, server.Client.Create(ctx, replacement))
+				require.NotEqual(t, physical.UID, replacement.UID)
+			}
+			require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+			observed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				return current.Generation == resource.Generation && len(current.Status.Conditions) != 0 &&
+					current.Status.Conditions[0].ObservedGeneration == resource.Generation, nil
+			})
+			require.Equal(t, apiv2.ProjectPhaseFailed, observed.Status.Phase)
+			require.Equal(t, failed.Status.Conditions[0].Reason, observed.Status.Conditions[0].Reason)
+			require.Equal(t, failed.Status.Conditions[0].Message, observed.Status.Conditions[0].Message)
+			require.Equal(t, prepared.Status.RuntimeLogs.UID, observed.Status.RuntimeLogs.UID)
+			require.Equal(t, prepared.Status.RuntimeLogs.Name, observed.Status.RuntimeLogs.Name)
+			if scenario == "missing" {
+				require.True(t, observed.Status.RuntimeLogs.Complete)
+				require.False(t, observed.Status.RuntimeLogs.Available)
+			}
+			require.NoError(t, server.Client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+			var backings apiv2.PhysicalContainerList
+			require.NoError(t, server.Client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+			require.Empty(t, backings.Items)
+		})
+	}
+}
+
 // Verifies that Stop selects the Project Stopping handler before backing lookup and remains
 // Stopping while lookup fails, then finishes cleanup after reconciliation can observe the backing.
 func TestV2ProjectStopPrecedesBackingLookup(t *testing.T) {

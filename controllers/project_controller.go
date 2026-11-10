@@ -667,9 +667,6 @@ func handleProjectFailed(
 		change |= observationChange
 		if getErr != nil {
 			log.Error(getErr, "Failed to observe failed Project container")
-			if lookupData.state == projectStateUnknown {
-				data.state, data.reason, data.message = lookupData.state, lookupData.reason, lookupData.message
-			}
 		}
 	}
 	return change | (reconciler.projectImageLogs(ctx, resource, data, log) &^ additionalReconciliationNeeded)
