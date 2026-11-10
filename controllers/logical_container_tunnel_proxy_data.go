@@ -39,10 +39,9 @@ type logicalTunnelRecord struct {
 }
 
 type logicalTunnelProxyData struct {
-	state        logicalTunnelProxyState
-	reason       apiv2.ConditionReason
-	message      string
-	reconcileErr error
+	state   logicalTunnelProxyState
+	reason  apiv2.ConditionReason
+	message string
 	// started records that the proxy pair reached Running, which distinguishes Missing from FailedToStart.
 	started              bool
 	containerUID         types.UID
@@ -81,7 +80,6 @@ func (data *logicalTunnelProxyData) UpdateFrom(other *logicalTunnelProxyData) bo
 
 func (data *logicalTunnelProxyData) fail(reason apiv2.ConditionReason, message string) {
 	data.state, data.reason, data.message = logicalTunnelProxyFailed, reason, message
-	data.reconcileErr = nil
 }
 
 // failMissing reports a backing that is gone or no longer verifiably owned by the proxy.
@@ -96,7 +94,6 @@ func (data *logicalTunnelProxyData) failMissing(message string) {
 // stopAfterExit begins stopping the remaining backing after a running backing exits on its own.
 func (data *logicalTunnelProxyData) stopAfterExit(message string) {
 	data.state, data.reason, data.message = logicalTunnelProxyStopping, "", message
-	data.reconcileErr = nil
 }
 
 func applyLogicalTunnelProxyContainerStatus(proxy *apiv2.LogicalContainerTunnelProxy, container *apiv2.PhysicalContainer) objectChange {
@@ -143,13 +140,6 @@ func (data *logicalTunnelProxyData) applyTo(proxy *apiv2.LogicalContainerTunnelP
 		change |= statusChanged
 	}
 	change |= setValue(&proxy.Status.TunnelConfigurationVersion, data.configurationVersion)
-	if _, valid := logicalTunnelProxyProjections.project(data.state); valid && data.reconcileErr != nil &&
-		data.state != logicalTunnelProxyFailed && data.state != logicalTunnelProxyExited {
-		change |= setValue(&proxy.Status.Phase, apiv2.LogicalContainerTunnelProxyPhaseUnknown)
-		change |= setCondition(&proxy.Status.Conditions, apiv2.ConditionReady, proxy.Generation,
-			metav1.ConditionFalse, apiv2.LogicalContainerTunnelProxyReasonLookupFailed, data.reconcileErr.Error())
-		return change | additionalReconciliationNeeded, LongDelay, true
-	}
 	projected, delay, valid := logicalTunnelProxyProjections.applyWithReason(data.state, data.reason, data.message,
 		&proxy.Status.Phase, &proxy.Status.Conditions, proxy.Generation)
 	return change | projected, delay, valid

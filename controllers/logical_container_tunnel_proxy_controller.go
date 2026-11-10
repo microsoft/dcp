@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -233,7 +234,6 @@ func (r *LogicalContainerTunnelProxyReconciler) manageLogicalTunnelProxy(
 		data = &logicalTunnelProxyData{state: logicalTunnelProxyPending, tunnels: make(map[string]logicalTunnelRecord)}
 		r.proxies.Store(proxy.NamespacedName(), proxy.UID, data.Clone())
 	}
-	data.reconcileErr = nil
 	stateHandler := getStateInitializer(logicalTunnelProxyHandlers, data.state, log)
 	change := stateHandler(ctx, r, proxy, data.state, data, log)
 	_ = r.proxies.Update(proxy.NamespacedName(), proxy.UID, data)
@@ -264,44 +264,50 @@ func handleLogicalTunnelProxyPending(
 	_ logicalTunnelProxyState, data *logicalTunnelProxyData, log logr.Logger,
 ) objectChange {
 	data.reason, data.message = "", ""
-	container, containerErr := r.findPhysicalContainer(ctx, proxy, data)
-	image, imageErr := r.findPhysicalContainerImage(ctx, proxy, data)
-	if errors.Join(containerErr, imageErr) != nil {
-		return additionalReconciliationNeeded
-	}
-	change := applyLogicalTunnelProxyContainerStatus(proxy, container)
-	change |= applyLogicalTunnelProxyImageStatus(proxy, image)
-	if container == nil && data.containerUID != "" {
-		data.message = "Waiting to observe the owned PhysicalContainer."
-		return change | additionalReconciliationNeeded
-	}
-	ready, namespaceReason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, proxy.Namespace)
-	if namespaceErr != nil {
-		data.reconcileErr = namespaceErr
-		return change | additionalReconciliationNeeded
-	}
-	if !ready {
-		data.message = namespaceReadinessMessage(proxy.Namespace, namespaceReason)
+	image, change := r.ensurePhysicalContainerImage(ctx, proxy, data, log)
+	if image == nil {
 		return change
 	}
-	baseImage := proxy.Spec.BaseImage
-	if baseImage == "" {
-		baseImage = dcptun.DefaultBaseImage
+	container, ensureChange := r.ensurePhysicalContainer(ctx, proxy, data, image.GetName(), log)
+	change |= ensureChange
+	if container == nil {
+		return change
 	}
-	name := "logical-" + string(proxy.UID)
-	if image == nil && (data.imageUID != "" || container != nil) {
+	server, processChange := r.ensurePhysicalProcess(ctx, proxy, data, container, log)
+	change |= processChange
+	if server == nil {
+		return change
+	}
+	data.state, data.reason, data.message = logicalTunnelProxyStarting, "", ""
+	return change
+}
+
+// ensurePhysicalContainerImage finds or declares the owned image and returns it once its identity is known.
+func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainerImage(
+	ctx context.Context, proxy *apiv2.LogicalContainerTunnelProxy, data *logicalTunnelProxyData, log logr.Logger,
+) (*apiv2.PhysicalContainerImage, objectChange) {
+	image, imageErr := r.findPhysicalContainerImage(ctx, proxy, data)
+	if imageErr != nil {
+		log.Error(imageErr, "Failed to get pending tunnel image")
+		return nil, additionalReconciliationNeeded
+	}
+	change := applyLogicalTunnelProxyImageStatus(proxy, image)
+	if image == nil && (data.imageUID != "" || data.containerUID != "") {
 		data.message = "Waiting to observe the owned PhysicalContainerImage."
-		return change | additionalReconciliationNeeded
+		return nil, change | additionalReconciliationNeeded
 	}
 	if image == nil {
+		baseImage := proxy.Spec.BaseImage
+		if baseImage == "" {
+			baseImage = dcptun.DefaultBaseImage
+		}
 		plan, planErr := dcptun.PrepareClientProxyImageBuild(ctx, r.config.BuildContextDir, baseImage)
 		if planErr != nil {
-			data.reconcileErr = planErr
 			log.Error(planErr, "Failed to prepare tunnel image build context")
-			return change | additionalReconciliationNeeded
+			return nil, change | additionalReconciliationNeeded
 		}
 		desiredImage := &apiv2.PhysicalContainerImage{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: proxy.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(proxy.UID), Namespace: proxy.Namespace},
 			Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{
 				Image: plan.Image, PullPolicy: apiv2.PullPolicyBestEffort, BuildPolicy: apiv2.BuildPolicyIfNeeded,
 				Build: &apiv2.ContainerBuildContext{Digest: plan.BuildContextDigest, Dockerfile: plan.Dockerfile, BaseImages: []string{baseImage},
@@ -324,14 +330,33 @@ func handleLogicalTunnelProxyPending(
 			log.Error(createErr, "Failed to declare tunnel image")
 			if apierrors.IsAlreadyExists(createErr) {
 				data.fail(apiv2.LogicalContainerTunnelProxyReasonFailedToStart, createErr.Error())
-			} else {
-				data.reconcileErr = createErr
 			}
-			return change | additionalReconciliationNeeded
+			return nil, change | additionalReconciliationNeeded
 		}
 		image = createdImage
 		change |= applyLogicalTunnelProxyImageStatus(proxy, image)
 		removeUnusedTunnelProxyBuildContext(plan.BuildContextArchive.Source, createdImage, log)
+	}
+	if data.imageUID == "" {
+		data.message = "Waiting to observe the owned PhysicalContainerImage."
+		return nil, change | additionalReconciliationNeeded
+	}
+	return image, change
+}
+
+// ensurePhysicalContainer finds or declares the owned container and observes its startup.
+func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainer(
+	ctx context.Context, proxy *apiv2.LogicalContainerTunnelProxy, data *logicalTunnelProxyData, imageRef string, log logr.Logger,
+) (*apiv2.PhysicalContainer, objectChange) {
+	container, containerErr := r.findPhysicalContainer(ctx, proxy, data)
+	if containerErr != nil {
+		log.Error(containerErr, "Failed to get pending tunnel container")
+		return nil, additionalReconciliationNeeded
+	}
+	change := applyLogicalTunnelProxyContainerStatus(proxy, container)
+	if container == nil && data.containerUID != "" {
+		data.message = "Waiting to observe the owned PhysicalContainer."
+		return nil, change | additionalReconciliationNeeded
 	}
 	if container == nil {
 		network := &apiv2.LogicalContainerNetwork{}
@@ -340,37 +365,37 @@ func handleLogicalTunnelProxyPending(
 		if networkErr != nil {
 			if apierrors.IsNotFound(networkErr) {
 				data.message = fmt.Sprintf("LogicalContainerNetwork %q does not exist.", networkName)
-				return change
+				return nil, change
 			}
-			data.reconcileErr = networkErr
 			log.Error(networkErr, "Failed to read tunnel proxy logical network")
-			return change | additionalReconciliationNeeded
+			return nil, change | additionalReconciliationNeeded
 		}
 		if network.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed {
 			data.fail(apiv2.LogicalContainerTunnelProxyReasonFailedToStart,
 				fmt.Sprintf("LogicalContainerNetwork %q failed: %s", networkName, physicalResourceStatusMessage(network.Status.Conditions)))
-			return change | additionalReconciliationNeeded
+			return nil, change | additionalReconciliationNeeded
 		}
 		if !network.DeletionTimestamp.IsZero() {
 			data.message = fmt.Sprintf("LogicalContainerNetwork %q is terminating.", networkName)
-			return change
+			return nil, change
 		}
 		if network.Status.PhysicalNetworkRef == "" {
 			data.message = fmt.Sprintf("LogicalContainerNetwork %q has not published its backing physical network reference.", networkName)
-			return change
+			return nil, change
 		}
 		if !data.security.HasCompleteCertificateData() {
 			security, securityErr := dcptun.NewTunnelProxySecurityConfig()
 			if securityErr != nil {
+				log.Error(securityErr, "Failed to prepare tunnel security configuration")
 				data.fail(apiv2.LogicalContainerTunnelProxyReasonFailedToStart, securityErr.Error())
-				return change | additionalReconciliationNeeded
+				return nil, change | additionalReconciliationNeeded
 			}
 			data.security = security
 		}
 		desiredContainer := &apiv2.PhysicalContainer{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: proxy.Namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(proxy.UID), Namespace: proxy.Namespace},
 			Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
-				ImageRef: image.GetName(), ContainerName: "tunnel-" + string(proxy.UID), Entrypoint: dcptun.ClientProxyBinaryPath,
+				ImageRef: imageRef, ContainerName: "tunnel-" + string(proxy.UID), Entrypoint: dcptun.ClientProxyBinaryPath,
 				Command: append([]string{"client", "--client-control-address", networking.IPv4AllInterfaceAddress,
 					"--client-control-port", strconv.Itoa(dcptun.DefaultContainerProxyControlPort),
 					"--client-data-address", networking.IPv4AllInterfaceAddress, "--client-data-port", strconv.Itoa(dcptun.DefaultContainerProxyDataPort)}, tunnelProxySecurityArgs(data.security)...),
@@ -384,55 +409,57 @@ func handleLogicalTunnelProxyPending(
 			log.Error(createErr, "Failed to declare tunnel container")
 			if apierrors.IsAlreadyExists(createErr) {
 				data.fail(apiv2.LogicalContainerTunnelProxyReasonFailedToStart, createErr.Error())
-			} else {
-				data.reconcileErr = createErr
 			}
-			return change | additionalReconciliationNeeded
+			return nil, change | additionalReconciliationNeeded
 		}
 		container = createdContainer
-	}
-	if data.imageUID == "" {
-		data.message = "Waiting to observe the owned PhysicalContainerImage."
-		return change | additionalReconciliationNeeded
+		change |= applyLogicalTunnelProxyContainerStatus(proxy, container)
 	}
 	if !observeTunnelContainer(container, data) {
 		if data.state != logicalTunnelProxyPending {
-			change |= additionalReconciliationNeeded
+			return nil, change | additionalReconciliationNeeded
 		}
-		return change
+		return nil, change
 	}
+	return container, change
+}
+
+// ensurePhysicalProcess finds or declares the owned tunnel server process.
+func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalProcess(
+	ctx context.Context, proxy *apiv2.LogicalContainerTunnelProxy, data *logicalTunnelProxyData,
+	container *apiv2.PhysicalContainer, log logr.Logger,
+) (*apiv2.PhysicalProcess, objectChange) {
 	server, processErr := r.findPhysicalProcess(ctx, proxy, data)
 	if processErr != nil {
-		return change | additionalReconciliationNeeded
+		log.Error(processErr, "Failed to get pending tunnel server process")
+		return nil, additionalReconciliationNeeded
 	}
 	if server != nil {
-		change |= applyLogicalTunnelProxyProcessStatus(proxy, server)
-		data.state, data.reason, data.message = logicalTunnelProxyStarting, "", ""
-		return change
+		return server, applyLogicalTunnelProxyProcessStatus(proxy, server)
 	}
 	if data.processUID != "" {
 		data.message = "Waiting to observe the owned PhysicalProcess."
-		return change | additionalReconciliationNeeded
+		return nil, additionalReconciliationNeeded
 	}
 	controlPort, controlPortErr := physicalContainerHostPort(container.Status.PortMappings, dcptun.DefaultContainerProxyControlPort)
 	dataPort, dataPortErr := physicalContainerHostPort(container.Status.PortMappings, dcptun.DefaultContainerProxyDataPort)
 	if errors.Join(controlPortErr, dataPortErr) != nil {
 		data.message = "Waiting for client proxy container port mappings."
-		return change | additionalReconciliationNeeded
+		return nil, additionalReconciliationNeeded
 	}
 	if data.control == nil {
 		connection, connectionErr := dcptun.NewReverseControlConnection(r.LifetimeCtx, data.security, func() { r.ScheduleReconciliation(proxy.NamespacedName()) }, log)
 		if connectionErr != nil {
-			data.reconcileErr = connectionErr
 			log.Error(connectionErr, "Failed to open reverse tunnel control listener")
-			return change | additionalReconciliationNeeded
+			return nil, additionalReconciliationNeeded
 		}
 		data.control = connection
 	}
 	executablePath, pathErr := dcppaths.GetDcpExePath()
 	if pathErr != nil {
+		log.Error(pathErr, "Failed to resolve tunnel server executable")
 		data.fail(apiv2.LogicalContainerTunnelProxyReasonFailedToStart, pathErr.Error())
-		return change | additionalReconciliationNeeded
+		return nil, additionalReconciliationNeeded
 	}
 	process := &apiv2.PhysicalProcess{
 		ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(proxy.UID), Namespace: proxy.Namespace},
@@ -444,7 +471,7 @@ func handleLogicalTunnelProxyPending(
 			Env: []commonapi.EnvVar{{Name: logger.DCP_LOG_SESSION_ID, Value: logger.SessionId()}},
 		}},
 	}
-	_, createErr := createLogicalBacking(ctx, r.Client, r.NoCacheClient, proxy, process, physicalProcessFinalizer,
+	createdProcess, createErr := createLogicalBacking(ctx, r.Client, r.NoCacheClient, proxy, process, physicalProcessFinalizer,
 		&data.processUID, &data.unobservedChildren, func(existing *apiv2.PhysicalProcess) error {
 			if !reflect.DeepEqual(existing.Spec, process.Spec) {
 				return fmt.Errorf("physical process %q has a different spec", existing.NamespacedName())
@@ -454,14 +481,11 @@ func handleLogicalTunnelProxyPending(
 	if createErr != nil {
 		if apierrors.IsAlreadyExists(createErr) {
 			data.fail(apiv2.LogicalContainerTunnelProxyReasonFailedToStart, createErr.Error())
-		} else {
-			data.reconcileErr = createErr
 		}
 		log.Error(createErr, "Failed to declare tunnel server process")
-		return change | additionalReconciliationNeeded
+		return nil, additionalReconciliationNeeded
 	}
-	data.state, data.reason, data.message = logicalTunnelProxyStarting, "", ""
-	return change
+	return createdProcess, applyLogicalTunnelProxyProcessStatus(proxy, createdProcess)
 }
 
 func tunnelProxySecurityArgs(security dcptun.TunnelProxySecurityConfig) []string {
@@ -476,7 +500,6 @@ func (r *LogicalContainerTunnelProxyReconciler) findPhysicalContainer(
 		ctrl_client.MatchingFields{logicalTunnelProxyOwnerUIDField: string(proxy.UID)})
 	if listErr != nil {
 		lookupErr := fmt.Errorf("list owned physical containers: %w", listErr)
-		data.reason, data.message, data.reconcileErr = apiv2.LogicalContainerTunnelProxyReasonLookupFailed, lookupErr.Error(), lookupErr
 		return nil, lookupErr
 	}
 	var owned *apiv2.PhysicalContainer
@@ -524,7 +547,6 @@ func (r *LogicalContainerTunnelProxyReconciler) findPhysicalContainerImage(
 		ctrl_client.MatchingFields{logicalTunnelProxyOwnerUIDField: string(proxy.UID)})
 	if listErr != nil {
 		lookupErr := fmt.Errorf("list owned physical images: %w", listErr)
-		data.reason, data.message, data.reconcileErr = apiv2.LogicalContainerTunnelProxyReasonLookupFailed, lookupErr.Error(), lookupErr
 		return nil, lookupErr
 	}
 	var owned *apiv2.PhysicalContainerImage
@@ -560,7 +582,6 @@ func (r *LogicalContainerTunnelProxyReconciler) findPhysicalProcess(
 		ctrl_client.MatchingFields{logicalTunnelProxyOwnerUIDField: string(proxy.UID)})
 	if listErr != nil {
 		lookupErr := fmt.Errorf("list owned physical processes: %w", listErr)
-		data.reason, data.message, data.reconcileErr = apiv2.LogicalContainerTunnelProxyReasonLookupFailed, lookupErr.Error(), lookupErr
 		return nil, lookupErr
 	}
 	var owned *apiv2.PhysicalProcess
@@ -586,25 +607,6 @@ func (r *LogicalContainerTunnelProxyReconciler) findPhysicalProcess(
 		data.processUID = owned.UID
 	}
 	return owned, nil
-}
-
-func tunnelProxyChildren(list ctrl_client.ObjectList) []ctrl_client.Object {
-	var children []ctrl_client.Object
-	switch typed := list.(type) {
-	case *apiv2.PhysicalContainerList:
-		for index := range typed.Items {
-			children = append(children, &typed.Items[index])
-		}
-	case *apiv2.PhysicalContainerImageList:
-		for index := range typed.Items {
-			children = append(children, &typed.Items[index])
-		}
-	case *apiv2.PhysicalProcessList:
-		for index := range typed.Items {
-			children = append(children, &typed.Items[index])
-		}
-	}
-	return children
 }
 
 func handleLogicalTunnelProxyStarting(
@@ -658,7 +660,7 @@ func handleLogicalTunnelProxyStarting(
 			"Server process is unavailable: "+physicalResourceStatusMessage(server.Status.Conditions))
 		return change | additionalReconciliationNeeded
 	case apiv2.PhysicalProcessPhaseUnknown:
-		data.reconcileErr = errors.New("server process state is unknown: " + physicalResourceStatusMessage(server.Status.Conditions))
+		data.message = "Server process state is unknown: " + physicalResourceStatusMessage(server.Status.Conditions)
 	case apiv2.PhysicalProcessPhaseRunning:
 		if data.control.Ready() {
 			data.state, data.started = logicalTunnelProxyRunning, true
@@ -680,7 +682,7 @@ func observeTunnelContainer(container *apiv2.PhysicalContainer, data *logicalTun
 	case apiv2.PhysicalContainerPhasePaused:
 		data.message = "The client container is paused."
 		if data.started {
-			data.reason = apiv2.LogicalContainerTunnelProxyReasonPaused
+			data.state, data.reason = logicalTunnelProxyRunning, apiv2.LogicalContainerTunnelProxyReasonPaused
 		}
 	case apiv2.PhysicalContainerPhaseExited:
 		message := tunnelBackingExitMessage("Client container", container.Status.ExitCode)
@@ -692,7 +694,10 @@ func observeTunnelContainer(container *apiv2.PhysicalContainer, data *logicalTun
 	case apiv2.PhysicalContainerPhaseFailed:
 		data.failMissing("Client container is unavailable: " + physicalResourceStatusMessage(container.Status.Conditions))
 	case apiv2.PhysicalContainerPhaseUnknown:
-		data.reconcileErr = errors.New("client container state is unknown: " + physicalResourceStatusMessage(container.Status.Conditions))
+		data.message = "Client container state is unknown: " + physicalResourceStatusMessage(container.Status.Conditions)
+		if data.started {
+			data.state, data.reason = logicalTunnelProxyUnknown, apiv2.LogicalContainerTunnelProxyReasonLookupFailed
+		}
 	}
 	return false
 }
@@ -705,30 +710,34 @@ func tunnelBackingExitMessage(backing string, exitCode *int32) string {
 }
 
 func (r *LogicalContainerTunnelProxyReconciler) observeTunnelPair(
-	ctx context.Context, proxy *apiv2.LogicalContainerTunnelProxy, data *logicalTunnelProxyData,
+	ctx context.Context, proxy *apiv2.LogicalContainerTunnelProxy, data *logicalTunnelProxyData, log logr.Logger,
 ) (objectChange, bool) {
 	image, imageErr := r.findPhysicalContainerImage(ctx, proxy, data)
 	if imageErr != nil {
+		log.Error(imageErr, "Failed to get tunnel image")
 		return noChange, false
 	}
 	container, containerErr := r.findPhysicalContainer(ctx, proxy, data)
 	server, processErr := r.findPhysicalProcess(ctx, proxy, data)
-	if errors.Join(containerErr, processErr) != nil {
-		return noChange, false
-	}
-	if container == nil {
-		data.failMissing("The owned PhysicalContainer no longer exists.")
-		return noChange, false
-	}
-	if server == nil {
-		data.failMissing("The owned PhysicalProcess no longer exists.")
+	if lookupErr := errors.Join(containerErr, processErr); lookupErr != nil {
+		log.Error(lookupErr, "Failed to get tunnel workloads")
 		return noChange, false
 	}
 	change := applyLogicalTunnelProxyContainerStatus(proxy, container)
 	change |= applyLogicalTunnelProxyImageStatus(proxy, image)
 	change |= applyLogicalTunnelProxyProcessStatus(proxy, server)
+	var missing []string
+	if container == nil {
+		missing = append(missing, "The owned PhysicalContainer no longer exists.")
+	}
 	if image == nil {
-		data.failMissing("The owned PhysicalContainerImage no longer exists.")
+		missing = append(missing, "The owned PhysicalContainerImage no longer exists.")
+	}
+	if server == nil {
+		missing = append(missing, "The owned PhysicalProcess no longer exists.")
+	}
+	if len(missing) != 0 {
+		data.failMissing(strings.Join(missing, " "))
 		return change, false
 	}
 	if !observeTunnelContainer(container, data) {
@@ -748,7 +757,8 @@ func (r *LogicalContainerTunnelProxyReconciler) observeTunnelPair(
 	case apiv2.PhysicalProcessPhaseRunning:
 		return change, true
 	case apiv2.PhysicalProcessPhaseUnknown:
-		data.reconcileErr = errors.New("server process state is unknown: " + physicalResourceStatusMessage(server.Status.Conditions))
+		data.state, data.reason, data.message = logicalTunnelProxyUnknown, apiv2.LogicalContainerTunnelProxyReasonLookupFailed,
+			"Server process state is unknown: "+physicalResourceStatusMessage(server.Status.Conditions)
 		return change, false
 	default:
 		return change, false
@@ -760,7 +770,7 @@ func handleLogicalTunnelProxyRunning(
 	_ logicalTunnelProxyState, data *logicalTunnelProxyData, log logr.Logger,
 ) objectChange {
 	data.reason, data.message = "", ""
-	change, available := r.observeTunnelPair(ctx, proxy, data)
+	change, available := r.observeTunnelPair(ctx, proxy, data, log)
 	if !available {
 		if data.state == logicalTunnelProxyRunning && data.reason == apiv2.LogicalContainerTunnelProxyReasonPaused {
 			return change
@@ -771,9 +781,11 @@ func handleLogicalTunnelProxyRunning(
 		return change | additionalReconciliationNeeded
 	}
 	if data.control == nil || !data.control.Ready() {
-		data.reconcileErr = errors.New("waiting for authenticated reverse tunnel control connection")
+		data.state, data.reason, data.message = logicalTunnelProxyUnknown, apiv2.LogicalContainerTunnelProxyReasonLookupFailed,
+			"Waiting for the authenticated reverse tunnel control connection."
 		return change | additionalReconciliationNeeded
 	}
+	data.state = logicalTunnelProxyRunning
 	change |= r.manageLogicalTunnels(ctx, proxy, data, log)
 	desired := make(map[string]apiv2.ServiceEndpointSpec)
 	for _, tunnel := range proxy.Spec.Tunnels {
@@ -816,31 +828,44 @@ func handleLogicalTunnelProxyTerminal(
 		log.Error(endpointErr, "Failed to withdraw terminal tunnel endpoints")
 		change |= additionalReconciliationNeeded
 	}
-	for _, list := range []ctrl_client.ObjectList{&apiv2.PhysicalProcessList{}, &apiv2.PhysicalContainerList{}} {
-		if listErr := r.List(ctx, list, ctrl_client.InNamespace(proxy.Namespace), ctrl_client.MatchingFields{logicalTunnelProxyOwnerUIDField: string(proxy.UID)}); listErr != nil {
-			log.Error(listErr, "Failed to list terminal tunnel backings")
-			change |= additionalReconciliationNeeded
-			continue
-		}
-		for _, child := range tunnelProxyChildren(list) {
-			if !metav1.IsControlledBy(child, proxy) || !child.GetDeletionTimestamp().IsZero() {
+	options := []ctrl_client.ListOption{
+		ctrl_client.InNamespace(proxy.Namespace),
+		ctrl_client.MatchingFields{logicalTunnelProxyOwnerUIDField: string(proxy.UID)},
+	}
+	var processes apiv2.PhysicalProcessList
+	processListErr := r.List(ctx, &processes, options...)
+	if processListErr != nil {
+		log.Error(processListErr, "Failed to list terminal tunnel processes")
+		change |= additionalReconciliationNeeded
+	} else {
+		for index := range processes.Items {
+			server := &processes.Items[index]
+			if !metav1.IsControlledBy(server, proxy) || !server.DeletionTimestamp.IsZero() || server.Spec.Stop {
 				continue
 			}
-			patch := ctrl_client.MergeFromWithOptions(child.DeepCopyObject().(ctrl_client.Object), ctrl_client.MergeFromWithOptimisticLock{})
-			switch typed := child.(type) {
-			case *apiv2.PhysicalContainer:
-				if typed.Spec.Stop {
-					continue
-				}
-				typed.Spec.Stop = true
-			case *apiv2.PhysicalProcess:
-				if typed.Spec.Stop {
-					continue
-				}
-				typed.Spec.Stop = true
+			processPatch := ctrl_client.MergeFromWithOptions(server.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
+			server.Spec.Stop = true
+			if processStopErr := r.Patch(ctx, server, processPatch); processStopErr != nil {
+				log.Error(processStopErr, "Failed to stop terminal tunnel process")
+				change |= additionalReconciliationNeeded
 			}
-			if stopErr := r.Patch(ctx, child, patch); stopErr != nil {
-				log.Error(stopErr, "Failed to stop terminal tunnel backing")
+		}
+	}
+	var containers apiv2.PhysicalContainerList
+	containerListErr := r.List(ctx, &containers, options...)
+	if containerListErr != nil {
+		log.Error(containerListErr, "Failed to list terminal tunnel containers")
+		change |= additionalReconciliationNeeded
+	} else {
+		for index := range containers.Items {
+			container := &containers.Items[index]
+			if !metav1.IsControlledBy(container, proxy) || !container.DeletionTimestamp.IsZero() || container.Spec.Stop {
+				continue
+			}
+			containerPatch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
+			container.Spec.Stop = true
+			if containerStopErr := r.Patch(ctx, container, containerPatch); containerStopErr != nil {
+				log.Error(containerStopErr, "Failed to stop terminal tunnel container")
 				change |= additionalReconciliationNeeded
 			}
 		}
@@ -855,7 +880,8 @@ func handleLogicalTunnelProxyStopping(
 	change := handleLogicalTunnelProxyTerminal(ctx, r, proxy, state, data, log)
 	container, containerErr := r.findPhysicalContainer(ctx, proxy, data)
 	server, processErr := r.findPhysicalProcess(ctx, proxy, data)
-	if errors.Join(containerErr, processErr) != nil {
+	if lookupErr := errors.Join(containerErr, processErr); lookupErr != nil {
+		log.Error(lookupErr, "Failed to get stopping tunnel workloads")
 		return change | additionalReconciliationNeeded
 	}
 	if data.state != logicalTunnelProxyStopping {
@@ -871,11 +897,14 @@ func handleLogicalTunnelProxyStopping(
 	return change
 }
 
-// handleLogicalTunnelProxyUnknown restarts discovery from Pending after an invalid in-memory state.
+// handleLogicalTunnelProxyUnknown observes a previously running pair or restarts discovery after an invalid state.
 func handleLogicalTunnelProxyUnknown(
 	ctx context.Context, r *LogicalContainerTunnelProxyReconciler, proxy *apiv2.LogicalContainerTunnelProxy,
 	state logicalTunnelProxyState, data *logicalTunnelProxyData, log logr.Logger,
 ) objectChange {
+	if data.started {
+		return handleLogicalTunnelProxyRunning(ctx, r, proxy, state, data, log)
+	}
 	change := noChange
 	if endpointErr := syncOwnedServiceEndpoints(ctx, r.Client, r.NoCacheClient, proxy, logicalTunnelProxyOwnerUIDField, &data.unobservedChildren, nil); endpointErr != nil {
 		log.Error(endpointErr, "Failed to withdraw tunnel endpoints after invalid state")
@@ -1056,7 +1085,6 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 	if data.state == logicalTunnelProxyRunning {
 		data.state, data.reason, data.message = logicalTunnelProxyStopping, "", "Stopping the tunnel proxy pair for deletion."
 	}
-	data.reconcileErr = nil
 	if data.control != nil {
 		if closeErr := data.control.Close(); closeErr != nil {
 			log.Error(closeErr, "Failed to close deleting tunnel control connection")
@@ -1066,63 +1094,98 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 	endpointsComplete, endpointErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, proxy, logicalTunnelProxyOwnerUIDField, data.unobservedChildren)
 	if endpointErr != nil {
 		log.Error(endpointErr, "Failed to clean up tunnel endpoints")
-		data.reconcileErr = endpointErr
 	}
 	waiting := !endpointsComplete || endpointErr != nil
 	workloadsComplete := true
-	for _, list := range []ctrl_client.ObjectList{&apiv2.PhysicalProcessList{}, &apiv2.PhysicalContainerList{}, &apiv2.PhysicalContainerImageList{}} {
-		_, isImage := list.(*apiv2.PhysicalContainerImageList)
-		if isImage && !workloadsComplete {
-			waiting = true
-			continue
-		}
-		listErr := r.List(ctx, list, ctrl_client.InNamespace(proxy.Namespace), ctrl_client.MatchingFields{logicalTunnelProxyOwnerUIDField: string(proxy.UID)})
-		if listErr == nil {
-			switch typed := list.(type) {
-			case *apiv2.PhysicalProcessList:
-				listErr = resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, proxy, data.unobservedChildren, &typed.Items)
-			case *apiv2.PhysicalContainerList:
-				listErr = resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, proxy, data.unobservedChildren, &typed.Items)
-			case *apiv2.PhysicalContainerImageList:
-				listErr = resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, proxy, data.unobservedChildren, &typed.Items)
-			}
-		}
-		if listErr != nil {
-			data.reconcileErr = listErr
-			log.Error(listErr, "Failed to discover tunnel backings for deletion")
-			waiting = true
-			if !isImage {
-				workloadsComplete = false
-			}
-			continue
-		}
-		for _, child := range tunnelProxyChildren(list) {
-			if !metav1.IsControlledBy(child, proxy) {
+	options := []ctrl_client.ListOption{
+		ctrl_client.InNamespace(proxy.Namespace),
+		ctrl_client.MatchingFields{logicalTunnelProxyOwnerUIDField: string(proxy.UID)},
+	}
+	var processes apiv2.PhysicalProcessList
+	processListErr := r.List(ctx, &processes, options...)
+	if processListErr != nil {
+		log.Error(processListErr, "Failed to list tunnel processes for deletion")
+		waiting, workloadsComplete = true, false
+	} else if processConfirmationErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, proxy, data.unobservedChildren, &processes.Items); processConfirmationErr != nil {
+		log.Error(processConfirmationErr, "Failed to resolve unobserved tunnel processes for deletion")
+		waiting, workloadsComplete = true, false
+	} else {
+		for index := range processes.Items {
+			server := &processes.Items[index]
+			if !metav1.IsControlledBy(server, proxy) {
 				continue
 			}
-			waiting = true
-			if !isImage {
-				workloadsComplete = false
-			}
-			if child.GetDeletionTimestamp().IsZero() {
-				uid := child.GetUID()
-				if deleteErr := r.Delete(ctx, child, ctrl_client.Preconditions{UID: &uid}); deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-					data.reconcileErr = deleteErr
-					log.Error(deleteErr, "Failed to delete tunnel backing")
+			waiting, workloadsComplete = true, false
+			if server.DeletionTimestamp.IsZero() {
+				processUID := server.UID
+				if processDeleteErr := r.Delete(ctx, server, ctrl_client.Preconditions{UID: &processUID}); processDeleteErr != nil && !apierrors.IsNotFound(processDeleteErr) {
+					log.Error(processDeleteErr, "Failed to delete tunnel process")
 				}
 				continue
 			}
-			finalizer := physicalProcessFinalizer
-			switch child.(type) {
-			case *apiv2.PhysicalContainer:
-				finalizer = physicalContainerFinalizer
-			case *apiv2.PhysicalContainerImage:
-				finalizer = physicalContainerImageFinalizer
+			if !hasFinalizer(server, physicalProcessFinalizer) {
+				if processReleaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, server); processReleaseErr != nil && !apierrors.IsNotFound(processReleaseErr) {
+					log.Error(processReleaseErr, "Failed to release logical tunnel process hold")
+				}
 			}
-			if !hasFinalizer(child, finalizer) {
-				if releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, child); releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
-					data.reconcileErr = releaseErr
-					log.Error(releaseErr, "Failed to release logical tunnel backing hold")
+		}
+	}
+	var containers apiv2.PhysicalContainerList
+	containerListErr := r.List(ctx, &containers, options...)
+	if containerListErr != nil {
+		log.Error(containerListErr, "Failed to list tunnel containers for deletion")
+		waiting, workloadsComplete = true, false
+	} else if containerConfirmationErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, proxy, data.unobservedChildren, &containers.Items); containerConfirmationErr != nil {
+		log.Error(containerConfirmationErr, "Failed to resolve unobserved tunnel containers for deletion")
+		waiting, workloadsComplete = true, false
+	} else {
+		for index := range containers.Items {
+			container := &containers.Items[index]
+			if !metav1.IsControlledBy(container, proxy) {
+				continue
+			}
+			waiting, workloadsComplete = true, false
+			if container.DeletionTimestamp.IsZero() {
+				containerUID := container.UID
+				if containerDeleteErr := r.Delete(ctx, container, ctrl_client.Preconditions{UID: &containerUID}); containerDeleteErr != nil && !apierrors.IsNotFound(containerDeleteErr) {
+					log.Error(containerDeleteErr, "Failed to delete tunnel container")
+				}
+				continue
+			}
+			if !hasFinalizer(container, physicalContainerFinalizer) {
+				if containerReleaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, container); containerReleaseErr != nil && !apierrors.IsNotFound(containerReleaseErr) {
+					log.Error(containerReleaseErr, "Failed to release logical tunnel container hold")
+				}
+			}
+		}
+	}
+	if workloadsComplete {
+		var images apiv2.PhysicalContainerImageList
+		imageListErr := r.List(ctx, &images, options...)
+		if imageListErr != nil {
+			log.Error(imageListErr, "Failed to list tunnel images for deletion")
+			waiting = true
+		} else if imageConfirmationErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, proxy, data.unobservedChildren, &images.Items); imageConfirmationErr != nil {
+			log.Error(imageConfirmationErr, "Failed to resolve unobserved tunnel images for deletion")
+			waiting = true
+		} else {
+			for index := range images.Items {
+				image := &images.Items[index]
+				if !metav1.IsControlledBy(image, proxy) {
+					continue
+				}
+				waiting = true
+				if image.DeletionTimestamp.IsZero() {
+					imageUID := image.UID
+					if imageDeleteErr := r.Delete(ctx, image, ctrl_client.Preconditions{UID: &imageUID}); imageDeleteErr != nil && !apierrors.IsNotFound(imageDeleteErr) {
+						log.Error(imageDeleteErr, "Failed to delete tunnel image")
+					}
+					continue
+				}
+				if !hasFinalizer(image, physicalContainerImageFinalizer) {
+					if imageReleaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, image); imageReleaseErr != nil && !apierrors.IsNotFound(imageReleaseErr) {
+						log.Error(imageReleaseErr, "Failed to release logical tunnel image hold")
+					}
 				}
 			}
 		}
@@ -1136,7 +1199,6 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 	}
 	if discardErr := r.discardLogicalTunnelProxyData(proxy.NamespacedName()); discardErr != nil {
 		log.Error(discardErr, "Failed to discard logical tunnel proxy state")
-		data.reconcileErr = discardErr
 		return additionalReconciliationNeeded, delay
 	}
 	data = nil
