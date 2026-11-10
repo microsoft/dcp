@@ -176,11 +176,11 @@ func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, Additio
 	change |= projectProcessObservations(resource, data)
 	inputsReady := data.inputsPrepared
 	arguments, environment := data.effectiveArgs, data.effectiveEnv
-	if !reflect.DeepEqual(resource.Status.EffectiveArgs, arguments) {
+	if !slices.Equal(resource.Status.EffectiveArgs, arguments) {
 		resource.Status.EffectiveArgs = slices.Clone(arguments)
 		change |= statusChanged
 	}
-	if !reflect.DeepEqual(resource.Status.EffectiveEnv, environment) {
+	if !slices.Equal(resource.Status.EffectiveEnv, environment) {
 		resource.Status.EffectiveEnv = slices.Clone(environment)
 		change |= statusChanged
 	}

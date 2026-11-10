@@ -232,6 +232,10 @@ func TestV2ProjectFailureSurvivesBackingChanges(t *testing.T) {
 			}
 			require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 			observed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				if scenario == "missing" && (current.Status.RuntimeLogs == nil ||
+					!current.Status.RuntimeLogs.Complete || current.Status.RuntimeLogs.Available) {
+					return false, nil
+				}
 				return current.Generation == resource.Generation && len(current.Status.Conditions) != 0 &&
 					current.Status.Conditions[0].ObservedGeneration == resource.Generation, nil
 			})

@@ -32,6 +32,7 @@ import (
 	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -247,16 +248,7 @@ func (r *ProjectReconciler) prepareProjectValues(
 	var arguments []string
 	var environment []commonapi.EnvVar
 	if resource.Spec.Process != nil {
-		arguments = resource.Spec.Process.Args
-		if resource.Spec.Process.AmbientEnvironment.EffectiveBehavior() == apiv2.EnvironmentBehaviorInherit {
-			for _, entry := range os.Environ() {
-				name, value, found := strings.Cut(entry, "=")
-				if found {
-					environment = append(environment, commonapi.EnvVar{Name: name, Value: value})
-				}
-			}
-		}
-		environment = append(environment, resource.Spec.Process.Env...)
+		arguments, environment = resource.Spec.Process.Args, resource.Spec.Process.Env
 	} else {
 		arguments, environment = resource.Spec.Container.Command, resource.Spec.Container.Env
 	}
@@ -293,6 +285,9 @@ func (r *ProjectReconciler) prepareProjectValues(
 		}
 		return evaluationErr
 	}
+	if resource.Spec.Process != nil && resource.Spec.Process.AmbientEnvironment.EffectiveBehavior() == apiv2.EnvironmentBehaviorInherit {
+		resolvedEnv = mergeProjectAmbientEnvironment(resolvedEnv)
+	}
 	resolvedEnv = slices.DeleteFunc(resolvedEnv, func(variable commonapi.EnvVar) bool {
 		name := variable.Name
 		if osutil.IsWindows() {
@@ -308,6 +303,27 @@ func (r *ProjectReconciler) prepareProjectValues(
 	data.effectiveArgs, data.effectiveEnv = resolvedArgs, resolvedEnv
 	data.ports, data.inputsPrepared = logicalPortSelections(ports, requests), true
 	return nil
+}
+
+// mergeProjectAmbientEnvironment overlays evaluated declarations onto literal host environment values.
+func mergeProjectAmbientEnvironment(declared []commonapi.EnvVar) []commonapi.EnvVar {
+	mode := maps.StringMapModeCaseSensitive
+	if osutil.IsWindows() {
+		mode = maps.StringMapModeCaseInsensitive
+	}
+	merged := maps.NewStringKeyMap[string](mode)
+	for _, entry := range os.Environ() {
+		name, value, found := strings.Cut(entry, "=")
+		if found {
+			merged.Override(name, value)
+		}
+	}
+	for _, variable := range declared {
+		merged.Override(variable.Name, variable.Value)
+	}
+	return maps.MapToSlice[commonapi.EnvVar](merged.Data(), func(name, value string) commonapi.EnvVar {
+		return commonapi.EnvVar{Name: name, Value: value}
+	})
 }
 
 func handleProjectPending(
