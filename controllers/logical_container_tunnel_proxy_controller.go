@@ -963,7 +963,7 @@ func (r *LogicalContainerTunnelProxyReconciler) manageLogicalTunnels(
 					record.attempts = 0
 				}
 			}
-			if record.status.State == apiv2.LogicalContainerTunnelStateNotReady && serverErr == nil && !time.Now().Before(record.retryAfter) {
+			if record.status.State == apiv2.LogicalContainerTunnelStateNotReady && !time.Now().Before(record.retryAfter) {
 				if record.status.TunnelID != 0 {
 					if deleteErr := deleteLogicalTunnel(ctx, client, record.status.TunnelID); deleteErr != nil {
 						log.Error(deleteErr, "Failed to retire previous tunnel")
@@ -973,31 +973,33 @@ func (r *LogicalContainerTunnelProxyReconciler) manageLogicalTunnels(
 					}
 					record.status.TunnelID = 0
 				}
-				record.attempts++
-				record.retryAfter = time.Now().Add(delayDuration(StandardDelay))
-				if record.attempts > r.config.MaxTunnelPreparationAttempts {
-					record.status.State, record.status.ErrorMessage = apiv2.LogicalContainerTunnelStateFailed, "Maximum tunnel preparation attempts reached."
-				} else {
-					operationCtx, cancel := context.WithTimeout(ctx, tunnelOperationTimeout)
-					request := &dcptunproto.TunnelReq{ServerAddress: stdproto.String(server.Address), ServerPort: stdproto.Int32(server.Port), ClientProxyPort: stdproto.Int32(server.Port)}
-					prepared, prepareErr := client.PrepareTunnel(operationCtx, request)
-					if prepareErr != nil {
-						request.ClientProxyPort = nil
-						prepared, prepareErr = client.PrepareTunnel(operationCtx, request)
-					}
-					cancel()
-					if prepareErr != nil {
-						log.Error(prepareErr, "Failed to prepare tunnel", "Tunnel", tunnel.Name)
-						change |= additionalReconciliationNeeded
-					} else if prepared.GetTunnelRef().GetTunnelId() == 0 || !networking.IsValidPort(int(prepared.GetClientProxyPort())) || len(prepared.GetClientProxyAddresses()) == 0 {
-						log.Error(errors.New("invalid tunnel preparation response"), "Failed to prepare tunnel", "Tunnel", tunnel.Name)
-						change |= additionalReconciliationNeeded
+				if serverErr == nil {
+					record.attempts++
+					record.retryAfter = time.Now().Add(delayDuration(StandardDelay))
+					if record.attempts > r.config.MaxTunnelPreparationAttempts {
+						record.status.State, record.status.ErrorMessage = apiv2.LogicalContainerTunnelStateFailed, "Maximum tunnel preparation attempts reached."
 					} else {
-						record.status.State, record.status.TunnelID = apiv2.LogicalContainerTunnelStateReady, prepared.GetTunnelRef().GetTunnelId()
-						record.status.ClientProxyAddresses, record.status.ClientProxyPort = slices.Clone(prepared.GetClientProxyAddresses()), prepared.GetClientProxyPort()
-						slices.Sort(record.status.ClientProxyAddresses)
-						record.status.ClientProxyAddresses = slices.Compact(record.status.ClientProxyAddresses)
-						record.server, record.attempts = server, 0
+						operationCtx, cancel := context.WithTimeout(ctx, tunnelOperationTimeout)
+						request := &dcptunproto.TunnelReq{ServerAddress: stdproto.String(server.Address), ServerPort: stdproto.Int32(server.Port), ClientProxyPort: stdproto.Int32(server.Port)}
+						prepared, prepareErr := client.PrepareTunnel(operationCtx, request)
+						if prepareErr != nil {
+							request.ClientProxyPort = nil
+							prepared, prepareErr = client.PrepareTunnel(operationCtx, request)
+						}
+						cancel()
+						if prepareErr != nil {
+							log.Error(prepareErr, "Failed to prepare tunnel", "Tunnel", tunnel.Name)
+							change |= additionalReconciliationNeeded
+						} else if prepared.GetTunnelRef().GetTunnelId() == 0 || !networking.IsValidPort(int(prepared.GetClientProxyPort())) || len(prepared.GetClientProxyAddresses()) == 0 {
+							log.Error(errors.New("invalid tunnel preparation response"), "Failed to prepare tunnel", "Tunnel", tunnel.Name)
+							change |= additionalReconciliationNeeded
+						} else {
+							record.status.State, record.status.TunnelID = apiv2.LogicalContainerTunnelStateReady, prepared.GetTunnelRef().GetTunnelId()
+							record.status.ClientProxyAddresses, record.status.ClientProxyPort = slices.Clone(prepared.GetClientProxyAddresses()), prepared.GetClientProxyPort()
+							slices.Sort(record.status.ClientProxyAddresses)
+							record.status.ClientProxyAddresses = slices.Compact(record.status.ClientProxyAddresses)
+							record.server, record.attempts = server, 0
+						}
 					}
 				}
 			}

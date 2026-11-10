@@ -61,6 +61,7 @@ type TestEnvironmentOptions struct {
 	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
 	DecorateAPIReader               func(ctrl_client.Reader) ctrl_client.Reader
 	CreateLogicalServiceProxy       proxy.ProxyFactory
+	DecorateTunnelControlClient     func(dcptunproto.TunnelControlClient) dcptunproto.TunnelControlClient
 }
 
 func (tei *TestEnvironmentInfo) addAfterShutdown(callback func()) {
@@ -524,15 +525,23 @@ func StartTestEnvironmentWithOptions(
 	}
 
 	var tcc *ctrl_testutil.TestTunnelControlClient
+	var tunnelControlClient dcptunproto.TunnelControlClient
 	if inclCtrl&(ContainerNetworkTunnelProxyController|LogicalContainerTunnelProxyController) != 0 {
 		tcc = ctrl_testutil.NewTestTunnelControlClient()
+		tunnelControlClient = tcc
+		if options.DecorateTunnelControlClient != nil {
+			tunnelControlClient = options.DecorateTunnelControlClient(tunnelControlClient)
+			if tunnelControlClient == nil {
+				return nil, nil, fmt.Errorf("tunnel control client decorator returned nil")
+			}
+		}
 	}
 
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
 		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
 			ProcessExecutor:              pex,
 			BuildContextDir:              sessionFolder,
-			MakeTunnelControlClient:      func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
+			MakeTunnelControlClient:      func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tunnelControlClient },
 			MaxTunnelPreparationAttempts: 2,
 		}
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(
@@ -552,7 +561,7 @@ func StartTestEnvironmentWithOptions(
 			ctx, mgr.GetClient(), controllerAPIReader, log.WithName("LogicalContainerTunnelProxyReconciler"),
 			controllers.LogicalContainerTunnelProxyReconcilerConfig{
 				BuildContextDir: sessionFolder, MaxTunnelPreparationAttempts: 2,
-				MakeTunnelControlClient: func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
+				MakeTunnelControlClient: func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tunnelControlClient },
 			},
 		)
 		if setupErr := logicalTunnelR.SetupWithManager(mgr, instanceTag+"-LogicalContainerTunnelProxyReconciler"); setupErr != nil {

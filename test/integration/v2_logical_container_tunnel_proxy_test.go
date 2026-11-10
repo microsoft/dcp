@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	stdproto "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -184,6 +185,74 @@ func TestV2LogicalContainerTunnelProxyLifecycle(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, hostProcess)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, endpoint)
 	require.NoError(t, server.Client.Get(ctx, clientService.NamespacedName(), &apiv2.LogicalService{}))
+}
+
+type tunnelRetirementFailureClient struct {
+	dcptunproto.TunnelControlClient
+	blocked atomic.Bool
+	failed  atomic.Bool
+}
+
+func (boundary *tunnelRetirementFailureClient) DeleteTunnel(
+	ctx context.Context, reference *dcptunproto.TunnelRef, options ...grpc.CallOption,
+) (*emptypb.Empty, error) {
+	if boundary.blocked.Load() {
+		boundary.failed.Store(true)
+		return nil, errors.New("injected tunnel retirement failure")
+	}
+	return boundary.TunnelControlClient.DeleteTunnel(ctx, reference, options...)
+}
+
+// Verifies that LogicalContainerTunnelProxy retires an unavailable tunnel after a transient deletion failure
+// without waiting for the referenced service to return or preparing a replacement.
+func TestV2LogicalContainerTunnelProxyRetriesUnavailableTunnelRetirement(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	var boundary *tunnelRetirementFailureClient
+	server, environment, proxy := startLogicalTunnelApplication(t, ctx, TestEnvironmentOptions{
+		DecorateTunnelControlClient: func(client dcptunproto.TunnelControlClient) dcptunproto.TunnelControlClient {
+			boundary = &tunnelRetirementFailureClient{TunnelControlClient: client}
+			boundary.blocked.Store(true)
+			return boundary
+		},
+	})
+	defer boundary.blocked.Store(false)
+	require.NoError(t, server.Client.Create(ctx, proxy))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseRunning &&
+			len(current.Status.TunnelStatuses) == 1 && current.Status.TunnelStatuses[0].State == apiv2.LogicalContainerTunnelStateReady, nil
+	})
+	endpoint := waitObjectAssumesStateEx(t, ctx, server.Client,
+		types.NamespacedName{Namespace: proxy.Namespace, Name: "logical-" + string(proxy.UID) + "-http"},
+		func(current *apiv2.ServiceEndpoint) (bool, error) { return len(current.Spec.Addresses) > 0, nil })
+	host := &apiv2.LogicalService{}
+	require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: proxy.Namespace, Name: "host"}, host))
+	address, found, selectionErr := networking.SelectServiceAddress(host.Status.EffectiveAddresses,
+		networking.IpVersionPreferenceNone, networking.GetIpVersionPreference())
+	require.NoError(t, selectionErr)
+	require.True(t, found)
+	fingerprint := dcptunproto.TunnelRequestFingerprint{
+		ServerAddress: address.Address, ServerPort: address.Port, ClientProxyPort: address.Port,
+	}
+	require.NoError(t, server.Client.Delete(ctx, host))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, host)
+	waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
+		return boundary.failed.Load() && len(current.Status.TunnelStatuses) == 1 &&
+			current.Status.TunnelStatuses[0].State == apiv2.LogicalContainerTunnelStateNotReady &&
+			current.Status.TunnelStatuses[0].TunnelID == running.Status.TunnelStatuses[0].TunnelID, nil
+	})
+	boundary.blocked.Store(false)
+	waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseRunning &&
+			len(current.Status.TunnelStatuses) == 1 && current.Status.TunnelStatuses[0].State == apiv2.LogicalContainerTunnelStateNotReady &&
+			current.Status.TunnelStatuses[0].TunnelID == 0 &&
+			environment.GetTunnelSpec(fingerprint).GetTunnelRef().GetTunnelId() == 0, nil
+	})
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, endpoint)
+	require.True(t, apierrors.IsNotFound(server.Client.Get(ctx, host.NamespacedName(), &apiv2.LogicalService{})))
+	require.NoError(t, server.Client.Delete(ctx, proxy))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, proxy)
 }
 
 // Verifies that LogicalContainerTunnelProxy observes server exit while its client is running, paused, or unknown,
