@@ -37,13 +37,14 @@ type stopStreamFn context.CancelFunc
 // The result of the tunnel stream connection creator.
 type streamConnectionResult struct {
 	streamRef         *proto.StreamRef // The new stream reference (the one we are creation connections for).
-	serverConn        net.Conn         // The connection to the server endpoint (if successful).
-	clientDataConn    net.Conn         // The connection to the client proxy data endpoint (if successful).
-	tunnelNotFoundErr error            // The error indicating that the referenced tunnel (part of stream reference) was not found.
-	serverDialErr     error            // The error that occurred while dialing the server endpoint.
-	clientDataDialErr error            // The error that occurred while dialing the client proxy data endpoint.
-	streamLog         logr.Logger      // The logger to be used for the stream.
-	stopCleanup       func() bool      // Transfers pending sockets out of the control attempt's lifetime.
+	tunnelSpec        *proto.TunnelSpec
+	serverConn        net.Conn    // The connection to the server endpoint (if successful).
+	clientDataConn    net.Conn    // The connection to the client proxy data endpoint (if successful).
+	tunnelNotFoundErr error       // The error indicating that the referenced tunnel (part of stream reference) was not found.
+	serverDialErr     error       // The error that occurred while dialing the server endpoint.
+	clientDataDialErr error       // The error that occurred while dialing the client proxy data endpoint.
+	streamLog         logr.Logger // The logger to be used for the stream.
+	stopCleanup       func() bool // Transfers pending sockets out of the control attempt's lifetime.
 }
 
 func (res streamConnectionResult) close() {
@@ -182,14 +183,19 @@ func (sp *ServerProxy) DeleteTunnel(ctx context.Context, tr *proto.TunnelRef) (*
 
 	sp.lock.Lock()
 	td, found := sp.tunnels[tid]
+	var tunnelSpec *proto.TunnelSpec
+	if found {
+		tunnelSpec = td.spec
+	}
 	sp.lock.Unlock()
-	if !found {
-		return nil, status.Errorf(codes.NotFound, "tunnel with ID %d does not exist", tid)
+	if found {
+		sp.log.V(1).Info("Deleting tunnel..", "tunnel_spec", tunnelSpec.LogString())
+	} else {
+		sp.log.V(1).Info("Deleting tunnel missing from server-side bookkeeping", "TunnelID", tid)
 	}
 
-	sp.log.V(1).Info("Deleting tunnel..", "tunnel_spec", td.spec.LogString())
-
-	// Always call the client proxy to facilitate retries.
+	// Always call the client proxy to facilitate retries, including after the
+	// server-side entry has drained its last established stream.
 	_, clientDeleteErr := sp.clientProxy.DeleteTunnel(ctx, tr)
 
 	// Delete the tunnel from the server-side proxy even if the client proxy deletion fails.
@@ -197,20 +203,104 @@ func (sp *ServerProxy) DeleteTunnel(ctx context.Context, tr *proto.TunnelRef) (*
 	td, found = sp.tunnels[tid]
 	if !found || td.deleted.Load() {
 		sp.lock.Unlock()
-		// We found it above so the tunnel ID was valid. It is possible that it was deleted concurrently.
 		sp.log.V(1).Info("Tunnel already deleted", "tunnel_id", tid)
 	} else {
+		deletedSpec := td.spec
+		td.accepting.Store(false)
 		td.deleted.Store(true)
 		sp.lock.Unlock()
-		sp.log.V(1).Info("Tunnel deleted", "tunnel_spec", td.spec.LogString())
+		sp.log.V(1).Info("Tunnel deleted", "tunnel_spec", deletedSpec.LogString())
 	}
 
 	if clientDeleteErr != nil {
-		sp.log.Error(clientDeleteErr, "Failed to delete tunnel with client proxy", "tunnel_spec", td.spec.LogString())
+		sp.log.Error(clientDeleteErr, "Failed to delete tunnel with client proxy", "TunnelID", tid)
 		return nil, status.Errorf(codes.Internal, "failed to delete tunnel with client proxy: %s", clientDeleteErr.Error())
-	} else {
-		return &emptypb.Empty{}, nil
 	}
+	return &emptypb.Empty{}, nil
+}
+
+// UpdateTunnel changes an existing tunnel without replacing its client-facing listener or ID.
+func (sp *ServerProxy) UpdateTunnel(ctx context.Context, update *proto.TunnelUpdate) (*emptypb.Empty, error) {
+	validationErr := ensureValidTunnelUpdate(update)
+	if validationErr != nil {
+		return nil, validationErr
+	}
+	if sp.dispose.IsDone() {
+		return nil, status.Error(codes.FailedPrecondition, errMsgProxyDisposed)
+	}
+
+	tid := TunnelID(update.GetTunnelRef().GetTunnelId())
+	sp.lock.Lock()
+	td, found := sp.tunnels[tid]
+	if !found || td.deleted.Load() {
+		sp.lock.Unlock()
+		return nil, status.Errorf(codes.NotFound, "tunnel with ID %d does not exist", tid)
+	}
+
+	if update.GetAcceptNewStreams() {
+		// Fail closed while changing the backend. The client may still be accepting
+		// from an earlier Ready state, so suspend both sides before enabling either
+		// side with the replacement target.
+		td.accepting.Store(false)
+		sp.lock.Unlock()
+		suspendUpdate := &proto.TunnelUpdate{
+			TunnelRef:        stdproto.CloneOf(update.GetTunnelRef()),
+			AcceptNewStreams: stdproto.Bool(false),
+		}
+		_, clientSuspendErr := sp.clientProxy.UpdateTunnel(ctx, suspendUpdate, grpc.WaitForReady(true))
+		if clientSuspendErr != nil {
+			sp.log.Error(clientSuspendErr, "Failed to suspend tunnel with client proxy before updating its backend", "TunnelID", tid)
+			return nil, status.Errorf(codes.Internal, "failed to suspend tunnel with client proxy before updating its backend: %s", clientSuspendErr.Error())
+		}
+
+		sp.lock.Lock()
+		td, found = sp.tunnels[tid]
+		if !found || td.deleted.Load() {
+			sp.lock.Unlock()
+			return nil, status.Errorf(codes.NotFound, "tunnel with ID %d does not exist", tid)
+		}
+		updatedSpec := stdproto.CloneOf(td.spec)
+		updatedSpec.ServerAddress = stdproto.String(update.GetServerAddress())
+		updatedSpec.ServerPort = stdproto.Int32(update.GetServerPort())
+		td.spec = updatedSpec
+		td.accepting.Store(true)
+	} else {
+		// Disable the server side first. If forwarding fails, any connection still
+		// accepted by the client side is rejected here instead of reaching a stale backend.
+		td.accepting.Store(false)
+	}
+	sp.lock.Unlock()
+
+	_, clientUpdateErr := sp.clientProxy.UpdateTunnel(ctx, update, grpc.WaitForReady(true))
+	if clientUpdateErr != nil {
+		if update.GetAcceptNewStreams() {
+			// A unary error is ambiguous: the client may have applied the resume
+			// before its response was lost. Keep the server side suspended so any
+			// accepted client connection still fails closed until an idempotent retry.
+			sp.lock.Lock()
+			current := sp.tunnels[tid]
+			if current == td && !current.deleted.Load() {
+				current.accepting.Store(false)
+			}
+			sp.lock.Unlock()
+		}
+		sp.log.Error(
+			clientUpdateErr,
+			"Failed to update tunnel with client proxy",
+			"TunnelID", tid,
+			"AcceptNewStreams", update.GetAcceptNewStreams(),
+		)
+		return nil, status.Errorf(codes.Internal, "failed to update tunnel with client proxy: %s", clientUpdateErr.Error())
+	}
+
+	sp.log.V(1).Info(
+		"Tunnel updated",
+		"TunnelID", tid,
+		"AcceptNewStreams", update.GetAcceptNewStreams(),
+		"ServerAddress", update.GetServerAddress(),
+		"ServerPort", update.GetServerPort(),
+	)
+	return &emptypb.Empty{}, nil
 }
 
 // Shuts down both sides of the tunneling proxy. Existing streams will be aborted.
@@ -423,6 +513,10 @@ func (sp *ServerProxy) createStreamConnections(ctx context.Context, sr *proto.St
 
 	sp.lock.Lock()
 	td, found := sp.tunnels[tid]
+	var tunnelSpec *proto.TunnelSpec
+	if found {
+		tunnelSpec = td.spec
+	}
 	sp.lock.Unlock()
 	if !found || td.deleted.Load() {
 		tunnelNotFoundErr := fmt.Errorf("tunnel with ID %d does not exist", tid)
@@ -430,11 +524,18 @@ func (sp *ServerProxy) createStreamConnections(ctx context.Context, sr *proto.St
 		res.tunnelNotFoundErr = tunnelNotFoundErr
 		return res
 	}
+	if !td.accepting.Load() {
+		tunnelSuspendedErr := fmt.Errorf("tunnel with ID %d is not accepting new streams", tid)
+		res.streamLog = sp.log.WithValues("TunnelID", tid, "StreamID", streamID)
+		res.serverDialErr = tunnelSuspendedErr
+		return res
+	}
+	res.tunnelSpec = tunnelSpec
 
 	res.streamLog = sp.log.WithValues(
 		"TunnelID", tid, "StreamID", streamID,
-		"ServerAddress", td.spec.GetServerAddress(),
-		"ServerPort", td.spec.GetServerPort(),
+		"ServerAddress", tunnelSpec.GetServerAddress(),
+		"ServerPort", tunnelSpec.GetServerPort(),
 		"ClientDataEndpointAddress", sp.clientDataEndpointAddress,
 		"ClientDataEndpointPort", sp.clientDataEndpointPort,
 	)
@@ -443,7 +544,7 @@ func (sp *ServerProxy) createStreamConnections(ctx context.Context, sr *proto.St
 	streamCreationCtx, streamCreationCtxCancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer streamCreationCtxCancel()
 
-	ap := networking.AddressAndPort(td.spec.GetServerAddress(), td.spec.GetServerPort())
+	ap := networking.AddressAndPort(tunnelSpec.GetServerAddress(), tunnelSpec.GetServerPort())
 	serverConn, serverDialErr := resiliency.RetryGetExponential(streamCreationCtx, func() (net.Conn, error) {
 		serverDialCtx, serverDialCtxCancel := context.WithTimeout(streamCreationCtx, proxy.DefaultConnectionTimeout)
 		defer serverDialCtxCancel()
@@ -498,9 +599,49 @@ func (sp *ServerProxy) completeStream(
 		return sp.reportConnectionError(connRes.streamRef, proto.StreamErr_STREAM_ERR_DATA_CONNECTION_FAILED, connRes.clientDataDialErr, newStreamsConn)
 	}
 
-	// All connections are established successfully, so we can send the result to the client proxy.
-
+	tid := TunnelID(connRes.streamRef.GetTunnelId())
+	streamID := connRes.streamRef.GetStreamId()
 	streamLog := connRes.streamLog
+	streamCtx, streamCtxCancel := context.WithCancel(sp.lifetimeCtx)
+	stopStream := func() {
+		streamCtxCancel()
+		_ = connRes.clientDataConn.Close()
+		_ = connRes.serverConn.Close()
+	}
+
+	tunnelSpec, registrationErr := sp.registerTunnelStream(
+		tid,
+		StreamID(streamID),
+		connRes.tunnelSpec,
+		stopStream,
+	)
+	if registrationErr != nil {
+		streamCtxCancel()
+		connRes.close()
+		return sp.reportConnectionError(connRes.streamRef, proto.StreamErr_STREAM_ERR_SERVER_UNAVAILABLE, registrationErr, newStreamsConn)
+	}
+
+	removeRegisteredStream := func() {
+		sp.lock.Lock()
+		current, currentFound := sp.tunnels[tid]
+		if currentFound {
+			delete(current.streams, StreamID(streamID))
+			if len(current.streams) == 0 && current.deleted.Load() {
+				delete(sp.tunnels, tid)
+			}
+		}
+		sp.lock.Unlock()
+		stopStream()
+	}
+
+	if !connRes.stopCleanup() {
+		removeRegisteredStream()
+		return context.Canceled
+	}
+
+	// Registration is linearized before success is reported. Suspension preserves
+	// registered streams, so a successful response always has an owner that will
+	// either start the stream or clean it up if the send fails.
 	res := &proto.NewStreamResult{
 		StreamRef: connRes.streamRef,
 	}
@@ -511,61 +652,45 @@ func (sp *ServerProxy) completeStream(
 		} else {
 			streamLog.V(1).Info("New streams connection is closing; stream will not be established")
 		}
-		connRes.close()
+		removeRegisteredStream()
 		return resErr
 	}
-	if !connRes.stopCleanup() {
-		connRes.close()
-		return context.Canceled
-	}
-
-	tid := TunnelID(connRes.streamRef.GetTunnelId())
-	streamID := connRes.streamRef.GetStreamId()
-
-	streamCtx, streamCtxCancel := context.WithCancel(sp.lifetimeCtx)
-	stopStream := func() {
-		streamCtxCancel()
-		_ = connRes.clientDataConn.Close()
-		_ = connRes.serverConn.Close()
-	}
-
-	sp.lock.Lock()
-	td, found := sp.tunnels[tid]
-	if !found || td.deleted.Load() {
-		sp.lock.Unlock()
-		streamLog.Info("Tunnel deleted while establishing a new stream")
-		stopStream()
-		return nil
-	}
-	td.streams[StreamID(streamID)] = stopStream
-	sp.lock.Unlock()
 
 	connRes.streamLog.V(1).Info("New tunnel stream started")
 
 	go func() {
 		defer func() {
-			stopStream()
-
-			sp.lock.Lock()
-			if td, found = sp.tunnels[tid]; found {
-				delete(td.streams, StreamID(streamID))
-
-				if len(td.streams) == 0 && td.deleted.Load() {
-					streamLog.V(1).Info("Forgetting deleted tunnel with no connections..")
-					delete(sp.tunnels, tid)
-				}
-			}
-
-			sp.lock.Unlock()
+			removeRegisteredStream()
 		}()
 
 		var buf bytes.Buffer
 		_ = binary.Write(&buf, binary.BigEndian, tid)
 		_ = binary.Write(&buf, binary.BigEndian, streamID)
-		_, _ = buf.Write(td.spec.GetDataConnectionToken())
+		_, _ = buf.Write(tunnelSpec.GetDataConnectionToken())
 		sp.runTunnelStream(streamCtx, buf.Bytes(), connRes.serverConn, connRes.clientDataConn, streamLog)
 	}()
 	return nil
+}
+
+func (sp *ServerProxy) registerTunnelStream(
+	tunnelID TunnelID,
+	streamID StreamID,
+	expectedSpec *proto.TunnelSpec,
+	stopStream stopStreamFn,
+) (*proto.TunnelSpec, error) {
+	sp.lock.Lock()
+	defer sp.lock.Unlock()
+
+	tunnel, found := sp.tunnels[tunnelID]
+	if !found || tunnel.deleted.Load() || !tunnel.accepting.Load() {
+		return nil, fmt.Errorf("tunnel with ID %d is not accepting new streams", tunnelID)
+	}
+	if tunnel.spec != expectedSpec {
+		return nil, fmt.Errorf("tunnel with ID %d changed its server endpoint while the stream was being established", tunnelID)
+	}
+
+	tunnel.streams[streamID] = stopStream
+	return tunnel.spec, nil
 }
 
 func (sp *ServerProxy) reportConnectionError(

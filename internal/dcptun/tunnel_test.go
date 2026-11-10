@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	stdproto "google.golang.org/protobuf/proto"
@@ -154,6 +155,372 @@ func TestTunnelDeletionReleasesListenerAndPreservesStreams(t *testing.T) {
 		func() []byte { return []byte("replacement stream\n") },
 	))
 	roundTripExisting("old stream remains active\n")
+}
+
+// Verifies that UpdateTunnel keeps the published listener and existing streams
+// while suspended, rejects new connections, and resumes against a changed backend.
+func TestTunnelUpdateSuspendsAndResumesListener(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{})
+	defer pair.cleanup()
+	firstBackend, firstBackendPort := setupEchoServer(t)
+	defer firstBackend.Close()
+	secondBackend, secondBackendPort := setupEchoServer(t)
+	defer secondBackend.Close()
+
+	request := &proto.TunnelReq{
+		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:         stdproto.Int32(int32(firstBackendPort)),
+		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+	}
+	original, prepareErr := pair.control.PrepareTunnel(ctx, request)
+	require.NoError(t, prepareErr)
+
+	var dialer net.Dialer
+	existingConnection, dialErr := dialer.DialContext(
+		ctx,
+		"tcp",
+		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, original.GetClientProxyPort()),
+	)
+	require.NoError(t, dialErr)
+	deadline, hasDeadline := ctx.Deadline()
+	require.True(t, hasDeadline)
+	require.NoError(t, existingConnection.SetDeadline(deadline))
+	existingReader := bufio.NewReader(existingConnection)
+	roundTripExisting := func(message string) {
+		_, writeErr := io.WriteString(existingConnection, message)
+		require.NoError(t, writeErr)
+		reply, readErr := existingReader.ReadString('\n')
+		require.NoError(t, readErr)
+		require.Equal(t, message, reply)
+	}
+	roundTripExisting("before suspension\n")
+
+	_, suspendErr := pair.control.UpdateTunnel(ctx, &proto.TunnelUpdate{
+		TunnelRef:        original.GetTunnelRef(),
+		AcceptNewStreams: stdproto.Bool(false),
+	})
+	require.NoError(t, suspendErr)
+	roundTripExisting("existing stream while suspended\n")
+
+	rejectedCtx, cancelRejected := context.WithTimeout(ctx, 3*time.Second)
+	defer cancelRejected()
+	rejectedErr := doRoundTrip(
+		rejectedCtx,
+		networking.IPv4LocalhostDefaultAddress,
+		original.GetClientProxyPort(),
+		time.Second,
+		func() []byte { return []byte("rejected while suspended\n") },
+	)
+	require.Error(t, rejectedErr)
+
+	require.NoError(t, existingConnection.Close())
+	require.NoError(t, firstBackend.Close())
+	_, resumeErr := pair.control.UpdateTunnel(ctx, &proto.TunnelUpdate{
+		TunnelRef:        original.GetTunnelRef(),
+		ServerAddress:    stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:       stdproto.Int32(int32(secondBackendPort)),
+		AcceptNewStreams: stdproto.Bool(true),
+	})
+	require.NoError(t, resumeErr)
+
+	resumedRequest := stdproto.CloneOf(request)
+	resumedRequest.ServerPort = stdproto.Int32(int32(secondBackendPort))
+	resumed, observeErr := pair.control.PrepareTunnel(ctx, resumedRequest)
+	require.NoError(t, observeErr)
+	require.Equal(t, original.GetTunnelRef().GetTunnelId(), resumed.GetTunnelRef().GetTunnelId())
+	require.Equal(t, original.GetClientProxyPort(), resumed.GetClientProxyPort())
+	require.Equal(t, int32(secondBackendPort), resumed.GetServerPort())
+	require.NoError(t, doRoundTrip(
+		ctx,
+		networking.IPv4LocalhostDefaultAddress,
+		resumed.GetClientProxyPort(),
+		10*time.Second,
+		func() []byte { return []byte("resumed against replacement backend\n") },
+	))
+}
+
+// Verifies that an ambiguous resume failure leaves the server side suspended,
+// preventing traffic until an idempotent retry updates both proxies.
+func TestTunnelUpdateResumeFailureRemainsSuspended(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	var loseResumeResponse atomic.Bool
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{
+		controlUnaryServerInterceptor: func(
+			callCtx context.Context,
+			request any,
+			info *grpc.UnaryServerInfo,
+			handler grpc.UnaryHandler,
+		) (any, error) {
+			response, handlerErr := handler(callCtx, request)
+			update, isUpdate := request.(*proto.TunnelUpdate)
+			if handlerErr == nil &&
+				isUpdate &&
+				info.FullMethod == proto.TunnelControl_UpdateTunnel_FullMethodName &&
+				update.GetAcceptNewStreams() &&
+				loseResumeResponse.CompareAndSwap(true, false) {
+				return nil, status.Error(codes.Unavailable, "resume response was lost")
+			}
+			return response, handlerErr
+		},
+	})
+	defer pair.cleanup()
+	echoListener, echoPort := setupEchoServer(t)
+	defer echoListener.Close()
+	tunnelSpec, prepareErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{
+		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:         stdproto.Int32(int32(echoPort)),
+		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+	})
+	require.NoError(t, prepareErr)
+	_, suspendErr := pair.control.UpdateTunnel(ctx, &proto.TunnelUpdate{
+		TunnelRef:        tunnelSpec.GetTunnelRef(),
+		AcceptNewStreams: stdproto.Bool(false),
+	})
+	require.NoError(t, suspendErr)
+
+	loseResumeResponse.Store(true)
+	resume := &proto.TunnelUpdate{
+		TunnelRef:        tunnelSpec.GetTunnelRef(),
+		ServerAddress:    stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:       stdproto.Int32(int32(echoPort)),
+		AcceptNewStreams: stdproto.Bool(true),
+	}
+	_, firstResumeErr := pair.control.UpdateTunnel(ctx, resume)
+	require.Error(t, firstResumeErr)
+	pair.server.lock.Lock()
+	serverTunnel := pair.server.tunnels[TunnelID(tunnelSpec.GetTunnelRef().GetTunnelId())]
+	serverAccepting := serverTunnel != nil && serverTunnel.accepting.Load()
+	pair.server.lock.Unlock()
+	require.False(t, serverAccepting)
+
+	rejectedErr := doRoundTrip(
+		ctx,
+		networking.IPv4LocalhostDefaultAddress,
+		tunnelSpec.GetClientProxyPort(),
+		3*time.Second,
+		func() []byte { return []byte("rejected after ambiguous resume\n") },
+	)
+	require.Error(t, rejectedErr)
+
+	_, retryResumeErr := pair.control.UpdateTunnel(ctx, resume)
+	require.NoError(t, retryResumeErr)
+	require.NoError(t, doRoundTrip(
+		ctx,
+		networking.IPv4LocalhostDefaultAddress,
+		tunnelSpec.GetClientProxyPort(),
+		10*time.Second,
+		func() []byte { return []byte("accepted after resume retry\n") },
+	))
+}
+
+// Verifies that a connection accepted before suspension remains owned while its
+// success response is blocked, rather than becoming a half-open parked stream.
+func TestTunnelUpdatePreservesStreamRegisteredBeforeSuspension(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	resultBlocked := make(chan struct{})
+	releaseResult := make(chan struct{})
+	var blockFirst sync.Once
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{
+		controlStreamInterceptor: func(callCtx context.Context, desc *grpc.StreamDesc, connection *grpc.ClientConn, method string, streamer grpc.Streamer, options ...grpc.CallOption) (grpc.ClientStream, error) {
+			stream, streamErr := streamer(callCtx, desc, connection, method, options...)
+			if streamErr != nil {
+				return nil, streamErr
+			}
+			return &gatedTunnelResult{
+				ClientStream: stream,
+				blockFirst:   &blockFirst,
+				blocked:      resultBlocked,
+				release:      releaseResult,
+			}, nil
+		},
+	})
+	defer pair.cleanup()
+	echoListener, echoPort := setupEchoServer(t)
+	defer echoListener.Close()
+	tunnelSpec, prepareErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{
+		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:         stdproto.Int32(int32(echoPort)),
+		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+	})
+	require.NoError(t, prepareErr)
+
+	var dialer net.Dialer
+	connection, dialErr := dialer.DialContext(
+		ctx,
+		"tcp",
+		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, tunnelSpec.GetClientProxyPort()),
+	)
+	require.NoError(t, dialErr)
+	defer connection.Close()
+	deadline, hasDeadline := ctx.Deadline()
+	require.True(t, hasDeadline)
+	require.NoError(t, connection.SetDeadline(deadline))
+	_, writeErr := io.WriteString(connection, "accepted before suspension\n")
+	require.NoError(t, writeErr)
+	select {
+	case <-resultBlocked:
+	case <-ctx.Done():
+		t.Fatal("Tunnel stream success did not reach the gated control send")
+	}
+
+	_, suspendErr := pair.control.UpdateTunnel(ctx, &proto.TunnelUpdate{
+		TunnelRef:        tunnelSpec.GetTunnelRef(),
+		AcceptNewStreams: stdproto.Bool(false),
+	})
+	require.NoError(t, suspendErr)
+	close(releaseResult)
+	reply, readErr := bufio.NewReader(connection).ReadString('\n')
+	require.NoError(t, readErr)
+	require.Equal(t, "accepted before suspension\n", reply)
+}
+
+// Verifies that a stream connection created for an old backend cannot register
+// after the tunnel has resumed with a replacement backend.
+func TestTunnelStreamRegistrationRejectsSupersededBackend(t *testing.T) {
+	t.Parallel()
+
+	oldSpec := &proto.TunnelSpec{
+		TunnelRef:     &proto.TunnelRef{TunnelId: stdproto.Uint32(1)},
+		ServerAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:    stdproto.Int32(31001),
+	}
+	tunnel := newTunnelData[stopStreamFn](oldSpec)
+	serverProxy := &ServerProxy{
+		tunnels: map[TunnelID]*tunnelData[stopStreamFn]{
+			1: tunnel,
+		},
+		lock: &sync.Mutex{},
+	}
+	replacementSpec := stdproto.CloneOf(oldSpec)
+	replacementSpec.ServerPort = stdproto.Int32(31002)
+	tunnel.spec = replacementSpec
+
+	_, registrationErr := serverProxy.registerTunnelStream(1, 1, oldSpec, func() {})
+	require.Error(t, registrationErr)
+	require.Contains(t, registrationErr.Error(), "changed its server endpoint")
+	require.Empty(t, tunnel.streams)
+}
+
+// Verifies that retrying DeleteTunnel reaches the client proxy after the
+// server-side tunnel entry drains, releasing the retained listener.
+func TestTunnelDeletionForwardsAfterServerEntryDrains(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	var blockClientDeletion atomic.Bool
+	blockClientDeletion.Store(true)
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{
+		controlUnaryServerInterceptor: func(
+			callCtx context.Context,
+			request any,
+			info *grpc.UnaryServerInfo,
+			handler grpc.UnaryHandler,
+		) (any, error) {
+			if info.FullMethod == proto.TunnelControl_DeleteTunnel_FullMethodName && blockClientDeletion.Load() {
+				return nil, status.Error(codes.Unavailable, "client deletion is temporarily blocked")
+			}
+			return handler(callCtx, request)
+		},
+	})
+	defer pair.cleanup()
+	echoListener, echoPort := setupEchoServer(t)
+	defer echoListener.Close()
+
+	request := &proto.TunnelReq{
+		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:         stdproto.Int32(int32(echoPort)),
+		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+	}
+	tunnelSpec, prepareErr := pair.control.PrepareTunnel(ctx, request)
+	require.NoError(t, prepareErr)
+
+	var dialer net.Dialer
+	connection, dialErr := dialer.DialContext(
+		ctx,
+		"tcp",
+		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, tunnelSpec.GetClientProxyPort()),
+	)
+	require.NoError(t, dialErr)
+	require.NoError(t, connection.SetDeadline(time.Now().Add(10*time.Second)))
+	_, writeErr := io.WriteString(connection, "establish stream\n")
+	require.NoError(t, writeErr)
+	reply, readErr := bufio.NewReader(connection).ReadString('\n')
+	require.NoError(t, readErr)
+	require.Equal(t, "establish stream\n", reply)
+
+	_, firstDeleteErr := pair.control.DeleteTunnel(ctx, tunnelSpec.GetTunnelRef())
+	require.Error(t, firstDeleteErr)
+	require.NoError(t, connection.Close())
+	tunnelID := TunnelID(tunnelSpec.GetTunnelRef().GetTunnelId())
+	drainErr := wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
+		pair.server.lock.Lock()
+		_, found := pair.server.tunnels[tunnelID]
+		pair.server.lock.Unlock()
+		return !found, nil
+	})
+	require.NoError(t, drainErr)
+
+	blockClientDeletion.Store(false)
+	_, retryDeleteErr := pair.control.DeleteTunnel(ctx, tunnelSpec.GetTunnelRef())
+	require.NoError(t, retryDeleteErr)
+
+	replacement, replacementErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{
+		ServerAddress:      request.ServerAddress,
+		ServerPort:         request.ServerPort,
+		ClientProxyAddress: request.ClientProxyAddress,
+		ClientProxyPort:    stdproto.Int32(tunnelSpec.GetClientProxyPort()),
+	})
+	require.NoError(t, replacementErr)
+	require.Equal(t, tunnelSpec.GetClientProxyPort(), replacement.GetClientProxyPort())
+}
+
+// Verifies that random client-listener allocation rejects reserved ports before
+// publishing a tunnel and continues with another OS-selected port.
+func TestClientProxyRandomPortExcludesReservations(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	dataListener, _ := setupListener(t, autoAllocatePort)
+	clientCtx, cancelClient := context.WithCancel(ctx)
+	clientProxy := NewClientProxy(clientCtx, dataListener, cancelClient, testutil.NewLogForTesting(t.Name()))
+	defer clientProxy.disposeOnce()
+
+	reservedListener, reservedPort := setupListener(t, autoAllocatePort)
+	allowedListener, allowedPort := setupListener(t, autoAllocatePort)
+	listeners := []net.Listener{reservedListener, allowedListener}
+	clientProxy.listen = func(context.Context, string, string) (net.Listener, error) {
+		require.NotEmpty(t, listeners)
+		listener := listeners[0]
+		listeners = listeners[1:]
+		return listener, nil
+	}
+
+	tunnelSpec, prepareErr := clientProxy.PrepareTunnel(ctx, &proto.TunnelReq{
+		ServerPort:               stdproto.Int32(12345),
+		ClientProxyAddress:       stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ExcludedClientProxyPorts: []int32{int32(reservedPort)},
+	})
+	require.NoError(t, prepareErr)
+	require.Equal(t, int32(allowedPort), tunnelSpec.GetClientProxyPort())
+
+	reboundListener, reboundErr := net.Listen(
+		"tcp",
+		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, int32(reservedPort)),
+	)
+	require.NoError(t, reboundErr, "The rejected reserved listener must be closed before PrepareTunnel returns")
+	require.NoError(t, reboundListener.Close())
 }
 
 // Runs 100 simultaneous clients making requests to a single server behind the proxy
@@ -481,6 +848,12 @@ func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger, config 
 	if config.controlServerInterceptor != nil {
 		clientServerOptions = append(clientServerOptions, grpc.StreamInterceptor(config.controlServerInterceptor))
 	}
+	if config.controlUnaryServerInterceptor != nil {
+		clientServerOptions = append(clientServerOptions, grpc.UnaryInterceptor(config.controlUnaryServerInterceptor))
+	}
+	if config.controlServerEnforcement != nil {
+		clientServerOptions = append(clientServerOptions, grpc.KeepaliveEnforcementPolicy(*config.controlServerEnforcement))
+	}
 	clientGrpcServer := grpc.NewServer(clientServerOptions...)
 	proto.RegisterTunnelControlServer(clientGrpcServer, clientProxy)
 
@@ -499,6 +872,9 @@ func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger, config 
 	}
 	if config.controlStreamInterceptor != nil {
 		dialOptions = append(dialOptions, grpc.WithStreamInterceptor(config.controlStreamInterceptor))
+	}
+	if config.controlClientKeepalive != nil {
+		dialOptions = append(dialOptions, grpc.WithKeepaliveParams(*config.controlClientKeepalive))
 	}
 	clientProxyConn, clientProxyErr := grpc.NewClient(
 		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, int32(clientControlPort)),
@@ -719,6 +1095,57 @@ func TestTunnelControlReconnectBudgetDoesNotLimitHealthyStream(t *testing.T) {
 	require.NoError(t, pair.server.Err())
 }
 
+// Verifies that gRPC keepalive detects a half-open idle control transport and
+// reconnects it without replacing prepared tunnels.
+func TestTunnelControlKeepaliveRecoversHalfOpenTransport(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	transport := &halfOpenTunnelTransport{}
+	clientKeepalive := keepalive.ClientParameters{
+		Time:    10 * time.Second,
+		Timeout: time.Second,
+	}
+	serverEnforcement := keepalive.EnforcementPolicy{MinTime: 10 * time.Second}
+	pair := createProxyPair(t, ctx, testutil.NewLogForTesting(t.Name()), proxyPairConfig{
+		server:                   ServerProxyConfig{ReconnectTimeout: 20 * time.Second},
+		controlDialer:            transport.dial,
+		controlClientKeepalive:   &clientKeepalive,
+		controlServerEnforcement: &serverEnforcement,
+	})
+	defer pair.cleanup()
+	echoListener, echoPort := setupEchoServer(t)
+	defer echoListener.Close()
+	tunnelSpec, prepareErr := pair.control.PrepareTunnel(ctx, &proto.TunnelReq{
+		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:         stdproto.Int32(int32(echoPort)),
+		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+	})
+	require.NoError(t, prepareErr)
+	require.NoError(t, doRoundTrip(
+		ctx,
+		networking.IPv4LocalhostDefaultAddress,
+		tunnelSpec.GetClientProxyPort(),
+		5*time.Second,
+		func() []byte { return []byte("before half-open transport\n") },
+	))
+
+	require.NoError(t, transport.blackholeCurrent())
+	reconnectedErr := wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
+		return transport.connectionCount() >= 2, nil
+	})
+	require.NoError(t, reconnectedErr)
+	require.NoError(t, doRoundTrip(
+		ctx,
+		networking.IPv4LocalhostDefaultAddress,
+		tunnelSpec.GetClientProxyPort(),
+		10*time.Second,
+		func() []byte { return []byte("after keepalive reconnect\n") },
+	))
+	require.NoError(t, pair.server.Err())
+}
+
 // Verifies that ServerProxy bounds reconnect even while WaitForReady blocks,
 // reports budget exhaustion, and leaves pair recreation to the controller.
 func TestTunnelControlReconnectBudgetExhaustion(t *testing.T) {
@@ -898,6 +1325,29 @@ type blockedTunnelResult struct {
 	grpc.ClientStream
 	blockFirst *sync.Once
 	blocked    chan<- struct{}
+}
+
+type gatedTunnelResult struct {
+	grpc.ClientStream
+	blockFirst *sync.Once
+	blocked    chan<- struct{}
+	release    <-chan struct{}
+}
+
+func (stream *gatedTunnelResult) SendMsg(message any) error {
+	block := false
+	stream.blockFirst.Do(func() {
+		block = true
+		close(stream.blocked)
+	})
+	if block {
+		select {
+		case <-stream.release:
+		case <-stream.Context().Done():
+			return status.FromContextError(stream.Context().Err()).Err()
+		}
+	}
+	return stream.ClientStream.SendMsg(message)
 }
 
 func (stream *blockedTunnelResult) SendMsg(message any) error {
@@ -1085,10 +1535,13 @@ func TestTunnelControlReconnectQueuedRequestsAndTunnelChanges(t *testing.T) {
 }
 
 type proxyPairConfig struct {
-	server                   ServerProxyConfig
-	controlDialer            func(context.Context, string) (net.Conn, error)
-	controlStreamInterceptor grpc.StreamClientInterceptor
-	controlServerInterceptor grpc.StreamServerInterceptor
+	server                        ServerProxyConfig
+	controlDialer                 func(context.Context, string) (net.Conn, error)
+	controlStreamInterceptor      grpc.StreamClientInterceptor
+	controlServerInterceptor      grpc.StreamServerInterceptor
+	controlUnaryServerInterceptor grpc.UnaryServerInterceptor
+	controlClientKeepalive        *keepalive.ClientParameters
+	controlServerEnforcement      *keepalive.EnforcementPolicy
 }
 
 type proxyPair struct {
@@ -1096,6 +1549,72 @@ type proxyPair struct {
 	server  *ServerProxy
 	client  *ClientProxy
 	cleanup context.CancelFunc
+}
+
+type halfOpenTunnelTransport struct {
+	lock        sync.Mutex
+	current     *halfOpenConn
+	connections int
+}
+
+func (transport *halfOpenTunnelTransport) dial(ctx context.Context, address string) (net.Conn, error) {
+	var dialer net.Dialer
+	connection, dialErr := dialer.DialContext(ctx, "tcp", address)
+	if dialErr != nil {
+		return nil, dialErr
+	}
+	wrapped := &halfOpenConn{Conn: connection}
+	transport.lock.Lock()
+	transport.current = wrapped
+	transport.connections++
+	transport.lock.Unlock()
+	return wrapped, nil
+}
+
+func (transport *halfOpenTunnelTransport) blackholeCurrent() error {
+	transport.lock.Lock()
+	current := transport.current
+	transport.lock.Unlock()
+	if current == nil {
+		return errors.New("no tunnel control transport has connected")
+	}
+	current.blackhole.Store(true)
+	return nil
+}
+
+func (transport *halfOpenTunnelTransport) connectionCount() int {
+	transport.lock.Lock()
+	defer transport.lock.Unlock()
+	return transport.connections
+}
+
+type halfOpenConn struct {
+	net.Conn
+	blackhole atomic.Bool
+}
+
+func (connection *halfOpenConn) Read(buffer []byte) (int, error) {
+	for {
+		deadlineErr := connection.Conn.SetReadDeadline(time.Now().Add(25 * time.Millisecond))
+		if deadlineErr != nil {
+			return 0, deadlineErr
+		}
+		count, readErr := connection.Conn.Read(buffer)
+		if connection.blackhole.Load() && count > 0 {
+			continue
+		}
+		if timeoutErr, isTimeout := readErr.(net.Error); isTimeout && timeoutErr.Timeout() {
+			continue
+		}
+		return count, readErr
+	}
+}
+
+func (connection *halfOpenConn) Write(buffer []byte) (int, error) {
+	if connection.blackhole.Load() {
+		return len(buffer), nil
+	}
+	return connection.Conn.Write(buffer)
 }
 
 type controlledTunnelTransport struct {

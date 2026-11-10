@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 
 	cmdutil "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/internal/dcptun"
@@ -108,6 +109,9 @@ func runClientProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			log.V(1).Info("Using insecure gRPC server for control endpoint")
 		}
 
+		grpcServerOpts = append(grpcServerOpts, grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime: dcptun.ControlKeepaliveTime,
+		}))
 		controlEndpointServer := grpc.NewServer(grpcServerOpts...)
 		proto.RegisterTunnelControlServer(controlEndpointServer, clientProxy)
 

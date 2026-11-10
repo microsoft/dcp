@@ -82,7 +82,7 @@ const (
 	// Initial state -- no attempt to prepare the tunnel have been made yet.
 	TunnelStateEmpty TunnelState = ""
 
-	// Tunnel is being prepared, or is waiting for required services to become ready.
+	// Tunnel is being prepared, waiting for required services, or suspended while retaining its published listener.
 	TunnelStateNotReady TunnelState = "NotReady"
 
 	// Tunnel deletion has been requested and is being retried. Existing streams may remain active.
@@ -130,12 +130,12 @@ type TunnelStatus struct {
 	ErrorMessage string `json:"errorMessage,omitempty"`
 
 	// Addresses on the container network that client proxy is listening on for this tunnel.
-	// May be empty if the tunnel is not ready.
+	// Retained while a prepared tunnel is suspended; may be empty before initial preparation.
 	// +listType=set
 	ClientProxyAddresses []string `json:"clientProxyAddresses,omitempty"`
 
 	// Port on the container network that client proxy is listening on for this tunnel.
-	// May be zero if the tunnel is not ready.
+	// Retained while a prepared tunnel is suspended; may be zero before initial preparation.
 	ClientProxyPort int32 `json:"clientProxyPort,omitempty"`
 
 	// The timestamp for the status (last update).

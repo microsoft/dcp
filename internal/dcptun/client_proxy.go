@@ -99,6 +99,9 @@ type ClientProxy struct {
 	// Function to request shutdown of the client-side proxy.
 	requestShutdown func()
 
+	// Opens tunnel listeners. Tests replace this at the network-listener boundary.
+	listen func(context.Context, string, string) (net.Listener, error)
+
 	// Data about tunnels managed by this proxy, indexed by tunnel ID.
 	tunnels map[TunnelID]*clientTunnelData
 
@@ -124,10 +127,12 @@ type ClientProxy struct {
 }
 
 func NewClientProxy(ctx context.Context, dataListener net.Listener, requestShutdown func(), log logr.Logger) *ClientProxy {
+	listenConfig := &net.ListenConfig{}
 	cp := &ClientProxy{
 		lifetimeCtx:       ctx,
 		dataListener:      dataListener,
 		requestShutdown:   requestShutdown,
+		listen:            listenConfig.Listen,
 		log:               log,
 		tunnels:           make(map[TunnelID]*clientTunnelData),
 		tunnelRequests:    make(map[proto.TunnelRequestFingerprint]TunnelID),
@@ -163,9 +168,10 @@ func (cp *ClientProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 	cp.lock.Lock()
 	if tid, alreadyRequested := cp.tunnelRequests[tf]; alreadyRequested {
 		if ctd, found := cp.tunnels[tid]; found && !ctd.deleted.Load() {
+			tunnelSpec := ctd.spec
 			cp.lock.Unlock()
-			cp.log.V(1).Info("Returning existing tunnel for request", "TunnelID", tid, "TunnelSpec", ctd.spec.LogString())
-			return ctd.spec, nil
+			cp.log.V(1).Info("Returning existing tunnel for request", "TunnelID", tid, "TunnelSpec", tunnelSpec.LogString())
+			return tunnelSpec, nil
 		}
 		// The tunnel was deleted, so remove it from the requests map and continue to create a new one
 		delete(cp.tunnelRequests, tf)
@@ -177,8 +183,7 @@ func (cp *ClientProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 		return nil, status.Errorf(codes.Internal, "failed to resolve client proxy address %s: %s", tr.GetClientProxyAddress(), lookupErr.Error())
 	}
 
-	lc := net.ListenConfig{}
-	tunnelListener, tlErr := lc.Listen(ctx, "tcp", networking.AddressAndPort(tr.GetClientProxyAddress(), tr.GetClientProxyPort()))
+	tunnelListener, tlErr := cp.listenForTunnel(ctx, tr)
 	if tlErr != nil {
 		cp.log.Error(tlErr, "Failed to listen on client proxy address",
 			"Address", tr.GetClientProxyAddress(),
@@ -189,6 +194,7 @@ func (cp *ClientProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 
 	authToken, tokenErr := security.MakeBearerToken()
 	if tokenErr != nil {
+		_ = tunnelListener.Close()
 		cp.log.Error(tokenErr, "Failed to generate authentication token for tunnel")
 		return nil, status.Errorf(codes.Internal, "failed to generate authentication token for tunnel: %s", tokenErr.Error())
 	}
@@ -224,6 +230,46 @@ func (cp *ClientProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 	return ts, nil
 }
 
+func (cp *ClientProxy) listenForTunnel(ctx context.Context, tr *proto.TunnelReq) (net.Listener, error) {
+	if tr.GetClientProxyPort() != 0 || len(tr.GetExcludedClientProxyPorts()) == 0 {
+		return cp.listen(ctx, "tcp", networking.AddressAndPort(tr.GetClientProxyAddress(), tr.GetClientProxyPort()))
+	}
+
+	excludedPorts := make(map[int32]struct{}, len(tr.GetExcludedClientProxyPorts()))
+	for _, excludedPort := range tr.GetExcludedClientProxyPorts() {
+		excludedPorts[excludedPort] = struct{}{}
+	}
+
+	// Keep rejected listeners bound until a usable port is selected. This prevents
+	// the OS from repeatedly returning the same excluded port and bounds the
+	// number of attempts by the number of unique exclusions plus one.
+	rejectedListeners := make([]net.Listener, 0, len(excludedPorts))
+	defer func() {
+		for _, listener := range rejectedListeners {
+			_ = listener.Close()
+		}
+	}()
+
+	for {
+		tunnelListener, listenErr := cp.listen(
+			ctx,
+			"tcp",
+			networking.AddressAndPort(tr.GetClientProxyAddress(), 0),
+		)
+		if listenErr != nil {
+			return nil, listenErr
+		}
+
+		selectedPort := int32(tunnelListener.Addr().(*net.TCPAddr).Port)
+		if _, excluded := excludedPorts[selectedPort]; !excluded {
+			return tunnelListener, nil
+		}
+
+		cp.log.V(1).Info("Random tunnel port is reserved; selecting another port", "Port", selectedPort)
+		rejectedListeners = append(rejectedListeners, tunnelListener)
+	}
+}
+
 // Gracefully deletes the tunnel identified by tunnel ID.
 // Existing streams will be preserved, but no new streams will be allowed.
 func (cp *ClientProxy) DeleteTunnel(ctx context.Context, tr *proto.TunnelRef) (*emptypb.Empty, error) {
@@ -240,6 +286,7 @@ func (cp *ClientProxy) DeleteTunnel(ctx context.Context, tr *proto.TunnelRef) (*
 		return &emptypb.Empty{}, nil
 	}
 
+	td.accepting.Store(false)
 	td.deleted.Store(true)
 
 	for tf, id := range cp.tunnelRequests {
@@ -255,6 +302,53 @@ func (cp *ClientProxy) DeleteTunnel(ctx context.Context, tr *proto.TunnelRef) (*
 	}
 
 	cp.log.V(1).Info("Tunnel deleted", "TunnelID", tid)
+	return &emptypb.Empty{}, nil
+}
+
+// UpdateTunnel changes whether an existing tunnel accepts new streams and, when
+// resuming, records the current server endpoint without replacing its listener.
+func (cp *ClientProxy) UpdateTunnel(_ context.Context, update *proto.TunnelUpdate) (*emptypb.Empty, error) {
+	validationErr := ensureValidTunnelUpdate(update)
+	if validationErr != nil {
+		return nil, validationErr
+	}
+	if cp.disposed.Load() {
+		return nil, status.Error(codes.FailedPrecondition, errMsgProxyDisposed)
+	}
+
+	tid := TunnelID(update.GetTunnelRef().GetTunnelId())
+	cp.lock.Lock()
+	defer cp.lock.Unlock()
+
+	td, found := cp.tunnels[tid]
+	if !found || td.deleted.Load() {
+		return nil, status.Errorf(codes.NotFound, "tunnel with ID %d does not exist", tid)
+	}
+
+	if update.GetAcceptNewStreams() {
+		updatedSpec := stdproto.CloneOf(td.spec)
+		updatedSpec.ServerAddress = stdproto.String(update.GetServerAddress())
+		updatedSpec.ServerPort = stdproto.Int32(update.GetServerPort())
+		td.spec = updatedSpec
+		for requestFingerprint, mappedTunnelID := range cp.tunnelRequests {
+			if mappedTunnelID != tid {
+				continue
+			}
+			delete(cp.tunnelRequests, requestFingerprint)
+			requestFingerprint.ServerAddress = update.GetServerAddress()
+			requestFingerprint.ServerPort = update.GetServerPort()
+			cp.tunnelRequests[requestFingerprint] = tid
+			break
+		}
+	}
+	td.accepting.Store(update.GetAcceptNewStreams())
+	cp.log.V(1).Info(
+		"Tunnel updated",
+		"TunnelID", tid,
+		"AcceptNewStreams", update.GetAcceptNewStreams(),
+		"ServerAddress", update.GetServerAddress(),
+		"ServerPort", update.GetServerPort(),
+	)
 	return &emptypb.Empty{}, nil
 }
 
@@ -485,10 +579,10 @@ func (cp *ClientProxy) handleClientConnections(tunnelCtx context.Context, tid Tu
 		}
 		cp.lock.Lock()
 		td, found := cp.tunnels[tid]
-		if !found || td.deleted.Load() {
+		if !found || td.deleted.Load() || !td.accepting.Load() {
 			cp.lock.Unlock()
 			_ = incoming.Close()
-			cp.log.V(1).Info("Tunnel is no longer available, rejecting incoming connection", "TunnelID", tid)
+			cp.log.V(1).Info("Tunnel is not accepting new streams, rejecting incoming connection", "TunnelID", tid)
 			continue
 		}
 

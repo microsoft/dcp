@@ -17,6 +17,12 @@ service TunnelControl {
   // Existing streams will be preserved, but no new streams will be allowed.
   rpc DeleteTunnel(TunnelRef) returns (google.protobuf.Empty);
 
+  // Updates an existing tunnel without changing its client-facing listener or ID.
+  // When accept_new_streams is false, the client listener remains bound but rejects
+  // new connections. When it is true, the server address and port identify the
+  // current backend used for new streams.
+  rpc UpdateTunnel(TunnelUpdate) returns (google.protobuf.Empty);
+
   // Shuts down both sides of the tunneling proxy. Existing streams will be aborted.
   rpc Shutdown(google.protobuf.Empty) returns (google.protobuf.Empty);
 
@@ -55,6 +61,11 @@ message TunnelReq {
   // The port that the client network proxy will use;
   // This is optional and defaults to 0 (random port).
   int32 client_proxy_port = 5;
+
+  // Client proxy ports that random allocation must not select. This is used to
+  // preserve ports previously published by tunnels whose listeners are being
+  // recovered. The field is ignored when client_proxy_port is non-zero.
+  repeated int32 excluded_client_proxy_ports = 6;
 }
 
 // Describes a tunnel that allows clients connected to "client network" 
@@ -88,6 +99,24 @@ message TunnelSpec {
 message TunnelRef {
   // The ID of the tunnel.
   uint32 tunnel_id = 1;
+}
+
+// Describes the desired mutable state of an existing tunnel.
+message TunnelUpdate {
+  // The tunnel to update.
+  TunnelRef tunnel_ref = 1;
+
+  // The current address of the server used for new streams. Required when
+  // accept_new_streams is true.
+  string server_address = 2;
+
+  // The current port of the server used for new streams. Required when
+  // accept_new_streams is true.
+  int32 server_port = 3;
+
+  // Whether the tunnel may accept and establish new streams. Existing streams
+  // are preserved when this is false.
+  bool accept_new_streams = 4;
 }
 
 // Carries the result of an attempt to establish a tunnel stream.

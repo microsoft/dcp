@@ -49,6 +49,16 @@ type tunnelExtraData struct {
 
 	// The names of client service Endpoints that have been created for this tunnel.
 	clientServiceEndpointNames []types.NamespacedName
+
+	// The server endpoint currently configured in the proxy pair.
+	serverAddress string
+	serverPort    int32
+
+	// Whether the proxy pair is currently accepting new streams for this tunnel.
+	acceptingNewStreams bool
+
+	// Whether acceptingNewStreams reflects a confirmed proxy-pair update.
+	acceptanceStateKnown bool
 }
 
 func (ted tunnelExtraData) Clone() tunnelExtraData {
@@ -56,6 +66,10 @@ func (ted tunnelExtraData) Clone() tunnelExtraData {
 		preparationAttempts:          ted.preparationAttempts,
 		nextPreparationNoEarlierThan: ted.nextPreparationNoEarlierThan,
 		clientServiceEndpointNames:   std_slices.Clone(ted.clientServiceEndpointNames),
+		serverAddress:                ted.serverAddress,
+		serverPort:                   ted.serverPort,
+		acceptingNewStreams:          ted.acceptingNewStreams,
+		acceptanceStateKnown:         ted.acceptanceStateKnown,
 	}
 	return copy
 }
@@ -68,6 +82,12 @@ func (ted tunnelExtraData) Equal(other tunnelExtraData) bool {
 		return false
 	}
 	if !std_slices.Equal(ted.clientServiceEndpointNames, other.clientServiceEndpointNames) {
+		return false
+	}
+	if ted.serverAddress != other.serverAddress ||
+		ted.serverPort != other.serverPort ||
+		ted.acceptingNewStreams != other.acceptingNewStreams ||
+		ted.acceptanceStateKnown != other.acceptanceStateKnown {
 		return false
 	}
 	return true
@@ -280,15 +300,11 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 		updated = true
 	}
 
-	for k, v := range other.tunnelExtra {
-		existing, found := tpd.tunnelExtra[k]
-		if !found {
-			tpd.tunnelExtra[k] = v.Clone()
-			updated = true
-		} else if !existing.Equal(v) {
-			tpd.tunnelExtra[k] = v.Clone()
-			updated = true
-		}
+	if !std_maps.EqualFunc(tpd.tunnelExtra, other.tunnelExtra, func(left tunnelExtraData, right tunnelExtraData) bool {
+		return left.Equal(right)
+	}) {
+		tpd.tunnelExtra = maps.Map[string, tunnelExtraData, tunnelExtraData](other.tunnelExtra, tunnelExtraData.Clone)
+		updated = true
 	}
 
 	if other.securityConfig != nil && tpd.securityConfig != other.securityConfig {

@@ -31,6 +31,9 @@ type TestTunnelControlClient struct {
 	// Tunnels that this test client is aware of/can handle, keyed by their fingerprint.
 	tunnels map[dcptunproto.TunnelRequestFingerprint]*dcptunproto.TunnelSpec
 
+	// Whether each prepared tunnel accepts new streams, keyed by tunnel ID.
+	accepting map[uint32]bool
+
 	// The next tunnel ID to use (monotonically increasing).
 	nextTunnelId uint32
 }
@@ -39,6 +42,7 @@ func NewTestTunnelControlClient() *TestTunnelControlClient {
 	return &TestTunnelControlClient{
 		lock:         &sync.Mutex{},
 		tunnels:      make(map[dcptunproto.TunnelRequestFingerprint]*dcptunproto.TunnelSpec),
+		accepting:    make(map[uint32]bool),
 		nextTunnelId: InvalidTunnelID + 1,
 	}
 }
@@ -82,6 +86,15 @@ func (t *TestTunnelControlClient) GetTunnelSpec(rf dcptunproto.TunnelRequestFing
 	return stdproto.CloneOf(tunnelSpec)
 }
 
+// TunnelAccepting reports whether the prepared tunnel currently accepts new streams.
+func (t *TestTunnelControlClient) TunnelAccepting(tunnelID uint32) (bool, bool) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	accepting, found := t.accepting[tunnelID]
+	return accepting, found
+}
+
 //
 // TunnelControlClient interface methods
 //
@@ -105,6 +118,7 @@ func (t *TestTunnelControlClient) PrepareTunnel(ctx context.Context, req *dcptun
 	}
 
 	tunnelSpec.TunnelRef.TunnelId = stdproto.Uint32(t.nextTunnelId)
+	t.accepting[t.nextTunnelId] = true
 	t.nextTunnelId++
 
 	if req.GetClientProxyAddress() != "" && req.GetClientProxyAddress() != networking.IPv4AllInterfaceAddress {
@@ -117,8 +131,17 @@ func (t *TestTunnelControlClient) PrepareTunnel(ctx context.Context, req *dcptun
 	if networking.IsValidPort(int(req.GetClientProxyPort())) {
 		port = req.GetClientProxyPort()
 	} else {
-		// Assign a random port in the ephemeral port range.
-		port = int32(networking.DefaultEphemeralPortRangeStart) + mathrand.Int31n(networking.DefaultEphemeralPortRangeEnd-networking.DefaultEphemeralPortRangeStart)
+		excludedPorts := make(map[int32]struct{}, len(req.GetExcludedClientProxyPorts()))
+		for _, excludedPort := range req.GetExcludedClientProxyPorts() {
+			excludedPorts[excludedPort] = struct{}{}
+		}
+		for {
+			// Assign a random port in the ephemeral port range.
+			port = int32(networking.DefaultEphemeralPortRangeStart) + mathrand.Int31n(networking.DefaultEphemeralPortRangeEnd-networking.DefaultEphemeralPortRangeStart)
+			if _, excluded := excludedPorts[port]; !excluded {
+				break
+			}
+		}
 	}
 	tunnelSpec.ClientProxyPort = &port
 
@@ -139,6 +162,7 @@ func (t *TestTunnelControlClient) DeleteTunnel(ctx context.Context, tr *dcptunpr
 	for rf, tunnelSpec := range t.tunnels {
 		if tunnelSpec.GetTunnelRef().GetTunnelId() == *tr.TunnelId {
 			found = true
+			delete(t.accepting, *tr.TunnelId)
 			// Reset the tunnel spec to unprepared state, but keep it enabled.
 			tunnelSpec.TunnelRef.TunnelId = nil
 			tunnelSpec.ClientProxyAddresses = nil
@@ -153,6 +177,34 @@ func (t *TestTunnelControlClient) DeleteTunnel(ctx context.Context, tr *dcptunpr
 	} else {
 		return &emptypb.Empty{}, nil
 	}
+}
+
+func (t *TestTunnelControlClient) UpdateTunnel(_ context.Context, update *dcptunproto.TunnelUpdate, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	tunnelID := update.GetTunnelRef().GetTunnelId()
+	if tunnelID == InvalidTunnelID {
+		return nil, status.Error(codes.InvalidArgument, "UpdateTunnel request has invalid tunnel reference")
+	}
+
+	for requestFingerprint, tunnelSpec := range t.tunnels {
+		if tunnelSpec.GetTunnelRef().GetTunnelId() != tunnelID {
+			continue
+		}
+		if update.GetAcceptNewStreams() {
+			delete(t.tunnels, requestFingerprint)
+			requestFingerprint.ServerAddress = update.GetServerAddress()
+			requestFingerprint.ServerPort = update.GetServerPort()
+			tunnelSpec.ServerAddress = stdproto.String(update.GetServerAddress())
+			tunnelSpec.ServerPort = stdproto.Int32(update.GetServerPort())
+			t.tunnels[requestFingerprint] = tunnelSpec
+		}
+		t.accepting[tunnelID] = update.GetAcceptNewStreams()
+		return &emptypb.Empty{}, nil
+	}
+
+	return nil, status.Errorf(codes.NotFound, "UpdateTunnel request for unknown tunnel ID: %d", tunnelID)
 }
 
 func (t *TestTunnelControlClient) Shutdown(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error) {

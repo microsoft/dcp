@@ -103,8 +103,15 @@ func TestContainerNetworkTunnelProxyDataRecoveryGeneration(t *testing.T) {
 	current.clientPhysicalUID = "current-container"
 	current.recovery.backoff = backoff.NewConstantBackOff(time.Second)
 	current.publishedPorts["service"] = 45001
+	current.tunnelExtra["service"] = tunnelExtraData{
+		serverAddress:        "127.0.0.1",
+		serverPort:           45002,
+		acceptingNewStreams:  true,
+		acceptanceStateKnown: true,
+	}
 	clone := current.Clone()
 	require.Same(t, current.recovery.backoff, clone.recovery.backoff)
+	require.Equal(t, current.tunnelExtra["service"], clone.tunnelExtra["service"])
 	clone.publishedPorts["service"] = 45002
 	require.Equal(t, int32(45001), current.publishedPorts["service"])
 	clone.State = apiv1.ContainerNetworkTunnelProxyStateRecoveryWait
@@ -114,8 +121,13 @@ func TestContainerNetworkTunnelProxyDataRecoveryGeneration(t *testing.T) {
 	require.Equal(t, apiv1.ContainerNetworkTunnelProxyStateRecoveryWait, current.State)
 	require.Equal(t, clone.recovery.retryAfter, current.recovery.retryAfter)
 	require.Equal(t, int32(45002), current.publishedPorts["service"])
+	require.Equal(t, clone.tunnelExtra["service"], current.tunnelExtra["service"])
 	clone.publishedPorts["service"] = 45003
 	require.Equal(t, int32(45002), current.publishedPorts["service"])
+
+	delete(clone.tunnelExtra, "service")
+	require.True(t, current.UpdateFrom(clone))
+	require.NotContains(t, current.tunnelExtra, "service")
 
 	missingIdentity := current.Clone()
 	missingIdentity.clientPhysicalUID = ""

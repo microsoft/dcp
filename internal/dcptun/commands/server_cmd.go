@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 
 	cmdutil "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/internal/dcptun"
@@ -78,7 +79,10 @@ func runServerProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 
 		clientProxyConn, clientProxyErr := grpc.NewClient(
 			networking.AddressAndPort(tunnelConfig.ClientControlAddress, tunnelConfig.ClientControlPort),
-			clientProxyConnOpts...,
+			append(clientProxyConnOpts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
+				Time:    dcptun.ControlKeepaliveTime,
+				Timeout: dcptun.ControlKeepaliveTimeout,
+			}))...,
 		)
 		if clientProxyErr != nil {
 			log.Error(clientProxyErr, "Failed to connect to the client-side proxy",

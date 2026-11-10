@@ -57,6 +57,7 @@ type TestEnvironmentOptions struct {
 	DecoratePhysicalProcessExecutor func(process.Executor) process.Executor
 	ConfigureTunnelProxy            func(*controllers.ContainerNetworkTunnelProxyReconcilerConfig)
 	DecorateTunnelProxyClient       func(ctrl_client.Client) ctrl_client.Client
+	DecorateTunnelProxyAPIReader    func(ctrl_client.Reader) ctrl_client.Reader
 	DecorateAPIClient               func(ctrl_client.Client) ctrl_client.Client
 	WorkloadID                      commonapi.WorkloadID
 	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
@@ -512,11 +513,18 @@ func StartTestEnvironmentWithOptions(
 		if options.ConfigureTunnelProxy != nil {
 			options.ConfigureTunnelProxy(&tprOpts)
 		}
+		tunnelProxyAPIReader := mgr.GetAPIReader()
+		if options.DecorateTunnelProxyAPIReader != nil {
+			tunnelProxyAPIReader = options.DecorateTunnelProxyAPIReader(tunnelProxyAPIReader)
+			if tunnelProxyAPIReader == nil {
+				return nil, nil, fmt.Errorf("tunnel proxy API reader decorator returned nil")
+			}
+		}
 
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(
 			ctx,
 			tunnelProxyClient,
-			mgr.GetAPIReader(),
+			tunnelProxyAPIReader,
 			tprOpts,
 			log.WithName("TunnelProxyReconciler"),
 		)

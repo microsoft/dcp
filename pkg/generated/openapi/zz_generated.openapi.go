@@ -4079,7 +4079,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Addresses on the container network that client proxy is listening on for this tunnel. May be empty if the tunnel is not ready.",
+							Description: "Addresses on the container network that client proxy is listening on for this tunnel. Retained while a prepared tunnel is suspended; may be empty before initial preparation.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -4093,7 +4093,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 					},
 					"clientProxyPort": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Port on the container network that client proxy is listening on for this tunnel. May be zero if the tunnel is not ready.",
+							Description: "Port on the container network that client proxy is listening on for this tunnel. Retained while a prepared tunnel is suspended; may be zero before initial preparation.",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},
