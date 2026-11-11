@@ -56,7 +56,7 @@ const (
 	logicalContainerExecStateCreating
 	logicalContainerExecStateRunning
 	logicalContainerExecStateExited
-	logicalContainerExecStateRuntimeFailed
+	logicalContainerExecStateRuntimeFailed // Backing failure observation, not a stored lifecycle state.
 	logicalContainerExecStateMissing
 	logicalContainerExecStateFailed
 	logicalContainerExecStateStopping
@@ -120,7 +120,7 @@ func (data *logicalContainerExecData) UpdateFrom(other *logicalContainerExecData
 
 func (data *logicalContainerExecData) terminal() bool {
 	switch data.state {
-	case logicalContainerExecStateExited, logicalContainerExecStateRuntimeFailed, logicalContainerExecStateMissing,
+	case logicalContainerExecStateExited, logicalContainerExecStateMissing,
 		logicalContainerExecStateFailed, logicalContainerExecStateInvalid:
 		return true
 	default:
@@ -203,9 +203,6 @@ var logicalContainerExecProjections = physicalResourceProjectionTable[logicalCon
 		},
 		logicalContainerExecStateExited: {
 			phase: apiv2.LogicalContainerExecPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonCompleted,
-		},
-		logicalContainerExecStateRuntimeFailed: {
-			phase: apiv2.LogicalContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonFailedToStart,
 		},
 		logicalContainerExecStateMissing: {
 			phase: apiv2.LogicalContainerExecPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerExecReasonMissing,

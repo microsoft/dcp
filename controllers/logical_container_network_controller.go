@@ -39,13 +39,14 @@ var (
 	errMultipleLogicalNetworkBackings   = errors.New("multiple owned physical networks")
 	logicalContainerNetworkFinalizer    = fmt.Sprintf("%s/logicalcontainernetwork-reconciler", apiv2.GroupVersion.Group)
 	logicalContainerNetworkDataHandlers = map[logicalContainerNetworkState]logicalContainerNetworkDataHandlerFunc{
-		logicalContainerNetworkStatePending:           handleLogicalContainerNetworkPending,
-		logicalContainerNetworkStatePreparationFailed: handleLogicalContainerNetworkTerminal,
-		logicalContainerNetworkStateCreating:          handleLogicalContainerNetworkCreating,
-		logicalContainerNetworkStateReady:             handleLogicalContainerNetworkReady,
-		logicalContainerNetworkStateFailed:            handleLogicalContainerNetworkTerminal,
-		logicalContainerNetworkStateUnknown:           handleLogicalContainerNetworkUnknown,
-		0:                                             handleLogicalContainerNetworkUnknown,
+		logicalContainerNetworkStatePending:            handleLogicalContainerNetworkPending,
+		logicalContainerNetworkStateWaitingForExisting: handleLogicalContainerNetworkPending,
+		logicalContainerNetworkStatePreparationFailed:  handleLogicalContainerNetworkTerminal,
+		logicalContainerNetworkStateCreating:           handleLogicalContainerNetworkCreating,
+		logicalContainerNetworkStateReady:              handleLogicalContainerNetworkReady,
+		logicalContainerNetworkStateFailed:             handleLogicalContainerNetworkTerminal,
+		logicalContainerNetworkStateUnknown:            handleLogicalContainerNetworkUnknown,
+		0:                                              handleLogicalContainerNetworkUnknown,
 	}
 )
 
@@ -162,8 +163,7 @@ func (r *LogicalContainerNetworkReconciler) manageLogicalContainerNetwork(
 			if namespaceErr != nil {
 
 				log.Error(namespaceErr, "Failed to get namespace", "Namespace", network.Namespace)
-				phase, message = apiv2.LogicalContainerNetworkPhaseUnknown, fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
-				reason = apiv2.LogicalContainerNetworkReasonLookupFailed
+				message = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
 				change |= additionalReconciliationNeeded
 			}
 			change |= setValue(&network.Status.Phase, phase)
@@ -188,6 +188,7 @@ func handleLogicalContainerNetworkPending(
 	ctx context.Context, reconciler *LogicalContainerNetworkReconciler, network *apiv2.LogicalContainerNetwork,
 	_ logicalContainerNetworkState, data *logicalContainerNetworkData, log logr.Logger,
 ) objectChange {
+	data.state = logicalContainerNetworkStatePending
 	data.reason, data.message = "", ""
 	physical, lookupErr := reconciler.findLogicalNetworkBacking(ctx, network, data, reconciler.Client,
 		ctrl_client.MatchingFields{logicalNetworkOwnerUIDField: string(network.UID)})
@@ -243,7 +244,7 @@ func handleLogicalContainerNetworkPending(
 			}
 			if inspectErr != nil && !errors.Is(inspectErr, containers.ErrNotFound) {
 				log.Error(inspectErr, "Failed to inspect logical network by name")
-				data.state, data.reason, data.message = logicalContainerNetworkStateUnknown, apiv2.LogicalContainerNetworkReasonLookupFailed, inspectErr.Error()
+				data.reason, data.message = apiv2.LogicalContainerNetworkReasonStarting, inspectErr.Error()
 				return additionalReconciliationNeeded
 			}
 			if inspectErr == nil {
@@ -255,6 +256,7 @@ func handleLogicalContainerNetworkPending(
 			}
 		}
 		if mode == apiv2.LogicalContainerNetworkModeExisting && inspected == nil {
+			data.state = logicalContainerNetworkStateWaitingForExisting
 			data.reason, data.message = apiv2.LogicalContainerNetworkReasonStarting, fmt.Sprintf("Container network %q was not found.", network.Spec.NetworkName)
 			return additionalReconciliationNeeded
 		}
@@ -568,12 +570,6 @@ func handleLogicalContainerNetworkUnknown(
 		return noChange
 	}
 	if physical == nil {
-		pendingBacking := logicalChildIdentity{resource: (&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource(), name: "logical-" + string(network.UID)}
-		_, awaitingObservation := data.unobservedChildren[pendingBacking]
-		if !data.started && (data.physicalNetworkUID == "" || awaitingObservation) {
-			data.state, data.reason, data.message = logicalContainerNetworkStatePending, apiv2.LogicalContainerNetworkReasonStarting, "Waiting to observe the owned PhysicalContainerNetwork."
-			return additionalReconciliationNeeded
-		}
 		data.failMissing("The backing PhysicalContainerNetwork is no longer available.")
 		if data.lease != nil {
 			return reconciler.settleLogicalNetworkLease(ctx, network, data, nil, log)

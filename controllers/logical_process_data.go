@@ -214,6 +214,10 @@ func (data *logicalProcessData) updateLifecycleFromPhysicalProcess(physical *api
 		}
 	case logicalProcessStateRunning:
 		data.started = true
+	case logicalProcessStateUnknown:
+		if !data.started {
+			data.state = logicalProcessStateCreating
+		}
 	case logicalProcessStateStopping:
 		if !data.started {
 			data.state = logicalProcessStateCreating

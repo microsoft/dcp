@@ -78,6 +78,90 @@ func TestV2LogicalContainerControllerWaitsForNamespace(t *testing.T) {
 	})
 }
 
+// Verifies that persistent and existing logical containers and networks remain Pending with
+// runtime inspection diagnostics during startup, then start successfully when the runtime recovers.
+func TestV2LogicalRuntimeStartupLookupFailuresRemainPending(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	server, _, startupErr := StartTestEnvironment(t, ctx,
+		LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController|
+			LogicalContainerNetworkController|PhysicalContainerNetworkController,
+		t.Name(), t.TempDir())
+	require.NoError(t, startupErr)
+	orchestrator, simulated := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, simulated)
+	apiClient := server.Client
+	namespace := createV2ExecNamespace(t, ctx, apiClient, "v2-logical-startup-runtime-lookup")
+	existingContainerID, runErr := orchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{Name: "existing-container", Image: "existing-image"},
+	})
+	require.NoError(t, runErr)
+	existingNetworkID, networkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "existing-network"})
+	require.NoError(t, networkErr)
+	orchestrator.SetRuntimeHealth(false)
+	defer orchestrator.SetRuntimeHealth(true)
+	persistentContainer := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "persistent-container", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerSpec{Mode: apiv2.LogicalContainerModePersistent, ContainerName: "persistent-container",
+			Container: &apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "persistent-image"}}},
+	}
+	existingContainer := &apiv2.LogicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "existing-container", Namespace: namespace.Name},
+		Spec:       apiv2.LogicalContainerSpec{Mode: apiv2.LogicalContainerModeExisting, ContainerName: "existing-container"},
+	}
+	persistentNetwork := &apiv2.LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "persistent-network", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerNetworkSpec{Mode: apiv2.LogicalContainerNetworkModePersistent,
+			NetworkName: "persistent-network", Network: &apiv2.LogicalContainerNetworkConfig{}},
+	}
+	existingNetwork := &apiv2.LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "existing-network", Namespace: namespace.Name},
+		Spec:       apiv2.LogicalContainerNetworkSpec{Mode: apiv2.LogicalContainerNetworkModeExisting, NetworkName: "existing-network"},
+	}
+	logicalContainers := []*apiv2.LogicalContainer{persistentContainer, existingContainer}
+	logicalNetworks := []*apiv2.LogicalContainerNetwork{persistentNetwork, existingNetwork}
+	for _, resource := range logicalContainers {
+		require.NoError(t, apiClient.Create(ctx, resource))
+	}
+	for _, resource := range logicalNetworks {
+		require.NoError(t, apiClient.Create(ctx, resource))
+	}
+	for _, resource := range logicalContainers {
+		pending := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+			ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+			return ready != nil && strings.Contains(ready.Message, "container runtime is unhealthy"), nil
+		})
+		require.Equal(t, apiv2.LogicalContainerPhasePending, pending.Status.Phase)
+		requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonStarting)
+		require.Empty(t, pending.Status.PhysicalContainerRef)
+	}
+	for _, resource := range logicalNetworks {
+		pending := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+			ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+			return ready != nil && strings.Contains(ready.Message, "container runtime is unhealthy"), nil
+		})
+		require.Equal(t, apiv2.LogicalContainerNetworkPhasePending, pending.Status.Phase)
+		requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerNetworkReasonStarting)
+		require.Empty(t, pending.Status.PhysicalNetworkRef)
+	}
+	orchestrator.SetRuntimeHealth(true)
+	for _, resource := range logicalContainers {
+		waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+			return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
+		})
+	}
+	for _, resource := range logicalNetworks {
+		waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+			return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+		})
+	}
+	require.NoError(t, apiClient.Get(ctx, existingContainer.NamespacedName(), existingContainer))
+	require.Equal(t, existingContainerID, existingContainer.Status.ContainerID)
+	require.NoError(t, apiClient.Get(ctx, existingNetwork.NamespacedName(), existingNetwork))
+	require.Equal(t, existingNetworkID, existingNetwork.Status.NetworkID)
+}
+
 type unavailableNamespaceClient struct {
 	ctrl_client.Client
 	unavailable atomic.Bool
@@ -90,7 +174,7 @@ func (client *unavailableNamespaceClient) Get(ctx context.Context, key ctrl_clie
 	return client.Client.Get(ctx, key, obj, options...)
 }
 
-// Verifies that LogicalContainer reports and retries initial namespace lookup errors, then
+// Verifies that LogicalContainer remains Pending while reporting and retrying initial namespace lookup errors, then
 // forwards stop and observes its backing despite namespace read failures after initialization.
 func TestV2LogicalContainerControllerHandlesNamespaceReadFailures(t *testing.T) {
 	t.Parallel()
@@ -121,9 +205,11 @@ func TestV2LogicalContainerControllerHandlesNamespaceReadFailures(t *testing.T) 
 	}
 	require.NoError(t, server.Client.Create(ctx, container))
 	lookupFailed := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerPhaseUnknown, nil
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return ready != nil && strings.Contains(ready.Message, "injected namespace read failure"), nil
 	})
-	requireReadyCondition(t, lookupFailed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonLookupFailed)
+	require.Equal(t, apiv2.LogicalContainerPhasePending, lookupFailed.Status.Phase)
+	requireReadyCondition(t, lookupFailed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonStarting)
 	require.Empty(t, lookupFailed.Status.PhysicalContainerRef)
 	decorated.unavailable.Store(false)
 	running := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {

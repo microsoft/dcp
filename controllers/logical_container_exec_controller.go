@@ -39,17 +39,16 @@ type logicalContainerExecDataHandlerFunc = stateInitializerFunc[
 ]
 
 var logicalContainerExecDataHandlers = map[logicalContainerExecState]logicalContainerExecDataHandlerFunc{
-	logicalContainerExecStatePending:       handleLogicalContainerExecPending,
-	logicalContainerExecStateCreating:      handleLogicalContainerExecCreating,
-	logicalContainerExecStateRunning:       handleLogicalContainerExecRunning,
-	logicalContainerExecStateStopping:      handleLogicalContainerExecRunning,
-	logicalContainerExecStateUnknown:       handleLogicalContainerExecCreating,
-	logicalContainerExecStateExited:        handleLogicalContainerExecTerminal,
-	logicalContainerExecStateRuntimeFailed: handleLogicalContainerExecTerminal,
-	logicalContainerExecStateMissing:       handleLogicalContainerExecTerminal,
-	logicalContainerExecStateFailed:        handleLogicalContainerExecTerminal,
-	logicalContainerExecStateInvalid:       handleLogicalContainerExecTerminal,
-	0:                                      handleInvalidLogicalContainerExecState,
+	logicalContainerExecStatePending:  handleLogicalContainerExecPending,
+	logicalContainerExecStateCreating: handleLogicalContainerExecCreating,
+	logicalContainerExecStateRunning:  handleLogicalContainerExecRunning,
+	logicalContainerExecStateStopping: handleLogicalContainerExecRunning,
+	logicalContainerExecStateUnknown:  handleLogicalContainerExecCreating,
+	logicalContainerExecStateExited:   handleLogicalContainerExecTerminal,
+	logicalContainerExecStateMissing:  handleLogicalContainerExecTerminal,
+	logicalContainerExecStateFailed:   handleLogicalContainerExecTerminal,
+	logicalContainerExecStateInvalid:  handleLogicalContainerExecTerminal,
+	0:                                 handleInvalidLogicalContainerExecState,
 }
 
 // LogicalContainerExecReconciler translates logical target readiness into one physical execution.
@@ -169,7 +168,6 @@ func (r *LogicalContainerExecReconciler) manageLogicalContainerExec(
 
 				log.Error(namespaceErr, "Failed to get logical execution namespace")
 				message = namespaceErr.Error()
-				phase, publicReason = apiv2.LogicalContainerExecPhaseUnknown, apiv2.LogicalContainerExecReasonLookupFailed
 				change |= additionalReconciliationNeeded
 			}
 			change |= setValue(&resource.Status.Phase, phase)

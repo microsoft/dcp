@@ -268,7 +268,7 @@ func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 	}
 }
 
-// Verifies that LogicalService checks namespace readiness only before initializing service state.
+// Verifies that LogicalService remains Pending during failed initial namespace checks and checks readiness only before initializing service state.
 // Later namespace read failures do not block endpoint updates or service deletion.
 func TestV2LogicalServiceChecksNamespaceOnlyBeforeInitialization(t *testing.T) {
 	t.Parallel()
@@ -307,9 +307,11 @@ func TestV2LogicalServiceChecksNamespaceOnlyBeforeInitialization(t *testing.T) {
 				Spec: apiv2.LogicalServiceSpec{Address: "127.0.0.1", AddressAllocationMode: mode}}
 			require.NoError(t, apiClient.Create(ctx, service))
 			unavailable := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalServicePhaseUnknown, nil
+				return len(current.Status.Conditions) > 0 &&
+					strings.Contains(current.Status.Conditions[0].Message, "injected namespace read failure"), nil
 			})
-			requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonLookupFailed)
+			require.Equal(t, apiv2.LogicalServicePhasePending, unavailable.Status.Phase)
+			requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonStarting)
 			require.Empty(t, unavailable.Status.EffectiveAddresses)
 			require.Empty(t, recorder.snapshot())
 			decorated.unavailable.Store(false)

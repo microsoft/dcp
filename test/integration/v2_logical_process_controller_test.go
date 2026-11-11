@@ -291,9 +291,10 @@ func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 	require.NoError(t, client.Create(ctx, resource))
 	pending := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return condition != nil && condition.Reason == string(apiv2.PhysicalResourceReasonNamespaceNotFound), nil
+		return condition != nil && condition.Reason == string(apiv2.LogicalProcessReasonStarting), nil
 	})
 	require.Empty(t, pending.Status.PhysicalProcessRef)
+	require.Contains(t, pending.Status.Conditions[0].Message, resource.Namespace)
 	require.Empty(t, pending.Status.EffectiveArgs)
 	require.Empty(t, pending.Status.EffectiveEnv)
 	createActiveV2Namespace(t, ctx, resource.Namespace)
@@ -330,9 +331,10 @@ func TestV2LogicalProcessControllerDeletesBeforeNamespaceAdmission(t *testing.T)
 	require.NoError(t, client.Create(ctx, resource))
 	pending := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == string(apiv2.PhysicalResourceReasonNamespaceNotFound), nil
+		return ready != nil && ready.Reason == string(apiv2.LogicalProcessReasonStarting), nil
 	})
 	require.Empty(t, pending.Status.LifecycleKey)
+	require.Contains(t, pending.Status.Conditions[0].Message, resource.Namespace)
 	require.Empty(t, pending.Status.PhysicalProcessRef)
 	require.NoError(t, client.Delete(ctx, resource))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
@@ -975,13 +977,13 @@ func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndReleasesTermi
 	require.ErrorIs(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, resource, environmentInfo.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 }
 
-// Verifies that a confirmed missing adopted process permits deletion and startup lease release
+// Verifies that a polled exit of an adopted process permits completion and startup lease release
 // without consulting unavailable workload ownership or removing its existing reuse record.
-func TestV2LogicalProcessControllerReleasesLeaseForMissingAdoptedProcess(t *testing.T) {
+func TestV2LogicalProcessControllerReleasesLeaseForExitedAdoptedProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	const namespaceName = "v2-process-missing-adoption-registration"
+	const namespaceName = "v2-process-exited-adoption-registration"
 	var reader *namespaceWorkloadFailureReader
 	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
@@ -997,7 +999,7 @@ func TestV2LogicalProcessControllerReleasesLeaseForMissingAdoptedProcess(t *test
 	})
 	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespaceName},
 		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespaceName,
-			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-missing-adoption-command"}}}
+			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-exited-adoption-command"}}}
 	handle, _, startErr := environment.TestProcessExecutor.StartProcess(ctx, exec.Command(resource.Spec.Process.ExecutablePath),
 		nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startErr)
@@ -1009,18 +1011,23 @@ func TestV2LogicalProcessControllerReleasesLeaseForMissingAdoptedProcess(t *test
 	reader.fail.Store(true)
 	defer reader.fail.Store(false)
 	require.NoError(t, server.Client.Create(ctx, resource))
-	failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return current.Status.Phase == apiv2.LogicalProcessPhaseRunning && ready != nil &&
 			ready.Reason == string(apiv2.LogicalProcessReasonRunning) && strings.Contains(ready.Message, "namespace workload lookup unavailable"), nil
 	})
 	require.NoError(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, resource, environment.ResourceLeaseOwner))
 	require.NoError(t, environment.TestProcessExecutor.StopProcess(ctx, handle))
-	physicalName := types.NamespacedName{Namespace: namespaceName, Name: failed.Status.PhysicalProcessRef}
+	physicalName := types.NamespacedName{Namespace: namespaceName, Name: running.Status.PhysicalProcessRef}
 	waitObjectAssumesStateEx(t, ctx, server.Client, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == string(apiv2.PhysicalProcessReasonRuntimeProcessMissing), nil
+		return ready != nil && ready.Reason == string(apiv2.PhysicalProcessReasonRuntimeProcessExited), nil
 	})
+	completed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
+	})
+	requireReadyCondition(t, completed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonCompleted)
+	require.Nil(t, completed.Status.ExitCode)
 	require.NoError(t, server.Client.Delete(ctx, resource))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 	require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, resource, environment.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)

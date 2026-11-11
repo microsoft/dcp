@@ -171,11 +171,11 @@ func (r *LogicalProcessReconciler) manageLogicalProcess(
 			phase, message := apiv2.LogicalProcessPhasePending, namespaceReadinessMessage(resource.Namespace, reason)
 			if namespaceErr != nil {
 				log.Error(namespaceErr, "Failed to get namespace", "Namespace", resource.Namespace)
-				phase, message = apiv2.LogicalProcessPhaseUnknown, fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+				message = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
 				change |= additionalReconciliationNeeded
 			}
 			change |= setValue(&resource.Status.Phase, phase)
-			change |= setCondition(&resource.Status.Conditions, apiv2.ConditionReady, resource.Generation, metav1.ConditionFalse, reason, message)
+			change |= setCondition(&resource.Status.Conditions, apiv2.ConditionReady, resource.Generation, metav1.ConditionFalse, apiv2.LogicalProcessReasonStarting, message)
 			return change, StandardDelay
 		}
 		data = &logicalProcessData{state: logicalProcessStatePrepare}

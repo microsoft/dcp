@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -495,8 +496,9 @@ func TestPhysicalProcessCleanupUncertaintyIsScopedToProcessIdentity(t *testing.T
 	}
 }
 
-// Verifies that observing a missing process records its terminal state and clears stale inspection diagnostics.
-func TestHandlePhysicalProcessInspectFailedClearsFailureWhenProcessIsMissing(t *testing.T) {
+// Verifies that observing a tracked process's exit after an inspection failure clears stale diagnostics
+// and reports RuntimeProcessExited without fabricating an exit code.
+func TestHandlePhysicalProcessInspectFailedClearsFailureWhenTrackedProcessExits(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
 	defer cancel()
@@ -542,9 +544,17 @@ func TestHandlePhysicalProcessInspectFailedClearsFailureWhenProcessIsMissing(t *
 	)
 
 	require.Equal(t, additionalReconciliationNeeded, change)
-	require.Equal(t, physicalProcessStateMissing, data.state)
+	require.Equal(t, physicalProcessStateExited, data.state)
 	require.Empty(t, data.failureReason)
 	require.Empty(t, data.failureMessage)
+	_, _, valid := data.applyTo(physicalProcess)
+	require.True(t, valid)
+	require.Equal(t, apiv2.PhysicalProcessPhaseExited, physicalProcess.Status.Phase)
+	ready := apimeta.FindStatusCondition(physicalProcess.Status.Conditions, string(apiv2.ConditionReady))
+	require.NotNil(t, ready)
+	require.Equal(t, string(apiv2.PhysicalProcessReasonRuntimeProcessExited), ready.Reason)
+	require.Nil(t, physicalProcess.Status.ExitCode)
+	require.False(t, physicalProcess.Status.FinishedAt.IsZero())
 }
 
 // Verifies that runtime inspection failures replace any stale condition reason

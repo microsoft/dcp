@@ -49,17 +49,18 @@ var (
 	errLogicalNetworkFailed             = errors.New("logical network failed")
 	logicalContainerFinalizer           = fmt.Sprintf("%s/logicalcontainer-reconciler", apiv2.GroupVersion.Group)
 	logicalContainerDataHandlers        = map[logicalContainerState]logicalContainerDataHandlerFunc{
-		logicalContainerStatePending:           handleLogicalContainerPending,
-		logicalContainerStatePreparationFailed: handleLogicalContainerTerminal,
-		logicalContainerStateCreating:          handleLogicalContainerCreating,
-		logicalContainerStateRunning:           handleLogicalContainerRunning,
-		logicalContainerStatePaused:            handleLogicalContainerRunning,
-		logicalContainerStateExited:            handleLogicalContainerTerminal,
-		logicalContainerStateFailed:            handleLogicalContainerTerminal,
-		logicalContainerStateUnknown:           handleLogicalContainerUnknown,
-		logicalContainerStateStopping:          handleLogicalContainerStopping,
-		logicalContainerStateStopped:           handleLogicalContainerTerminal,
-		0:                                      handleLogicalContainerUnknown,
+		logicalContainerStatePending:            handleLogicalContainerPending,
+		logicalContainerStateWaitingForExisting: handleLogicalContainerPending,
+		logicalContainerStatePreparationFailed:  handleLogicalContainerTerminal,
+		logicalContainerStateCreating:           handleLogicalContainerCreating,
+		logicalContainerStateRunning:            handleLogicalContainerRunning,
+		logicalContainerStatePaused:             handleLogicalContainerRunning,
+		logicalContainerStateExited:             handleLogicalContainerTerminal,
+		logicalContainerStateFailed:             handleLogicalContainerTerminal,
+		logicalContainerStateUnknown:            handleLogicalContainerUnknown,
+		logicalContainerStateStopping:           handleLogicalContainerStopping,
+		logicalContainerStateStopped:            handleLogicalContainerTerminal,
+		0:                                       handleLogicalContainerUnknown,
 	}
 )
 
@@ -263,8 +264,6 @@ func (r *LogicalContainerReconciler) manageLogicalContainer(
 			if namespaceErr != nil {
 
 				log.Error(namespaceErr, "Failed to get namespace", "Namespace", container.Namespace)
-				namespacePhase = apiv2.LogicalContainerPhaseUnknown
-				publicReason = apiv2.LogicalContainerReasonLookupFailed
 				namespaceMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
 				namespaceChange |= additionalReconciliationNeeded
 			}
@@ -332,6 +331,7 @@ func handleLogicalContainerPending(
 	ctx context.Context, reconciler *LogicalContainerReconciler, container *apiv2.LogicalContainer,
 	_ logicalContainerState, data *logicalContainerData, log logr.Logger,
 ) objectChange {
+	data.state = logicalContainerStatePending
 	data.reason, data.message = "", ""
 
 	physical, lookupErr := reconciler.findPhysicalContainer(ctx, container, data, reconciler.Client, container.UID)
@@ -405,7 +405,7 @@ func handleLogicalContainerPending(
 			}
 			if inspectErr != nil && !errors.Is(inspectErr, containers.ErrNotFound) {
 				log.Error(inspectErr, "Failed to inspect logical container by name")
-				data.state, data.reason, data.message = logicalContainerStateUnknown, apiv2.LogicalContainerReasonLookupFailed, inspectErr.Error()
+				data.reason, data.message = apiv2.LogicalContainerReasonStarting, inspectErr.Error()
 				return additionalReconciliationNeeded
 			}
 			if inspectErr == nil {
@@ -422,6 +422,7 @@ func handleLogicalContainerPending(
 			return noChange
 		}
 		if inspected == nil && !mode.ShouldCreateIfMissing() {
+			data.state = logicalContainerStateWaitingForExisting
 			data.reason = apiv2.LogicalContainerReasonStarting
 			data.message = fmt.Sprintf("Runtime container %q was not found.", container.Spec.ContainerName)
 			return additionalReconciliationNeeded
@@ -957,12 +958,6 @@ func handleLogicalContainerUnknown(
 		return change
 	}
 	if physical == nil {
-		pendingBacking := logicalChildIdentity{resource: (&apiv2.PhysicalContainer{}).GetGroupVersionResource(), name: "logical-" + string(container.UID)}
-		_, awaitingObservation := data.unobservedChildren[pendingBacking]
-		if !data.started && (data.physicalContainerUID == "" || awaitingObservation) {
-			data.state, data.reason, data.message = logicalContainerStatePending, apiv2.LogicalContainerReasonStarting, "Waiting to observe the owned PhysicalContainer."
-			return change | additionalReconciliationNeeded
-		}
 		data.failMissing("The backing PhysicalContainer is no longer available.")
 		if data.lease != nil {
 			change |= reconciler.settleLogicalContainerLease(ctx, container, data, nil, log)

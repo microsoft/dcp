@@ -264,7 +264,7 @@ func handlePhysicalProcessRunning(
 ) objectChange {
 	runningErr := reconciler.processExecutor.CheckProcessRunning(data.handle)
 	if process.IsProcessGoneErr(runningErr) {
-		data.state = physicalProcessStateMissing
+		data.state = physicalProcessStateExited
 		data.finishedAt = time.Now()
 		if data.cleanupUnconfirmed {
 			markDescendantCleanupUnconfirmed(data, descendantCleanupUnconfirmedMessage)
@@ -308,7 +308,7 @@ func handlePhysicalProcessInspectFailed(
 	}
 	runningErr := reconciler.processExecutor.CheckProcessRunning(data.handle)
 	if process.IsProcessGoneErr(runningErr) {
-		data.state, data.finishedAt = physicalProcessStateMissing, time.Now()
+		data.state, data.finishedAt = physicalProcessStateExited, time.Now()
 		if data.cleanupUnconfirmed {
 			markDescendantCleanupUnconfirmed(data, descendantCleanupUnconfirmedMessage)
 		} else {

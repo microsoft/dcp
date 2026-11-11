@@ -55,6 +55,7 @@ const (
 	logicalContainerStateStopping
 	logicalContainerStateUnknown
 	logicalContainerStateCreating
+	logicalContainerStateWaitingForExisting
 )
 
 func (state logicalContainerState) String() string {
@@ -81,6 +82,8 @@ func (state logicalContainerState) String() string {
 		return "Unknown"
 	case logicalContainerStateCreating:
 		return "Creating"
+	case logicalContainerStateWaitingForExisting:
+		return "WaitingForExisting"
 	default:
 		return fmt.Sprintf("logicalContainerState(%d)", int(state))
 	}
@@ -169,9 +172,8 @@ func (data *logicalContainerData) updateLifecycleFromPhysicalContainer(physical 
 	case logicalContainerStateFailed:
 		data.failMissing(data.message)
 	case logicalContainerStateUnknown:
-		if ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady)); ready != nil &&
-			ready.Reason == string(apiv2.PhysicalContainerReasonRuntimeContainerMissing) {
-			data.failMissing(ready.Message)
+		if !data.started {
+			data.state = logicalContainerStateCreating
 		}
 	}
 }
@@ -218,6 +220,10 @@ var logicalContainerProjections = physicalResourceProjectionTable[logicalContain
 		logicalContainerStatePending: {
 			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.LogicalContainerReasonStarting,
+		},
+		logicalContainerStateWaitingForExisting: {
+			phase: apiv2.LogicalContainerPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.LogicalContainerReasonStarting, requeue: true, requeueDelay: MonitoringDelay,
 		},
 		logicalContainerStatePreparationFailed: {
 			phase: apiv2.LogicalContainerPhaseFailed, conditionStatus: metav1.ConditionFalse,

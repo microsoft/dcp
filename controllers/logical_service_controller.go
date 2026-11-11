@@ -129,7 +129,6 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			delay := StandardDelay
 			if namespaceErr != nil {
 				log.Error(namespaceErr, "Failed to check service namespace")
-				phase, reason = apiv2.LogicalServicePhaseUnknown, apiv2.LogicalServiceReasonLookupFailed
 				message, delay = namespaceErr.Error(), LongDelay
 			}
 			change := setValue(&service.Status.Phase, phase)

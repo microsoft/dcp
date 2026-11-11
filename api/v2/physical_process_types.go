@@ -61,7 +61,8 @@ const (
 	// PhysicalProcessReasonRuntimeProcessExited indicates that the operating system process has exited.
 	PhysicalProcessReasonRuntimeProcessExited ConditionReason = "RuntimeProcessExited"
 
-	// PhysicalProcessReasonRuntimeProcessMissing indicates that the operating system process was not found.
+	// PhysicalProcessReasonRuntimeProcessMissing indicates that the referenced process was absent
+	// or failed its identity check before tracking began.
 	PhysicalProcessReasonRuntimeProcessMissing ConditionReason = "RuntimeProcessMissing"
 
 	// PhysicalProcessReasonRuntimeProcessInspectFailed indicates that process state could not be inspected.

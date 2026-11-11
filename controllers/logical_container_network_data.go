@@ -27,6 +27,7 @@ const (
 	logicalContainerNetworkStateReady
 	logicalContainerNetworkStateFailed
 	logicalContainerNetworkStateUnknown
+	logicalContainerNetworkStateWaitingForExisting
 )
 
 func (state logicalContainerNetworkState) String() string {
@@ -45,6 +46,8 @@ func (state logicalContainerNetworkState) String() string {
 		return "Failed"
 	case logicalContainerNetworkStateUnknown:
 		return "Unknown"
+	case logicalContainerNetworkStateWaitingForExisting:
+		return "WaitingForExisting"
 	default:
 		return fmt.Sprintf("logicalContainerNetworkState(%d)", int(state))
 	}
@@ -123,6 +126,8 @@ func (data *logicalContainerNetworkData) updateLifecycleFromPhysicalContainerNet
 		if ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady)); ready != nil &&
 			ready.Reason == string(apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing) {
 			data.failMissing(ready.Message)
+		} else if !data.started {
+			data.state = logicalContainerNetworkStateCreating
 		}
 	}
 }
@@ -148,6 +153,10 @@ var logicalContainerNetworkProjections = physicalResourceProjectionTable[logical
 		logicalContainerNetworkStatePending: {
 			phase: apiv2.LogicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
 			conditionReason: apiv2.LogicalContainerNetworkReasonStarting,
+		},
+		logicalContainerNetworkStateWaitingForExisting: {
+			phase: apiv2.LogicalContainerNetworkPhasePending, conditionStatus: metav1.ConditionFalse,
+			conditionReason: apiv2.LogicalContainerNetworkReasonStarting, requeue: true, requeueDelay: MonitoringDelay,
 		},
 		logicalContainerNetworkStatePreparationFailed: {
 			phase: apiv2.LogicalContainerNetworkPhaseFailed, conditionStatus: metav1.ConditionFalse,
