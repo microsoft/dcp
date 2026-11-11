@@ -246,6 +246,19 @@ type PhysicalContainerPortMapping struct {
 // PhysicalContainerStatus describes the observed runtime container.
 // +k8s:openapi-gen=true
 type PhysicalContainerStatus struct {
+	// EffectiveCommand contains the container command reported by runtime inspection, separately from its entrypoint.
+	// +listType=atomic
+	EffectiveCommand []string `json:"effectiveCommand,omitempty"`
+
+	// EffectiveEntrypoint contains the container entrypoint reported by runtime inspection.
+	// +listType=atomic
+	EffectiveEntrypoint []string `json:"effectiveEntrypoint,omitempty"`
+
+	// EffectiveEnv contains environment variables reported by runtime inspection, including image and environment-file values.
+	// +listType=map
+	// +listMapKey=name
+	EffectiveEnv []commonapi.EnvVar `json:"effectiveEnv,omitempty"`
+
 	// Phase summarizes the runtime container lifecycle.
 	// +kubebuilder:validation:Enum=Pending;Running;Paused;Exited;Unknown;Failed
 	// +optional

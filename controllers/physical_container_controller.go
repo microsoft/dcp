@@ -1686,6 +1686,23 @@ func physicalContainerCreationLabels(container *apiv2.PhysicalContainer, log log
 
 func applyInspectedPhysicalContainerDetails(container *apiv2.PhysicalContainer, inspectedContainer *containers.InspectedContainer, _ logr.Logger) objectChange {
 	change := noChange
+	if !std_slices.Equal(container.Status.EffectiveCommand, inspectedContainer.Command) {
+		container.Status.EffectiveCommand = std_slices.Clone(inspectedContainer.Command)
+		change |= statusChanged
+	}
+	if !std_slices.Equal(container.Status.EffectiveEntrypoint, inspectedContainer.Entrypoint) {
+		container.Status.EffectiveEntrypoint = std_slices.Clone(inspectedContainer.Entrypoint)
+		change |= statusChanged
+	}
+	var environment []commonapi.EnvVar
+	for name, value := range inspectedContainer.Env {
+		environment = append(environment, commonapi.EnvVar{Name: name, Value: value})
+	}
+	std_slices.SortFunc(environment, func(left, right commonapi.EnvVar) int { return strings.Compare(left.Name, right.Name) })
+	if !std_slices.Equal(container.Status.EffectiveEnv, environment) {
+		container.Status.EffectiveEnv = environment
+		change |= statusChanged
+	}
 	change |= setValue(&container.Status.ContainerID, inspectedContainer.Id)
 	change |= setValue(&container.Status.ContainerName, inspectedContainer.Name)
 	change |= setValue(&container.Status.RuntimeStatus, string(inspectedContainer.Status))

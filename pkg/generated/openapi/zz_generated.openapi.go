@@ -8293,6 +8293,65 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerStatus(ref common.ReferenceCal
 				Description: "PhysicalContainerStatus describes the observed runtime container.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"effectiveCommand": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveCommand contains the container command reported by runtime inspection, separately from its entrypoint.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEntrypoint": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEntrypoint contains the container entrypoint reported by runtime inspection.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEnv": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEnv contains environment variables reported by runtime inspection, including image and environment-file values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
 					"phase": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Phase summarizes the runtime container lifecycle.",
@@ -8396,7 +8455,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerStatus(ref common.ReferenceCal
 			},
 		},
 		Dependencies: []string{
-			v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
