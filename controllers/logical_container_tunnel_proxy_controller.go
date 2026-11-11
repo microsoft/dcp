@@ -997,13 +997,12 @@ func (r *LogicalContainerTunnelProxyReconciler) manageLogicalTunnels(
 				if record.status.TunnelID != 0 {
 					if deleteErr := deleteLogicalTunnel(ctx, client, record.status.TunnelID); deleteErr != nil {
 						log.Error(deleteErr, "Failed to retire previous tunnel")
-						data.tunnels[tunnel.Name] = record
 						change |= additionalReconciliationNeeded
-						continue
+					} else {
+						record.status.TunnelID = 0
 					}
-					record.status.TunnelID = 0
 				}
-				if serverErr == nil {
+				if record.status.TunnelID == 0 && serverErr == nil {
 					record.attempts++
 					record.retryAfter = time.Now().Add(delayDuration(StandardDelay))
 					if record.attempts > r.config.MaxTunnelPreparationAttempts {
@@ -1117,7 +1116,7 @@ func (r *LogicalContainerTunnelProxyReconciler) handleLogicalTunnelProxyDeletion
 			}
 		}
 	}()
-	if data.state == logicalTunnelProxyRunning {
+	if data.state == logicalTunnelProxyRunning || (data.state == logicalTunnelProxyUnknown && data.started) {
 		data.state, data.reason, data.message = logicalTunnelProxyStopping, "", "Stopping the tunnel proxy pair for deletion."
 	}
 	if data.control != nil {

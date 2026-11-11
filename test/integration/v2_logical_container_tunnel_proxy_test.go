@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -203,14 +204,23 @@ func (boundary *tunnelRetirementFailureClient) DeleteTunnel(
 	ctx context.Context, reference *dcptunproto.TunnelRef, options ...grpc.CallOption,
 ) (*emptypb.Empty, error) {
 	if boundary.blocked.Load() {
-		boundary.failed.Store(true)
+		if boundary.failed.CompareAndSwap(false, true) {
+			// Expire the preparation backoff so both retirement attempts fail in the same reconciliation.
+			timer := time.NewTimer(3 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 		return nil, errors.New("injected tunnel retirement failure")
 	}
 	return boundary.TunnelControlClient.DeleteTunnel(ctx, reference, options...)
 }
 
-// Verifies that LogicalContainerTunnelProxy retires an unavailable tunnel after a transient deletion failure
-// without waiting for the referenced service to return or preparing a replacement.
+// Verifies that LogicalContainerTunnelProxy publishes a versioned availability change when retirement fails,
+// then retires the tunnel without waiting for the referenced service to return or preparing a replacement.
 func TestV2LogicalContainerTunnelProxyRetriesUnavailableTunnelRetirement(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -243,11 +253,13 @@ func TestV2LogicalContainerTunnelProxyRetriesUnavailableTunnelRetirement(t *test
 	}
 	require.NoError(t, server.Client.Delete(ctx, host))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, host)
-	waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
+	unavailable := waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
 		return boundary.failed.Load() && len(current.Status.TunnelStatuses) == 1 &&
 			current.Status.TunnelStatuses[0].State == apiv2.LogicalContainerTunnelStateNotReady &&
 			current.Status.TunnelStatuses[0].TunnelID == running.Status.TunnelStatuses[0].TunnelID, nil
 	})
+	require.Greater(t, unavailable.Status.TunnelConfigurationVersion, running.Status.TunnelConfigurationVersion)
+	require.True(t, unavailable.Status.TunnelStatuses[0].Timestamp.After(running.Status.TunnelStatuses[0].Timestamp.Time))
 	boundary.blocked.Store(false)
 	waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseRunning &&
@@ -334,10 +346,10 @@ func (boundary *tunnelImageDeletionClient) Delete(ctx context.Context, object ct
 	return boundary.Client.Delete(ctx, object, options...)
 }
 
-// Verifies that deletion stops a running proxy through its normal lifecycle states and preserves earlier terminal outcomes.
+// Verifies that deletion stops a previously running proxy even when its current state is unknown, and preserves earlier terminal outcomes.
 // Image cleanup waits for both workloads and its errors must not replace Exited/Stopped, Exited/Completed, or Failed/FailedToStart.
 func TestV2LogicalContainerTunnelProxyDeletionLifecycle(t *testing.T) {
-	for _, scenario := range []string{"running", "completed", "failed-to-start"} {
+	for _, scenario := range []string{"running", "unknown", "completed", "failed-to-start"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -378,6 +390,14 @@ func TestV2LogicalContainerTunnelProxyDeletionLifecycle(t *testing.T) {
 					return current.Status.Phase == initialPhase && tunnelProxyReadyReason(current) == initialReason, nil
 				})
 			}
+			if scenario == "unknown" {
+				runtime := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+				require.NoError(t, runtime.SimulateContainerStatus(ctx, initial.Status.ContainerID, containers.ContainerStatus("test-unrecognized")))
+				waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
+					return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseUnknown &&
+						tunnelProxyReadyReason(current) == apiv2.LogicalContainerTunnelProxyReasonLookupFailed, nil
+				})
+			}
 			backingName := types.NamespacedName{Namespace: proxy.Namespace, Name: "logical-" + string(proxy.UID)}
 			const hold = "test.dcp/hold-tunnel-workload"
 			require.NoError(t, retryOnConflictEx(ctx, server.Client, backingName, func(updateCtx context.Context, current *apiv2.PhysicalContainer) error {
@@ -399,12 +419,17 @@ func TestV2LogicalContainerTunnelProxyDeletionLifecycle(t *testing.T) {
 			require.NoError(t, server.Client.Get(ctx, backingName, image))
 			require.True(t, image.DeletionTimestamp.IsZero())
 			require.Zero(t, boundary.attempts.Load())
-			if scenario == "running" {
+			expectDeletionStop := scenario == "running" || scenario == "unknown"
+			if expectDeletionStop {
 				waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseRunning &&
 						tunnelProxyReadyReason(current) == apiv2.LogicalContainerTunnelProxyReasonStopping, nil
 				})
 				initialPhase, initialReason = apiv2.LogicalContainerTunnelProxyPhaseExited, apiv2.LogicalContainerTunnelProxyReasonStopped
+			}
+			if scenario == "unknown" {
+				runtime := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+				require.NoError(t, runtime.SimulateContainerStatus(ctx, initial.Status.ContainerID, containers.ContainerStatusRunning))
 			}
 			require.NoError(t, retryOnConflictEx(ctx, server.Client, backingName, func(updateCtx context.Context, current *apiv2.PhysicalContainer) error {
 				current.Finalizers = slices.DeleteFunc(current.Finalizers, func(value string) bool { return value == hold })
@@ -417,7 +442,7 @@ func TestV2LogicalContainerTunnelProxyDeletionLifecycle(t *testing.T) {
 			preserved := waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
 				return boundary.attempts.Load() >= 2 && current.Status.Phase == initialPhase && tunnelProxyReadyReason(current) == initialReason, nil
 			})
-			if scenario != "running" {
+			if !expectDeletionStop {
 				require.Equal(t, apimeta.FindStatusCondition(initial.Status.Conditions, string(apiv2.ConditionReady)).Message,
 					apimeta.FindStatusCondition(preserved.Status.Conditions, string(apiv2.ConditionReady)).Message)
 			}
@@ -648,8 +673,8 @@ func TestV2LogicalContainerTunnelProxyContainerExit(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, proxy)
 }
 
-// Verifies that pausing the client container reports Running with Paused and keeps endpoints,
-// then resuming the same container returns the proxy to its normal Running reason.
+// Verifies that pausing the client container reports Running with Paused and Ready=False while keeping endpoints,
+// then resuming the same container restores Ready=True and the normal Running reason.
 func TestV2LogicalContainerTunnelProxyPausedContainer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -666,16 +691,18 @@ func TestV2LogicalContainerTunnelProxyPausedContainer(t *testing.T) {
 	})
 	runtime := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.NoError(t, runtime.SimulateContainerStatus(ctx, running.Status.ContainerID, containers.ContainerStatusPaused))
-	waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
+	paused := waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseRunning &&
 			tunnelProxyReadyReason(current) == apiv2.LogicalContainerTunnelProxyReasonPaused, nil
 	})
+	requireReadyCondition(t, paused.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerTunnelProxyReasonPaused)
 	require.NoError(t, server.Client.Get(ctx, endpointName, &apiv2.ServiceEndpoint{}))
 	require.NoError(t, runtime.SimulateContainerStatus(ctx, running.Status.ContainerID, containers.ContainerStatusRunning))
 	resumed := waitObjectAssumesStateEx(t, ctx, server.Client, proxy.NamespacedName(), func(current *apiv2.LogicalContainerTunnelProxy) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerTunnelProxyPhaseRunning &&
 			tunnelProxyReadyReason(current) == apiv2.LogicalContainerTunnelProxyReasonRunning, nil
 	})
+	requireReadyCondition(t, resumed.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerTunnelProxyReasonRunning)
 	require.Equal(t, running.Status.ContainerID, resumed.Status.ContainerID)
 	require.NoError(t, server.Client.Delete(ctx, proxy))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, proxy)

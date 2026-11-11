@@ -149,6 +149,12 @@ func (data *logicalTunnelProxyData) applyTo(proxy *apiv2.LogicalContainerTunnelP
 		change |= statusChanged
 	}
 	change |= setValue(&proxy.Status.TunnelConfigurationVersion, data.configurationVersion)
+	if data.state == logicalTunnelProxyRunning && data.reason == apiv2.LogicalContainerTunnelProxyReasonPaused {
+		change |= setValue(&proxy.Status.Phase, apiv2.LogicalContainerTunnelProxyPhaseRunning)
+		change |= setCondition(&proxy.Status.Conditions, apiv2.ConditionReady, proxy.Generation,
+			metav1.ConditionFalse, data.reason, data.message)
+		return change, StandardDelay, true
+	}
 	projected, delay, valid := logicalTunnelProxyProjections.applyWithReason(data.state, data.reason, data.message,
 		&proxy.Status.Phase, &proxy.Status.Conditions, proxy.Generation)
 	return change | projected, delay, valid
