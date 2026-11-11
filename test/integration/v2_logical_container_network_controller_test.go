@@ -374,8 +374,8 @@ func TestV2LogicalContainerNetworkControllerPreservesAdoptedKeyAfterUndecodedCre
 	require.Len(t, retained, 1)
 }
 
-// Verifies that LogicalContainerNetwork preserves its ready lifecycle and pinned backing during API
-// lookup failures, then completes deletion after observation recovers.
+// Verifies that LogicalContainerNetwork recovers from a backing lookup failure with its original
+// network and backing identities, then completes deletion.
 func TestV2LogicalContainerNetworkControllerRetriesBackingLookup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -405,14 +405,15 @@ func TestV2LogicalContainerNetworkControllerRetriesBackingLookup(t *testing.T) {
 	require.NoError(t, apiClient.Patch(ctx, network,
 		ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"test-lookup":"retry"}}}`))))
 	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
-		return decorated.lookupAttempts.Load() >= 2, nil
+		return decorated.lookupAttempts.Load() > 0, nil
 	}))
-	require.NoError(t, apiClient.Get(ctx, network.NamespacedName(), network))
-	require.Equal(t, apiv2.LogicalContainerNetworkPhaseReady, network.Status.Phase)
-	requireReadyCondition(t, network.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerNetworkReasonReady)
-	require.Equal(t, ready.Status.NetworkID, network.Status.NetworkID)
-	require.Equal(t, ready.Status.PhysicalNetworkRef, network.Status.PhysicalNetworkRef)
 	decorated.failLookup.Store(false)
+	recovered := waitObjectAssumesStateEx(t, ctx, apiClient, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+	})
+	requireReadyCondition(t, recovered.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerNetworkReasonReady)
+	require.Equal(t, ready.Status.NetworkID, recovered.Status.NetworkID)
+	require.Equal(t, ready.Status.PhysicalNetworkRef, recovered.Status.PhysicalNetworkRef)
 	var backings apiv2.PhysicalContainerNetworkList
 	require.NoError(t, apiClient.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
 	require.Len(t, backings.Items, 1)

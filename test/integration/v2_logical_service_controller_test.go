@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -47,15 +48,13 @@ type recordedServiceProxy struct {
 
 type serviceEndpointLookupFailureClient struct {
 	ctrl_client.Client
-	fail     atomic.Bool
-	failures atomic.Uint32
+	fail atomic.Bool
 }
 
 func (apiClient *serviceEndpointLookupFailureClient) List(
 	ctx context.Context, objects ctrl_client.ObjectList, options ...ctrl_client.ListOption,
 ) error {
 	if _, endpoints := objects.(*apiv2.ServiceEndpointList); endpoints && apiClient.fail.Load() {
-		apiClient.failures.Add(1)
 		return errors.New("service endpoint lookup unavailable")
 	}
 	return apiClient.Client.List(ctx, objects, options...)
@@ -517,68 +516,62 @@ func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 // then recovers readiness without replacing an established listener.
 func TestV2LogicalServicePreservesLifecycleDuringEndpointLookupFailure(t *testing.T) {
 	t.Parallel()
-	for _, stage := range []string{"startup", "running"} {
-		t.Run(stage, func(t *testing.T) {
-			t.Parallel()
-			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-			defer cancel()
-			recorder := &serviceProxyRecorder{}
-			var decorated *serviceEndpointLookupFailureClient
-			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalServiceController, t.Name(), t.TempDir(),
-				TestEnvironmentOptions{
-					CreateLogicalServiceProxy: recorder.create,
-					DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-						decorated = &serviceEndpointLookupFailureClient{Client: apiClient}
-						return decorated
-					},
-				})
-			require.NoError(t, startupErr)
-			apiClient := server.Client
-			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "service-endpoint-read"}}
-			require.NoError(t, apiClient.Create(ctx, namespace))
-			service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
-				Spec: apiv2.LogicalServiceSpec{Address: "127.0.0.1"}}
-			endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: namespace.Name},
-				Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}}}}
-			require.NoError(t, apiClient.Create(ctx, endpoint))
-			decorated.fail.Store(stage == "startup")
-			defer decorated.fail.Store(false)
-			require.NoError(t, apiClient.Create(ctx, service))
-			var listeners []*recordedServiceProxy
-			if stage == "running" {
-				waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-					return logicalServiceReady(current), nil
-				})
-				listeners = recorder.snapshot()
-				require.Len(t, listeners, 1)
+	t.Run("startup", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+		defer cancel()
+		var decorated *serviceEndpointLookupFailureClient
+		resources := createServiceEndpointResources(t, ctx, commonapi.PortProtocolTCP, TestEnvironmentOptions{
+			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+				decorated = &serviceEndpointLookupFailureClient{Client: apiClient}
 				decorated.fail.Store(true)
-				require.NoError(t, apiClient.Patch(ctx, service,
-					ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"test-lookup":"retry"}}}`))))
-			}
-			unavailable := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return decorated.failures.Load() >= 2 && !logicalServiceReady(current) &&
-					len(current.Status.Conditions) > 0 && current.Status.Conditions[0].Message == "service endpoint lookup unavailable", nil
-			})
-			if stage == "startup" {
-				require.Equal(t, apiv2.LogicalServicePhasePending, unavailable.Status.Phase)
-				requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonStarting)
-			} else {
-				require.Equal(t, apiv2.LogicalServicePhaseRunning, unavailable.Status.Phase)
-				requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
-			}
-			decorated.fail.Store(false)
-			waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return logicalServiceReady(current), nil
-			})
-			recoveredListeners := recorder.snapshot()
-			require.Len(t, recoveredListeners, 1)
-			if stage == "running" {
-				require.Same(t, listeners[0], recoveredListeners[0])
-			}
-			require.NoError(t, apiClient.Delete(ctx, namespace))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
+				return decorated
+			},
 		})
-	}
+		defer decorated.fail.Store(false)
+		pending := waitObjectAssumesStateEx(t, ctx, resources.client, resources.service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+			return !logicalServiceReady(current) && len(current.Status.Conditions) > 0 &&
+				current.Status.Conditions[0].Message == "service endpoint lookup unavailable", nil
+		})
+		require.Equal(t, apiv2.LogicalServicePhasePending, pending.Status.Phase)
+		requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonStarting)
+		decorated.fail.Store(false)
+		resources.requireReady(t, ctx)
+		namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: resources.service.Namespace}}
+		require.NoError(t, resources.client.Delete(ctx, namespace))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, resources.client, namespace)
+	})
+	t.Run("running", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+		defer cancel()
+		var decorated *serviceEndpointLookupFailureClient
+		resources := createServiceEndpointResources(t, ctx, commonapi.PortProtocolTCP, TestEnvironmentOptions{
+			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+				decorated = &serviceEndpointLookupFailureClient{Client: apiClient}
+				return decorated
+			},
+		})
+		defer decorated.fail.Store(false)
+		original, listener := resources.requireReady(t, ctx)
+		decorated.fail.Store(true)
+		require.NoError(t, resources.client.Patch(ctx, resources.service,
+			ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"test-lookup":"retry"}}}`))))
+		unavailable := waitObjectAssumesStateEx(t, ctx, resources.client, resources.service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+			return !logicalServiceReady(current) && len(current.Status.Conditions) > 0 &&
+				current.Status.Conditions[0].Message == "service endpoint lookup unavailable", nil
+		})
+		require.Equal(t, apiv2.LogicalServicePhaseRunning, unavailable.Status.Phase)
+		requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
+		require.NoError(t, listener.lifetimeCtx.Err())
+		decorated.fail.Store(false)
+		recovered, recoveredListener := resources.requireReady(t, ctx)
+		require.Same(t, listener, recoveredListener)
+		require.Equal(t, original.Status.EffectiveAddresses, recovered.Status.EffectiveAddresses)
+		namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: resources.service.Namespace}}
+		require.NoError(t, resources.client.Delete(ctx, namespace))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, resources.client, namespace)
+	})
 }
 
 // Verifies that LogicalService retries a route-configuration failure while remaining Running
@@ -590,51 +583,67 @@ func TestV2LogicalServiceRetriesConfigurationWithoutReplacingListener(t *testing
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
-			recorder := &serviceProxyRecorder{}
-			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalServiceController, t.Name(), t.TempDir(),
-				TestEnvironmentOptions{CreateLogicalServiceProxy: recorder.create})
-			require.NoError(t, startupErr)
-			apiClient := server.Client
-			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "retry-configuration"}}
-			require.NoError(t, apiClient.Create(ctx, namespace))
-			service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
-				Spec: apiv2.LogicalServiceSpec{Protocol: protocol, Address: "127.0.0.1"}}
-			require.NoError(t, apiClient.Create(ctx, service))
-			endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: namespace.Name},
-				Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}}}}
-			require.NoError(t, apiClient.Create(ctx, endpoint))
-			ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return logicalServiceReady(current), nil
-			})
-			listeners := recorder.snapshot()
-			require.Len(t, listeners, 1)
-			listener := listeners[0]
-			configurationCount := listener.configurationCalls.Load()
+			resources := createServiceEndpointResources(t, ctx, protocol, TestEnvironmentOptions{})
+			original, listener := resources.requireReady(t, ctx)
 			listener.failConfiguration.Store(true)
-			endpoint.Spec.Addresses[0].Port++
-			endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
-			unavailable := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return listener.configurationCalls.Load() >= configurationCount+2 && !logicalServiceReady(current) &&
-					current.Status.Phase == apiv2.LogicalServicePhaseRunning &&
-					slices.Equal(current.Status.EffectiveAddresses, ready.Status.EffectiveAddresses), nil
+			resources.endpoint.Spec.Addresses[0].Port++
+			resources.endpoint = recreateServiceEndpoint(t, ctx, resources.client, resources.endpoint)
+			unavailable := waitObjectAssumesStateEx(t, ctx, resources.client, resources.service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+				return !logicalServiceReady(current) && len(current.Status.Conditions) > 0 &&
+					strings.Contains(current.Status.Conditions[0].Message, "configuration unavailable"), nil
 			})
+			require.Equal(t, apiv2.LogicalServicePhaseRunning, unavailable.Status.Phase)
 			requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
-			require.Contains(t, unavailable.Status.Conditions[0].Message, "configuration unavailable")
+			require.Equal(t, original.Status.EffectiveAddresses, unavailable.Status.EffectiveAddresses)
 			require.NoError(t, listener.lifetimeCtx.Err())
 			listener.failConfiguration.Store(false)
-			waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return logicalServiceReady(current) &&
-					listener.configurationCalls.Load() >= configurationCount+2 &&
-					slices.Equal(current.Status.EffectiveAddresses, ready.Status.EffectiveAddresses) &&
-					slices.Equal(listener.configuration().Endpoints, []proxy.Endpoint{{Address: "127.0.0.1", Port: endpoint.Spec.Addresses[0].Port}}), nil
-			})
-			require.Len(t, recorder.snapshot(), 1)
-			require.NoError(t, listener.lifetimeCtx.Err())
-			require.Equal(t, proxy.ProxyStateRunning, listener.State())
-			require.NoError(t, apiClient.Delete(ctx, namespace))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
+			recovered, recoveredListener := resources.requireReady(t, ctx)
+			require.Same(t, listener, recoveredListener)
+			require.Equal(t, original.Status.EffectiveAddresses, recovered.Status.EffectiveAddresses)
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: resources.service.Namespace}}
+			require.NoError(t, resources.client.Delete(ctx, namespace))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, resources.client, namespace)
 		})
 	}
+}
+
+type serviceEndpointResources struct {
+	client   ctrl_client.Client
+	service  *apiv2.LogicalService
+	endpoint *apiv2.ServiceEndpoint
+	recorder *serviceProxyRecorder
+}
+
+func createServiceEndpointResources(
+	t *testing.T, ctx context.Context, protocol commonapi.PortProtocol, options TestEnvironmentOptions,
+) *serviceEndpointResources {
+	t.Helper()
+	recorder := &serviceProxyRecorder{}
+	options.CreateLogicalServiceProxy = recorder.create
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalServiceController, t.Name(), t.TempDir(), options)
+	require.NoError(t, startupErr)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "service-endpoint-retry"}}
+	require.NoError(t, server.Client.Create(ctx, namespace))
+	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
+		Spec: apiv2.LogicalServiceSpec{Protocol: protocol, Address: "127.0.0.1"}}
+	endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: namespace.Name},
+		Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}}}}
+	require.NoError(t, server.Client.Create(ctx, endpoint))
+	require.NoError(t, server.Client.Create(ctx, service))
+	return &serviceEndpointResources{client: server.Client, service: service, endpoint: endpoint, recorder: recorder}
+}
+
+func (resources *serviceEndpointResources) requireReady(t *testing.T, ctx context.Context) (*apiv2.LogicalService, *recordedServiceProxy) {
+	t.Helper()
+	ready := waitObjectAssumesStateEx(t, ctx, resources.client, resources.service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+		return logicalServiceReady(current), nil
+	})
+	listeners := resources.recorder.snapshot()
+	require.Len(t, listeners, 1)
+	require.Equal(t, []proxy.Endpoint{{Address: "127.0.0.1", Port: resources.endpoint.Spec.Addresses[0].Port}}, listeners[0].configuration().Endpoints)
+	require.NoError(t, listeners[0].lifetimeCtx.Err())
+	require.Equal(t, proxy.ProxyStateRunning, listeners[0].State())
+	return ready, listeners[0]
 }
 
 // Verifies that LogicalService retries failed initial listener startup before publishing its

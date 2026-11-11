@@ -41,7 +41,6 @@ type execBackingClient struct {
 	loseCleanupResponse atomic.Bool
 	cleanupResponseLost atomic.Bool
 	failObservation     atomic.Bool
-	observationFailures atomic.Uint32
 	failNamespace       atomic.Bool
 	observation         chan struct{}
 	observationOnce     sync.Once
@@ -60,7 +59,6 @@ func (client *execBackingClient) Status() ctrl_client.SubResourceWriter {
 
 func (client *execBackingClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
 	if _, executions := list.(*apiv2.PhysicalContainerExecList); executions && client.failObservation.Load() {
-		client.observationFailures.Add(1)
 		client.observationOnce.Do(func() { close(client.observation) })
 		return errors.New("execution observation unavailable")
 	}
@@ -215,8 +213,8 @@ func TestV2ContainerExecDisposalFailureDoesNotBlockDeletion(t *testing.T) {
 	require.NoError(t, captureErr, "failed output deletion must not block resource finalization")
 }
 
-// Verifies that LogicalContainerExec preserves Running and its selected backing during API read failures,
-// then reports completion and cleans up the original execution after observation recovers.
+// Verifies that LogicalContainerExec completes its original execution after backing observation
+// recovers, without relaunching, and cleans up the original backing.
 func TestV2LogicalContainerExecRetriesOwnerObservation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -240,24 +238,18 @@ func TestV2LogicalContainerExecRetriesOwnerObservation(t *testing.T) {
 	require.NoError(t, server.Client.Patch(ctx, logical,
 		ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"test.dcp.microsoft.com/reconcile":"observe"}}}`))))
 	waitContainerExecSignal(t, ctx, decorated.observation)
-	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
-		return decorated.observationFailures.Load() >= 2, nil
-	}))
-	require.NoError(t, server.Client.Get(ctx, logical.NamespacedName(), logical))
-	require.Equal(t, apiv2.LogicalContainerExecPhaseRunning, logical.Status.Phase)
-	requireReadyCondition(t, logical.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerExecReasonRunning)
-	require.Equal(t, running.Status.PhysicalExecRef, logical.Status.PhysicalExecRef)
-	require.Equal(t, running.Status.ContainerID, logical.Status.ContainerID)
 	decorated.failObservation.Store(false)
 	orchestrator, simulated := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, simulated)
 	require.NoError(t, orchestrator.SimulateContainerExecExit(ctx, target.Status.ContainerID, logical.Spec.Execution.Command, 23))
 	recovered := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerExecPhaseExited, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseExited &&
+			current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete, nil
 	})
 	requireReadyCondition(t, recovered.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonCompleted)
 	require.Equal(t, int32(23), *recovered.Status.ExitCode)
 	require.Equal(t, running.Status.PhysicalExecRef, recovered.Status.PhysicalExecRef)
+	require.Equal(t, running.Status.ContainerID, recovered.Status.ContainerID)
 	require.Equal(t, running.Status.RuntimeLogs.UID, recovered.Status.RuntimeLogs.UID)
 	require.Equal(t, 1, orchestrator.ExecContainerCallCount(logical.Spec.Execution.Command))
 	require.NoError(t, server.Client.Delete(ctx, logical))

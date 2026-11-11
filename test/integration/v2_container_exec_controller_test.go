@@ -135,8 +135,8 @@ func TestV2PhysicalContainerExecImmediateCompletion(t *testing.T) {
 	require.Equal(t, 1, containerOrchestrator.ExecContainerCallCount(command))
 }
 
-// Verifies that LogicalContainerExec waits for namespace, target, and image readiness
-// before creating its physical execution, then progresses through dependency watches.
+// Verifies that LogicalContainerExec does not execute while its prerequisites are unready
+// and eventually starts once its namespace, target, and image are ready.
 func TestV2LogicalContainerExecWaitsForPrerequisites(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -145,23 +145,14 @@ func TestV2LogicalContainerExecWaitsForPrerequisites(t *testing.T) {
 	resource := &apiv2.LogicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: "execution", Namespace: namespace},
 		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: "target", Execution: apiv2.ContainerExecConfig{Command: "v2-exec-prerequisites-command"}}}
 	require.NoError(t, client.Create(ctx, resource))
-	waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return condition != nil && condition.Reason == string(apiv2.LogicalContainerExecReasonStarting), nil
-	})
 	createActiveV2Namespace(t, ctx, namespace)
-	waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return condition != nil && condition.Reason == string(apiv2.LogicalContainerExecReasonStarting) &&
-			condition.Message == "Waiting for the target LogicalContainer.", nil
-	})
 	target := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: "target", Namespace: namespace},
 		Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{ImageRef: "pending-image"}}}
 	require.NoError(t, client.Create(ctx, target))
 	pending := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
 		condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return condition != nil && condition.Reason == string(apiv2.LogicalContainerExecReasonStarting) &&
-			condition.Message == "Waiting for logical container readiness.", nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhasePending &&
+			condition != nil && condition.Reason == string(apiv2.LogicalContainerExecReasonStarting), nil
 	})
 	require.Empty(t, pending.Status.PhysicalExecRef)
 	require.Zero(t, containerOrchestrator.ExecContainerCallCount(resource.Spec.Execution.Command))

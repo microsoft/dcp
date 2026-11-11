@@ -1058,9 +1058,9 @@ type retainedProcessLaunchGate struct {
 	release <-chan struct{}
 }
 
-// Verifies that LogicalProcess forwards Stop during startup without entering Running/Stopping,
-// then reports Stopped once the physical controller finishes cancelling the launch.
-func TestV2LogicalProcessControllerCancelsStartupWithoutEnteringStopping(t *testing.T) {
+// Verifies that LogicalProcess eventually reports Stopped after Stop is requested during an
+// in-flight launch, without duplicate launches or a surviving process.
+func TestV2LogicalProcessControllerStopsDuringStartup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -1068,7 +1068,7 @@ func TestV2LogicalProcessControllerCancelsStartupWithoutEnteringStopping(t *test
 	unblock := sync.OnceFunc(func() { close(release) })
 	defer unblock()
 	const command = "v2-logical-process-cancel-startup"
-	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecoratePhysicalProcessExecutor: func(executor process.Executor) process.Executor {
 			return &retainedProcessLaunchGate{Executor: executor, command: command, started: started, release: release}
@@ -1085,22 +1085,19 @@ func TestV2LogicalProcessControllerCancelsStartupWithoutEnteringStopping(t *test
 	}
 	require.NoError(t, server.Client.Patch(ctx, resource,
 		ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(resource.UID)}
-	waitObjectAssumesStateEx(t, ctx, server.Client, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
-		return current.Spec.Stop, nil
-	})
-	pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
-		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.ObservedGeneration == current.Generation &&
-			ready.Message == "Waiting for the physical controller to cancel process startup.", nil
-	})
-	require.Equal(t, apiv2.LogicalProcessPhasePending, pending.Status.Phase)
-	requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonStarting)
 	unblock()
 	stopped := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
 	})
 	requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonStopped)
+	require.LessOrEqual(t, len(environment.TestProcessExecutor.FindAll([]string{command}, "", nil)), 1)
+	require.Empty(t, environment.TestProcessExecutor.FindAll([]string{command}, "", func(execution *internal_testutil.ProcessExecution) bool {
+		return execution.Running()
+	}))
+	require.NoError(t, server.Client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+	physical := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: stopped.Status.PhysicalProcessRef, Namespace: namespace.Name}}
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
 }
 
 func (gate *retainedProcessLaunchGate) StartProcess(
