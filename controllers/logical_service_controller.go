@@ -161,8 +161,12 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		if listErr != nil {
 			log.Error(listErr, "Failed to list service endpoints")
 			message, requeue = listErr.Error(), true
-			status.EffectiveAddresses = slices.Clone(service.Status.EffectiveAddresses)
-			status.ProxylessEndpointRef = service.Status.ProxylessEndpointRef
+			if service.Spec.AddressAllocationMode == apiv2.ServiceAddressAllocationModeProxyless {
+				status.EffectiveAddresses = slices.Clone(service.Status.EffectiveAddresses)
+				status.ProxylessEndpointRef = service.Status.ProxylessEndpointRef
+			} else {
+				status.EffectiveAddresses = logicalServiceProxyAddresses(data.proxies)
+			}
 			if len(status.EffectiveAddresses) > 0 {
 				status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonAllocated
 			}
@@ -197,13 +201,7 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			break
 		}
 		proxyErr := r.configureProxies(service, data, endpoints.Items, log)
-		for _, listener := range data.proxies {
-			if listener.proxy.State() == proxy.ProxyStateRunning {
-				status.EffectiveAddresses = append(status.EffectiveAddresses, apiv2.ServiceAddress{
-					Address: listener.proxy.EffectiveAddress(), Port: listener.proxy.EffectivePort(),
-				})
-			}
-		}
+		status.EffectiveAddresses = logicalServiceProxyAddresses(data.proxies)
 		if len(status.EffectiveAddresses) > 0 {
 			data.started = true
 		}
@@ -260,6 +258,18 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		delay = LongDelay
 	}
 	return r.SaveChangesWithDelay(ctx, service, patch, change, delay, nil, log)
+}
+
+func logicalServiceProxyAddresses(listeners []proxyInstanceData) []apiv2.ServiceAddress {
+	var addresses []apiv2.ServiceAddress
+	for _, listener := range listeners {
+		if listener.proxy.State() == proxy.ProxyStateRunning {
+			addresses = append(addresses, apiv2.ServiceAddress{
+				Address: listener.proxy.EffectiveAddress(), Port: listener.proxy.EffectivePort(),
+			})
+		}
+	}
+	return addresses
 }
 
 func (r *LogicalServiceReconciler) configureProxies(

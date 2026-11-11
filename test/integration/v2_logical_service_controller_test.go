@@ -19,7 +19,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,7 +50,8 @@ type recordedServiceProxy struct {
 
 type serviceEndpointLookupFailureClient struct {
 	ctrl_client.Client
-	fail atomic.Bool
+	fail               atomic.Bool
+	conflictAllocation atomic.Bool
 }
 
 func (apiClient *serviceEndpointLookupFailureClient) List(
@@ -58,6 +61,27 @@ func (apiClient *serviceEndpointLookupFailureClient) List(
 		return errors.New("service endpoint lookup unavailable")
 	}
 	return apiClient.Client.List(ctx, objects, options...)
+}
+
+func (apiClient *serviceEndpointLookupFailureClient) Status() ctrl_client.SubResourceWriter {
+	return &serviceAllocationConflictWriter{SubResourceWriter: apiClient.Client.Status(), client: apiClient}
+}
+
+type serviceAllocationConflictWriter struct {
+	ctrl_client.SubResourceWriter
+	client *serviceEndpointLookupFailureClient
+}
+
+func (writer *serviceAllocationConflictWriter) Patch(
+	ctx context.Context, object ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption,
+) error {
+	if service, logical := object.(*apiv2.LogicalService); logical && len(service.Status.EffectiveAddresses) > 0 &&
+		writer.client.conflictAllocation.CompareAndSwap(true, false) {
+		writer.client.fail.Store(true)
+		return apierrors.NewConflict(schema.GroupResource{Group: apiv2.GroupName, Resource: "logicalservices"},
+			service.Name, errors.New("injected allocation status conflict"))
+	}
+	return writer.SubResourceWriter.Patch(ctx, object, patch, options...)
 }
 
 func (recorded *recordedServiceProxy) Start() error {
@@ -512,8 +536,8 @@ func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 	}
 }
 
-// Verifies that LogicalService preserves startup or Running lifecycle during failed endpoint reads,
-// then recovers readiness without replacing an established listener.
+// Verifies that LogicalService preserves startup or allocated listener state during failed endpoint reads,
+// including after an allocation status conflict, then recovers readiness without replacing the listener.
 func TestV2LogicalServicePreservesLifecycleDuringEndpointLookupFailure(t *testing.T) {
 	t.Parallel()
 	t.Run("startup", func(t *testing.T) {
@@ -537,6 +561,42 @@ func TestV2LogicalServicePreservesLifecycleDuringEndpointLookupFailure(t *testin
 		requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonStarting)
 		decorated.fail.Store(false)
 		resources.requireReady(t, ctx)
+		namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: resources.service.Namespace}}
+		require.NoError(t, resources.client.Delete(ctx, namespace))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, resources.client, namespace)
+	})
+	t.Run("allocation-status-conflict", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+		defer cancel()
+		var decorated *serviceEndpointLookupFailureClient
+		resources := createServiceEndpointResources(t, ctx, commonapi.PortProtocolTCP, TestEnvironmentOptions{
+			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+				decorated = &serviceEndpointLookupFailureClient{Client: apiClient}
+				decorated.conflictAllocation.Store(true)
+				return decorated
+			},
+		})
+		defer decorated.fail.Store(false)
+		allocated := waitObjectAssumesStateEx(t, ctx, resources.client, resources.service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+			return len(current.Status.Conditions) > 0 &&
+				current.Status.Conditions[0].Message == "service endpoint lookup unavailable", nil
+		})
+		require.False(t, decorated.conflictAllocation.Load())
+		require.Equal(t, apiv2.LogicalServicePhaseRunning, allocated.Status.Phase)
+		requireReadyCondition(t, allocated.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonAllocated)
+		listeners := resources.recorder.snapshot()
+		require.Len(t, listeners, 1)
+		listener := listeners[0]
+		require.Equal(t, []apiv2.ServiceAddress{{
+			Address: listener.EffectiveAddress(), Port: listener.EffectivePort(),
+		}}, allocated.Status.EffectiveAddresses)
+		require.Positive(t, allocated.Status.EffectiveAddresses[0].Port)
+		require.NoError(t, listener.lifetimeCtx.Err())
+		decorated.fail.Store(false)
+		recovered, recoveredListener := resources.requireReady(t, ctx)
+		require.Same(t, listener, recoveredListener)
+		require.Equal(t, allocated.Status.EffectiveAddresses, recovered.Status.EffectiveAddresses)
 		namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: resources.service.Namespace}}
 		require.NoError(t, resources.client.Delete(ctx, namespace))
 		ctrl_testutil.WaitObjectDeleted(t, ctx, resources.client, namespace)
