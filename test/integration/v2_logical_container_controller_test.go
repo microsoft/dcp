@@ -798,7 +798,7 @@ func TestV2LogicalContainerControllerCalculatesLifecycleKey(t *testing.T) {
 }
 
 // Verifies that the LogicalContainer controller never creates a missing existing-mode container
-// and attributes mixed explicit/dynamic endpoint bindings from physical observations rather than logical status.
+// and projects runtime launch configuration and mixed endpoint bindings from physical observations rather than logical status.
 // Deletion withdraws endpoints while retaining the adopted container and independent services.
 func TestV2LogicalContainerControllerObservesExistingContainer(t *testing.T) {
 	t.Parallel()
@@ -834,7 +834,17 @@ func TestV2LogicalContainerControllerObservesExistingContainer(t *testing.T) {
 		return ready != nil && ready.Reason == string(apiv2.LogicalContainerReasonStarting), nil
 	})
 	require.Zero(t, containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName))
-	runtimeID := runExistingTestContainer(t, ctx, container.Spec.ContainerName, "existing-image")
+	runtimeCommand := []string{"runtime-only-argument"}
+	runtimeEntrypoint := "runtime-entrypoint"
+	runtimeEnvironment := []commonapi.EnvVar{{Name: "RUNTIME_ONLY", Value: "from the runtime"}}
+	runtimeID, runErr := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name: container.Spec.ContainerName, Image: "existing-image",
+			Command: runtimeCommand, Entrypoint: runtimeEntrypoint, Env: runtimeEnvironment,
+		},
+	})
+	require.NoError(t, runErr)
+	removeRuntimeContainerOnCleanup(t, runtimeID)
 	createCalls := containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName)
 	require.NoError(t, containerOrchestrator.SimulateContainerPortMappings(ctx, runtimeID, containers.InspectedContainerPortMapping{
 		"8080/tcp": {
@@ -852,6 +862,16 @@ func TestV2LogicalContainerControllerObservesExistingContainer(t *testing.T) {
 		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
 	})
 	require.Equal(t, runtimeID, running.Status.ContainerID)
+	require.Equal(t, runtimeCommand, running.Status.EffectiveCommand)
+	require.Equal(t, []string{runtimeEntrypoint}, running.Status.EffectiveEntrypoint)
+	require.Equal(t, runtimeEnvironment, running.Status.EffectiveEnv)
+	physical := &apiv2.PhysicalContainer{}
+	require.NoError(t, client.Get(ctx, types.NamespacedName{
+		Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef,
+	}, physical))
+	require.Equal(t, runtimeCommand, physical.Status.EffectiveCommand)
+	require.Equal(t, []string{runtimeEntrypoint}, physical.Status.EffectiveEntrypoint)
+	require.Equal(t, runtimeEnvironment, physical.Status.EffectiveEnv)
 	require.Equal(t, createCalls, containerOrchestrator.CreateContainerCallCount(container.Spec.ContainerName))
 	var endpoints apiv2.ServiceEndpointList
 	require.NoError(t, client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))

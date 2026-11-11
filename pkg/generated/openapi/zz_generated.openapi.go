@@ -5896,6 +5896,65 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 				Description: "LogicalContainerStatus describes the observed logical container and its physical dependencies.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"effectiveCommand": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveCommand contains the container command reported by runtime inspection, separately from its entrypoint.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEntrypoint": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEntrypoint contains the container entrypoint reported by runtime inspection.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEnv": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEnv contains environment variables reported by runtime inspection, including image and environment-file values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
 					"ports": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -6046,7 +6105,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 			},
 		},
 		Dependencies: []string{
-			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -6421,6 +6480,46 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 				Description: "LogicalProcessStatus describes the observed process and its backing PhysicalProcess.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"effectiveArgs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveArgs contains evaluated process launch arguments.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEnv": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEnv contains prepared launch values, including permitted process environment inheritance.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
 					"ports": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -6520,7 +6619,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 			},
 		},
 		Dependencies: []string{
-			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 

@@ -82,6 +82,28 @@ func TestPhysicalProcessEnvironment(t *testing.T) {
 	}
 }
 
+// Verifies that LogicalProcess prepares literal inherited values with explicit overrides,
+// honors disabled inheritance, and omits internal variables from its published environment.
+func TestLogicalProcessLaunchEnvironment(t *testing.T) {
+	t.Setenv("LOGICAL_PROCESS_AMBIENT_ONLY", "{{literal inherited value}}")
+	t.Setenv("LOGICAL_PROCESS_OVERRIDE", "inherited")
+	t.Setenv("DCP_LOGICAL_PROCESS_INTERNAL", "hidden")
+	t.Setenv("DEBUG_SESSION_LOGICAL_PROCESS_INTERNAL", "hidden")
+	declared := []commonapi.EnvVar{
+		{Name: "LOGICAL_PROCESS_OVERRIDE", Value: "configured"},
+		{Name: "DCP_LOGICAL_PROCESS_INTERNAL", Value: "configured hidden"},
+	}
+	inherited := logicalProcessLaunchEnvironment(apiv2.AmbientEnvironment{}, declared)
+	require.Contains(t, inherited, commonapi.EnvVar{Name: "LOGICAL_PROCESS_AMBIENT_ONLY", Value: "{{literal inherited value}}"})
+	require.Contains(t, inherited, declared[0])
+	require.NotContains(t, inherited, commonapi.EnvVar{Name: "LOGICAL_PROCESS_OVERRIDE", Value: "inherited"})
+	require.NotContains(t, inherited, declared[1])
+	require.NotContains(t, inherited, commonapi.EnvVar{Name: "DEBUG_SESSION_LOGICAL_PROCESS_INTERNAL", Value: "hidden"})
+	isolated := logicalProcessLaunchEnvironment(
+		apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit}, declared)
+	require.Equal(t, declared[:1], isolated)
+}
+
 func (*missingPhysicalProcessExecutor) CheckProcessRunning(process.ProcessHandle) error {
 	return process.ErrorProcessNotFound
 }

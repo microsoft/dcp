@@ -791,6 +791,8 @@ func TestV2LogicalProcessPreparationLifecycle(t *testing.T) {
 							current.Status.Conditions[0].Reason == string(expectedReason), nil
 					})
 					require.Empty(t, prepared.Status.PhysicalProcessRef)
+					require.Empty(t, prepared.Status.EffectiveArgs)
+					require.Empty(t, prepared.Status.EffectiveEnv)
 					if dependency != nil {
 						require.Contains(t, prepared.Status.Conditions[0].Message, "terminating")
 						releaseDependency()

@@ -276,8 +276,8 @@ func TestV2LogicalProcessControllerRecoversCreatedChildBeforeForwardingStop(t *t
 	}
 }
 
-// Verifies that LogicalProcess waits for namespace readiness, delegates session launch and configuration,
-// and stops the process by deleting its backing PhysicalProcess.
+// Verifies that LogicalProcess waits for namespace readiness, publishes its prepared launch configuration,
+// delegates session launch, and stops the process by deleting its backing PhysicalProcess.
 func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -294,8 +294,12 @@ func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 		return condition != nil && condition.Reason == string(apiv2.PhysicalResourceReasonNamespaceNotFound), nil
 	})
 	require.Empty(t, pending.Status.PhysicalProcessRef)
+	require.Empty(t, pending.Status.EffectiveArgs)
+	require.Empty(t, pending.Status.EffectiveEnv)
 	createActiveV2Namespace(t, ctx, resource.Namespace)
 	running := waitLogicalProcessPhase(t, ctx, resource.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+	require.Equal(t, resource.Spec.Process.Args, running.Status.EffectiveArgs)
+	require.Equal(t, resource.Spec.Process.Env, running.Status.EffectiveEnv)
 	physical := &apiv2.PhysicalProcess{}
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: resource.Namespace, Name: running.Status.PhysicalProcessRef}, physical))
 	require.True(t, metav1.IsControlledBy(physical, resource))

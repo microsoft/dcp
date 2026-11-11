@@ -290,6 +290,19 @@ type LogicalContainerNetworkConnectionConfig struct {
 // LogicalContainerStatus describes the observed logical container and its physical dependencies.
 // +k8s:openapi-gen=true
 type LogicalContainerStatus struct {
+	// EffectiveCommand contains the container command reported by runtime inspection, separately from its entrypoint.
+	// +listType=atomic
+	EffectiveCommand []string `json:"effectiveCommand,omitempty"`
+
+	// EffectiveEntrypoint contains the container entrypoint reported by runtime inspection.
+	// +listType=atomic
+	EffectiveEntrypoint []string `json:"effectiveEntrypoint,omitempty"`
+
+	// EffectiveEnv contains environment variables reported by runtime inspection, including image and environment-file values.
+	// +listType=map
+	// +listMapKey=name
+	EffectiveEnv []commonapi.EnvVar `json:"effectiveEnv,omitempty"`
+
 	// Ports describes service selection and the listening address/port for each logical port.
 	// +listType=map
 	// +listMapKey=name

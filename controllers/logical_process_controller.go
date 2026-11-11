@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -29,6 +31,7 @@ import (
 	"github.com/microsoft/dcp/internal/templating"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -230,6 +233,10 @@ func handleLogicalProcessPhysical(
 		if existing.Spec.Process != nil {
 			data.effectiveArgs = append([]string(nil), existing.Spec.Process.Args...)
 			data.effectiveEnv = append([]commonapi.EnvVar(nil), existing.Spec.Process.Env...)
+			if !data.inputsPrepared {
+				data.launchEnv = logicalProcessLaunchEnvironment(existing.Spec.Process.AmbientEnvironment, data.effectiveEnv)
+				data.inputsPrepared = true
+			}
 		} else if resource.Spec.EffectiveMode() == apiv2.LogicalProcessModePersistent && existing.Spec.PID != nil {
 			pid, pidErr := process.Int64_ToPidT(*existing.Spec.PID)
 			if pidErr != nil {
@@ -893,9 +900,38 @@ func (r *LogicalProcessReconciler) prepareLogicalProcessValues(
 			return evaluationErr
 		}
 		data.effectiveArgs, data.effectiveEnv = arguments, environment
+		data.launchEnv = logicalProcessLaunchEnvironment(config.AmbientEnvironment, environment)
+		data.inputsPrepared = true
 	}
 	data.ports = logicalPortSelections(ports, requests)
 	return nil
+}
+
+func logicalProcessLaunchEnvironment(ambient apiv2.AmbientEnvironment, declared []commonapi.EnvVar) []commonapi.EnvVar {
+	mode := maps.StringMapModeCaseSensitive
+	if osutil.IsWindows() {
+		mode = maps.StringMapModeCaseInsensitive
+	}
+	merged := maps.NewStringKeyMap[string](mode)
+	for _, entry := range physicalProcessEnvironment(&apiv2.PhysicalProcessConfig{AmbientEnvironment: ambient, Env: declared}) {
+		name, value, found := strings.Cut(entry, "=")
+		if found {
+			merged.Override(name, value)
+		}
+	}
+	var environment []commonapi.EnvVar
+	for name, value := range merged.Data() {
+		comparisonName := name
+		if osutil.IsWindows() {
+			comparisonName = strings.ToUpper(name)
+		}
+		if slices.ContainsFunc(suppressVarPrefixes, func(prefix string) bool { return strings.HasPrefix(comparisonName, prefix) }) {
+			continue
+		}
+		environment = append(environment, commonapi.EnvVar{Name: name, Value: value})
+	}
+	slices.SortFunc(environment, func(left, right commonapi.EnvVar) int { return strings.Compare(left.Name, right.Name) })
+	return environment
 }
 
 func (r *LogicalProcessReconciler) prepareLogicalProcess(

@@ -1137,6 +1137,18 @@ func applyLogicalContainerBackingStatus(
 		change |= setValue(&container.Status.CreatedAt, physicalStatus.CreatedAt)
 		change |= setValue(&container.Status.StartedAt, physicalStatus.StartedAt)
 		change |= setValue(&container.Status.FinishedAt, physicalStatus.FinishedAt)
+		if !std_slices.Equal(container.Status.EffectiveCommand, physicalStatus.EffectiveCommand) {
+			container.Status.EffectiveCommand = std_slices.Clone(physicalStatus.EffectiveCommand)
+			change |= statusChanged
+		}
+		if !std_slices.Equal(container.Status.EffectiveEntrypoint, physicalStatus.EffectiveEntrypoint) {
+			container.Status.EffectiveEntrypoint = std_slices.Clone(physicalStatus.EffectiveEntrypoint)
+			change |= statusChanged
+		}
+		if !std_slices.Equal(container.Status.EffectiveEnv, physicalStatus.EffectiveEnv) {
+			container.Status.EffectiveEnv = std_slices.Clone(physicalStatus.EffectiveEnv)
+			change |= statusChanged
+		}
 		if !reflect.DeepEqual(container.Status.ExitCode, physicalStatus.ExitCode) {
 			container.Status.ExitCode = nil
 			if physicalStatus.ExitCode != nil {

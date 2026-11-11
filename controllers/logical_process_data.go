@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -137,6 +138,8 @@ type logicalProcessData struct {
 	started             bool
 	effectiveArgs       []string
 	effectiveEnv        []commonapi.EnvVar
+	launchEnv           []commonapi.EnvVar
+	inputsPrepared      bool
 	ports               []logicalPortSelection
 	lifecycleKey        string
 	physicalUID         types.UID
@@ -153,6 +156,7 @@ func (data *logicalProcessData) Clone() *logicalProcessData {
 	cloned.unobservedChildren = maps.Clone(data.unobservedChildren)
 	cloned.effectiveArgs = append([]string(nil), data.effectiveArgs...)
 	cloned.effectiveEnv = append([]commonapi.EnvVar(nil), data.effectiveEnv...)
+	cloned.launchEnv = slices.Clone(data.launchEnv)
 	cloned.ports = append([]logicalPortSelection(nil), data.ports...)
 	if data.pendingRecord != nil {
 		record := *data.pendingRecord
@@ -233,6 +237,14 @@ func (data *logicalProcessData) applyTo(resource *apiv2.LogicalProcess) (objectC
 		physicalRef = "logical-" + string(resource.UID)
 	}
 	change := setValue(&resource.Status.PhysicalProcessRef, physicalRef)
+	if !slices.Equal(resource.Status.EffectiveArgs, data.effectiveArgs) {
+		resource.Status.EffectiveArgs = slices.Clone(data.effectiveArgs)
+		change |= statusChanged
+	}
+	if !slices.Equal(resource.Status.EffectiveEnv, data.launchEnv) {
+		resource.Status.EffectiveEnv = slices.Clone(data.launchEnv)
+		change |= statusChanged
+	}
 	var ports []logicalPortData
 	lifecycleKey := resource.Spec.LifecycleKey
 	if data.physicalUID != "" {

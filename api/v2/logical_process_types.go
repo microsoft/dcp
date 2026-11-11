@@ -182,6 +182,13 @@ func (spec *LogicalProcessSpec) GetLifecycleKey() (string, bool, error) {
 // LogicalProcessStatus describes the observed process and its backing PhysicalProcess.
 // +k8s:openapi-gen=true
 type LogicalProcessStatus struct {
+	// EffectiveArgs contains evaluated process launch arguments.
+	// +listType=atomic
+	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
+	// EffectiveEnv contains prepared launch values, including permitted process environment inheritance.
+	// +listType=map
+	// +listMapKey=name
+	EffectiveEnv []commonapi.EnvVar `json:"effectiveEnv,omitempty"`
 	// Ports describes service selection and the listening address/port for each logical port.
 	// +listType=map
 	// +listMapKey=name
