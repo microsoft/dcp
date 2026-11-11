@@ -778,11 +778,6 @@ func (r *LogicalContainerReconciler) findPhysicalContainer(
 			return nil, identityErr
 		}
 		data.physicalContainerUID = owned.UID
-		if !owned.DeletionTimestamp.IsZero() && !data.terminal() {
-			deletionErr := fmt.Errorf("the owned PhysicalContainer %q is being deleted", owned.NamespacedName())
-			data.failMissing(deletionErr.Error())
-			return nil, deletionErr
-		}
 	}
 	return owned, nil
 }
@@ -873,7 +868,7 @@ func handleLogicalContainerRunning(
 		return change | additionalReconciliationNeeded
 	}
 	data.reason, data.message = "", ""
-	publish := state == logicalContainerStateRunning && physical.DeletionTimestamp.IsZero()
+	publish := state == logicalContainerStateRunning
 	if _, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, container, data, logicalContainerOwnerUIDField, &data.unobservedChildren, publish, physical.Status.PortMappings...); endpointErr != nil {
 		log.Error(endpointErr, "Failed to synchronize logical container endpoints")
 		change |= additionalReconciliationNeeded

@@ -338,7 +338,7 @@ func handleLogicalContainerExecCreating(
 		return change | handleInvalidLogicalContainerExecState(ctx, reconciler, resource, observedState, data, log)
 	}
 	data.updateLifecycleFromPhysicalContainerExec(physical, observedState)
-	if data.state != logicalContainerExecStateCreating || !physical.DeletionTimestamp.IsZero() {
+	if data.state != logicalContainerExecStateCreating {
 		change |= additionalReconciliationNeeded
 	}
 	return change
@@ -361,9 +361,6 @@ func handleLogicalContainerExecRunning(
 	}
 	if observedState != logicalContainerExecStateRunning {
 		data.updateLifecycleFromPhysicalContainerExec(physical, observedState)
-		change |= additionalReconciliationNeeded
-	} else if !physical.DeletionTimestamp.IsZero() {
-		data.failMissing("The owned PhysicalContainerExec is being deleted.")
 		change |= additionalReconciliationNeeded
 	}
 	return change
@@ -389,11 +386,6 @@ func (r *LogicalContainerExecReconciler) findPhysicalContainerExec(
 				data.state = logicalContainerExecStateMissing
 				return nil, identityErr
 			}
-			if !child.DeletionTimestamp.IsZero() && !data.terminal() {
-				deletionErr := fmt.Errorf("the owned PhysicalContainerExec %q is being deleted", child.NamespacedName())
-				data.failMissing(deletionErr.Error())
-				return nil, deletionErr
-			}
 			return child, nil
 		}
 	}
@@ -412,11 +404,6 @@ func (r *LogicalContainerExecReconciler) findPhysicalContainerExec(
 		data.failMissing(identityErr.Error())
 		data.state = logicalContainerExecStateMissing
 		return nil, identityErr
-	}
-	if !physical.DeletionTimestamp.IsZero() && !data.terminal() {
-		deletionErr := fmt.Errorf("the owned PhysicalContainerExec %q is being deleted", physical.NamespacedName())
-		data.failMissing(deletionErr.Error())
-		return nil, deletionErr
 	}
 	return physical, nil
 }

@@ -1321,16 +1321,13 @@ func TestV2LogicalContainerNetworkControllerSettlesPersistenceDuringDeletion(t *
 	}))
 	require.NoError(t, testStateStore.VerifyResourceLeaseHeld(ctx, network, testResourceLeaseOwner))
 	require.NoError(t, client.Delete(ctx, network))
-	deleting := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
-		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == string(apiv2.LogicalContainerNetworkReasonStarting), nil
+	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(network.UID)}
+	physical := waitObjectAssumesState(t, ctx, physicalName, func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
+		return !current.DeletionTimestamp.IsZero(), nil
 	})
-	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: deleting.Status.PhysicalNetworkRef}
-	physical := &apiv2.PhysicalContainerNetwork{}
-	require.NoError(t, client.Get(ctx, physicalName, physical))
-	require.False(t, physical.DeletionTimestamp.IsZero())
 	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
 	require.NotEmpty(t, physical.Finalizers)
+	deleting := &apiv2.LogicalContainerNetwork{}
 	require.NoError(t, client.Get(ctx, network.NamespacedName(), deleting))
 	require.Contains(t, deleting.Finalizers, apiv2.GroupName+"/logicalcontainernetwork-reconciler")
 	require.NoError(t, testStateStore.VerifyResourceLeaseHeld(ctx, network, testResourceLeaseOwner))
@@ -1348,6 +1345,61 @@ func TestV2LogicalContainerNetworkControllerSettlesPersistenceDuringDeletion(t *
 	require.NoError(t, inspectErr)
 	require.Len(t, retained, 1)
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
+}
+
+// Verifies that LogicalContainerNetwork observes creation completed after backing deletion is requested
+// and records retained workload ownership before releasing its creation lease.
+func TestV2LogicalContainerNetworkControllerRecordsCreationAfterBackingDeletionRequest(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	namespace := createActiveV2Namespace(t, ctx, "v2-logical-network-backing-delete-create")
+	require.NoError(t, retryOnConflict(ctx, namespace.NamespacedName(), func(updateCtx context.Context, current *apiv2.Namespace) error {
+		current.Annotations = map[string]string{apiv2.NamespaceWorkloadIDAnnotation: "backing-delete-network-workload"}
+		return client.Update(updateCtx, current)
+	}))
+	networkName := namespace.Name + "-runtime"
+	removeRuntimeNetworkOnCleanup(t, networkName)
+	unblockCreate := containerOrchestrator.BlockCreateNetwork(networkName)
+	defer unblockCreate()
+	network := &apiv2.LogicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "persistent", Namespace: namespace.Name},
+		Spec: apiv2.LogicalContainerNetworkSpec{
+			Mode: apiv2.LogicalContainerNetworkModePersistent, NetworkName: networkName,
+			Network: &apiv2.LogicalContainerNetworkConfig{},
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return containerOrchestrator.CreateNetworkCallCount(networkName) == 1, nil
+	}))
+	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(network.UID)}
+	physical := &apiv2.PhysicalContainerNetwork{}
+	require.NoError(t, client.Get(ctx, physicalName, physical))
+	require.NoError(t, client.Delete(ctx, physical))
+	unblockCreate()
+	waitResourceLeaseReleased(t, ctx, network)
+	record, recordErr := testStateStore.GetPersistentNetwork(ctx, network.GetLeaseKey())
+	require.NoError(t, recordErr)
+	require.Equal(t, commonapi.WorkloadID("backing-delete-network-workload"), record.WorkloadID)
+	require.Equal(t, networkName, record.NetworkName)
+	require.NotEmpty(t, record.NetworkID)
+	observed := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.NetworkID == record.NetworkID, nil
+	})
+	require.Equal(t, apiv2.LogicalContainerNetworkPhasePending, observed.Status.Phase)
+	requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerNetworkReasonStarting)
+	require.NoError(t, client.Get(ctx, physicalName, physical))
+	require.Equal(t, record.NetworkID, physical.Status.NetworkID)
+	require.Equal(t, apiv2.PhysicalContainerNetworkPhasePending, physical.Status.Phase)
+	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
+	require.NoError(t, client.Delete(ctx, network))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, network)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
+	retained, inspectErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{record.NetworkID}})
+	require.NoError(t, inspectErr)
+	require.Len(t, retained, 1)
 }
 
 type delayedPhysicalNetworkCreator struct {

@@ -418,11 +418,6 @@ func (r *LogicalContainerNetworkReconciler) findLogicalNetworkBacking(
 			return nil, identityErr
 		}
 		data.physicalNetworkUID = owned.UID
-		if !owned.DeletionTimestamp.IsZero() && !data.terminal() {
-			deletionErr := fmt.Errorf("the owned PhysicalContainerNetwork %q is being deleted", owned.NamespacedName())
-			data.failMissing(deletionErr.Error())
-			return nil, deletionErr
-		}
 	}
 	return owned, nil
 }

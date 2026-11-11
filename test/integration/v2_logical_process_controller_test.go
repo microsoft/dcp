@@ -1187,11 +1187,7 @@ func forceRemoveLogicalProcessBacking(
 	t *testing.T, ctx context.Context, apiClient ctrl_client.Client, physical *apiv2.PhysicalProcess,
 ) {
 	t.Helper()
-	require.NoError(t, apiClient.Delete(ctx, physical))
-	waitObjectAssumesStateEx(t, ctx, apiClient, physical.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
-		return !slices.Contains(current.Finalizers, apiv2.GroupName+"/physicalprocess-reconciler"), nil
-	})
-	// Deliberately violate the logical hold to exercise terminal backing-loss handling.
+	// Violate the logical hold before graceful deletion can report an orderly runtime exit.
 	require.NoError(t, retryOnConflictEx(ctx, apiClient, physical.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalProcess) error {
 		patch := ctrl_client.MergeFromWithOptions(current.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 		current.Finalizers = slices.DeleteFunc(current.Finalizers, func(finalizer string) bool {
@@ -1199,6 +1195,7 @@ func forceRemoveLogicalProcessBacking(
 		})
 		return apiClient.Patch(updateCtx, current, patch)
 	}))
+	require.NoError(t, apiClient.Delete(ctx, physical))
 }
 
 // Verifies that LogicalProcess projects terminal PhysicalProcess launch failure and releases the

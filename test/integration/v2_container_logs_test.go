@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/statestore"
@@ -444,8 +446,8 @@ func TestV2ContainerStartupLogsExcludeReferencedImageBuild(t *testing.T) {
 	require.NotContains(t, firstSystem, "Building PhysicalContainerImage")
 }
 
-// Verifies that physical deletion stays held while a logical-only follower remains active,
-// and logical deletion releases the backing and finishes the follower.
+// Verifies that an existing container remains Running with an active logical-only follower after
+// backing deletion is requested, and logical deletion releases the backing and finishes the follower.
 func TestV2LogicalContainerLogFollowerKeepsBackingUntilLogicalDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -492,13 +494,15 @@ func TestV2LogicalContainerLogFollowerKeepsBackingUntilLogicalDeletion(t *testin
 		Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef,
 	}, physical))
 	require.NoError(t, server.Client.Delete(ctx, physical))
-	waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
-		return !current.DeletionTimestamp.IsZero(), nil
+	physical = waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		return !slices.Contains(current.Finalizers, apiv2.GroupName+"/physicalcontainer-reconciler"), nil
 	})
-	unknown := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerPhaseFailed, nil
-	})
-	require.Equal(t, running.Status.RuntimeLogs, unknown.Status.RuntimeLogs)
+	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	observed := &apiv2.LogicalContainer{}
+	require.NoError(t, server.Client.Get(ctx, container.NamespacedName(), observed))
+	require.Equal(t, apiv2.LogicalContainerPhaseRunning, observed.Status.Phase)
+	requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerReasonRunning)
+	require.Equal(t, running.Status.RuntimeLogs, observed.Status.RuntimeLogs)
 	require.NoError(t, orchestrator.SimulateContainerLogging(runtimeID, apiv1.LogStreamSourceStdout, []byte("held\n")))
 	held := make([]byte, len("held\n"))
 	_, heldErr := io.ReadFull(follower, held)

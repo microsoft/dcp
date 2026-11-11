@@ -284,8 +284,8 @@ func TestV2PhysicalContainerExecRetriesReadinessLossBeforeLaunch(t *testing.T) {
 	require.NoError(t, orchestrator.SimulateContainerExecExit(ctx, target.Status.ContainerID, resource.Spec.Execution.Command, 0))
 }
 
-// Verifies that logical-only stdout followers finish after physical backing cleanup,
-// and late followers retain captured output while the logical hold keeps the backing addressable.
+// Verifies that logical-only stdout followers finish with the reported execution outcome after
+// physical backing cleanup, and late followers retain output while the logical hold keeps the backing addressable.
 func TestV2ContainerExecLogicalOnlyFollowerCompletesOnBackingCleanup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -317,14 +317,15 @@ func TestV2ContainerExecLogicalOnlyFollowerCompletesOnBackingCleanup(t *testing.
 	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalExecRef, Namespace: resource.Namespace}}
 	require.NoError(t, apiClient.Delete(ctx, physical))
 	exited := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalContainerExecPhaseFailed &&
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseExited &&
 			current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete, nil
 	})
-	requireReadyCondition(t, exited.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonMissing)
+	requireReadyCondition(t, exited.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonCompleted)
 	require.True(t, exited.Status.RuntimeLogs.Complete)
-	require.NoError(t, apiClient.Get(ctx, physical.NamespacedName(), physical))
+	physical = waitObjectAssumesStateEx(t, ctx, apiClient, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
+		return !slices.Contains(current.Finalizers, apiv2.GroupName+"/physicalcontainerexec-reconciler"), nil
+	})
 	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
-	require.NotContains(t, physical.Finalizers, apiv2.GroupName+"/physicalcontainerexec-reconciler")
 	remaining, completionErr := io.ReadAll(follow)
 	require.NoError(t, completionErr)
 	require.Empty(t, remaining)
@@ -345,11 +346,7 @@ func forceRemoveLogicalContainerExecBacking(
 	t *testing.T, ctx context.Context, apiClient ctrl_client.Client, physical *apiv2.PhysicalContainerExec,
 ) {
 	t.Helper()
-	require.NoError(t, apiClient.Delete(ctx, physical))
-	waitObjectAssumesStateEx(t, ctx, apiClient, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
-		return !slices.Contains(current.Finalizers, apiv2.GroupName+"/physicalcontainerexec-reconciler"), nil
-	})
-	// Deliberately violate the logical hold to exercise terminal backing-loss handling.
+	// Violate the logical hold before graceful deletion can report an orderly runtime exit.
 	require.NoError(t, retryOnConflictEx(ctx, apiClient, physical.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainerExec) error {
 		patch := ctrl_client.MergeFromWithOptions(current.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 		current.Finalizers = slices.DeleteFunc(current.Finalizers, func(finalizer string) bool {
@@ -357,4 +354,5 @@ func forceRemoveLogicalContainerExecBacking(
 		})
 		return apiClient.Patch(updateCtx, current, patch)
 	}))
+	require.NoError(t, apiClient.Delete(ctx, physical))
 }

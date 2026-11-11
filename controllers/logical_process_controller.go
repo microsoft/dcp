@@ -460,9 +460,6 @@ func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
 	if !hasFinalizer(physical, LogicalBackingFinalizer) {
 		return nil, fmt.Errorf("physical process %q no longer has its logical hold", physical.NamespacedName())
 	}
-	if !physical.DeletionTimestamp.IsZero() {
-		return nil, fmt.Errorf("physical process %q is being deleted", physical.NamespacedName())
-	}
 	return physical, nil
 }
 
@@ -685,11 +682,6 @@ func (r *LogicalProcessReconciler) findPhysicalProcess(
 		data.physicalUID = physical.UID
 	} else {
 		data.replacementUID = physical.UID
-	}
-	if !physical.DeletionTimestamp.IsZero() && !data.terminal() {
-		deletionErr := fmt.Errorf("the owned PhysicalProcess %q is being deleted", physical.NamespacedName())
-		data.failMissing(deletionErr.Error())
-		return nil, deletionErr
 	}
 	return physical, nil
 }
