@@ -925,7 +925,7 @@ func projectContainerSpec(resource *apiv2.Project, data *projectData) apiv2.Phys
 	)
 	return apiv2.PhysicalContainerSpec{Stop: resource.Spec.Stop, Container: &apiv2.PhysicalContainerConfig{
 		ContainerName: projectPhysicalName(resource), ImageRef: imageRef,
-		Entrypoint: "tail", Command: []string{"-f", "/dev/null"}, Env: desired.Env,
+		Entrypoint: "tail", Command: []string{"-f", "/dev/null"}, RunArgs: desired.RunArgs, Env: desired.Env,
 		Ports: physicalPorts, VolumeMounts: desired.VolumeMounts,
 		CreateFiles: desired.CreateFiles, Labels: labels,
 	}}

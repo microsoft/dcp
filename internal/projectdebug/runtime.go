@@ -242,19 +242,19 @@ func (runtime *projectDebugRuntime) launch(
 		return nil, nil, errors.Join(launchErr, publishErr)
 	}
 	args := append([]string(nil), project.Spec.DebugAdapter.Args...)
-	if mode == apiv2.DebugAdapterModeTCPCallback {
-		var listenErr error
-		listener, listenErr = net.Listen("tcp", "127.0.0.1:0")
-		if listenErr != nil {
-			return fail(listenErr)
-		}
-		execution.address = listener.Addr().String()
-	} else if mode == apiv2.DebugAdapterModeTCPConnect {
+	if mode != apiv2.DebugAdapterModeStdio {
 		port, portErr := networking.GetFreePort(commonapi.PortProtocolTCP, "127.0.0.1", runtime.log)
 		if portErr != nil {
 			return fail(portErr)
 		}
 		execution.address = net.JoinHostPort("127.0.0.1", strconv.FormatInt(int64(port), 10))
+	}
+	if mode == apiv2.DebugAdapterModeTCPCallback {
+		var listenErr error
+		listener, listenErr = net.Listen("tcp", execution.address)
+		if listenErr != nil {
+			return fail(listenErr)
+		}
 	}
 	if mode != apiv2.DebugAdapterModeStdio {
 		_, portText, portErr := net.SplitHostPort(execution.address)

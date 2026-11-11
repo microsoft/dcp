@@ -144,7 +144,7 @@ func TestV2ProjectNamespaceAndEarlyStop(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
 }
 
-// Verifies that Project owns a physical container and inline image, preserves explicit mounts,
+// Verifies that Project owns a physical container and inline image, preserves explicit mounts and run arguments,
 // shares runtime capture, retains its prepared lifecycle while paused, and removes execution on stop/deletion.
 func TestV2ProjectContainerLifecycle(t *testing.T) {
 	t.Parallel()
@@ -156,7 +156,7 @@ func TestV2ProjectContainerLifecycle(t *testing.T) {
 		Spec: apiv2.ProjectSpec{RootDirectory: filepath.Join(root, "source"),
 			DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{"not-started"}},
 			Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
-				Entrypoint: "program", Command: []string{"one"}, Env: []commonapi.EnvVar{{Name: "VALUE", Value: "literal"}},
+				Entrypoint: "program", Command: []string{"one"}, RunArgs: []string{"--user", "1000"}, Env: []commonapi.EnvVar{{Name: "VALUE", Value: "literal"}},
 				VolumeMounts: []apiv2.VolumeMount{{Type: apiv2.BindMount, Source: filepath.Join(root, "assets"), Target: "/assets", ReadOnly: true}}},
 				Ports: []apiv2.LogicalContainerPort{{ContainerPort: 8080, LogicalServiceBinding: apiv2.LogicalServiceBinding{
 					Name: "http", Service: &apiv2.LogicalServiceTemplate{Name: "http"},
@@ -168,6 +168,7 @@ func TestV2ProjectContainerLifecycle(t *testing.T) {
 	require.True(t, metav1.IsControlledBy(physical, resource))
 	require.False(t, physical.Spec.Container.RetainRuntimeContainer)
 	require.Equal(t, resource.Spec.Container.VolumeMounts, physical.Spec.Container.VolumeMounts)
+	require.Equal(t, resource.Spec.Container.RunArgs, physical.Spec.Container.RunArgs)
 	require.Equal(t, []string{"-f", "/dev/null"}, physical.Spec.Container.Command)
 	require.Equal(t, "tail", physical.Spec.Container.Entrypoint)
 	require.Equal(t, resource.Spec.Container.Command, running.Status.EffectiveArgs)

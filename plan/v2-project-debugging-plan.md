@@ -218,7 +218,7 @@ Re-read PR [#78](https://github.com/microsoft/dcp/pull/78) at head `2d493f4fab40
 
 - `stdio`: launch the command and communicate through its stdin/stdout.
 - `tcp-connect`: allocate a loopback port, substitute it into the command, launch the listening adapter, and connect with bounded retries. Additional sessions can use the existing provider address without another process launch.
-- `tcp-callback`: bind a loopback listener first, substitute its port into the command, launch the adapter, and accept its outbound DAP connection.
+- `tcp-callback`: allocate a loopback port through the shared DCP port allocator, bind the listener on it first, substitute its port into the command, launch the adapter, and accept its outbound DAP connection.
 - `ConnectToExistingAdapter`: open another TCP connection to an already-running listening provider. Its use with additional sessions is separate from launching the provider.
 
 The V2 declaration is now available as `spec.debugAdapter` (`api/v2/project_types.go`):
