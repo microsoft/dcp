@@ -6260,7 +6260,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessConfig(ref common.ReferenceCallba
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Env contains environment variables that override inherited values.",
+							Description: "Env contains environment variables that override inherited values. DCP_ and DEBUG_SESSION-prefixed variables are excluded from both inherited and explicit environments.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -6509,7 +6509,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "EffectiveEnv contains prepared launch values, including permitted process environment inheritance.",
+							Description: "EffectiveEnv contains prepared launch values, including permitted process environment inheritance. Internal DCP_ and DEBUG_SESSION-prefixed variables are excluded from both launch and status.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -8907,7 +8907,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Env contains process environment variables. These values override inherited variables with the same name.",
+							Description: "Env contains process environment variables. These values override inherited variables with the same name. DCP_ and DEBUG_SESSION-prefixed variables are excluded from both inherited and explicit environments.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{

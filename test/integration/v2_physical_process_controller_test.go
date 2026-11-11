@@ -53,6 +53,8 @@ func TestV2PhysicalProcessControllerChecksExpectedIdentity(t *testing.T) {
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
 }
 
+// Verifies that PhysicalProcess launches with the supplied arguments and working directory,
+// preserves ordinary environment values, and excludes internal-prefixed variables.
 func TestV2PhysicalProcessControllerLaunchesProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -68,7 +70,11 @@ func TestV2PhysicalProcessControllerLaunchesProcess(t *testing.T) {
 				Args:               []string{"one", "two"},
 				WorkingDirectory:   "/tmp",
 				AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
-				Env:                []commonapi.EnvVar{{Name: "TEST_VALUE", Value: "expected"}},
+				Env: []commonapi.EnvVar{
+					{Name: "TEST_VALUE", Value: "expected"},
+					{Name: "DCP_PHYSICAL_PROCESS_INTERNAL", Value: "not for child"},
+					{Name: "DEBUG_SESSION_PHYSICAL_PROCESS_INTERNAL", Value: "not for child"},
+				},
 			},
 		},
 	}

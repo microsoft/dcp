@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -30,7 +32,9 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/logs"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -991,14 +995,43 @@ func handlePIDString(handle process.ProcessHandle) string {
 }
 
 func physicalProcessEnvironment(processConfig *apiv2.PhysicalProcessConfig) []string {
-	inheritedEnvironment := []string(nil)
-	if processConfig.AmbientEnvironment.EffectiveBehavior() == apiv2.EnvironmentBehaviorInherit {
-		inheritedEnvironment = os.Environ()
+	values := processLaunchEnvironment(processConfig.AmbientEnvironment, processConfig.Env)
+	environment := make([]string, len(values))
+	for index, variable := range values {
+		environment[index] = variable.Name + "=" + variable.Value
 	}
-	environment := make([]string, 0, len(inheritedEnvironment)+len(processConfig.Env))
-	environment = append(environment, inheritedEnvironment...)
-	for _, envVar := range processConfig.Env {
-		environment = append(environment, envVar.Name+"="+envVar.Value)
+	return environment
+}
+
+func processLaunchEnvironment(ambient apiv2.AmbientEnvironment, declared []commonapi.EnvVar) []commonapi.EnvVar {
+	mode := maps.StringMapModeCaseSensitive
+	if osutil.IsWindows() {
+		mode = maps.StringMapModeCaseInsensitive
 	}
+	merged := maps.NewStringKeyMap[string](mode)
+	if ambient.EffectiveBehavior() == apiv2.EnvironmentBehaviorInherit {
+		for _, entry := range os.Environ() {
+			start := 0
+			// Windows drive-directory entries have names beginning with '='.
+			if strings.HasPrefix(entry, "=") {
+				start = 1
+			}
+			if separator := strings.IndexByte(entry[start:], '='); separator >= 0 {
+				separator += start
+				merged.Override(entry[:separator], entry[separator+1:])
+			}
+		}
+	}
+	for _, envVar := range declared {
+		merged.Override(envVar.Name, envVar.Value)
+	}
+	for _, prefix := range suppressVarPrefixes {
+		merged.DeletePrefix(prefix)
+	}
+	var environment []commonapi.EnvVar
+	for name, value := range merged.Data() {
+		environment = append(environment, commonapi.EnvVar{Name: name, Value: value})
+	}
+	slices.SortFunc(environment, func(left, right commonapi.EnvVar) int { return strings.Compare(left.Name, right.Name) })
 	return environment
 }

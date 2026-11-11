@@ -125,6 +125,7 @@ type LogicalProcessConfig struct {
 	// AmbientEnvironment controls inheritance from the controller process environment.
 	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 	// Env contains environment variables that override inherited values.
+	// DCP_ and DEBUG_SESSION-prefixed variables are excluded from both inherited and explicit environments.
 	// +listType=map
 	// +listMapKey=name
 	Env []commonapi.EnvVar `json:"env,omitempty"`
@@ -186,6 +187,7 @@ type LogicalProcessStatus struct {
 	// +listType=atomic
 	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
 	// EffectiveEnv contains prepared launch values, including permitted process environment inheritance.
+	// Internal DCP_ and DEBUG_SESSION-prefixed variables are excluded from both launch and status.
 	// +listType=map
 	// +listMapKey=name
 	EffectiveEnv []commonapi.EnvVar `json:"effectiveEnv,omitempty"`

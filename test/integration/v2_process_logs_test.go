@@ -148,7 +148,7 @@ func (executor *processOutputDrainExecutor) StartProcess(
 	return executor.Executor.StartProcess(ctx, command, handler, flags, create)
 }
 
-// Verifies that LogicalProcess and PhysicalProcess preserve incomplete output after confirmed root loss
+// Verifies that LogicalProcess and PhysicalProcess preserve incomplete output after confirmed root exit
 // until descendant-held pipes drain, including for newly opened followers of terminal resources.
 func TestV2ProcessLogFollowersWaitForOutputDrain(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -214,12 +214,12 @@ func TestV2ProcessLogFollowersWaitForOutputDrain(t *testing.T) {
 		return current.Status.Phase == apiv2.PhysicalProcessPhaseExited, nil
 	})
 	require.False(t, exited.Status.LogsComplete, "root disappearance must not finish the capture before pipe drain")
-	logicalFailed := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalProcessPhaseFailed, nil
+	logicalExited := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
 	})
-	requireReadyCondition(t, logicalFailed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonMissing)
-	require.Equal(t, exited.GetLogSource(), logicalFailed.Status.RuntimeLogs)
-	require.False(t, logicalFailed.Status.RuntimeLogs.Complete)
+	requireReadyCondition(t, logicalExited.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonCompleted)
+	require.Equal(t, exited.GetLogSource(), logicalExited.Status.RuntimeLogs)
+	require.False(t, logicalExited.Status.RuntimeLogs.Complete)
 	var followers []io.ReadCloser
 	for _, resource := range []commonapi.DcpModelObject{logical, physical} {
 		gvr := resource.GetGroupVersionResource()

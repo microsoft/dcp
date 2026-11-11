@@ -20,6 +20,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -50,8 +51,9 @@ type recordedServiceProxy struct {
 
 type serviceEndpointLookupFailureClient struct {
 	ctrl_client.Client
-	fail               atomic.Bool
-	conflictAllocation atomic.Bool
+	fail                atomic.Bool
+	conflictAllocation  atomic.Bool
+	conflictEndpointRef atomic.Pointer[string]
 }
 
 func (apiClient *serviceEndpointLookupFailureClient) List(
@@ -75,7 +77,9 @@ type serviceAllocationConflictWriter struct {
 func (writer *serviceAllocationConflictWriter) Patch(
 	ctx context.Context, object ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption,
 ) error {
+	expectedEndpoint := writer.client.conflictEndpointRef.Load()
 	if service, logical := object.(*apiv2.LogicalService); logical && len(service.Status.EffectiveAddresses) > 0 &&
+		(expectedEndpoint == nil || service.Status.ProxylessEndpointRef == *expectedEndpoint) &&
 		writer.client.conflictAllocation.CompareAndSwap(true, false) {
 		writer.client.fail.Store(true)
 		return apierrors.NewConflict(schema.GroupResource{Group: apiv2.GroupName, Resource: "logicalservices"},
@@ -538,8 +542,8 @@ func TestV2LogicalServiceDoesNotReplaceStoppedListeners(t *testing.T) {
 	}
 }
 
-// Verifies that LogicalService preserves startup or allocated listener state during failed endpoint reads,
-// including after an allocation status conflict, then recovers readiness without replacing the listener.
+// Verifies that LogicalService preserves startup or observed allocation during failed endpoint reads,
+// including initial/replacement status conflicts, and clears confirmed withdrawn proxyless selections.
 func TestV2LogicalServicePreservesLifecycleDuringEndpointLookupFailure(t *testing.T) {
 	t.Parallel()
 	t.Run("startup", func(t *testing.T) {
@@ -602,6 +606,83 @@ func TestV2LogicalServicePreservesLifecycleDuringEndpointLookupFailure(t *testin
 		namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: resources.service.Namespace}}
 		require.NoError(t, resources.client.Delete(ctx, namespace))
 		ctrl_testutil.WaitObjectDeleted(t, ctx, resources.client, namespace)
+	})
+	t.Run("proxyless-allocation-status-conflict", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+		t.Cleanup(cancel)
+		var decorated *serviceEndpointLookupFailureClient
+		server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalServiceController, t.Name(), t.TempDir(),
+			TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+				decorated = &serviceEndpointLookupFailureClient{Client: apiClient}
+				decorated.conflictAllocation.Store(true)
+				return decorated
+			}})
+		require.NoError(t, startupErr)
+		defer decorated.fail.Store(false)
+		apiClient := server.Client
+		namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "proxyless-allocation-conflict"}}
+		require.NoError(t, apiClient.Create(ctx, namespace))
+		service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
+			Spec: apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}}
+		selected := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "selected", Namespace: namespace.Name},
+			Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}}}}
+		require.NoError(t, apiClient.Create(ctx, selected))
+		require.NoError(t, apiClient.Create(ctx, service))
+		allocated := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+			ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+			return ready != nil && ready.Message == "service endpoint lookup unavailable", nil
+		})
+		require.False(t, decorated.conflictAllocation.Load())
+		require.Equal(t, apiv2.LogicalServicePhaseRunning, allocated.Status.Phase)
+		requireReadyCondition(t, allocated.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonAllocated)
+		require.Equal(t, selected.Name, allocated.Status.ProxylessEndpointRef)
+		require.Equal(t, selected.Spec.Addresses, allocated.Status.EffectiveAddresses)
+		decorated.fail.Store(false)
+		waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+			return logicalServiceReady(current) && current.Status.ProxylessEndpointRef == selected.Name, nil
+		})
+
+		replacement := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "replacement", Namespace: namespace.Name},
+			Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61001}}}}
+		require.NoError(t, apiClient.Create(ctx, replacement))
+		replacementRef := replacement.Name
+		decorated.conflictEndpointRef.Store(&replacementRef)
+		decorated.conflictAllocation.Store(true)
+		require.NoError(t, apiClient.Delete(ctx, selected))
+		replaced := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+			ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+			return ready != nil && ready.Message == "service endpoint lookup unavailable", nil
+		})
+		require.False(t, decorated.conflictAllocation.Load())
+		require.Equal(t, apiv2.LogicalServicePhaseRunning, replaced.Status.Phase)
+		requireReadyCondition(t, replaced.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonAllocated)
+		require.Equal(t, replacement.Name, replaced.Status.ProxylessEndpointRef)
+		require.Equal(t, replacement.Spec.Addresses, replaced.Status.EffectiveAddresses)
+		decorated.fail.Store(false)
+		waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+			return logicalServiceReady(current) && current.Status.ProxylessEndpointRef == replacement.Name &&
+				slices.Equal(current.Status.EffectiveAddresses, replacement.Spec.Addresses), nil
+		})
+		require.NoError(t, apiClient.Delete(ctx, replacement))
+		waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+			return current.Status.Phase == apiv2.LogicalServicePhasePending && current.Status.ProxylessEndpointRef == "" &&
+				len(current.Status.EffectiveAddresses) == 0, nil
+		})
+		decorated.fail.Store(true)
+		require.NoError(t, apiClient.Patch(ctx, service,
+			ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"test-lookup":"empty-selection"}}}`))))
+		empty := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+			ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+			return ready != nil && ready.Message == "service endpoint lookup unavailable", nil
+		})
+		require.Equal(t, apiv2.LogicalServicePhasePending, empty.Status.Phase)
+		requireReadyCondition(t, empty.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonStarting)
+		require.Empty(t, empty.Status.ProxylessEndpointRef)
+		require.Empty(t, empty.Status.EffectiveAddresses)
+		decorated.fail.Store(false)
+		require.NoError(t, apiClient.Delete(ctx, namespace))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
 	})
 	t.Run("running", func(t *testing.T) {
 		t.Parallel()

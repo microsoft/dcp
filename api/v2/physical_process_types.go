@@ -142,6 +142,7 @@ type PhysicalProcessConfig struct {
 	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 
 	// Env contains process environment variables. These values override inherited variables with the same name.
+	// DCP_ and DEBUG_SESSION-prefixed variables are excluded from both inherited and explicit environments.
 	// +listType=map
 	// +listMapKey=name
 	Env []commonapi.EnvVar `json:"env,omitempty"`

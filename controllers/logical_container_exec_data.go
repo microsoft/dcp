@@ -150,6 +150,10 @@ func (data *logicalContainerExecData) updateLifecycleFromPhysicalContainerExec(p
 			data.state = logicalContainerExecStateCreating
 		}
 	case logicalContainerExecStateExited:
+		if condition := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady)); condition != nil &&
+			condition.Reason == string(apiv2.ContainerExecReasonCancelled) {
+			data.reason = apiv2.LogicalContainerExecReasonStopped
+		}
 		if physical.Status.ExitCode != nil {
 			data.message = fmt.Sprintf("The attached execution exited with code %d.", *physical.Status.ExitCode)
 		}

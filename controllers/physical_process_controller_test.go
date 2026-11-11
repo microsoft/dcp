@@ -8,8 +8,8 @@ package controllers
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,29 +44,35 @@ type recordingPhysicalProcessExecutor struct {
 }
 
 // Verifies that PhysicalProcess environment construction defaults to inheritance, honors explicit
-// inheritance behavior, and appends explicit values after inherited values so they take precedence.
+// inheritance behavior, applies explicit overrides, and excludes inherited and explicit internal variables.
 func TestPhysicalProcessEnvironment(t *testing.T) {
-	t.Setenv("DCP_PHYSICAL_PROCESS_ENV_TEST", "inherited")
+	t.Setenv("PHYSICAL_PROCESS_ENV_TEST", "inherited")
+	t.Setenv("PHYSICAL_PROCESS_AMBIENT_ONLY", "ambient")
+	t.Setenv("DCP_PHYSICAL_PROCESS_INHERITED", "not for child")
+	t.Setenv("DEBUG_SESSION_PHYSICAL_PROCESS_INHERITED", "not for child")
 
-	explicitEnvironment := []commonapi.EnvVar{{Name: "DCP_PHYSICAL_PROCESS_ENV_TEST", Value: "configured"}}
+	explicitEnvironment := []commonapi.EnvVar{
+		{Name: "PHYSICAL_PROCESS_ENV_TEST", Value: "configured"},
+		{Name: "DCP_PHYSICAL_PROCESS_DECLARED", Value: "not for child"},
+		{Name: "DEBUG_SESSION_PHYSICAL_PROCESS_DECLARED", Value: "not for child"},
+	}
 	testCases := []struct {
-		name     string
-		behavior apiv2.EnvironmentBehavior
-		expected []string
+		name            string
+		behavior        apiv2.EnvironmentBehavior
+		expectedAmbient []string
 	}{
 		{
-			name:     "defaults to inherited environment",
-			expected: append(os.Environ(), "DCP_PHYSICAL_PROCESS_ENV_TEST=configured"),
+			name:            "defaults to inherited environment",
+			expectedAmbient: []string{"ambient"},
 		},
 		{
-			name:     "inherits environment explicitly",
-			behavior: apiv2.EnvironmentBehaviorInherit,
-			expected: append(os.Environ(), "DCP_PHYSICAL_PROCESS_ENV_TEST=configured"),
+			name:            "inherits environment explicitly",
+			behavior:        apiv2.EnvironmentBehaviorInherit,
+			expectedAmbient: []string{"ambient"},
 		},
 		{
 			name:     "does not inherit environment explicitly",
 			behavior: apiv2.EnvironmentBehaviorDoNotInherit,
-			expected: []string{"DCP_PHYSICAL_PROCESS_ENV_TEST=configured"},
 		},
 	}
 
@@ -77,15 +83,37 @@ func TestPhysicalProcessEnvironment(t *testing.T) {
 				Env:                explicitEnvironment,
 			})
 
-			require.Equal(t, testCase.expected, environment)
-			require.Equal(t, len(environment), cap(environment))
+			var values, ambientValues, internalNames []string
+			for _, entry := range environment {
+				name, value, _ := strings.Cut(entry, "=")
+				switch name {
+				case "PHYSICAL_PROCESS_ENV_TEST":
+					values = append(values, value)
+				case "PHYSICAL_PROCESS_AMBIENT_ONLY":
+					ambientValues = append(ambientValues, value)
+				case "DCP_PHYSICAL_PROCESS_INHERITED", "DEBUG_SESSION_PHYSICAL_PROCESS_INHERITED",
+					"DCP_PHYSICAL_PROCESS_DECLARED", "DEBUG_SESSION_PHYSICAL_PROCESS_DECLARED":
+					internalNames = append(internalNames, name)
+				}
+			}
+			require.Equal(t, []string{"configured"}, values)
+			require.Equal(t, testCase.expectedAmbient, ambientValues)
+			require.Empty(t, internalNames)
 		})
 	}
+	t.Run("does not restore inheritance when all variables are suppressed", func(t *testing.T) {
+		environment := physicalProcessEnvironment(&apiv2.PhysicalProcessConfig{
+			AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
+			Env:                explicitEnvironment[1:],
+		})
+		require.NotNil(t, environment)
+		require.Empty(t, environment)
+	})
 }
 
-// Verifies that LogicalProcess prepares literal inherited values with explicit overrides,
-// honors disabled inheritance, and omits internal variables from its published environment.
-func TestLogicalProcessLaunchEnvironment(t *testing.T) {
+// Verifies that processLaunchEnvironment preserves literal inherited values with explicit overrides,
+// honors disabled inheritance, and excludes internal variables.
+func TestProcessLaunchEnvironment(t *testing.T) {
 	t.Setenv("LOGICAL_PROCESS_AMBIENT_ONLY", "{{literal inherited value}}")
 	t.Setenv("LOGICAL_PROCESS_OVERRIDE", "inherited")
 	t.Setenv("DCP_LOGICAL_PROCESS_INTERNAL", "hidden")
@@ -94,13 +122,13 @@ func TestLogicalProcessLaunchEnvironment(t *testing.T) {
 		{Name: "LOGICAL_PROCESS_OVERRIDE", Value: "configured"},
 		{Name: "DCP_LOGICAL_PROCESS_INTERNAL", Value: "configured hidden"},
 	}
-	inherited := logicalProcessLaunchEnvironment(apiv2.AmbientEnvironment{}, declared)
+	inherited := processLaunchEnvironment(apiv2.AmbientEnvironment{}, declared)
 	require.Contains(t, inherited, commonapi.EnvVar{Name: "LOGICAL_PROCESS_AMBIENT_ONLY", Value: "{{literal inherited value}}"})
 	require.Contains(t, inherited, declared[0])
 	require.NotContains(t, inherited, commonapi.EnvVar{Name: "LOGICAL_PROCESS_OVERRIDE", Value: "inherited"})
 	require.NotContains(t, inherited, declared[1])
 	require.NotContains(t, inherited, commonapi.EnvVar{Name: "DEBUG_SESSION_LOGICAL_PROCESS_INTERNAL", Value: "hidden"})
-	isolated := logicalProcessLaunchEnvironment(
+	isolated := processLaunchEnvironment(
 		apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit}, declared)
 	require.Equal(t, declared[:1], isolated)
 }

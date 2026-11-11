@@ -41,6 +41,8 @@ type logicalServiceData struct {
 	attempts              uint32
 	startupFailureMessage string
 	selectedUID           types.UID
+	selectedName          string
+	selectedAddresses     []apiv2.ServiceAddress
 	started               bool
 	failureReason         apiv2.ConditionReason
 	failureMessage        string
@@ -137,6 +139,10 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			return r.SaveChangesWithDelay(ctx, service, patch, change, delay, nil, log)
 		}
 		data = &logicalServiceData{uid: service.UID}
+		if service.Spec.AddressAllocationMode == apiv2.ServiceAddressAllocationModeProxyless {
+			data.selectedName = service.Status.ProxylessEndpointRef
+			data.selectedAddresses = slices.Clone(service.Status.EffectiveAddresses)
+		}
 		r.services.Store(service.NamespacedName(), data)
 	}
 	status := apiv2.LogicalServiceStatus{Phase: apiv2.LogicalServicePhasePending, Conditions: slices.Clone(service.Status.Conditions)}
@@ -161,8 +167,8 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			log.Error(listErr, "Failed to list service endpoints")
 			message, requeue = listErr.Error(), true
 			if service.Spec.AddressAllocationMode == apiv2.ServiceAddressAllocationModeProxyless {
-				status.EffectiveAddresses = slices.Clone(service.Status.EffectiveAddresses)
-				status.ProxylessEndpointRef = service.Status.ProxylessEndpointRef
+				status.EffectiveAddresses = slices.Clone(data.selectedAddresses)
+				status.ProxylessEndpointRef = data.selectedName
 			} else {
 				status.EffectiveAddresses = logicalServiceProxyAddresses(data.proxies)
 			}
@@ -188,13 +194,14 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			}
 			if selected >= 0 {
 				endpoint := &endpoints.Items[selected]
-				data.selectedUID = endpoint.UID
-				status.EffectiveAddresses = slices.Clone(endpoint.Spec.Addresses)
-				status.ProxylessEndpointRef, status.Phase = endpoint.Name, apiv2.LogicalServicePhaseRunning
+				data.selectedUID, data.selectedName = endpoint.UID, endpoint.Name
+				data.selectedAddresses = slices.Clone(endpoint.Spec.Addresses)
+				status.EffectiveAddresses = slices.Clone(data.selectedAddresses)
+				status.ProxylessEndpointRef, status.Phase = data.selectedName, apiv2.LogicalServicePhaseRunning
 				reason, message = apiv2.LogicalServiceReasonReady, "The selected endpoint's addresses are available."
 				data.started, available = true, true
 			} else {
-				data.selectedUID = ""
+				data.selectedUID, data.selectedName, data.selectedAddresses = "", "", nil
 				reason, message = apiv2.LogicalServiceReasonStarting, "The service has no available endpoints."
 			}
 			break

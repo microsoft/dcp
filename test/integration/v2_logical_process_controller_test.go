@@ -276,7 +276,7 @@ func TestV2LogicalProcessControllerRecoversCreatedChildBeforeForwardingStop(t *t
 	}
 }
 
-// Verifies that LogicalProcess waits for namespace readiness, publishes its prepared launch configuration,
+// Verifies that LogicalProcess waits for namespace readiness, publishes its filtered launch configuration,
 // delegates session launch, and stops the process by deleting its backing PhysicalProcess.
 func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 	t.Parallel()
@@ -286,7 +286,11 @@ func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 		Spec: apiv2.LogicalProcessSpec{Process: &apiv2.LogicalProcessConfig{
 			ExecutablePath: "v2-logical-process-session-command", Args: []string{"one"}, WorkingDirectory: "/tmp",
 			AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
-			Env:                []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}},
+			Env: []commonapi.EnvVar{
+				{Name: "VALUE", Value: "expected"},
+				{Name: "DCP_LOGICAL_PROCESS_INTERNAL", Value: "not for child"},
+				{Name: "DEBUG_SESSION_LOGICAL_PROCESS_INTERNAL", Value: "not for child"},
+			},
 		}}}
 	require.NoError(t, client.Create(ctx, resource))
 	pending := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
@@ -300,7 +304,7 @@ func TestV2LogicalProcessControllerDelegatesSessionLifecycle(t *testing.T) {
 	createActiveV2Namespace(t, ctx, resource.Namespace)
 	running := waitLogicalProcessPhase(t, ctx, resource.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
 	require.Equal(t, resource.Spec.Process.Args, running.Status.EffectiveArgs)
-	require.Equal(t, resource.Spec.Process.Env, running.Status.EffectiveEnv)
+	require.Equal(t, []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}}, running.Status.EffectiveEnv)
 	physical := &apiv2.PhysicalProcess{}
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: resource.Namespace, Name: running.Status.PhysicalProcessRef}, physical))
 	require.True(t, metav1.IsControlledBy(physical, resource))
