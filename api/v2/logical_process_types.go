@@ -86,6 +86,9 @@ const (
 // LogicalProcessSpec describes process lifecycle policy and desired configuration.
 // +k8s:openapi-gen=true
 type LogicalProcessSpec struct {
+	// ProcessName is the opaque, host-scoped identity used to store and reuse a persistent process.
+	// Required in persistent mode; independent of the resource namespace, resource name, and executable path.
+	ProcessName string `json:"processName,omitempty"`
 	// Mode controls creation, reuse, and retention. Defaults to session.
 	// +kubebuilder:default:=session
 	Mode LogicalProcessMode `json:"mode,omitempty"`
@@ -254,9 +257,9 @@ func (*LogicalProcessLogResource) GetStorageProvider(
 	return newLogStorageProvider(obj, parentProvider)
 }
 
-// GetLeaseKey identifies the persistent process by its logical namespace and name.
+// GetLeaseKey identifies the persistent process by its opaque processName.
 func (resource *LogicalProcess) GetLeaseKey() string {
-	return LogicalProcessResourceKeyPrefix + resource.NamespacedName().String()
+	return LogicalProcessResourceKeyPrefix + resource.Spec.ProcessName
 }
 
 func (resource *LogicalProcess) GetObjectMeta() *metav1.ObjectMeta {
@@ -292,6 +295,12 @@ func (resource *LogicalProcess) Validate(ctx context.Context) field.ErrorList {
 	}
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(resource.Annotations, field.NewPath("metadata", "annotations"))...)
 	mode := resource.Spec.EffectiveMode()
+	if mode == LogicalProcessModePersistent && resource.Spec.ProcessName == "" {
+		errorList = append(errorList, field.Required(specPath.Child("processName"), "processName must be set in persistent mode"))
+	}
+	if resource.Spec.ProcessName != strings.TrimSpace(resource.Spec.ProcessName) {
+		errorList = append(errorList, field.Invalid(specPath.Child("processName"), resource.Spec.ProcessName, "processName must not have leading or trailing whitespace"))
+	}
 	switch mode {
 	case LogicalProcessModeSession, LogicalProcessModePersistent:
 		if resource.Spec.Process == nil {

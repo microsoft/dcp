@@ -90,7 +90,7 @@ func TestV2ProcessRetainedLogsPreserveRawOutput(t *testing.T) {
 	defer cancel()
 	namespace := createActiveV2Namespace(t, ctx, "v2-process-raw-output")
 	logical := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
-		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespace.Name,
 			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-raw-output-command"}}}
 	require.NoError(t, client.Create(ctx, logical))
 	defer func() {
@@ -747,7 +747,7 @@ func TestV2ProcessCreatedCapturesHonorPreservation(t *testing.T) {
 		t.Run(string(mode), func(t *testing.T) {
 			namespace := createActiveV2Namespace(t, ctx, "v2-process-preserved-capture-"+string(mode))
 			resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
-				Spec: apiv2.LogicalProcessSpec{Mode: mode,
+				Spec: apiv2.LogicalProcessSpec{Mode: mode, ProcessName: namespace.Name,
 					Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-preserved-capture-" + string(mode)}}}
 			require.NoError(t, client.Create(ctx, resource))
 			running := waitLogicalProcessPhase(t, ctx, resource.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
@@ -838,7 +838,7 @@ func TestV2OutputCleanupDoesNotBlockReconciliation(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, image)
 
 	persistent := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "persistent", Namespace: namespace.Name},
-		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespace.Name,
 			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-queued-cleanup-persistent"}}}
 	staleHandle, _, startErr := environment.TestProcessExecutor.StartProcess(ctx, exec.Command("v2-queued-cleanup-stale"),
 		nil, process.CreationFlagsNone, nil)

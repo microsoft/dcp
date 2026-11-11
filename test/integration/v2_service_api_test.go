@@ -334,7 +334,7 @@ func TestV2LogicalProcessPersistentModeRequiresFixedPorts(t *testing.T) {
 			{name: "no-ports"},
 		} {
 			t.Run(keyKind+"/"+testCase.name, func(t *testing.T) {
-				spec := apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+				spec := apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: "persistent-port-validation",
 					Process: &apiv2.LogicalProcessConfig{ExecutablePath: "persistent-port-validation"}}
 				if keyKind == "explicit" {
 					spec.LifecycleKey = "caller-key"

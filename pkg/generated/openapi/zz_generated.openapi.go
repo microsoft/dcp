@@ -6328,6 +6328,13 @@ func schema_microsoft_dcp_api_v2_LogicalProcessSpec(ref common.ReferenceCallback
 				Description: "LogicalProcessSpec describes process lifecycle policy and desired configuration.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"processName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ProcessName is the opaque, host-scoped identity used to store and reuse a persistent process. Required in persistent mode; independent of the resource namespace, resource name, and executable path.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"mode": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Mode controls creation, reuse, and retention. Defaults to session.",

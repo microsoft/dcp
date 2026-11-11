@@ -720,7 +720,7 @@ func TestV2LogicalProcessPreparationLifecycle(t *testing.T) {
 					defer cancel()
 					namespace := createActiveV2Namespace(t, ctx, "v2-process-template-"+fieldName+"-"+keyKind+"-"+outcome)
 					command := namespace.Name + "-command"
-					spec := apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+					spec := apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespace.Name,
 						Process: &apiv2.LogicalProcessConfig{ExecutablePath: command, Args: []string{"original"}}}
 					if keyKind == "explicit" {
 						spec.LifecycleKey = "retained-key"

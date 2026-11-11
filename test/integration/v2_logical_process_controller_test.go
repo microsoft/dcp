@@ -41,13 +41,14 @@ import (
 )
 
 // Verifies that persistent logical process leases do not share rows with containers or
-// networks even when their namespace and name would otherwise form the same resource key.
+// networks even when opaque process names resemble runtime resource keys.
 func TestV2LogicalProcessLeaseKeysDoNotCollideWithRuntimeResources(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	for _, namespace := range []string{"containers", "containernetworks"} {
-		logical := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process-lease-cross-kind", Namespace: namespace}}
+		logical := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process-lease-cross-kind", Namespace: namespace},
+			Spec: apiv2.LogicalProcessSpec{ProcessName: namespace + "/process-lease-cross-kind"}}
 		var other statestore.LeasableResource = &apiv2.LogicalContainer{Spec: apiv2.LogicalContainerSpec{ContainerName: logical.Name}}
 		if namespace == "containernetworks" {
 			other = &apiv2.LogicalContainerNetwork{Spec: apiv2.LogicalContainerNetworkSpec{NetworkName: logical.Name}}
@@ -106,7 +107,7 @@ func TestV2LogicalProcessControllerFailsWhenPersistentBackingDisappears(t *testi
 			defer reader.fail.Store(false)
 			command := "v2-process-missing-" + stage
 			logical := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespaceName},
-				Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+				Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespaceName,
 					Process: &apiv2.LogicalProcessConfig{ExecutablePath: command}}}
 			require.NoError(t, server.Client.Create(ctx, logical))
 			var physical *apiv2.PhysicalProcess
@@ -231,7 +232,7 @@ func TestV2LogicalProcessControllerRecoversCreatedChildBeforeForwardingStop(t *t
 				command := "v2-process-lost-create-command-" + string(mode)
 				logical := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
 					Spec: apiv2.LogicalProcessSpec{
-						Mode: mode,
+						Mode: mode, ProcessName: namespace.Name,
 						Ports: []apiv2.LogicalProcessPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{
 							Name: "http", ServiceRef: service.Name,
 						}, Port: 8080}},
@@ -320,7 +321,7 @@ func TestV2LogicalProcessControllerDeletesBeforeNamespaceAdmission(t *testing.T)
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "v2-process-delete-before-admission"},
-		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: "v2-process-delete-before-admission",
 			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-delete-before-admission-command"}}}
 	require.NoError(t, client.Create(ctx, resource))
 	pending := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
@@ -571,7 +572,7 @@ func TestV2LogicalProcessControllerStopSupersedesPreparedReplacement(t *testing.
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-stop-prepared-replacement"}}
 	require.NoError(t, apiClient.Create(ctx, namespace))
 	first := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
-		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, LifecycleKey: "original-key",
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespace.Name, LifecycleKey: "original-key",
 			Process: &apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name, Args: []string{"original"}}}}
 	require.NoError(t, apiClient.Create(ctx, first))
 	waitObjectAssumesStateEx(t, ctx, apiClient, first.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
@@ -620,8 +621,8 @@ func TestV2LogicalProcessControllerStopSupersedesPreparedReplacement(t *testing.
 	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
 }
 
-// Verifies that LogicalProcess uses persistent output storage and preserves ownership and captures through unscoped reuse.
-// Changed lifecycle keys replace the process without inheriting the retired process's workload association.
+// Verifies that LogicalProcess preserves a named persistent process, ownership, and captures across resource
+// name and namespace changes. Changed lifecycle keys replace it without inheriting the retired workload association.
 func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -631,7 +632,7 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 		current.Annotations = map[string]string{apiv2.NamespaceWorkloadIDAnnotation: " logical-process-workload "}
 		return client.Update(updateCtx, current)
 	}))
-	spec := apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+	spec := apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespace.Name + "/retained process",
 		Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-logical-process-persistent-command"}}
 	first := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name}, Spec: *spec.DeepCopy()}
 	require.NoError(t, client.Create(ctx, first))
@@ -658,16 +659,14 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(record.ProcessHandle()))
 	require.FileExists(t, record.StdOutFile)
 	require.FileExists(t, record.StdErrFile)
-	require.NoError(t, retryOnConflict(ctx, namespace.NamespacedName(), func(updateCtx context.Context, current *apiv2.Namespace) error {
-		delete(current.Annotations, apiv2.NamespaceWorkloadIDAnnotation)
-		return client.Update(updateCtx, current)
-	}))
-	second := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name}, Spec: *spec.DeepCopy()}
+	reuseNamespace := createActiveV2Namespace(t, ctx, "v2-logical-process-persistent-reused")
+	second := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "renamed-process", Namespace: reuseNamespace.Name}, Spec: *spec.DeepCopy()}
+	require.Equal(t, first.GetLeaseKey(), second.GetLeaseKey())
 	require.NoError(t, client.Create(ctx, second))
 	reused := waitLogicalProcessPhase(t, ctx, second.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
 	require.Equal(t, *created.Status.PID, *reused.Status.PID)
 	adopted := &apiv2.PhysicalProcess{}
-	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: reused.Status.PhysicalProcessRef}, adopted))
+	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: reuseNamespace.Name, Name: reused.Status.PhysicalProcessRef}, adopted))
 	require.Equal(t, reused.Status.PID, adopted.Spec.PID)
 	require.False(t, adopted.Spec.IdentityTimestamp.IsZero())
 	require.Nil(t, adopted.Spec.Process)
@@ -690,7 +689,7 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	require.NoError(t, client.Delete(ctx, second))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, second)
 	spec.Process.Args = []string{"changed"}
-	third := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name}, Spec: *spec.DeepCopy()}
+	third := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "replacement-process", Namespace: reuseNamespace.Name}, Spec: *spec.DeepCopy()}
 	require.NoError(t, client.Create(ctx, third))
 	replaced := waitLogicalProcessPhase(t, ctx, third.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
 	require.NotEqual(t, *created.Status.PID, *replaced.Status.PID)
@@ -703,7 +702,7 @@ func TestV2LogicalProcessControllerReusesAndReplacesPersistentProcess(t *testing
 	waitOutputFilesRemoved(t, ctx, record.StdOutFile, record.StdErrFile)
 	require.True(t, process.IsProcessGoneErr(testProcessExecutor.CheckProcessRunning(record.ProcessHandle())))
 	previous := &apiv2.PhysicalProcess{}
-	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(third.UID) + "-previous"}, previous))
+	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: reuseNamespace.Name, Name: "logical-" + string(third.UID) + "-previous"}, previous))
 	require.True(t, previous.Spec.Stop)
 	require.Equal(t, *created.Status.PID, *previous.Spec.PID)
 	require.Equal(t, apiv2.PhysicalProcessPhaseExited, previous.Status.Phase)
@@ -807,7 +806,7 @@ func TestV2LogicalProcessControllerRejectsReusedPersistentPIDWithBusyOutput(t *t
 	namespace := createActiveV2Namespace(t, ctx, "v2-logical-process-stale-record")
 	currentHandle := seedAdoptablePhysicalProcess(t, ctx, "v2-logical-process-reused-pid-command")
 	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
-		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespace.Name,
 			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-logical-process-new-pid-command"}}}
 	key, _, keyErr := resource.Spec.GetLifecycleKey()
 	require.NoError(t, keyErr)
@@ -840,7 +839,7 @@ func TestV2LogicalProcessControllerReplacesProcessDespiteOutputRemovalFailure(t 
 	defer cancel()
 	namespace := createActiveV2Namespace(t, ctx, "v2-process-retired-output-retry")
 	first := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
-		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespace.Name,
 			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-retired-output-command"}}}
 	require.NoError(t, client.Create(ctx, first))
 	waitLogicalProcessPhase(t, ctx, first.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
@@ -935,7 +934,7 @@ func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndReleasesTermi
 	reader.fail.Store(true)
 	defer reader.fail.Store(false)
 	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespaceName},
-		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespaceName,
 			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-logical-process-ownership-command"}}}
 	require.NoError(t, serverInfo.Client.Create(ctx, resource))
 	failed := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
@@ -993,7 +992,7 @@ func TestV2LogicalProcessControllerReleasesLeaseForMissingAdoptedProcess(t *test
 		return current.Status.Phase == apiv2.NamespacePhaseActive, nil
 	})
 	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespaceName},
-		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespaceName,
 			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-missing-adoption-command"}}}
 	handle, _, startErr := environment.TestProcessExecutor.StartProcess(ctx, exec.Command(resource.Spec.Process.ExecutablePath),
 		nil, process.CreationFlagsNone, nil)
@@ -1037,7 +1036,7 @@ func TestV2LogicalProcessControllerNamespaceCleanup(t *testing.T) {
 	handles := make(map[apiv2.LogicalProcessMode]process.ProcessHandle)
 	for _, mode := range []apiv2.LogicalProcessMode{apiv2.LogicalProcessModeSession, apiv2.LogicalProcessModePersistent} {
 		resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: string(mode), Namespace: namespace.Name},
-			Spec: apiv2.LogicalProcessSpec{Mode: mode,
+			Spec: apiv2.LogicalProcessSpec{Mode: mode, ProcessName: namespace.Name + "-" + string(mode),
 				Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-logical-process-namespace-" + string(mode)}}}
 		require.NoError(t, client.Create(ctx, resource))
 		running := waitLogicalProcessPhase(t, ctx, resource.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
@@ -1140,7 +1139,7 @@ func TestV2LogicalProcessControllerDeletesDuringRetainedLaunch(t *testing.T) {
 				return current.Status.Phase == apiv2.NamespacePhaseActive, nil
 			})
 			resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
-				Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+				Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespace.Name,
 					Process: &apiv2.LogicalProcessConfig{ExecutablePath: command}}}
 			require.NoError(t, server.Client.Create(ctx, resource))
 			select {
@@ -1215,7 +1214,7 @@ func TestV2LogicalProcessControllerDeletesAfterLaunchFailure(t *testing.T) {
 		StartupError: func(*internal_testutil.ProcessExecution) error { return errors.New("launch unavailable") }})
 	defer testProcessExecutor.RemoveAutoExecution(criteria)
 	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
-		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespace.Name,
 			Process: &apiv2.LogicalProcessConfig{ExecutablePath: command}}}
 	require.NoError(t, client.Create(ctx, resource))
 	waitObjectAssumesState(t, ctx, types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(resource.UID)},
