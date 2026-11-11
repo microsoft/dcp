@@ -245,6 +245,84 @@ func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 	}
 }
 
+// Verifies that LogicalService checks namespace readiness only before initializing service state.
+// Later namespace read failures do not block endpoint updates or service deletion.
+func TestV2LogicalServiceChecksNamespaceOnlyBeforeInitialization(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []apiv2.ServiceAddressAllocationMode{"", apiv2.ServiceAddressAllocationModeProxyless} {
+		name := "listeners"
+		if mode == apiv2.ServiceAddressAllocationModeProxyless {
+			name = "proxyless"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			recorder := &serviceProxyRecorder{}
+			var decorated *unavailableNamespaceClient
+			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, LogicalServiceController, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{
+					CreateLogicalServiceProxy: recorder.create,
+					DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+						decorated = &unavailableNamespaceClient{Client: apiClient}
+						return decorated
+					},
+				})
+			require.NoError(t, startupErr)
+			apiClient := server.Client
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "service-initial-admission"}}
+			require.NoError(t, apiClient.Create(ctx, namespace))
+			waitObjectAssumesStateEx(t, ctx, apiClient, namespace.NamespacedName(), func(current *apiv2.Namespace) (bool, error) {
+				return current.Status.Phase == apiv2.NamespacePhaseActive, nil
+			})
+			endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: namespace.Name},
+				Spec: apiv2.ServiceEndpointSpec{ServiceRef: "service", Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 61000}}}}
+			require.NoError(t, apiClient.Create(ctx, endpoint))
+			decorated.unavailable.Store(true)
+			defer decorated.unavailable.Store(false)
+			service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: namespace.Name},
+				Spec: apiv2.LogicalServiceSpec{Address: "127.0.0.1", AddressAllocationMode: mode}}
+			require.NoError(t, apiClient.Create(ctx, service))
+			unavailable := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+				return current.Status.Phase == apiv2.LogicalServicePhaseUnknown, nil
+			})
+			requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonLookupFailed)
+			require.Empty(t, unavailable.Status.EffectiveAddresses)
+			require.Empty(t, recorder.snapshot())
+			decorated.unavailable.Store(false)
+			running := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+				return logicalServiceReady(current), nil
+			})
+			listeners := recorder.snapshot()
+			decorated.unavailable.Store(true)
+			endpoint.Spec.Addresses[0].Port++
+			endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
+			updated := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+				if !logicalServiceReady(current) {
+					return false, nil
+				}
+				if mode == apiv2.ServiceAddressAllocationModeProxyless {
+					return slices.Equal(current.Status.EffectiveAddresses, endpoint.Spec.Addresses), nil
+				}
+				return slices.Equal(listeners[0].configuration().Endpoints,
+					[]proxy.Endpoint{{Address: "127.0.0.1", Port: endpoint.Spec.Addresses[0].Port}}), nil
+			})
+			if mode == apiv2.ServiceAddressAllocationModeProxyless {
+				require.Empty(t, recorder.snapshot())
+			} else {
+				require.Len(t, listeners, 1)
+				require.Same(t, listeners[0], recorder.snapshot()[0])
+				require.Equal(t, running.Status.EffectiveAddresses, updated.Status.EffectiveAddresses)
+			}
+			require.NoError(t, apiClient.Delete(ctx, service))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, service)
+			decorated.unavailable.Store(false)
+			require.NoError(t, apiClient.Delete(ctx, namespace))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
+		})
+	}
+}
+
 // Verifies that periodic and metadata-only reconciliations preserve an established UDP forwarding
 // stream, while a changed endpoint configuration is applied once to the existing listener.
 func TestV2LogicalServicePreservesUDPStreamAcrossReconciliation(t *testing.T) {

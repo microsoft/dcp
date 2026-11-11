@@ -122,13 +122,26 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		found = false
 	}
 	if !found {
+		ready, namespaceReason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, service.Namespace)
+		if !ready {
+			phase, reason := apiv2.LogicalServicePhasePending, apiv2.LogicalServiceReasonStarting
+			message := namespaceReadinessMessage(service.Namespace, namespaceReason)
+			delay := StandardDelay
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to check service namespace")
+				phase, reason = apiv2.LogicalServicePhaseUnknown, apiv2.LogicalServiceReasonLookupFailed
+				message, delay = namespaceErr.Error(), LongDelay
+			}
+			change := setValue(&service.Status.Phase, phase)
+			change |= setCondition(&service.Status.Conditions, apiv2.ConditionReady, service.Generation,
+				metav1.ConditionFalse, reason, message)
+			return r.SaveChangesWithDelay(ctx, service, patch, change, delay, nil, log)
+		}
 		data = &logicalServiceData{uid: service.UID}
 		r.services.Store(service.NamespacedName(), data)
 	}
 	status := apiv2.LogicalServiceStatus{Phase: apiv2.LogicalServicePhasePending, Conditions: slices.Clone(service.Status.Conditions)}
-	ready, reason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, service.Namespace)
-	message := namespaceReadinessMessage(service.Namespace, reason)
-	reason = apiv2.LogicalServiceReasonStarting
+	reason, message := apiv2.LogicalServiceReasonStarting, ""
 	requeue := false
 	available := false
 	switch {
@@ -140,14 +153,6 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 	}):
 		status.Phase = apiv2.LogicalServicePhaseFailed
 		reason, message = apiv2.LogicalServiceReasonMissing, "Service listeners have stopped; recreate the service to allocate new listeners."
-	case !ready:
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to check service namespace")
-			message, requeue = namespaceErr.Error(), true
-			status.Phase, reason = apiv2.LogicalServicePhaseUnknown, apiv2.LogicalServiceReasonLookupFailed
-		} else if data.started {
-			status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonRunning
-		}
 	default:
 		var endpoints apiv2.ServiceEndpointList
 		listErr := r.List(ctx, &endpoints, ctrl_client.InNamespace(service.Namespace), ctrl_client.MatchingFields{

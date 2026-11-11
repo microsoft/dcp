@@ -386,6 +386,7 @@ func (r *LogicalContainerExecReconciler) findPhysicalContainerExec(
 			if (data.physicalUID != "" && child.UID != data.physicalUID) || !hasFinalizer(child, LogicalBackingFinalizer) {
 				identityErr := fmt.Errorf("physical execution %q UID or logical hold changed", child.NamespacedName())
 				data.failMissing(identityErr.Error())
+				data.state = logicalContainerExecStateMissing
 				return nil, identityErr
 			}
 			if !child.DeletionTimestamp.IsZero() && !data.terminal() {
@@ -409,6 +410,7 @@ func (r *LogicalContainerExecReconciler) findPhysicalContainerExec(
 		!hasFinalizer(physical, LogicalBackingFinalizer) {
 		identityErr := fmt.Errorf("physical execution %q has a different identity, owner, or logical hold", physical.NamespacedName())
 		data.failMissing(identityErr.Error())
+		data.state = logicalContainerExecStateMissing
 		return nil, identityErr
 	}
 	if !physical.DeletionTimestamp.IsZero() && !data.terminal() {

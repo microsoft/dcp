@@ -84,6 +84,39 @@ func (writer *containerExecStatusConflictWriter) Patch(ctx context.Context, obj 
 	return writer.SubResourceWriter.Patch(ctx, obj, patch, options...)
 }
 
+type containerExecReplacementClient struct {
+	*containerExecStatusConflictClient
+	replace  atomic.Bool
+	uncached bool
+}
+
+func (apiClient *containerExecReplacementClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+	listErr := apiClient.Client.List(ctx, list, options...)
+	if physicals, executions := list.(*apiv2.PhysicalContainerExecList); executions && listErr == nil && apiClient.replace.Load() {
+		if apiClient.uncached {
+			physicals.Items = nil
+		} else {
+			for i := range physicals.Items {
+				physicals.Items[i].UID += "-replacement"
+			}
+		}
+	}
+	return listErr
+}
+
+type containerExecReplacementReader struct {
+	ctrl_client.Reader
+	client *containerExecReplacementClient
+}
+
+func (reader *containerExecReplacementReader) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
+	getErr := reader.Reader.Get(ctx, key, obj, options...)
+	if physical, execution := obj.(*apiv2.PhysicalContainerExec); execution && getErr == nil && reader.client.replace.Load() {
+		physical.UID += "-replacement"
+	}
+	return getErr
+}
+
 type containerExecLaunchReader struct {
 	ctrl_client.Reader
 	target  types.NamespacedName
@@ -146,6 +179,59 @@ func TestV2ContainerExecMissingBackingProjectionSurvivesStatusConflict(t *testin
 	require.True(t, conflictClient.conflicted.Load())
 	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonMissing)
 	require.Equal(t, &apiv2.LogSource{Name: running.Status.PhysicalExecRef, UID: running.Status.RuntimeLogs.UID, Complete: true}, failed.Status.RuntimeLogs)
+}
+
+// Verifies that LogicalContainerExec treats a changed backing UID as missing through both lookup paths,
+// repeatedly invalidating the original capture through a status conflict without adopting the replacement.
+func TestV2LogicalContainerExecInvalidatesLogsAfterBackingUIDChanges(t *testing.T) {
+	for _, mode := range []string{"cached", "uncached"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			var replacementClient *containerExecReplacementClient
+			serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, containerExecTestControllers, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{
+					DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+						replacementClient = &containerExecReplacementClient{
+							containerExecStatusConflictClient: &containerExecStatusConflictClient{Client: apiClient},
+							uncached:                          mode == "uncached",
+						}
+						return replacementClient
+					},
+					DecorateAPIReader: func(reader ctrl_client.Reader) ctrl_client.Reader {
+						return &containerExecReplacementReader{Reader: reader, client: replacementClient}
+					},
+				})
+			require.NoError(t, startupErr)
+			apiClient := serverInfo.Client
+			target := createV2ExecTarget(t, ctx, apiClient, "v2-exec-uid-"+mode)
+			resource := &apiv2.LogicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: "execution", Namespace: target.Namespace},
+				Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: "v2-exec-uid-command"}}}
+			require.NoError(t, apiClient.Create(ctx, resource))
+			running := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
+				return current.Status.Phase == apiv2.LogicalContainerExecPhaseRunning, nil
+			})
+			require.NotNil(t, running.Status.RuntimeLogs)
+			require.True(t, running.Status.RuntimeLogs.Available)
+			require.False(t, running.Status.RuntimeLogs.Complete)
+			replacementClient.replace.Store(true)
+			t.Cleanup(func() { replacementClient.replace.Store(false) })
+			require.NoError(t, apiClient.Patch(ctx, resource,
+				ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"exec-test":"changed-uid"}}}`))))
+			failed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
+				return current.Status.Phase == apiv2.LogicalContainerExecPhaseFailed, nil
+			})
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonMissing)
+			require.Equal(t, &apiv2.LogSource{Name: running.Status.PhysicalExecRef, UID: running.Status.RuntimeLogs.UID, Complete: true}, failed.Status.RuntimeLogs)
+			require.True(t, replacementClient.conflicted.Load())
+			replacementClient.replace.Store(false)
+			require.NoError(t, apiClient.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, resource)
+			physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalExecRef, Namespace: resource.Namespace}}
+			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, physical)
+		})
+	}
 }
 
 // Verifies that PhysicalContainerExec waits when its target is paused during uncached preflight,
