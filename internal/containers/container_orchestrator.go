@@ -178,7 +178,13 @@ type InspectedContainer struct {
 	// Environment variables
 	Env map[string]string `json:"Env,omitempty"`
 
-	// Launch arguments
+	// Entrypoint reported by the runtime.
+	Entrypoint []string `json:"Entrypoint,omitempty"`
+
+	// Command reported by the runtime, separately from the entrypoint.
+	Command []string `json:"Command,omitempty"`
+
+	// Combined entrypoint and command arguments.
 	Args []string `json:"Args,omitempty"`
 
 	// Container volume/bind mounts

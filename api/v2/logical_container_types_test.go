@@ -64,7 +64,7 @@ func TestLogicalContainerSpecGetLifecycleKey(t *testing.T) {
 		Mode: LogicalContainerModePersistent, ContainerName: "runtime-container",
 		Ports: []LogicalContainerPort{{LogicalServiceBinding: LogicalServiceBinding{Name: "http", Service: &LogicalServiceTemplate{Name: "http"}}, ContainerPort: 8080}},
 		Container: &LogicalContainerConfig{
-			ImageRef: "image", Command: []string{"run"},
+			ImageRef: "image", Command: []string{"run"}, RunArgs: []string{"--read-only", "--cap-add=NET_RAW"},
 			Env:          []commonapi.EnvVar{{Name: "B", Value: "2"}, {Name: "A", Value: "1"}},
 			Labels:       []commonapi.Label{{Key: "b", Value: "2"}, {Key: "a", Value: "1"}},
 			VolumeMounts: []VolumeMount{{Type: NamedVolumeMount, VolumeRef: "volume", Target: "/data"}},
@@ -98,6 +98,19 @@ func TestLogicalContainerSpecGetLifecycleKey(t *testing.T) {
 	changedKey, _, changedErr := changed.GetLifecycleKey(runtimePorts)
 	require.NoError(t, changedErr)
 	require.NotEqual(t, key, changedKey)
+
+	changedRunArgs := original.DeepCopy()
+	changedRunArgs.Container.RunArgs[0] = "--read-only=false"
+	runArgsKey, _, runArgsErr := changedRunArgs.GetLifecycleKey(runtimePorts)
+	require.NoError(t, runArgsErr)
+	require.NotEqual(t, key, runArgsKey)
+	require.Equal(t, unchanged, original)
+
+	reorderedRunArgs := original.DeepCopy()
+	slices.Reverse(reorderedRunArgs.Container.RunArgs)
+	reorderedKey, _, reorderedErr := reorderedRunArgs.GetLifecycleKey(runtimePorts)
+	require.NoError(t, reorderedErr)
+	require.NotEqual(t, key, reorderedKey)
 
 	explicit := &LogicalContainerSpec{LifecycleKey: "user-key"}
 	explicitKey, explicitComputed, explicitErr := explicit.GetLifecycleKey(nil)
@@ -661,7 +674,7 @@ func TestLogicalContainerGetLeaseKey(t *testing.T) {
 }
 
 // Verifies that LogicalContainer JSON separates lifecycle policy from the container,
-// uses networkRef for network references, and retains observed identity and lifecycle status.
+// uses networkRef for network references, and retains literal runtime arguments and observed lifecycle status.
 func TestLogicalContainerJSONShape(t *testing.T) {
 	exitCode := int32(0)
 	container := &LogicalContainer{
@@ -672,6 +685,7 @@ func TestLogicalContainerJSONShape(t *testing.T) {
 			Container: &LogicalContainerConfig{
 				Image:    &PhysicalContainerImageConfig{Image: "example/image:latest"},
 				Networks: []LogicalContainerNetworkConnectionConfig{{NetworkRef: "network"}},
+				RunArgs:  []string{"--label", "value=literal {{argument}}"},
 			},
 		},
 		Status: LogicalContainerStatus{
@@ -691,7 +705,7 @@ func TestLogicalContainerJSONShape(t *testing.T) {
 		Status map[string]json.RawMessage `json:"status"`
 	}
 	require.NoError(t, json.Unmarshal(data, &fields))
-	require.JSONEq(t, `{"image":{"image":"example/image:latest"},"networks":[{"networkRef":"network"}]}`, string(fields.Spec["container"]))
+	require.JSONEq(t, `{"image":{"image":"example/image:latest"},"networks":[{"networkRef":"network"}],"runArgs":["--label","value=literal {{argument}}"]}`, string(fields.Spec["container"]))
 	require.JSONEq(t, `"persistent"`, string(fields.Spec["mode"]))
 	require.JSONEq(t, `"runtime-container"`, string(fields.Spec["containerName"]))
 	require.NotContains(t, fields.Spec, "containerID")

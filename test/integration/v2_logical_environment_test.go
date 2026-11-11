@@ -44,6 +44,7 @@ func TestV2LogicalValuesIgnoreOverriddenEnvironment(t *testing.T) {
 				physical := &apiv2.PhysicalProcess{}
 				require.NoError(t, client.Get(ctx, types.NamespacedName{Name: observed.Status.PhysicalProcessRef, Namespace: name.Namespace}, physical))
 				require.Equal(t, []commonapi.EnvVar{{Name: "VALUE", Value: "effective"}}, physical.Spec.Process.Env)
+				require.Contains(t, observed.Status.EffectiveEnv, commonapi.EnvVar{Name: "VALUE", Value: "effective"})
 			} else {
 				resource := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: name.Name, Namespace: name.Namespace},
 					Spec: apiv2.LogicalContainerSpec{Container: &apiv2.LogicalContainerConfig{
@@ -57,6 +58,8 @@ func TestV2LogicalValuesIgnoreOverriddenEnvironment(t *testing.T) {
 				physical := &apiv2.PhysicalContainer{}
 				require.NoError(t, client.Get(ctx, types.NamespacedName{Name: observed.Status.PhysicalContainerRef, Namespace: name.Namespace}, physical))
 				require.Equal(t, []commonapi.EnvVar{{Name: "VALUE", Value: "effective"}}, physical.Spec.Container.Env)
+				require.Contains(t, physical.Status.EffectiveEnv, commonapi.EnvVar{Name: "VALUE", Value: "effective"})
+				require.Equal(t, physical.Status.EffectiveEnv, observed.Status.EffectiveEnv)
 			}
 			require.NoError(t, client.Delete(ctx, namespace))
 			ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
@@ -98,7 +101,7 @@ func TestV2LogicalValuesEnvironmentCasing(t *testing.T) {
 					})
 					if expectedFailure {
 						require.Equal(t, apiv2.LogicalProcessPhaseFailed, observed.Status.Phase)
-						requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalResourceReasonTemplateEvaluationFailed)
+						requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.ConditionReason("FailedToStart"))
 						require.Empty(t, observed.Status.PhysicalProcessRef)
 					} else {
 						require.Equal(t, apiv2.LogicalProcessPhaseRunning, observed.Status.Phase, "%+v", observed.Status.Conditions)
@@ -122,7 +125,7 @@ func TestV2LogicalValuesEnvironmentCasing(t *testing.T) {
 					})
 					if expectedFailure {
 						require.Equal(t, apiv2.LogicalContainerPhaseFailed, observed.Status.Phase)
-						requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalResourceReasonTemplateEvaluationFailed)
+						requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.ConditionReason("FailedToStart"))
 						require.Empty(t, observed.Status.PhysicalContainerRef)
 					} else {
 						require.Equal(t, apiv2.LogicalContainerPhaseRunning, observed.Status.Phase, "%+v", observed.Status.Conditions)

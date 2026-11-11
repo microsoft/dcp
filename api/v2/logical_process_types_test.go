@@ -29,14 +29,17 @@ func TestLogicalProcessValidate(t *testing.T) {
 		valid bool
 	}{
 		{"session", LogicalProcessSpec{Process: config}, true},
-		{"persistent", LogicalProcessSpec{Mode: LogicalProcessModePersistent, Process: config, MonitorPID: &pid, MonitorTimestamp: timestamp}, true},
+		{"persistent", LogicalProcessSpec{Mode: LogicalProcessModePersistent, ProcessName: "application/process identity", Process: config, MonitorPID: &pid, MonitorTimestamp: timestamp}, true},
+		{"missing persistent name", LogicalProcessSpec{Mode: LogicalProcessModePersistent, Process: config}, false},
+		{"blank persistent name", LogicalProcessSpec{Mode: LogicalProcessModePersistent, ProcessName: " ", Process: config}, false},
+		{"padded persistent name", LogicalProcessSpec{Mode: LogicalProcessModePersistent, ProcessName: " process ", Process: config}, false},
 		{"existing", LogicalProcessSpec{Mode: LogicalProcessModeExisting, PID: &pid, IdentityTimestamp: timestamp}, true},
 		{"missing process", LogicalProcessSpec{}, false},
 		{"blank executable", LogicalProcessSpec{Process: &LogicalProcessConfig{ExecutablePath: " "}}, false},
 		{"session pid", LogicalProcessSpec{Process: config, PID: &pid}, false},
 		{"session identity", LogicalProcessSpec{Process: config, IdentityTimestamp: timestamp}, false},
 		{"session monitor", LogicalProcessSpec{Process: config, MonitorPID: &pid, MonitorTimestamp: timestamp}, false},
-		{"incomplete monitor", LogicalProcessSpec{Mode: LogicalProcessModePersistent, Process: config, MonitorPID: &pid}, false},
+		{"incomplete monitor", LogicalProcessSpec{Mode: LogicalProcessModePersistent, ProcessName: "process", Process: config, MonitorPID: &pid}, false},
 		{"existing pid only", LogicalProcessSpec{Mode: LogicalProcessModeExisting, PID: &pid}, false},
 		{"existing timestamp only", LogicalProcessSpec{Mode: LogicalProcessModeExisting, IdentityTimestamp: timestamp}, false},
 		{"existing configuration", LogicalProcessSpec{Mode: LogicalProcessModeExisting, PID: &pid, IdentityTimestamp: timestamp, Process: config}, false},
@@ -147,6 +150,7 @@ func TestLogicalProcessLifecycleKeyInputs(t *testing.T) {
 	}
 	policy := spec.DeepCopy()
 	policy.Mode, policy.Stop = LogicalProcessModeSession, true
+	policy.ProcessName = "another-process"
 	policy.MonitorPID, policy.MonitorTimestamp = nil, metav1.MicroTime{}
 	baseline := spec.DeepCopy()
 	baseline.MonitorPID, baseline.MonitorTimestamp = nil, metav1.MicroTime{}
@@ -164,13 +168,15 @@ func TestLogicalProcessLifecycleKeyInputs(t *testing.T) {
 	require.Equal(t, nilKey, emptyKey)
 }
 
-// Verifies that LogicalProcess permits only monotonic stop changes and uses a namespace-scoped persistent identity.
+// Verifies that LogicalProcess permits only monotonic Stop changes and uses an immutable opaque
+// persistent identity independent of its resource namespace and name.
 func TestLogicalProcessUpdateAndLeaseKey(t *testing.T) {
 	resource := &LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: "test"},
-		Spec: LogicalProcessSpec{Process: &LogicalProcessConfig{ExecutablePath: "program"}}}
+		Spec: LogicalProcessSpec{ProcessName: "application/process identity", Process: &LogicalProcessConfig{ExecutablePath: "program"}}}
 	require.Equal(t, LogicalProcessModeSession, resource.Spec.EffectiveMode())
-	require.Equal(t, "processes/test/process", resource.GetLeaseKey())
+	require.Equal(t, "processes/application/process identity", resource.GetLeaseKey())
 	resource.Namespace, resource.Name = "containers", "app"
+	require.Equal(t, "processes/application/process identity", resource.GetLeaseKey())
 	container := &LogicalContainer{Spec: LogicalContainerSpec{ContainerName: "app"}}
 	require.NotEqual(t, resource.GetLeaseKey(), container.GetLeaseKey())
 	resource.Namespace = "containernetworks"
@@ -186,6 +192,10 @@ func TestLogicalProcessUpdateAndLeaseKey(t *testing.T) {
 	changed = resource.DeepCopy()
 	changed.Spec.Process.AmbientEnvironment.Behavior = EnvironmentBehaviorDoNotInherit
 	require.NotEmpty(t, changed.ValidateUpdate(context.Background(), resource))
+	renamed := resource.DeepCopy()
+	renamed.Spec.ProcessName = "another-process"
+	require.NotEqual(t, resource.GetLeaseKey(), renamed.GetLeaseKey())
+	require.NotEmpty(t, renamed.ValidateUpdate(context.Background(), resource))
 }
 
 // Verifies that PhysicalProcess allows an optional expected identity only with a PID reference and freezes it on update.
