@@ -41,6 +41,8 @@ func TestExecContainerStreams(t *testing.T) {
 		})
 }
 
+// Verifies that container inspection preserves runtime identity, environment, networking,
+// and separate entrypoint and command values alongside their combined arguments.
 func TestInspectedContainerDeserialization(t *testing.T) {
 	var b bytes.Buffer
 
@@ -83,6 +85,8 @@ func TestInspectedContainerDeserialization(t *testing.T) {
 	}, ct.Env)
 
 	require.Equal(t, []string{"docker-entrypoint.sh", "agent", "-dev", "-client", "0.0.0.0"}, ct.Args)
+	require.Equal(t, []string{"docker-entrypoint.sh"}, ct.Entrypoint)
+	require.Equal(t, []string{"agent", "-dev", "-client", "0.0.0.0"}, ct.Command)
 
 	require.Equal(t, []containers.InspectedContainerNetwork{
 		{

@@ -133,6 +133,87 @@ func TestLogicalBackingLogSourceProjection(t *testing.T) {
 	}
 }
 
+// Verifies that uncertain physical observations remain Pending before successful logical startup,
+// retain their diagnostics, and become Unknown only after startup has succeeded.
+func TestLogicalObservationUncertaintyRequiresSuccessfulStartup(t *testing.T) {
+	t.Parallel()
+	t.Run("container", func(t *testing.T) {
+		t.Parallel()
+		physical := &apiv2.PhysicalContainer{Status: apiv2.PhysicalContainerStatus{
+			Phase: apiv2.PhysicalContainerPhaseUnknown,
+			Conditions: []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
+				Reason: string(apiv2.PhysicalContainerReasonRuntimeContainerInspectFailed), Message: "inspection unavailable"}},
+		}}
+		data := &logicalContainerData{state: logicalContainerStatePending, physicalContainerUID: "backing"}
+		resource := &apiv2.LogicalContainer{}
+		data.updateLifecycleFromPhysicalContainer(physical)
+		_, _, startupValid := data.applyTo(resource)
+		require.True(t, startupValid)
+		require.Equal(t, apiv2.LogicalContainerPhasePending, resource.Status.Phase)
+		require.Equal(t, string(apiv2.LogicalContainerReasonStarting), resource.Status.Conditions[0].Reason)
+		require.Contains(t, resource.Status.Conditions[0].Message, "inspection unavailable")
+		physical.Status.Phase, physical.Status.Conditions[0].Status = apiv2.PhysicalContainerPhaseRunning, metav1.ConditionTrue
+		data.updateLifecycleFromPhysicalContainer(physical)
+		physical.Status.Phase, physical.Status.Conditions[0].Status = apiv2.PhysicalContainerPhaseUnknown, metav1.ConditionFalse
+		data.updateLifecycleFromPhysicalContainer(physical)
+		_, delay, observationValid := data.applyTo(resource)
+		require.True(t, observationValid)
+		require.Equal(t, apiv2.LogicalContainerPhaseUnknown, resource.Status.Phase)
+		require.Equal(t, string(apiv2.LogicalContainerReasonLookupFailed), resource.Status.Conditions[0].Reason)
+		require.Equal(t, LongDelay, delay)
+	})
+	t.Run("network", func(t *testing.T) {
+		t.Parallel()
+		physical := &apiv2.PhysicalContainerNetwork{Status: apiv2.PhysicalContainerNetworkStatus{
+			Phase: apiv2.PhysicalContainerNetworkPhaseUnknown,
+			Conditions: []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
+				Reason: string(apiv2.PhysicalContainerNetworkReasonRuntimeNetworkInspectFailed), Message: "inspection unavailable"}},
+		}}
+		data := &logicalContainerNetworkData{state: logicalContainerNetworkStatePending, physicalNetworkUID: "backing"}
+		resource := &apiv2.LogicalContainerNetwork{}
+		data.updateLifecycleFromPhysicalContainerNetwork(physical)
+		_, _, startupValid := data.applyTo(resource)
+		require.True(t, startupValid)
+		require.Equal(t, apiv2.LogicalContainerNetworkPhasePending, resource.Status.Phase)
+		require.Equal(t, string(apiv2.LogicalContainerNetworkReasonStarting), resource.Status.Conditions[0].Reason)
+		require.Contains(t, resource.Status.Conditions[0].Message, "inspection unavailable")
+		physical.Status.Phase, physical.Status.Conditions[0].Status = apiv2.PhysicalContainerNetworkPhaseReady, metav1.ConditionTrue
+		data.updateLifecycleFromPhysicalContainerNetwork(physical)
+		physical.Status.Phase, physical.Status.Conditions[0].Status = apiv2.PhysicalContainerNetworkPhaseUnknown, metav1.ConditionFalse
+		data.updateLifecycleFromPhysicalContainerNetwork(physical)
+		_, delay, observationValid := data.applyTo(resource)
+		require.True(t, observationValid)
+		require.Equal(t, apiv2.LogicalContainerNetworkPhaseUnknown, resource.Status.Phase)
+		require.Equal(t, string(apiv2.LogicalContainerNetworkReasonLookupFailed), resource.Status.Conditions[0].Reason)
+		require.Equal(t, LongDelay, delay)
+	})
+	t.Run("process", func(t *testing.T) {
+		t.Parallel()
+		physical := &apiv2.PhysicalProcess{Status: apiv2.PhysicalProcessStatus{
+			Phase: apiv2.PhysicalProcessPhaseUnknown,
+			Conditions: []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
+				Reason: string(apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed), Message: "inspection unavailable"}},
+		}}
+		data := &logicalProcessData{state: logicalProcessStatePrepare}
+		resource := &apiv2.LogicalProcess{}
+		data.updateLifecycleFromPhysicalProcess(physical)
+		_, _, startupValid := data.applyTo(resource)
+		require.True(t, startupValid)
+		require.Equal(t, apiv2.LogicalProcessPhasePending, resource.Status.Phase)
+		require.Equal(t, string(apiv2.LogicalProcessReasonStarting), resource.Status.Conditions[0].Reason)
+		require.Contains(t, resource.Status.Conditions[0].Message, "inspection unavailable")
+		physical.Status.Phase, physical.Status.Conditions[0].Status = apiv2.PhysicalProcessPhaseRunning, metav1.ConditionTrue
+		data.updateLifecycleFromPhysicalProcess(physical)
+		physical.Status.Phase, physical.Status.Conditions[0].Status = apiv2.PhysicalProcessPhaseUnknown, metav1.ConditionFalse
+		data.updateLifecycleFromPhysicalProcess(physical)
+		_, delay, observationValid := data.applyTo(resource)
+		require.True(t, observationValid)
+		require.Equal(t, apiv2.LogicalProcessPhaseUnknown, resource.Status.Phase)
+		require.Equal(t, string(apiv2.LogicalProcessReasonLookupFailed), resource.Status.Conditions[0].Reason)
+		require.Equal(t, LongDelay, delay)
+	})
+}
+
 // Verifies that physical resource projections preserve phase, conditions, and retry policy.
 // Terminal dependency failures and confirmed missing containers and networks never schedule retries.
 func TestPhysicalResourceProjections(t *testing.T) {
@@ -152,6 +233,19 @@ func TestPhysicalResourceProjections(t *testing.T) {
 	require.True(t, valid)
 	require.Equal(t, apiv2.PhysicalContainerPhasePending, resolveProjection.phase)
 	require.Equal(t, apiv2.PhysicalContainerReasonResolvingRuntimeContainer, resolveProjection.conditionReason)
+
+	containerWaiting, containerWaitingFound := logicalContainerProjections.project(logicalContainerStateWaitingForExisting)
+	require.True(t, containerWaitingFound)
+	require.Equal(t, apiv2.LogicalContainerPhasePending, containerWaiting.phase)
+	require.Equal(t, apiv2.LogicalContainerReasonStarting, containerWaiting.conditionReason)
+	require.True(t, containerWaiting.requeue)
+	require.Equal(t, MonitoringDelay, containerWaiting.requeueDelay)
+	networkWaiting, networkWaitingFound := logicalContainerNetworkProjections.project(logicalContainerNetworkStateWaitingForExisting)
+	require.True(t, networkWaitingFound)
+	require.Equal(t, apiv2.LogicalContainerNetworkPhasePending, networkWaiting.phase)
+	require.Equal(t, apiv2.LogicalContainerNetworkReasonStarting, networkWaiting.conditionReason)
+	require.True(t, networkWaiting.requeue)
+	require.Equal(t, MonitoringDelay, networkWaiting.requeueDelay)
 
 	containerMissing, containerMissingFound := physicalContainerProjections.project(physicalContainerStateMissing)
 	require.True(t, containerMissingFound)
@@ -181,26 +275,15 @@ func TestV2ProjectedStatesHaveHandlers(t *testing.T) {
 	assertProjectedStateHandlers(t, physicalProcessProjections, physicalProcessDataHandlers)
 	assertProjectedStateHandlers(t, physicalContainerExecProjections, physicalContainerExecDataHandlers)
 	for state := range logicalContainerExecProjections.projections {
-		if state != logicalContainerExecStateDelete {
-			require.Contains(t, logicalContainerExecDataHandlers, state)
-		}
+		require.Contains(t, logicalContainerExecDataHandlers, state)
 	}
 	for state := range logicalContainerProjections.projections {
-		if state == logicalContainerStateDelete {
-			continue
-		}
 		require.Contains(t, logicalContainerDataHandlers, state)
 	}
 	for state := range logicalContainerNetworkProjections.projections {
-		if state == logicalContainerNetworkStateDelete {
-			continue
-		}
 		require.Contains(t, logicalContainerNetworkDataHandlers, state)
 	}
 	for state := range logicalProcessProjections.projections {
-		if state == logicalProcessStateDelete {
-			continue
-		}
 		require.Contains(t, logicalProcessDataHandlers, state)
 	}
 }

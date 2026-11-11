@@ -90,7 +90,7 @@ func TestV2ProcessRetainedLogsPreserveRawOutput(t *testing.T) {
 	defer cancel()
 	namespace := createActiveV2Namespace(t, ctx, "v2-process-raw-output")
 	logical := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
-		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespace.Name,
 			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-raw-output-command"}}}
 	require.NoError(t, client.Create(ctx, logical))
 	defer func() {
@@ -148,7 +148,7 @@ func (executor *processOutputDrainExecutor) StartProcess(
 	return executor.Executor.StartProcess(ctx, command, handler, flags, create)
 }
 
-// Verifies that LogicalProcess and PhysicalProcess preserve incomplete output after root exit
+// Verifies that LogicalProcess and PhysicalProcess preserve incomplete output after confirmed root exit
 // until descendant-held pipes drain, including for newly opened followers of terminal resources.
 func TestV2ProcessLogFollowersWaitForOutputDrain(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -217,6 +217,7 @@ func TestV2ProcessLogFollowersWaitForOutputDrain(t *testing.T) {
 	logicalExited := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
 	})
+	requireReadyCondition(t, logicalExited.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonCompleted)
 	require.Equal(t, exited.GetLogSource(), logicalExited.Status.RuntimeLogs)
 	require.False(t, logicalExited.Status.RuntimeLogs.Complete)
 	var followers []io.ReadCloser
@@ -356,7 +357,7 @@ func TestV2ProcessLogicalOnlyFollowerCompletesAfterBackingDeletion(t *testing.T)
 			waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 				return current.Status.Phase == apiv2.LogicalProcessPhaseFailed &&
-					ready != nil && ready.Reason == string(apiv2.LogicalProcessReasonPhysicalProcessMissing), nil
+					ready != nil && ready.Reason == string(apiv2.LogicalProcessReasonMissing), nil
 			})
 			require.NoError(t, apiClient.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, resource)
@@ -424,7 +425,7 @@ func TestV2ProcessTerminalOutcomeSurvivesBackingDeletion(t *testing.T) {
 		return current.Spec.Stop && ready != nil && ready.ObservedGeneration == current.Generation, nil
 	})
 	require.Equal(t, apiv2.LogicalProcessPhaseExited, unchanged.Status.Phase)
-	requireReadyCondition(t, unchanged.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonExited)
+	requireReadyCondition(t, unchanged.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonCompleted)
 	require.Equal(t, completed.Status.RuntimeLogs, unchanged.Status.RuntimeLogs)
 }
 
@@ -746,7 +747,7 @@ func TestV2ProcessCreatedCapturesHonorPreservation(t *testing.T) {
 		t.Run(string(mode), func(t *testing.T) {
 			namespace := createActiveV2Namespace(t, ctx, "v2-process-preserved-capture-"+string(mode))
 			resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
-				Spec: apiv2.LogicalProcessSpec{Mode: mode,
+				Spec: apiv2.LogicalProcessSpec{Mode: mode, ProcessName: namespace.Name,
 					Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-process-preserved-capture-" + string(mode)}}}
 			require.NoError(t, client.Create(ctx, resource))
 			running := waitLogicalProcessPhase(t, ctx, resource.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
@@ -837,7 +838,7 @@ func TestV2OutputCleanupDoesNotBlockReconciliation(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, image)
 
 	persistent := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "persistent", Namespace: namespace.Name},
-		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: namespace.Name,
 			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "v2-queued-cleanup-persistent"}}}
 	staleHandle, _, startErr := environment.TestProcessExecutor.StartProcess(ctx, exec.Command("v2-queued-cleanup-stale"),
 		nil, process.CreationFlagsNone, nil)

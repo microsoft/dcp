@@ -704,6 +704,7 @@ type testContainer struct {
 	Mounts         []containers.VolumeMount             `json:"mounts,omitempty"`
 	NetworkAliases map[string][]string                  `json:"networkAliases,omitempty"`
 	Args           []string                             `json:"args,omitempty"`
+	Entrypoint     []string                             `json:"entrypoint,omitempty"`
 	Env            map[string]string                    `json:"env,omitempty"`
 	Labels         map[string]string                    `json:"labels,omitempty"`
 	Health         *containers.InspectedContainerHealth `json:"health,omitempty"`
@@ -1983,6 +1984,9 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 		stdoutLog:      testutil.NewBufferWriter(),
 		stderrLog:      testutil.NewBufferWriter(),
 	}
+	if options.Entrypoint != "" {
+		container.Entrypoint = []string{options.Entrypoint}
+	}
 
 	for _, mount := range options.VolumeMounts {
 		container.Mounts = append(container.Mounts, containers.VolumeMount{
@@ -2813,7 +2817,9 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, opti
 					Status:      container.Status,
 					ExitCode:    container.ExitCode,
 					Ports:       inspectedContainerPorts,
-					Args:        container.Args,
+					Args:        append(append([]string(nil), container.Entrypoint...), container.Args...),
+					Entrypoint:  append([]string(nil), container.Entrypoint...),
+					Command:     append([]string(nil), container.Args...),
 					Env:         container.Env,
 					Labels:      container.Labels,
 					Mounts:      append([]containers.VolumeMount{}, container.Mounts...),

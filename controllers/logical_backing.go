@@ -11,17 +11,27 @@ import (
 	"slices"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 type logicalChildIdentity struct {
 	resource schema.GroupVersionResource
 	name     string
+}
+
+func logicalBackingStatusMessage(kind string, conditions []metav1.Condition) string {
+	ready := apimeta.FindStatusCondition(conditions, string(apiv2.ConditionReady))
+	if ready == nil {
+		return fmt.Sprintf("%s has not reported its state.", kind)
+	}
+	return fmt.Sprintf("%s reports %s: %s", kind, ready.Reason, ready.Message)
 }
 
 // unobservedLogicalChildren records possible creations not yet observed through the cache.

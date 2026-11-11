@@ -124,7 +124,7 @@ func TestV2ContainerStopCompletesWhenRuntimeDisappears(t *testing.T) {
 			}
 			waitObjectAssumesStateEx(t, ctx, apiClient, target.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-				return ready != nil && ready.Reason == string(apiv2.LogicalContainerReasonStopping), nil
+				return ready != nil && ready.ObservedGeneration == current.Generation && current.Spec.Stop, nil
 			})
 			require.NoError(t, orchestrator.SimulateContainerStatus(ctx, target.Status.ContainerID, containers.ContainerStatusExited))
 			_, removeErr := orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
@@ -181,5 +181,5 @@ func TestV2ContainerStopPreservesEstablishedMissingFailure(t *testing.T) {
 		return current.Spec.Stop && ready != nil && ready.ObservedGeneration == current.Generation, nil
 	})
 	require.Equal(t, apiv2.LogicalContainerPhaseFailed, logical.Status.Phase)
-	requireReadyCondition(t, logical.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonPhysicalContainerFailed)
+	requireReadyCondition(t, logical.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonMissing)
 }

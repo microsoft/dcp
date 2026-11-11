@@ -1536,6 +1536,7 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 		}
 	}
 
+	ic.Entrypoint, ic.Command = dci.Config.Entrypoint, dci.Config.Cmd
 	ic.Args = append(ic.Args, dci.Config.Entrypoint...)
 	ic.Args = append(ic.Args, dci.Config.Cmd...)
 

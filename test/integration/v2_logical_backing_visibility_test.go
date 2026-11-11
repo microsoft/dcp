@@ -241,7 +241,7 @@ func TestV2LogicalDeletionConfirmsUnrecordedBackingsByName(t *testing.T) {
 			} else if kind == "process" {
 				logical = &apiv2.LogicalProcess{
 					ObjectMeta: metav1.ObjectMeta{Name: logicalName.Name, Namespace: logicalName.Namespace},
-					Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, Process: &apiv2.LogicalProcessConfig{
+					Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: logicalName.Namespace, Process: &apiv2.LogicalProcessConfig{
 						ExecutablePath: "v2-undecoded-backing-process-command",
 					}},
 				}
