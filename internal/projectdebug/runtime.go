@@ -43,6 +43,7 @@ type projectDebugRuntime struct {
 	writer               *projectDebugStatusWriter
 	log                  logr.Logger
 	launches             chan struct{}
+	cleanups             chan struct{}
 	mu                   sync.Mutex
 	providers            map[types.UID]*projectDebugProvider
 	findContainerRuntime func(context.Context, string) (containers.ExecContainers, error)
@@ -71,6 +72,8 @@ type projectDebugExecution struct {
 	statusMu    sync.Mutex
 	status      apiv2.ProjectDebugExecutionStatus
 	containerID string
+	stopOnce    sync.Once
+	stopErr     error
 }
 
 type projectDebugTransport struct {
@@ -103,7 +106,7 @@ func (writer adapterDiagnosticWriter) Write(payload []byte) (int, error) {
 func newProjectDebugRuntime(ctx context.Context, executor process.Executor, writer *projectDebugStatusWriter, log logr.Logger) *projectDebugRuntime {
 	return &projectDebugRuntime{
 		ctx: ctx, executor: executor, writer: writer, log: log,
-		launches: make(chan struct{}, 8), providers: make(map[types.UID]*projectDebugProvider),
+		launches: make(chan struct{}, 8), cleanups: make(chan struct{}, 8), providers: make(map[types.UID]*projectDebugProvider),
 		findContainerRuntime: func(lookupCtx context.Context, name string) (containers.ExecContainers, error) {
 			return container_runtimes.FindContainerRuntime(lookupCtx, name, log, executor)
 		},
@@ -125,6 +128,15 @@ func (runtime *projectDebugRuntime) publish(
 }
 
 func (execution *projectDebugExecution) stop() error {
+	execution.stopOnce.Do(func() {
+		execution.runtime.cleanups <- struct{}{}
+		defer func() { <-execution.runtime.cleanups }()
+		execution.stopErr = execution.stopExecution()
+	})
+	return execution.stopErr
+}
+
+func (execution *projectDebugExecution) stopExecution() error {
 	if execution.containerID != "" {
 		return execution.stopContainer()
 	}
@@ -313,6 +325,7 @@ func (runtime *projectDebugRuntime) launch(
 		return fail(startErr)
 	}
 	execution.handle = handle
+	dcpproc.RunProcessWatcher(runtime.executor, handle, runtime.log)
 	pid := int64(handle.Pid)
 	execution.statusMu.Lock()
 	execution.status.PID, execution.status.IdentityTimestamp = &pid, metav1.NewMicroTime(handle.IdentityTime)
@@ -326,7 +339,6 @@ func (runtime *projectDebugRuntime) launch(
 	if publishErr != nil {
 		return fail(publishErr)
 	}
-	dcpproc.RunProcessWatcher(runtime.executor, handle, runtime.log)
 	if mode == apiv2.DebugAdapterModeTCPCallback {
 		callbackListener := listener
 		closeOnCancel := context.AfterFunc(setupCtx, func() { _ = callbackListener.Close() })

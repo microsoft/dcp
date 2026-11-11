@@ -71,7 +71,7 @@ func (apiClient *projectCreateCollisionClient) Create(ctx context.Context, obj c
 }
 
 // Verifies that Project validates exact-name AlreadyExists collisions for physical containers
-// and images, adopting compatible declarations and failing incompatible identities or specs.
+// and images, accepting owned container declarations and rejecting incompatible identities or image inputs.
 func TestV2ProjectValidatesPhysicalCreateCollisions(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"image", "container"} {
@@ -92,11 +92,11 @@ func TestV2ProjectValidatesPhysicalCreateCollisions(t *testing.T) {
 					}}}
 				require.NoError(t, server.Client.Create(ctx, resource))
 				expected := apiv2.ProjectPhaseFailed
-				if scenario == "compatible" {
+				if scenario == "compatible" || (kind == "container" && scenario == "spec") {
 					expected = apiv2.ProjectPhaseReady
 				}
 				observed := waitProjectPhase(t, ctx, server.Client, resource, expected)
-				if scenario != "compatible" {
+				if expected == apiv2.ProjectPhaseFailed {
 					reason := apiv2.ProjectReasonPhysicalPreparationFailed
 					if kind == "image" {
 						reason = apiv2.ProjectReasonImagePreparationFailed
@@ -217,7 +217,7 @@ type projectStatusConflictWriter struct {
 
 func (writer *projectStatusConflictWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
 	if resource, project := obj.(*apiv2.Project); project &&
-		(resource.Status.Phase == apiv2.ProjectPhaseUnknown || resource.Status.Phase == apiv2.ProjectPhaseFailed) &&
+		resource.Status.Phase == apiv2.ProjectPhaseFailed &&
 		resource.Status.RuntimeLogs != nil && resource.Status.RuntimeLogs.Complete && !resource.Status.RuntimeLogs.Available &&
 		writer.client.conflicted.CompareAndSwap(false, true) {
 		return apierrors.NewConflict(schema.GroupResource{Group: apiv2.GroupName, Resource: "projects"}, resource.Name, errors.New("injected Project status conflict"))
@@ -264,8 +264,8 @@ func TestV2ProjectMissingBackingCompletesFollowerThroughConflict(t *testing.T) {
 		if ready == nil {
 			return false, nil
 		}
-		terminal := (current.Status.Phase == apiv2.ProjectPhaseUnknown && ready.Reason == string(apiv2.ProjectReasonContainerContextMissing)) ||
-			(current.Status.Phase == apiv2.ProjectPhaseFailed && ready.Reason == string(apiv2.ProjectReasonContainerContextTerminating))
+		terminal := current.Status.Phase == apiv2.ProjectPhaseFailed &&
+			(ready.Reason == string(apiv2.ProjectReasonContainerContextMissing) || ready.Reason == string(apiv2.ProjectReasonContainerContextTerminating))
 		return terminal && current.Status.RuntimeLogs != nil &&
 			current.Status.RuntimeLogs.Complete && !current.Status.RuntimeLogs.Available, nil
 	})

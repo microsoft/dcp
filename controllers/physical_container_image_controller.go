@@ -489,6 +489,7 @@ func (r *PhysicalContainerImageReconciler) inspectPhysicalContainerImageOperatio
 		return noChange
 	}
 
+	data.inspectionFailures, data.inspectionFailureReason = 0, ""
 	data.state = physicalContainerImageStateReady
 	if !data.imageIDVerified {
 		data.imageID = inspectedImage.Id

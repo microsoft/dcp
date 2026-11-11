@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,7 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dap"
+	"github.com/microsoft/dcp/internal/dcppaths"
 	internaltest "github.com/microsoft/dcp/internal/testutil"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/process"
@@ -52,6 +54,61 @@ type adapterServingExecutor struct {
 	mu          sync.Mutex
 	stops       map[process.Pid_t]func()
 	unconfirmed atomic.Bool
+}
+
+type adapterRunningStatusInterceptor struct {
+	rest.Updater
+	intercept func(*apiv2.ProjectDebugExecutionStatus) error
+}
+
+func (storage *adapterRunningStatusInterceptor) Update(
+	ctx context.Context, name string, info rest.UpdatedObjectInfo,
+	createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc,
+	forceAllowCreate bool, options *metav1.UpdateOptions,
+) (runtime.Object, bool, error) {
+	observed := rest.WrapUpdatedObjectInfo(info, func(_ context.Context, proposed, _ runtime.Object) (runtime.Object, error) {
+		project := proposed.(*apiv2.Project)
+		if project.Status.Debug != nil {
+			for index := range project.Status.Debug.Executions {
+				execution := &project.Status.Debug.Executions[index]
+				if execution.Phase == apiv2.ProjectDebugPhaseRunning && execution.PID != nil {
+					if interceptErr := storage.intercept(execution); interceptErr != nil {
+						return nil, interceptErr
+					}
+				}
+			}
+		}
+		return proposed, nil
+	})
+	return storage.Updater.Update(ctx, name, observed, createValidation, updateValidation, forceAllowCreate, options)
+}
+
+// Verifies that a host adapter monitor is launched before publishing the running execution,
+// including when that publication fails and adapter launch must be cleaned up.
+func TestProjectDebugMonitorsAdapterBeforeRunningPublication(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	dcppaths.EnableTestPathProbing()
+	dcpPath, pathErr := dcppaths.GetDcpExePath()
+	require.NoError(t, pathErr)
+	apiClient, writer := startProjectDebugStatusServer(t, ctx)
+	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
+	executor := &adapterServingExecutor{TestProcessExecutor: internaltest.NewTestProcessExecutor(context.WithoutCancel(ctx)),
+		stops: make(map[process.Pid_t]func())}
+	t.Cleanup(executor.Dispose)
+	var monitored atomic.Bool
+	writer.storage = &adapterRunningStatusInterceptor{Updater: writer.storage, intercept: func(execution *apiv2.ProjectDebugExecutionStatus) error {
+		monitors := executor.FindAll([]string{dcpPath, "monitor-process", "--child", strconv.FormatInt(*execution.PID, 10)}, "", nil)
+		monitored.Store(len(monitors) == 1)
+		return errors.New("injected running publication failure")
+	}}
+	debugRuntime := newProjectDebugRuntime(ctx, executor, writer, logr.Discard())
+	execution, transport, launchErr := debugRuntime.launch(ctx, project, apiv2.DebugAdapterModeStdio)
+	require.ErrorContains(t, launchErr, "injected running publication failure")
+	require.Nil(t, transport)
+	require.NotNil(t, execution)
+	require.True(t, monitored.Load())
+	require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(execution.handle)))
 }
 
 // Verifies that unread adapter output fails the real debug endpoint at the backlog limit,
@@ -132,57 +189,85 @@ func TestProjectDebugServingDisconnectsSlowClient(t *testing.T) {
 // Verifies that prerequisite waiting outlasts the adapter connection timeout and uses no adapter
 // process before readiness, then upgrades and forwards bytes once prerequisites become available.
 func TestProjectDebugServingWaitsForPrerequisites(t *testing.T) {
-	ctx, cancel := testutil.GetTestContext(t, time.Minute)
-	defer cancel()
-	apiClient, config, executor := startDebugServingTest(t, ctx)
-	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
-	// Use a separate resource because adapter configuration is immutable.
-	require.NoError(t, apiClient.Delete(ctx, project))
-	project.ResourceVersion, project.UID = "", ""
-	project.Spec.DebugAdapter.ConnectionTimeout = &metav1.Duration{Duration: 100 * time.Millisecond}
-	project.Status = apiv2.ProjectStatus{}
-	require.NoError(t, apiClient.Create(ctx, project))
-	connectCtx, cancelConnect := context.WithCancel(ctx)
-	defer cancelConnect()
-	type result struct {
-		connection *websocket.Conn
-		err        error
-	}
-	connected := make(chan result, 1)
-	go func() {
-		connection, connectErr := connectDebugServing(connectCtx, config, project)
-		connected <- result{connection, connectErr}
-	}()
-	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		current := &apiv2.Project{}
-		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
-			return false, getErr
-		}
-		return current.Status.Debug != nil && len(current.Status.Debug.Sessions) == 1, nil
-	}))
-	timer := time.NewTimer(2 * project.Spec.DebugAdapter.GetConnectionTimeout())
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-	case early := <-connected:
-		if early.connection != nil {
-			_ = early.connection.Close()
-		}
-		t.Fatalf("debug stream completed before readiness: %v", early.err)
-	case <-ctx.Done():
-		t.Fatal("test timed out before prerequisite check")
-	}
-	require.Empty(t, executor.FindAll([]string{"test-adapter"}, "", nil))
-	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	project.Status.Debug.PrerequisitesReady = true
-	require.NoError(t, apiClient.Status().Update(ctx, project))
-	select {
-	case established := <-connected:
-		require.NoError(t, established.err)
-		exchangeDebugBytes(t, ctx, established.connection)
-		closeDebugServing(t, established.connection)
-	case <-ctx.Done():
-		t.Fatal("ready debug stream did not upgrade")
+	for _, scenario := range []struct {
+		name   string
+		phase  apiv2.ProjectPhase
+		status metav1.ConditionStatus
+		reason apiv2.ConditionReason
+		active bool
+	}{
+		{name: "missing-condition", phase: apiv2.ProjectPhaseReady},
+		{name: "paused", phase: apiv2.ProjectPhaseReady, status: metav1.ConditionFalse, reason: apiv2.PhysicalContainerReasonRuntimeContainerPaused},
+		{name: "wrong-phase", phase: apiv2.ProjectPhasePending, status: metav1.ConditionTrue, reason: apiv2.ProjectReasonPrepared},
+		{name: "wrong-reason", phase: apiv2.ProjectPhaseReady, status: metav1.ConditionTrue, reason: apiv2.ProjectReasonPreparingLaunchInputs},
+		{name: "active-recovery", phase: apiv2.ProjectPhaseUnknown, status: metav1.ConditionFalse, reason: apiv2.ProjectReasonContainerLookupFailed, active: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, time.Minute)
+			defer cancel()
+			apiClient, config, executor := startDebugServingTest(t, ctx)
+			project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
+			// Use a separate resource because adapter configuration is immutable.
+			require.NoError(t, apiClient.Delete(ctx, project))
+			project.ResourceVersion, project.UID = "", ""
+			project.Spec.DebugAdapter.ConnectionTimeout = &metav1.Duration{Duration: 100 * time.Millisecond}
+			project.Status = apiv2.ProjectStatus{}
+			require.NoError(t, apiClient.Create(ctx, project))
+			project.Status.Phase = scenario.phase
+			if scenario.status != "" {
+				project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: scenario.status,
+					Reason: string(scenario.reason), LastTransitionTime: metav1.Now()}}
+			}
+			require.NoError(t, apiClient.Status().Update(ctx, project))
+			connectCtx, cancelConnect := context.WithCancel(ctx)
+			defer cancelConnect()
+			type result struct {
+				connection *websocket.Conn
+				err        error
+			}
+			connected := make(chan result, 1)
+			go func() {
+				connection, connectErr := connectDebugServing(connectCtx, config, project)
+				connected <- result{connection, connectErr}
+			}()
+			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+				current := &apiv2.Project{}
+				if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
+					return false, getErr
+				}
+				return current.Status.Debug != nil && len(current.Status.Debug.Sessions) == 1, nil
+			}))
+			timer := time.NewTimer(2 * project.Spec.DebugAdapter.GetConnectionTimeout())
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case early := <-connected:
+				if early.connection != nil {
+					_ = early.connection.Close()
+				}
+				t.Fatalf("debug stream completed before readiness: %v", early.err)
+			case <-ctx.Done():
+				t.Fatal("test timed out before prerequisite check")
+			}
+			require.Empty(t, executor.FindAll([]string{"test-adapter"}, "", nil))
+			require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
+			project.Status.Phase = apiv2.ProjectPhaseReady
+			project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
+				Reason: string(apiv2.ProjectReasonPrepared), LastTransitionTime: metav1.Now()}}
+			if scenario.active {
+				project.Status.Phase = apiv2.ProjectPhaseActive
+				project.Status.Conditions[0].Reason = string(apiv2.ProjectReasonDebugSessionsActive)
+			}
+			require.NoError(t, apiClient.Status().Update(ctx, project))
+			select {
+			case established := <-connected:
+				require.NoError(t, established.err)
+				exchangeDebugBytes(t, ctx, established.connection)
+				closeDebugServing(t, established.connection)
+			case <-ctx.Done():
+				t.Fatal("ready debug stream did not upgrade")
+			}
+		})
 	}
 }
 
@@ -200,7 +285,9 @@ func TestProjectDebugServingSetupTimeout(t *testing.T) {
 			project.Spec.DebugAdapter.ConnectionTimeout = &metav1.Duration{Duration: 100 * time.Millisecond}
 			project.Status = apiv2.ProjectStatus{}
 			require.NoError(t, apiClient.Create(ctx, project))
-			project.Status.Debug = &apiv2.ProjectDebugStatus{PrerequisitesReady: true}
+			project.Status.Phase = apiv2.ProjectPhaseReady
+			project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
+				Reason: string(apiv2.ProjectReasonPrepared), LastTransitionTime: metav1.Now()}}
 			require.NoError(t, apiClient.Status().Update(ctx, project))
 			executor.unconfirmed.Store(unconfirmed)
 			defer executor.unconfirmed.Store(false)
@@ -345,7 +432,7 @@ func TestProjectDebugServingCancelsPendingSession(t *testing.T) {
 	defer cancel()
 	apiClient, config, executor := startDebugServingTest(t, ctx)
 	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
-	project.Status.Debug.PrerequisitesReady = false
+	project.Status.Conditions = nil
 	require.NoError(t, apiClient.Status().Update(ctx, project))
 	requestCtx, cancelRequest := context.WithCancel(ctx)
 	defer cancelRequest()
@@ -622,7 +709,8 @@ func createDebugServingProject(t *testing.T, ctx context.Context, apiClient ctrl
 	}
 	require.NoError(t, apiClient.Create(ctx, project))
 	project.Status.Phase = apiv2.ProjectPhaseReady
-	project.Status.Debug = &apiv2.ProjectDebugStatus{PrerequisitesReady: true}
+	project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
+		Reason: string(apiv2.ProjectReasonPrepared), LastTransitionTime: metav1.Now()}}
 	if project.Spec.Container != nil {
 		project.Status.ContainerID, project.Status.ContainerRuntime = "container-id", "test-runtime"
 	}
@@ -864,7 +952,7 @@ func TestProjectDebugServingTransportsAndSharing(t *testing.T) {
 					}
 				}
 				require.Equal(t, apiv2.ProjectPhaseReady, current.Status.Phase)
-				require.True(t, current.Status.Debug.PrerequisitesReady)
+				require.Equal(t, string(apiv2.ProjectReasonPrepared), current.Status.Conditions[0].Reason)
 				return true, nil
 			}))
 		})
@@ -913,6 +1001,10 @@ func TestProjectDebugServingWaitsForContainerTCPEndpoint(t *testing.T) {
 	apiClient, config, _ := startDebugServingTest(t, ctx,
 		func(context.Context, string) (containers.ExecContainers, error) { return containerExec, nil })
 	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen", apiv2.DebugAdapterPlacementContainer)
+	project.Status.Phase = apiv2.ProjectPhasePending
+	project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
+		Reason: string(apiv2.ProjectReasonAdapterPortPending), LastTransitionTime: metav1.Now()}}
+	require.NoError(t, apiClient.Status().Update(ctx, project))
 	type result struct {
 		connection *websocket.Conn
 		err        error
@@ -935,7 +1027,7 @@ func TestProjectDebugServingWaitsForContainerTCPEndpoint(t *testing.T) {
 	containerExec.mu.Unlock()
 	require.Zero(t, count, "endpoint preparation must precede adapter launch")
 	require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
-		[]byte(fmt.Sprintf(`{"status":{"debugAdapterPort":4711,"debugAdapterAddress":%q}}`, listener.Addr().String())))))
+		[]byte(fmt.Sprintf(`{"status":{"debugAdapterPort":4711,"debugAdapterAddress":%q,"phase":"Ready","conditions":[{"type":"Ready","status":"True","reason":"ProjectPrepared","lastTransitionTime":%q}]}}`, listener.Addr().String(), metav1.Now().Format(time.RFC3339))))))
 	select {
 	case ready := <-connected:
 		require.NoError(t, ready.err)

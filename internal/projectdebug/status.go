@@ -69,14 +69,9 @@ func (storage *projectControllerStatusStorage) Update(
 			next.Status.Debug = nil
 			return next, nil
 		}
-		prerequisitesReady := next.Status.Debug != nil && next.Status.Debug.PrerequisitesReady
 		proposedDebug := next.Status.Debug
 		next.Status.Debug = current.(*apiv2.Project).Status.Debug.DeepCopy()
-		if next.Status.Debug == nil && proposedDebug != nil {
-			next.Status.Debug = &apiv2.ProjectDebugStatus{}
-		}
 		if next.Status.Debug != nil {
-			next.Status.Debug.PrerequisitesReady = prerequisitesReady
 			if proposedDebug != nil {
 				for sessionIndex := range next.Status.Debug.Sessions {
 					storedSession := &next.Status.Debug.Sessions[sessionIndex]

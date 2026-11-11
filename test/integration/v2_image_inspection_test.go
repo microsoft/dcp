@@ -26,18 +26,20 @@ import (
 
 type boundedImageInspector struct {
 	containers.ContainerOrchestrator
-	remaining            atomic.Int32
-	injected             atomic.Int32
-	inspectionError      error
-	inspectionResults    []containers.InspectedImage
-	failAfterPull        int32
-	failAfterBuild       int32
-	inspectionLock       sync.Mutex
-	inspectionTimes      []time.Time
-	runtimeUnavailable   atomic.Bool
-	runtimeFailures      atomic.Int32
-	uncachedHealthChecks atomic.Int32
-	outageAfterPull      bool
+	remaining             atomic.Int32
+	injected              atomic.Int32
+	inspectionError       error
+	inspectionResults     []containers.InspectedImage
+	failAfterPull         int32
+	failAfterBuild        int32
+	inspectionLock        sync.Mutex
+	inspectionTimes       []time.Time
+	runtimeUnavailable    atomic.Bool
+	runtimeFailures       atomic.Int32
+	uncachedHealthChecks  atomic.Int32
+	outageAfterPull       bool
+	failAfterVerification bool
+	verificationObserved  atomic.Bool
 }
 
 func (inspector *boundedImageInspector) CheckStatus(ctx context.Context, usage containers.CachedRuntimeStatusUsage) containers.ContainerRuntimeStatus {
@@ -55,7 +57,12 @@ func (inspector *boundedImageInspector) InspectImages(ctx context.Context, optio
 	for {
 		remaining := inspector.remaining.Load()
 		if remaining <= 0 {
-			return inspector.ContainerOrchestrator.InspectImages(ctx, options)
+			inspected, inspectErr := inspector.ContainerOrchestrator.InspectImages(ctx, options)
+			if inspectErr == nil && len(inspected) == 1 && inspected[0].Id != "" &&
+				inspector.failAfterVerification && inspector.verificationObserved.CompareAndSwap(false, true) {
+				inspector.remaining.Store(1)
+			}
+			return inspected, inspectErr
 		}
 		if inspector.remaining.CompareAndSwap(remaining, remaining-1) {
 			inspector.injected.Add(1)
@@ -345,7 +352,8 @@ func TestV2ImageIdentityVerificationUsesV1RetryPolicy(t *testing.T) {
 }
 
 // Verifies that pre-pull inspection errors and initially missing acquired image IDs recover
-// within three retries without duplicating image pulls.
+// within three retries without duplicating image pulls, and successful verification resets
+// pre-pull failures before subsequent runtime monitoring.
 func TestV2ImageInspectionRetriesTransientFailures(t *testing.T) {
 	t.Parallel()
 	for _, stage := range []string{"before-pull", "after-pull"} {
@@ -363,6 +371,7 @@ func TestV2ImageInspectionRetriesTransientFailures(t *testing.T) {
 					if stage == "before-pull" {
 						inspector.inspectionError = errors.New("temporary inspection timeout")
 						inspector.remaining.Store(3)
+						inspector.failAfterVerification = true
 					} else {
 						inspector.inspectionError = containers.ErrNotFound
 						inspector.failAfterPull = 3
@@ -378,11 +387,28 @@ func TestV2ImageInspectionRetriesTransientFailures(t *testing.T) {
 			}
 			require.NoError(t, server.Client.Create(ctx, image))
 			ready := waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
-				return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+				return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady ||
+					current.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed, nil
 			})
+			require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, ready.Status.Phase)
 			require.NotEmpty(t, ready.Status.ImageID)
-			require.Equal(t, int32(3), inspector.injected.Load())
 			require.Equal(t, 1, runtime.PullImageCallCount("retry-source"))
+			if stage == "before-pull" {
+				require.NoError(t, retryOnConflictEx(ctx, server.Client, image.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainerImage) error {
+					current.Annotations = map[string]string{"test.dcp.microsoft.com/reconcile": "monitor-after-verification"}
+					return server.Client.Update(updateCtx, current)
+				}))
+				recovered := waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+					return current.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed ||
+						(current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady && inspector.injected.Load() == 4), nil
+				})
+				require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, recovered.Status.Phase)
+				require.Equal(t, ready.Status.ImageID, recovered.Status.ImageID)
+				require.Equal(t, int32(4), inspector.injected.Load())
+				require.Equal(t, 1, runtime.PullImageCallCount("retry-source"))
+			} else {
+				require.Equal(t, int32(3), inspector.injected.Load())
+			}
 		})
 	}
 }

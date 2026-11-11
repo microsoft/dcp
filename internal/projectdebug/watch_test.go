@@ -89,7 +89,7 @@ func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 				}
 			})
 			project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
-			project.Status.Debug.PrerequisitesReady = false
+			project.Status.Conditions = nil
 			require.NoError(t, apiClient.Status().Update(ctx, project))
 			namespace := &apiv2.Namespace{}
 			require.NoError(t, apiClient.Get(ctx, ctrlclient.ObjectKey{Name: project.Namespace}, namespace))
@@ -123,14 +123,15 @@ func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 				}
 				return
 			}
-			project.Status.Debug.PrerequisitesReady = true
+			project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
+				Reason: string(apiv2.ProjectReasonPrepared), LastTransitionTime: metav1.Now()}}
 			require.NoError(t, apiClient.Status().Update(ctx, project))
 			namespace.Status.Phase = apiv2.NamespacePhaseActive
 			require.NoError(t, apiClient.Status().Update(ctx, namespace))
 			select {
 			case prepared := <-ready:
 				require.Equal(t, project.UID, prepared.UID)
-				require.True(t, prepared.Status.Debug.PrerequisitesReady)
+				require.Equal(t, string(apiv2.ProjectReasonPrepared), prepared.Status.Conditions[0].Reason)
 			case <-lifetime.Done():
 				t.Fatalf("watch readiness failed: %v", context.Cause(lifetime))
 			}

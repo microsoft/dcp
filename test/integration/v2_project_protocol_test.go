@@ -77,7 +77,6 @@ func TestV2ProjectProtocolProgress(t *testing.T) {
 			require.Equal(t, apiv2.ProjectDebugRequestSucceeded, protocol[3].Phase)
 			require.Equal(t, apiv2.ProjectDebugRequestPending, protocol[4].Phase)
 			require.Equal(t, apiv2.ProjectDebugPhaseRunning, active.Status.Debug.Sessions[0].Phase)
-			require.True(t, active.Status.Debug.PrerequisitesReady)
 			require.True(t, active.Status.Debug.Sessions[0].ProcessTrackingUnconfirmed)
 			encoded, encodeErr := json.Marshal(active.Status.Debug.Sessions[0])
 			require.NoError(t, encodeErr)

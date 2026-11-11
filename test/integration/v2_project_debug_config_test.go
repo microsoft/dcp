@@ -23,7 +23,7 @@ import (
 )
 
 // Verifies that process debug prerequisites follow namespace admission independently of application
-// startup, and clear during namespace deletion without launching an adapter.
+// startup, and namespace deletion reaches Project deletion without launching an adapter.
 func TestV2ProjectProcessDebugPrerequisites(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -40,12 +40,13 @@ func TestV2ProjectProcessDebugPrerequisites(t *testing.T) {
 	pending := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 		return current.Status.Phase == apiv2.ProjectPhasePending, nil
 	})
-	require.True(t, pending.Status.Debug == nil || !pending.Status.Debug.PrerequisitesReady)
+	require.Nil(t, pending.Status.Debug)
 	namespace := createV2ExecNamespace(t, ctx, apiClient, resource.Namespace)
 	ready := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
-		return current.Status.Debug != nil && current.Status.Debug.PrerequisitesReady && current.Status.LaunchInputsReady, nil
+		return current.Status.Phase == apiv2.ProjectPhaseReady, nil
 	})
 	require.Equal(t, apiv2.ProjectPhaseReady, ready.Status.Phase)
+	requireReadyCondition(t, ready.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonPrepared)
 	require.Empty(t, environment.TestProcessExecutor.FindAll(resource.Spec.DebugAdapter.Args, "", nil))
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -55,7 +56,7 @@ func TestV2ProjectProcessDebugPrerequisites(t *testing.T) {
 	})
 	require.NoError(t, apiClient.Delete(ctx, namespace))
 	waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
-		return current.Status.Debug != nil && !current.Status.Debug.PrerequisitesReady, nil
+		return !current.DeletionTimestamp.IsZero(), nil
 	})
 	require.NoError(t, apiClient.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
 		[]byte(`{"metadata":{"finalizers":[]}}`))))
@@ -87,16 +88,8 @@ func TestV2ProjectDebugAdapterConfigurationDoesNotLaunch(t *testing.T) {
 			require.NoError(t, client.Create(ctx, resource))
 			running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
 			require.Equal(t, adapter, running.Spec.DebugAdapter)
-			if kind == "process" {
-				require.NotNil(t, running.Status.Debug)
-				require.True(t, running.Status.Debug.PrerequisitesReady)
-				require.Empty(t, running.Status.Debug.Executions)
-				require.Empty(t, running.Status.Debug.Sessions)
-			} else {
-				require.NotNil(t, running.Status.Debug)
-				require.True(t, running.Status.Debug.PrerequisitesReady)
-				require.Empty(t, running.Status.Debug.Executions)
-			}
+			requireReadyCondition(t, running.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonPrepared)
+			require.Nil(t, running.Status.Debug)
 			require.Empty(t, testProcessExecutor.FindAll([]string{adapterCommand}, "", nil))
 			for _, change := range []func(*apiv2.Project){
 				func(changed *apiv2.Project) { changed.Spec.DebugAdapter.Args[0] = "other-adapter" },
@@ -126,7 +119,7 @@ func TestV2ProjectDebugAdapterConfigurationDoesNotLaunch(t *testing.T) {
 			}))
 			stopped := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
 			require.Equal(t, adapter, stopped.Spec.DebugAdapter)
-			require.True(t, stopped.Status.Debug == nil || !stopped.Status.Debug.PrerequisitesReady)
+			requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonStopped)
 			require.Empty(t, testProcessExecutor.FindAll([]string{adapterCommand}, "", nil))
 		})
 	}

@@ -192,7 +192,6 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 				var adapterHandle process.ProcessHandle
 				if placement == apiv2.DebugAdapterPlacementContainer {
 					project.Status.ContainerID, project.Status.ContainerRuntime = "native-cli-target", "native-cli-runtime"
-					project.Status.Debug = &apiv2.ProjectDebugStatus{PrerequisitesReady: true}
 					require.NoError(t, apiClient.Status().Update(ctx, project))
 					containerExec := &containerAdapterExecutor{run: func(execCtx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
 						require.IsType(t, (*io.PipeWriter)(nil), options.StdOutStream)

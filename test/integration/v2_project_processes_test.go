@@ -34,6 +34,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/controllers"
 	internaltest "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -48,6 +49,12 @@ type projectTargetExecutor struct {
 	replaced     atomic.Bool
 	unobservable atomic.Bool
 	lookups      atomic.Int32
+	stopEntered  chan process.ProcessHandle
+	stopRelease  <-chan struct{}
+	adapter      atomic.Pointer[process.ProcessHandle]
+	orderFailed  atomic.Bool
+	activeStops  atomic.Int32
+	peakStops    atomic.Int32
 }
 
 func (executor *projectTargetExecutor) stopCounts() map[process.ProcessHandle]int {
@@ -75,6 +82,24 @@ func (executor *projectTargetExecutor) StopProcess(ctx context.Context, handle p
 	executor.lock.Lock()
 	executor.stops[handle]++
 	executor.lock.Unlock()
+	if adapter := executor.adapter.Load(); adapter != nil && !process.IsProcessGoneErr(executor.Executor.CheckProcessRunning(*adapter)) {
+		executor.orderFailed.Store(true)
+	}
+	if executor.stopEntered != nil {
+		active := executor.activeStops.Add(1)
+		defer executor.activeStops.Add(-1)
+		for peak := executor.peakStops.Load(); active > peak; peak = executor.peakStops.Load() {
+			if executor.peakStops.CompareAndSwap(peak, active) {
+				break
+			}
+		}
+		executor.stopEntered <- handle
+		select {
+		case <-executor.stopRelease:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	if executor.refuse.Load() {
 		return errors.New("injected target stop refusal")
 	}
@@ -124,10 +149,10 @@ func (writer *projectTargetConflictWriter) Patch(ctx context.Context, obj ctrl_c
 	return writer.SubResourceWriter.Patch(ctx, obj, patch, options...)
 }
 
-func startProjectTarget(t *testing.T, ctx context.Context, executor process.Executor, tool string) process.ProcessHandle {
+func startProjectTarget(t *testing.T, ctx context.Context, executor process.Executor, tool string, arguments ...string) process.ProcessHandle {
 	t.Helper()
 	ready := filepath.Join(t.TempDir(), "ready")
-	cmd := exec.Command(tool, "--ready-file", ready)
+	cmd := exec.Command(tool, append([]string{"--ready-file", ready}, arguments...)...)
 	handle, enableWait, startErr := executor.StartProcess(ctx, cmd, nil, process.CreationFlagEnsureKillOnDispose, nil)
 	require.NoError(t, startErr)
 	enableWait()
@@ -307,7 +332,11 @@ func TestV2ProjectRetainsAndCleansSessionProcesses(t *testing.T) {
 			for _, count := range counts {
 				require.Equal(t, 1, count, "a shared target must be stopped only once")
 			}
-			require.Len(t, counts, 2)
+			if scenario == "identity-changed" {
+				require.Empty(t, counts, "a process whose identity changed must not receive a stop request")
+			} else {
+				require.Len(t, counts, 2)
+			}
 			for handle := range counts {
 				require.True(t, (handle.Pid == handles[0].Pid && handle.IdentityTime.Equal(handles[0].IdentityTime)) ||
 					(handle.Pid == handles[1].Pid && handle.IdentityTime.Equal(handles[1].IdentityTime)),
@@ -343,4 +372,76 @@ func TestV2ProjectRetainsAndCleansSessionProcesses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Verifies that Project cleans independent target trees concurrently, serializes registered
+// ancestors and descendants, respects the shared concurrency limit, and skips children removed by a parent.
+func TestV2ProjectCleansIndependentTargetTrees(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	release := make(chan struct{})
+	releaseStops := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseStops)
+	var tracked *projectTargetExecutor
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, ProjectController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateProjectProcessExecutor: func(executor process.Executor) process.Executor {
+			tracked = &projectTargetExecutor{Executor: executor, stops: make(map[process.ProcessHandle]int),
+				stopEntered: make(chan process.ProcessHandle, int(controllers.MaxConcurrentReconciles)+2), stopRelease: release}
+			return tracked
+		}})
+	require.NoError(t, startupErr)
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-parallel-targets")
+	tool, toolErr := internaltest.GetTestToolPath("delay")
+	require.NoError(t, toolErr)
+	ownerExecutor := process.NewOSExecutor(logr.Discard())
+	t.Cleanup(ownerExecutor.Dispose)
+	t.Cleanup(releaseStops)
+	parent := startProjectTarget(t, ctx, ownerExecutor, tool, "--child-spec", "1")
+	tree, treeErr := process.GetProcessTree(ctx, parent)
+	require.NoError(t, treeErr)
+	require.Len(t, tree, 2)
+	child := tree[1]
+	handles := []process.ProcessHandle{child, parent}
+	for range controllers.MaxConcurrentReconciles {
+		handles = append(handles, startProjectTarget(t, ctx, ownerExecutor, tool))
+	}
+	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
+			Process:      &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "adapter-started"}},
+			DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{tool, "--dap-stdio"}}}}
+	require.NoError(t, server.Client.Create(ctx, project))
+	waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
+	connection, connectionErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
+	require.NoError(t, connectionErr)
+	defer connection.Close()
+	for _, handle := range handles {
+		reportProjectTarget(t, connection, handle.Pid)
+	}
+	waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		return current.Status.Debug != nil && len(current.Status.Debug.Sessions) == 1 &&
+			len(current.Status.Debug.Sessions[0].Processes) == len(handles), nil
+	})
+	require.NoError(t, server.Client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	started := make(map[process.Pid_t]bool)
+	for range controllers.MaxConcurrentReconciles {
+		select {
+		case handle := <-tracked.stopEntered:
+			started[handle.Pid] = true
+		case <-ctx.Done():
+			t.Fatal("independent target trees did not begin cleanup concurrently")
+		}
+	}
+	require.True(t, started[parent.Pid])
+	require.Len(t, started, int(controllers.MaxConcurrentReconciles))
+	require.False(t, started[child.Pid])
+	releaseStops()
+	stopped := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseStopped)
+	for _, target := range stopped.Status.Debug.Sessions[0].Processes {
+		require.Equal(t, apiv2.ProjectDebugProcessCleanupComplete, target.Observation.Cleanup)
+	}
+	require.Len(t, tracked.stopCounts(), len(handles)-1)
+	require.EqualValues(t, controllers.MaxConcurrentReconciles, tracked.peakStops.Load())
+	require.NoError(t, server.Client.Delete(ctx, project))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
 }

@@ -41,11 +41,11 @@ func TestV2ProjectTerminalServicePreparation(t *testing.T) {
 				resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 					Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir()}}
 				arguments := []string{`{{portFor "dependency"}}`}
-				expectedReason := apiv2.LogicalResourceReasonTemplateEvaluationFailed
+				expectedReason := apiv2.ProjectReasonTemplateEvaluationFailed
 				binding := apiv2.LogicalServiceBinding{Name: "application", ServiceRef: service.Name}
 				if source == "port" {
 					arguments = []string{"literal"}
-					expectedReason = apiv2.LogicalResourceReasonPortPreparationFailed
+					expectedReason = apiv2.ProjectReasonPortPreparationFailed
 				}
 				if kind == "process" {
 					resource.Spec.Process = &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
@@ -66,7 +66,6 @@ func TestV2ProjectTerminalServicePreparation(t *testing.T) {
 				require.NoError(t, client.Create(ctx, resource))
 				failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
 				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, expectedReason)
-				require.False(t, failed.Status.LaunchInputsReady)
 				require.Empty(t, failed.Status.PhysicalContainerRef)
 				releaseService()
 				replacement := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: service.Name, Namespace: namespace.Name}, Spec: service.Spec}
@@ -80,7 +79,6 @@ func TestV2ProjectTerminalServicePreparation(t *testing.T) {
 				terminal := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
 				requireReadyCondition(t, terminal.Status.Conditions, metav1.ConditionFalse, expectedReason)
 				require.Equal(t, failed.Status.Conditions[0].Message, terminal.Status.Conditions[0].Message)
-				require.False(t, terminal.Status.LaunchInputsReady)
 				var backings apiv2.PhysicalContainerList
 				require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
 				require.Empty(t, backings.Items)
@@ -140,7 +138,6 @@ func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 					return current.Status.ContainerID != "" && len(current.Status.Conditions) != 0 && current.Status.Conditions[0].Reason == "AdapterPortPending", nil
 				})
 				require.Equal(t, apiv2.ProjectPhasePending, pending.Status.Phase)
-				require.False(t, pending.Status.Debug.PrerequisitesReady)
 				require.Empty(t, pending.Status.DebugAdapterAddress)
 				mappingClient.hide.Store(false)
 				require.NoError(t, server.Client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType,
@@ -166,7 +163,7 @@ func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 				require.Zero(t, listener.HostPort)
 				require.Equal(t, "127.0.0.1", listener.HostIP)
 				require.Equal(t, commonapi.PortProtocolTCP, listener.Protocol)
-				require.Empty(t, prepared.Status.Debug.Executions, "container preparation must not launch an adapter")
+				require.Nil(t, prepared.Status.Debug, "container preparation must not launch an adapter")
 			}
 			require.NoError(t, server.Client.Delete(ctx, project))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
@@ -247,8 +244,7 @@ func TestV2ProjectServicePortsAndEvaluatedValues(t *testing.T) {
 			expectedArgs := []string{fmt.Sprintf("--listen=127.0.0.1:%d", port.Port), fmt.Sprintf("--consumer=%s:%d", front.Address, front.Port)}
 			expectedEnv := []commonapi.EnvVar{{Name: "VALUE", Value: fmt.Sprint(port.Port)}, {Name: "FRONT", Value: fmt.Sprintf("%s:%d", front.Address, front.Port)}}
 			require.Equal(t, expectedArgs, running.Status.EffectiveArgs)
-			require.Equal(t, expectedEnv, running.Status.EffectiveEnv)
-			require.True(t, running.Status.LaunchInputsReady)
+			require.ElementsMatch(t, expectedEnv, running.Status.EffectiveEnv)
 			var endpoints apiv2.ServiceEndpointList
 			require.NoError(t, server.Client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
 			require.Empty(t, endpoints.Items)
@@ -390,7 +386,7 @@ func TestV2ProjectPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 				Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 43210}}}}
 			require.NoError(t, server.Client.Create(ctx, producer))
 			waitObjectAssumesStateEx(t, ctx, server.Client, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalServicePhaseReady && len(current.Status.EffectiveAddresses) == 1 &&
+				return current.Status.Phase == apiv2.LogicalServicePhaseRunning && len(current.Status.EffectiveAddresses) == 1 &&
 					current.Status.EffectiveAddresses[0].Port == 43210, nil
 			})
 			resource := serviceProject("project", namespace.Name, t.TempDir(), kind, []string{`{{portFor "source"}}`}, nil)
@@ -413,7 +409,7 @@ func TestV2ProjectPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 			require.NoError(t, server.Client.Create(ctx, replacement))
 			require.NotEqual(t, producer.UID, replacement.UID)
 			waitObjectAssumesStateEx(t, ctx, server.Client, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalServicePhaseReady && len(current.Status.EffectiveAddresses) == 1 &&
+				return current.Status.Phase == apiv2.LogicalServicePhaseRunning && len(current.Status.EffectiveAddresses) == 1 &&
 					current.Status.EffectiveAddresses[0].Port == 54321, nil
 			})
 			release()

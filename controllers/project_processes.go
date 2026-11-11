@@ -6,9 +6,11 @@
 package controllers
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,12 +21,9 @@ import (
 )
 
 type projectProcessData struct {
-	observation      apiv2.ProjectDebugProcessObservation
-	cleanupAttempted bool
-}
-
-type projectProcessCleanupOperation struct {
-	handles []process.ProcessHandle
+	observation              apiv2.ProjectDebugProcessObservation
+	cleanupAttempted         bool
+	deletionCleanupAttempted bool
 }
 
 func logUnconfirmedProjectTargets(resource *apiv2.Project, log logr.Logger) {
@@ -124,12 +123,13 @@ func projectProcessObservations(resource *apiv2.Project, data *projectData) obje
 
 func (r *ProjectReconciler) settleProjectProcesses(resource *apiv2.Project, data *projectData, log logr.Logger) bool {
 	r.observeProjectProcesses(resource, data, log)
-	if data.processCleanup != nil {
+	if data.processCleanupsPending != 0 {
 		return false
 	}
 	var handles []process.ProcessHandle
 	for handle, target := range data.processes {
-		if !target.cleanupAttempted {
+		if !target.cleanupAttempted || (!resource.DeletionTimestamp.IsZero() &&
+			target.observation.Cleanup == apiv2.ProjectDebugProcessCleanupUnconfirmed && !target.deletionCleanupAttempted) {
 			handles = append(handles, handle)
 		}
 	}
@@ -137,61 +137,169 @@ func (r *ProjectReconciler) settleProjectProcesses(resource *apiv2.Project, data
 		// Retain the handles until their cleanup observations survive any status-write conflict.
 		return projectProcessObservations(resource.DeepCopy(), data)&statusChanged == 0
 	}
-	operation := &projectProcessCleanupOperation{handles: handles}
-	data.processCleanup = operation
+	deleting := !resource.DeletionTimestamp.IsZero()
+	data.processCleanupsPending = 1
 	cleanupLog := r.Log.WithValues("Project", resource.NamespacedName(), "UID", resource.UID)
 	enqueueErr := r.processCleanupQueue.Enqueue(func(ctx context.Context) {
-		cleanupCtx, cancel := process.WithStopTimeout(ctx)
-		defer cancel()
-		results := make(map[process.ProcessHandle]projectProcessData, len(operation.handles))
-		for _, handle := range operation.handles {
-			stopErr := r.processExecutor.StopProcess(cleanupCtx, handle)
-			result := projectProcessData{cleanupAttempted: true}
-			runningErr := r.processExecutor.CheckProcessRunning(handle)
-			switch {
-			case process.IsProcessGoneErr(runningErr):
-				result.observation.Phase = apiv2.ProjectDebugProcessExited
-				result.observation.FinishedAt = metav1.NowMicro()
-			case runningErr == nil:
-				result.observation.Phase = apiv2.ProjectDebugProcessRunning
-			default:
-				result.observation.Phase = apiv2.ProjectDebugProcessUnknown
-			}
-			if (stopErr == nil || (process.IsProcessGoneErr(stopErr) && !errors.Is(stopErr, process.ErrIncompleteProcessTree))) &&
-				process.IsProcessGoneErr(runningErr) {
-				result.observation.Cleanup = apiv2.ProjectDebugProcessCleanupComplete
-			} else {
-				failure := errors.Join(stopErr, runningErr, fmt.Errorf("target process cleanup could not be fully confirmed"))
-				result.observation.Cleanup = apiv2.ProjectDebugProcessCleanupUnconfirmed
-				result.observation.Message = failure.Error()
-				cleanupLog.Error(failure, "Project target cleanup is unconfirmed", "PID", handle.Pid)
-			}
-			results[handle] = result
-		}
-		queued := r.projects.QueueDeferredOpForStateKey(resource.NamespacedName(), resource.UID,
-			func(name types.NamespacedName, uid types.UID, _ *apiv2.Project) {
-				_, current := r.projects.BorrowByNamespacedName(name)
-				if current == nil || current.processCleanup != operation {
-					return
-				}
-				for handle, result := range results {
-					previous := current.processes[handle]
-					if !previous.observation.FinishedAt.IsZero() {
-						result.observation.FinishedAt = previous.observation.FinishedAt
-					}
-					current.processes[handle] = result
-				}
-				current.processCleanup = nil
-				_ = r.projects.Update(name, uid, current)
+		groups := groupProjectProcessCleanup(ctx, handles, cleanupLog)
+		r.queueProjectProcessCleanupResult(resource, nil, len(groups)-1)
+		for _, group := range groups {
+			groupErr := r.processCleanupQueue.Enqueue(func(groupCtx context.Context) {
+				results := r.cleanupProjectProcessGroup(groupCtx, group, deleting, cleanupLog)
+				r.queueProjectProcessCleanupResult(resource, results, -1)
 			})
-		if queued {
-			r.ScheduleReconciliation(resource.NamespacedName())
+			if groupErr != nil {
+				cleanupLog.Error(groupErr, "Failed to queue Project target cleanup group")
+				r.queueProjectProcessCleanupResult(resource, nil, -1)
+			}
 		}
 	})
 	if enqueueErr != nil {
-		data.processCleanup = nil
+		data.processCleanupsPending = 0
 		log.Error(enqueueErr, "Failed to queue Project target cleanup")
-		data.retry(apiv2.ProjectReasonProcessCleanupQueueFailed, enqueueErr)
 	}
 	return false
+}
+
+func groupProjectProcessCleanup(ctx context.Context, handles []process.ProcessHandle, log logr.Logger) [][]process.ProcessHandle {
+	ordered := slices.Clone(handles)
+	slices.SortFunc(ordered, func(left, right process.ProcessHandle) int {
+		if order := left.IdentityTime.Compare(right.IdentityTime); order != 0 {
+			return order
+		}
+		return cmp.Compare(left.Pid, right.Pid)
+	})
+	trees := make([][]process.ProcessHandle, len(ordered))
+	uncertain := false
+	for index, handle := range ordered {
+		treeCtx, cancel := process.WithStopTimeout(ctx)
+		tree, treeErr := process.GetProcessTree(treeCtx, handle)
+		cancel()
+		if treeErr != nil && (!process.IsProcessGoneErr(treeErr) || errors.Is(treeErr, process.ErrIncompleteProcessTree)) {
+			log.Error(treeErr, "Could not establish independent Project target trees; cleaning targets sequentially", "PID", handle.Pid)
+			uncertain = true
+		}
+		trees[index] = append(tree, handle)
+	}
+	ancestors := make(map[process.Pid_t]int)
+	for _, handle := range ordered {
+		ancestors[handle.Pid] = 0
+	}
+	for index, tree := range trees {
+		for _, member := range tree {
+			if _, registered := ancestors[member.Pid]; registered && member.Pid != ordered[index].Pid {
+				ancestors[member.Pid]++
+			}
+		}
+	}
+	orderTargets := func(left, right process.ProcessHandle) int {
+		if order := cmp.Compare(ancestors[left.Pid], ancestors[right.Pid]); order != 0 {
+			return order
+		}
+		if order := left.IdentityTime.Compare(right.IdentityTime); order != 0 {
+			return order
+		}
+		return cmp.Compare(left.Pid, right.Pid)
+	}
+	if uncertain {
+		slices.SortFunc(ordered, orderTargets)
+		return [][]process.ProcessHandle{ordered}
+	}
+	parents := make([]int, len(ordered))
+	for index := range parents {
+		parents[index] = index
+	}
+	root := func(index int) int {
+		for parents[index] != index {
+			parents[index] = parents[parents[index]]
+			index = parents[index]
+		}
+		return index
+	}
+	owners := make(map[process.Pid_t]int)
+	for index, tree := range trees {
+		for _, member := range tree {
+			if previous, found := owners[member.Pid]; found {
+				parents[root(index)] = root(previous)
+			} else {
+				owners[member.Pid] = index
+			}
+		}
+	}
+	var groups [][]process.ProcessHandle
+	groupIndexes := make(map[int]int)
+	for index, handle := range ordered {
+		groupRoot := root(index)
+		groupIndex, found := groupIndexes[groupRoot]
+		if !found {
+			groupIndex = len(groups)
+			groupIndexes[groupRoot] = groupIndex
+			groups = append(groups, nil)
+		}
+		groups[groupIndex] = append(groups[groupIndex], handle)
+	}
+	for _, group := range groups {
+		slices.SortFunc(group, orderTargets)
+	}
+	return groups
+}
+
+func (r *ProjectReconciler) cleanupProjectProcessGroup(
+	ctx context.Context, handles []process.ProcessHandle, deleting bool, log logr.Logger,
+) map[process.ProcessHandle]projectProcessData {
+	results := make(map[process.ProcessHandle]projectProcessData, len(handles))
+	for _, handle := range handles {
+		cleanupCtx, cancel := process.WithStopTimeout(ctx)
+		var stopErr error
+		if !process.IsProcessGoneErr(r.processExecutor.CheckProcessRunning(handle)) {
+			stopErr = r.processExecutor.StopProcess(cleanupCtx, handle)
+		}
+		cancel()
+		result := projectProcessData{cleanupAttempted: true, deletionCleanupAttempted: deleting}
+		runningErr := r.processExecutor.CheckProcessRunning(handle)
+		switch {
+		case process.IsProcessGoneErr(runningErr):
+			result.observation.Phase = apiv2.ProjectDebugProcessExited
+			result.observation.FinishedAt = metav1.NowMicro()
+		case runningErr == nil:
+			result.observation.Phase = apiv2.ProjectDebugProcessRunning
+		default:
+			result.observation.Phase = apiv2.ProjectDebugProcessUnknown
+		}
+		if (stopErr == nil || (process.IsProcessGoneErr(stopErr) && !errors.Is(stopErr, process.ErrIncompleteProcessTree))) &&
+			process.IsProcessGoneErr(runningErr) {
+			result.observation.Cleanup = apiv2.ProjectDebugProcessCleanupComplete
+		} else {
+			failure := errors.Join(stopErr, runningErr, fmt.Errorf("target process cleanup could not be fully confirmed"))
+			result.observation.Cleanup = apiv2.ProjectDebugProcessCleanupUnconfirmed
+			result.observation.Message = failure.Error()
+			log.Error(failure, "Project target cleanup is unconfirmed", "PID", handle.Pid)
+		}
+		results[handle] = result
+	}
+	return results
+}
+
+func (r *ProjectReconciler) queueProjectProcessCleanupResult(
+	resource *apiv2.Project, results map[process.ProcessHandle]projectProcessData, pendingChange int,
+) {
+	queued := r.projects.QueueDeferredOpForStateKey(resource.NamespacedName(), resource.UID,
+		func(name types.NamespacedName, uid types.UID, _ *apiv2.Project) {
+			_, current := r.projects.BorrowByNamespacedName(name)
+			if current == nil {
+				return
+			}
+			for handle, result := range results {
+				previous := current.processes[handle]
+				if !previous.observation.FinishedAt.IsZero() {
+					result.observation.FinishedAt = previous.observation.FinishedAt
+				}
+				current.processes[handle] = result
+			}
+			current.processCleanupsPending += pendingChange
+			_ = r.projects.Update(name, uid, current)
+		})
+	if queued {
+		r.ScheduleReconciliation(resource.NamespacedName())
+	}
 }

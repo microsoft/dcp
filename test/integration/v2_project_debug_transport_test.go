@@ -56,9 +56,7 @@ func TestV2ProjectDebugTransportLifecycle(t *testing.T) {
 					DebugAdapter: &apiv2.DebugAdapterConfig{Args: args}}}
 			require.NoError(t, apiClient.Create(ctx, project))
 			running := waitProjectPhase(t, ctx, apiClient, project, apiv2.ProjectPhaseReady)
-			require.NotNil(t, running.Status.Debug)
-			require.True(t, running.Status.Debug.PrerequisitesReady)
-			require.Empty(t, running.Status.Debug.Executions)
+			require.Nil(t, running.Status.Debug)
 			transport, holder, transportErr := clientwebsocket.RoundTripperFor(serverInfo.ClientConfig)
 			require.NoError(t, transportErr)
 			request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet,

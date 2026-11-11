@@ -9329,6 +9329,25 @@ func schema_microsoft_dcp_api_v2_ProjectContainerTemplate(ref common.ReferenceCa
 							},
 						},
 					},
+					"runArgs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "RunArgs contains additional container runtime arguments passed before the image name. Arguments are passed literally and in order, without shell parsing or template expansion.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
 					"env": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -9819,13 +9838,6 @@ func schema_microsoft_dcp_api_v2_ProjectDebugStatus(ref common.ReferenceCallback
 				Description: "ProjectDebugStatus reports adapter executions and sessions independently of application status. Entries are retained until Project deletion; active provider references are not reconstructed from this history.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"prerequisitesReady": {
-						SchemaProps: spec.SchemaProps{
-							Description: "PrerequisitesReady reports controller-observed execution prerequisites, not adapter or application readiness. Process prerequisites do not require the application to be running; container prerequisites require a prepared context.",
-							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
 					"executions": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -9982,7 +9994,7 @@ func schema_microsoft_dcp_api_v2_ProjectProcessTemplate(ref common.ReferenceCall
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Env contains environment variables that override inherited values.",
+							Description: "Env contains environment variables that override inherited values. DCP_ and DEBUG_SESSION-prefixed variables are excluded from both inherited and explicit environments.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -10105,7 +10117,7 @@ func schema_microsoft_dcp_api_v2_ProjectStatus(ref common.ReferenceCallback) com
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "EffectiveEnv contains the prepared launch environment, including permitted process inheritance.",
+							Description: "EffectiveEnv contains the observed container environment, including image-provided values, or the prepared process launch environment, including permitted host inheritance.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -10114,13 +10126,6 @@ func schema_microsoft_dcp_api_v2_ProjectStatus(ref common.ReferenceCallback) com
 									},
 								},
 							},
-						},
-					},
-					"launchInputsReady": {
-						SchemaProps: spec.SchemaProps{
-							Description: "LaunchInputsReady distinguishes a fully prepared snapshot from empty or unavailable inputs.",
-							Type:        []string{"boolean"},
-							Format:      "",
 						},
 					},
 					"ports": {
@@ -10146,7 +10151,7 @@ func schema_microsoft_dcp_api_v2_ProjectStatus(ref common.ReferenceCallback) com
 					},
 					"debug": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Debug contains controller-owned prerequisite readiness and API-server-owned adapter/session observations.",
+							Description: "Debug contains API-server-owned adapter/session observations and controller-owned target observations.",
 							Ref:         ref(v2.ProjectDebugStatus{}.OpenAPIModelName()),
 						},
 					},

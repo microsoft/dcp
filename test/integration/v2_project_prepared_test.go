@@ -40,7 +40,7 @@ func TestV2ProjectEmptyPreparedEnvironmentAllowsDeletion(t *testing.T) {
 		}}}
 	require.NoError(t, server.Client.Create(ctx, resource))
 	prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
-	require.True(t, prepared.Status.LaunchInputsReady)
+	requireReadyCondition(t, prepared.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonPrepared)
 	require.Empty(t, prepared.Status.EffectiveEnv)
 	require.Empty(t, prepared.Status.EffectiveArgs)
 	require.NoError(t, server.Client.Delete(ctx, resource))
@@ -93,12 +93,10 @@ func TestV2ProjectPreparedEnvironmentCasing(t *testing.T) {
 				if malformed && !ignoreCase {
 					require.Equal(t, apiv2.ProjectPhaseFailed, observed.Status.Phase)
 					requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, "TemplateEvaluationFailed")
-					require.False(t, observed.Status.LaunchInputsReady)
 					require.Empty(t, observed.Status.PhysicalContainerRef)
 				} else {
 					require.Equal(t, apiv2.ProjectPhaseReady, observed.Status.Phase)
 					require.Equal(t, expected, observed.Status.EffectiveEnv)
-					require.True(t, observed.Status.LaunchInputsReady)
 					if kind == "container" {
 						physical := &apiv2.PhysicalContainer{}
 						require.NoError(t, client.Get(ctx, types.NamespacedName{
@@ -139,7 +137,6 @@ func TestV2ProjectPreparedEnvironmentSnapshot(t *testing.T) {
 		}}}
 	require.NoError(t, client.Create(ctx, resource))
 	prepared := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
-	require.True(t, prepared.Status.LaunchInputsReady)
 	require.Empty(t, prepared.Status.EffectiveArgs)
 	environment := make(map[string]string)
 	for _, entry := range prepared.Status.EffectiveEnv {
@@ -174,7 +171,6 @@ func TestV2ProjectPreparedEnvironmentSnapshot(t *testing.T) {
 	noInheritance.Spec.Process.Env = nil
 	require.NoError(t, client.Create(ctx, noInheritance))
 	empty := waitProjectPhase(t, ctx, client, noInheritance, apiv2.ProjectPhaseReady)
-	require.True(t, empty.Status.LaunchInputsReady)
 	require.Zero(t, len(empty.Status.EffectiveEnv))
 	require.Empty(t, empty.Status.EffectiveArgs)
 	container := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
@@ -211,6 +207,5 @@ func TestV2ProjectReadyStopsWithoutApplication(t *testing.T) {
 	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 	stopped := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseStopped)
 	require.Equal(t, []string{"prepared"}, stopped.Status.EffectiveArgs)
-	require.True(t, stopped.Status.LaunchInputsReady)
 	require.Empty(t, environment.TestProcessExecutor.FindAll([]string{"not-started"}, "", nil))
 }

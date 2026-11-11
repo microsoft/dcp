@@ -8,6 +8,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"maps"
 	"path/filepath"
 	"testing"
 
@@ -21,11 +22,65 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+type projectContainerEnvironmentOrchestrator struct {
+	containers.ContainerOrchestrator
+}
+
+func (orchestrator *projectContainerEnvironmentOrchestrator) InspectContainers(
+	ctx context.Context, options containers.InspectContainersOptions,
+) ([]containers.InspectedContainer, error) {
+	inspected, inspectErr := orchestrator.ContainerOrchestrator.InspectContainers(ctx, options)
+	if inspectErr != nil {
+		return nil, inspectErr
+	}
+	for index := range inspected {
+		environment := map[string]string{"IMAGE_DEFAULT": "from-image", "OVERRIDE": "image-value"}
+		maps.Copy(environment, inspected[index].Env)
+		inspected[index].Env = environment
+	}
+	return inspected, nil
+}
+
+// Verifies that container Project reports the inspected environment, including image defaults
+// and explicit overrides, without changing its declared inputs or losing observations on stop.
+func TestV2ProjectReportsObservedContainerEnvironment(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateContainerOrchestrator: func(orchestrator containers.ContainerOrchestrator, _ *statestore.Store) containers.ContainerOrchestrator {
+			return &projectContainerEnvironmentOrchestrator{ContainerOrchestrator: orchestrator}
+		}})
+	require.NoError(t, startupErr)
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-observed-env")
+	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+			LogicalContainerConfig: apiv2.LogicalContainerConfig{
+				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
+				Env:   []commonapi.EnvVar{{Name: "OVERRIDE", Value: `{{printf "configured-value"}}`}},
+			}}}}
+	require.NoError(t, server.Client.Create(ctx, resource))
+	prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+	expected := []commonapi.EnvVar{{Name: "IMAGE_DEFAULT", Value: "from-image"}, {Name: "OVERRIDE", Value: "configured-value"}}
+	require.Equal(t, expected, prepared.Status.EffectiveEnv)
+	physical := &apiv2.PhysicalContainer{}
+	require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: prepared.Status.PhysicalContainerRef}, physical))
+	require.Equal(t, expected, physical.Status.EffectiveEnv)
+	require.Equal(t, []commonapi.EnvVar{{Name: "OVERRIDE", Value: "configured-value"}}, physical.Spec.Container.Env)
+	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
+		[]byte(`{"metadata":{"annotations":{"environment-projection":"repeat"}},"spec":{"stop":true}}`))))
+	stopped := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseStopped)
+	require.Equal(t, expected, stopped.Status.EffectiveEnv)
+	require.NoError(t, server.Client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+}
 
 // Verifies that Project prepares a process snapshot independently of its source root,
 // becomes Ready without launching it, and retains that snapshot until explicit stop/deletion.
@@ -43,7 +98,6 @@ func TestV2ProjectProcessLifecycle(t *testing.T) {
 						Env: []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}}}}}}
 			require.NoError(t, client.Create(ctx, resource))
 			running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
-			require.True(t, running.Status.LaunchInputsReady)
 			require.Equal(t, []string{"literal"}, running.Status.EffectiveArgs)
 			require.Equal(t, []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}}, running.Status.EffectiveEnv)
 			require.Equal(t, directory, running.Spec.Process.WorkingDirectory)
@@ -74,8 +128,7 @@ func TestV2ProjectNamespaceAndEarlyStop(t *testing.T) {
 	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-missing-namespace"},
 		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "v2-project-early-stop-command"}}}}
 	require.NoError(t, client.Create(ctx, resource))
-	pending := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhasePending)
-	require.False(t, pending.Status.LaunchInputsReady)
+	waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhasePending)
 	require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.Project) error {
 		current.Spec.Stop = true
 		return client.Update(updateCtx, current)
@@ -92,7 +145,7 @@ func TestV2ProjectNamespaceAndEarlyStop(t *testing.T) {
 }
 
 // Verifies that Project owns a physical container and inline image, preserves explicit mounts,
-// shares runtime capture, forwards stop, and removes runtime execution on deletion.
+// shares runtime capture, retains its prepared lifecycle while paused, and removes execution on stop/deletion.
 func TestV2ProjectContainerLifecycle(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -101,6 +154,7 @@ func TestV2ProjectContainerLifecycle(t *testing.T) {
 	root := t.TempDir()
 	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 		Spec: apiv2.ProjectSpec{RootDirectory: filepath.Join(root, "source"),
+			DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{"not-started"}},
 			Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
 				Entrypoint: "program", Command: []string{"one"}, Env: []commonapi.EnvVar{{Name: "VALUE", Value: "literal"}},
 				VolumeMounts: []apiv2.VolumeMount{{Type: apiv2.BindMount, Source: filepath.Join(root, "assets"), Target: "/assets", ReadOnly: true}}},
@@ -131,9 +185,20 @@ func TestV2ProjectContainerLifecycle(t *testing.T) {
 	require.NoError(t, outputErr)
 	require.Equal(t, "container-project\n", output)
 	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, running.Status.ContainerID, containers.ContainerStatusPaused))
-	waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhasePending)
+	paused := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonRuntimeContainerPaused), nil
+	})
+	require.Equal(t, apiv2.ProjectPhaseReady, paused.Status.Phase)
+	requireReadyCondition(t, paused.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerPaused)
 	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, running.Status.ContainerID, containers.ContainerStatusRunning))
 	waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, running.Status.ContainerID, containers.ContainerStatusCreated))
+	unknown := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseUnknown)
+	require.Equal(t, running.Status.RuntimeLogs.UID, unknown.Status.RuntimeLogs.UID)
+	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, running.Status.ContainerID, containers.ContainerStatusRunning))
+	recovered := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+	require.Equal(t, running.Status.RuntimeLogs.UID, recovered.Status.RuntimeLogs.UID)
 	require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.Project) error {
 		current.Spec.Stop = true
 		return client.Update(updateCtx, current)
@@ -164,8 +229,7 @@ func TestV2ProjectPreparationDoesNotLaunchApplication(t *testing.T) {
 	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: command}}}}
 	require.NoError(t, client.Create(ctx, resource))
-	prepared := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
-	require.True(t, prepared.Status.LaunchInputsReady)
+	waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
 	require.Empty(t, testProcessExecutor.FindAll([]string{command}, "", nil))
 }
 

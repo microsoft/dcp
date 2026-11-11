@@ -92,9 +92,7 @@ func TestProjectDebugStatusIsolatesWriterOwnership(t *testing.T) {
 	require.NoError(t, apiClient.Create(ctx, project))
 	require.Nil(t, project.Status.Debug)
 	project.Status.Phase = apiv2.ProjectPhaseReady
-	project.Status.Debug = &apiv2.ProjectDebugStatus{PrerequisitesReady: true}
 	require.NoError(t, apiClient.Status().Update(ctx, project))
-	require.True(t, project.Status.Debug.PrerequisitesReady)
 	stale := project.DeepCopy()
 	watcher, watchErr := apiClient.Watch(ctx, &apiv2.ProjectList{}, ctrlclient.InNamespace(project.Namespace))
 	require.NoError(t, watchErr)
@@ -104,7 +102,6 @@ func TestProjectDebugStatusIsolatesWriterOwnership(t *testing.T) {
 	updated, publishErr := writer.update(ctx, project.NamespacedName(), project.UID, execution, first)
 	require.NoError(t, publishErr)
 	require.Equal(t, apiv2.ProjectPhaseReady, updated.Status.Phase)
-	require.True(t, updated.Status.Debug.PrerequisitesReady)
 	for observedUpdate := false; !observedUpdate; {
 		select {
 		case event, open := <-watcher.ResultChan():
@@ -127,20 +124,19 @@ func TestProjectDebugStatusIsolatesWriterOwnership(t *testing.T) {
 	require.NoError(t, apiClient.Status().Update(ctx, project))
 	require.Len(t, project.Status.Debug.Executions, 1)
 	require.Len(t, project.Status.Debug.Sessions, 1)
-	require.False(t, project.Status.Debug.PrerequisitesReady)
+	require.Equal(t, apiv2.ProjectPhasePending, project.Status.Phase)
 	second := &apiv2.ProjectDebugSessionStatus{ID: "second", ExecutionID: "provider", Phase: apiv2.ProjectDebugPhaseRunning}
 	_, secondErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, second)
 	require.NoError(t, secondErr)
 	require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
-		[]byte(`{"status":{"phase":"Ready","debug":{"prerequisitesReady":true,"sessions":[{"id":"forged","phase":"Running"}]}}}`))))
-	require.True(t, project.Status.Debug.PrerequisitesReady)
+		[]byte(`{"status":{"phase":"Ready","debug":{"sessions":[{"id":"forged","phase":"Running"}]}}}`))))
+	require.Equal(t, apiv2.ProjectPhaseReady, project.Status.Phase)
 	require.Len(t, project.Status.Debug.Sessions, 2)
 	// Use the status client for a patch so that the normal HTTP /status handler and wrapper execute.
 	require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
 		[]byte(`{"status":{"phase":"Ready","debug":null}}`))))
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
 	require.Equal(t, apiv2.ProjectPhaseReady, project.Status.Phase)
-	require.False(t, project.Status.Debug.PrerequisitesReady)
 	require.Len(t, project.Status.Debug.Sessions, 2)
 	require.Equal(t, "first", project.Status.Debug.Sessions[0].ID)
 	require.Equal(t, "second", project.Status.Debug.Sessions[1].ID)
@@ -236,8 +232,7 @@ func TestProjectDebugStatusConcurrentUpdates(t *testing.T) {
 			if getErr != nil {
 				return getErr
 			}
-			current.Status = apiv2.ProjectStatus{Phase: apiv2.ProjectPhaseReady,
-				Debug: &apiv2.ProjectDebugStatus{PrerequisitesReady: true}}
+			current.Status = apiv2.ProjectStatus{Phase: apiv2.ProjectPhaseReady}
 			return apiClient.Status().Update(ctx, current)
 		})
 		outcomes <- statusErr
@@ -250,7 +245,6 @@ func TestProjectDebugStatusConcurrentUpdates(t *testing.T) {
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
 	require.Len(t, project.Status.Debug.Sessions, sessions)
 	require.Equal(t, apiv2.ProjectPhaseReady, project.Status.Phase)
-	require.True(t, project.Status.Debug.PrerequisitesReady)
 }
 
 // Verifies that deleting Projects accept completion of existing debug history but reject new entries,

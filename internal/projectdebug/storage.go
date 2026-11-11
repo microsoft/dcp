@@ -21,6 +21,7 @@ import (
 	"github.com/gorilla/websocket"
 	tiltapiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metainternal "k8s.io/apimachinery/pkg/apis/meta/internalversion"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -281,13 +282,12 @@ func (storage *projectDebugStorage) monitor(
 			}
 			namespace = snapshot
 		}
-		isReady := current != nil && current.Status.Debug != nil && current.Status.Debug.PrerequisitesReady &&
-			namespace != nil && namespace.Status.Phase == apiv2.NamespacePhaseActive
-		if isReady && current.Spec.Container != nil {
-			isReady = current.Status.ContainerID != "" && current.Status.ContainerRuntime != ""
-		}
-		if isReady && current.Spec.DebugAdapter.GetContainerTCPPort() != 0 {
-			isReady = current.Status.DebugAdapterPort != 0 && current.Status.DebugAdapterAddress != ""
+		isReady := false
+		if current != nil && namespace != nil && namespace.Status.Phase == apiv2.NamespacePhaseActive {
+			condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+			isReady = condition != nil && condition.Status == metav1.ConditionTrue &&
+				((current.Status.Phase == apiv2.ProjectPhaseReady && condition.Reason == string(apiv2.ProjectReasonPrepared)) ||
+					(current.Status.Phase == apiv2.ProjectPhaseActive && condition.Reason == string(apiv2.ProjectReasonDebugSessionsActive)))
 		}
 		if isReady && !prepared {
 			prepared = true

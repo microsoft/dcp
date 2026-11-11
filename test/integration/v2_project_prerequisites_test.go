@@ -103,10 +103,11 @@ func TestV2ProjectStopPreservesPreparedImageLifecycle(t *testing.T) {
 
 type projectRejectedCreateClient struct {
 	ctrl_client.Client
-	rejected atomic.Bool
-	attempts atomic.Int32
-	entered  chan struct{}
-	release  chan struct{}
+	rejected     atomic.Bool
+	attempts     atomic.Int32
+	entered      chan struct{}
+	release      chan struct{}
+	retryRelease chan struct{}
 }
 
 func (apiClient *projectRejectedCreateClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
@@ -121,77 +122,113 @@ func (apiClient *projectRejectedCreateClient) Create(ctx context.Context, obj ct
 			}
 			return errors.New("injected rejection before physical creation")
 		}
+		if apiClient.retryRelease != nil {
+			select {
+			case <-apiClient.retryRelease:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 	}
 	return apiClient.Client.Create(ctx, obj, options...)
 }
 
-// Verifies that Project revalidates pinned image and network prerequisites after a rejected create,
-// rather than launching a new physical container against a deleted or replaced dependency.
-func TestV2ProjectRevalidatesPrerequisitesAfterRejectedCreate(t *testing.T) {
+// Verifies that a rejected container declaration leaves Project Pending rather than inventing
+// observation uncertainty, and retries the same prepared inputs to realize one backing.
+func TestV2ProjectRejectedCreatePreservesPreparationState(t *testing.T) {
 	t.Parallel()
-	for _, dependency := range []string{"image", "network"} {
-		t.Run(dependency, func(t *testing.T) {
-			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-			t.Cleanup(cancel)
-			var rejectedCreate *projectRejectedCreateClient
-			serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx,
-				projectTestControllers|LogicalContainerNetworkController|PhysicalContainerNetworkController, t.Name(), t.TempDir(),
-				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-					rejectedCreate = &projectRejectedCreateClient{Client: apiClient, entered: make(chan struct{}), release: make(chan struct{})}
-					return rejectedCreate
-				}})
-			require.NoError(t, startupErr)
-			releaseCreate := sync.OnceFunc(func() { close(rejectedCreate.release) })
-			t.Cleanup(releaseCreate)
-			apiClient := serverInfo.Client
-			namespace := "v2-project-rejected-" + dependency
-			createV2ExecNamespace(t, ctx, apiClient, namespace)
-			network := &apiv2.LogicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace},
-				Spec: apiv2.LogicalContainerNetworkSpec{Network: &apiv2.LogicalContainerNetworkConfig{}}}
-			require.NoError(t, apiClient.Create(ctx, network))
-			waitObjectAssumesStateEx(t, ctx, apiClient, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
-				return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
-			})
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace + "-image"},
-					Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: network.Name}}},
-				}}}
-			require.NoError(t, apiClient.Create(ctx, resource))
-			select {
-			case <-rejectedCreate.entered:
-			case <-ctx.Done():
-				t.Fatal("Project did not attempt physical creation")
-			}
-			if dependency == "image" {
-				image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: "project-" + string(resource.UID), Namespace: namespace}}
-				require.NoError(t, apiClient.Delete(ctx, image))
-			} else {
-				require.NoError(t, apiClient.Delete(ctx, network))
-				ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, network)
-				replacement := &apiv2.LogicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: network.Name, Namespace: namespace}, Spec: *network.Spec.DeepCopy()}
-				require.NoError(t, apiClient.Create(ctx, replacement))
-				waitObjectAssumesStateEx(t, ctx, apiClient, replacement.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
-					return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
-				})
-			}
-			releaseCreate()
-			expectedPhase := apiv2.ProjectPhaseUnknown
-			expectedReason := apiv2.ProjectReasonImagePreparationFailed
-			if dependency == "network" {
-				expectedPhase, expectedReason = apiv2.ProjectPhaseFailed, apiv2.ProjectReasonNetworkChanged
-			}
-			failed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
-				return current.Status.Phase == expectedPhase && len(current.Status.Conditions) != 0 &&
-					current.Status.Conditions[0].Reason == string(expectedReason), nil
-			})
-			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, expectedReason)
-			require.Equal(t, int32(1), rejectedCreate.attempts.Load())
-			require.Empty(t, failed.Status.PhysicalContainerRef)
-			var physical apiv2.PhysicalContainerList
-			require.NoError(t, apiClient.List(ctx, &physical, ctrl_client.InNamespace(namespace)))
-			require.Empty(t, physical.Items)
-		})
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	var rejectedCreate *projectRejectedCreateClient
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
+			rejectedCreate = &projectRejectedCreateClient{Client: client, entered: make(chan struct{}), release: make(chan struct{}), retryRelease: make(chan struct{})}
+			return rejectedCreate
+		}})
+	require.NoError(t, startupErr)
+	release := sync.OnceFunc(func() { close(rejectedCreate.release) })
+	t.Cleanup(release)
+	releaseRetry := sync.OnceFunc(func() { close(rejectedCreate.retryRelease) })
+	t.Cleanup(releaseRetry)
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-rejected-preparation")
+	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+			LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
+		}}}
+	require.NoError(t, server.Client.Create(ctx, resource))
+	select {
+	case <-rejectedCreate.entered:
+	case <-ctx.Done():
+		t.Fatal("Project did not attempt backing creation")
 	}
+	release()
+	pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		return current.Status.Phase == apiv2.ProjectPhasePending && current.Status.PhysicalContainerRef == "" &&
+			len(current.Status.Conditions) != 0, nil
+	})
+	require.Equal(t, apiv2.ProjectPhasePending, pending.Status.Phase)
+	require.Empty(t, pending.Status.PhysicalContainerRef)
+	releaseRetry()
+	waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+	require.EqualValues(t, 2, rejectedCreate.attempts.Load())
+	var backings apiv2.PhysicalContainerList
+	require.NoError(t, server.Client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, backings.Items, 1)
+	require.NoError(t, server.Client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+}
+
+// Verifies that Project resolves network references again after a rejected declaration and uses
+// the current published backing when no container declaration committed the earlier selection.
+func TestV2ProjectResolvesNetworksAfterRejectedCreate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	var rejectedCreate *projectRejectedCreateClient
+	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		projectTestControllers|LogicalContainerNetworkController|PhysicalContainerNetworkController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+			rejectedCreate = &projectRejectedCreateClient{Client: apiClient, entered: make(chan struct{}), release: make(chan struct{})}
+			return rejectedCreate
+		}})
+	require.NoError(t, startupErr)
+	releaseCreate := sync.OnceFunc(func() { close(rejectedCreate.release) })
+	t.Cleanup(releaseCreate)
+	apiClient := serverInfo.Client
+	namespace := "v2-project-rejected-network"
+	createV2ExecNamespace(t, ctx, apiClient, namespace)
+	network := &apiv2.LogicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace},
+		Spec: apiv2.LogicalContainerNetworkSpec{Network: &apiv2.LogicalContainerNetworkConfig{}}}
+	require.NoError(t, apiClient.Create(ctx, network))
+	waitObjectAssumesStateEx(t, ctx, apiClient, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+	})
+	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace},
+		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace + "-image"},
+			Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: network.Name}}},
+		}}}
+	require.NoError(t, apiClient.Create(ctx, resource))
+	select {
+	case <-rejectedCreate.entered:
+	case <-ctx.Done():
+		t.Fatal("Project did not attempt physical creation")
+	}
+	require.NoError(t, apiClient.Delete(ctx, network))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, network)
+	replacement := &apiv2.LogicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: network.Name, Namespace: namespace}, Spec: *network.Spec.DeepCopy()}
+	require.NoError(t, apiClient.Create(ctx, replacement))
+	replaced := waitObjectAssumesStateEx(t, ctx, apiClient, replacement.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
+	})
+	releaseCreate()
+	waitProjectPhase(t, ctx, apiClient, resource, apiv2.ProjectPhaseReady)
+	require.EqualValues(t, 2, rejectedCreate.attempts.Load())
+	var physical apiv2.PhysicalContainerList
+	require.NoError(t, apiClient.List(ctx, &physical, ctrl_client.InNamespace(namespace)))
+	require.Len(t, physical.Items, 1)
+	require.Equal(t, replaced.Status.PhysicalNetworkRef, physical.Items[0].Spec.Container.Networks[0].NetworkRef)
+	require.NoError(t, apiClient.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, resource)
 }
 
 type projectImageFailureReader struct {
@@ -280,7 +317,7 @@ func TestV2ProjectOwnedImageDeletionPreservesLateStartupLogs(t *testing.T) {
 		return !current.DeletionTimestamp.IsZero() &&
 			!slices.Contains(current.Finalizers, apiv2.GroupName+"/physicalcontainerimage-reconciler"), nil
 	})
-	failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseUnknown)
+	failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
 	require.Equal(t, prepared.Status.StartupLogs.UID, failed.Status.StartupLogs.UID)
 	output, outputErr := readV2ContainerLog(ctx, resource, apiv2.ResourceLogOptions{Source: "startup_stdout", Follow: true})
 	require.NoError(t, outputErr)

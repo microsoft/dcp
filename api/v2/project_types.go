@@ -38,6 +38,9 @@ const ProjectDebugShutdownGrace = 5 * time.Second
 // Project reconciliation condition reasons.
 const (
 	ProjectReasonPreparingLaunchInputs       ConditionReason = "PreparingLaunchInputs"
+	ProjectReasonPortPreparationPending      ConditionReason = "PortPreparationPending"
+	ProjectReasonPortPreparationFailed       ConditionReason = "PortPreparationFailed"
+	ProjectReasonTemplateEvaluationFailed    ConditionReason = "TemplateEvaluationFailed"
 	ProjectReasonContainerPreparationPending ConditionReason = "ContainerPreparationPending"
 	ProjectReasonPrepared                    ConditionReason = "ProjectPrepared"
 	ProjectReasonDebugSessionsActive         ConditionReason = "DebugSessionsActive"
@@ -214,9 +217,6 @@ const (
 // Entries are retained until Project deletion; active provider references are not reconstructed from this history.
 // +k8s:openapi-gen=true
 type ProjectDebugStatus struct {
-	// PrerequisitesReady reports controller-observed execution prerequisites, not adapter or application readiness.
-	// Process prerequisites do not require the application to be running; container prerequisites require a prepared context.
-	PrerequisitesReady bool `json:"prerequisitesReady,omitempty"`
 	// Executions contains DCP-owned adapter process and shared provider observations.
 	// +listType=map
 	// +listMapKey=id
@@ -413,17 +413,16 @@ type ProjectStatus struct {
 	// EffectiveArgs contains evaluated application launch arguments, never the container placeholder's arguments.
 	// +listType=atomic
 	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
-	// EffectiveEnv contains the prepared launch environment, including permitted process inheritance.
+	// EffectiveEnv contains the observed container environment, including image-provided values,
+	// or the prepared process launch environment, including permitted host inheritance.
 	// +listType=map
 	// +listMapKey=name
 	EffectiveEnv []commonapi.EnvVar `json:"effectiveEnv,omitempty"`
-	// LaunchInputsReady distinguishes a fully prepared snapshot from empty or unavailable inputs.
-	LaunchInputsReady bool `json:"launchInputsReady,omitempty"`
 	// Ports reports allocated listening addresses and selected services, independently of proxy readiness.
 	// +listType=map
 	// +listMapKey=name
 	Ports []LogicalPortStatus `json:"ports,omitempty"`
-	// Debug contains controller-owned prerequisite readiness and API-server-owned adapter/session observations.
+	// Debug contains API-server-owned adapter/session observations and controller-owned target observations.
 	Debug *ProjectDebugStatus `json:"debug,omitempty"`
 	// Phase summarizes Project preparation, debug activity and shutdown.
 	// +kubebuilder:validation:Enum=Pending;Ready;Active;Stopping;Stopped;Unknown;Failed
