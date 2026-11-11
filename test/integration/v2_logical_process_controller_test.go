@@ -764,7 +764,7 @@ func TestV2LogicalProcessControllerExistingIdentity(t *testing.T) {
 	}
 	for _, service := range services {
 		retained := waitObjectAssumesState(t, ctx, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-			return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current), nil
+			return current.Status.Phase == apiv2.LogicalServicePhasePending && !logicalServiceReady(current), nil
 		})
 		require.Equal(t, service.UID, retained.UID)
 	}

@@ -161,8 +161,10 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		if listErr != nil {
 			log.Error(listErr, "Failed to list service endpoints")
 			message, requeue = listErr.Error(), true
-			if data.started {
-				status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonRunning
+			status.EffectiveAddresses = slices.Clone(service.Status.EffectiveAddresses)
+			status.ProxylessEndpointRef = service.Status.ProxylessEndpointRef
+			if len(status.EffectiveAddresses) > 0 {
+				status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonAllocated
 			}
 			break
 		}
@@ -186,14 +188,11 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 				data.selectedUID = endpoint.UID
 				status.EffectiveAddresses = slices.Clone(endpoint.Spec.Addresses)
 				status.ProxylessEndpointRef, status.Phase = endpoint.Name, apiv2.LogicalServicePhaseRunning
-				reason, message = apiv2.LogicalServiceReasonRunning, "The selected endpoint's addresses are available."
+				reason, message = apiv2.LogicalServiceReasonReady, "The selected endpoint's addresses are available."
 				data.started, available = true, true
 			} else {
 				data.selectedUID = ""
 				reason, message = apiv2.LogicalServiceReasonStarting, "The service has no available endpoints."
-				if data.started {
-					status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonRunning
-				}
 			}
 			break
 		}
@@ -205,6 +204,9 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 				})
 			}
 		}
+		if len(status.EffectiveAddresses) > 0 {
+			data.started = true
+		}
 		if proxyErr != nil {
 			log.Error(proxyErr, "Failed to configure logical service listeners")
 			if len(data.proxies) == 0 {
@@ -212,7 +214,7 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			}
 			reason, message, requeue = apiv2.LogicalServiceReasonStarting, proxyErr.Error(), true
 			if data.started {
-				status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonRunning
+				status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonAllocated
 			}
 			if len(status.EffectiveAddresses) == 0 && (len(data.proxies) > 0 || data.attempts >= MaxServiceStartAttempts) {
 				status.Phase, requeue = apiv2.LogicalServicePhaseFailed, false
@@ -229,10 +231,10 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			break
 		}
 		data.started = true
-		status.Phase, reason, message = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonRunning,
+		status.Phase, reason, message = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonAllocated,
 			"Listeners are running; the service has no available endpoints."
 		if len(endpoints.Items) > 0 {
-			available, message = true, "Listeners and endpoints are available."
+			available, reason, message = true, apiv2.LogicalServiceReasonReady, "Listeners and endpoints are available."
 		}
 	}
 	if data.failureReason != "" {

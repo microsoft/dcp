@@ -244,6 +244,11 @@ type LogicalContainerConfig struct {
 	// +listType=atomic
 	Command []string `json:"command,omitempty"`
 
+	// RunArgs contains additional container runtime arguments passed before the image name.
+	// Arguments are passed literally and in order, without shell parsing or template expansion.
+	// +listType=atomic
+	RunArgs []string `json:"runArgs,omitempty"`
+
 	// Env contains environment variables to set in the container.
 	// +listType=map
 	// +listMapKey=name

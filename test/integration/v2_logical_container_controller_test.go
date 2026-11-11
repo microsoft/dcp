@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -454,13 +455,35 @@ func TestV2NamespaceControllerCleansUpLogicalContainers(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
 }
 
-// Verifies that the LogicalContainer controller delegates image creation, container startup, stop,
+type recordingContainerRunArgsOrchestrator struct {
+	containers.ContainerOrchestrator
+	runArgs atomic.Pointer[[]string]
+}
+
+func (recorder *recordingContainerRunArgsOrchestrator) CreateContainer(ctx context.Context, options containers.CreateContainerOptions) (string, error) {
+	runArgs := slices.Clone(options.RunArgs)
+	recorder.runArgs.Store(&runArgs)
+	return recorder.ContainerOrchestrator.CreateContainer(ctx, options)
+}
+
+// Verifies that LogicalContainer delegates literal runtime arguments, image creation, startup, Stop,
 // and deletion to owned physical resources while projecting details and computing logical readiness.
 func TestV2LogicalContainerControllerDelegatesSessionLifecycle(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-	namespace := createActiveV2Namespace(t, ctx, "v2-logical-session")
+	t.Cleanup(cancel)
+	var recorder *recordingContainerRunArgsOrchestrator
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController|LogicalServiceController,
+		t.Name(), t.TempDir(), TestEnvironmentOptions{
+			DecorateContainerOrchestrator: func(orchestrator containers.ContainerOrchestrator, _ *statestore.Store) containers.ContainerOrchestrator {
+				recorder = &recordingContainerRunArgsOrchestrator{ContainerOrchestrator: orchestrator}
+				return recorder
+			},
+		})
+	require.NoError(t, startupErr)
+	apiClient := server.Client
+	namespace := createV2ExecNamespace(t, ctx, apiClient, "v2-logical-session")
 	container := &apiv2.LogicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "session", Namespace: namespace.Name},
 		Spec: apiv2.LogicalContainerSpec{
@@ -468,18 +491,23 @@ func TestV2LogicalContainerControllerDelegatesSessionLifecycle(t *testing.T) {
 			Container: &apiv2.LogicalContainerConfig{
 				Image:   &apiv2.PhysicalContainerImageConfig{Image: "v2-logical-session-image"},
 				Command: []string{"run"}, Env: []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}},
-				Labels: []commonapi.Label{{Key: "user-label", Value: "preserved"}},
+				RunArgs: []string{"--cap-add=NET_RAW", "--label", "value=literal {{argument}}"},
+				Labels:  []commonapi.Label{{Key: "user-label", Value: "preserved"}},
 			}},
 	}
-	require.NoError(t, client.Create(ctx, container))
-	running := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+	require.NoError(t, apiClient.Create(ctx, container))
+	running := waitObjectAssumesStateEx(t, ctx, apiClient, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
 	})
 	requireReadyCondition(t, running.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalContainerReasonRunning)
 	require.True(t, strings.HasPrefix(running.Status.ContainerName, "session-"))
 	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef}
 	physical := &apiv2.PhysicalContainer{}
-	require.NoError(t, client.Get(ctx, physicalName, physical))
+	require.NoError(t, apiClient.Get(ctx, physicalName, physical))
+	require.Equal(t, container.Spec.Container.RunArgs, physical.Spec.Container.RunArgs)
+	recordedArgs := recorder.runArgs.Load()
+	require.NotNil(t, recordedArgs)
+	require.Equal(t, container.Spec.Container.RunArgs, *recordedArgs)
 	expectedLifecycleKey, _, lifecycleKeyErr := container.Spec.GetLifecycleKey(physical.Spec.Container.Ports)
 	require.NoError(t, lifecycleKeyErr)
 	require.Equal(t, expectedLifecycleKey, running.Status.LifecycleKey)
@@ -490,32 +518,35 @@ func TestV2LogicalContainerControllerDelegatesSessionLifecycle(t *testing.T) {
 	require.Equal(t, physical.Status.CreatedAt, running.Status.CreatedAt)
 	require.Equal(t, physical.Status.StartedAt, running.Status.StartedAt)
 	require.Equal(t, physical.Status.PortMappings, running.Status.PortMappings)
-	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(running.Status.ContainerName))
-	inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{running.Status.ContainerID}})
+	orchestrator, simulated := recorder.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, simulated)
+	require.Equal(t, 1, orchestrator.CreateContainerCallCount(running.Status.ContainerName))
+	inspected, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{running.Status.ContainerID}})
 	require.NoError(t, inspectErr)
 	require.Len(t, inspected, 1)
 	require.Equal(t, running.Status.LifecycleKey, inspected[0].Labels["com.microsoft.developer.usvc-dev.lifecycle-key"])
 	require.Equal(t, "preserved", inspected[0].Labels["user-label"])
 
-	stopErr := retryOnConflict(ctx, container.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
+	stopErr := retryOnConflictEx(ctx, apiClient, container.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
 		current.Spec.Stop = true
-		return client.Update(updateCtx, current)
+		return apiClient.Update(updateCtx, current)
 	})
 	require.NoError(t, stopErr)
-	stopped := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
+	stopped := waitObjectAssumesStateEx(t, ctx, apiClient, container.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerPhaseExited, nil
 	})
 	requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerReasonStopped)
-	require.NoError(t, client.Get(ctx, physicalName, physical))
+	require.NoError(t, apiClient.Get(ctx, physicalName, physical))
 	require.True(t, physical.Spec.Stop)
 	require.Equal(t, physical.Status.ExitCode, stopped.Status.ExitCode)
 	require.Equal(t, physical.Status.FinishedAt, stopped.Status.FinishedAt)
 	image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: running.Status.ImageRef, Namespace: namespace.Name}}
-	require.NoError(t, client.Delete(ctx, container))
-	ctrl_testutil.WaitObjectDeleted[apiv2.LogicalContainer](t, ctx, client, container)
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, physical)
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
-	waitContainerMissing(t, ctx, running.Status.ContainerID)
+	require.NoError(t, apiClient.Delete(ctx, container))
+	ctrl_testutil.WaitObjectDeleted[apiv2.LogicalContainer](t, ctx, apiClient, container)
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, apiClient, physical)
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, apiClient, image)
+	_, removedErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{running.Status.ContainerID}})
+	require.ErrorIs(t, removedErr, containers.ErrNotFound)
 }
 
 // Verifies that a system stream opened while a logical container is Pending receives later
@@ -864,7 +895,7 @@ func TestV2LogicalContainerControllerObservesExistingContainer(t *testing.T) {
 	}
 	for _, service := range services {
 		retained := waitObjectAssumesState(t, ctx, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-			return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current), nil
+			return current.Status.Phase == apiv2.LogicalServicePhasePending && !logicalServiceReady(current), nil
 		})
 		require.Equal(t, service.UID, retained.UID)
 	}

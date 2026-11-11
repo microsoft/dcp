@@ -183,7 +183,7 @@ func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 					return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current) &&
 						len(current.Status.EffectiveAddresses) == 1, nil
 				})
-				requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
+				requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonAllocated)
 				addresses := slices.Clone(pending.Status.EffectiveAddresses)
 				require.Equal(t, "127.0.0.1", addresses[0].Address)
 				require.Positive(t, addresses[0].Port)
@@ -200,7 +200,7 @@ func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 				ready := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 					return logicalServiceReady(current), nil
 				})
-				requireReadyCondition(t, ready.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalServiceReasonRunning)
+				requireReadyCondition(t, ready.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalServiceReasonReady)
 				require.Equal(t, addresses, ready.Status.EffectiveAddresses)
 				require.Equal(t, []proxy.Endpoint{{Address: "127.0.0.1", Port: 61000}, {Address: "[::1]", Port: 61001}},
 					listeners[0].configuration().Endpoints)
@@ -215,7 +215,7 @@ func TestV2LogicalServiceReadinessAndListenerLifetime(t *testing.T) {
 				withoutEndpoints := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 					return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current), nil
 				})
-				requireReadyCondition(t, withoutEndpoints.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
+				requireReadyCondition(t, withoutEndpoints.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonAllocated)
 				require.Equal(t, addresses, withoutEndpoints.Status.EffectiveAddresses)
 				require.Empty(t, listeners[0].configuration().Endpoints)
 				require.NoError(t, listeners[0].lifetimeCtx.Err())
@@ -562,7 +562,8 @@ func TestV2LogicalServicePreservesLifecycleDuringEndpointLookupFailure(t *testin
 				current.Status.Conditions[0].Message == "service endpoint lookup unavailable", nil
 		})
 		require.Equal(t, apiv2.LogicalServicePhaseRunning, unavailable.Status.Phase)
-		requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
+		requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonAllocated)
+		require.Equal(t, original.Status.EffectiveAddresses, unavailable.Status.EffectiveAddresses)
 		require.NoError(t, listener.lifetimeCtx.Err())
 		decorated.fail.Store(false)
 		recovered, recoveredListener := resources.requireReady(t, ctx)
@@ -593,7 +594,7 @@ func TestV2LogicalServiceRetriesConfigurationWithoutReplacingListener(t *testing
 					strings.Contains(current.Status.Conditions[0].Message, "configuration unavailable"), nil
 			})
 			require.Equal(t, apiv2.LogicalServicePhaseRunning, unavailable.Status.Phase)
-			requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
+			requireReadyCondition(t, unavailable.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonAllocated)
 			require.Equal(t, original.Status.EffectiveAddresses, unavailable.Status.EffectiveAddresses)
 			require.NoError(t, listener.lifetimeCtx.Err())
 			listener.failConfiguration.Store(false)
@@ -666,6 +667,7 @@ func TestV2LogicalServiceRetriesInitialListenerStartup(t *testing.T) {
 		return len(current.Status.EffectiveAddresses) == 1, nil
 	})
 	require.Equal(t, apiv2.LogicalServicePhaseRunning, pending.Status.Phase)
+	requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonAllocated)
 	listeners := recorder.snapshot()
 	require.Len(t, listeners, 2)
 	require.ErrorIs(t, listeners[0].lifetimeCtx.Err(), context.Canceled)
@@ -793,8 +795,8 @@ func TestV2LogicalServicePublishesAllListenerAddresses(t *testing.T) {
 	require.NoError(t, ctx.Err())
 }
 
-// Verifies that proxyless LogicalService retains its producer when another endpoint sorts earlier,
-// publishes all selected addresses, and fails over only when that producer is deleted.
+// Verifies that proxyless LogicalService retains its producer until deletion, clears allocation
+// when no endpoints remain, and becomes ready again when a replacement endpoint appears.
 func TestV2LogicalServiceProxylessKeepsSelectedProducer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -833,7 +835,7 @@ func TestV2LogicalServiceProxylessKeepsSelectedProducer(t *testing.T) {
 	updated := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 		return current.Status.ProxylessEndpointRef == selected.Name && slices.Equal(current.Status.EffectiveAddresses, selected.Spec.Addresses), nil
 	})
-	requireReadyCondition(t, updated.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalServiceReasonRunning)
+	requireReadyCondition(t, updated.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalServiceReasonReady)
 	require.NoError(t, apiClient.Delete(ctx, selected))
 	failover := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
 		return current.Status.ProxylessEndpointRef == earlier.Name, nil
@@ -845,11 +847,18 @@ func TestV2LogicalServiceProxylessKeepsSelectedProducer(t *testing.T) {
 	require.NoError(t, apiClient.Update(ctx, selected))
 	require.NoError(t, apiClient.Delete(ctx, earlier))
 	empty := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalServicePhaseRunning && !logicalServiceReady(current) &&
+		return current.Status.Phase == apiv2.LogicalServicePhasePending && !logicalServiceReady(current) &&
 			current.Status.ProxylessEndpointRef == "", nil
 	})
 	require.Empty(t, empty.Status.EffectiveAddresses)
-	requireReadyCondition(t, empty.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonRunning)
+	requireReadyCondition(t, empty.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalServiceReasonStarting)
+	require.NoError(t, apiClient.Create(ctx, &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "replacement", Namespace: namespace.Name},
+		Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 63000}}}}))
+	reallocated := waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
+		return current.Status.ProxylessEndpointRef == "replacement" && logicalServiceReady(current), nil
+	})
+	require.Equal(t, []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 63000}}, reallocated.Status.EffectiveAddresses)
+	requireReadyCondition(t, reallocated.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalServiceReasonReady)
 	require.Empty(t, recorder.snapshot())
 	require.NoError(t, apiClient.Delete(ctx, namespace))
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, apiClient, namespace)

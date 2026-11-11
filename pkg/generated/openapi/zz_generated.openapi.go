@@ -4995,6 +4995,25 @@ func schema_microsoft_dcp_api_v2_LogicalContainerConfig(ref common.ReferenceCall
 							},
 						},
 					},
+					"runArgs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "RunArgs contains additional container runtime arguments passed before the image name. Arguments are passed literally and in order, without shell parsing or template expansion.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
 					"env": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -6680,7 +6699,7 @@ func schema_microsoft_dcp_api_v2_LogicalServiceStatus(ref common.ReferenceCallba
 				Properties: map[string]spec.Schema{
 					"phase": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase summarizes service lifecycle independently of current endpoint availability.",
+							Description: "Phase summarizes serving-address allocation and service lifecycle.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -6692,7 +6711,7 @@ func schema_microsoft_dcp_api_v2_LogicalServiceStatus(ref common.ReferenceCallba
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "EffectiveAddresses contains the usable addresses and their individual ports.",
+							Description: "EffectiveAddresses contains the allocated serving addresses and their individual ports. Allocation does not guarantee service or backend readiness.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -7031,6 +7050,25 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref common.ReferenceCal
 						},
 						SchemaProps: spec.SchemaProps{
 							Description: "Command is the command arguments passed to the container entrypoint.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"runArgs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "RunArgs contains additional container runtime arguments passed before the image name. Arguments are passed literally and in order, without shell parsing or template expansion.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{

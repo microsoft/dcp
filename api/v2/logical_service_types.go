@@ -26,10 +26,12 @@ import (
 type LogicalServicePhase string
 
 const (
-	// LogicalServiceReasonStarting qualifies Pending while allocation or endpoint availability is pending.
+	// LogicalServiceReasonStarting qualifies Pending while a serving address and port are unavailable.
 	LogicalServiceReasonStarting ConditionReason = "Starting"
-	// LogicalServiceReasonRunning indicates that listeners or proxyless endpoint selection started successfully.
-	LogicalServiceReasonRunning ConditionReason = "Running"
+	// LogicalServiceReasonAllocated indicates that a serving address and port are known, without guaranteeing service readiness.
+	LogicalServiceReasonAllocated ConditionReason = "Allocated"
+	// LogicalServiceReasonReady indicates that the service is up and has backing endpoints.
+	LogicalServiceReasonReady ConditionReason = "Ready"
 	// LogicalServiceReasonFailedToStart indicates that listener startup could not complete.
 	LogicalServiceReasonFailedToStart ConditionReason = "FailedToStart"
 	// LogicalServiceReasonMissing indicates that allocated listeners are no longer available.
@@ -39,11 +41,11 @@ const (
 )
 
 const (
-	// LogicalServicePhasePending indicates that listeners or initial proxyless endpoint selection are starting.
+	// LogicalServicePhasePending indicates that listeners or proxyless endpoint selection are pending.
 	LogicalServicePhasePending LogicalServicePhase = "Pending"
 
-	// LogicalServicePhaseRunning indicates that startup succeeded, independently of current endpoint availability.
-	// The Ready condition indicates whether listeners and endpoints are usable, without probing reachability.
+	// LogicalServicePhaseRunning indicates that a serving address and port are allocated.
+	// The Ready condition uses Allocated until the service is up with backing endpoints, then Ready, without probing reachability.
 	LogicalServicePhaseRunning LogicalServicePhase = "Running"
 
 	// LogicalServicePhaseUnknown indicates that service availability cannot be determined.
@@ -156,11 +158,12 @@ func (config *LogicalServiceSpec) Validate(configPath *field.Path) field.ErrorLi
 // LogicalServiceStatus describes observed service availability and all of its effective addresses.
 // +k8s:openapi-gen=true
 type LogicalServiceStatus struct {
-	// Phase summarizes service lifecycle independently of current endpoint availability.
+	// Phase summarizes serving-address allocation and service lifecycle.
 	// +kubebuilder:validation:Enum=Pending;Running;Unknown;Failed
 	Phase LogicalServicePhase `json:"phase,omitempty"`
 
-	// EffectiveAddresses contains the usable addresses and their individual ports.
+	// EffectiveAddresses contains the allocated serving addresses and their individual ports.
+	// Allocation does not guarantee service or backend readiness.
 	// +listType=atomic
 	EffectiveAddresses []ServiceAddress `json:"effectiveAddresses,omitempty"`
 

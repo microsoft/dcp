@@ -314,6 +314,11 @@ func (in *LogicalContainerConfig) DeepCopyInto(out *LogicalContainerConfig) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.RunArgs != nil {
+		in, out := &in.RunArgs, &out.RunArgs
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.Env != nil {
 		in, out := &in.Env, &out.Env
 		*out = make([]commonapi.EnvVar, len(*in))
@@ -1206,6 +1211,11 @@ func (in *PhysicalContainerConfig) DeepCopyInto(out *PhysicalContainerConfig) {
 	in.MonitorTimestamp.DeepCopyInto(&out.MonitorTimestamp)
 	if in.Command != nil {
 		in, out := &in.Command, &out.Command
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.RunArgs != nil {
+		in, out := &in.RunArgs, &out.RunArgs
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}

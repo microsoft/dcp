@@ -1063,6 +1063,7 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreate(
 		Image:        dataSnapshot.image,
 		Entrypoint:   containerConfig.Entrypoint,
 		Command:      containerConfig.Command,
+		RunArgs:      containerConfig.RunArgs,
 		VolumeMounts: volumeMounts,
 		Ports:        physicalPortsToCreateContainerPorts(containerConfig.Ports),
 		Networks:     networks,

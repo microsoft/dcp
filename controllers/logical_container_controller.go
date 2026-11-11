@@ -594,7 +594,7 @@ func physicalContainerConfigFromLogicalSpec(spec *apiv2.LogicalContainerSpec, po
 		RetainRuntimeContainer: spec.EffectiveMode() == apiv2.LogicalContainerModePersistent,
 		MonitorPID:             spec.MonitorPID, MonitorTimestamp: spec.MonitorTimestamp,
 		ImageRef: source.ImageRef, ContainerName: spec.ContainerName,
-		Entrypoint: source.Entrypoint, Command: source.Command, Env: source.Env,
+		Entrypoint: source.Entrypoint, Command: source.Command, RunArgs: source.RunArgs, Env: source.Env,
 		Ports: ports, VolumeMounts: source.VolumeMounts, CreateFiles: source.CreateFiles, Labels: source.Labels,
 	}
 	return config.DeepCopy()
