@@ -405,6 +405,25 @@ func TestBridgeTerminateAllowsDisconnect(t *testing.T) {
 	}
 }
 
+// Verifies that Bridge completes normally when the client closes after an acknowledged disconnect
+// while the adapter connection remains open.
+func TestBridgeClientClosureAfterAcknowledgedDisconnect(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, time.Minute)
+	defer cancel()
+	client, adapter, done := bridgeEndpoints(t, ctx, time.Second, nil)
+	require.NoError(t, client.WriteMessage(testRequest(40, "disconnect")))
+	request, requestErr := adapter.ReadMessage()
+	require.NoError(t, requestErr)
+	require.Equal(t, "disconnect", request.text("command"))
+	require.NoError(t, adapter.WriteMessage(testResponse(41, request.number("seq"), "disconnect")))
+	response, responseErr := client.ReadMessage()
+	require.NoError(t, responseErr)
+	require.EqualValues(t, 40, response.number("request_seq"))
+	require.NoError(t, client.Close())
+	require.NoError(t, <-done)
+}
+
 // Verifies that unexpected client closure is a session failure, not successful protocol shutdown.
 func TestBridgeUnexpectedDisconnectFails(t *testing.T) {
 	t.Parallel()

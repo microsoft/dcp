@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -160,6 +161,7 @@ func (writer *messageWriter) remap(message Message) (bool, bool, error) {
 // Bridge forwards DAP while preserving extension payloads and request correlation in both directions.
 // On ErrShutdownRequested it injects disconnect unless disconnect was already forwarded, allowing
 // final messages to drain until adapter EOF or grace expiry. Other cancellation and client loss fail.
+// Client closure after the adapter acknowledges a client disconnect completes normally; earlier client loss fails.
 // Execution exit or upstream read completion starts a bounded final-output drain.
 // It never synthesizes application exit or terminated events.
 // Observe runs before forwarding, after response correlation, and must be bounded and leave messages unchanged.
@@ -171,6 +173,7 @@ func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-c
 		err    error
 	}
 	results := make(chan result, 2)
+	var disconnectAcknowledged atomic.Bool
 	var workers sync.WaitGroup
 	workers.Add(2)
 	go func() {
@@ -220,6 +223,11 @@ func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-c
 						return
 					}
 				}
+				if matched && message.text("type") == "response" && message.text("command") == "disconnect" {
+					var success bool
+					// Record before forwarding so a client closing immediately after receipt cannot race the flag.
+					disconnectAcknowledged.Store(json.Unmarshal(message["success"], &success) == nil && success)
+				}
 				if writeErr := toClient.send(message, false); writeErr != nil {
 					results <- result{err: writeErr}
 					return
@@ -234,6 +242,9 @@ func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-c
 	}()
 	finish := func(completed result) error {
 		if completed.client {
+			if disconnectAcknowledged.Load() {
+				return nil
+			}
 			return fmt.Errorf("debug client disconnected: %w", completed.err)
 		}
 		if errors.Is(completed.err, io.EOF) {
