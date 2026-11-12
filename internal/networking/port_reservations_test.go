@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -225,9 +226,9 @@ func TestPortReservationRetainsAlreadyBoundDeclaredPort(t *testing.T) {
 	require.Equal(t, 1, portReservationCount(t, ctx, db))
 }
 
-// Verifies that automatic allocation skips a bound listener even after its SQLite claim
-// is released, and can reuse the port once that listener closes.
-func TestPortReservationAllocationSkipsReleasedButBoundPort(t *testing.T) {
+// Verifies that automatic allocation retains occupied-port exclusions until reconfiguration,
+// even after the listener closes, while successfully released claims remain reusable.
+func TestPortReservationAllocationRetainsOccupiedPortExclusion(t *testing.T) {
 	ctx, store, db := newPortReservationTestStore(t)
 	var first PortReservationSet
 	defer first.Release(ctx, log)
@@ -248,7 +249,117 @@ func TestPortReservationAllocationSkipsReleasedButBoundPort(t *testing.T) {
 	require.ErrorContains(t, occupiedErr, "could not find an available port")
 	require.Zero(t, portReservationCount(t, ctx, db))
 	require.NoError(t, listener.Close())
+	_, excludedErr := next.GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+	require.ErrorContains(t, excludedErr, "could not find an available port")
+	require.Zero(t, portReservationCount(t, ctx, db))
+	ConfigureStateStorePortAllocator(store, owner)
 	reusedPort, reuseErr := next.GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
 	require.NoError(t, reuseErr)
 	require.Equal(t, port, reusedPort)
+	next.Release(ctx, log)
+	var replacement PortReservationSet
+	defer replacement.Release(ctx, log)
+	releasedPort, releaseReuseErr := replacement.GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+	require.NoError(t, releaseReuseErr)
+	require.Equal(t, port, releasedPort, "released scan claims must become available without reconfiguring")
+}
+
+// Verifies that state-store allocation skips known reservations incrementally but resumes
+// the random walk when an incremental candidate is blocked by SQLite or a listener.
+func TestStateStorePortAllocationHybridScan(t *testing.T) {
+	for _, blocker := range []string{"owned reservation", "database reservation", "listener"} {
+		t.Run(blocker, func(t *testing.T) {
+			ctx, store, db := newPortReservationTestStore(t)
+			config, _, configErr := getStateStorePortAllocationConfig(log)
+			require.NoError(t, configErr)
+			binding := ports.Binding{Protocol: string(commonapi.PortProtocolTCP),
+				IP: netip.MustParseAddr(IPv4LocalhostDefaultAddress), Port: 26011}
+			expected := int32(26013)
+			switch blocker {
+			case "owned reservation":
+				var declared PortReservationSet
+				defer declared.Release(ctx, log)
+				require.NoError(t, declared.Reserve(ctx, binding, log))
+				expected = 26012
+			case "database reservation":
+				_, reserveErr := store.CreatePortReservation(ctx, stateStorePortReservationRequest(binding, config.owner))
+				require.NoError(t, reserveErr)
+			case "listener":
+				listener, listenErr := net.Listen("tcp", net.JoinHostPort(IPv4LocalhostDefaultAddress, fmt.Sprint(binding.Port)))
+				require.NoError(t, listenErr)
+				defer func() { require.NoError(t, listener.Close()) }()
+			}
+
+			require.NoError(t, stateStorePortReservationLock.Lock(ctx))
+			scan := config.getPortAllocationScan(commonapi.PortProtocolTCP, binding.IP)
+			scan.randomWalkCursor = 0
+			scan.randomWalkStep = 3
+			stateStorePortReservationLock.Unlock()
+
+			var owner PortReservationSet
+			defer owner.Release(ctx, log)
+			first, firstErr := owner.GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+			require.NoError(t, firstErr)
+			require.Equal(t, int32(26010), first)
+			second, secondErr := owner.GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+			require.NoError(t, secondErr)
+			require.Equal(t, expected, second)
+			third, thirdErr := owner.GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+			require.NoError(t, thirdErr)
+			require.Equal(t, expected+1, third)
+			expectedClaims := 4
+			if blocker == "listener" {
+				expectedClaims = 3
+			}
+			require.Equal(t, expectedClaims, portReservationCount(t, ctx, db))
+		})
+	}
+}
+
+// Verifies that state-store allocation can reconsider a conflicting SQLite claim after
+// its release, without treating that conflict as a failed bind probe or reconfiguring.
+func TestStateStorePortAllocationReconsidersReleasedDatabaseClaim(t *testing.T) {
+	ctx, store, db := newPortReservationTestStore(t)
+	t.Setenv(DCP_PORT_ALLOCATION_RANGE, "26010-26010")
+	config, _, configErr := getStateStorePortAllocationConfig(log)
+	require.NoError(t, configErr)
+	binding := ports.Binding{Protocol: string(commonapi.PortProtocolTCP),
+		IP: netip.MustParseAddr(IPv4LocalhostDefaultAddress), Port: 26010}
+	request := stateStorePortReservationRequest(binding, config.owner)
+	_, reserveErr := store.CreatePortReservation(ctx, request)
+	require.NoError(t, reserveErr)
+	var owner PortReservationSet
+	defer owner.Release(ctx, log)
+	_, conflictErr := owner.GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+	require.ErrorContains(t, conflictErr, "could not find an available port")
+	require.Equal(t, 1, portReservationCount(t, ctx, db))
+	require.NoError(t, store.ReleasePort(ctx, request))
+	port, allocationErr := owner.GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+	require.NoError(t, allocationErr)
+	require.Equal(t, binding.Port, port)
+	require.Equal(t, 1, portReservationCount(t, ctx, db))
+}
+
+// Verifies that concurrent GetFreePort calls sharing a stateful scan return distinct
+// ports and commit every allocation to SQLite.
+func TestStateStorePortAllocationConcurrentScan(t *testing.T) {
+	ctx, _, db := newPortReservationTestStore(t)
+	allocated := make([]int32, 6)
+	allocationErrors := make([]error, len(allocated))
+	var pending sync.WaitGroup
+	for index := range allocated {
+		pending.Add(1)
+		go func() {
+			defer pending.Done()
+			allocated[index], allocationErrors[index] = GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+		}()
+	}
+	pending.Wait()
+	unique := make(map[int32]struct{})
+	for index, port := range allocated {
+		require.NoError(t, allocationErrors[index])
+		unique[port] = struct{}{}
+	}
+	require.Len(t, unique, len(allocated))
+	require.Equal(t, len(allocated), portReservationCount(t, ctx, db))
 }

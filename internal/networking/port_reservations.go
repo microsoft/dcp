@@ -135,7 +135,17 @@ func (reservations *PortReservationSet) Release(ctx context.Context, log logr.Lo
 				releaseErr = releaseSpecificPortWithMruFile(ctx, addrToAddressString(key.binding.IP), key.binding.Port, log)
 			} else {
 				releaseCtx, cancel := context.WithTimeout(ctx, key.config.allocationTimeout)
-				releaseErr = key.config.store.ReleasePort(releaseCtx, stateStorePortReservationRequest(key.binding, key.config.owner))
+				releaseErr = stateStorePortReservationLock.Lock(releaseCtx)
+				if releaseErr == nil {
+					releaseErr = key.config.store.ReleasePort(releaseCtx, stateStorePortReservationRequest(key.binding, key.config.owner))
+					if releaseErr == nil {
+						scope := portAllocationScope{protocol: commonapi.PortProtocol(key.binding.Protocol), ip: key.binding.IP}
+						if candidates, found := key.config.scans[scope]; found {
+							delete(candidates.reservedPorts, key.binding.Port)
+						}
+					}
+					stateStorePortReservationLock.Unlock()
+				}
 				cancel()
 			}
 			if releaseErr != nil {

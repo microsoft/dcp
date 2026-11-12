@@ -9,7 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/fnv"
+	"math/rand/v2"
 	"net/netip"
 	"os"
 	"sort"
@@ -34,6 +34,12 @@ type stateStorePortAllocationConfig struct {
 	portRanges            indexedPortRanges
 	allowEphemeralOverlap bool
 	allocationTimeout     time.Duration
+	scans                 map[portAllocationScope]*stateStorePortAllocationScan // Protected by stateStorePortReservationLock.
+}
+
+type portAllocationScope struct {
+	protocol commonapi.PortProtocol
+	ip       netip.Addr
 }
 
 const (
@@ -41,7 +47,7 @@ const (
 	defaultStateStorePortAllocationRangeEnd   = 32767
 )
 
-// stateStorePortReservationLock serializes slower bind probes with state-store reservation writes.
+// stateStorePortReservationLock protects shared scans and serializes bind probes with reservation writes.
 // Do not hold portAllocatorLock while acquiring stateStorePortReservationLock, or vice versa.
 var stateStorePortReservationLock = concurrency.NewContextAwareLock()
 
@@ -103,7 +109,18 @@ func allocatePortFromStateStoreRange(ctx context.Context, protocol commonapi.Por
 	allocationCtx, cancel := context.WithTimeout(ctx, config.allocationTimeout)
 	defer cancel()
 
-	candidates := newStateStorePortAllocationCandidateIterator(config.portRanges, string(protocol), address)
+	ip, parseErr := netip.ParseAddr(ToStandaloneAddress(address))
+	if parseErr != nil {
+		return 0, nil, shouldFallback, fmt.Errorf("could not parse port allocation IP '%s': %w", address, parseErr)
+	}
+	ip = ip.Unmap()
+	if lockErr := stateStorePortReservationLock.Lock(allocationCtx); lockErr != nil {
+		return 0, nil, shouldFallback, lockErr
+	}
+	defer stateStorePortReservationLock.Unlock()
+
+	candidates := config.getPortAllocationScan(protocol, ip)
+	clear(candidates.attemptedPorts)
 	for {
 		if ctxErr := allocationCtx.Err(); ctxErr != nil {
 			return 0, nil, shouldFallback, ctxErr
@@ -112,11 +129,14 @@ func allocatePortFromStateStoreRange(ctx context.Context, protocol commonapi.Por
 		if !hasCandidate {
 			break
 		}
-		portAvailable, reserveErr := reserveStateStoreCandidateIfBindable(allocationCtx, config, protocol, address, candidate)
-		if !portAvailable {
+		if checkErr := checkPortCurrentlyBindable(protocol, address, candidate); checkErr != nil {
+			candidates.excludedPorts[candidate] = struct{}{}
 			continue
 		}
+		request := stateStorePortReservationRequest(ports.Binding{Protocol: string(protocol), IP: ip, Port: candidate}, config.owner)
+		_, reserveErr := config.store.CreatePortReservation(allocationCtx, request)
 		if reserveErr == nil {
+			candidates.RecordAllocation(candidate)
 			return candidate, config, false, nil
 		}
 		if errors.Is(reserveErr, statestore.ErrPortReservationHeld) {
@@ -126,35 +146,6 @@ func allocatePortFromStateStoreRange(ctx context.Context, protocol commonapi.Por
 	}
 
 	return 0, nil, shouldFallback, fmt.Errorf("could not find an available port in configured DCP port allocation range")
-}
-
-func reserveStateStoreCandidateIfBindable(
-	ctx context.Context,
-	config *stateStorePortAllocationConfig,
-	protocol commonapi.PortProtocol,
-	address string,
-	port int32,
-) (bool, error) {
-	if lockErr := stateStorePortReservationLock.Lock(ctx); lockErr != nil {
-		return true, lockErr
-	}
-	defer stateStorePortReservationLock.Unlock()
-
-	if checkErr := checkPortCurrentlyBindable(protocol, address, port); checkErr != nil {
-		return false, nil
-	}
-
-	normalizedAddress, addressErr := NormalizePortAllocationAddress(address)
-	if addressErr != nil {
-		return true, addressErr
-	}
-	ip, ipErr := netip.ParseAddr(ToStandaloneAddress(normalizedAddress))
-	if ipErr != nil {
-		return true, fmt.Errorf("could not parse port reservation IP '%s': %w", normalizedAddress, ipErr)
-	}
-	request := stateStorePortReservationRequest(ports.Binding{Protocol: string(protocol), IP: ip, Port: port}, config.owner)
-	_, reserveErr := config.store.CreatePortReservation(ctx, request)
-	return true, reserveErr
 }
 
 func checkPortAvailableWithStateStore(ctx context.Context, protocol commonapi.PortProtocol, address string, port int32, log logr.Logger) (*stateStorePortAllocationConfig, bool, error) {
@@ -202,7 +193,22 @@ func reserveSpecificStateStorePort(ctx context.Context, binding ports.Binding, b
 		}
 		return nil, shouldFallback, reserveErr
 	}
+	candidates := config.getPortAllocationScan(commonapi.PortProtocol(binding.Protocol), binding.IP)
+	candidates.reservedPorts[binding.Port] = struct{}{}
 	return config, false, nil
+}
+
+func (config *stateStorePortAllocationConfig) getPortAllocationScan(protocol commonapi.PortProtocol, ip netip.Addr) *stateStorePortAllocationScan {
+	scope := portAllocationScope{protocol: protocol, ip: ip.Unmap()}
+	if candidates, found := config.scans[scope]; found {
+		return candidates
+	}
+	if config.scans == nil {
+		config.scans = make(map[portAllocationScope]*stateStorePortAllocationScan)
+	}
+	candidates := newStateStorePortAllocationScan(config.portRanges)
+	config.scans[scope] = candidates
+	return candidates
 }
 
 func stateStorePortReservationRequest(binding ports.Binding, owner process.ProcessHandle) statestore.PortReservationRequest {
@@ -372,67 +378,97 @@ func (ranges indexedPortRanges) PortAt(index int) (int32, bool) {
 	return 0, false
 }
 
-type stateStorePortAllocationCandidateIterator struct {
-	ranges indexedPortRanges
-	total  int
-	offset int
-	step   int
-	next   int
+type stateStorePortAllocationScan struct {
+	ranges           indexedPortRanges
+	randomWalkCursor int
+	randomWalkStep   int
+	nextCandidate    int
+	currentCandidate int
+	reservedPorts    map[int32]struct{}
+	excludedPorts    map[int32]struct{}
+	attemptedPorts   map[int32]struct{}
 }
 
-// newStateStorePortAllocationCandidateIterator creates a deterministic random walk over the
-// configured ranges. The walk is lazy so large ranges do not need to be materialized before the
-// allocator finds an available port.
-func newStateStorePortAllocationCandidateIterator(ranges indexedPortRanges, protocol string, address string) *stateStorePortAllocationCandidateIterator {
-	total := ranges.Len()
-	if total <= 0 {
-		return &stateStorePortAllocationCandidateIterator{}
+// newStateStorePortAllocationScan creates a hybrid scan that advances incrementally after
+// successful allocations and resumes an exhaustive random walk after a candidate is unavailable.
+func newStateStorePortAllocationScan(ranges indexedPortRanges) *stateStorePortAllocationScan {
+	scan := &stateStorePortAllocationScan{
+		ranges:         ranges,
+		nextCandidate:  -1,
+		reservedPorts:  make(map[int32]struct{}),
+		excludedPorts:  make(map[int32]struct{}),
+		attemptedPorts: make(map[int32]struct{}),
 	}
-
-	hash := fnv.New64a()
-	_, _ = hash.Write([]byte(programInstanceID))
-	_, _ = hash.Write([]byte(protocol))
-	_, _ = hash.Write([]byte(address))
-	hashValue := hash.Sum64()
-	offset := int(hashValue % uint64(total))
-	// Use the remaining hash bits for the stride so it is not determined by the offset.
-	step := stateStorePortAllocationCandidateStep(total, hashValue/uint64(total))
-
-	return &stateStorePortAllocationCandidateIterator{
-		ranges: ranges,
-		total:  total,
-		offset: offset,
-		step:   step,
+	if total := ranges.Len(); total > 0 {
+		scan.randomWalkCursor = rand.IntN(total)
+		scan.randomWalkStep = stateStorePortAllocationCandidateStep(total)
 	}
+	return scan
 }
 
-// Next returns the next candidate port from the virtual flattened port range.
-func (iterator *stateStorePortAllocationCandidateIterator) Next() (int32, bool) {
-	if iterator.next >= iterator.total {
+// Next returns a candidate that is neither reserved, excluded, nor attempted in the current allocation.
+func (scan *stateStorePortAllocationScan) Next() (int32, bool) {
+	total := scan.ranges.Len()
+	if scan.nextCandidate >= 0 {
+		start := scan.nextCandidate
+		scan.nextCandidate = -1
+		for offset := 0; offset < total; offset++ {
+			if candidate, available := scan.takeCandidate((start + offset) % total); available {
+				return candidate, true
+			}
+		}
 		return 0, false
 	}
 
-	candidateIndex := (iterator.offset + iterator.next*iterator.step) % iterator.total
-	iterator.next++
-	return iterator.ranges.PortAt(candidateIndex)
+	for attempts := 0; attempts < total; attempts++ {
+		candidateIndex := scan.randomWalkCursor
+		scan.randomWalkCursor = (scan.randomWalkCursor + scan.randomWalkStep) % total
+		if candidate, available := scan.takeCandidate(candidateIndex); available {
+			return candidate, true
+		}
+	}
+	return 0, false
+}
+
+func (scan *stateStorePortAllocationScan) takeCandidate(index int) (int32, bool) {
+	candidate, valid := scan.ranges.PortAt(index)
+	if !valid {
+		return 0, false
+	}
+	if _, reserved := scan.reservedPorts[candidate]; reserved {
+		return 0, false
+	}
+	if _, excluded := scan.excludedPorts[candidate]; excluded {
+		return 0, false
+	}
+	if _, attempted := scan.attemptedPorts[candidate]; attempted {
+		return 0, false
+	}
+	scan.attemptedPorts[candidate] = struct{}{}
+	scan.currentCandidate = index
+	return candidate, true
+}
+
+// RecordAllocation retains the selected port and switches the next search to incremental scanning.
+func (scan *stateStorePortAllocationScan) RecordAllocation(port int32) {
+	scan.reservedPorts[port] = struct{}{}
+	scan.nextCandidate = (scan.currentCandidate + 1) % scan.ranges.Len()
 }
 
 // stateStorePortAllocationCandidateStep returns a pseudo-random step that is coprime with the
 // number of candidates. A coprime step guarantees the modular walk visits every candidate exactly
 // once instead of cycling through a subset of the range.
-func stateStorePortAllocationCandidateStep(total int, hashValue uint64) int {
+func stateStorePortAllocationCandidateStep(total int) int {
 	if total <= 1 {
 		return 1
 	}
 
-	step := int(hashValue%uint64(total-1)) + 1
-	for gcd(step, total) != 1 {
-		step++
-		if step >= total {
-			step = 1
+	for {
+		step := rand.IntN(total-1) + 1
+		if gcd(step, total) == 1 {
+			return step
 		}
 	}
-	return step
 }
 
 // gcd computes the greatest common divisor using Euclid's algorithm.
