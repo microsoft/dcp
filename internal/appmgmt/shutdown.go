@@ -11,8 +11,6 @@ import (
 	"os"
 	stdslices "slices"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -20,9 +18,8 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/dynamic/dynamicinformer"
-	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
@@ -209,7 +206,16 @@ func doCleanup(log logr.Logger) error {
 			sr.State = processing
 			inProgress += 1
 			log.Info("Cleaning up a resource...", "Resource", sr.GVR.String())
-			go cleanupResource(shutdownCtx, dcpclient, dynamicClient, sr.GVR, log, resourceDone)
+			go func(gvr schema.GroupVersionResource) {
+				var cleanupErr error
+				defer func() {
+					if panicErr := resiliency.MakePanicError(recover(), log); panicErr != nil {
+						cleanupErr = panicErr
+					}
+					resourceDone <- resourceCleanupResult{GVR: gvr, Error: cleanupErr}
+				}()
+				cleanupErr = cleanupResource(shutdownCtx, dcpclient, dynamicClient, gvr, log)
+			}(sr.GVR)
 		}
 
 		waitForResourceProcessed()
@@ -248,128 +254,102 @@ func doCleanup(log logr.Logger) error {
 	return retval
 }
 
+// cleanupResource deletes all instances of the given resource kind (except those owned by a DCP parent object)
+// and waits until none of them remain. Completion is determined by periodically listing the remaining instances,
+// so it does not depend on observing a watch event for every deletion.
 func cleanupResource(
 	ctx context.Context,
 	dcpclient client.Client,
-	dynamicClient *dynamic.DynamicClient,
+	dynamicClient dynamic.Interface,
 	gvr schema.GroupVersionResource,
 	log logr.Logger,
-	resourceDone chan<- resourceCleanupResult,
-) {
-	// Note that this recovery does not affect the resource event handlers code, which runs in a separate goroutine,
-	// managed by the informer. If handlers get more complex, consider adding panic recovery to them too.
-	defer func() {
-		panicErr := resiliency.MakePanicError(recover(), log)
-		if panicErr != nil {
-			// Note: make sure the code in the cleanupResource() function (code below) writes to resourceDone channel
-			// as the LAST operation before returning. This minimizes the chance of writing to the channel twice
-			// for the same resource (gvr).
-			resourceDone <- resourceCleanupResult{GVR: gvr, Error: panicErr}
-		}
-	}()
+) error {
+	// Instances (by UID) for which deletion has been initiated, or which are left to their parent to clean up.
+	handled := make(map[types.UID]bool)
+	// Instances (by UID) that could not be deleted, mapped to the deletion error.
+	failedDeletions := &syncmap.Map[types.UID, error]{}
+	var lastListErr error
+	firstList := true
 
-	factory := dynamicinformer.NewDynamicSharedInformerFactory(dynamicClient, 20*time.Second)
-	// Do not call factory.Shutdown() -- if for whatever reason there are some resources left not deleted,
-	// factory.Shutdown() will block forever waiting for the informers to stop.
-	informer := factory.ForResource(gvr)
-
-	resourceCount := &atomic.Int32{}
-	cacheSyncDone := make(chan struct{})
-	informerFactoryCtx, informerFactoryCtxCancel := context.WithCancel(ctx)
-	defer informerFactoryCtxCancel()
-	var deleteErrors []error
-	var deleteErrorsLock sync.Mutex
-
-	handlers := cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj any) {
-			if obj == nil {
-				return // Should never happen
-			}
-			clientObj, ok := obj.(client.Object)
-			if !ok {
-				return // Should never happen
-			}
-
-			resourceCount.Add(1)
-
-			parent := metav1.GetControllerOf(clientObj)
-			if parent != nil && parent.APIVersion == apiv1.GroupVersion.String() {
-				log.Info("Object has a parent, which should handle cleanup", "gvr", gvr, "ObjectName", clientObj.GetName(), "Namespace", clientObj.GetNamespace(), "ParentKind", parent.Kind, "ParentName", parent.Name)
-				resourceCount.Add(-1)
-				return
-			}
-
-			go func() {
-				deleteErr := deleteSingleObject(ctx, dcpclient, gvr, clientObj, log, cacheSyncDone)
-				if deleteErr != nil {
-					// Only decrement if error occurred--successful deletion will be accounted for by DeleteFunc handler below
-					resourceCount.Add(-1)
-
-					deleteErrorsLock.Lock()
-					defer deleteErrorsLock.Unlock()
-					deleteErrors = append(deleteErrors, fmt.Errorf("could not delete object '%s/%s' of type '%s': %w", clientObj.GetNamespace(), clientObj.GetName(), gvr.String(), deleteErr))
-				}
-			}()
-		},
-
-		DeleteFunc: func(obj interface{}) {
-			if obj == nil {
-				return // Should never happen
-			}
-			clientObj, ok := obj.(client.Object)
-			if !ok {
-				return // Should never happen
-			}
-			resourceCount.Add(-1)
-			log.Info("Object deleted", "gvr", gvr, "Resource", clientObj.GetName(), "Namespace", clientObj.GetNamespace())
-		},
-	}
-
-	if _, err := informer.Informer().AddEventHandler(handlers); err != nil {
-		resourceDone <- resourceCleanupResult{GVR: gvr, Error: err}
-		return
-	}
-
-	factory.Start(informerFactoryCtx.Done())
-	_ = factory.WaitForCacheSync(ctx.Done())
-	initialCount := resourceCount.Load()
-	close(cacheSyncDone)
-
-	if initialCount == 0 {
-		log.Info("No resource instances found", "Resource", gvr.String())
-		resourceDone <- resourceCleanupResult{GVR: gvr, Error: nil}
-		return
-	}
-
-	log.Info("Waiting for all instances of a resource to be deleted...",
-		"InitialCount", initialCount,
-		"Resource", gvr.String(),
-	)
-
-	const noNewResourcesCheckInterval = 1 * time.Second
-	noNewResourcesTimer := time.NewTimer(noNewResourcesCheckInterval)
+	const remainingResourcesCheckInterval = 1 * time.Second
+	checkTimer := time.NewTimer(0)
+	defer checkTimer.Stop()
 
 	for {
 		select {
-
 		case <-ctx.Done():
 			log.Info("Shutdown context cancelled, stopping resource cleanup", "Resource", gvr.String())
-			noNewResourcesTimer.Stop()
-			resourceDone <- resourceCleanupResult{GVR: gvr, Error: ctx.Err()}
-			return
+			return resiliency.Join(ctx.Err(), lastListErr, joinDeletionErrors(failedDeletions))
 
-		case <-noNewResourcesTimer.C:
-			if resourceCount.Load() <= 0 {
-				log.Info("All resource instances processed", "Resource", gvr.String())
-				deleteErrorsLock.Lock()
-				defer deleteErrorsLock.Unlock()
-				resourceDone <- resourceCleanupResult{GVR: gvr, Error: resiliency.Join(deleteErrors...)}
-				return
-			} else {
-				noNewResourcesTimer.Reset(noNewResourcesCheckInterval)
+		case <-checkTimer.C:
+		}
+
+		// Always list directly from the API server: it is the authoritative source of the remaining instances.
+		instances, listErr := dynamicClient.Resource(gvr).List(ctx, metav1.ListOptions{})
+		if listErr != nil {
+			lastListErr = fmt.Errorf("could not list instances of resource '%s': %w", gvr.String(), listErr)
+			log.Error(listErr, "Could not list resource instances, will retry", "Resource", gvr.String())
+			checkTimer.Reset(remainingResourcesCheckInterval)
+			continue
+		}
+		lastListErr = nil
+
+		remaining := 0
+		for i := range instances.Items {
+			instance := &instances.Items[i]
+			uid := instance.GetUID()
+
+			if _, failed := failedDeletions.Load(uid); failed {
+				continue
+			}
+
+			parent := metav1.GetControllerOf(instance)
+			if parent != nil && parent.APIVersion == apiv1.GroupVersion.String() {
+				if !handled[uid] {
+					handled[uid] = true
+					log.Info("Object has a parent, which should handle cleanup", "gvr", gvr, "ObjectName", instance.GetName(), "Namespace", instance.GetNamespace(), "ParentKind", parent.Kind, "ParentName", parent.Name)
+				}
+				continue
+			}
+
+			remaining++
+			if !handled[uid] {
+				handled[uid] = true
+				go func() {
+					deleteErr := deleteSingleObject(ctx, dcpclient, gvr, instance, log)
+					if deleteErr != nil {
+						failedDeletions.Store(uid, fmt.Errorf("could not delete object '%s/%s' of type '%s': %w", instance.GetNamespace(), instance.GetName(), gvr.String(), deleteErr))
+					}
+				}()
 			}
 		}
+
+		if firstList {
+			firstList = false
+			if remaining == 0 {
+				log.Info("No resource instances found", "Resource", gvr.String())
+				return nil
+			}
+			log.Info("Waiting for all instances of a resource to be deleted...",
+				"InitialCount", remaining,
+				"Resource", gvr.String(),
+			)
+		} else if remaining == 0 {
+			log.Info("All resource instances processed", "Resource", gvr.String())
+			return joinDeletionErrors(failedDeletions)
+		}
+
+		checkTimer.Reset(remainingResourcesCheckInterval)
 	}
+}
+
+func joinDeletionErrors(failedDeletions *syncmap.Map[types.UID, error]) error {
+	var deleteErrors []error
+	failedDeletions.Range(func(_ types.UID, deleteErr error) bool {
+		deleteErrors = append(deleteErrors, deleteErr)
+		return true
+	})
+	return resiliency.Join(deleteErrors...)
 }
 
 func deleteSingleObject(
@@ -378,10 +358,7 @@ func deleteSingleObject(
 	gvr schema.GroupVersionResource,
 	clientObj client.Object,
 	log logr.Logger,
-	cacheSyncDone <-chan struct{},
 ) (retval error) {
-	<-cacheSyncDone
-
 	defer func() {
 		panicErr := resiliency.MakePanicError(recover(), log)
 		if panicErr != nil {
