@@ -20,6 +20,16 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 )
 
+// Verifies that WSLC copies caller-owned tar streams to the selected destination
+// and surfaces command launch failures.
+func TestCopyFilesArchive(t *testing.T) {
+	t.Parallel()
+	commandstreams.VerifyTarCopy(t, []string{"wslc"}, func(ctx context.Context, executor process.Executor, archive io.Reader) error {
+		orchestrator := NewWslcCliOrchestrator(testr.New(t), executor)
+		return orchestrator.CopyFiles(ctx, containers.CopyFilesOptions{Container: "pinned-id", Destination: "/workspace", Archive: archive})
+	})
+}
+
 // Verifies that WSLc exec forwards caller-owned stdin without a TTY, preserves raw duplex IO,
 // keeps stderr separate and retains its existing completion, cancellation and startup-failure behavior.
 func TestExecContainerStreams(t *testing.T) {

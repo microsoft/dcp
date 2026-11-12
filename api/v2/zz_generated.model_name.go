@@ -31,6 +31,11 @@ func (in ContainerBuildSecret) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerCopyFileContext) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ContainerCopyFileContext"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ContainerExecConfig) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.ContainerExecConfig"
 }

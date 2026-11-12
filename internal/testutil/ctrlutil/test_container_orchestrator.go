@@ -22,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	std_slices "slices"
 	"strings"
@@ -2880,54 +2881,12 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 		return containers.ErrNotFound
 	}
 
-	tarWriter := usvc_io.NewTarWriter()
-
-	certificateHashes := []string{}
-	for _, item := range options.Entries {
-		switch item.Type {
-		case containers.FileSystemEntryTypeDir:
-			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addDirectoryErr != nil {
-				return addDirectoryErr
-			}
-		case containers.FileSystemEntryTypeSymlink:
-			if addSymlinkErr := containers.AddSymlinkToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addSymlinkErr != nil {
-				if item.ContinueOnError {
-					to.log.Error(addSymlinkErr, "Failed to add symlink to tar archive, but continueOnError is set", "SymLink", item)
-				} else {
-					return addSymlinkErr
-				}
-			}
-		case containers.FileSystemEntryTypeOpenSSL:
-			hash, addCertErr := containers.AddCertificateToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, certificateHashes, to.log)
-			if addCertErr != nil {
-				if item.ContinueOnError {
-					to.log.Error(addCertErr, "Failed to add certificate to tar archive, but continueOnError is set", "Certificate", item)
-				} else {
-					return addCertErr
-				}
-			}
-
-			// Keep track of the certificate hashes we've added to this directory so that we can deal with the possibility of collisions
-			certificateHashes = append(certificateHashes, hash)
-		default:
-			if addFileErr := containers.AddFileToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addFileErr != nil {
-				if item.ContinueOnError {
-					to.log.Error(addFileErr, "Failed to add file to tar archive, but continueOnError is set", "File", item)
-				} else {
-					return addFileErr
-				}
-			}
-		}
-	}
-
-	if tarWriter.Empty() {
-		// Can happen if all ContinueOnError items fail
-		return nil
-	}
-
-	buffer, bufferErr := tarWriter.Buffer()
+	buffer, bufferErr := containers.CreateFilesArchive(ctx, to.log, options)
 	if bufferErr != nil {
 		return bufferErr
+	}
+	if buffer == nil {
+		return nil
 	}
 
 	to.createFiles[foundContainer.ID] = append(to.createFiles[foundContainer.ID], &containerCreateFile{
@@ -2940,6 +2899,30 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 	})
 
 	return nil
+}
+
+func (to *TestContainerOrchestrator) CopyFiles(ctx context.Context, options containers.CopyFilesOptions) error {
+	if options.Container == "" || !path.IsAbs(options.Destination) || options.Archive == nil {
+		return fmt.Errorf("container, absolute destination, and archive are required")
+	}
+	buffer := &bytes.Buffer{}
+	if _, copyErr := io.Copy(buffer, usvc_io.NewContextReader(ctx, options.Archive, false)); copyErr != nil {
+		return copyErr
+	}
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
+	for _, container := range to.containers {
+		if container.matches(options.Container) {
+			to.createFiles[container.ID] = append(to.createFiles[container.ID], &containerCreateFile{
+				Destination: options.Destination, Tar: buffer,
+			})
+			return nil
+		}
+	}
+	return containers.ErrNotFound
 }
 
 func (to *TestContainerOrchestrator) GetCreatedFiles(name string) ([]*containerCreateFile, error) {

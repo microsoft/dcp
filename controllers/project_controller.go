@@ -257,7 +257,7 @@ func (r *ProjectReconciler) prepareProjectValues(
 		return prepareErr
 	}
 	if resource.Spec.Container != nil && resource.Spec.DebugAdapter != nil {
-		adapterPort := resource.Spec.DebugAdapter.GetContainerTCPPort()
+		adapterPort := resource.Spec.DebugAdapter.GetContainerTCPPort(resource.Spec.Container != nil)
 		for index, selected := range ports {
 			if adapterPort != 0 && selected.protocol == commonapi.PortProtocolTCP && resource.Spec.Container.Ports[index].ContainerPort == adapterPort {
 				data.reason, data.message = apiv2.ProjectReasonPreparationFailed, "The adapter port conflicts with a declared TCP application port."
@@ -682,7 +682,7 @@ func (r *ProjectReconciler) observeProjectContainer(
 	}
 	data.adapterAddress = ""
 	if resource.Spec.DebugAdapter != nil {
-		port := resource.Spec.DebugAdapter.GetContainerTCPPort()
+		port := resource.Spec.DebugAdapter.GetContainerTCPPort(resource.Spec.Container != nil)
 		for _, mapping := range physical.Status.PortMappings {
 			if port != 0 && mapping.ContainerPort == port && mapping.Protocol == commonapi.PortProtocolTCP &&
 				mapping.HostIP == "127.0.0.1" && mapping.HostPort > 0 {
@@ -909,7 +909,7 @@ func projectContainerSpec(resource *apiv2.Project, data *projectData) apiv2.Phys
 		physicalPorts = append(physicalPorts, port.ToContainerPort(data.ports[portIndex].protocol))
 	}
 	if resource.Spec.DebugAdapter != nil {
-		if port := resource.Spec.DebugAdapter.GetContainerTCPPort(); port != 0 {
+		if port := resource.Spec.DebugAdapter.GetContainerTCPPort(resource.Spec.Container != nil); port != 0 {
 			physicalPorts = append(physicalPorts, apiv2.ContainerPort{
 				ContainerPort: port, HostIP: "127.0.0.1", Protocol: commonapi.PortProtocolTCP,
 			})
@@ -924,11 +924,18 @@ func projectContainerSpec(resource *apiv2.Project, data *projectData) apiv2.Phys
 		commonapi.Label{Key: groupVersionLabel, Value: apiv2.GroupVersion.String()},
 		commonapi.Label{Key: nameLabel, Value: resource.Name},
 	)
+	var copyFiles []apiv2.ContainerCopyFileContext
+	if resource.Spec.DebugAdapter != nil {
+		copyFiles = append(copyFiles, apiv2.ContainerCopyFileContext{
+			Directory:   resource.Spec.DebugAdapter.Directory,
+			Destination: resource.Spec.DebugAdapter.GetAdapterDirectory(true),
+		})
+	}
 	return apiv2.PhysicalContainerSpec{Stop: resource.Spec.Stop, Container: &apiv2.PhysicalContainerConfig{
 		ContainerName: projectPhysicalName(resource), ImageRef: imageRef,
 		Entrypoint: "tail", Command: []string{"-f", "/dev/null"}, RunArgs: desired.RunArgs, Env: desired.Env,
 		Ports: physicalPorts, VolumeMounts: desired.VolumeMounts,
-		CreateFiles: desired.CreateFiles, Labels: labels,
+		CreateFiles: desired.CreateFiles, CopyFiles: copyFiles, Labels: labels,
 	}}
 }
 

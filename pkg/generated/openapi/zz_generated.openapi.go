@@ -91,6 +91,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.ContainerBuildContext{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_ContainerBuildContext(ref),
 		v2.ContainerBuildContextArchive{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref),
 		v2.ContainerBuildSecret{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_ContainerBuildSecret(ref),
+		v2.ContainerCopyFileContext{}.OpenAPIModelName():                schema_microsoft_dcp_api_v2_ContainerCopyFileContext(ref),
 		v2.ContainerExecConfig{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ContainerExecConfig(ref),
 		v2.ContainerExecStatus{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ContainerExecStatus(ref),
 		v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName():        schema_microsoft_dcp_api_v2_ContainerNetworkConnectionConfig(ref),
@@ -4440,6 +4441,61 @@ func schema_microsoft_dcp_api_v2_ContainerBuildSecret(ref common.ReferenceCallba
 	}
 }
 
+func schema_microsoft_dcp_api_v2_ContainerCopyFileContext(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerCopyFileContext describes a tar archive to extract into a container before startup. Exactly one of Directory, Source and RawContents is required.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"destination": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Destination is the absolute container destination, defaulting to \"/\". File and inline archives require an existing destination; Directory creates it through the streamed archive.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"directory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Directory is an absolute host directory packaged as a tar stream during copy. Source permissions and relative internal symlinks are preserved; absolute or escaping links are rejected.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Source is a host tar file. Mutually exclusive with Directory and RawContents.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"sha256": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SHA256 verifies the archive at Source. Required when Source is set.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"rawContents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RawContents contains a base64-encoded tar archive. Mutually exclusive with Directory and Source.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"deleteAfterCopy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DeleteAfterCopy deletes Source after copying or terminal failure, including stop/deletion. The file is retained while an operation is outstanding or a retry remains possible.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_ContainerExecConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -4753,9 +4809,17 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 				Description: "DebugAdapterConfig declares an adapter to launch only on an explicit debug-subresource request. DAP initialize, launch, and attach configuration is supplied over the debug stream, not through this spec.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"placement": {
+					"directory": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Placement selects host execution or execution in the prepared Project container. Defaults to host. Container placement supports stdio and tcp-connect.",
+							Description: "Directory is the absolute host directory containing the adapter and its dependencies. Container Projects copy its contents before starting the prepared container.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerDirectory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerDirectory overrides the container installation directory, defaulting to /opt/dcp/debug-adapter. It is forbidden for process Projects.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -4767,7 +4831,7 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Args contains the executable name or path followed by its arguments. TCP modes replace {{port}} with the host-allocated port or the prepared container's internal port.",
+							Description: "Args contains the executable name or path followed by its arguments. TCP modes replace {{port}} with the host-allocated port or the prepared container's internal port. {{adapterDirectory}} expands to Directory for process Projects or the installation directory for container Projects.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -4820,7 +4884,7 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 						},
 					},
 				},
-				Required: []string{"args"},
+				Required: []string{"directory", "args"},
 			},
 		},
 		Dependencies: []string{
@@ -7395,6 +7459,24 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref common.ReferenceCal
 							},
 						},
 					},
+					"copyFiles": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "CopyFiles contains tar archives to copy after CreateFiles and before container startup.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.ContainerCopyFileContext{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
 					"labels": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -7420,7 +7502,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref common.ReferenceCal
 			},
 		},
 		Dependencies: []string{
-			v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName(), v2.ContainerPort{}.OpenAPIModelName(), v2.CreateFileSystem{}.OpenAPIModelName(), v2.VolumeMount{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.ContainerCopyFileContext{}.OpenAPIModelName(), v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName(), v2.ContainerPort{}.OpenAPIModelName(), v2.CreateFileSystem{}.OpenAPIModelName(), v2.VolumeMount{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -10061,7 +10143,7 @@ func schema_microsoft_dcp_api_v2_ProjectSpec(ref common.ReferenceCallback) commo
 					},
 					"debugAdapter": {
 						SchemaProps: spec.SchemaProps{
-							Description: "DebugAdapter declares an adapter; configuration alone does not launch it. Host placement is valid with either application template; container placement requires a container template.",
+							Description: "DebugAdapter declares an adapter; configuration alone does not launch it. The application template determines whether the adapter runs on the host or in the prepared container.",
 							Ref:         ref(v2.DebugAdapterConfig{}.OpenAPIModelName()),
 						},
 					},

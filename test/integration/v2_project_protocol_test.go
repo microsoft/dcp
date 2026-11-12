@@ -44,7 +44,7 @@ func TestV2ProjectProtocolProgress(t *testing.T) {
 				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
 					Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
 						ExecutablePath: "adapter-started", AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit}}},
-					DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{tool, "--dap-stdio"}},
+					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}},
 				}}
 			if ending == "delete" {
 				project.Finalizers = []string{"test/inspect-target-cleanup"}

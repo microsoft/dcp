@@ -39,6 +39,16 @@ const (
 	pollImmediately = true // Don't wait before polling for the first time
 )
 
+// Verifies that Docker copies caller-owned tar streams to the selected container destination
+// and surfaces command launch failures.
+func TestCopyFilesArchive(t *testing.T) {
+	t.Parallel()
+	commandstreams.VerifyTarCopy(t, []string{"docker"}, func(ctx context.Context, executor process.Executor, archive io.Reader) error {
+		orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
+		return orchestrator.CopyFiles(ctx, ct.CopyFilesOptions{Container: "pinned-id", Destination: "/workspace", Archive: archive})
+	})
+}
+
 // Verifies that Docker exec forwards caller-owned stdin without a TTY, preserves raw duplex IO,
 // keeps stderr separate and retains its existing completion, cancellation and startup-failure behavior.
 func TestExecContainerStreams(t *testing.T) {

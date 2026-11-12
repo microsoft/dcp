@@ -111,8 +111,8 @@ func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 					Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
 						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
 					}},
-					DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{"adapter", "--port={{port}}"},
-						Placement: apiv2.DebugAdapterPlacementContainer, Mode: apiv2.DebugAdapterModeTCPConnect},
+					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter", "--port={{port}}"},
+						Mode: apiv2.DebugAdapterModeTCPConnect},
 				}}
 			expectedPort := int32(4711)
 			if scenario == "zero" {

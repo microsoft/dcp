@@ -198,7 +198,7 @@ func (runtime *projectDebugRuntime) launch(
 		projectName: project.NamespacedName(), projectUID: project.UID, generation: project.Generation,
 		status: apiv2.ProjectDebugExecutionStatus{ID: string(id), Phase: apiv2.ProjectDebugPhasePending},
 	}
-	if project.Spec.DebugAdapter.EffectivePlacement() == apiv2.DebugAdapterPlacementContainer {
+	if project.Spec.Container != nil {
 		execution.containerID = project.Status.ContainerID
 	}
 	if _, publishErr := runtime.writer.update(setupCtx, project.NamespacedName(), project.UID, execution.status.DeepCopy(), nil); publishErr != nil {
@@ -207,7 +207,7 @@ func (runtime *projectDebugRuntime) launch(
 	}
 	stopSetup := context.AfterFunc(setupCtx, cancel)
 	defer stopSetup()
-	if project.Spec.DebugAdapter.EffectivePlacement() == apiv2.DebugAdapterPlacementContainer {
+	if project.Spec.Container != nil {
 		return runtime.launchContainer(setupCtx, executionCtx, project, execution)
 	}
 	var listener net.Listener
@@ -241,7 +241,14 @@ func (runtime *projectDebugRuntime) launch(
 		}
 		return nil, nil, errors.Join(launchErr, publishErr)
 	}
-	args := append([]string(nil), project.Spec.DebugAdapter.Args...)
+	directoryInfo, directoryErr := os.Stat(project.Spec.DebugAdapter.Directory)
+	if directoryErr != nil {
+		return fail(fmt.Errorf("inspect adapter directory: %w", directoryErr))
+	}
+	if !directoryInfo.IsDir() {
+		return fail(fmt.Errorf("adapter directory %q is not a directory", project.Spec.DebugAdapter.Directory))
+	}
+	args := project.Spec.DebugAdapter.GetArgs(false)
 	if mode != apiv2.DebugAdapterModeStdio {
 		port, portErr := networking.GetFreePort(commonapi.PortProtocolTCP, "127.0.0.1", runtime.log)
 		if portErr != nil {
@@ -410,7 +417,7 @@ func (runtime *projectDebugRuntime) launchContainer(
 	}
 	diagnostic := adapterDiagnosticWriter{log: runtime.log.WithValues(
 		logger.RESOURCE_LOG_STREAM_ID, project.GetResourceId(), "Project", project.NamespacedName(), "Execution", execution.status.ID)}
-	args := append([]string(nil), project.Spec.DebugAdapter.Args...)
+	args := project.Spec.DebugAdapter.GetArgs(true)
 	options := containers.ExecContainerOptions{
 		Container: execution.containerID, Env: environment,
 		StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: usvc_io.NopWriteCloser(diagnostic), StdErrStream: usvc_io.NopWriteCloser(diagnostic)},

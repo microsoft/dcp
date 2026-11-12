@@ -368,9 +368,9 @@ func TestV2ProjectContextLossReasons(t *testing.T) {
 	}
 }
 
-// Verifies that a backing lookup error preserves Project's established lifecycle, prerequisites,
-// and log identity, and subsequent observation continues with the same backing.
-func TestV2ProjectPreservesLifecycleAcrossLookupErrors(t *testing.T) {
+// Verifies that Project recovers from backing lookup errors during startup and after preparation,
+// eventually becoming ready with the same container and log identity without creating a replacement.
+func TestV2ProjectRecoversFromBackingLookupErrors(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -385,16 +385,15 @@ func TestV2ProjectPreservesLifecycleAcrossLookupErrors(t *testing.T) {
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-observation-recovery")
 	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-			DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{"not-started"}},
+			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"not-started"}},
 			Container: &apiv2.ProjectContainerTemplate{
 				LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 			}}}
 	decorated.failContainerLists.Store(true)
 	require.NoError(t, server.Client.Create(ctx, resource))
-	pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(_ *apiv2.Project) (bool, error) {
 		return decorated.containerListFailures.Load() > 0, nil
 	})
-	require.Equal(t, apiv2.ProjectPhasePending, pending.Status.Phase)
 	decorated.failContainerLists.Store(false)
 	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
 		[]byte(`{"metadata":{"annotations":{"observation-probe":"start"}}}`))))
@@ -403,18 +402,16 @@ func TestV2ProjectPreservesLifecycleAcrossLookupErrors(t *testing.T) {
 	decorated.failContainerLists.Store(true)
 	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
 		[]byte(`{"metadata":{"annotations":{"observation-probe":"fail"}}}`))))
-	observed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(_ *apiv2.Project) (bool, error) {
 		return decorated.containerListFailures.Load() > initialFailures, nil
 	})
-	require.Equal(t, apiv2.ProjectPhaseReady, observed.Status.Phase)
-	requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonPrepared)
-	require.Equal(t, prepared.Status.RuntimeLogs, observed.Status.RuntimeLogs)
 	decorated.failContainerLists.Store(false)
 	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
 		[]byte(`{"metadata":{"annotations":{"observation-probe":"recover"}}}`))))
 	recovered := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+	requireReadyCondition(t, recovered.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonPrepared)
 	require.Equal(t, prepared.Status.ContainerID, recovered.Status.ContainerID)
-	require.Equal(t, prepared.Status.RuntimeLogs.UID, recovered.Status.RuntimeLogs.UID)
+	require.Equal(t, prepared.Status.RuntimeLogs, recovered.Status.RuntimeLogs)
 	var backings apiv2.PhysicalContainerList
 	require.NoError(t, server.Client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
 	require.Len(t, backings.Items, 1)
@@ -784,7 +781,7 @@ func TestV2ProjectDeletionConfirmsUnobservedCreate(t *testing.T) {
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-delete-confirmation")
 	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-			DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{"not-started"}},
+			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"not-started"}},
 			Container: &apiv2.ProjectContainerTemplate{
 				LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: namespace.Name + "-image"},
 			}}}

@@ -23,9 +23,24 @@ import (
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/internal/testutil/commandstreams"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that Podman copies caller-owned tar streams through its native or machine transport
+// and surfaces command launch failures.
+func TestCopyFilesArchive(t *testing.T) {
+	t.Parallel()
+	prefix := []string{"podman"}
+	if osutil.IsWindows() {
+		prefix = append(prefix, "machine", "ssh", "podman")
+	}
+	commandstreams.VerifyTarCopy(t, prefix, func(ctx context.Context, executor process.Executor, archive io.Reader) error {
+		orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+		return orchestrator.CopyFiles(ctx, containers.CopyFilesOptions{Container: "pinned-id", Destination: "/workspace", Archive: archive})
+	})
+}
 
 // Verifies that Podman exec forwards caller-owned stdin without a TTY, preserves raw duplex IO,
 // keeps stderr separate and retains its existing completion, cancellation and startup-failure behavior.

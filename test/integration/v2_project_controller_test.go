@@ -156,7 +156,7 @@ func TestV2ProjectContainerLifecycle(t *testing.T) {
 	root := t.TempDir()
 	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 		Spec: apiv2.ProjectSpec{RootDirectory: filepath.Join(root, "source"),
-			DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{"not-started"}},
+			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"not-started"}},
 			Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
 				Entrypoint: "program", Command: []string{"one"}, RunArgs: []string{"--user", "1000"}, Env: []commonapi.EnvVar{{Name: "VALUE", Value: "literal"}},
 				VolumeMounts: []apiv2.VolumeMount{{Type: apiv2.BindMount, Source: filepath.Join(root, "assets"), Target: "/assets", ReadOnly: true}}},

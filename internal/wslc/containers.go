@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -731,15 +732,22 @@ func (wco *WslcCliOrchestrator) CreateFiles(ctx context.Context, options contain
 	if archive == nil {
 		return nil
 	}
+	return wco.CopyFiles(ctx, containers.CopyFilesOptions{Container: options.Container, Destination: "/", Archive: archive})
+}
+
+func (wco *WslcCliOrchestrator) CopyFiles(ctx context.Context, options containers.CopyFilesOptions) error {
+	if options.Container == "" || !path.IsAbs(options.Destination) || options.Archive == nil {
+		return fmt.Errorf("container, absolute destination, and archive are required")
+	}
 
 	cmd := makeWslcCommand(
 		"container",
 		"cp",
 		"-a=false",
 		"-",
-		options.Container+":/",
+		options.Container+":"+options.Destination,
 	)
-	cmd.Stdin = archive
+	cmd.Stdin = options.Archive
 	_, errBuf, runErr := wco.runBufferedWslcCommand(
 		ctx,
 		"CreateFiles",

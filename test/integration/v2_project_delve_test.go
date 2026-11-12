@@ -216,7 +216,7 @@ func TestV2ProjectDelveEndToEnd(t *testing.T) {
 					Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
 						ExecutablePath: binary, AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
 					}},
-					DebugAdapter: &apiv2.DebugAdapterConfig{
+					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(),
 						Args: []string{delve, "dap", "--client-addr=127.0.0.1:{{port}}"}, Mode: apiv2.DebugAdapterModeTCPCallback,
 					},
 				}}

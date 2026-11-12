@@ -16,6 +16,19 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
+// Verifies that adapter-directory substitution selects the host directory or container installation
+// directory, preserves unrelated placeholders, and supports interpreter-based command vectors.
+func TestDebugAdapterDirectoryArguments(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	config := DebugAdapterConfig{Directory: directory, Args: []string{"node", "{{adapterDirectory}}/out/adapter.js", "--port={{port}}"}}
+	require.Equal(t, []string{"node", directory + "/out/adapter.js", "--port={{port}}"}, config.GetArgs(false))
+	require.Equal(t, []string{"node", "/opt/dcp/debug-adapter/out/adapter.js", "--port={{port}}"}, config.GetArgs(true))
+	config.ContainerDirectory = "/custom"
+	require.Equal(t, []string{"node", "/custom/out/adapter.js", "--port={{port}}"}, config.GetArgs(true))
+	require.Equal(t, "{{adapterDirectory}}/out/adapter.js", config.Args[1])
+}
+
 // Verifies that Project validates the adapter command vector, transport mode, environment names,
 // and connection timeout without restricting valid literal arguments or executable names.
 func TestProjectDebugAdapterValidation(t *testing.T) {
@@ -26,30 +39,32 @@ func TestProjectDebugAdapterValidation(t *testing.T) {
 		field     string
 		container bool
 	}{
-		{name: "explicit host", config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementHost}},
-		{name: "container stdio", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer}},
-		{name: "container requires context", config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer}, field: "spec.debugAdapter.placement"},
-		{name: "container tcp default", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect}},
-		{name: "container tcp explicit", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{Port: 5678}}},
-		{name: "container callback deferred", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPCallback}, field: "spec.debugAdapter.mode"},
-		{name: "negative tcp port", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{Port: -1}}, field: "spec.debugAdapter.tcp.port"},
-		{name: "excessive tcp port", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{Port: 65536}}, field: "spec.debugAdapter.tcp.port"},
-		{name: "host tcp options unsupported", config: DebugAdapterConfig{Args: []string{"adapter"}, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{}}, field: "spec.debugAdapter.tcp"},
-		{name: "stdio tcp options unsupported", container: true, config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: DebugAdapterPlacementContainer, TCP: &DebugAdapterTCPConfig{}}, field: "spec.debugAdapter.tcp"},
-		{name: "unknown placement", config: DebugAdapterConfig{Args: []string{"adapter"}, Placement: "unknown"}, field: "spec.debugAdapter.placement"},
-		{name: "default stdio", config: DebugAdapterConfig{Args: []string{"adapter"}}},
-		{name: "explicit stdio", config: DebugAdapterConfig{Args: []string{"adapter"}, Mode: DebugAdapterModeStdio}},
-		{name: "tcp connect", config: DebugAdapterConfig{Args: []string{"adapter", "--port={{port}}"}, Mode: DebugAdapterModeTCPConnect}},
-		{name: "tcp callback", config: DebugAdapterConfig{Args: []string{"adapter", "--connect", "127.0.0.1:{{port}}"}, Mode: DebugAdapterModeTCPCallback}},
-		{name: "empty argument", config: DebugAdapterConfig{Args: []string{"adapter", ""}}},
-		{name: "environment", config: DebugAdapterConfig{Args: []string{"adapter"}, Env: []commonapi.EnvVar{{Name: "VALUE", Value: ""}}}},
-		{name: "zero timeout", config: DebugAdapterConfig{Args: []string{"adapter"}, ConnectionTimeout: &metav1.Duration{}}},
-		{name: "explicit timeout", config: DebugAdapterConfig{Args: []string{"adapter"}, ConnectionTimeout: &metav1.Duration{Duration: 30 * time.Second}}},
-		{name: "missing executable", field: "spec.debugAdapter.args"},
-		{name: "blank executable", config: DebugAdapterConfig{Args: []string{" "}}, field: "spec.debugAdapter.args[0]"},
-		{name: "unknown mode", config: DebugAdapterConfig{Args: []string{"adapter"}, Mode: "unknown"}, field: "spec.debugAdapter.mode"},
-		{name: "missing env name", config: DebugAdapterConfig{Args: []string{"adapter"}, Env: []commonapi.EnvVar{{Value: "value"}}}, field: "spec.debugAdapter.env[0].name"},
-		{name: "negative timeout", config: DebugAdapterConfig{Args: []string{"adapter"}, ConnectionTimeout: &metav1.Duration{Duration: -time.Second}}, field: "spec.debugAdapter.connectionTimeout"},
+		{name: "explicit host", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}},
+		{name: "container stdio", container: true, config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}},
+		{name: "container directory requires context", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, ContainerDirectory: "/adapter"}, field: "spec.debugAdapter.containerDirectory"},
+		{name: "container tcp default", container: true, config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Mode: DebugAdapterModeTCPConnect}},
+		{name: "container tcp explicit", container: true, config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{Port: 5678}}},
+		{name: "container callback deferred", container: true, config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Mode: DebugAdapterModeTCPCallback}, field: "spec.debugAdapter.mode"},
+		{name: "negative tcp port", container: true, config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{Port: -1}}, field: "spec.debugAdapter.tcp.port"},
+		{name: "excessive tcp port", container: true, config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{Port: 65536}}, field: "spec.debugAdapter.tcp.port"},
+		{name: "host tcp options unsupported", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{}}, field: "spec.debugAdapter.tcp"},
+		{name: "stdio tcp options unsupported", container: true, config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, TCP: &DebugAdapterTCPConfig{}}, field: "spec.debugAdapter.tcp"},
+		{name: "missing directory", config: DebugAdapterConfig{Args: []string{"adapter"}}, field: "spec.debugAdapter.directory"},
+		{name: "relative directory", config: DebugAdapterConfig{Directory: "relative", Args: []string{"adapter"}}, field: "spec.debugAdapter.directory"},
+		{name: "relative container directory", container: true, config: DebugAdapterConfig{Directory: root, ContainerDirectory: "relative", Args: []string{"adapter"}}, field: "spec.debugAdapter.containerDirectory"},
+		{name: "default stdio", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}},
+		{name: "explicit stdio", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Mode: DebugAdapterModeStdio}},
+		{name: "tcp connect", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter", "--port={{port}}"}, Mode: DebugAdapterModeTCPConnect}},
+		{name: "tcp callback", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter", "--connect", "127.0.0.1:{{port}}"}, Mode: DebugAdapterModeTCPCallback}},
+		{name: "empty argument", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter", ""}}},
+		{name: "environment", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Env: []commonapi.EnvVar{{Name: "VALUE", Value: ""}}}},
+		{name: "zero timeout", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, ConnectionTimeout: &metav1.Duration{}}},
+		{name: "explicit timeout", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, ConnectionTimeout: &metav1.Duration{Duration: 30 * time.Second}}},
+		{name: "missing executable", config: DebugAdapterConfig{Directory: root}, field: "spec.debugAdapter.args"},
+		{name: "blank executable", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{" "}}, field: "spec.debugAdapter.args[0]"},
+		{name: "unknown mode", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Mode: "unknown"}, field: "spec.debugAdapter.mode"},
+		{name: "missing env name", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Env: []commonapi.EnvVar{{Value: "value"}}}, field: "spec.debugAdapter.env[0].name"},
+		{name: "negative timeout", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, ConnectionTimeout: &metav1.Duration{Duration: -time.Second}}, field: "spec.debugAdapter.connectionTimeout"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			project := &Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "test"},
@@ -72,19 +87,17 @@ func TestProjectDebugAdapterValidation(t *testing.T) {
 // Verifies that DebugAdapterConfig defaults omitted mode and timeout, preserves explicit values,
 // and does not silently normalize invalid transport names or mutate the declared configuration.
 func TestDebugAdapterConfigurationDefaults(t *testing.T) {
-	config := DebugAdapterConfig{Args: []string{"adapter"}}
+	config := DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}
 	require.Equal(t, DebugAdapterModeStdio, config.EffectiveMode())
 	require.Equal(t, 10*time.Second, config.GetConnectionTimeout())
 	require.Empty(t, config.Mode)
-	require.Equal(t, DebugAdapterPlacementHost, config.EffectivePlacement())
-	require.Empty(t, config.Placement)
-	require.Zero(t, config.GetContainerTCPPort())
-	containerTCP := DebugAdapterConfig{Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect}
-	require.Equal(t, int32(4711), containerTCP.GetContainerTCPPort())
+	require.Zero(t, config.GetContainerTCPPort(false))
+	containerTCP := DebugAdapterConfig{Directory: t.TempDir(), Mode: DebugAdapterModeTCPConnect}
+	require.Equal(t, int32(4711), containerTCP.GetContainerTCPPort(true))
 	containerTCP.TCP = &DebugAdapterTCPConfig{}
-	require.Equal(t, int32(4711), containerTCP.GetContainerTCPPort())
+	require.Equal(t, int32(4711), containerTCP.GetContainerTCPPort(true))
 	containerTCP.TCP.Port = 5678
-	require.Equal(t, int32(5678), containerTCP.GetContainerTCPPort())
+	require.Equal(t, int32(5678), containerTCP.GetContainerTCPPort(true))
 	require.Nil(t, config.ConnectionTimeout)
 	config.ConnectionTimeout = &metav1.Duration{}
 	require.Equal(t, 10*time.Second, config.GetConnectionTimeout())
@@ -101,10 +114,11 @@ func TestDebugAdapterConfigurationDefaults(t *testing.T) {
 func TestProjectDebugAdapterCopyAndImmutability(t *testing.T) {
 	project := &Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "test"},
 		Spec: ProjectSpec{RootDirectory: t.TempDir(), Process: &ProjectProcessTemplate{LogicalProcessConfig: LogicalProcessConfig{ExecutablePath: "application"}},
-			DebugAdapter: &DebugAdapterConfig{Args: []string{"adapter", "--port={{port}}"}, Mode: DebugAdapterModeTCPConnect,
+			DebugAdapter: &DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter", "--port={{port}}"}, Mode: DebugAdapterModeTCPConnect,
 				Env: []commonapi.EnvVar{{Name: "VALUE", Value: "original"}}, ConnectionTimeout: &metav1.Duration{Duration: 20 * time.Second}}}}
 	for _, change := range []func(*Project){
-		func(changed *Project) { changed.Spec.DebugAdapter.Placement = DebugAdapterPlacementContainer },
+		func(changed *Project) { changed.Spec.DebugAdapter.Directory = t.TempDir() },
+		func(changed *Project) { changed.Spec.DebugAdapter.ContainerDirectory = "/custom" },
 		func(changed *Project) { changed.Spec.DebugAdapter.Args[0] = "other" },
 		func(changed *Project) { changed.Spec.DebugAdapter.Mode = DebugAdapterModeStdio },
 		func(changed *Project) { changed.Spec.DebugAdapter.Env[0].Value = "other" },
@@ -131,8 +145,8 @@ func TestProjectDebugAdapterCopyAndImmutability(t *testing.T) {
 // Verifies that container TCP options are deep-copied and immutable after Project creation.
 func TestProjectDebugAdapterTCPImmutability(t *testing.T) {
 	t.Parallel()
-	project := &Project{Spec: ProjectSpec{DebugAdapter: &DebugAdapterConfig{
-		Args: []string{"adapter", "{{port}}"}, Placement: DebugAdapterPlacementContainer, Mode: DebugAdapterModeTCPConnect,
+	project := &Project{Spec: ProjectSpec{DebugAdapter: &DebugAdapterConfig{Directory: t.TempDir(),
+		Args: []string{"adapter", "{{port}}"}, Mode: DebugAdapterModeTCPConnect,
 		TCP: &DebugAdapterTCPConfig{Port: 5678},
 	}}}
 	copied := project.DeepCopy()

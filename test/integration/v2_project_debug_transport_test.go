@@ -6,12 +6,16 @@
 package integration_test
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientwebsocket "k8s.io/client-go/transport/websocket"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/dap"
@@ -28,6 +33,7 @@ import (
 	"github.com/microsoft/dcp/internal/testutil/containertest"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -53,7 +59,7 @@ func TestV2ProjectDebugTransportLifecycle(t *testing.T) {
 			}
 			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-application"}},
-					DebugAdapter: &apiv2.DebugAdapterConfig{Args: args}}}
+					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: args}}}
 			require.NoError(t, apiClient.Create(ctx, project))
 			running := waitProjectPhase(t, ctx, apiClient, project, apiv2.ProjectPhaseReady)
 			require.Nil(t, running.Status.Debug)
@@ -145,49 +151,79 @@ func readProjectDebugMessage(t *testing.T, connection *websocket.Conn) dap.Messa
 	return message
 }
 
-// Verifies that a host adapter can debug a prepared container Project without resolving reported
-// container PIDs as host identities, and that session closure retains the container until Project deletion.
-func TestV2ProjectHostAdapterWithContainerContext(t *testing.T) {
+// Verifies that Project installs adapter files at the default or overridden destination before readiness,
+// reports missing sources as preparation failures, and does not launch an adapter during installation.
+func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	t.Cleanup(cancel)
-	server, _, startupErr := StartTestEnvironment(t, ctx, projectTestControllers, t.Name(), t.TempDir())
-	require.NoError(t, startupErr)
-	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-container-host-adapter")
-	tool, toolErr := internaltest.GetTestToolPath("delay")
-	require.NoError(t, toolErr)
-	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-			Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
-				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Command: []string{"application"},
-			}},
-			DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{tool, "--dap-stdio"}},
-		}}
-	require.NoError(t, server.Client.Create(ctx, project))
-	prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
-	require.Equal(t, server.ContainerOrchestrator.Name(), prepared.Status.ContainerRuntime)
-	owner := process.NewOSExecutor(logr.Discard())
-	t.Cleanup(owner.Dispose)
-	target := startProjectTarget(t, ctx, owner, tool)
-	connection, connectionErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
-	require.NoError(t, connectionErr)
-	defer connection.Close()
-	reportProjectTarget(t, connection, target.Pid)
-	require.NoError(t, server.Client.Get(ctx, project.NamespacedName(), project))
-	registration := project.Status.Debug.Sessions[0].Processes[0]
-	require.Equal(t, prepared.Status.ContainerID, registration.ContainerID)
-	require.True(t, registration.IdentityTimestamp.IsZero())
-	require.NotEmpty(t, registration.TrackingError)
-	sendProjectProtocolRequest(t, connection, `{"seq":40,"type":"request","command":"disconnect","arguments":{}}`)
-	response := readProjectDebugMessage(t, connection)
-	require.JSONEq(t, "40", string(response["request_seq"]))
-	event := readProjectDebugMessage(t, connection)
-	require.JSONEq(t, `"terminated"`, string(event["event"]))
-	ready := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
-	require.Equal(t, prepared.Status.ContainerID, ready.Status.ContainerID)
-	require.NoError(t, server.Client.Delete(ctx, project))
-	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
-	require.NoError(t, owner.CheckProcessRunning(target), "container PID reports must never select host cleanup handles")
+	for _, scenario := range []string{"default", "custom", "missing"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			server, _, startupErr := StartTestEnvironment(t, ctx, projectTestControllers, t.Name(), t.TempDir())
+			require.NoError(t, startupErr)
+			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-adapter-directory-"+scenario)
+			source := t.TempDir()
+			require.NoError(t, usvc_io.WriteFile(filepath.Join(source, "dependency.dll"), []byte("dependency"), 0644))
+			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
+					Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
+					}},
+					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: source, Args: []string{"{{adapterDirectory}}/adapter"}},
+				}}
+			destination := apiv2.DefaultContainerDebugAdapterDirectory
+			if scenario == "custom" {
+				destination = "/custom/adapter"
+				project.Spec.DebugAdapter.ContainerDirectory = destination
+			} else if scenario == "missing" {
+				project.Spec.DebugAdapter.Directory = filepath.Join(source, "missing")
+			}
+			require.NoError(t, server.Client.Create(ctx, project))
+			expectedPhase := apiv2.ProjectPhaseReady
+			if scenario == "missing" {
+				expectedPhase = apiv2.ProjectPhaseFailed
+			}
+			observed := waitProjectPhase(t, ctx, server.Client, project, expectedPhase)
+			require.Nil(t, observed.Status.Debug)
+			if scenario == "missing" {
+				requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
+				require.Contains(t, observed.Status.Conditions[0].Message, "directory source")
+			} else {
+				physical := &apiv2.PhysicalContainer{}
+				require.NoError(t, server.Client.Get(ctx, ctrlclient.ObjectKey{Namespace: project.Namespace, Name: observed.Status.PhysicalContainerRef}, physical))
+				require.Empty(t, physical.Spec.Container.CreateFiles)
+				require.Len(t, physical.Spec.Container.CopyFiles, 1)
+				require.Equal(t, source, physical.Spec.Container.CopyFiles[0].Directory)
+				require.Equal(t, destination, physical.Spec.Container.CopyFiles[0].Destination)
+				require.Empty(t, physical.Spec.Container.CopyFiles[0].Source)
+				require.False(t, physical.Spec.Container.CopyFiles[0].DeleteAfterCopy)
+				require.DirExists(t, source)
+				orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+				copied, copiedErr := orchestrator.GetCreatedFiles(observed.Status.ContainerID)
+				require.NoError(t, copiedErr)
+				require.Len(t, copied, 1)
+				reader := tar.NewReader(bytes.NewReader(copied[0].Tar.Bytes()))
+				found := false
+				for {
+					header, nextErr := reader.Next()
+					if nextErr == io.EOF {
+						break
+					}
+					require.NoError(t, nextErr)
+					if header.Name == strings.TrimPrefix(destination, "/")+"/dependency.dll" {
+						payload, readErr := io.ReadAll(reader)
+						require.NoError(t, readErr)
+						require.Equal(t, "dependency", string(payload))
+						found = true
+					}
+				}
+				require.True(t, found)
+			}
+			require.NoError(t, server.Client.Delete(ctx, project))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
+		})
+	}
 }
 
 // Verifies through each enabled real runtime that container stdio adapter sessions use the
@@ -217,7 +253,7 @@ func TestV2ProjectContainerAdapterWithRealOrchestrator(t *testing.T) {
 				Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
 					Image: &apiv2.PhysicalContainerImageConfig{Image: "busybox:latest"}, Labels: labels,
 				}},
-				DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{"cat"}, Placement: apiv2.DebugAdapterPlacementContainer},
+				DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"cat"}},
 			}}
 		require.NoError(t, server.Client.Create(ctx, project))
 		prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)

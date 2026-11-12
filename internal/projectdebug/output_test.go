@@ -164,7 +164,7 @@ func TestProjectDebugConnectionEOFFinishesBlockedSession(t *testing.T) {
 // and that overflow fails a blocked session and permits execution cleanup without client reads.
 // The childless echo fixture may exit during tree enumeration; its captured identity must still be gone.
 func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
-	for _, placement := range []apiv2.DebugAdapterPlacement{apiv2.DebugAdapterPlacementHost, apiv2.DebugAdapterPlacementContainer} {
+	for _, placement := range []string{"host", "container"} {
 		for _, overflow := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/overflow=%t", placement, overflow), func(t *testing.T) {
 				t.Setenv("DCP_DISABLE_MONITOR_PROCESS", "true")
@@ -178,19 +178,18 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 				project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "blocked-forwarding"},
 					Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
 						Process:      &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}},
-						DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{tool, "--dap-stdio"}}}}
+						DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}}}}
 				if overflow {
 					project.Spec.DebugAdapter.Args[1] = "--echo-stdio"
 				}
-				if placement == apiv2.DebugAdapterPlacementContainer {
+				if placement == "container" {
 					project.Spec.Process = nil
 					project.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "unused"}}
-					project.Spec.DebugAdapter.Placement = placement
 				}
 				require.NoError(t, apiClient.Create(ctx, project))
 				debugRuntime := newProjectDebugRuntime(ctx, executor, statusWriter, logr.Discard())
 				var adapterHandle process.ProcessHandle
-				if placement == apiv2.DebugAdapterPlacementContainer {
+				if placement == "container" {
 					project.Status.ContainerID, project.Status.ContainerRuntime = "native-cli-target", "native-cli-runtime"
 					require.NoError(t, apiClient.Status().Update(ctx, project))
 					containerExec := &containerAdapterExecutor{run: func(execCtx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
@@ -216,13 +215,13 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 				execution, adapterStream, launchErr := debugRuntime.launch(ctx, project, apiv2.DebugAdapterModeStdio)
 				require.NoError(t, launchErr)
 				adapterStream = bufferProjectDebugTransport(adapterStream)
-				if placement == apiv2.DebugAdapterPlacementHost {
+				if placement == "host" {
 					adapterHandle = execution.handle
 				}
 				t.Cleanup(func() {
 					require.NoError(t, adapterStream.Close())
 					stopErr := execution.stop()
-					if overflow && placement == apiv2.DebugAdapterPlacementContainer {
+					if overflow && placement == "container" {
 						require.ErrorContains(t, stopErr, "in-container adapter termination is unconfirmed")
 					} else if overflow && errors.Is(stopErr, process.ErrIncompleteProcessTree) {
 						require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(adapterHandle)))
@@ -292,7 +291,7 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 					<-floodDone
 					require.NoError(t, adapterStream.Close())
 					stopErr := execution.stop()
-					if placement == apiv2.DebugAdapterPlacementContainer {
+					if placement == "container" {
 						require.ErrorContains(t, stopErr, "in-container adapter termination is unconfirmed")
 					} else if errors.Is(stopErr, process.ErrIncompleteProcessTree) {
 						require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(adapterHandle)))

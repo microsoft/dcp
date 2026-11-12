@@ -39,7 +39,7 @@ func (data *projectData) updateLifecycleFromContainer(resource *apiv2.Project, p
 	switch physical.Status.Phase {
 	case apiv2.PhysicalContainerPhaseRunning:
 		if condition != nil && condition.Status == metav1.ConditionTrue {
-			if resource.Spec.DebugAdapter != nil && resource.Spec.DebugAdapter.GetContainerTCPPort() != 0 && data.adapterAddress == "" {
+			if resource.Spec.DebugAdapter != nil && resource.Spec.DebugAdapter.GetContainerTCPPort(resource.Spec.Container != nil) != 0 && data.adapterAddress == "" {
 				data.state = projectStateUnknown
 				if !data.prepared {
 					data.state = projectStateCreating
@@ -186,7 +186,7 @@ func (data *projectData) applyTo(resource *apiv2.Project) (objectChange, Additio
 	change := projectLogicalPorts(data.portData(resource), &resource.Status.Ports)
 	adapterPort := int32(0)
 	if resource.Spec.DebugAdapter != nil {
-		adapterPort = resource.Spec.DebugAdapter.GetContainerTCPPort()
+		adapterPort = resource.Spec.DebugAdapter.GetContainerTCPPort(resource.Spec.Container != nil)
 	}
 	change |= setValue(&resource.Status.DebugAdapterPort, adapterPort)
 	change |= setValue(&resource.Status.DebugAdapterAddress, data.adapterAddress)

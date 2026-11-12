@@ -37,6 +37,37 @@ type commandStreamExecutor struct {
 	fail      bool
 }
 
+// VerifyTarCopy checks archive-reader ownership and exact copy arguments without invoking a container runtime.
+func VerifyTarCopy(t *testing.T, prefix []string, run func(context.Context, process.Executor, io.Reader) error) {
+	t.Helper()
+	for _, fail := range []bool{false, true} {
+		name := "copy"
+		if fail {
+			name = "launch-failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			defer cancel()
+			tool, toolErr := internal_testutil.GetTestToolPath("delay")
+			require.NoError(t, toolErr)
+			owner := process.NewOSExecutor(logr.Discard())
+			defer owner.Dispose()
+			executor := &commandStreamExecutor{Executor: owner, tool: tool, arguments: []string{"--echo-stdio"}, fail: fail}
+			archive := bytes.NewReader([]byte("tar archive payload"))
+			copyErr := run(ctx, executor, archive)
+			if fail {
+				require.ErrorContains(t, copyErr, "injected exec start failure")
+			} else {
+				require.NoError(t, copyErr)
+			}
+			require.Same(t, archive, executor.stdin)
+			expected := append(slices.Clone(prefix), "container", "cp", "-a=false", "-", "pinned-id:/workspace")
+			require.Equal(t, prefix[0], strings.TrimSuffix(filepath.Base(executor.command[0]), ".exe"))
+			require.Equal(t, expected[1:], executor.command[1:])
+		})
+	}
+}
+
 func (executor *commandStreamExecutor) StartProcess(
 	ctx context.Context, cmd *exec.Cmd, handler process.ProcessExitHandler, flags process.ProcessCreationFlag, create process.SysCreateProcessFunc,
 ) (process.ProcessHandle, func(), error) {

@@ -220,6 +220,10 @@ type PhysicalContainerConfig struct {
 	// +listType=atomic
 	CreateFiles []CreateFileSystem `json:"createFiles,omitempty"`
 
+	// CopyFiles contains tar archives to copy after CreateFiles and before container startup.
+	// +listType=atomic
+	CopyFiles []ContainerCopyFileContext `json:"copyFiles,omitempty"`
+
 	// Labels contains labels to apply to a newly-created runtime container.
 	// DCP harvesting and physical resource UID labels are reserved and set by the controller.
 	// +listType=map
@@ -440,6 +444,7 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 	errorList = append(errorList, validateLabels(container.Labels, containerPath.Child("labels"))...)
 
 	errorList = append(errorList, validateCreateFiles(container.CreateFiles, containerPath.Child("createFiles"))...)
+	errorList = append(errorList, validateCopyFiles(container.CopyFiles, containerPath.Child("copyFiles"))...)
 
 	return errorList
 }

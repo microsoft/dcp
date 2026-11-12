@@ -604,6 +604,18 @@ type CreateFiles interface {
 	CreateFiles(ctx context.Context, options CreateFilesOptions) error
 }
 
+// CopyFilesOptions supplies a tar archive to extract beneath an absolute container destination.
+// The caller owns Archive and keeps it open until CopyFiles returns.
+type CopyFilesOptions struct {
+	Container   string
+	Destination string
+	Archive     io.Reader
+}
+
+type CopyFiles interface {
+	CopyFiles(ctx context.Context, options CopyFilesOptions) error
+}
+
 // ApplyImageLayers command types
 
 type ApplyImageLayersOptions struct {
@@ -682,6 +694,7 @@ type ContainerOrchestrator interface {
 	ExecContainers
 	AttachContainer
 	CreateFiles
+	CopyFiles
 	ApplyImageLayers
 
 	// Subscribes to events about container state changes

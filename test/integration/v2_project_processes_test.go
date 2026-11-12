@@ -252,7 +252,7 @@ func TestV2ProjectRetainsAndCleansSessionProcesses(t *testing.T) {
 					Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
 						ExecutablePath: "adapter-started", AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
 					}},
-					DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{tool, "--dap-stdio"}},
+					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}},
 				}}
 			if scenario == "namespace" || scenario == "unconfirmed" {
 				project.Finalizers = []string{"test/inspect-target-cleanup"}
@@ -409,7 +409,7 @@ func TestV2ProjectCleansIndependentTargetTrees(t *testing.T) {
 	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
 			Process:      &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "adapter-started"}},
-			DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{tool, "--dap-stdio"}}}}
+			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}}}}
 	require.NoError(t, server.Client.Create(ctx, project))
 	waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
 	connection, connectionErr := connectProjectDebug(t, ctx, server.ClientConfig, project)

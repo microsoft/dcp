@@ -693,7 +693,7 @@ func startDebugServingTest(t *testing.T, ctx context.Context, containerRuntime .
 	return apiClient, clientConfig, executor
 }
 
-func createDebugServingProject(t *testing.T, ctx context.Context, apiClient ctrlclient.Client, mode apiv2.DebugAdapterMode, command string, placement ...apiv2.DebugAdapterPlacement) *apiv2.Project {
+func createDebugServingProject(t *testing.T, ctx context.Context, apiClient ctrlclient.Client, mode apiv2.DebugAdapterMode, command string, container ...bool) *apiv2.Project {
 	t.Helper()
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "debug"}}
 	require.NoError(t, apiClient.Create(ctx, namespace))
@@ -701,11 +701,10 @@ func createDebugServingProject(t *testing.T, ctx context.Context, apiClient ctrl
 	require.NoError(t, apiClient.Status().Update(ctx, namespace))
 	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "application"}},
-			DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{"test-adapter", command, "{{port}}"}, Mode: mode}}}
-	if len(placement) != 0 {
+			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"test-adapter", command, "{{port}}"}, Mode: mode}}}
+	if len(container) != 0 && container[0] {
 		project.Spec.Process = nil
 		project.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "image"}}
-		project.Spec.DebugAdapter.Placement = placement[0]
 	}
 	require.NoError(t, apiClient.Create(ctx, project))
 	project.Status.Phase = apiv2.ProjectPhaseReady
@@ -1000,7 +999,7 @@ func TestProjectDebugServingWaitsForContainerTCPEndpoint(t *testing.T) {
 	containerExec := &containerAdapterExecutor{tcpListener: listener, tcpComplete: completion}
 	apiClient, config, _ := startDebugServingTest(t, ctx,
 		func(context.Context, string) (containers.ExecContainers, error) { return containerExec, nil })
-	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen", apiv2.DebugAdapterPlacementContainer)
+	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen", true)
 	project.Status.Phase = apiv2.ProjectPhasePending
 	project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
 		Reason: string(apiv2.ProjectReasonPreparing), LastTransitionTime: metav1.Now()}}
@@ -1064,7 +1063,7 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 			containerExec := &containerAdapterExecutor{tcpListener: listener, tcpComplete: completion}
 			apiClient, config, hostExecutor := startDebugServingTest(t, ctx,
 				func(context.Context, string) (containers.ExecContainers, error) { return containerExec, nil })
-			project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen", apiv2.DebugAdapterPlacementContainer)
+			project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen", true)
 			require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
 				[]byte(fmt.Sprintf(`{"status":{"debugAdapterPort":4711,"debugAdapterAddress":%q}}`, listener.Addr().String())))))
 			if scenario == "failed-connect" {
@@ -1232,7 +1231,7 @@ func (executor *containerAdapterExecutor) ExecContainer(ctx context.Context, opt
 }
 
 // Verifies that container adapters execute through the selected runtime against a pinned container,
-// keep host handles separate, preserve host placement and report uncertain cancellation explicitly.
+// keep host handles separate, derive execution from the Project template and report uncertain cancellation explicitly.
 func TestProjectDebugServingContainerAdapters(t *testing.T) {
 	for _, scenario := range []string{"stdio", "host", "disconnect", "replace-live", "replace-before-exec", "lookup-failure", "setup-timeout", "start-failure", "no-completion"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -1266,11 +1265,11 @@ func TestProjectDebugServingContainerAdapters(t *testing.T) {
 			var config *clientrest.Config
 			var hostExecutor *adapterServingExecutor
 			apiClient, config, hostExecutor = startDebugServingTest(t, ctx, lookup)
-			placement := apiv2.DebugAdapterPlacementContainer
+			container := true
 			if scenario == "host" {
-				placement = apiv2.DebugAdapterPlacementHost
+				container = false
 			}
-			project = createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio", placement)
+			project = createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio", container)
 			connection, connectErr := connectDebugServing(ctx, config, project)
 			if scenario == "lookup-failure" || scenario == "setup-timeout" || scenario == "replace-before-exec" || scenario == "start-failure" || scenario == "no-completion" {
 				if connection != nil {

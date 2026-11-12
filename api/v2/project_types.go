@@ -8,6 +8,7 @@ package v2
 import (
 	"context"
 	"fmt"
+	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -31,6 +32,9 @@ const DefaultDebugAdapterConnectionTimeout = 10 * time.Second
 
 // DefaultContainerDebugAdapterPort is the internal listening port when no container TCP port is supplied.
 const DefaultContainerDebugAdapterPort int32 = 4711
+
+// DefaultContainerDebugAdapterDirectory is the installation directory for container adapters.
+const DefaultContainerDebugAdapterDirectory = "/opt/dcp/debug-adapter"
 
 // ProjectDebugShutdownGrace bounds protocol shutdown before forced session and backing cleanup.
 const ProjectDebugShutdownGrace = 5 * time.Second
@@ -73,25 +77,19 @@ const (
 	DebugAdapterModeTCPCallback DebugAdapterMode = "tcp-callback"
 )
 
-// DebugAdapterPlacement selects the adapter's execution context.
-type DebugAdapterPlacement string
-
-const (
-	DebugAdapterPlacementHost      DebugAdapterPlacement = "host"
-	DebugAdapterPlacementContainer DebugAdapterPlacement = "container"
-)
-
 // DebugAdapterConfig declares an adapter to launch only on an explicit debug-subresource request.
 // DAP initialize, launch, and attach configuration is supplied over the debug stream, not through this spec.
 // +k8s:openapi-gen=true
 type DebugAdapterConfig struct {
-	// Placement selects host execution or execution in the prepared Project container. Defaults to host.
-	// Container placement supports stdio and tcp-connect.
-	// +kubebuilder:validation:Enum=host;container
-	// +kubebuilder:default:=host
-	Placement DebugAdapterPlacement `json:"placement,omitempty"`
+	// Directory is the absolute host directory containing the adapter and its dependencies.
+	// Container Projects copy its contents before starting the prepared container.
+	Directory string `json:"directory"`
+	// ContainerDirectory overrides the container installation directory, defaulting to /opt/dcp/debug-adapter.
+	// It is forbidden for process Projects.
+	ContainerDirectory string `json:"containerDirectory,omitempty"`
 	// Args contains the executable name or path followed by its arguments.
 	// TCP modes replace {{port}} with the host-allocated port or the prepared container's internal port.
+	// {{adapterDirectory}} expands to Directory for process Projects or the installation directory for container Projects.
 	// +listType=atomic
 	Args []string `json:"args"`
 	// Mode selects the adapter DAP transport. Defaults to stdio.
@@ -118,8 +116,8 @@ type DebugAdapterTCPConfig struct {
 }
 
 // GetContainerTCPPort returns the selected container TCP port, or zero when no listener is required.
-func (config DebugAdapterConfig) GetContainerTCPPort() int32 {
-	if config.EffectivePlacement() != DebugAdapterPlacementContainer || config.EffectiveMode() != DebugAdapterModeTCPConnect {
+func (config DebugAdapterConfig) GetContainerTCPPort(container bool) int32 {
+	if !container || config.EffectiveMode() != DebugAdapterModeTCPConnect {
 		return 0
 	}
 	if config.TCP != nil && config.TCP.Port != 0 {
@@ -128,12 +126,25 @@ func (config DebugAdapterConfig) GetContainerTCPPort() int32 {
 	return DefaultContainerDebugAdapterPort
 }
 
-// EffectivePlacement defaults omitted adapter placement to host.
-func (config DebugAdapterConfig) EffectivePlacement() DebugAdapterPlacement {
-	if config.Placement == "" {
-		return DebugAdapterPlacementHost
+// GetAdapterDirectory resolves the adapter directory in the selected execution context.
+func (config DebugAdapterConfig) GetAdapterDirectory(container bool) string {
+	if !container {
+		return config.Directory
 	}
-	return config.Placement
+	if config.ContainerDirectory != "" {
+		return config.ContainerDirectory
+	}
+	return DefaultContainerDebugAdapterDirectory
+}
+
+// GetArgs resolves adapter-directory references without interpreting other argument contents.
+func (config DebugAdapterConfig) GetArgs(container bool) []string {
+	arguments := make([]string, len(config.Args))
+	directory := config.GetAdapterDirectory(container)
+	for index, argument := range config.Args {
+		arguments[index] = strings.ReplaceAll(argument, "{{adapterDirectory}}", directory)
+	}
+	return arguments
 }
 
 // EffectiveMode returns the declared transport, defaulting to stdio when omitted.
@@ -152,19 +163,23 @@ func (config DebugAdapterConfig) GetConnectionTimeout() time.Duration {
 	return config.ConnectionTimeout.Duration
 }
 
-func (config *DebugAdapterConfig) validate(configPath *field.Path) field.ErrorList {
+func (config *DebugAdapterConfig) validate(configPath *field.Path, container bool) field.ErrorList {
 	var errorList field.ErrorList
-	switch config.EffectivePlacement() {
-	case DebugAdapterPlacementHost:
-	case DebugAdapterPlacementContainer:
-		if config.EffectiveMode() == DebugAdapterModeTCPCallback {
-			errorList = append(errorList, field.Forbidden(configPath.Child("mode"), "container adapter placement does not support tcp-callback"))
+	if !filepath.IsAbs(config.Directory) || strings.ContainsRune(config.Directory, '\x00') {
+		errorList = append(errorList, field.Invalid(configPath.Child("directory"), config.Directory, "directory must be an absolute host directory path"))
+	}
+	if config.ContainerDirectory != "" {
+		if !container {
+			errorList = append(errorList, field.Forbidden(configPath.Child("containerDirectory"), "containerDirectory requires a container Project"))
+		} else if !path.IsAbs(config.ContainerDirectory) || strings.ContainsRune(config.ContainerDirectory, '\x00') {
+			errorList = append(errorList, field.Invalid(configPath.Child("containerDirectory"), config.ContainerDirectory, "containerDirectory must be an absolute container path"))
 		}
-	default:
-		errorList = append(errorList, field.NotSupported(configPath.Child("placement"), config.Placement, []string{"host", "container"}))
+	}
+	if container && config.EffectiveMode() == DebugAdapterModeTCPCallback {
+		errorList = append(errorList, field.Forbidden(configPath.Child("mode"), "container adapters do not support tcp-callback"))
 	}
 	if config.TCP != nil {
-		if config.EffectivePlacement() != DebugAdapterPlacementContainer || config.EffectiveMode() != DebugAdapterModeTCPConnect {
+		if !container || config.EffectiveMode() != DebugAdapterModeTCPConnect {
 			errorList = append(errorList, field.Forbidden(configPath.Child("tcp"), "TCP options require container tcp-connect placement"))
 		}
 		if config.TCP.Port < 0 || config.TCP.Port > 65535 {
@@ -392,7 +407,7 @@ type ProjectSpec struct {
 	// Container describes how to run the code as a container. Exactly one of process or container must be set.
 	Container *ProjectContainerTemplate `json:"container,omitempty"`
 	// DebugAdapter declares an adapter; configuration alone does not launch it.
-	// Host placement is valid with either application template; container placement requires a container template.
+	// The application template determines whether the adapter runs on the host or in the prepared container.
 	DebugAdapter *DebugAdapterConfig `json:"debugAdapter,omitempty"`
 	// Stop requests termination or prevents launch. Once true, it cannot be reset.
 	Stop bool `json:"stop,omitempty"`
@@ -541,10 +556,7 @@ func (resource *Project) Validate(context.Context) field.ErrorList {
 		errorList = append(errorList, validateLogicalContainerPorts(resource.Spec.Container.Ports, resource.Namespace, resource.Name, specPath.Child("container", "ports"))...)
 	}
 	if resource.Spec.DebugAdapter != nil {
-		errorList = append(errorList, resource.Spec.DebugAdapter.validate(specPath.Child("debugAdapter"))...)
-		if resource.Spec.DebugAdapter.EffectivePlacement() == DebugAdapterPlacementContainer && resource.Spec.Container == nil {
-			errorList = append(errorList, field.Forbidden(specPath.Child("debugAdapter", "placement"), "container adapter placement requires a container Project"))
-		}
+		errorList = append(errorList, resource.Spec.DebugAdapter.validate(specPath.Child("debugAdapter"), resource.Spec.Container != nil)...)
 	}
 	return errorList
 }

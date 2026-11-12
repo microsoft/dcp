@@ -35,7 +35,7 @@ func TestV2ProjectProcessDebugPrerequisites(t *testing.T) {
 		Finalizers: []string{"test/debug-prerequisite-cleanup"}},
 		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
 			Process:      &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "v2-project-pending-application"}},
-			DebugAdapter: &apiv2.DebugAdapterConfig{Args: []string{"v2-project-prerequisite-adapter"}}}}
+			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"v2-project-prerequisite-adapter"}}}}
 	require.NoError(t, apiClient.Create(ctx, resource))
 	pending := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 		return current.Status.Phase == apiv2.ProjectPhasePending, nil
@@ -73,7 +73,7 @@ func TestV2ProjectDebugAdapterConfigurationDoesNotLaunch(t *testing.T) {
 			defer cancel()
 			namespace := createActiveV2Namespace(t, ctx, "v2-project-debug-config-"+kind)
 			adapterCommand := namespace.Name + "-adapter"
-			adapter := &apiv2.DebugAdapterConfig{
+			adapter := &apiv2.DebugAdapterConfig{Directory: t.TempDir(),
 				Args: []string{adapterCommand, "--port={{port}}", ""}, Mode: apiv2.DebugAdapterModeTCPConnect,
 				Env:               []commonapi.EnvVar{{Name: "VALUE", Value: "literal-{{port}}"}},
 				ConnectionTimeout: &metav1.Duration{Duration: 25 * time.Second},
@@ -137,7 +137,7 @@ func TestV2ProjectRejectsAddingDebugAdapter(t *testing.T) {
 	require.NoError(t, client.Create(ctx, resource))
 	current := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhasePending)
 	changed := current.DeepCopy()
-	changed.Spec.DebugAdapter = &apiv2.DebugAdapterConfig{Args: []string{"adapter"}}
+	changed.Spec.DebugAdapter = &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}
 	require.True(t, apierrors.IsInvalid(client.Update(ctx, changed)))
 	patchErr := client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
 		[]byte(`{"spec":{"debugAdapter":{"args":["adapter"]}}}`)))
@@ -157,16 +157,16 @@ func TestV2ProjectDebugAdapterAdmission(t *testing.T) {
 		config apiv2.DebugAdapterConfig
 		valid  bool
 	}{
-		{name: "default", config: apiv2.DebugAdapterConfig{Args: []string{"adapter"}}, valid: true},
-		{name: "stdio", config: apiv2.DebugAdapterConfig{Args: []string{"adapter"}, Mode: apiv2.DebugAdapterModeStdio}, valid: true},
-		{name: "tcp-connect", config: apiv2.DebugAdapterConfig{Args: []string{"adapter", "{{port}}"}, Mode: apiv2.DebugAdapterModeTCPConnect}, valid: true},
-		{name: "tcp-callback", config: apiv2.DebugAdapterConfig{Args: []string{"adapter", "{{port}}"}, Mode: apiv2.DebugAdapterModeTCPCallback}, valid: true},
-		{name: "zero-timeout", config: apiv2.DebugAdapterConfig{Args: []string{"adapter"}, ConnectionTimeout: &metav1.Duration{}}, valid: true},
+		{name: "default", config: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}, valid: true},
+		{name: "stdio", config: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Mode: apiv2.DebugAdapterModeStdio}, valid: true},
+		{name: "tcp-connect", config: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter", "{{port}}"}, Mode: apiv2.DebugAdapterModeTCPConnect}, valid: true},
+		{name: "tcp-callback", config: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter", "{{port}}"}, Mode: apiv2.DebugAdapterModeTCPCallback}, valid: true},
+		{name: "zero-timeout", config: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, ConnectionTimeout: &metav1.Duration{}}, valid: true},
 		{name: "missing-command"},
-		{name: "blank-command", config: apiv2.DebugAdapterConfig{Args: []string{" "}}},
-		{name: "unknown-mode", config: apiv2.DebugAdapterConfig{Args: []string{"adapter"}, Mode: "unknown"}},
-		{name: "empty-environment-name", config: apiv2.DebugAdapterConfig{Args: []string{"adapter"}, Env: []commonapi.EnvVar{{Value: "value"}}}},
-		{name: "negative-timeout", config: apiv2.DebugAdapterConfig{Args: []string{"adapter"}, ConnectionTimeout: &metav1.Duration{Duration: -time.Second}}},
+		{name: "blank-command", config: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{" "}}},
+		{name: "unknown-mode", config: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Mode: "unknown"}},
+		{name: "empty-environment-name", config: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Env: []commonapi.EnvVar{{Value: "value"}}}},
+		{name: "negative-timeout", config: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, ConnectionTimeout: &metav1.Duration{Duration: -time.Second}}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: testCase.name, Namespace: "v2-project-debug-admission"},
