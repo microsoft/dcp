@@ -9,10 +9,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync/atomic"
 
 	"github.com/go-logr/logr"
@@ -37,14 +38,16 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 type proxyInstanceData struct {
-	proxy     proxy.Proxy
-	stopProxy context.CancelFunc
+	proxy        proxy.Proxy
+	stopProxy    context.CancelFunc
+	reservations *networking.PortReservationSet
 }
 
 type serviceData struct {
@@ -167,7 +170,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Get(ctx, req.NamespacedName, &svc); err != nil {
 		if apimachinery_errors.IsNotFound(err) {
 			log.V(1).Info("The Service object does not exist yet or was deleted")
-			r.stopService(req.NamespacedName, nil, log)
+			r.stopService(ctx, req.NamespacedName, nil, log)
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
@@ -186,7 +189,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if svc.DeletionTimestamp != nil && !svc.DeletionTimestamp.IsZero() {
 		log.V(1).Info("Service object is being deleted")
-		r.stopService(svc.NamespacedName(), &svc, log)
+		r.stopService(ctx, svc.NamespacedName(), &svc, log)
 		change = deleteFinalizer(&svc, serviceFinalizer, log)
 		serviceCounters(ctx, &svc, -1) // Service is being deleted
 	} else {
@@ -203,12 +206,12 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return result, err
 }
 
-func (r *ServiceReconciler) stopService(svcName types.NamespacedName, svc *apiv1.Service, log logr.Logger) {
+func (r *ServiceReconciler) stopService(ctx context.Context, svcName types.NamespacedName, svc *apiv1.Service, log logr.Logger) {
 	serviceData, found := r.serviceInfo.LoadAndDelete(svcName)
 	if !found || len(serviceData.proxies) == 0 {
 		return
 	}
-	stopProxies(serviceData.proxies, log)
+	stopProxies(ctx, serviceData.proxies, log)
 	if svc != nil {
 		logger.ReleaseResourceLog(svc.GetResourceId())
 	}
@@ -384,7 +387,7 @@ func (r *ServiceReconciler) getServiceEndpoints(ctx context.Context, svc *apiv1.
 // No matter if an error occurs, a *serviceData is returned that is used for storing proxy information
 // and count startup attempts for the service. The service data is stored in ServiceReconciler.serviceInfo
 // before the method returns.
-func (r *ServiceReconciler) startProxyIfNeeded(_ context.Context, svc *apiv1.Service, log logr.Logger) (*serviceData, error) {
+func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.Service, log logr.Logger) (*serviceData, error) {
 	psd, found := r.serviceInfo.Load(svc.NamespacedName())
 	if !found {
 		psd = &serviceData{}
@@ -401,10 +404,11 @@ func (r *ServiceReconciler) startProxyIfNeeded(_ context.Context, svc *apiv1.Ser
 	svc.Status.ProxyProcessPid = apiv1.UnknownPID
 	svc.Status.EffectiveAddress = ""
 	svc.Status.EffectivePort = 0
-	stopProxies(psd.proxies, log)
+	defer r.serviceInfo.Store(svc.NamespacedName(), psd)
+
+	stopProxies(ctx, psd.proxies, log)
 	psd.proxies = nil
 	psd.startAttempts += 1
-	defer r.serviceInfo.Store(svc.NamespacedName(), psd)
 
 	if requestedAddressErr != nil {
 		return psd, requestedAddressErr
@@ -413,14 +417,14 @@ func (r *ServiceReconciler) startProxyIfNeeded(_ context.Context, svc *apiv1.Ser
 	proxyLog := r.Log.WithName("Proxy").WithValues("Service", svc.NamespacedName(), logger.RESOURCE_LOG_STREAM_ID, svc.GetResourceId())
 	proxies, portAllocationErr := allocateServiceProxies(r.LifetimeCtx, r.config.CreateProxy, svc.Spec.Protocol, svc.Spec.Port, requestedServiceAddress, proxyLog)
 	if portAllocationErr != nil {
-		stopProxies(proxies, log)
+		stopProxies(ctx, proxies, log)
 		return psd, fmt.Errorf("could not create the proxy for the service: port allocation failed: %w", portAllocationErr)
 	}
 
 	for _, proxyInstanceData := range proxies {
 		startErr := proxyInstanceData.proxy.Start()
 		if startErr != nil {
-			stopProxies(proxies, log)
+			stopProxies(ctx, proxies, log)
 			return psd, fmt.Errorf("could not start the proxy for the service: %w", startErr)
 		} else {
 			log.V(1).Info("Service proxy started",
@@ -448,17 +452,15 @@ func allocateServiceProxies(
 	lifetimeCtx context.Context, createProxy proxy.ProxyFactory, protocol commonapi.PortProtocol,
 	requestedPort int32, requestedServiceAddress string, log logr.Logger,
 ) ([]proxyInstanceData, error) {
+	protocol = networking.NormalizePortProtocol(protocol)
 	proxies := []proxyInstanceData{}
-	var getProxyPort func(proxyAddress string) (int32, error)
-	if requestedPort == 0 {
-		getProxyPort = func(proxyAddress string) (int32, error) {
-			return networking.GetFreePort(protocol, proxyAddress, log)
+	reservations := &networking.PortReservationSet{}
+	allocated := false
+	defer func() {
+		if !allocated {
+			reservations.Release(lifetimeCtx, log)
 		}
-	} else {
-		getProxyPort = func(_ string) (int32, error) {
-			return requestedPort, nil
-		}
-	}
+	}()
 
 	var portAllocationErr error = nil
 
@@ -477,21 +479,25 @@ func allocateServiceProxies(
 	for _, ip := range ips {
 		proxyInstanceAddress := networking.IpToString(ip)
 
-		if lastPort == networking.InvalidPort {
-			lastPort, err = getProxyPort(proxyInstanceAddress)
-			if err != nil {
-				lastPort = networking.InvalidPort
-				portAllocationErr = errors.Join(portAllocationErr, err)
+		proxyPort := requestedPort
+		if proxyPort == 0 && usingSamePort {
+			proxyPort = lastPort
+		}
+		if requestedPort != 0 {
+			reservationIP, reservationIPErr := portReservationIP(proxyInstanceAddress)
+			if reservationIPErr != nil {
+				portAllocationErr = errors.Join(portAllocationErr, reservationIPErr)
 				continue
 			}
-		}
-
-		var proxyPort int32
-
-		if usingSamePort {
-			proxyPort = lastPort
-			err = networking.CheckPortAvailable(protocol, proxyInstanceAddress, proxyPort, log)
+			if reserveErr := reservations.Reserve(lifetimeCtx,
+				ports.Binding{Protocol: string(protocol), IP: reservationIP, Port: requestedPort}, log); reserveErr != nil {
+				portAllocationErr = errors.Join(portAllocationErr, reserveErr)
+				continue
+			}
+		} else if proxyPort != networking.InvalidPort {
+			err = reservations.CheckPortAvailable(lifetimeCtx, protocol, proxyInstanceAddress, proxyPort, log)
 			if err != nil {
+				proxyPort = networking.InvalidPort
 				usingSamePort = false
 				log.Info("Could not use the same port for all addresses associated with requested service address, service will be reachable only using specific IP address",
 					"AttemptedCommonPort", lastPort,
@@ -500,21 +506,24 @@ func allocateServiceProxies(
 			}
 		}
 
-		if !usingSamePort {
-			proxyPort, err = getProxyPort(proxyInstanceAddress)
+		if proxyPort == networking.InvalidPort {
+			proxyPort, err = reservations.GetFreePort(lifetimeCtx, protocol, proxyInstanceAddress, log)
 			if err != nil {
 				portAllocationErr = errors.Join(portAllocationErr, err)
 				continue
 			}
+			lastPort = proxyPort
 		}
 
 		proxyCtx, cancelFunc := context.WithCancel(lifetimeCtx)
 		proxies = append(proxies, proxyInstanceData{
-			proxy:     createProxy(protocol, proxyInstanceAddress, proxyPort, proxyCtx, log),
-			stopProxy: cancelFunc,
+			proxy:        createProxy(protocol, proxyInstanceAddress, proxyPort, proxyCtx, log),
+			stopProxy:    cancelFunc,
+			reservations: reservations,
 		})
 	}
 
+	allocated = portAllocationErr == nil
 	return proxies, portAllocationErr
 }
 
@@ -535,7 +544,7 @@ func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceDa
 
 	// For any "hostname" style addresses (e.g. "localhost", "<machinename>"), we use "localhost" as the effective
 	// address if possible.
-	if net.ParseIP(networking.ToStandaloneAddress(requestedServiceAddress)) == nil {
+	if _, parseErr := netip.ParseAddr(networking.ToStandaloneAddress(requestedServiceAddress)); parseErr != nil {
 		portsInUse := make(map[int32]bool)
 		for _, pd := range eligibleProxies {
 			portsInUse[pd.proxy.EffectivePort()] = true
@@ -594,7 +603,8 @@ func getRequestedServiceAddress(address string, allocationMode string) (string, 
 			if len(ips) == 0 {
 				return "", fmt.Errorf("could not obtain valid IP address(es) for 'localhost': %w", err)
 			}
-			requestedServiceAddress = networking.IpToString(ips[rand.Intn(len(ips))])
+			sort.Slice(ips, func(i, j int) bool { return ips[i].String() < ips[j].String() })
+			requestedServiceAddress = networking.IpToString(ips[0])
 		case string(apiv1.AddressAllocationModeIPv6ZeroOne):
 			requestedServiceAddress = networking.IPv6LocalhostDefaultAddress
 		case string(apiv1.AddressAllocationModeAllInterfaces):
@@ -616,11 +626,14 @@ func getRequestedServiceAddress(address string, allocationMode string) (string, 
 	return requestedServiceAddress, nil
 }
 
-func stopProxies(proxies []proxyInstanceData, log logr.Logger) {
+func stopProxies(ctx context.Context, proxies []proxyInstanceData, log logr.Logger) {
 	if len(proxies) > 0 {
 		log.V(1).Info("Stopping all proxies...")
 		for _, proxyInstanceData := range proxies {
 			proxyInstanceData.stopProxy()
+		}
+		for _, instance := range proxies {
+			instance.reservations.Release(ctx, log)
 		}
 	}
 }

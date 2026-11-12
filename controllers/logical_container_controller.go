@@ -294,6 +294,8 @@ func (r *LogicalContainerReconciler) prepareLogicalContainerValues(
 	if container.Spec.Stop {
 		return nil
 	}
+	releaseLogicalPortReservations(ctx, data.ports, log)
+	data.ports = nil
 	requests := make([]logicalPortRequest, len(container.Spec.Ports))
 	for portIndex, port := range container.Spec.Ports {
 		requests[portIndex] = logicalPortRequest{binding: port.LogicalServiceBinding, address: port.Address, port: port.ContainerPort}
@@ -313,6 +315,9 @@ func (r *LogicalContainerReconciler) prepareLogicalContainerValues(
 		arguments, environment, evaluationErr := templating.EvaluateV2Values(
 			ctx, r.NoCacheClient, container, servingPorts(ports), config.Command, config.Env, false)
 		if evaluationErr != nil {
+			for _, port := range ports {
+				port.reservations.Release(ctx, log)
+			}
 			log.Error(evaluationErr, "Failed to evaluate logical container values")
 			data.reason, data.message = apiv2.LogicalContainerReasonFailedToStart, evaluationErr.Error()
 			if !templating.IsTransientTemplateError(evaluationErr) {
@@ -730,6 +735,7 @@ func (r *LogicalContainerReconciler) createPhysicalContainer(
 				}
 			}
 			if len(existing.Spec.Container.Ports) == len(container.Spec.Ports) {
+				releaseLogicalPortReservations(ctx, data.ports, r.Log)
 				data.ports = nil
 				for _, port := range existing.Spec.Container.Ports {
 					protocol := port.Protocol
@@ -1396,6 +1402,7 @@ func (r *LogicalContainerReconciler) discardLogicalContainerData(ctx context.Con
 		}
 	}
 	discarded := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{UID: resourceUID}}
+	releaseLogicalPortReservations(ctx, data.ports, r.Log)
 	defer logger.ReleaseResourceLog(discarded.GetResourceId())
 	r.containerData.DeleteByNamespacedName(name)
 	return nil

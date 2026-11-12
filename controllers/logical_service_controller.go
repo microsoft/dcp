@@ -86,9 +86,9 @@ func (r *LogicalServiceReconciler) SetupWithManager(mgr ctrl.Manager, name strin
 		Named(name).Complete(r)
 }
 
-func (r *LogicalServiceReconciler) stop(name types.NamespacedName, log logr.Logger) {
+func (r *LogicalServiceReconciler) stop(ctx context.Context, name types.NamespacedName, log logr.Logger) {
 	if data, found := r.services.LoadAndDelete(name); found {
-		stopProxies(data.proxies, log)
+		stopProxies(ctx, data.proxies, log)
 	}
 }
 
@@ -100,7 +100,7 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 	service := &apiv2.LogicalService{}
 	getErr := reader.Get(ctx, request.NamespacedName, service)
 	if apierrors.IsNotFound(getErr) {
-		r.stop(request.NamespacedName, log)
+		r.stop(ctx, request.NamespacedName, log)
 		getNotFoundCounter.Add(ctx, 1)
 		return ctrl.Result{}, nil
 	}
@@ -112,7 +112,7 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 	getSucceededCounter.Add(ctx, 1)
 	patch := ctrl_client.MergeFromWithOptions(service.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 	if !service.DeletionTimestamp.IsZero() {
-		r.stop(service.NamespacedName(), log)
+		r.stop(ctx, service.NamespacedName(), log)
 		return r.SaveChanges(ctx, service, patch, deleteFinalizer(service, logicalServiceFinalizer, log), nil, log)
 	}
 	if change := ensureFinalizer(service, logicalServiceFinalizer, log); change != noChange {
@@ -120,7 +120,7 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 	}
 	data, found := r.services.Load(service.NamespacedName())
 	if found && data.uid != service.UID {
-		r.stop(service.NamespacedName(), log)
+		r.stop(ctx, service.NamespacedName(), log)
 		found = false
 	}
 	if !found {
@@ -294,12 +294,12 @@ func (r *LogicalServiceReconciler) configureProxies(
 		listeners, allocationErr := allocateServiceProxies(r.LifetimeCtx, r.createProxy, service.Spec.EffectiveProtocol(), service.Spec.Port, address,
 			r.Log.WithName("Proxy").WithValues("LogicalService", service.NamespacedName()))
 		if allocationErr != nil {
-			stopProxies(listeners, log)
+			stopProxies(r.LifetimeCtx, listeners, log)
 			return allocationErr
 		}
 		for _, listener := range listeners {
 			if startErr := listener.proxy.Start(); startErr != nil {
-				stopProxies(listeners, log)
+				stopProxies(r.LifetimeCtx, listeners, log)
 				return fmt.Errorf("start service listener: %w", startErr)
 			}
 		}

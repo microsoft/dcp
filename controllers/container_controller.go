@@ -44,6 +44,7 @@ import (
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -606,6 +607,14 @@ func ensureContainerStartingState(
 	case templating.IsTransientTemplateError(rcd.startupError), errors.Is(rcd.startupError, statestore.ErrResourceLeaseHeld), errors.Is(rcd.startupError, errInitialContainerNetworksNotReady):
 		// Retry startup after a transient error or while another DCP instance is creating the persistent container.
 
+		if !container.DeletionTimestamp.IsZero() {
+			log.Info("Container is being deleted while waiting for startup dependencies, aborting startup", "Cause", rcd.startupError.Error())
+			_ = r.releasePersistentContainerResourceLease(ctx, container, log, false)
+			rcd.containerState = apiv1.ContainerStateFailedToStart
+			change |= additionalReconciliationNeeded
+			break
+		}
+
 		rcd.startupError = nil
 		rcd.startAttemptFinishedAt = metav1.MicroTime{}
 		rcd.containerName = ""
@@ -658,6 +667,7 @@ func ensureContainerFailedToStartState(
 		}
 	}
 
+	releaseWorkloadPortReservations(ctx, container.UID, log)
 	return change
 }
 
@@ -710,7 +720,7 @@ func ensureContainerRunningState(
 			log.V(1).Info("Container is not running, delaying Endpoint creation...")
 			change |= additionalReconciliationNeeded
 		} else {
-			r.enableEndpointsAndHealthProbes(ctx, container, rcd, inspected, log)
+			change |= r.enableEndpointsAndHealthProbes(ctx, container, rcd, inspected, log)
 		}
 	}
 
@@ -745,6 +755,7 @@ func ensureContainerExitedState(ctx context.Context,
 	rcd.closeStartupLogFiles(log)
 	rcd.closeTerminalResources(ctx, r.config.ProcessExecutor, log)
 	r.disableEndpointsAndHealthProbes(ctx, container, rcd, log)
+	releaseWorkloadPortReservations(ctx, container.UID, log)
 
 	log.V(1).Info("Inspecting container resource...")
 	inspected, err := inspectContainer(ctx, r.orchestrator, string(rcd.containerID))
@@ -1341,6 +1352,26 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 		err := func() error {
 			if leaseErr := r.verifyPersistentContainerResourceLeaseHeld(startupCtx, container, log); leaseErr != nil {
 				return leaseErr
+			}
+
+			for _, port := range rcd.runSpec.Ports {
+				if port.HostPort == 0 {
+					continue
+				}
+				address := port.HostIP
+				if address == "" {
+					address = networking.IPv4AllInterfaceAddress
+				}
+				ip, ipErr := portReservationIP(address)
+				if ipErr != nil {
+					return ipErr
+				}
+				reservations, _ := workloadPortReservations.LoadOrStore(container.UID, &networking.PortReservationSet{})
+				if reserveErr := reservations.Reserve(startupCtx, ports.Binding{
+					Protocol: string(port.Protocol), IP: ip, Port: port.HostPort,
+				}, log); reserveErr != nil {
+					return fmt.Errorf("reserve fixed container host port: %w", reserveErr)
+				}
 			}
 
 			// Compute effective environment and invocation arguments for the container
@@ -1981,6 +2012,7 @@ func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd 
 				rcd.updateFromInspectedContainer(inspected)
 			}
 			rcd.containerState = apiv1.ContainerStateExited
+			releaseWorkloadPortReservations(stopCtx, container.UID, log)
 		}
 
 		rcMap := r.runningContainers
@@ -2006,17 +2038,24 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 
 	if !rcd.hasValidContainerID() {
 		log.V(1).Info("Container resource was never created, nothing to remove...")
+		releaseWorkloadPortReservations(ctx, container.UID, log)
 		return
 	}
 
 	// We want to stop the container first to give it a chance to clean up
-	_ = r.removeExistingContainer(ctx, rcd.containerID, nil, log)
+	removeErr := r.removeExistingContainer(ctx, rcd.containerID, nil, log)
+	if removeErr == nil || errors.Is(removeErr, containers.ErrNotFound) {
+		releaseWorkloadPortReservations(ctx, container.UID, log)
+	}
 }
 
 // Removes all resources associated with the Container object, both DCP-managed, as well as orchestrator-managed,
 // including the running container.
 func (r *ContainerReconciler) cleanupContainerResources(ctx context.Context, container *apiv1.Container, rcd *runningContainerData, log logr.Logger) {
 	r.cleanupDcpContainerResources(ctx, container, log)
+	if rcd.containerState == apiv1.ContainerStateExited || rcd.containerState == apiv1.ContainerStateFailedToStart {
+		releaseWorkloadPortReservations(ctx, container.UID, log)
+	}
 	r.removeContainerNetworkConnections(ctx, container, log)
 	r.deleteContainer(ctx, container, rcd, log)
 	logger.ReleaseResourceLog(container.GetResourceId())
@@ -2168,7 +2207,7 @@ func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
 	rcd *runningContainerData,
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
-) {
+) objectChange {
 	if len(ctr.Spec.HealthProbes) > 0 && pointers.NotTrue(rcd.healthProbesEnabled) {
 		log.V(1).Info("Enabling health probes for Container...")
 		pointers.Make(&rcd.healthProbesEnabled, true)
@@ -2178,7 +2217,7 @@ func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
 			log.Error(probeErr, "Could not enable health probes for Container")
 		}
 	}
-	ensureEndpointsForWorkload(ctx, r, ctr, nil, inspected, log)
+	return ensureEndpointsForWorkload(ctx, r, ctr, nil, inspected, log)
 }
 
 // NETWORKING SUPPORT METHODS
@@ -2503,19 +2542,27 @@ func (r *ContainerReconciler) createEndpoints(
 	existingEndpoints []*apiv1.Endpoint,
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
-) ([]*apiv1.Endpoint, error) {
+) ([]*apiv1.Endpoint, objectChange, error) {
 	endpointName, _, err := MakeUniqueName(owner.GetName())
 	if err != nil {
 		log.Error(err, "Could not generate unique name for Endpoint object")
-		return nil, err
+		return nil, noChange, err
 	}
 
-	hostAddress, hostPort, err := getHostAddressAndPortForContainerPort(owner.(*apiv1.Container).Spec, serviceProducer.Port, inspected, log)
+	bindAddress, hostPort, err := getHostBindAddressAndPortForPorts(
+		v1PortsToCreateContainerPorts(owner.(*apiv1.Container).Spec.Ports), serviceProducer.Port, inspected, log)
 	if err != nil {
 		log.Error(err, "Could not determine host address and port for container port")
-		return nil, err
+		return nil, noChange, err
 	}
-
+	hostAddress := normalizeHostAddress(bindAddress)
+	if bindAddress == "" {
+		bindAddress = networking.IPv4AllInterfaceAddress
+	}
+	change, reservationErr := reserveServiceProducerEndpointPort(ctx, r, owner, serviceProducer, bindAddress, hostPort, log)
+	if reservationErr != nil {
+		return nil, change, reservationErr
+	}
 	endpointExists := slices.Any(existingEndpoints, func(ep *apiv1.Endpoint) bool {
 		return ep.Spec.ServiceName == serviceProducer.ServiceName &&
 			ep.Spec.ServiceNamespace == owner.GetNamespace() &&
@@ -2523,7 +2570,7 @@ func (r *ContainerReconciler) createEndpoints(
 			ep.Spec.Port == hostPort
 	})
 	if endpointExists {
-		return nil, nil
+		return nil, change, nil
 	}
 
 	// Otherwise, create a new Endpoint object.
@@ -2540,7 +2587,7 @@ func (r *ContainerReconciler) createEndpoints(
 		},
 	}
 
-	return []*apiv1.Endpoint{endpoint}, nil
+	return []*apiv1.Endpoint{endpoint}, change, nil
 }
 
 func (r *ContainerReconciler) validateExistingEndpoints(
@@ -2740,7 +2787,7 @@ func (r *ContainerReconciler) computeEffectiveEnvironment(
 ) error {
 	// Note: there is no value substitution by DCP for .env files, these are handled by container orchestrator directly.
 
-	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, nil, log)
 	if err != nil {
 		return err
 	}
@@ -2764,7 +2811,7 @@ func (r *ContainerReconciler) computeEffectiveInvocationArgs(
 	acquiredRCD *runningContainerData,
 	log logr.Logger,
 ) error {
-	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, nil, log)
 	if err != nil {
 		return err
 	}

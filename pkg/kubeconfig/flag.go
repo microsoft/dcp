@@ -155,9 +155,8 @@ func RequireKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 // The kubeconfig flag value, if empty upon invocation, will be set to preferred path of the kubeconfig file.
 // Does NOT create the kubeconfig file itself (see Kubeconfig.Save() for that).
 //
-// traceCtx is used to propagate trace context for sub-instrumentation; cancellation is not
-// observed by this function (the work is short and synchronous).
-func EnsureKubeconfigData(traceCtx context.Context, flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, error) {
+// ctx is used to propagate trace context for sub-instrumentation and cancellation for port allocation.
+func EnsureKubeconfigData(ctx context.Context, flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, error) {
 	f := flags.Lookup(ctrl_config.KubeconfigFlagName)
 	if f == nil {
 		return nil, fmt.Errorf("unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
@@ -177,7 +176,7 @@ func EnsureKubeconfigData(traceCtx context.Context, flags *pflag.FlagSet, log lo
 	}
 
 	if hasTLSCertFile {
-		lookup, lookupErr := traced(traceCtx, spanTlsCertLookup, func() (certLookup, error) {
+		lookup, lookupErr := traced(ctx, spanTlsCertLookup, func() (certLookup, error) {
 			cd, addr, err := security.LoadCertificateFiles(tlsCertFile, tlsKeyFile, tlsCAFile, tlsCertThumbprint)
 			return certLookup{data: cd, address: addr}, err
 		})
@@ -186,7 +185,7 @@ func EnsureKubeconfigData(traceCtx context.Context, flags *pflag.FlagSet, log lo
 		}
 		storeCertData, serverAddress = lookup.data, lookup.address
 	} else if tlsCertThumbprint != "" {
-		lookup, lookupErr := traced(traceCtx, spanTlsCertLookup, func() (certLookup, error) {
+		lookup, lookupErr := traced(ctx, spanTlsCertLookup, func() (certLookup, error) {
 			cd, addr, err := security.LookupCertificate(tlsCertThumbprint)
 			return certLookup{data: cd, address: addr}, err
 		})
@@ -207,7 +206,7 @@ func EnsureKubeconfigData(traceCtx context.Context, flags *pflag.FlagSet, log lo
 		if tlsCAFile != "" {
 			return nil, fmt.Errorf("--%s requires --%s/--%s or --%s to also be specified", TLSCAFileFlagName, TLSCertFileFlagName, TLSKeyFileFlagName, TLSCertThumbprintFlagName)
 		}
-		preferredAddress, preferredErr := traced(traceCtx, spanPreferredHostIps, func() (string, error) {
+		preferredAddress, preferredErr := traced(ctx, spanPreferredHostIps, func() (string, error) {
 			ips, err := networking.GetPreferredHostIps(networking.Localhost)
 			if err != nil {
 				return "", err
@@ -236,7 +235,7 @@ func EnsureKubeconfigData(traceCtx context.Context, flags *pflag.FlagSet, log lo
 
 	generateEphemeral := storeCertData == nil
 
-	k, kErr := getKubeconfig(traceCtx, kubeconfigPath, port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
+	k, kErr := getKubeconfig(ctx, kubeconfigPath, port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
 	if kErr != nil {
 		return nil, fmt.Errorf("unable to obtain Kubeconfig data: %w", kErr)
 	}

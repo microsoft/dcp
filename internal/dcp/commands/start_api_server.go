@@ -19,7 +19,9 @@ import (
 	cmds "github.com/microsoft/dcp/internal/commands"
 	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcp/bootstrap"
+	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/perftrace"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/telemetry"
 	"github.com/microsoft/dcp/internal/telemetry/startupspans"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
@@ -106,6 +108,22 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 				return fmt.Errorf("could not determine the working directory: %w", err)
 			}
 		}
+
+		stateStore, stateStoreErr := statestore.Open(apiServerCtx, statestore.Options{Log: log})
+		if stateStoreErr != nil {
+			return fmt.Errorf("failed to initialize state store: %w", stateStoreErr)
+		}
+		defer func() {
+			networking.ConfigureStateStorePortAllocator(nil, process.ProcessHandle{})
+			if closeErr := stateStore.Close(); closeErr != nil {
+				log.Error(closeErr, "Failed to close state store")
+			}
+		}()
+		portOwner, portOwnerErr := statestore.CurrentResourceLeaseOwner()
+		if portOwnerErr != nil {
+			return fmt.Errorf("failed to initialize port reservation owner identity: %w", portOwnerErr)
+		}
+		networking.ConfigureStateStorePortAllocator(stateStore, portOwner)
 
 		kconfig, err := telemetry.CallWithTelemetry(telemetry.StartupTracer(), startupspans.SpanEnsureKubeconfig, startupCtx,
 			func(ctx context.Context) (*kubeconfig.Kubeconfig, error) {

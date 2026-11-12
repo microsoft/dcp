@@ -26,6 +26,7 @@ import (
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/exerunners"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/notifications"
 	"github.com/microsoft/dcp/internal/perftrace"
 	"github.com/microsoft/dcp/internal/proxy"
@@ -134,10 +135,24 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		if leaseOwnerErr != nil {
 			return fmt.Errorf("failed to initialize state store lease owner identity: %w", leaseOwnerErr)
 		}
-		if cleanupErr := stateStore.DeleteInactiveResourceLeases(ctrlCtx); cleanupErr != nil {
-			log.Error(cleanupErr, "Failed to clean up inactive state store resource leases")
-		}
-		startInvalidPersistentExecutableRecordCleanup(ctrlCtx, stateStore, leaseOwner, log)
+		networking.ConfigureStateStorePortAllocator(stateStore, leaseOwner)
+		cleanupCtx, cancelCleanup := context.WithCancel(ctrlCtx)
+		cleanupDone := make(chan struct{})
+		go func() {
+			defer close(cleanupDone)
+			if leaseCleanupErr := stateStore.DeleteInactiveResourceLeases(cleanupCtx); leaseCleanupErr != nil {
+				log.Error(leaseCleanupErr, "Failed to clean up inactive state store resource leases")
+			}
+			if portCleanupErr := stateStore.DeleteInactivePortReservations(cleanupCtx); portCleanupErr != nil {
+				log.Error(portCleanupErr, "Failed to clean up inactive state store port reservations")
+			}
+		}()
+		persistentCleanupDone := startInvalidPersistentExecutableRecordCleanup(cleanupCtx, stateStore, leaseOwner, log)
+		defer func() {
+			cancelCleanup()
+			<-cleanupDone
+			<-persistentCleanupDone
+		}()
 		workloadID, workloadIDErr := cmds.GetWorkloadIDFromFlags(cmd.Flags())
 		if workloadIDErr != nil {
 			return workloadIDErr
