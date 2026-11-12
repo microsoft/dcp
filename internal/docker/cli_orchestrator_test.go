@@ -109,14 +109,20 @@ func TestExpectStringsMultiline(t *testing.T) {
 	b.Reset()
 }
 
-func TestUnmarshalContainerNormalizesName(t *testing.T) {
+// Verifies that unmarshalContainer normalizes runtime names and preserves separate entrypoint,
+// command, and environment values while retaining combined arguments for existing consumers.
+func TestUnmarshalContainerPreservesLaunchConfiguration(t *testing.T) {
 	t.Parallel()
 
 	inspected := ct.InspectedContainer{}
-	err := unmarshalContainer([]byte(`{"Id":"container-id","Name":"/container-name"}`), &inspected)
+	err := unmarshalContainer([]byte(`{"Id":"container-id","Name":"/container-name","Config":{"Entrypoint":["entrypoint","--entrypoint-arg"],"Cmd":["command","--command-arg"],"Env":["RUNTIME=value"]}}`), &inspected)
 
 	require.NoError(t, err)
 	require.Equal(t, "container-name", inspected.Name)
+	require.Equal(t, []string{"entrypoint", "--entrypoint-arg"}, inspected.Entrypoint)
+	require.Equal(t, []string{"command", "--command-arg"}, inspected.Command)
+	require.Equal(t, []string{"entrypoint", "--entrypoint-arg", "command", "--command-arg"}, inspected.Args)
+	require.Equal(t, map[string]string{"RUNTIME": "value"}, inspected.Env)
 }
 
 func TestInspectedContainerDeserialization(t *testing.T) {

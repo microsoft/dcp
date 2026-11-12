@@ -315,8 +315,10 @@ func NewControllerManagerOptions(lifetimeCtx context.Context, scheme *apiruntime
 		Metrics: metricsserver.Options{
 			BindAddress: "0",
 		},
-		Logger:      log.WithName("ControllerManager"),
-		BaseContext: func() context.Context { return lifetimeCtx },
+		Logger: log.WithName("ControllerManager"),
+		// Runnable cancellation belongs to the manager; inheriting parent cancellation
+		// here would bypass StartControllerManager's cache-startup barrier.
+		BaseContext: func() context.Context { return context.WithoutCancel(lifetimeCtx) },
 		Controller: ctrl_config.Controller{
 			MaxConcurrentReconciles: MaxConcurrentReconciles,
 		},

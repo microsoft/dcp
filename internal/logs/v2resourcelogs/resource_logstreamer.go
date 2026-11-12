@@ -121,8 +121,8 @@ func snapshot(obj resource.Object) (resourceSnapshot, error) {
 	case *apiv2.LogicalContainerExec:
 		result.systemID = container.GetResourceId()
 		result.runtime = container.Status.RuntimeLogs
-		result.complete = container.Status.Phase == apiv2.ContainerExecPhaseExited ||
-			container.Status.Phase == apiv2.ContainerExecPhaseFailed
+		result.complete = container.Status.Phase == apiv2.LogicalContainerExecPhaseExited ||
+			container.Status.Phase == apiv2.LogicalContainerExecPhaseFailed
 	default:
 		return resourceSnapshot{}, fmt.Errorf("unsupported log resource %T", obj)
 	}

@@ -538,10 +538,10 @@ func TestLogicalProcessPortReservationsReleasedOnTemplateFailure(t *testing.T) {
 				Name: "http", ServiceRef: service.Name}, Address: "127.0.0.1"}},
 		}}
 	require.NoError(t, server.Client.Create(ctx, resource))
-	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalProcessPhaseFailed && len(current.Status.Conditions) > 0 &&
-			current.Status.Conditions[0].Reason == string(apiv2.LogicalResourceReasonTemplateEvaluationFailed), nil
+	failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseFailed, nil
 	})
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonFailedToStart)
 	waitPortReservationCount(t, ctx, db, 0)
 	require.NoError(t, server.Client.Delete(ctx, resource))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)

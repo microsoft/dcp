@@ -74,7 +74,7 @@ func TestContainerExecLifecycleEventsCompleteLogicalFollowers(t *testing.T) {
 			physical.Status.LogsComplete = true
 			event := apiv2.ResourceWatcherEvent{Type: testCase.event, Object: physical}
 			if testCase.logical {
-				logical.Status.Phase = apiv2.ContainerExecPhaseFailed
+				logical.Status.Phase = apiv2.LogicalContainerExecPhaseFailed
 				logical.Status.RuntimeLogs = &apiv2.LogSource{Name: physical.Name, UID: physical.UID, Complete: true}
 				event.Object = logical
 			}
@@ -110,7 +110,7 @@ func TestContainerExecLogAvailabilityAndSources(t *testing.T) {
 	require.NoError(t, streamErr)
 	require.Equal(t, logstream.ResourceStreamStatusNotReady, status)
 	physical.Status.LogsComplete = true
-	logical.Status.Phase = apiv2.ContainerExecPhaseFailed
+	logical.Status.Phase = apiv2.LogicalContainerExecPhaseFailed
 	status, _, streamErr = streamer.StreamLogs(ctx, &output, logical, &apiv2.ResourceLogOptions{Follow: true}, logr.Discard())
 	require.NoError(t, streamErr)
 	require.Equal(t, logstream.ResourceStreamStatusDone, status)
