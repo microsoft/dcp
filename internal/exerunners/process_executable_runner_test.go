@@ -215,8 +215,8 @@ func TestProcessExecutableRunnerSkipsTimestampsForPersistentOutput(t *testing.T)
 	}
 }
 
-// Verifies that an escaped descendant holding the root process's output pipes
-// cannot delay completion beyond the configured wait delay.
+// Verifies that a ready descendant holding the root process's output pipes survives root exit
+// without delaying completion beyond the configured wait delay.
 func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultExerunnerTestTimeout)
 	defer cancel()
@@ -244,23 +244,18 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 			ExecutablePath: delayPath,
 		},
 		Status: apiv1.ExecutableStatus{
-			EffectiveArgs: []string{"--delay=60s", "--child-spec=1", "--hold-pipe"},
+			EffectiveArgs: []string{"--delay=60s", "--child-spec=1", "--hold-pipe", "--report-ready"},
 			EffectiveEnv:  effectiveEnv,
 		},
 	}
 
 	result := runner.StartRun(ctx, exe, changeHandler, logr.Discard())
-	var tree []process.ProcessHandle
+	var childProcess *os.Process
 	t.Cleanup(func() {
-		for _, handle := range tree {
-			proc, findErr := handle.OsProcess()
-			if process.IsProcessGoneErr(findErr) {
-				continue
-			}
-			require.NoError(t, findErr)
-			killErr := proc.Kill()
-			releaseErr := proc.Release()
-			require.True(t, killErr == nil || process.IsProcessGoneErr(killErr), "failed to stop delay: %v", killErr)
+		if childProcess != nil {
+			killErr := childProcess.Kill()
+			releaseErr := childProcess.Release()
+			require.True(t, killErr == nil || process.IsProcessGoneErr(killErr), "failed to stop delay child: %v", killErr)
 			require.NoError(t, releaseErr)
 		}
 		require.NoError(t, runner.ReleaseRun(context.Background(), result.RunID, logr.Discard()))
@@ -278,18 +273,36 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 	rootPID, rootPIDErr := process.Int64_ToPidT(*result.Pid)
 	require.NoError(t, rootPIDErr)
 	rootHandle := process.NewHandle(rootPID, result.ProcessIdentityTime)
-	expectedTreeSize := 2
 	expectedExitCode := int32(-1)
 	if osutil.IsWindows() {
-		expectedTreeSize++ // The isolated console also contains conhost.
 		expectedExitCode = 1
 	}
-	treeErr := wait.PollUntilContextCancel(ctx, 25*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		var snapshotErr error
-		tree, snapshotErr = process.GetProcessTree(pollCtx, rootHandle)
-		return len(tree) >= expectedTreeSize, snapshotErr
+	var childHandle process.ProcessHandle
+	readyErr := wait.PollUntilContextCancel(ctx, 25*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+		tree, snapshotErr := process.GetProcessTree(pollCtx, rootHandle)
+		if snapshotErr != nil {
+			return false, snapshotErr
+		}
+		output, readErr := os.ReadFile(result.StdOutFile)
+		if readErr != nil {
+			return false, readErr
+		}
+		for _, candidate := range tree[1:] {
+			if strings.Contains(string(output), fmt.Sprintf("Ready: %d\n", candidate.Pid)) {
+				childHandle = candidate
+				if childProcess == nil {
+					var childErr error
+					childProcess, childErr = candidate.OsProcess()
+					if childErr != nil {
+						return false, childErr
+					}
+				}
+				return strings.Contains(string(output), fmt.Sprintf("Ready: %d\n", rootPID)), nil
+			}
+		}
+		return false, nil
 	})
-	require.NoError(t, treeErr)
+	require.NoError(t, readyErr, "delay parent and child must report readiness before root termination")
 	rootProcess, rootProcessErr := rootHandle.OsProcess()
 	require.NoError(t, rootProcessErr)
 	startedAt := time.Now()
@@ -297,7 +310,8 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 	require.NoError(t, rootProcess.Release())
 
 	select {
-	case completed := <-changeHandler.completedRuns:
+	case completed, valid := <-changeHandler.completedRuns:
+		require.True(t, valid, "completion must report an exit result")
 		require.Equal(t, result.RunID, completed.runID)
 		require.NotNil(t, completed.exitCode)
 		require.Equal(t, expectedExitCode, *completed.exitCode)
@@ -309,18 +323,8 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 		t.Fatal("timed out waiting for root process completion")
 	}
 
-	runningDescendants := 0
-	for _, handle := range tree {
-		if handle.Pid == rootPID {
-			continue
-		}
-		runningErr := executor.CheckProcessRunning(handle)
-		require.True(t, runningErr == nil || process.IsProcessGoneErr(runningErr), "failed to inspect delay descendant: %v", runningErr)
-		if runningErr == nil {
-			runningDescendants++
-		}
-	}
-	require.GreaterOrEqual(t, runningDescendants, expectedTreeSize-1, "descendants must remain alive while the runner closes the held pipes")
+	require.NoError(t, executor.CheckProcessRunning(childHandle),
+		"the ready delay child must remain alive while the runner closes the held pipes")
 }
 
 func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {

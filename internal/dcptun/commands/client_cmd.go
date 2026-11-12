@@ -6,7 +6,6 @@
 package commands
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -86,7 +85,7 @@ func runClientProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 		tunnelConfig.ClientDataAddress = dataListenerAddr.IP.String()
 		tunnelConfig.ClientDataPort = int32(dataListenerAddr.Port)
 
-		configJson, marshalErr := json.Marshal(tunnelConfig)
+		configJson, marshalErr := tunnelConfig.MarshalStatus()
 		if marshalErr != nil {
 			log.Error(marshalErr, "Failed to create server proxy status message") // Should never happen
 			return marshalErr

@@ -449,6 +449,14 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return err
 		}
 
+		logicalTunnelProxyCtrl := controllers.NewLogicalContainerTunnelProxyReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalContainerTunnelProxyReconciler"),
+			controllers.LogicalContainerTunnelProxyReconcilerConfig{},
+		)
+		if logicalTunnelSetupErr := logicalTunnelProxyCtrl.SetupWithManager(mgr, defaultControllerName); logicalTunnelSetupErr != nil {
+			return fmt.Errorf("set up LogicalContainerTunnelProxy controller: %w", logicalTunnelSetupErr)
+		}
+
 		mgrRunResultCh := make(chan error, 1)
 
 		// Run the controller manager in a separate goroutine to ensure that the process running controllers

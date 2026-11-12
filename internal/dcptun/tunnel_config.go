@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 
@@ -62,6 +63,12 @@ type TunnelProxyConfig struct {
 	// to connect to the data endpoint of the client-side proxy.
 	// In the context of the client-side proxy, this is the port that the client-side proxy will be listening on.
 	ClientDataPort int32 `json:"client_data_port"`
+}
+
+// MarshalStatus serializes connection details without disclosing the server private key.
+func (tc TunnelProxyConfig) MarshalStatus() ([]byte, error) {
+	tc.ServerKeyBase64 = ""
+	return json.Marshal(tc)
 }
 
 func (tc TunnelProxySecurityConfig) HasCompleteCertificateData() bool {

@@ -209,10 +209,17 @@ func syncLogicalEndpoints[Resource commonapi.DcpModelObject](
 			ServiceRef: port.serviceRef, Addresses: addresses[portIndex],
 		}
 	}
+	return addressesReady, syncOwnedServiceEndpoints(ctx, apiClient, reader, owner, ownerUIDField, pending, desired)
+}
+
+func syncOwnedServiceEndpoints(
+	ctx context.Context, apiClient ctrl_client.Client, reader ctrl_client.Reader, owner commonapi.DcpModelObject,
+	ownerUIDField string, pending *unobservedLogicalChildren, desired map[string]apiv2.ServiceEndpointSpec,
+) error {
 	var current apiv2.ServiceEndpointList
 	if listErr := apiClient.List(ctx, &current, ctrl_client.InNamespace(owner.GetNamespace()),
 		ctrl_client.MatchingFields{ownerUIDField: string(owner.GetUID())}); listErr != nil {
-		return false, fmt.Errorf("list logical workload endpoints: %w", listErr)
+		return fmt.Errorf("list logical workload endpoints: %w", listErr)
 	}
 	var syncErr error
 	for endpointIndex := range current.Items {
@@ -242,15 +249,10 @@ func syncLogicalEndpoints[Resource commonapi.DcpModelObject](
 			syncErr = errors.Join(syncErr, fmt.Errorf("endpoint %q is awaiting replacement after deletion", endpoint.NamespacedName()))
 		}
 	}
-	for _, port := range ports {
-		name := logicalPortResourceName(owner, port.Name)
-		spec, missing := desired[name]
-		if !missing {
-			continue
-		}
+	for name, spec := range desired {
 		endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: owner.GetNamespace()}, Spec: spec}
 		if ownerErr := ctrl.SetControllerReference(owner, endpoint, apiClient.Scheme()); ownerErr != nil {
-			syncErr = errors.Join(syncErr, fmt.Errorf("set port %q endpoint owner: %w", port.Name, ownerErr))
+			syncErr = errors.Join(syncErr, fmt.Errorf("set endpoint %q owner: %w", name, ownerErr))
 			continue
 		}
 		pending.recordCreateAttempt(endpoint)
@@ -258,17 +260,17 @@ func syncLogicalEndpoints[Resource commonapi.DcpModelObject](
 		if apierrors.IsAlreadyExists(createErr) {
 			existing := &apiv2.ServiceEndpoint{}
 			if lookupErr := reader.Get(ctx, endpoint.NamespacedName(), existing); lookupErr != nil {
-				syncErr = errors.Join(syncErr, fmt.Errorf("get existing port %q endpoint: %w", port.Name, lookupErr))
+				syncErr = errors.Join(syncErr, fmt.Errorf("get existing endpoint %q: %w", name, lookupErr))
 			} else if !metav1.IsControlledBy(existing, owner) {
 				syncErr = errors.Join(syncErr, fmt.Errorf("endpoint %q has a different owner", existing.NamespacedName()))
 			} else if !existing.DeletionTimestamp.IsZero() || !reflect.DeepEqual(existing.Spec, spec) {
 				syncErr = errors.Join(syncErr, fmt.Errorf("endpoint %q is awaiting replacement after deletion", existing.NamespacedName()))
 			}
 		} else if createErr != nil {
-			syncErr = errors.Join(syncErr, fmt.Errorf("create port %q endpoint: %w", port.Name, createErr))
+			syncErr = errors.Join(syncErr, fmt.Errorf("create endpoint %q: %w", name, createErr))
 		}
 	}
-	return addressesReady, syncErr
+	return syncErr
 }
 
 func cleanupLogicalEndpoints(

@@ -344,6 +344,7 @@ func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error
 	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainer{}).GetGroupVersionResource(), v2ResourceStreamer)
 	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerImage{}).GetGroupVersionResource(), v2ResourceStreamer)
 	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainerNetwork{}).GetGroupVersionResource(), v2ResourceStreamer)
+	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalContainerTunnelProxy{}).GetGroupVersionResource(), v2ResourceStreamer)
 	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource(), v2ResourceStreamer)
 	apiv2.ResourceLogStreamers.Store((&apiv2.PhysicalProcess{}).GetGroupVersionResource(), v2ResourceStreamer)
 	apiv2.ResourceLogStreamers.Store((&apiv2.LogicalProcess{}).GetGroupVersionResource(), v2ResourceStreamer)
