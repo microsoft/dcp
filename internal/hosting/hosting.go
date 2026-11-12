@@ -74,8 +74,9 @@ func (host *Host) Run(ctx context.Context, lifecycleMsgs chan<- LifecycleMessage
 		host.Logger = logr.Discard()
 	}
 
+	// Not closed on return: services that outlive the shutdown timeout still report their exit,
+	// and the buffer guarantees those late sends never block.
 	messages := make(chan LifecycleMessage, len(host.Services))
-	defer close(messages)
 
 	// Track running services so we know when they all stop.
 	running := map[string]bool{}

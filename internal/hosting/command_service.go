@@ -22,6 +22,10 @@ type CommandServiceRunOptions uint32
 const (
 	CommandServiceRunOptionShowStderr    CommandServiceRunOptions = 0x1
 	CommandServiceRunOptionDontTerminate CommandServiceRunOptions = 0x2
+
+	// Used with CommandServiceRunOptionDontTerminate: after the service context is cancelled, Run waits for the process
+	// to exit on its own instead of returning immediately. The caller is responsible for asking the process to exit.
+	CommandServiceRunOptionWaitForExit CommandServiceRunOptions = 0x4
 )
 
 // CommandService is a Service that runs an external command.
@@ -91,7 +95,10 @@ func (s *CommandService) Run(ctx context.Context) error {
 		case exitInfo := <-pic:
 			return s.recordExit(ctx, exitInfo)
 		case <-ctx.Done():
-			return nil
+			if (s.options & CommandServiceRunOptionWaitForExit) == 0 {
+				return nil
+			}
+			return s.recordExit(ctx, <-pic)
 		}
 	} else {
 		// Context cancel will force the process to exit, so we only need to wait for the latter
