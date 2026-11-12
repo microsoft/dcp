@@ -46,6 +46,10 @@ type projectBackingClient struct {
 	containerListFailures   atomic.Int32
 	staleContainerCondition atomic.Bool
 	reportContainerRunning  atomic.Bool
+	reportContainerUnknown  atomic.Bool
+	reportContainerPending  atomic.Bool
+	failNamespace           atomic.Bool
+	namespaceLookups        atomic.Int32
 }
 
 // Verifies that a Failed Project preserves its original readable capture on ambiguous discovery
@@ -90,7 +94,7 @@ func TestV2ProjectBackingInterferencePreservesRuntimeLogs(t *testing.T) {
 				removeProjectBackingHold(t, ctx, server.Client, physical)
 			}
 			unknown := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
-			requireReadyCondition(t, unknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPhysicalExecutionChanged)
+			requireReadyCondition(t, unknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
 			require.NoError(t, server.Client.Get(ctx, physical.NamespacedName(), physical))
 			require.Equal(t, physical.GetLogSource(), unknown.Status.RuntimeLogs)
 			require.True(t, unknown.Status.RuntimeLogs.Available)
@@ -156,10 +160,19 @@ func (apiClient *projectBackingClient) List(ctx context.Context, list ctrl_clien
 			if apiClient.reportContainerRunning.Load() {
 				containers.Items[index].Status.Phase = apiv2.PhysicalContainerPhaseRunning
 			}
+			if apiClient.reportContainerUnknown.Load() {
+				containers.Items[index].Status.Phase = apiv2.PhysicalContainerPhaseUnknown
+			}
+			if apiClient.reportContainerPending.Load() {
+				containers.Items[index].Status.Phase = apiv2.PhysicalContainerPhasePending
+			}
 			if apiClient.staleContainerCondition.Load() {
 				containers.Items[index].Generation++
 			}
 			for conditionIndex := range containers.Items[index].Status.Conditions {
+				if apiClient.reportContainerPending.Load() {
+					containers.Items[index].Status.Conditions[conditionIndex].Message = "injected pending backing observation"
+				}
 				if apiClient.staleContainerCondition.Load() {
 					containers.Items[index].Status.Conditions[conditionIndex].ObservedGeneration = containers.Items[index].Generation - 1
 				}
@@ -206,7 +219,7 @@ func TestV2ProjectFailureSurvivesBackingChanges(t *testing.T) {
 			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 			require.NoError(t, orchestrator.SimulateContainerStatus(ctx, prepared.Status.ContainerID, containers.ContainerStatusDead))
 			failed := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
-			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
 			physical := &apiv2.PhysicalContainer{}
 			require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
 			replacement := physical.DeepCopy()
@@ -242,6 +255,115 @@ func TestV2ProjectFailureSurvivesBackingChanges(t *testing.T) {
 			var backings apiv2.PhysicalContainerList
 			require.NoError(t, server.Client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
 			require.Empty(t, backings.Items)
+		})
+	}
+}
+
+// Verifies that Project keeps namespace lookup failures in Pending/Preparing with diagnostic context
+// and becomes prepared after namespace observation recovers.
+func TestV2ProjectNamespaceLookupRetainsPreparation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	var decorated *projectBackingClient
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+			decorated = &projectBackingClient{Client: apiClient}
+			return decorated
+		}})
+	require.NoError(t, startupErr)
+	t.Cleanup(func() { decorated.failNamespace.Store(false) })
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-namespace-lookup")
+	decorated.failNamespace.Store(true)
+	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{
+			LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "application"},
+		}}}
+	require.NoError(t, server.Client.Create(ctx, resource))
+	pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		return decorated.namespaceLookups.Load() > 0 && len(current.Status.Conditions) != 0 &&
+			strings.Contains(current.Status.Conditions[0].Message, "injected Project namespace lookup failure"), nil
+	})
+	require.Equal(t, apiv2.ProjectPhasePending, pending.Status.Phase)
+	requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparing)
+	decorated.failNamespace.Store(false)
+	waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+	require.NoError(t, server.Client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+}
+
+// Verifies that Project distinguishes preparation failure from loss of an established context,
+// retaining successful preparation through Unknown and subsequent Pending backing observations.
+func TestV2ProjectContextLossReasons(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"preparing", "prepared", "unknown"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			var decorated *projectBackingClient
+			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+					decorated = &projectBackingClient{Client: apiClient}
+					decorated.reportContainerUnknown.Store(scenario == "preparing")
+					return decorated
+				}})
+			require.NoError(t, startupErr)
+			t.Cleanup(func() {
+				decorated.reportContainerUnknown.Store(false)
+				decorated.reportContainerPending.Store(false)
+			})
+			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-context-loss-"+scenario)
+			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+					LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
+				}}}
+			require.NoError(t, server.Client.Create(ctx, resource))
+			expectedReason := apiv2.ProjectReasonMissing
+			var observed *apiv2.Project
+			if scenario == "preparing" {
+				expectedReason = apiv2.ProjectReasonPreparationFailed
+				observed = waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+					return current.Status.ContainerID != "" && len(current.Status.Conditions) != 0 &&
+						strings.Contains(current.Status.Conditions[0].Message, "PhysicalContainer reports"), nil
+				})
+				require.Equal(t, apiv2.ProjectPhasePending, observed.Status.Phase)
+				requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparing)
+			} else {
+				observed = waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+				if scenario == "unknown" {
+					decorated.reportContainerUnknown.Store(true)
+					require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
+						[]byte(`{"metadata":{"annotations":{"context-observation":"unknown"}}}`))))
+					unknown := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseUnknown)
+					requireReadyCondition(t, unknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonLookupFailed)
+					decorated.reportContainerPending.Store(true)
+					decorated.reportContainerUnknown.Store(false)
+					require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
+						[]byte(`{"metadata":{"annotations":{"context-observation":"pending"}}}`))))
+					pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+						return current.Status.Phase == apiv2.ProjectPhaseUnknown && len(current.Status.Conditions) != 0 &&
+							strings.Contains(current.Status.Conditions[0].Message, "injected pending backing observation"), nil
+					})
+					requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonLookupFailed)
+				}
+			}
+			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+			require.NoError(t, orchestrator.SimulateContainerStatus(ctx, observed.Status.ContainerID, containers.ContainerStatusDead))
+			waitObjectAssumesStateEx(t, ctx, server.Client, types.NamespacedName{Namespace: namespace.Name, Name: observed.Status.PhysicalContainerRef},
+				func(physical *apiv2.PhysicalContainer) (bool, error) {
+					return physical.Status.Phase == apiv2.PhysicalContainerPhaseFailed ||
+						physical.Status.Phase == apiv2.PhysicalContainerPhaseExited, nil
+				})
+			decorated.reportContainerUnknown.Store(false)
+			decorated.reportContainerPending.Store(false)
+			require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
+				[]byte(`{"metadata":{"annotations":{"context-observation":"failed"}}}`))))
+			failed := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, expectedReason)
+			require.Contains(t, failed.Status.Conditions[0].Message, "PhysicalContainer reports")
+			require.NoError(t, server.Client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 		})
 	}
 }
@@ -395,6 +517,10 @@ func TestV2ProjectObservesContainerWithoutGenerationGate(t *testing.T) {
 }
 
 func (apiClient *projectBackingClient) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
+	if _, namespace := obj.(*apiv2.Namespace); namespace && apiClient.failNamespace.Load() {
+		apiClient.namespaceLookups.Add(1)
+		return errors.New("injected Project namespace lookup failure")
+	}
 	if _, network := obj.(*apiv2.LogicalContainerNetwork); network && key.Name == "later" && apiClient.failNetwork.Load() {
 		apiClient.networkLookups.Add(1)
 		return errors.New("later network lookup unavailable")
@@ -605,12 +731,12 @@ func TestV2ProjectDiscoversAndDeletesBackingsByOwner(t *testing.T) {
 			require.NoError(t, server.Client.Create(ctx, duplicate))
 			// A second owned resource invalidates normal observation, but must not block cleanup.
 			unknown := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
-			requireReadyCondition(t, unknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPhysicalExecutionChanged)
+			requireReadyCondition(t, unknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
 			require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 			stillUnknown := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 				return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
 			})
-			requireReadyCondition(t, stillUnknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPhysicalExecutionChanged)
+			requireReadyCondition(t, stillUnknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
 			require.Equal(t, running.Status.RuntimeLogs.UID, stillUnknown.Status.RuntimeLogs.UID)
 			require.NoError(t, server.Client.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
@@ -719,11 +845,13 @@ func TestV2ProjectChecksAllNetworkReferences(t *testing.T) {
 			switch scenario {
 			case "failed":
 				failed := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
-				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "NetworkFailed")
+				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
 				require.Contains(t, failed.Status.Conditions[0].Message, "later failed")
 			case "lookup":
 				pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
-					return len(current.Status.Conditions) != 0 && current.Status.Conditions[0].Reason == string(apiv2.ProjectReasonNetworkLookupFailed), nil
+					return len(current.Status.Conditions) != 0 &&
+						current.Status.Conditions[0].Reason == string(apiv2.ProjectReasonPreparing) &&
+						strings.Contains(current.Status.Conditions[0].Message, "later network lookup unavailable"), nil
 				})
 				require.Equal(t, apiv2.ProjectPhasePending, pending.Status.Phase)
 				require.Positive(t, decorated.networkLookups.Load())

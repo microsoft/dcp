@@ -10,6 +10,7 @@ import (
 	"errors"
 	"maps"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -128,7 +129,8 @@ func TestV2ProjectNamespaceAndEarlyStop(t *testing.T) {
 	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-missing-namespace"},
 		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "v2-project-early-stop-command"}}}}
 	require.NoError(t, client.Create(ctx, resource))
-	waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhasePending)
+	pending := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhasePending)
+	requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparing)
 	require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.Project) error {
 		current.Spec.Stop = true
 		return client.Update(updateCtx, current)
@@ -188,10 +190,10 @@ func TestV2ProjectContainerLifecycle(t *testing.T) {
 	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, running.Status.ContainerID, containers.ContainerStatusPaused))
 	paused := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == string(apiv2.PhysicalContainerReasonRuntimeContainerPaused), nil
+		return ready != nil && ready.Reason == string(apiv2.ProjectReasonPaused), nil
 	})
 	require.Equal(t, apiv2.ProjectPhaseReady, paused.Status.Phase)
-	requireReadyCondition(t, paused.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerPaused)
+	requireReadyCondition(t, paused.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPaused)
 	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, running.Status.ContainerID, containers.ContainerStatusRunning))
 	waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
 	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, running.Status.ContainerID, containers.ContainerStatusCreated))
@@ -206,7 +208,7 @@ func TestV2ProjectContainerLifecycle(t *testing.T) {
 	}))
 	stopped := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
 	require.Equal(t, running.Status.ContainerID, stopped.Status.ContainerID)
-	requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, "ProjectStopped")
+	requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonStopped)
 	require.NoError(t, client.Delete(ctx, resource))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
@@ -290,7 +292,8 @@ func TestV2ProjectContainerDependencyWatches(t *testing.T) {
 	require.NoError(t, client.Create(ctx, resource))
 	waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == "NetworkNotReady", nil
+		return ready != nil && ready.Reason == string(apiv2.ProjectReasonPreparing) &&
+			strings.Contains(ready.Message, "LogicalContainerNetwork"), nil
 	})
 	network := &apiv2.LogicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: namespace.Name},
 		Spec: apiv2.LogicalContainerNetworkSpec{Network: &apiv2.LogicalContainerNetworkConfig{}}}

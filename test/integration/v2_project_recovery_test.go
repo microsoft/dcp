@@ -97,11 +97,7 @@ func TestV2ProjectValidatesPhysicalCreateCollisions(t *testing.T) {
 				}
 				observed := waitProjectPhase(t, ctx, server.Client, resource, expected)
 				if expected == apiv2.ProjectPhaseFailed {
-					reason := apiv2.ProjectReasonPhysicalPreparationFailed
-					if kind == "image" {
-						reason = apiv2.ProjectReasonImagePreparationFailed
-					}
-					requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, reason)
+					requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
 				}
 				if scenario == "hold" || scenario == "owner" {
 					var collision ctrl_client.Object = &apiv2.PhysicalContainer{}
@@ -265,7 +261,7 @@ func TestV2ProjectMissingBackingCompletesFollowerThroughConflict(t *testing.T) {
 			return false, nil
 		}
 		terminal := current.Status.Phase == apiv2.ProjectPhaseFailed &&
-			(ready.Reason == string(apiv2.ProjectReasonContainerContextMissing) || ready.Reason == string(apiv2.ProjectReasonContainerContextTerminating))
+			ready.Reason == string(apiv2.ProjectReasonMissing)
 		return terminal && current.Status.RuntimeLogs != nil &&
 			current.Status.RuntimeLogs.Complete && !current.Status.RuntimeLogs.Available, nil
 	})

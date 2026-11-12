@@ -45,7 +45,8 @@ func TestV2ProjectPreparesImageBeforeNetworks(t *testing.T) {
 	}, apiv2.PhysicalContainerImagePhaseReady)
 	prepared := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return ready != nil && ready.Reason == "NetworkNotReady" && current.Status.StartupLogs != nil && current.Status.StartupLogs.Complete, nil
+		return ready != nil && ready.Reason == string(apiv2.ProjectReasonPreparing) &&
+			current.Status.StartupLogs != nil && current.Status.StartupLogs.Complete, nil
 	})
 	require.Equal(t, image.Name, prepared.Status.ImageRef)
 	require.Equal(t, image.GetLogSource(), prepared.Status.StartupLogs)

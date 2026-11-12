@@ -197,11 +197,11 @@ func (r *ProjectReconciler) manageProject(
 			phase, message := apiv2.ProjectPhasePending, namespaceReadinessMessage(resource.Namespace, reason)
 			if namespaceErr != nil {
 				log.Error(namespaceErr, "Failed to get Project namespace")
-				phase, message = apiv2.ProjectPhaseUnknown, namespaceErr.Error()
+				message = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
 				change |= additionalReconciliationNeeded
 			}
 			change |= setValue(&resource.Status.Phase, phase)
-			change |= setCondition(&resource.Status.Conditions, apiv2.ConditionReady, resource.Generation, metav1.ConditionFalse, reason, message)
+			change |= setCondition(&resource.Status.Conditions, apiv2.ConditionReady, resource.Generation, metav1.ConditionFalse, apiv2.ProjectReasonPreparing, message)
 			return change, StandardDelay
 		}
 		data = &projectData{state: projectStatePending}
@@ -249,9 +249,9 @@ func (r *ProjectReconciler) prepareProjectValues(
 	ports, prepareErr := prepareLogicalPorts(ctx, r.Client, r.NoCacheClient, resource, requests, log)
 	if prepareErr != nil {
 		log.Error(prepareErr, "Failed to prepare Project ports")
-		data.reason, data.message = apiv2.ProjectReasonPortPreparationPending, prepareErr.Error()
+		data.reason, data.message = apiv2.ProjectReasonPreparing, prepareErr.Error()
 		if errors.Is(prepareErr, errLogicalServiceDependencyFailed) {
-			data.reason = apiv2.ProjectReasonPortPreparationFailed
+			data.reason = apiv2.ProjectReasonPreparationFailed
 			return fmt.Errorf("%w: %w", errLogicalValuePreparationFailed, prepareErr)
 		}
 		return prepareErr
@@ -260,7 +260,7 @@ func (r *ProjectReconciler) prepareProjectValues(
 		adapterPort := resource.Spec.DebugAdapter.GetContainerTCPPort()
 		for index, selected := range ports {
 			if adapterPort != 0 && selected.protocol == commonapi.PortProtocolTCP && resource.Spec.Container.Ports[index].ContainerPort == adapterPort {
-				data.reason, data.message = apiv2.ProjectReasonAdapterPortConflict, "The adapter port conflicts with a declared TCP application port."
+				data.reason, data.message = apiv2.ProjectReasonPreparationFailed, "The adapter port conflicts with a declared TCP application port."
 				conflictErr := errors.New(data.message)
 				log.Error(conflictErr, "Failed to prepare Project adapter port")
 				return fmt.Errorf("%w: %w", errLogicalValuePreparationFailed, conflictErr)
@@ -271,10 +271,11 @@ func (r *ProjectReconciler) prepareProjectValues(
 		servingPorts(ports), arguments, environment, resource.Spec.Process != nil && osutil.IsWindows())
 	if evaluationErr != nil {
 		log.Error(evaluationErr, "Failed to evaluate Project launch values")
-		data.reason, data.message = apiv2.ProjectReasonTemplateEvaluationFailed, evaluationErr.Error()
+		data.reason, data.message = apiv2.ProjectReasonPreparationFailed, evaluationErr.Error()
 		if !templating.IsTransientTemplateError(evaluationErr) {
 			return fmt.Errorf("%w: %w", errLogicalValuePreparationFailed, evaluationErr)
 		}
+		data.reason = apiv2.ProjectReasonPreparing
 		return evaluationErr
 	}
 	if resource.Spec.Process != nil && resource.Spec.Process.AmbientEnvironment.EffectiveBehavior() == apiv2.EnvironmentBehaviorInherit {
@@ -334,7 +335,7 @@ func handleProjectPending(
 			}
 			return additionalReconciliationNeeded
 		}
-		data.state = projectStateReady
+		data.state, data.prepared = projectStateReady, true
 		return additionalReconciliationNeeded
 	}
 	backing, getErr := reconciler.findProjectContainer(ctx, resource, data)
@@ -359,7 +360,7 @@ func handleProjectPending(
 		if imageErr != nil {
 			log.Error(imageErr, "Failed to prepare Project image")
 			if apierrors.IsAlreadyExists(imageErr) {
-				data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonImagePreparationFailed, imageErr.Error()
+				data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonPreparationFailed, imageErr.Error()
 				return noChange
 			}
 			return additionalReconciliationNeeded
@@ -372,15 +373,15 @@ func handleProjectPending(
 		networksReady, networks, networkMessage, networkErr := resolveLogicalContainerNetworks(ctx, reconciler.Client, resource.Namespace, resource.Spec.Container.Networks)
 		if networkErr != nil {
 			log.Error(networkErr, "Failed to resolve Project networks")
-			data.reason, data.message = apiv2.ProjectReasonNetworkLookupFailed, networkErr.Error()
+			data.reason, data.message = apiv2.ProjectReasonPreparing, networkErr.Error()
 			if errors.Is(networkErr, errLogicalNetworkFailed) {
-				data.state, data.reason = projectStateFailed, apiv2.ProjectReasonNetworkFailed
+				data.state, data.reason = projectStateFailed, apiv2.ProjectReasonPreparationFailed
 				return change
 			}
 			return change | additionalReconciliationNeeded
 		}
 		if !networksReady {
-			data.reason, data.message = apiv2.ProjectReasonNetworkNotReady, networkMessage
+			data.reason, data.message = apiv2.ProjectReasonPreparing, networkMessage
 			return change
 		}
 		spec := projectContainerSpec(resource, data)
@@ -389,7 +390,7 @@ func handleProjectPending(
 		if createErr != nil {
 			log.Error(createErr, "Failed to prepare Project physical backing")
 			if apierrors.IsAlreadyExists(createErr) {
-				data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonPhysicalPreparationFailed, createErr.Error()
+				data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonPreparationFailed, createErr.Error()
 				return change
 			}
 			return change | additionalReconciliationNeeded
@@ -527,7 +528,7 @@ func (r *ProjectReconciler) observePreparedProject(ctx context.Context, resource
 			return change | additionalReconciliationNeeded, false
 		}
 		if image == nil && data.imageUID != "" {
-			data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonImagePreparationFailed, "The owned PhysicalContainerImage is no longer available."
+			data.failMissing("The owned PhysicalContainerImage is no longer available.")
 			return change, false
 		}
 		change |= applyProjectImageLogs(resource, image)
@@ -657,7 +658,7 @@ func (r *ProjectReconciler) observeProjectContainer(
 			return nil, noChange, fmt.Errorf("owned PhysicalContainer has not reached the cache")
 		}
 		missingErr := fmt.Errorf("prepared Project container is missing")
-		data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonContainerContextMissing, missingErr.Error()
+		data.failMissing(missingErr.Error())
 		source := &apiv2.LogSource{Name: data.physicalName, UID: data.physicalUID, Complete: true}
 		if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
 			resource.Status.RuntimeLogs = source
@@ -702,7 +703,7 @@ func (r *ProjectReconciler) findProjectContainer(ctx context.Context, resource *
 	observed, getErr := r.findProjectBacking(ctx, resource, &apiv2.PhysicalContainerList{})
 	if getErr != nil {
 		if errors.Is(getErr, errMultipleProjectBackings) {
-			data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonPhysicalExecutionChanged, getErr.Error()
+			data.failMissing(getErr.Error())
 		}
 		return nil, getErr
 	}
@@ -713,7 +714,7 @@ func (r *ProjectReconciler) findProjectContainer(ctx context.Context, resource *
 	data.unobservedChildren.observeCached(physical)
 	if (data.physicalUID != "" && physical.UID != data.physicalUID) || !hasFinalizer(physical, LogicalBackingFinalizer) {
 		identityErr := fmt.Errorf("physical container %q UID or logical hold changed", physical.NamespacedName())
-		data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonPhysicalExecutionChanged, identityErr.Error()
+		data.failMissing(identityErr.Error())
 		return nil, identityErr
 	}
 	data.physicalUID, data.physicalName = physical.UID, physical.Name
@@ -727,7 +728,7 @@ func (r *ProjectReconciler) findProjectImage(ctx context.Context, resource *apiv
 	observed, getErr := r.findProjectBacking(ctx, resource, &apiv2.PhysicalContainerImageList{})
 	if getErr != nil {
 		if errors.Is(getErr, errMultipleProjectBackings) {
-			data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonImagePreparationFailed, getErr.Error()
+			data.failMissing(getErr.Error())
 		}
 		return nil, getErr
 	}
@@ -738,13 +739,13 @@ func (r *ProjectReconciler) findProjectImage(ctx context.Context, resource *apiv
 	data.unobservedChildren.observeCached(image)
 	if (data.imageUID != "" && image.UID != data.imageUID) || !hasFinalizer(image, LogicalBackingFinalizer) {
 		identityErr := fmt.Errorf("physical image %q UID or logical hold changed", image.NamespacedName())
-		data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonImagePreparationFailed, identityErr.Error()
+		data.failMissing(identityErr.Error())
 		return nil, identityErr
 	}
 	data.imageUID, data.imageName = image.UID, image.Name
 	if !image.DeletionTimestamp.IsZero() && data.state != projectStateFailed && data.state != projectStateStopped {
 		deletionErr := fmt.Errorf("the owned PhysicalContainerImage %q is being deleted", image.NamespacedName())
-		data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonImagePreparationFailed, deletionErr.Error()
+		data.failMissing(deletionErr.Error())
 		return nil, deletionErr
 	}
 	return image, nil
@@ -866,7 +867,7 @@ func handleProjectStopping(
 ) objectChange {
 	data.reason, data.message = "", ""
 	if projectDebugSessionsActive(resource) {
-		data.reason, data.message = apiv2.ProjectReasonDebugShutdownPending, "Waiting for debug sessions and adapter cleanup to finish."
+		data.reason, data.message = apiv2.ProjectReasonStopping, "Waiting for debug sessions and adapter cleanup to finish."
 		return additionalReconciliationNeeded
 	}
 	if !reconciler.settleProjectProcesses(resource, data, log) {

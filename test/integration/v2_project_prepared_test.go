@@ -92,7 +92,7 @@ func TestV2ProjectPreparedEnvironmentCasing(t *testing.T) {
 				})
 				if malformed && !ignoreCase {
 					require.Equal(t, apiv2.ProjectPhaseFailed, observed.Status.Phase)
-					requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, "TemplateEvaluationFailed")
+					requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
 					require.Empty(t, observed.Status.PhysicalContainerRef)
 				} else {
 					require.Equal(t, apiv2.ProjectPhaseReady, observed.Status.Phase)

@@ -37,33 +37,24 @@ const ProjectDebugShutdownGrace = 5 * time.Second
 
 // Project reconciliation condition reasons.
 const (
-	ProjectReasonPreparingLaunchInputs       ConditionReason = "PreparingLaunchInputs"
-	ProjectReasonPortPreparationPending      ConditionReason = "PortPreparationPending"
-	ProjectReasonPortPreparationFailed       ConditionReason = "PortPreparationFailed"
-	ProjectReasonTemplateEvaluationFailed    ConditionReason = "TemplateEvaluationFailed"
-	ProjectReasonContainerPreparationPending ConditionReason = "ContainerPreparationPending"
-	ProjectReasonPrepared                    ConditionReason = "ProjectPrepared"
-	ProjectReasonDebugSessionsActive         ConditionReason = "DebugSessionsActive"
-	ProjectReasonStopping                    ConditionReason = "ProjectStopping"
-	ProjectReasonStopped                     ConditionReason = "ProjectStopped"
-	ProjectReasonPreparationFailed           ConditionReason = "PreparationFailed"
-	ProjectReasonContainerContextMissing     ConditionReason = "ContainerContextMissing"
-	ProjectReasonDeleting                    ConditionReason = "DeletingProject"
-	ProjectReasonPhysicalPreparationFailed   ConditionReason = "PhysicalPreparationFailed"
-	ProjectReasonPhysicalExecutionChanged    ConditionReason = "PhysicalExecutionChanged"
-	ProjectReasonImagePreparationFailed      ConditionReason = "ImagePreparationFailed"
-	ProjectReasonNetworkFailed               ConditionReason = "NetworkFailed"
-	ProjectReasonNetworkLookupFailed         ConditionReason = "NetworkLookupFailed"
-	ProjectReasonNetworkNotReady             ConditionReason = "NetworkNotReady"
-	ProjectReasonNetworkChanged              ConditionReason = "NetworkChanged"
-	ProjectReasonContainerLookupFailed       ConditionReason = "ContainerLookupFailed"
-	ProjectReasonContainerContextTerminating ConditionReason = "ContainerContextTerminating"
-	ProjectReasonAdapterPortPending          ConditionReason = "AdapterPortPending"
-	ProjectReasonDebugShutdownPending        ConditionReason = "DebugShutdownPending"
-	ProjectReasonDebugShutdownGraceExpired   ConditionReason = "DebugShutdownGraceExpired"
-	ProjectReasonPhysicalDeletionFailed      ConditionReason = "PhysicalDeletionFailed"
-	ProjectReasonProcessCleanupQueueFailed   ConditionReason = "ProcessCleanupQueueFailed"
-	ProjectReasonAdapterPortConflict         ConditionReason = "AdapterPortConflict"
+	// ProjectReasonPreparing indicates that prerequisites or execution context are being prepared.
+	ProjectReasonPreparing ConditionReason = "Preparing"
+	// ProjectReasonPrepared indicates that the prepared context is available for debug sessions.
+	ProjectReasonPrepared ConditionReason = "Prepared"
+	// ProjectReasonDebugSessionsActive indicates that the prepared context has active debug sessions.
+	ProjectReasonDebugSessionsActive ConditionReason = "DebugSessionsActive"
+	// ProjectReasonPaused indicates that the prepared container is paused.
+	ProjectReasonPaused ConditionReason = "Paused"
+	// ProjectReasonStopping indicates that session, target, or backing cleanup is in progress.
+	ProjectReasonStopping ConditionReason = "Stopping"
+	// ProjectReasonStopped indicates that requested shutdown has completed.
+	ProjectReasonStopped ConditionReason = "Stopped"
+	// ProjectReasonPreparationFailed indicates that preparation could not complete.
+	ProjectReasonPreparationFailed ConditionReason = "PreparationFailed"
+	// ProjectReasonMissing indicates that a previously prepared context is unavailable or no longer owned.
+	ProjectReasonMissing ConditionReason = "Missing"
+	// ProjectReasonLookupFailed indicates that the prepared context's current state cannot be confirmed.
+	ProjectReasonLookupFailed ConditionReason = "LookupFailed"
 )
 
 // DebugSubresourceName identifies the bidirectional Project DAP endpoint.

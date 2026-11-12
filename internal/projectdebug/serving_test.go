@@ -197,10 +197,10 @@ func TestProjectDebugServingWaitsForPrerequisites(t *testing.T) {
 		active bool
 	}{
 		{name: "missing-condition", phase: apiv2.ProjectPhaseReady},
-		{name: "paused", phase: apiv2.ProjectPhaseReady, status: metav1.ConditionFalse, reason: apiv2.PhysicalContainerReasonRuntimeContainerPaused},
+		{name: "paused", phase: apiv2.ProjectPhaseReady, status: metav1.ConditionFalse, reason: apiv2.ProjectReasonPaused},
 		{name: "wrong-phase", phase: apiv2.ProjectPhasePending, status: metav1.ConditionTrue, reason: apiv2.ProjectReasonPrepared},
-		{name: "wrong-reason", phase: apiv2.ProjectPhaseReady, status: metav1.ConditionTrue, reason: apiv2.ProjectReasonPreparingLaunchInputs},
-		{name: "active-recovery", phase: apiv2.ProjectPhaseUnknown, status: metav1.ConditionFalse, reason: apiv2.ProjectReasonContainerLookupFailed, active: true},
+		{name: "wrong-reason", phase: apiv2.ProjectPhaseReady, status: metav1.ConditionTrue, reason: apiv2.ProjectReasonPreparing},
+		{name: "active-recovery", phase: apiv2.ProjectPhaseUnknown, status: metav1.ConditionFalse, reason: apiv2.ProjectReasonLookupFailed, active: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, time.Minute)
@@ -1003,7 +1003,7 @@ func TestProjectDebugServingWaitsForContainerTCPEndpoint(t *testing.T) {
 	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen", apiv2.DebugAdapterPlacementContainer)
 	project.Status.Phase = apiv2.ProjectPhasePending
 	project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
-		Reason: string(apiv2.ProjectReasonAdapterPortPending), LastTransitionTime: metav1.Now()}}
+		Reason: string(apiv2.ProjectReasonPreparing), LastTransitionTime: metav1.Now()}}
 	require.NoError(t, apiClient.Status().Update(ctx, project))
 	type result struct {
 		connection *websocket.Conn
@@ -1027,7 +1027,7 @@ func TestProjectDebugServingWaitsForContainerTCPEndpoint(t *testing.T) {
 	containerExec.mu.Unlock()
 	require.Zero(t, count, "endpoint preparation must precede adapter launch")
 	require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
-		[]byte(fmt.Sprintf(`{"status":{"debugAdapterPort":4711,"debugAdapterAddress":%q,"phase":"Ready","conditions":[{"type":"Ready","status":"True","reason":"ProjectPrepared","lastTransitionTime":%q}]}}`, listener.Addr().String(), metav1.Now().Format(time.RFC3339))))))
+		[]byte(fmt.Sprintf(`{"status":{"debugAdapterPort":4711,"debugAdapterAddress":%q,"phase":"Ready","conditions":[{"type":"Ready","status":"True","reason":"Prepared","lastTransitionTime":%q}]}}`, listener.Addr().String(), metav1.Now().Format(time.RFC3339))))))
 	select {
 	case ready := <-connected:
 		require.NoError(t, ready.err)

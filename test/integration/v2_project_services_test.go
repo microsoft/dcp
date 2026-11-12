@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -41,11 +42,9 @@ func TestV2ProjectTerminalServicePreparation(t *testing.T) {
 				resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 					Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir()}}
 				arguments := []string{`{{portFor "dependency"}}`}
-				expectedReason := apiv2.ProjectReasonTemplateEvaluationFailed
 				binding := apiv2.LogicalServiceBinding{Name: "application", ServiceRef: service.Name}
 				if source == "port" {
 					arguments = []string{"literal"}
-					expectedReason = apiv2.ProjectReasonPortPreparationFailed
 				}
 				if kind == "process" {
 					resource.Spec.Process = &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
@@ -65,7 +64,7 @@ func TestV2ProjectTerminalServicePreparation(t *testing.T) {
 				}
 				require.NoError(t, client.Create(ctx, resource))
 				failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
-				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, expectedReason)
+				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
 				require.Empty(t, failed.Status.PhysicalContainerRef)
 				releaseService()
 				replacement := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: service.Name, Namespace: namespace.Name}, Spec: service.Spec}
@@ -77,7 +76,7 @@ func TestV2ProjectTerminalServicePreparation(t *testing.T) {
 					return client.Status().Update(updateCtx, current)
 				}))
 				terminal := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
-				requireReadyCondition(t, terminal.Status.Conditions, metav1.ConditionFalse, expectedReason)
+				requireReadyCondition(t, terminal.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
 				require.Equal(t, failed.Status.Conditions[0].Message, terminal.Status.Conditions[0].Message)
 				var backings apiv2.PhysicalContainerList
 				require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
@@ -135,7 +134,9 @@ func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 			require.NoError(t, server.Client.Create(ctx, project))
 			if scenario == "pending-binding" {
 				pending := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
-					return current.Status.ContainerID != "" && len(current.Status.Conditions) != 0 && current.Status.Conditions[0].Reason == "AdapterPortPending", nil
+					return current.Status.ContainerID != "" && len(current.Status.Conditions) != 0 &&
+						current.Status.Conditions[0].Reason == string(apiv2.ProjectReasonPreparing) &&
+						strings.Contains(current.Status.Conditions[0].Message, "adapter port binding"), nil
 				})
 				require.Equal(t, apiv2.ProjectPhasePending, pending.Status.Phase)
 				require.Empty(t, pending.Status.DebugAdapterAddress)
@@ -145,7 +146,8 @@ func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 			}
 			if scenario == "tcp-conflict" {
 				failed := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseFailed)
-				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, "AdapterPortConflict")
+				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
+				require.Contains(t, failed.Status.Conditions[0].Message, "adapter port conflicts")
 				require.Empty(t, failed.Status.PhysicalContainerRef)
 			} else {
 				prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
@@ -309,12 +311,15 @@ func TestV2ProjectTemplatePreparationFailures(t *testing.T) {
 				}
 				require.NoError(t, server.Client.Create(ctx, resource))
 				expected := apiv2.ProjectPhasePending
+				expectedReason := apiv2.ProjectReasonPreparing
 				if malformed {
 					expected = apiv2.ProjectPhaseFailed
+					expectedReason = apiv2.ProjectReasonPreparationFailed
 				}
 				waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 					return current.Status.Phase == expected && len(current.Status.Conditions) != 0 &&
-						current.Status.Conditions[0].Reason == "TemplateEvaluationFailed", nil
+						current.Status.Conditions[0].Reason == string(expectedReason) &&
+						current.Status.Conditions[0].Message != "", nil
 				})
 				if malformed {
 					require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))

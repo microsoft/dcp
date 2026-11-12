@@ -22,28 +22,35 @@ import (
 
 type projectState int
 
+func (data *projectData) failMissing(message string) {
+	data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonPreparationFailed, message
+	if data.prepared {
+		data.reason = apiv2.ProjectReasonMissing
+	}
+}
+
 func (data *projectData) updateLifecycleFromContainer(resource *apiv2.Project, physical *apiv2.PhysicalContainer) {
-	wasStarting := data.state == projectStatePending || data.state == projectStateCreating
 	if !physical.DeletionTimestamp.IsZero() {
-		data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonContainerContextTerminating, "The prepared container is being deleted."
+		data.failMissing("The backing PhysicalContainer is being deleted.")
 		return
 	}
 	condition := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
-	message := ""
-	if condition != nil {
-		message = fmt.Sprintf("Container preparation reports %s: %s", condition.Reason, condition.Message)
-	}
+	message := logicalBackingStatusMessage("PhysicalContainer", physical.Status.Conditions)
 	switch physical.Status.Phase {
 	case apiv2.PhysicalContainerPhaseRunning:
 		if condition != nil && condition.Status == metav1.ConditionTrue {
 			if resource.Spec.DebugAdapter != nil && resource.Spec.DebugAdapter.GetContainerTCPPort() != 0 && data.adapterAddress == "" {
 				data.state = projectStateUnknown
-				if wasStarting {
+				if !data.prepared {
 					data.state = projectStateCreating
 				}
-				data.reason, data.message = apiv2.ProjectReasonAdapterPortPending, "Waiting for the container adapter port binding."
+				data.reason, data.message = apiv2.ProjectReasonLookupFailed, "Waiting for the container adapter port binding."
+				if !data.prepared {
+					data.reason = apiv2.ProjectReasonPreparing
+				}
 				return
 			}
+			data.prepared = true
 			if data.state != projectStateActive {
 				data.state = projectStateReady
 			}
@@ -51,14 +58,15 @@ func (data *projectData) updateLifecycleFromContainer(resource *apiv2.Project, p
 			return
 		}
 	case apiv2.PhysicalContainerPhasePaused:
-		data.state, data.reason, data.message = projectStatePaused, apiv2.PhysicalContainerReasonRuntimeContainerPaused, message
+		data.prepared = true
+		data.state, data.reason, data.message = projectStatePaused, apiv2.ProjectReasonPaused, message
 		return
 	case apiv2.PhysicalContainerPhaseExited, apiv2.PhysicalContainerPhaseFailed:
-		data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonPreparationFailed, message
+		data.failMissing(message)
 		return
 	case apiv2.PhysicalContainerPhaseUnknown:
 		if condition != nil && condition.Reason == string(apiv2.PhysicalContainerReasonRuntimeContainerMissing) {
-			data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonContainerContextMissing, message
+			data.failMissing(message)
 			return
 		}
 	case apiv2.PhysicalContainerPhasePending, "":
@@ -66,9 +74,9 @@ func (data *projectData) updateLifecycleFromContainer(resource *apiv2.Project, p
 		data.state, data.reason, data.message = projectStateFailed, apiv2.PhysicalResourceReasonOperationStateInvalid, fmt.Sprintf("Unrecognized physical container phase %q.", physical.Status.Phase)
 		return
 	}
-	data.state, data.reason, data.message = projectStateUnknown, apiv2.ProjectReasonContainerLookupFailed, message
-	if wasStarting {
-		data.state, data.reason = projectStateCreating, apiv2.ProjectReasonContainerPreparationPending
+	data.state, data.reason, data.message = projectStateUnknown, apiv2.ProjectReasonLookupFailed, message
+	if !data.prepared {
+		data.state, data.reason = projectStateCreating, apiv2.ProjectReasonPreparing
 	}
 }
 
@@ -122,18 +130,20 @@ func (state projectState) String() string {
 }
 
 type projectData struct {
-	state                  projectState
-	reason                 apiv2.ConditionReason
-	message                string
-	physicalUID            types.UID
-	physicalName           string
-	imageUID               types.UID
-	imageName              string
-	ports                  []logicalPortSelection
-	unobservedChildren     unobservedLogicalChildren
-	effectiveArgs          []string
-	effectiveEnv           []commonapi.EnvVar
-	inputsPrepared         bool
+	state              projectState
+	reason             apiv2.ConditionReason
+	message            string
+	physicalUID        types.UID
+	physicalName       string
+	imageUID           types.UID
+	imageName          string
+	ports              []logicalPortSelection
+	unobservedChildren unobservedLogicalChildren
+	effectiveArgs      []string
+	effectiveEnv       []commonapi.EnvVar
+	inputsPrepared     bool
+	// Records successful preparation independently of temporary observation failures.
+	prepared               bool
 	processes              map[process.ProcessHandle]projectProcessData
 	processCleanupsPending int
 	processPoll            bool
@@ -231,10 +241,10 @@ var projectProjections = physicalResourceProjectionTable[projectState, apiv2.Pro
 	invalidPhase: apiv2.ProjectPhaseUnknown,
 	projections: map[projectState]physicalResourceProjection[apiv2.ProjectPhase]{
 		projectStatePending: {
-			phase: apiv2.ProjectPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonPreparingLaunchInputs,
+			phase: apiv2.ProjectPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonPreparing,
 		},
 		projectStateCreating: {
-			phase: apiv2.ProjectPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonContainerPreparationPending,
+			phase: apiv2.ProjectPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonPreparing,
 		},
 		projectStateReady: {
 			phase: apiv2.ProjectPhaseReady, conditionStatus: metav1.ConditionTrue, conditionReason: apiv2.ProjectReasonPrepared,
@@ -243,7 +253,7 @@ var projectProjections = physicalResourceProjectionTable[projectState, apiv2.Pro
 			phase: apiv2.ProjectPhaseActive, conditionStatus: metav1.ConditionTrue, conditionReason: apiv2.ProjectReasonDebugSessionsActive,
 		},
 		projectStatePaused: {
-			phase: apiv2.ProjectPhaseReady, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.PhysicalContainerReasonRuntimeContainerPaused,
+			phase: apiv2.ProjectPhaseReady, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonPaused,
 		},
 		projectStateStopping: {
 			phase: apiv2.ProjectPhaseStopping, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonStopping, requeue: true,
@@ -255,7 +265,7 @@ var projectProjections = physicalResourceProjectionTable[projectState, apiv2.Pro
 			phase: apiv2.ProjectPhaseFailed, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonPreparationFailed,
 		},
 		projectStateUnknown: {
-			phase: apiv2.ProjectPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonContainerLookupFailed,
+			phase: apiv2.ProjectPhaseUnknown, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonLookupFailed,
 			requeue: true, requeueDelay: LongDelay,
 		},
 	},
