@@ -2009,8 +2009,8 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable effective environment does not contain expected port information. The effective environment is %v", effectiveEnv)
 }
 
-// Verify that ports are injected into Executable environment variables
-// even if relevant Services appear AFTER the Executable is created.
+// Verifies that ports are injected into Executable environment variables when Services appear after
+// the Executable is created, and that the dynamically allocated produced Service becomes ready.
 func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -2057,7 +2057,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 		},
 		Spec: apiv1.ServiceSpec{
 			Protocol: commonapi.PortProtocolTCP,
-			Address:  "127.22.33.45",
+			Address:  networking.IPv4LocalhostDefaultAddress,
 		},
 	}
 
@@ -2090,6 +2090,9 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 	})
 	require.True(t, slices.Contains(effectiveEnv, "PRODUCED_SVC_PORT=26020"), "The Executable '%s' effective environment does not contain expected port information (PRODUCED_SVC_PORT variable). The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
 	require.True(t, slices.Contains(effectiveEnv, "CONSUMED_SVC_PORT=26021"), "The Executable '%s' effective environment does not contain expected port information (CONSUMED_SVC_PORT variable). The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
+	readySvc := waitServiceReady(t, ctx, producedSvc.NamespacedName())
+	require.Equal(t, producedSvc.Spec.Address, readySvc.Status.EffectiveAddress)
+	require.True(t, networking.IsValidPort(int(readySvc.Status.EffectivePort)), "The produced Service must have an allocated port")
 }
 
 // Verify that an Executable in Starting state can be deleted.
