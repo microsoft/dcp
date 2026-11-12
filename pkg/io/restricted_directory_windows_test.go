@@ -136,12 +136,19 @@ func setDirectoryDACL(t *testing.T, outputDir string, protected bool, entries []
 func directoryWithInheritedAccess(t *testing.T, sid *windows.SID, accessPermissions windows.ACCESS_MASK) string {
 	t.Helper()
 	parentDir := t.TempDir()
-	setDirectoryDACL(t, parentDir, false, []windows.EXPLICIT_ACCESS{
+	// Protect the parent DACL so that the child inherits only the configured entries, not unrelated ancestor grants.
+	setDirectoryDACL(t, parentDir, true, []windows.EXPLICIT_ACCESS{
 		directoryAccessEntry(t, currentUserSID(t), windows.STANDARD_RIGHTS_ALL|windows.GENERIC_ALL, windows.GRANT_ACCESS, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
 		directoryAccessEntry(t, sid, accessPermissions, windows.GRANT_ACCESS, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
 	})
 
 	outputDir := filepath.Join(parentDir, "child")
 	require.NoError(t, os.Mkdir(outputDir, osutil.PermissionOnlyOwnerReadWriteTraverse))
+
+	securityDescriptor, securityDescriptorErr := windows.GetNamedSecurityInfo(outputDir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	require.NoError(t, securityDescriptorErr)
+	control, _, controlErr := securityDescriptor.Control()
+	require.NoError(t, controlErr)
+	require.Zero(t, control&windows.SE_DACL_PROTECTED, "child directory dacl must inherit entries from its parent")
 	return outputDir
 }
