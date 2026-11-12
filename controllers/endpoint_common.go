@@ -37,7 +37,7 @@ type endpointPortReservationKey struct {
 }
 
 var endpointPortReservations syncmap.Map[endpointPortReservationKey, *networking.PortReservationSet]
-var executablePortReservations syncmap.Map[types.UID, *networking.PortReservationSet]
+var workloadPortReservations syncmap.Map[types.UID, *networking.PortReservationSet]
 
 type ServiceWorkloadEndpointKey struct {
 	commonapi.NamespacedNameWithKind
@@ -86,7 +86,7 @@ func SetupEndpointIndexWithManager(mgr ctrl.Manager) error {
 
 func reserveServiceProducerEndpointPort(
 	ctx context.Context,
-	client ctrl_client.Client,
+	client ctrl_client.Reader,
 	owner ctrl_client.Object,
 	serviceProducer commonapi.ServiceProducer,
 	address string,
@@ -104,7 +104,7 @@ func reserveServiceProducerEndpointPort(
 			if _, retained := endpointPortReservations.Load(key); retained {
 				return noChange, nil // The producer retains its original binding after Service deletion.
 			}
-			log.V(1).Info("Deferring Endpoint port reservation until its Service is available",
+			log.V(1).Info("Deferring producer port reservation until its Service is available",
 				"Service", serviceProducer.ServiceNamespacedName().String())
 			return additionalReconciliationNeeded, nil
 		}
@@ -142,7 +142,7 @@ func releaseWorkloadPortReservations(ctx context.Context, ownerUID types.UID, lo
 		}
 		return true
 	})
-	if reservations, found := executablePortReservations.LoadAndDelete(ownerUID); found {
+	if reservations, found := workloadPortReservations.LoadAndDelete(ownerUID); found {
 		reservations.Release(ctx, log)
 	}
 }

@@ -44,6 +44,7 @@ import (
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -606,6 +607,14 @@ func ensureContainerStartingState(
 	case templating.IsTransientTemplateError(rcd.startupError), errors.Is(rcd.startupError, statestore.ErrResourceLeaseHeld), errors.Is(rcd.startupError, errInitialContainerNetworksNotReady):
 		// Retry startup after a transient error or while another DCP instance is creating the persistent container.
 
+		if !container.DeletionTimestamp.IsZero() {
+			log.Info("Container is being deleted while waiting for startup dependencies, aborting startup", "Cause", rcd.startupError.Error())
+			_ = r.releasePersistentContainerResourceLease(ctx, container, log, false)
+			rcd.containerState = apiv1.ContainerStateFailedToStart
+			change |= additionalReconciliationNeeded
+			break
+		}
+
 		rcd.startupError = nil
 		rcd.startAttemptFinishedAt = metav1.MicroTime{}
 		rcd.containerName = ""
@@ -658,6 +667,7 @@ func ensureContainerFailedToStartState(
 		}
 	}
 
+	releaseWorkloadPortReservations(ctx, container.UID, log)
 	return change
 }
 
@@ -1344,6 +1354,26 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				return leaseErr
 			}
 
+			for _, port := range rcd.runSpec.Ports {
+				if port.HostPort == 0 {
+					continue
+				}
+				address := port.HostIP
+				if address == "" {
+					address = networking.IPv4AllInterfaceAddress
+				}
+				ip, ipErr := portReservationIP(address)
+				if ipErr != nil {
+					return ipErr
+				}
+				reservations, _ := workloadPortReservations.LoadOrStore(container.UID, &networking.PortReservationSet{})
+				if reserveErr := reservations.Reserve(startupCtx, ports.Binding{
+					Protocol: string(port.Protocol), IP: ip, Port: port.HostPort,
+				}, log); reserveErr != nil {
+					return fmt.Errorf("reserve fixed container host port: %w", reserveErr)
+				}
+			}
+
 			// Compute effective environment and invocation arguments for the container
 			err := r.computeContainerStartupInputs(startupCtx, container, rcd, log)
 			if err != nil {
@@ -2008,6 +2038,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 
 	if !rcd.hasValidContainerID() {
 		log.V(1).Info("Container resource was never created, nothing to remove...")
+		releaseWorkloadPortReservations(ctx, container.UID, log)
 		return
 	}
 
@@ -2022,7 +2053,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 // including the running container.
 func (r *ContainerReconciler) cleanupContainerResources(ctx context.Context, container *apiv1.Container, rcd *runningContainerData, log logr.Logger) {
 	r.cleanupDcpContainerResources(ctx, container, log)
-	if rcd.containerState == apiv1.ContainerStateExited {
+	if rcd.containerState == apiv1.ContainerStateExited || rcd.containerState == apiv1.ContainerStateFailedToStart {
 		releaseWorkloadPortReservations(ctx, container.UID, log)
 	}
 	r.removeContainerNetworkConnections(ctx, container, log)

@@ -623,6 +623,7 @@ func (r *ExecutableReconciler) startExecutable(
 			if persistErr != nil {
 				log.Error(persistErr, "Could not persist Executable process record")
 				r.cleanUpPersistentStartAfterRecordFailure(ctx, exe, ri.startupStage, res, log)
+				releaseWorkloadPortReservations(ctx, exe.UID, log)
 
 				now := metav1.NowMicro()
 				ri.ExeState = apiv1.ExecutableStateFailedToStart
@@ -684,9 +685,7 @@ func (r *ExecutableReconciler) startExecutable(
 				exe.Status.StartupTimestamp = metav1.NowMicro()
 			}
 			exe.Status.FinishTimestamp = exe.Status.StartupTimestamp
-			if !uncertainStart {
-				releaseWorkloadPortReservations(ctx, exe.UID, log)
-			}
+			releaseWorkloadPortReservations(ctx, exe.UID, log)
 			r.runs.DeleteByNamespacedName(exe.NamespacedName())
 			return statusChanged | environmentChanged
 		}
@@ -1383,7 +1382,7 @@ func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context,
 		reservedServicePorts = make(map[types.NamespacedName]int32)
 	}
 	ri.ReservedPorts = reservedServicePorts
-	reservations, _ := executablePortReservations.LoadOrStore(exe.UID, &networking.PortReservationSet{})
+	reservations, _ := workloadPortReservations.LoadOrStore(exe.UID, &networking.PortReservationSet{})
 	defer func() {
 		r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
 	}()
@@ -1392,6 +1391,24 @@ func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context,
 		ri.ExeState = apiv1.ExecutableStateFailedToStart
 		r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 		releaseWorkloadPortReservations(ctx, exe.UID, log)
+	}
+
+	producers, producersErr := commonapi.GetServiceProducersForObject(exe, log)
+	if producersErr != nil {
+		markExecutableFailed()
+		return false, statusChanged
+	}
+	for _, producer := range producers {
+		if producer.Port == 0 {
+			continue
+		}
+		// A missing Service must not prevent startup; its protocol is reserved once available.
+		_, reserveErr := reserveServiceProducerEndpointPort(ctx, r.NoCacheClient, exe, producer, producer.Address, producer.Port, log)
+		if reserveErr != nil {
+			log.Error(reserveErr, "Could not reserve fixed Executable producer port before startup")
+			markExecutableFailed()
+			return false, statusChanged
+		}
 	}
 
 	err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, reservations, log)

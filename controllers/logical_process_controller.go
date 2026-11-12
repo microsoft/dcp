@@ -180,6 +180,9 @@ func (r *LogicalProcessReconciler) manageLogicalProcess(
 	}
 	stateHandler := getStateInitializer(logicalProcessDataHandlers, data.state, log)
 	change := stateHandler(ctx, r, resource, data.state, data, log)
+	if data.terminal() {
+		releaseLogicalPortReservations(ctx, data.ports, log)
+	}
 	_ = r.processData.Update(resource.NamespacedName(), resource.UID, data)
 	projectionChange, delay, valid := data.applyTo(resource)
 	if !valid {
@@ -708,6 +711,9 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 
 	defer func() {
 		if data != nil {
+			if data.terminal() {
+				releaseLogicalPortReservations(ctx, data.ports, log)
+			}
 			_ = r.processData.Update(resource.NamespacedName(), resource.UID, data)
 			projectionChange, projectionDelay, valid := data.applyTo(resource)
 			change |= projectionChange

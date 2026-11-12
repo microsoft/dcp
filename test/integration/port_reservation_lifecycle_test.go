@@ -33,6 +33,7 @@ import (
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/ports"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -151,8 +152,29 @@ func TestExecutableTemplatePortReservationUsesBindAddress(t *testing.T) {
 	}
 }
 
-// Verifies that Container Endpoint reservations use the configured or inspected host bind
-// address before it is rewritten to a loopback address for clients.
+type containerCreationReservationObserver struct {
+	containers.ContainerOrchestrator
+	db               *sql.DB
+	claimsAtCreation atomic.Int32
+	creationError    error
+}
+
+func (orchestrator *containerCreationReservationObserver) CreateContainer(
+	ctx context.Context, options containers.CreateContainerOptions,
+) (string, error) {
+	var count int
+	if queryErr := orchestrator.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM port_allocations").Scan(&count); queryErr != nil {
+		return "", queryErr
+	}
+	orchestrator.claimsAtCreation.Store(int32(count))
+	if orchestrator.creationError != nil {
+		return "", orchestrator.creationError
+	}
+	return orchestrator.ContainerOrchestrator.CreateContainer(ctx, options)
+}
+
+// Verifies that Container reserves fixed host bindings before creation, defaults omitted HostIP
+// to wildcard, and keeps that binding when Endpoints expose a loopback client address.
 func TestContainerProducerPortReservationUsesBindAddress(t *testing.T) {
 	for _, testCase := range []struct {
 		name     string
@@ -166,9 +188,15 @@ func TestContainerProducerPortReservationUsesBindAddress(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
+			var observed *containerCreationReservationObserver
 			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 				ServiceController|ContainerController, t.Name(), t.TempDir(),
-				TestEnvironmentOptions{ConfigurePortAllocator: true})
+				TestEnvironmentOptions{ConfigurePortAllocator: true,
+					DecorateContainerOrchestrator: func(orchestrator containers.ContainerOrchestrator, store *statestore.Store) containers.ContainerOrchestrator {
+						observed = &containerCreationReservationObserver{ContainerOrchestrator: orchestrator,
+							db: reservationDatabase(t, &TestEnvironmentInfo{StateStore: store})}
+						return observed
+					}})
 			require.NoError(t, startupErr)
 			t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
 			t.Setenv(networking.DCP_PORT_ALLOCATION_ALLOW_EPHEMERAL_OVERLAP, "true")
@@ -182,6 +210,11 @@ func TestContainerProducerPortReservationUsesBindAddress(t *testing.T) {
 					Ports: []apiv1.ContainerPort{{ContainerPort: 8080, HostPort: testCase.hostPort, HostIP: testCase.hostIP}}}}
 			require.NoError(t, server.Client.Create(ctx, container))
 			ensureContainerRunningEx(t, ctx, server.Client, server.ContainerOrchestrator, container)
+			var expectedClaimsAtCreation int32
+			if testCase.hostPort != 0 {
+				expectedClaimsAtCreation = 1
+			}
+			require.Equal(t, expectedClaimsAtCreation, observed.claimsAtCreation.Load())
 			ready := waitObjectAssumesStateEx(t, ctx, server.Client, service.NamespacedName(), func(current *apiv1.Service) (bool, error) {
 				return current.Status.State == apiv1.ServiceStateReady, nil
 			})
@@ -199,11 +232,22 @@ func TestContainerProducerPortReservationUsesBindAddress(t *testing.T) {
 	}
 }
 
-// Verifies that Executable template claims are released after confirmed startup failure
-// and deletion while waiting for a template dependency, without Endpoint publication.
+// Verifies that Executable reserves fixed and dynamic producer ports before launch and releases
+// them on settled startup failure, including uncertain cleanup, or deletion during templating.
 func TestExecutableTemplatePortReservationsReleasedBeforePublication(t *testing.T) {
-	for _, outcome := range []string{"startup-failure", "deletion-while-templating"} {
-		t.Run(outcome, func(t *testing.T) {
+	for _, outcome := range []struct {
+		name              string
+		fixed             bool
+		uncertain         bool
+		deleteBeforeStart bool
+	}{
+		{name: "startup-failure"},
+		{name: "fixed-startup-failure", fixed: true},
+		{name: "uncertain-fixed-startup-failure", fixed: true, uncertain: true},
+		{name: "deletion-while-templating", deleteBeforeStart: true},
+		{name: "fixed-deletion-while-templating", fixed: true, deleteBeforeStart: true},
+	} {
+		t.Run(outcome.name, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
 			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
@@ -225,18 +269,26 @@ func TestExecutableTemplatePortReservationsReleasedBeforePublication(t *testing.
 						return queryErr
 					}
 					claimsAtFailure.Store(int32(claimCount))
+					if outcome.uncertain {
+						return fmt.Errorf("injected Executable startup failure: %w", process.ErrProcessStartUncertain)
+					}
 					return errors.New("injected Executable startup failure")
 				},
 			})
 			executable := &apiv1.Executable{ObjectMeta: metav1.ObjectMeta{Name: "producer",
 				Annotations: map[string]string{commonapi.ServiceProducerAnnotation: `[{"serviceName":"producer","address":"0.0.0.0"}]`}},
 				Spec: apiv1.ExecutableSpec{ExecutablePath: "template-port-startup-failure",
-					Args: []string{`{{portForServing "producer"}}`}}}
-			if outcome == "deletion-while-templating" {
+					Args:               []string{`{{portForServing "producer"}}`},
+					AmbientEnvironment: apiv1.AmbientEnvironment{Behavior: apiv1.EnvironmentBehaviorDoNotInherit}}}
+			if outcome.fixed {
+				executable.Annotations[commonapi.ServiceProducerAnnotation] = `[{"serviceName":"producer","address":"0.0.0.0","port":26102}]`
+				executable.Spec.Args = nil
+			}
+			if outcome.deleteBeforeStart {
 				executable.Spec.Args = append(executable.Spec.Args, `{{portFor "missing"}}`)
 			}
 			require.NoError(t, server.Client.Create(ctx, executable))
-			if outcome == "startup-failure" {
+			if !outcome.deleteBeforeStart {
 				waitObjectAssumesStateEx(t, ctx, server.Client, executable.NamespacedName(), func(current *apiv1.Executable) (bool, error) {
 					return current.Status.State == apiv1.ExecutableStateFailedToStart, nil
 				})
@@ -248,6 +300,63 @@ func TestExecutableTemplatePortReservationsReleasedBeforePublication(t *testing.
 			require.NoError(t, server.Client.Delete(ctx, executable))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, executable)
 			waitPortReservationCount(t, ctx, db, 0)
+		})
+	}
+}
+
+// Verifies that Container retains fixed host-port claims across template retries and releases
+// them on failed runtime creation or deletion before any runtime container is created.
+func TestContainerFixedPortReservationsReleasedBeforeCreation(t *testing.T) {
+	for _, outcome := range []string{"creation-failure", "deletion-while-templating", "persistent-deletion-while-templating"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			var observed *containerCreationReservationObserver
+			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+				ServiceController|ContainerController, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{ConfigurePortAllocator: true,
+					DecorateContainerOrchestrator: func(orchestrator containers.ContainerOrchestrator, store *statestore.Store) containers.ContainerOrchestrator {
+						observed = &containerCreationReservationObserver{ContainerOrchestrator: orchestrator,
+							db:            reservationDatabase(t, &TestEnvironmentInfo{StateStore: store}),
+							creationError: errors.New("injected container creation failure")}
+						return observed
+					}})
+			require.NoError(t, startupErr)
+			t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+			db := reservationDatabase(t, environment)
+			container := &apiv1.Container{ObjectMeta: metav1.ObjectMeta{Name: "producer"},
+				Spec: apiv1.ContainerSpec{Image: "producer-image",
+					Args:  []string{`{{portFor "missing"}}`},
+					Ports: []apiv1.ContainerPort{{ContainerPort: 8080, HostPort: 26102}}}}
+			if outcome == "persistent-deletion-while-templating" {
+				container.Spec.Mode = apiv1.ContainerModePersistent
+				container.Spec.ContainerName = "persistent-producer"
+			}
+			require.NoError(t, server.Client.Create(ctx, container))
+			waitPortReservationCount(t, ctx, db, 1)
+			requirePortReservationBinding(t, ctx, db, ports.Binding{
+				Protocol: "TCP", IP: netip.MustParseAddr("0.0.0.0"), Port: 26102})
+			if outcome == "creation-failure" {
+				service := &apiv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "missing"},
+					Spec: apiv1.ServiceSpec{Address: "127.0.0.1", Port: 26103}}
+				require.NoError(t, server.Client.Create(ctx, service))
+				waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv1.Container) (bool, error) {
+					return current.Status.State == apiv1.ContainerStateFailedToStart, nil
+				})
+				require.Equal(t, int32(2), observed.claimsAtCreation.Load())
+				waitPortReservationCount(t, ctx, db, 1)
+				requirePortReservationBinding(t, ctx, db, ports.Binding{
+					Protocol: "TCP", IP: netip.MustParseAddr("127.0.0.1"), Port: 26103})
+				require.NoError(t, server.Client.Delete(ctx, service))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, service)
+			}
+			require.NoError(t, server.Client.Delete(ctx, container))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
+			waitPortReservationCount(t, ctx, db, 0)
+			if outcome == "persistent-deletion-while-templating" {
+				require.ErrorIs(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, container, environment.ResourceLeaseOwner),
+					statestore.ErrResourceLeaseNotHeld)
+			}
 		})
 	}
 }
@@ -585,4 +694,117 @@ func TestLogicalProcessPortReservationPreparationAndDeletion(t *testing.T) {
 	require.NoError(t, server.Client.Delete(ctx, process))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, process)
 	waitPortReservationCount(t, ctx, db, 0)
+}
+
+// Verifies that terminal LogicalProcess outcomes release selected ports while preserving
+// published metadata, including launch failures and completed stops with uncertain cleanup.
+func TestLogicalProcessTerminalReleasesPortReservations(t *testing.T) {
+	for _, outcome := range []string{"exit", "stop", "launch-failure", "uncertain-launch-failure", "cleanup-unconfirmed"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			completionCtx, complete := context.WithCancel(ctx)
+			defer complete()
+			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+				LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{ConfigurePortAllocator: true})
+			require.NoError(t, startupErr)
+			t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+			t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26100")
+			db := reservationDatabase(t, environment)
+			const executablePath = "logical-port-terminal"
+			var claimsAtFailure, stopAttempts atomic.Int32
+			autoExecution := internal_testutil.AutoExecution{
+				Condition: internal_testutil.ProcessSearchCriteria{Command: []string{executablePath}},
+				RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+					select {
+					case _, open := <-execution.Signal:
+						if !open {
+							return 0
+						}
+					case <-completionCtx.Done():
+					}
+					return 0
+				},
+			}
+			failedLaunch := outcome == "launch-failure" || outcome == "uncertain-launch-failure"
+			if failedLaunch {
+				autoExecution.StartupError = func(*internal_testutil.ProcessExecution) error {
+					var count int
+					if queryErr := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM port_allocations").Scan(&count); queryErr != nil {
+						return queryErr
+					}
+					claimsAtFailure.Store(int32(count))
+					if outcome == "uncertain-launch-failure" {
+						return process.ErrProcessStartUncertain
+					}
+					return errors.New("injected LogicalProcess startup failure")
+				}
+			}
+			if outcome == "cleanup-unconfirmed" {
+				autoExecution.StopError = func(*internal_testutil.ProcessExecution) error {
+					if stopAttempts.Add(1) == 1 {
+						return process.ErrIncompleteProcessTree
+					}
+					return nil
+				}
+			}
+			environment.TestProcessExecutor.InstallAutoExecution(autoExecution)
+			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "reservations"}}
+			require.NoError(t, server.Client.Create(ctx, namespace))
+			service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "producer", Namespace: namespace.Name},
+				Spec: apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}}
+			require.NoError(t, server.Client.Create(ctx, service))
+			resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "producer", Namespace: namespace.Name},
+				Spec: apiv2.LogicalProcessSpec{
+					Process: &apiv2.LogicalProcessConfig{ExecutablePath: executablePath,
+						Args:               []string{`{{portForServing "http"}}`},
+						AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit}},
+					Ports: []apiv2.LogicalProcessPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{
+						Name: "http", ServiceRef: service.Name}, Address: "127.0.0.1"}},
+				}}
+			require.NoError(t, server.Client.Create(ctx, resource))
+			phase := apiv2.LogicalProcessPhaseFailed
+			if !failedLaunch {
+				running := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+					return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+				})
+				waitPortReservationCount(t, ctx, db, 1)
+				require.Len(t, running.Status.Ports, 1)
+				require.Equal(t, int32(26100), running.Status.Ports[0].Port)
+				if outcome == "exit" {
+					complete()
+				} else {
+					require.NoError(t, retryOnConflictEx[apiv2.LogicalProcess](ctx, server.Client, resource.NamespacedName(), func(ctx context.Context, current *apiv2.LogicalProcess) error {
+						current.Spec.Stop = true
+						return server.Client.Update(ctx, current)
+					}))
+				}
+				phase = apiv2.LogicalProcessPhaseExited
+			}
+			terminal := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+				return current.Status.Phase == phase, nil
+			})
+			if failedLaunch {
+				require.Equal(t, int32(1), claimsAtFailure.Load())
+			}
+			if outcome == "cleanup-unconfirmed" {
+				physical := &apiv2.PhysicalProcess{}
+				require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKey{
+					Namespace: resource.Namespace, Name: terminal.Status.PhysicalProcessRef}, physical))
+				requireReadyCondition(t, physical.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonDescendantCleanupUnconfirmed)
+			}
+			waitPortReservationCount(t, ctx, db, 0)
+			require.True(t, terminal.DeletionTimestamp.IsZero())
+			require.Len(t, terminal.Status.Ports, 1)
+			require.Equal(t, apiv2.LogicalPortStatus{Name: "http", ServiceRef: service.Name, Address: "127.0.0.1", Port: 26100},
+				terminal.Status.Ports[0])
+			require.Equal(t, []string{"26100"}, terminal.Status.EffectiveArgs)
+			replacement := &networking.PortReservationSet{}
+			t.Cleanup(func() { replacement.Release(context.WithoutCancel(ctx), environment.Log) })
+			selected, allocationErr := replacement.GetFreePort(ctx, commonapi.PortProtocolTCP, "127.0.0.1", environment.Log)
+			require.NoError(t, allocationErr)
+			require.Equal(t, int32(26100), selected)
+		})
+	}
 }
