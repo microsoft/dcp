@@ -539,7 +539,7 @@ func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationApplied(t *testing.T) {
 	requirePortAllocationsTable(t, ctx, reopenedStore.db, true)
 }
 
-// Verifies that Open replays an uncommitted port-conflict index migration after a dirty marker.
+// Verifies that Open replays an uncommitted port-allocation migration after a dirty marker.
 func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T) {
 	t.Parallel()
 
@@ -550,7 +550,7 @@ func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T
 	store := openTestStore(t, ctx, storePath)
 	// Undo the latest minor migration's schema changes to simulate a migration that never committed,
 	// leaving only the dirty marker behind.
-	_, revertErr := store.db.ExecContext(ctx, `DROP INDEX idx_port_allocations_protocol_port`)
+	_, revertErr := store.db.ExecContext(ctx, `DROP TABLE port_allocations`)
 	require.NoError(t, revertErr)
 	updateQuery := fmt.Sprintf(
 		`UPDATE %s SET dirty = 1`,
@@ -560,7 +560,7 @@ func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T
 	require.NoError(t, updateErr)
 	requirePersistentVolumesTable(t, ctx, store.db, true)
 	requireVolumeOwnershipColumn(t, ctx, store.db, true)
-	requirePortAllocationsTable(t, ctx, store.db, true)
+	requirePortAllocationsTable(t, ctx, store.db, false)
 
 	reopenedStore := openTestStore(t, ctx, storePath)
 
@@ -570,26 +570,21 @@ func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T
 	requirePersistentVolumesTable(t, ctx, reopenedStore.db, true)
 	requireVolumeOwnershipColumn(t, ctx, reopenedStore.db, true)
 	requirePortAllocationsTable(t, ctx, reopenedStore.db, true)
-	var applied bool
-	require.NoError(t, reopenedStore.db.QueryRowContext(ctx, portConflictsMigrationAppliedProbe).Scan(&applied))
-	require.True(t, applied)
 }
 
-// Verifies that Open adds the conflict-query index to an existing minor-version-4 database.
-func TestOpenAddsPortConflictIndexToExistingReservations(t *testing.T) {
+// Verifies that Open adds indexed port reservations to a minor-version-3 database.
+func TestOpenAddsIndexedPortReservations(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
 	defer cancel()
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
 	store := openTestStore(t, ctx, storePath)
-	_, revertErr := store.db.ExecContext(ctx, `DROP INDEX idx_port_allocations_protocol_port;
-		UPDATE schema_minor_migrations_v1 SET version = 4`)
+	_, revertErr := store.db.ExecContext(ctx, `DROP TABLE port_allocations;
+		UPDATE schema_minor_migrations_v1 SET version = 3`)
 	require.NoError(t, revertErr)
 	reopened := openTestStore(t, ctx, storePath)
 	requireSchemaMinorVersion(t, ctx, reopened, currentSchemaMinorVersion)
-	var applied bool
-	require.NoError(t, reopened.db.QueryRowContext(ctx, portConflictsMigrationAppliedProbe).Scan(&applied))
-	require.True(t, applied)
+	requirePortAllocationsTable(t, ctx, reopened.db, true)
 	var id, parent, unused int
 	var detail string
 	require.NoError(t, reopened.db.QueryRowContext(ctx,

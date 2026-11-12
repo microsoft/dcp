@@ -10,10 +10,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/netip"
+	"net/url"
+	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/net/nettest"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,6 +32,7 @@ import (
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -47,13 +53,211 @@ func waitPortReservationCount(t *testing.T, ctx context.Context, db *sql.DB, exp
 	}))
 }
 
-// Verifies that both Service APIs stop fixed/dynamic listeners and finish deletion despite a
-// failed SQLite release, leaving the failed claim reserved without retrying.
+func requirePortReservationBinding(t *testing.T, ctx context.Context, db *sql.DB, binding ports.Binding) {
+	t.Helper()
+	var protocol string
+	var ipBytes []byte
+	var port int32
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT protocol, ip, port FROM port_allocations").
+		Scan(&protocol, &ipBytes, &port))
+	ip, validIP := netip.AddrFromSlice(ipBytes)
+	require.True(t, validIP)
+	require.Equal(t, binding, ports.Binding{Protocol: protocol, IP: ip, Port: port})
+}
+
+// Verifies that dcp start-apiserver configures SQLite-backed port allocation before
+// kubeconfig creation, so strict state-store mode starts and reserves its actual listener.
+func TestApiServerUsesStateStorePortAllocator(t *testing.T) {
+	t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+	t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26120")
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	sessionFolder, sessionErr := testutil.CreateTestSessionDir()
+	require.NoError(t, sessionErr)
+	server, startupErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone,
+		testutil.NewLogForTesting(t.Name()), sessionFolder)
+	require.NoError(t, startupErr)
+	t.Cleanup(server.Dispose)
+	db, openErr := sql.Open("sqlite", filepath.Join(sessionFolder, "state.sqlite3"))
+	require.NoError(t, openErr)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	serverURL, urlErr := url.Parse(server.ClientConfig.Host)
+	require.NoError(t, urlErr)
+	ip, ipErr := netip.ParseAddr(serverURL.Hostname())
+	require.NoError(t, ipErr)
+	port, portErr := strconv.Atoi(serverURL.Port())
+	require.NoError(t, portErr)
+	require.GreaterOrEqual(t, port, 26100)
+	require.LessOrEqual(t, port, 26120)
+	waitPortReservationCount(t, ctx, db, 1)
+	requirePortReservationBinding(t, ctx, db, ports.Binding{Protocol: "TCP", IP: ip, Port: int32(port)})
+	var ownerPID int64
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT owner_pid FROM port_allocations").Scan(&ownerPID))
+	require.Equal(t, int64(server.ApiServerPID), ownerPID)
+}
+
+// Verifies that Executable template allocation and Endpoint publication share the wildcard
+// bind claim, while exposing a loopback client address and defaulting omitted protocols to TCP.
+func TestExecutableTemplatePortReservationUsesBindAddress(t *testing.T) {
+	for _, testCase := range []struct {
+		bindAddress     string
+		endpointAddress string
+		protocol        commonapi.PortProtocol
+	}{
+		{networking.IPv4AllInterfaceAddress, networking.IPv4LocalhostDefaultAddress, ""},
+		{networking.IPv6AllInterfaceAddress, networking.IPv6LocalhostDefaultAddress, commonapi.PortProtocolTCP},
+	} {
+		t.Run(testCase.bindAddress, func(t *testing.T) {
+			if testCase.bindAddress == networking.IPv6AllInterfaceAddress && !nettest.SupportsIPv6() {
+				t.Skip("IPv6 is unavailable")
+			}
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+				ServiceController|ExecutableController, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{ConfigurePortAllocator: true})
+			require.NoError(t, startupErr)
+			t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+			t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26120")
+			db := reservationDatabase(t, environment)
+			service := &apiv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "producer"},
+				Spec: apiv1.ServiceSpec{Protocol: testCase.protocol, AddressAllocationMode: apiv1.AddressAllocationModeProxyless}}
+			require.NoError(t, server.Client.Create(ctx, service))
+			executable := &apiv1.Executable{ObjectMeta: metav1.ObjectMeta{Name: "producer",
+				Annotations: map[string]string{commonapi.ServiceProducerAnnotation: fmt.Sprintf(
+					`[{"serviceName":"producer","address":%q}]`, testCase.bindAddress)}},
+				Spec: apiv1.ExecutableSpec{ExecutablePath: "wildcard-template-producer",
+					Args: []string{`{{portForServing "producer"}}`}}}
+			require.NoError(t, server.Client.Create(ctx, executable))
+			running := waitObjectAssumesStateEx(t, ctx, server.Client, executable.NamespacedName(), func(current *apiv1.Executable) (bool, error) {
+				return current.Status.State == apiv1.ExecutableStateRunning, nil
+			})
+			ready := waitObjectAssumesStateEx(t, ctx, server.Client, service.NamespacedName(), func(current *apiv1.Service) (bool, error) {
+				return current.Status.State == apiv1.ServiceStateReady, nil
+			})
+			require.Len(t, running.Status.EffectiveArgs, 1)
+			require.Equal(t, fmt.Sprint(ready.Status.EffectivePort), running.Status.EffectiveArgs[0])
+			var endpoints apiv1.EndpointList
+			require.NoError(t, server.Client.List(ctx, &endpoints))
+			require.Len(t, endpoints.Items, 1)
+			require.Equal(t, testCase.endpointAddress, endpoints.Items[0].Spec.Address)
+			waitPortReservationCount(t, ctx, db, 1)
+			requirePortReservationBinding(t, ctx, db, ports.Binding{Protocol: "TCP",
+				IP: netip.MustParseAddr(networking.ToStandaloneAddress(testCase.bindAddress)), Port: ready.Status.EffectivePort})
+			require.NoError(t, server.Client.Delete(ctx, executable))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, executable)
+			waitPortReservationCount(t, ctx, db, 0)
+		})
+	}
+}
+
+// Verifies that Container Endpoint reservations use the configured or inspected host bind
+// address before it is rewritten to a loopback address for clients.
+func TestContainerProducerPortReservationUsesBindAddress(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		hostIP   string
+		hostPort int32
+	}{
+		{"fixed-wildcard", networking.IPv4AllInterfaceAddress, 26102},
+		{"fixed-unspecified", "", 26102},
+		{"dynamic-wildcard", networking.IPv4AllInterfaceAddress, 0},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+				ServiceController|ContainerController, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{ConfigurePortAllocator: true})
+			require.NoError(t, startupErr)
+			t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+			t.Setenv(networking.DCP_PORT_ALLOCATION_ALLOW_EPHEMERAL_OVERLAP, "true")
+			db := reservationDatabase(t, environment)
+			service := &apiv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "producer"},
+				Spec: apiv1.ServiceSpec{AddressAllocationMode: apiv1.AddressAllocationModeProxyless}}
+			require.NoError(t, server.Client.Create(ctx, service))
+			container := &apiv1.Container{ObjectMeta: metav1.ObjectMeta{Name: "producer",
+				Annotations: map[string]string{commonapi.ServiceProducerAnnotation: `[{"serviceName":"producer","port":8080}]`}},
+				Spec: apiv1.ContainerSpec{Image: "producer-image",
+					Ports: []apiv1.ContainerPort{{ContainerPort: 8080, HostPort: testCase.hostPort, HostIP: testCase.hostIP}}}}
+			require.NoError(t, server.Client.Create(ctx, container))
+			ensureContainerRunningEx(t, ctx, server.Client, server.ContainerOrchestrator, container)
+			ready := waitObjectAssumesStateEx(t, ctx, server.Client, service.NamespacedName(), func(current *apiv1.Service) (bool, error) {
+				return current.Status.State == apiv1.ServiceStateReady, nil
+			})
+			var endpoints apiv1.EndpointList
+			require.NoError(t, server.Client.List(ctx, &endpoints))
+			require.Len(t, endpoints.Items, 1)
+			require.Equal(t, networking.IPv4LocalhostDefaultAddress, endpoints.Items[0].Spec.Address)
+			waitPortReservationCount(t, ctx, db, 1)
+			requirePortReservationBinding(t, ctx, db, ports.Binding{Protocol: "TCP",
+				IP: netip.MustParseAddr(networking.IPv4AllInterfaceAddress), Port: ready.Status.EffectivePort})
+			require.NoError(t, server.Client.Delete(ctx, container))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
+			waitPortReservationCount(t, ctx, db, 0)
+		})
+	}
+}
+
+// Verifies that Executable template claims are released after confirmed startup failure
+// and deletion while waiting for a template dependency, without Endpoint publication.
+func TestExecutableTemplatePortReservationsReleasedBeforePublication(t *testing.T) {
+	for _, outcome := range []string{"startup-failure", "deletion-while-templating"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+				ServiceController|ExecutableController, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{ConfigurePortAllocator: true})
+			require.NoError(t, startupErr)
+			t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+			t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26120")
+			db := reservationDatabase(t, environment)
+			service := &apiv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "producer"},
+				Spec: apiv1.ServiceSpec{AddressAllocationMode: apiv1.AddressAllocationModeProxyless}}
+			require.NoError(t, server.Client.Create(ctx, service))
+			var claimsAtFailure atomic.Int32
+			environment.TestProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+				Condition: internal_testutil.ProcessSearchCriteria{Command: []string{"template-port-startup-failure"}},
+				StartupError: func(_ *internal_testutil.ProcessExecution) error {
+					var claimCount int
+					if queryErr := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM port_allocations").Scan(&claimCount); queryErr != nil {
+						return queryErr
+					}
+					claimsAtFailure.Store(int32(claimCount))
+					return errors.New("injected Executable startup failure")
+				},
+			})
+			executable := &apiv1.Executable{ObjectMeta: metav1.ObjectMeta{Name: "producer",
+				Annotations: map[string]string{commonapi.ServiceProducerAnnotation: `[{"serviceName":"producer","address":"0.0.0.0"}]`}},
+				Spec: apiv1.ExecutableSpec{ExecutablePath: "template-port-startup-failure",
+					Args: []string{`{{portForServing "producer"}}`}}}
+			if outcome == "deletion-while-templating" {
+				executable.Spec.Args = append(executable.Spec.Args, `{{portFor "missing"}}`)
+			}
+			require.NoError(t, server.Client.Create(ctx, executable))
+			if outcome == "startup-failure" {
+				waitObjectAssumesStateEx(t, ctx, server.Client, executable.NamespacedName(), func(current *apiv1.Executable) (bool, error) {
+					return current.Status.State == apiv1.ExecutableStateFailedToStart, nil
+				})
+				require.Equal(t, int32(1), claimsAtFailure.Load())
+				waitPortReservationCount(t, ctx, db, 0)
+			} else {
+				waitPortReservationCount(t, ctx, db, 1)
+			}
+			require.NoError(t, server.Client.Delete(ctx, executable))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, executable)
+			waitPortReservationCount(t, ctx, db, 0)
+		})
+	}
+}
+
+// Verifies that both Service APIs default unspecified protocols to TCP, stop fixed/dynamic
+// listeners, and finish deletion despite a failed SQLite release without retrying it.
 func TestServicePortReservationReleaseDoesNotBlockDeletion(t *testing.T) {
 	for _, version := range []string{"v1", "v2"} {
 		for _, fixed := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/fixed=%t", version, fixed), func(t *testing.T) {
-				t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26120")
 				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 				defer cancel()
 				recorder := &serviceProxyRecorder{}
@@ -63,6 +267,7 @@ func TestServicePortReservationReleaseDoesNotBlockDeletion(t *testing.T) {
 						CreateServiceProxy: recorder.create, CreateLogicalServiceProxy: recorder.create})
 				require.NoError(t, startupErr)
 				t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+				t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26120")
 				db := reservationDatabase(t, environment)
 				var port int32
 				if fixed {
@@ -71,12 +276,12 @@ func TestServicePortReservationReleaseDoesNotBlockDeletion(t *testing.T) {
 				var service ctrl_client.Object
 				if version == "v1" {
 					service = &apiv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "release"},
-						Spec: apiv1.ServiceSpec{Protocol: commonapi.PortProtocolTCP, Address: "127.0.0.1", Port: port}}
+						Spec: apiv1.ServiceSpec{Address: "127.0.0.1", Port: port}}
 				} else {
 					namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "reservations"}}
 					require.NoError(t, server.Client.Create(ctx, namespace))
 					service = &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "release", Namespace: namespace.Name},
-						Spec: apiv2.LogicalServiceSpec{Protocol: commonapi.PortProtocolTCP, Address: "127.0.0.1", Port: port}}
+						Spec: apiv2.LogicalServiceSpec{Address: "127.0.0.1", Port: port}}
 				}
 				require.NoError(t, server.Client.Create(ctx, service))
 				waitPortReservationCount(t, ctx, db, 1)
@@ -123,7 +328,6 @@ func (apiClient *endpointReservationFailureClient) Create(ctx context.Context, o
 // Verifies that workload-owned claims survive Service deletion, are released without looking
 // the Service up again, and remain owned while Endpoint publication fails.
 func TestEndpointPortReservationOwnedByWorkload(t *testing.T) {
-	t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26120")
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	var decorated *endpointReservationFailureClient
@@ -135,6 +339,7 @@ func TestEndpointPortReservationOwnedByWorkload(t *testing.T) {
 		}})
 	require.NoError(t, startupErr)
 	t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+	t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26120")
 	db := reservationDatabase(t, environment)
 	service := &apiv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "producer"},
 		Spec: apiv1.ServiceSpec{Protocol: commonapi.PortProtocolTCP, AddressAllocationMode: apiv1.AddressAllocationModeProxyless}}
@@ -212,7 +417,6 @@ func (orchestrator *delayedProducerContainerStop) StopContainers(
 func TestProducerPortReservationRetainedUntilStopCompletes(t *testing.T) {
 	for _, kind := range []string{"executable", "container"} {
 		t.Run(kind, func(t *testing.T) {
-			t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26120")
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
 			stopGate, completeStop := context.WithCancel(ctx)
@@ -228,6 +432,7 @@ func TestProducerPortReservationRetainedUntilStopCompletes(t *testing.T) {
 				ServiceController|ExecutableController|ContainerController, t.Name(), t.TempDir(), options)
 			require.NoError(t, startupErr)
 			t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+			t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26120")
 			db := reservationDatabase(t, environment)
 			service := &apiv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "producer"},
 				Spec: apiv1.ServiceSpec{Protocol: commonapi.PortProtocolTCP, AddressAllocationMode: apiv1.AddressAllocationModeProxyless}}
@@ -257,8 +462,9 @@ func TestProducerPortReservationRetainedUntilStopCompletes(t *testing.T) {
 						return 0
 					},
 				})
+				metadata.Annotations[commonapi.ServiceProducerAnnotation] = `[{"serviceName":"producer","address":"127.0.0.1"}]`
 				executable := &apiv1.Executable{ObjectMeta: metadata,
-					Spec: apiv1.ExecutableSpec{ExecutablePath: executablePath}}
+					Spec: apiv1.ExecutableSpec{ExecutablePath: executablePath, Args: []string{`{{portForServing "producer"}}`}}}
 				require.NoError(t, server.Client.Create(ctx, executable))
 				waitObjectAssumesStateEx(t, ctx, server.Client, executable.NamespacedName(), func(current *apiv1.Executable) (bool, error) {
 					return current.Status.State == apiv1.ExecutableStateRunning, nil
@@ -311,7 +517,6 @@ func TestProducerPortReservationRetainedUntilStopCompletes(t *testing.T) {
 // Verifies that LogicalProcess releases dynamically selected ports when
 // subsequent argument template evaluation fails, before their API resources are deleted.
 func TestLogicalProcessPortReservationsReleasedOnTemplateFailure(t *testing.T) {
-	t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26101")
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
@@ -319,6 +524,7 @@ func TestLogicalProcessPortReservationsReleasedOnTemplateFailure(t *testing.T) {
 		TestEnvironmentOptions{ConfigurePortAllocator: true})
 	require.NoError(t, startupErr)
 	t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+	t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26101")
 	db := reservationDatabase(t, environment)
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "reservations"}}
 	require.NoError(t, server.Client.Create(ctx, namespace))
@@ -344,7 +550,6 @@ func TestLogicalProcessPortReservationsReleasedOnTemplateFailure(t *testing.T) {
 // Verifies that failed V2 port preparation releases earlier dynamic selections before retrying,
 // and that deletion releases successful selections after the backing has settled.
 func TestLogicalProcessPortReservationPreparationAndDeletion(t *testing.T) {
-	t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26101")
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
@@ -352,6 +557,7 @@ func TestLogicalProcessPortReservationPreparationAndDeletion(t *testing.T) {
 		TestEnvironmentOptions{ConfigurePortAllocator: true})
 	require.NoError(t, startupErr)
 	t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+	t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26101")
 	db := reservationDatabase(t, environment)
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "reservations"}}
 	require.NoError(t, server.Client.Create(ctx, namespace))

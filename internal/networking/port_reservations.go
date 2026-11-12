@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"strings"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -40,6 +39,7 @@ var portReservations = struct {
 func (reservations *PortReservationSet) GetFreePort(
 	ctx context.Context, protocol commonapi.PortProtocol, address string, log logr.Logger,
 ) (int32, error) {
+	protocol = NormalizePortProtocol(protocol)
 	normalizedAddress, addressErr := NormalizePortAllocationAddress(address)
 	if addressErr != nil {
 		return 0, addressErr
@@ -67,12 +67,17 @@ func (reservations *PortReservationSet) GetFreePort(
 // Reserve retains a declared binding without requiring it to be currently bindable.
 func (reservations *PortReservationSet) Reserve(ctx context.Context, binding ports.Binding, log logr.Logger) error {
 	binding.IP = binding.IP.Unmap()
-	binding.Protocol = strings.ToUpper(strings.TrimSpace(binding.Protocol))
+	binding.Protocol = string(NormalizePortProtocol(commonapi.PortProtocol(binding.Protocol)))
 	if !binding.IP.IsValid() || !IsValidPort(int(binding.Port)) {
 		return fmt.Errorf("invalid port reservation binding: %s/%s/%d", binding.Protocol, binding.IP, binding.Port)
 	}
 	portReservations.Lock()
 	defer portReservations.Unlock()
+	for retained := range reservations.bindings {
+		if retained.binding == binding {
+			return nil
+		}
+	}
 	config, fallback, reserveErr := reserveSpecificStateStorePort(ctx, binding, "", false, log)
 	if reserveErr != nil {
 		if !fallback {
@@ -91,6 +96,7 @@ func (reservations *PortReservationSet) Reserve(ctx context.Context, binding por
 func (reservations *PortReservationSet) CheckPortAvailable(
 	ctx context.Context, protocol commonapi.PortProtocol, address string, port int32, log logr.Logger,
 ) error {
+	protocol = NormalizePortProtocol(protocol)
 	normalizedAddress, addressErr := NormalizePortAllocationAddress(address)
 	if addressErr != nil {
 		return addressErr

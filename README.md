@@ -64,3 +64,8 @@ DCP has knowledge of a number of environment variables that can change its behav
 | `DCP_SECURE_TOKEN` | Provides a predetermined bearer token for DCP to use rather than generating a randm one. If this is set, DCP will write a placeholder value to the kubeconfig file. Any client trying to connect will have to know this predetermined token and apply it to their config themselves. |
 | `DCP_PERF_TRACE` | If set, instructs DCP to capture a performance trace during startup and/or shutdown. For more information see [performance investigations page](https://github.com/microsoft/dcp/blob/main/doc/performance-investigations.md). |
 | `DCP_DISABLE_PROCESS_CLEANUP_JOB` | On Windows, DCP will use a Win32 Job object to ensure that processes it launches are terminated when it shuts down. This alters standard process startup sequence and might not work on tightly locked-down machines, or might be flagged as "suspicious behavior" by antivirus software. If DCP cannot start processes and complains about "process cleanup job" errors, setting `DCP_DISABLE_PROCESS_CLEANUP_JOB` to `1` or `true` should help. |
+
+State-store port allocation is initialized in both the API-server and controller processes.
+Claims use the listener's bind IP, not its advertised client address; for example, a wildcard `0.0.0.0` listener remains reserved on `0.0.0.0` even when its Endpoint advertises `127.0.0.1`.
+An omitted transport protocol is treated as TCP.
+Executable template allocations belong to their workload, including while startup waits for dependencies, and are released after confirmed startup failure or workload stop.

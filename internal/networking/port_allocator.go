@@ -16,6 +16,7 @@ import (
 // Gets a free TCP or UDP port for a given address (defaults to localhost).
 // Even if this method is called twice in a row, it should not return the same port.
 func GetFreePort(ctx context.Context, protocol commonapi.PortProtocol, address string, log logr.Logger) (int32, error) {
+	protocol = NormalizePortProtocol(protocol)
 	address, addressErr := NormalizePortAllocationAddress(address)
 	if addressErr != nil {
 		return 0, addressErr
@@ -33,6 +34,7 @@ func GetFreePort(ctx context.Context, protocol commonapi.PortProtocol, address s
 }
 
 func CheckPortAvailable(ctx context.Context, protocol commonapi.PortProtocol, address string, port int32, log logr.Logger) error {
+	protocol = NormalizePortProtocol(protocol)
 	address, addressErr := NormalizePortAllocationAddress(address)
 	if addressErr != nil {
 		return addressErr

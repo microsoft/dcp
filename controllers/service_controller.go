@@ -170,7 +170,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Get(ctx, req.NamespacedName, &svc); err != nil {
 		if apimachinery_errors.IsNotFound(err) {
 			log.V(1).Info("The Service object does not exist yet or was deleted")
-			_ = r.stopService(ctx, req.NamespacedName, nil, log)
+			r.stopService(ctx, req.NamespacedName, nil, log)
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
@@ -189,11 +189,9 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if svc.DeletionTimestamp != nil && !svc.DeletionTimestamp.IsZero() {
 		log.V(1).Info("Service object is being deleted")
-		change = r.stopService(ctx, svc.NamespacedName(), &svc, log)
-		if change == noChange {
-			change = deleteFinalizer(&svc, serviceFinalizer, log)
-			serviceCounters(ctx, &svc, -1) // Service is being deleted
-		}
+		r.stopService(ctx, svc.NamespacedName(), &svc, log)
+		change = deleteFinalizer(&svc, serviceFinalizer, log)
+		serviceCounters(ctx, &svc, -1) // Service is being deleted
 	} else {
 		change = ensureFinalizer(&svc, serviceFinalizer, log)
 		// If we added a finalizer, we'll do the additional reconciliation next call
@@ -208,17 +206,15 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return result, err
 }
 
-func (r *ServiceReconciler) stopService(ctx context.Context, svcName types.NamespacedName, svc *apiv1.Service, log logr.Logger) objectChange {
-	serviceData, found := r.serviceInfo.Load(svcName)
+func (r *ServiceReconciler) stopService(ctx context.Context, svcName types.NamespacedName, svc *apiv1.Service, log logr.Logger) {
+	serviceData, found := r.serviceInfo.LoadAndDelete(svcName)
 	if !found || len(serviceData.proxies) == 0 {
-		return noChange
+		return
 	}
 	stopProxies(ctx, serviceData.proxies, log)
-	r.serviceInfo.Delete(svcName)
 	if svc != nil {
 		logger.ReleaseResourceLog(svc.GetResourceId())
 	}
-	return noChange
 }
 
 func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Context, svc *apiv1.Service, log logr.Logger) objectChange {
@@ -456,6 +452,7 @@ func allocateServiceProxies(
 	lifetimeCtx context.Context, createProxy proxy.ProxyFactory, protocol commonapi.PortProtocol,
 	requestedPort int32, requestedServiceAddress string, log logr.Logger,
 ) ([]proxyInstanceData, error) {
+	protocol = networking.NormalizePortProtocol(protocol)
 	proxies := []proxyInstanceData{}
 	reservations := &networking.PortReservationSet{}
 	allocated := false

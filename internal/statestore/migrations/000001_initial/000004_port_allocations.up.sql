@@ -8,4 +8,4 @@ CREATE TABLE IF NOT EXISTS port_allocations (
 	PRIMARY KEY(protocol, ip, port)
 );
 
-CREATE INDEX IF NOT EXISTS idx_port_allocations_owner ON port_allocations(owner_pid, owner_identity_time);
+CREATE INDEX IF NOT EXISTS idx_port_allocations_protocol_port ON port_allocations(protocol, port, ip);

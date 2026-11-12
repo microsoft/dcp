@@ -299,7 +299,7 @@ func (r *ContainerExecReconciler) computeEffectiveEnvironment(
 	// Note: there is no value substitution by DCP for .env files, these are handled by container orchestrator directly.
 	effectiveEnv := []apiv1.EnvVar{}
 
-	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, nil, log)
 	if err != nil {
 		return effectiveEnv, err
 	}
@@ -324,7 +324,7 @@ func (r *ContainerExecReconciler) computeEffectiveInvocationArgs(
 	log logr.Logger,
 ) ([]string, error) {
 	effectiveArgs := []string{}
-	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, nil, log)
 	if err != nil {
 		return effectiveArgs, err
 	}

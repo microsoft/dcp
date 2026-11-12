@@ -745,7 +745,7 @@ func ensureContainerExitedState(ctx context.Context,
 	rcd.closeStartupLogFiles(log)
 	rcd.closeTerminalResources(ctx, r.config.ProcessExecutor, log)
 	r.disableEndpointsAndHealthProbes(ctx, container, rcd, log)
-	releaseWorkloadEndpointPortReservations(ctx, container.UID, log)
+	releaseWorkloadPortReservations(ctx, container.UID, log)
 
 	log.V(1).Info("Inspecting container resource...")
 	inspected, err := inspectContainer(ctx, r.orchestrator, string(rcd.containerID))
@@ -1982,7 +1982,7 @@ func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd 
 				rcd.updateFromInspectedContainer(inspected)
 			}
 			rcd.containerState = apiv1.ContainerStateExited
-			releaseWorkloadEndpointPortReservations(stopCtx, container.UID, log)
+			releaseWorkloadPortReservations(stopCtx, container.UID, log)
 		}
 
 		rcMap := r.runningContainers
@@ -2014,7 +2014,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	// We want to stop the container first to give it a chance to clean up
 	removeErr := r.removeExistingContainer(ctx, rcd.containerID, nil, log)
 	if removeErr == nil || errors.Is(removeErr, containers.ErrNotFound) {
-		releaseWorkloadEndpointPortReservations(ctx, container.UID, log)
+		releaseWorkloadPortReservations(ctx, container.UID, log)
 	}
 }
 
@@ -2023,7 +2023,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 func (r *ContainerReconciler) cleanupContainerResources(ctx context.Context, container *apiv1.Container, rcd *runningContainerData, log logr.Logger) {
 	r.cleanupDcpContainerResources(ctx, container, log)
 	if rcd.containerState == apiv1.ContainerStateExited {
-		releaseWorkloadEndpointPortReservations(ctx, container.UID, log)
+		releaseWorkloadPortReservations(ctx, container.UID, log)
 	}
 	r.removeContainerNetworkConnections(ctx, container, log)
 	r.deleteContainer(ctx, container, rcd, log)
@@ -2511,17 +2511,26 @@ func (r *ContainerReconciler) createEndpoints(
 	existingEndpoints []*apiv1.Endpoint,
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
-) ([]*apiv1.Endpoint, error) {
+) ([]*apiv1.Endpoint, objectChange, error) {
 	endpointName, _, err := MakeUniqueName(owner.GetName())
 	if err != nil {
 		log.Error(err, "Could not generate unique name for Endpoint object")
-		return nil, err
+		return nil, noChange, err
 	}
 
-	hostAddress, hostPort, err := getHostAddressAndPortForContainerPort(owner.(*apiv1.Container).Spec, serviceProducer.Port, inspected, log)
+	bindAddress, hostPort, err := getHostBindAddressAndPortForPorts(
+		v1PortsToCreateContainerPorts(owner.(*apiv1.Container).Spec.Ports), serviceProducer.Port, inspected, log)
 	if err != nil {
 		log.Error(err, "Could not determine host address and port for container port")
-		return nil, err
+		return nil, noChange, err
+	}
+	hostAddress := normalizeHostAddress(bindAddress)
+	if bindAddress == "" {
+		bindAddress = networking.IPv4AllInterfaceAddress
+	}
+	change, reservationErr := reserveServiceProducerEndpointPort(ctx, r, owner, serviceProducer, bindAddress, hostPort, log)
+	if reservationErr != nil {
+		return nil, change, reservationErr
 	}
 	endpointExists := slices.Any(existingEndpoints, func(ep *apiv1.Endpoint) bool {
 		return ep.Spec.ServiceName == serviceProducer.ServiceName &&
@@ -2530,7 +2539,7 @@ func (r *ContainerReconciler) createEndpoints(
 			ep.Spec.Port == hostPort
 	})
 	if endpointExists {
-		return nil, nil
+		return nil, change, nil
 	}
 
 	// Otherwise, create a new Endpoint object.
@@ -2547,7 +2556,7 @@ func (r *ContainerReconciler) createEndpoints(
 		},
 	}
 
-	return []*apiv1.Endpoint{endpoint}, nil
+	return []*apiv1.Endpoint{endpoint}, change, nil
 }
 
 func (r *ContainerReconciler) validateExistingEndpoints(
@@ -2747,7 +2756,7 @@ func (r *ContainerReconciler) computeEffectiveEnvironment(
 ) error {
 	// Note: there is no value substitution by DCP for .env files, these are handled by container orchestrator directly.
 
-	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, nil, log)
 	if err != nil {
 		return err
 	}
@@ -2771,7 +2780,7 @@ func (r *ContainerReconciler) computeEffectiveInvocationArgs(
 	acquiredRCD *runningContainerData,
 	log logr.Logger,
 ) error {
-	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, log)
+	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, nil, log)
 	if err != nil {
 		return err
 	}

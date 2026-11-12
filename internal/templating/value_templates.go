@@ -61,11 +61,13 @@ func IsTransientTemplateError(err error) bool {
 // The contextObject parameter is the object that will be used as context during template evaluation (Executable, Container, etc.)
 // If a port needs to be reserved for a service production by the context object,
 // information about the reserved port will be added to reservedPorts map (currently only used for Executables).
+// Executable templates require reservations to retain dynamically allocated ports.
 func NewSpecValueTemplate(
 	ctx context.Context,
 	client ctrl_client.Client,
 	contextObj commonapi.DcpModelObject,
 	reservedPorts map[types.NamespacedName]int32,
+	reservations *networking.PortReservationSet,
 	log logr.Logger,
 ) (*template.Template, error) {
 
@@ -78,7 +80,7 @@ func NewSpecValueTemplate(
 		"portForServing": func(serviceNamespacedName string) (int32, error) {
 			switch contextObj := contextObj.(type) {
 			case *apiv1.Executable:
-				return portForServingFromExecutable(serviceNamespacedName, contextObj, servicesProduced, reservedPorts, client, ctx, log)
+				return portForServingFromExecutable(serviceNamespacedName, contextObj, servicesProduced, reservedPorts, reservations, client, ctx, log)
 			case *apiv1.Container:
 				return portForServingFromContainer(serviceNamespacedName, contextObj, servicesProduced)
 			default:
@@ -208,6 +210,7 @@ func portForServingFromExecutable(
 	exe *apiv1.Executable,
 	servicesProduced []commonapi.ServiceProducer,
 	reservedPorts map[types.NamespacedName]int32,
+	reservations *networking.PortReservationSet,
 	client ctrl_client.Client,
 	ctx context.Context,
 	log logr.Logger,
@@ -225,9 +228,9 @@ func portForServingFromExecutable(
 			return validateServiceProducerPort(sp, serviceName.String(), exe.NamespacedName().String())
 		}
 
-		if reservedPorts == nil {
+		if reservedPorts == nil || reservations == nil {
 			// This is a bug in the code, reservedPorts should never be nil for Executables.
-			return 0, fmt.Errorf("reservedPorts map is nil for Executable '%s'", exe.NamespacedName().String())
+			return 0, fmt.Errorf("port reservation ownership is missing for Executable '%s'", exe.NamespacedName().String())
 		}
 
 		if port, found := reservedPorts[serviceName]; found {
@@ -240,7 +243,7 @@ func portForServingFromExecutable(
 			return 0, errServiceDoesNotExist{Service: serviceName, ContextObject: exe.NamespacedName()}
 		}
 
-		port, err := networking.GetFreePort(ctx, svc.Spec.Protocol, sp.Address, log)
+		port, err := reservations.GetFreePort(ctx, svc.Spec.Protocol, sp.Address, log)
 		if err != nil {
 			return 0, fmt.Errorf(
 				"could not allocate a port for service '%s' with desired address '%s': %w",

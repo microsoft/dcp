@@ -90,6 +90,54 @@ func TestPortReservationSetSharesAndReacquiresClaims(t *testing.T) {
 	require.Zero(t, portReservationCount(t, ctx, db))
 }
 
+// Verifies that PortReservationSet.Reserve avoids repeated SQLite writes for a retained
+// binding, including normalized protocol/IP aliases and allocator reconfiguration.
+func TestPortReservationSetReserveIsIdempotent(t *testing.T) {
+	ctx, store, db := newPortReservationTestStore(t)
+	var owner PortReservationSet
+	defer owner.Release(ctx, log)
+	binding := ports.Binding{Protocol: "tcp", IP: netip.MustParseAddr("::ffff:127.0.0.1"), Port: 26010}
+	require.NoError(t, owner.Reserve(ctx, binding, log))
+	_, triggerErr := db.ExecContext(ctx, `CREATE TRIGGER fail_reservation_refresh BEFORE UPDATE ON port_allocations
+		BEGIN SELECT RAISE(FAIL, 'unexpected reservation refresh'); END`)
+	require.NoError(t, triggerErr)
+	binding.Protocol = ""
+	binding.IP = netip.MustParseAddr("127.0.0.1")
+	require.NoError(t, owner.Reserve(ctx, binding, log))
+	processOwner, processErr := process.This()
+	require.NoError(t, processErr)
+	ConfigureStateStorePortAllocator(store, processOwner)
+	require.NoError(t, owner.Reserve(ctx, binding, log))
+	require.Equal(t, 1, portReservationCount(t, ctx, db))
+	owner.Release(ctx, log)
+	require.Zero(t, portReservationCount(t, ctx, db))
+}
+
+// Verifies that networking allocation and availability APIs treat an empty protocol as TCP
+// and retain SQLite-backed claims rather than falling back to MRU.
+func TestPortAllocationDefaultsEmptyProtocolToTCP(t *testing.T) {
+	ctx, _, db := newPortReservationTestStore(t)
+	port, allocationErr := GetFreePort(ctx, "", IPv4LocalhostDefaultAddress, log)
+	require.NoError(t, allocationErr)
+	require.NoError(t, CheckPortAvailable(ctx, "", IPv4LocalhostDefaultAddress, port, log))
+	var first, second PortReservationSet
+	defer first.Release(ctx, log)
+	defer second.Release(ctx, log)
+	require.NoError(t, first.CheckPortAvailable(ctx, "", IPv4LocalhostDefaultAddress, port, log))
+	require.NoError(t, second.Reserve(ctx, ports.Binding{IP: netip.MustParseAddr(IPv4LocalhostDefaultAddress), Port: port}, log))
+	ownedPort, ownedErr := first.GetFreePort(ctx, "", IPv4LocalhostDefaultAddress, log)
+	require.NoError(t, ownedErr)
+	require.NotEqual(t, port, ownedPort)
+	var nonTCPClaims int
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM port_allocations WHERE protocol <> 'TCP'").Scan(&nonTCPClaims))
+	require.Zero(t, nonTCPClaims)
+	require.Equal(t, 2, portReservationCount(t, ctx, db))
+	first.Release(ctx, log)
+	require.Equal(t, 1, portReservationCount(t, ctx, db))
+	second.Release(ctx, log)
+	require.Zero(t, portReservationCount(t, ctx, db))
+}
+
 // Verifies that PortReservationSet leaves failed releases reserved without retrying,
 // and that subsequent allocations skip the retained claim.
 func TestPortReservationFailedReleaseIsNotRetried(t *testing.T) {

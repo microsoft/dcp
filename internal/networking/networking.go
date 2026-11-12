@@ -18,6 +18,7 @@ import (
 	"golang.org/x/net/nettest"
 
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/randdata"
@@ -121,6 +122,15 @@ func ConfigureStateStorePortAllocator(store *statestore.Store, owner process.Pro
 	packageStateStoreOwner = owner
 	stateStoreConfig = nil
 	stateStoreConfigLoaded = false
+}
+
+// NormalizePortProtocol canonicalizes a transport protocol and defaults an omitted value to TCP.
+func NormalizePortProtocol(protocol commonapi.PortProtocol) commonapi.PortProtocol {
+	normalized := commonapi.PortProtocol(strings.ToUpper(strings.TrimSpace(string(protocol))))
+	if normalized == "" {
+		return commonapi.PortProtocolTCP
+	}
+	return normalized
 }
 
 // Wrap the standard net.LookupIP method to filter for supported IP address types

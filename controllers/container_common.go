@@ -464,10 +464,14 @@ func getHostAddressAndPortForContainerPort(
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
 ) (string, int32, error) {
-	return getHostAddressAndPortForPorts(v1PortsToCreateContainerPorts(ctrSpec.Ports), serviceProducerPort, inspected, log)
+	bindAddress, port, bindingErr := getHostBindAddressAndPortForPorts(v1PortsToCreateContainerPorts(ctrSpec.Ports), serviceProducerPort, inspected, log)
+	if bindingErr != nil {
+		return "", 0, bindingErr
+	}
+	return normalizeHostAddress(bindAddress), port, nil
 }
 
-func getHostAddressAndPortForPorts(
+func getHostBindAddressAndPortForPorts(
 	ports []containers.CreateContainerPort,
 	serviceProducerPort int32,
 	inspected *containers.InspectedContainer,
@@ -493,10 +497,9 @@ func getHostAddressAndPortForPorts(
 	}
 
 	if found && matchedPort.HostPort != 0 {
-		hostAddress := normalizeHostAddress(matchedPort.HostIP)
 		// If the spec contains a port matching the desired container port, just use that
-		log.V(1).Info("Found matching port in Container spec", "ServiceProducerPort", serviceProducerPort, "HostPort", matchedPort.HostPort, "HostIP", matchedPort.HostIP, "EffectiveHostAddress", hostAddress)
-		return hostAddress, matchedPort.HostPort, nil
+		log.V(1).Info("Found matching port in Container spec", "ServiceProducerPort", serviceProducerPort, "HostPort", matchedPort.HostPort, "HostIP", matchedPort.HostIP)
+		return matchedPort.HostIP, matchedPort.HostPort, nil
 	}
 
 	if inspected.Status != containers.ContainerStatusRunning {
@@ -526,9 +529,8 @@ func getHostAddressAndPortForPorts(
 		return "", 0, fmt.Errorf("could not find host port for container port %d (invalid host port value %d reported by container orchestrator)", serviceProducerPort, hostPort)
 	}
 
-	hostAddress := normalizeHostAddress(matchedHostPort.HostIp)
-	log.V(1).Info("Matched service producer port to one of the container host ports", "ServiceProducerPort", serviceProducerPort, "HostPort", hostPort, "HostIP", matchedHostPort.HostIp, "EffectiveHostAddress", hostAddress)
-	return hostAddress, int32(hostPort), nil
+	log.V(1).Info("Matched service producer port to one of the container host ports", "ServiceProducerPort", serviceProducerPort, "HostPort", hostPort, "HostIP", matchedHostPort.HostIp)
+	return matchedHostPort.HostIp, int32(hostPort), nil
 }
 
 func normalizeHostAddress(hostIP string) string {
