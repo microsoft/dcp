@@ -68,7 +68,7 @@ func HeldPortReservation(err error) (*PortReservation, bool) {
 
 // CreatePortReservation creates a reservation for the requested protocol/IP/port tuple.
 // It fails with ErrPortReservationHeld when any active owner already reserves the same tuple or a
-// same-family wildcard tuple for that port.
+// overlapping wildcard tuple for that port. IPv6 wildcard claims also conflict with IPv4 bindings.
 func (s *Store) CreatePortReservation(ctx context.Context, request PortReservationRequest) (*PortReservation, error) {
 	return s.reservePort(ctx, request, false)
 }
@@ -353,10 +353,6 @@ func portReservationIPsConflict(requestedIP []byte, reservedIP []byte) bool {
 	if bytes.Equal(requestedIP, reservedIP) {
 		return true
 	}
-	if len(requestedIP) != len(reservedIP) {
-		return false
-	}
-
 	requestedAddr, requestedErr := portReservationAddrFromBytes(requestedIP)
 	if requestedErr != nil {
 		return false
@@ -364,6 +360,12 @@ func portReservationIPsConflict(requestedIP []byte, reservedIP []byte) bool {
 	reservedAddr, reservedErr := portReservationAddrFromBytes(reservedIP)
 	if reservedErr != nil {
 		return false
+	}
+
+	if len(requestedIP) != len(reservedIP) {
+		// IPv6 wildcard listeners may also bind IPv4, depending on the socket configuration.
+		return (requestedAddr.Is6() && requestedAddr.IsUnspecified()) ||
+			(reservedAddr.Is6() && reservedAddr.IsUnspecified())
 	}
 
 	return requestedAddr.IsUnspecified() || reservedAddr.IsUnspecified()

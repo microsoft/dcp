@@ -22,12 +22,18 @@ import (
 )
 
 func allocateRandomEphemeralPortWithMruFile(ctx context.Context, protocol commonapi.PortProtocol, address string, log logr.Logger) (int32, error) {
+	if callerErr := ctx.Err(); callerErr != nil {
+		return 0, callerErr
+	}
 	portFileLock.Lock()
 	portFileErr := ensurePackageMruPortFile(log)
 	portFileLock.Unlock()
 	var allocatedPort int32 = 0
 
 	bestEffortPortAllocation := func(err error) (int32, error) {
+		if callerErr := ctx.Err(); callerErr != nil {
+			return 0, callerErr
+		}
 		if packageMruPortFile.params.failOnPortFileError {
 			return 0, err
 		} else {
@@ -44,7 +50,10 @@ func allocateRandomEphemeralPortWithMruFile(ctx context.Context, protocol common
 	mruPortsAllocCtx, cancel := context.WithTimeout(ctx, packageMruPortFile.params.portAllocationTimeout)
 	defer cancel()
 
-	pollWaitErr := wait.PollUntilContextCancel(mruPortsAllocCtx, packageMruPortFile.params.portAllocationRoundDelay, true /* poll immediately */, func(ctx context.Context) (bool, error) {
+	pollWaitErr := wait.PollUntilContextCancel(mruPortsAllocCtx, packageMruPortFile.params.portAllocationRoundDelay, true /* poll immediately */, func(roundCtx context.Context) (bool, error) {
+		if callerErr := ctx.Err(); callerErr != nil {
+			return false, callerErr
+		}
 		portFileLock.Lock()
 		defer portFileLock.Unlock()
 
@@ -78,7 +87,7 @@ func allocateRandomEphemeralPortWithMruFile(ctx context.Context, protocol common
 					Timestamp:      time.Now(),
 					Instance:       programInstanceID,
 				})
-				if writeErr := packageMruPortFile.WriteAndUnlock(ctx, usedPorts); writeErr != nil {
+				if writeErr := packageMruPortFile.WriteAndUnlock(roundCtx, usedPorts); writeErr != nil {
 					log.Error(writeErr, "Could not write to the most recently used ports file")
 					if packageMruPortFile.params.failOnPortFileError {
 						return false, writeErr

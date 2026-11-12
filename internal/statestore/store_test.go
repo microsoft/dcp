@@ -1587,6 +1587,50 @@ func TestPortReservationAllIPv6InterfacesBlocksSpecificAddress(t *testing.T) {
 	require.ErrorIs(t, blockedErr, ErrPortReservationHeld)
 }
 
+// Verifies that IPv6 wildcard claims conflict with IPv4 wildcard, specific, and mapped
+// bindings in both reservation orders, and that release permits the competing claim.
+func TestPortReservationIPv6WildcardConflictsWithIPv4(t *testing.T) {
+	t.Parallel()
+	for _, protocol := range []string{"tcp", "udp"} {
+		for _, ipv4 := range []string{"0.0.0.0", "127.0.0.1", "::ffff:127.0.0.1"} {
+			for _, wildcardFirst := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/wildcard-first=%t", protocol, ipv4, wildcardFirst), func(t *testing.T) {
+					t.Parallel()
+					ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+					defer cancel()
+					storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+					store1 := openTestStore(t, ctx, storePath)
+					store2 := openTestStore(t, ctx, storePath)
+					owner1, owner1Err := testResourceLeaseOwner(t, 0)
+					require.NoError(t, owner1Err)
+					owner2, owner2Err := testResourceLeaseOwner(t, time.Second)
+					require.NoError(t, owner2Err)
+					firstIP, secondIP := ipv4, "::"
+					if wildcardFirst {
+						firstIP, secondIP = secondIP, firstIP
+					}
+					firstRequest := PortReservationRequest{
+						Binding: testPortBinding(protocol, firstIP, 26011), OwnerProcess: owner1,
+					}
+					secondRequest := PortReservationRequest{
+						Binding: testPortBinding(protocol, secondIP, 26011), OwnerProcess: owner2,
+					}
+					first, firstErr := store1.CreatePortReservation(ctx, firstRequest)
+					require.NoError(t, firstErr)
+					_, blockedErr := store2.CreatePortReservation(ctx, secondRequest)
+					require.ErrorIs(t, blockedErr, ErrPortReservationHeld)
+					held, hasHeld := HeldPortReservation(blockedErr)
+					require.True(t, hasHeld)
+					require.Equal(t, first.Binding, held.Binding)
+					require.NoError(t, store1.ReleasePort(ctx, firstRequest))
+					_, retryErr := store2.CreatePortReservation(ctx, secondRequest)
+					require.NoError(t, retryErr)
+				})
+			}
+		}
+	}
+}
+
 func TestPortReservationIPv4WildcardDoesNotBlockIPv6(t *testing.T) {
 	t.Parallel()
 

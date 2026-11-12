@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -238,6 +239,58 @@ func TestPortReservationFallbackUsesOnlyMru(t *testing.T) {
 	require.NoError(t, remainingErr)
 	require.NoError(t, mru.Unlock())
 	require.Empty(t, remaining)
+}
+
+// Verifies that cancelled and expired caller contexts fail MRU allocation and state-store
+// fallback, while an allocator-only timeout still permits best-effort allocation.
+func TestPortAllocationMruFallbackHonorsCallerContext(t *testing.T) {
+	ctx, store, db := newPortReservationTestStore(t)
+	config, _, configErr := getStateStorePortAllocationConfig(log)
+	require.NoError(t, configErr)
+	t.Setenv(DCP_PORT_ALLOCATOR, portAllocatorModeStateStoreWithFallback)
+	ConfigureStateStorePortAllocator(store, config.owner)
+	params := defaultMruPortFileUsageParameters()
+	params.failOnPortFileError = false
+	params.portAllocationTimeout = -time.Nanosecond
+	mru, mruErr := newMruPortFile(filepath.Join(t.TempDir(), "mru.list"), params)
+	require.NoError(t, mruErr)
+	portFileLock.Lock()
+	previousMru := packageMruPortFile
+	packageMruPortFile = mru
+	portFileLock.Unlock()
+	defer func() {
+		portFileLock.Lock()
+		packageMruPortFile = previousMru
+		portFileLock.Unlock()
+		require.NoError(t, mru.Close())
+	}()
+	cancelledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	expiredCtx, cancelExpired := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	defer cancelExpired()
+	for _, callerCtx := range []context.Context{cancelledCtx, expiredCtx} {
+		port, allocationErr := allocateRandomEphemeralPortWithMruFile(callerCtx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+		require.ErrorIs(t, allocationErr, callerCtx.Err())
+		require.Zero(t, port)
+		fallbackPort, fallbackErr := GetFreePort(callerCtx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+		require.ErrorIs(t, fallbackErr, callerCtx.Err())
+		require.Zero(t, fallbackPort)
+		var owner PortReservationSet
+		ownedPort, ownedErr := owner.GetFreePort(callerCtx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+		require.ErrorIs(t, ownedErr, callerCtx.Err())
+		require.Zero(t, ownedPort)
+		require.Empty(t, owner.bindings)
+	}
+	_, readErr := mru.tryLockAndRead(ctx)
+	require.NoError(t, readErr)
+	_, writeErr := mru.Write([]byte("invalid MRU record\n"))
+	require.NoError(t, writeErr)
+	require.NoError(t, mru.Unlock())
+	port, timeoutFallbackErr := allocateRandomEphemeralPortWithMruFile(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+	require.NoError(t, timeoutFallbackErr)
+	require.Positive(t, port)
+	require.NoError(t, ctx.Err())
+	require.Zero(t, portReservationCount(t, ctx, db))
 }
 
 // Verifies that availability checks still reject occupied ephemeral ports when SQLite

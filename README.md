@@ -67,5 +67,7 @@ DCP has knowledge of a number of environment variables that can change its behav
 
 State-store port allocation is initialized in both the API-server and controller processes.
 Claims use the listener's bind IP, not its advertised client address; for example, a wildcard `0.0.0.0` listener remains reserved on `0.0.0.0` even when its Endpoint advertises `127.0.0.1`.
+IPv6 wildcard `::` claims conservatively conflict with IPv4 bindings because those listeners may serve both address families; specific IPv4 and IPv6 addresses remain independent.
 An omitted transport protocol is treated as TCP.
 Executable template allocations belong to their workload, including while startup waits for dependencies, and are released after confirmed startup failure or workload stop.
+Caller cancellation stops allocation without MRU fallback; the allocator's own timeout may still permit best-effort MRU allocation when the caller remains active.
