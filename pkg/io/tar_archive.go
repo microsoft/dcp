@@ -20,6 +20,8 @@ import (
 // OpenTarArchive opens a hash-verified source file or decodes base64 archive contents.
 // Exactly one input must be supplied. The caller closes the returned reader.
 func OpenTarArchive(ctx context.Context, source, expectedSHA256, rawContents string) (io.ReadCloser, error) {
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	if cancellationErr := ctx.Err(); cancellationErr != nil {
 		return nil, cancellationErr
 	}
@@ -32,7 +34,7 @@ func OpenTarArchive(ctx context.Context, source, expectedSHA256, rawContents str
 		}
 		var contents bytes.Buffer
 		decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(rawContents))
-		if _, decodeErr := io.Copy(&contents, NewContextReader(ctx, decoder, false)); decodeErr != nil {
+		if _, decodeErr := io.Copy(&contents, NewContextReader(readCtx, decoder, false)); decodeErr != nil {
 			return nil, fmt.Errorf("decode archive contents: %w", decodeErr)
 		}
 		return io.NopCloser(bytes.NewReader(contents.Bytes())), nil
@@ -49,7 +51,7 @@ func OpenTarArchive(ctx context.Context, source, expectedSHA256, rawContents str
 		return nil, errors.Join(fmt.Errorf("archive %q is not a regular file", source), file.Close())
 	}
 	hash := sha256.New()
-	if _, hashErr := io.Copy(hash, NewContextReader(ctx, file, false)); hashErr != nil {
+	if _, hashErr := io.Copy(hash, NewContextReader(readCtx, file, false)); hashErr != nil {
 		return nil, errors.Join(fmt.Errorf("hash archive %q: %w", source, hashErr), file.Close())
 	}
 	expected := strings.TrimSpace(expectedSHA256)

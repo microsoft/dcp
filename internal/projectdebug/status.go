@@ -139,17 +139,19 @@ func (writer *projectDebugStatusWriter) update(
 		if sessionSnapshot != nil {
 			nextSession := sessionSnapshot.DeepCopy()
 			if sessionIndex < 0 {
-				nextSession.ProtocolRequests = nil
+				nextSession.Progress = nil
 				nextSession.Processes = nil
 				nextSession.ProcessTrackingUnconfirmed = false
 				nextSession.ProcessTrackingMessage = ""
 				debug.Sessions = append(debug.Sessions, *nextSession)
 			} else {
 				storedSession := &debug.Sessions[sessionIndex]
-				nextSession.ProtocolRequests = slices.Clone(storedSession.ProtocolRequests)
-				if nextSession.Phase == apiv2.ProjectDebugPhaseExited || nextSession.Phase == apiv2.ProjectDebugPhaseFailed {
-					interruptProjectDebugRequests(nextSession)
+				nextSession.Progress = storedSession.Progress.DeepCopy()
+				if storedSession.Phase == apiv2.ProjectDebugPhaseExited || storedSession.Phase == apiv2.ProjectDebugPhaseFailed {
+					nextSession.Phase, nextSession.FinishedAt = storedSession.Phase, storedSession.FinishedAt
+					nextSession.Conditions = slices.Clone(storedSession.Conditions)
 				}
+				applyProjectDebugSessionProgress(nextSession, project.Generation)
 				nextSession.Processes = storedSession.Processes
 				nextSession.ProcessTrackingUnconfirmed = storedSession.ProcessTrackingUnconfirmed
 				nextSession.ProcessTrackingMessage = storedSession.ProcessTrackingMessage

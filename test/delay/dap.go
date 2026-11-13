@@ -52,11 +52,20 @@ func serveDAP(input io.Reader, output io.Writer) error {
 		default:
 			return fmt.Errorf("unsupported test response behavior %q", arguments.Response)
 		}
-		if command == "reportProcess" {
+		event := ""
+		switch command {
+		case "reportProcess":
+			event = "process"
+		case "reportInitialized":
+			event = "initialized"
+		case "reportExit":
+			event = "exited"
+		}
+		if event != "" {
 			sequence++
 			if writeErr := dap.WriteMessage(output, dap.Message{
 				"seq": json.RawMessage(strconv.FormatInt(sequence, 10)), "type": json.RawMessage(`"event"`),
-				"event": json.RawMessage(`"process"`), "body": message["arguments"],
+				"event": json.RawMessage(strconv.Quote(event)), "body": message["arguments"],
 			}); writeErr != nil {
 				return writeErr
 			}

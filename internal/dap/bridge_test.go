@@ -53,7 +53,7 @@ func bridgeEndpoints(t *testing.T, ctx context.Context, grace time.Duration, obs
 	go func() {
 		done <- Bridge(ctx,
 			&testTransport{Conn: bridgeClient, reader: bufio.NewReader(bridgeClient)},
-			&testTransport{Conn: bridgeAdapter, reader: bufio.NewReader(bridgeAdapter)}, exited, nil, grace, observe)
+			&testTransport{Conn: bridgeAdapter, reader: bufio.NewReader(bridgeAdapter)}, exited, nil, grace, observe, nil)
 	}()
 	return &testTransport{Conn: client, reader: bufio.NewReader(client)},
 		&testTransport{Conn: adapter, reader: bufio.NewReader(adapter)}, done

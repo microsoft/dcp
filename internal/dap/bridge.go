@@ -166,22 +166,40 @@ func (writer *messageWriter) remap(message Message) (bool, bool, error) {
 // It never synthesizes application exit or terminated events.
 // Observe runs before forwarding, after response correlation, and must be bounded and leave messages unchanged.
 // Private shutdown replies and uncorrelated responses are not observed.
-func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-chan struct{}, grace time.Duration, observe func(Direction, Message) error) error {
+// ObserveState receives serialized snapshots only when connection state or DAP milestones change.
+func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-chan struct{}, grace time.Duration,
+	observe func(Direction, Message) error, observeState func(SessionState) error,
+) (bridgeErr error) {
 	toAdapter, toClient := newMessageWriter(adapter), newMessageWriter(client)
+	tracker := &sessionTracker{publish: observeState}
 	type result struct {
-		client bool
-		err    error
+		client      bool
+		err         error
+		progressErr error
 	}
 	results := make(chan result, 2)
 	var disconnectAcknowledged atomic.Bool
 	var workers sync.WaitGroup
+	defer func() {
+		_ = client.Close()
+		_ = adapter.Close()
+		workers.Wait()
+		bridgeErr = errors.Join(bridgeErr, tracker.disconnect(true, "Stream closed by bridge."),
+			tracker.disconnect(false, "Stream closed by bridge."))
+	}()
+	if connectedErr := tracker.update(func(state *SessionState) error {
+		state.Phase, state.StreamsConnected = ConnectionConnected, true
+		return nil
+	}); connectedErr != nil {
+		return connectedErr
+	}
 	workers.Add(2)
 	go func() {
 		defer workers.Done()
 		for {
 			message, readErr := client.ReadMessage()
 			if readErr != nil {
-				results <- result{client: true, err: readErr}
+				results <- result{client: true, err: readErr, progressErr: tracker.disconnect(true, readErr.Error())}
 				return
 			}
 			forward, matched, remapErr := toClient.remap(message)
@@ -190,6 +208,12 @@ func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-c
 				return
 			}
 			if forward {
+				if message.text("type") != "response" || matched {
+					if progressErr := tracker.message(ClientToAdapter, message); progressErr != nil {
+						results <- result{client: true, progressErr: progressErr}
+						return
+					}
+				}
 				if observe != nil && (message.text("type") != "response" || matched) {
 					if observationErr := observe(ClientToAdapter, message); observationErr != nil {
 						results <- result{client: true, err: observationErr}
@@ -197,7 +221,7 @@ func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-c
 					}
 				}
 				if writeErr := toAdapter.send(message, false); writeErr != nil {
-					results <- result{client: true, err: writeErr}
+					results <- result{err: writeErr, progressErr: tracker.disconnect(false, writeErr.Error())}
 					return
 				}
 			}
@@ -208,7 +232,7 @@ func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-c
 		for {
 			message, readErr := adapter.ReadMessage()
 			if readErr != nil {
-				results <- result{err: readErr}
+				results <- result{err: readErr, progressErr: tracker.disconnect(false, readErr.Error())}
 				return
 			}
 			forward, matched, remapErr := toAdapter.remap(message)
@@ -217,6 +241,12 @@ func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-c
 				return
 			}
 			if forward {
+				if message.text("type") != "response" || matched {
+					if progressErr := tracker.message(AdapterToClient, message); progressErr != nil {
+						results <- result{progressErr: progressErr}
+						return
+					}
+				}
 				if observe != nil && (message.text("type") != "response" || matched) {
 					if observationErr := observe(AdapterToClient, message); observationErr != nil {
 						results <- result{err: observationErr}
@@ -229,18 +259,16 @@ func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-c
 					disconnectAcknowledged.Store(json.Unmarshal(message["success"], &success) == nil && success)
 				}
 				if writeErr := toClient.send(message, false); writeErr != nil {
-					results <- result{err: writeErr}
+					results <- result{client: true, err: writeErr, progressErr: tracker.disconnect(true, writeErr.Error())}
 					return
 				}
 			}
 		}
 	}()
-	defer func() {
-		_ = client.Close()
-		_ = adapter.Close()
-		workers.Wait()
-	}()
 	finish := func(completed result) error {
+		if completed.progressErr != nil {
+			return errors.Join(completed.err, completed.progressErr)
+		}
 		if completed.client {
 			if disconnectAcknowledged.Load() {
 				return nil
@@ -280,10 +308,31 @@ forwarding:
 		case <-drainExpired:
 			return fmt.Errorf("debug adapter output drain timed out")
 		case <-exited:
+			if terminationErr := tracker.update(func(state *SessionState) error {
+				state.AdapterTerminating = true
+				if state.Phase != ConnectionDisconnected {
+					state.Phase = ConnectionTerminating
+				}
+				return nil
+			}); terminationErr != nil {
+				return terminationErr
+			}
 			startDrain()
 		case <-readDone:
+			if disconnectedErr := tracker.disconnect(false, "Adapter output stream ended."); disconnectedErr != nil {
+				return disconnectedErr
+			}
 			startDrain()
 		case <-ctx.Done():
+			if terminationErr := tracker.update(func(state *SessionState) error {
+				state.ResourceTerminating = true
+				if state.Phase != ConnectionDisconnected {
+					state.Phase = ConnectionTerminating
+				}
+				return nil
+			}); terminationErr != nil {
+				return errors.Join(context.Cause(ctx), terminationErr)
+			}
 			if !errors.Is(context.Cause(ctx), ErrShutdownRequested) {
 				return context.Cause(ctx)
 			}

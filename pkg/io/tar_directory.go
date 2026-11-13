@@ -66,10 +66,11 @@ func (tw *TarWriter) CopyDirectory(ctx context.Context, source, destination stri
 			if linkErr != nil {
 				return fmt.Errorf("read source symlink %q: %w", current, linkErr)
 			}
-			linkRelative, linkRelativeErr := filepath.Rel(root, filepath.Join(filepath.Dir(current), target))
-			if filepath.IsAbs(target) || linkRelativeErr != nil || linkRelative == ".." ||
-				strings.HasPrefix(linkRelative, ".."+string(filepath.Separator)) {
+			if filepath.IsAbs(target) {
 				return fmt.Errorf("source symlink %q must be relative and remain within the source directory", current)
+			}
+			if traversalErr := validateDirectorySymlink(ctx, root, relative); traversalErr != nil {
+				return fmt.Errorf("source symlink %q must be relative and remain within the source directory: %w", current, traversalErr)
 			}
 			return tw.WriteSymlink(name, filepath.ToSlash(target), uid, gid, info.ModTime(), info.ModTime(), info.ModTime())
 		case info.IsDir():
@@ -79,11 +80,60 @@ func (tw *TarWriter) CopyDirectory(ctx context.Context, source, destination stri
 			if openErr != nil {
 				return fmt.Errorf("open directory entry %q: %w", current, openErr)
 			}
-			copyErr := tw.CopyFile(NewContextReader(ctx, file, false), info.Size(), name, uid, gid, info.Mode().Perm(), info.ModTime(), info.ModTime(), info.ModTime())
+			copyCtx, cancelCopy := context.WithCancel(ctx)
+			copyErr := tw.CopyFile(NewContextReader(copyCtx, file, false), info.Size(), name, uid, gid, info.Mode().Perm(), info.ModTime(), info.ModTime(), info.ModTime())
+			cancelCopy()
 			closeErr := file.Close()
 			return errors.Join(copyErr, closeErr)
 		default:
 			return fmt.Errorf("unsupported directory entry %q with mode %s", current, info.Mode())
 		}
+
 	})
+}
+
+// Resolve symlinks before processing ".."; cleaning the path first changes filesystem traversal.
+func validateDirectorySymlink(ctx context.Context, root, relative string) error {
+	pending := strings.Split(relative, string(filepath.Separator))
+	var resolved []string
+	links := 0
+	for len(pending) != 0 {
+		if cancellationErr := ctx.Err(); cancellationErr != nil {
+			return cancellationErr
+		}
+		component := pending[0]
+		pending = pending[1:]
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			if len(resolved) == 0 {
+				return fmt.Errorf("link traversal escapes source directory")
+			}
+			resolved = resolved[:len(resolved)-1]
+			continue
+		}
+		candidate := filepath.Join(root, filepath.Join(resolved...), component)
+		info, inspectErr := os.Lstat(candidate)
+		if inspectErr != nil && !errors.Is(inspectErr, os.ErrNotExist) {
+			return fmt.Errorf("inspect link target %q: %w", candidate, inspectErr)
+		}
+		if inspectErr == nil && info.Mode()&fs.ModeSymlink != 0 {
+			links++
+			if links > 255 {
+				return fmt.Errorf("too many symbolic links")
+			}
+			target, readErr := os.Readlink(candidate)
+			if readErr != nil {
+				return fmt.Errorf("read link target %q: %w", candidate, readErr)
+			}
+			if filepath.IsAbs(target) {
+				return fmt.Errorf("link traversal contains an absolute target")
+			}
+			pending = append(strings.Split(target, string(filepath.Separator)), pending...)
+			continue
+		}
+		resolved = append(resolved, component)
+	}
+	return nil
 }

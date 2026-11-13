@@ -7,20 +7,64 @@ package io_test
 
 import (
 	"archive/tar"
+	"bytes"
+	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that completed archive hashing, decoding, and directory copying release their temporary
+// ContextReader workers without waiting for the parent context to be cancelled.
+func TestTarOperationsReleaseReaderWorkers(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	countWorkers := func() int {
+		var stacks bytes.Buffer
+		require.NoError(t, pprof.Lookup("goroutine").WriteTo(&stacks, 2))
+		return strings.Count(stacks.String(), "github.com/microsoft/dcp/pkg/io.(*ContextReader).doWork")
+	}
+	initial := countWorkers()
+	root := t.TempDir()
+	for index := range 8 {
+		require.NoError(t, usvc_io.WriteFile(filepath.Join(root, fmt.Sprintf("file-%d", index)), []byte("data"), 0644))
+	}
+	source := filepath.Join(root, "file-0")
+	hash := sha256.Sum256([]byte("data"))
+	for _, fileSource := range []bool{true, false} {
+		var archiveSource, archiveHash, raw string
+		if fileSource {
+			archiveSource, archiveHash = source, fmt.Sprintf("%x", hash)
+		} else {
+			raw = base64.StdEncoding.EncodeToString([]byte("data"))
+		}
+		reader, openErr := usvc_io.OpenTarArchive(ctx, archiveSource, archiveHash, raw)
+		require.NoError(t, openErr)
+		require.NoError(t, reader.Close())
+	}
+	writer := usvc_io.NewTarWriter()
+	require.NoError(t, writer.CopyDirectory(ctx, root, "adapter", 0, 0))
+	require.NoError(t, writer.Close())
+	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
+		return countWorkers() <= initial, nil
+	}))
+	require.NoError(t, ctx.Err())
+}
 
 // Verifies that OpenTarArchive verifies file contents before exposing them, supports hash prefixes,
 // and rejects a source changed after its expected hash was calculated.
@@ -87,7 +131,7 @@ func TestTarDirectorySymlinks(t *testing.T) {
 		t.Skip("creating symlinks requires Windows developer mode or elevated privileges")
 	}
 	t.Parallel()
-	for _, scenario := range []string{"internal", "absolute", "escaping", "chained-escape"} {
+	for _, scenario := range []string{"internal", "absolute", "escaping", "chained-escape", "composed-escape", "composed-internal"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, 0)
 			defer cancel()
@@ -103,11 +147,17 @@ func TestTarDirectorySymlinks(t *testing.T) {
 			case "chained-escape":
 				require.NoError(t, os.Symlink("../outside", filepath.Join(root, "dependency-link")))
 				target = "../dependency-link"
+			case "composed-escape":
+				require.NoError(t, os.Symlink(".", filepath.Join(root, "alias")))
+				target = "../alias/../outside"
+			case "composed-internal":
+				require.NoError(t, os.Symlink("bin", filepath.Join(root, "alias")))
+				target = "../alias/../dependency"
 			}
 			require.NoError(t, os.Symlink(target, filepath.Join(root, "bin", "link")))
 			writer := usvc_io.NewTarWriter()
 			copyErr := writer.CopyDirectory(ctx, root, "adapter", 0, 0)
-			if scenario != "internal" {
+			if scenario != "internal" && scenario != "composed-internal" {
 				require.ErrorContains(t, copyErr, "must be relative and remain within")
 				require.NoError(t, writer.Close())
 				return
@@ -125,7 +175,7 @@ func TestTarDirectorySymlinks(t *testing.T) {
 				require.NoError(t, nextErr)
 				if header.Name == "adapter/bin/link" {
 					require.Equal(t, byte(tar.TypeSymlink), header.Typeflag)
-					require.Equal(t, "../dependency", header.Linkname)
+					require.Equal(t, target, header.Linkname)
 					found = true
 				}
 			}

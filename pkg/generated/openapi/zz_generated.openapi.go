@@ -170,7 +170,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.ProjectDebugExecutionStatus{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_ProjectDebugExecutionStatus(ref),
 		v2.ProjectDebugProcessObservation{}.OpenAPIModelName():          schema_microsoft_dcp_api_v2_ProjectDebugProcessObservation(ref),
 		v2.ProjectDebugProcessStatus{}.OpenAPIModelName():               schema_microsoft_dcp_api_v2_ProjectDebugProcessStatus(ref),
-		v2.ProjectDebugRequestStatus{}.OpenAPIModelName():               schema_microsoft_dcp_api_v2_ProjectDebugRequestStatus(ref),
+		v2.ProjectDebugSessionProgress{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_ProjectDebugSessionProgress(ref),
 		v2.ProjectDebugSessionStatus{}.OpenAPIModelName():               schema_microsoft_dcp_api_v2_ProjectDebugSessionStatus(ref),
 		v2.ProjectDebugStatus{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_ProjectDebugStatus(ref),
 		v2.ProjectList{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v2_ProjectList(ref),
@@ -9738,56 +9738,137 @@ func schema_microsoft_dcp_api_v2_ProjectDebugProcessStatus(ref common.ReferenceC
 	}
 }
 
-func schema_microsoft_dcp_api_v2_ProjectDebugRequestStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v2_ProjectDebugSessionProgress(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ProjectDebugRequestStatus records an API-server-observed client request, not target health or execution.",
+				Description: "ProjectDebugSessionProgress reports current connection state and facts observed during one bridge session. Milestones remain established once observed; termination and disconnection cannot reopen the connection.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"requestSeq": {
-						SchemaProps: spec.SchemaProps{
-							Description: "RequestSeq is the originating client's DAP sequence number, scoped to this session.",
-							Default:     0,
-							Type:        []string{"integer"},
-							Format:      "int64",
-						},
-					},
-					"command": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Command identifies the observed protocol operation.",
-							Default:     "",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
 					"phase": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase records a pending request, its response outcome, or session closure before a response.",
+							Description: "Phase describes the bridge connection, independently of adapter process and target lifetimes.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
-					"finishedAt": {
+					"streamsConnected": {
 						SchemaProps: spec.SchemaProps{
-							Description: "FinishedAt records when a response or interruption was observed.",
-							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+							Description: "StreamsConnected records that both client and adapter streams were connected.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"initializeRequested": {
+						SchemaProps: spec.SchemaProps{
+							Description: "InitializeRequested records a client initialize request.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"launchRequested": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LaunchRequested records a client launch request, not successful target startup.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"attachRequested": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AttachRequested records a client attach request, not successful target attachment.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"adapterInitialized": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AdapterInitialized records the adapter's initialized event.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"processReported": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ProcessReported records an adapter process event; Processes holds the target registrations.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"clientTerminating": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ClientTerminating records a client terminate or disconnect request.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"adapterTerminating": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AdapterTerminating records the adapter's terminated event or termination request.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"resourceTerminating": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ResourceTerminating records shutdown initiated by DCP.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"debuggeeExited": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DebuggeeExited records the adapter's exited event, not independently observed target termination.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"debuggeeExitCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DebuggeeExitCode is the exit code supplied in the adapter's exited event.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"clientDisconnected": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ClientDisconnected records that the client stream was lost or closed.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"adapterDisconnected": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AdapterDisconnected records that the adapter stream was lost or closed.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"clientDisconnectMessage": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ClientDisconnectMessage describes client stream loss or bridge-initiated closure.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"adapterDisconnectMessage": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AdapterDisconnectMessage describes adapter stream loss or bridge-initiated closure.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"message": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Message contains the adapter's response message or the reason no response was observed.",
+							Description: "Message is the current protocol diagnostic; request/response payloads and history are not retained.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 				},
-				Required: []string{"requestSeq", "command", "phase"},
+				Required: []string{"phase"},
 			},
 		},
-		Dependencies: []string{
-			metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -9813,25 +9894,10 @@ func schema_microsoft_dcp_api_v2_ProjectDebugSessionStatus(ref common.ReferenceC
 							Format:      "",
 						},
 					},
-					"protocolRequests": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"requestSeq",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
+					"progress": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ProtocolRequests retains initialize, launch and attach outcomes independently of transport phase. Arguments, environment and adapter-specific response bodies are not retained.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Ref: ref(v2.ProjectDebugRequestStatus{}.OpenAPIModelName()),
-									},
-								},
-							},
+							Description: "Progress reports bridge-owned connection state and established DAP milestones.",
+							Ref:         ref(v2.ProjectDebugSessionProgress{}.OpenAPIModelName()),
 						},
 					},
 					"processes": {
@@ -9909,7 +9975,7 @@ func schema_microsoft_dcp_api_v2_ProjectDebugSessionStatus(ref common.ReferenceC
 			},
 		},
 		Dependencies: []string{
-			v2.ProjectDebugProcessStatus{}.OpenAPIModelName(), v2.ProjectDebugRequestStatus{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.ProjectDebugProcessStatus{}.OpenAPIModelName(), v2.ProjectDebugSessionProgress{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 

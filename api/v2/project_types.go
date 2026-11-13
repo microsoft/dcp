@@ -263,11 +263,8 @@ type ProjectDebugSessionStatus struct {
 	ID string `json:"id"`
 	// ExecutionID references an entry in debug.executions when DCP owns its adapter process.
 	ExecutionID string `json:"executionID,omitempty"`
-	// ProtocolRequests retains initialize, launch and attach outcomes independently of transport phase.
-	// Arguments, environment and adapter-specific response bodies are not retained.
-	// +listType=map
-	// +listMapKey=requestSeq
-	ProtocolRequests []ProjectDebugRequestStatus `json:"protocolRequests,omitempty"`
+	// Progress reports bridge-owned connection state and established DAP milestones.
+	Progress *ProjectDebugSessionProgress `json:"progress,omitempty"`
 	// Processes retains adapter-reported targets independently of the stream and adapter lifetimes.
 	// +listType=map
 	// +listMapKey=id
@@ -287,30 +284,52 @@ type ProjectDebugSessionStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-type ProjectDebugRequestPhase string
+type ProjectDebugConnectionPhase string
 
 const (
-	ProjectDebugRequestPending     ProjectDebugRequestPhase = "Pending"
-	ProjectDebugRequestSucceeded   ProjectDebugRequestPhase = "Succeeded"
-	ProjectDebugRequestFailed      ProjectDebugRequestPhase = "Failed"
-	ProjectDebugRequestInterrupted ProjectDebugRequestPhase = "Interrupted"
+	ProjectDebugConnectionConnected    ProjectDebugConnectionPhase = "Connected"
+	ProjectDebugConnectionTerminating  ProjectDebugConnectionPhase = "Terminating"
+	ProjectDebugConnectionDisconnected ProjectDebugConnectionPhase = "Disconnected"
 )
 
-// ProjectDebugRequestStatus records an API-server-observed client request, not target health or execution.
+// ProjectDebugSessionProgress reports current connection state and facts observed during one bridge session.
+// Milestones remain established once observed; termination and disconnection cannot reopen the connection.
 // +k8s:openapi-gen=true
-type ProjectDebugRequestStatus struct {
-	// RequestSeq is the originating client's DAP sequence number, scoped to this session.
-	// +kubebuilder:validation:Minimum=1
-	RequestSeq int64 `json:"requestSeq"`
-	// Command identifies the observed protocol operation.
-	// +kubebuilder:validation:Enum=initialize;launch;attach
-	Command string `json:"command"`
-	// Phase records a pending request, its response outcome, or session closure before a response.
-	// +kubebuilder:validation:Enum=Pending;Succeeded;Failed;Interrupted
-	Phase ProjectDebugRequestPhase `json:"phase"`
-	// FinishedAt records when a response or interruption was observed.
-	FinishedAt metav1.MicroTime `json:"finishedAt,omitempty"`
-	// Message contains the adapter's response message or the reason no response was observed.
+type ProjectDebugSessionProgress struct {
+	// Phase describes the bridge connection, independently of adapter process and target lifetimes.
+	// +kubebuilder:validation:Enum=Connected;Terminating;Disconnected
+	Phase ProjectDebugConnectionPhase `json:"phase"`
+	// StreamsConnected records that both client and adapter streams were connected.
+	StreamsConnected bool `json:"streamsConnected,omitempty"`
+	// InitializeRequested records a client initialize request.
+	InitializeRequested bool `json:"initializeRequested,omitempty"`
+	// LaunchRequested records a client launch request, not successful target startup.
+	LaunchRequested bool `json:"launchRequested,omitempty"`
+	// AttachRequested records a client attach request, not successful target attachment.
+	AttachRequested bool `json:"attachRequested,omitempty"`
+	// AdapterInitialized records the adapter's initialized event.
+	AdapterInitialized bool `json:"adapterInitialized,omitempty"`
+	// ProcessReported records an adapter process event; Processes holds the target registrations.
+	ProcessReported bool `json:"processReported,omitempty"`
+	// ClientTerminating records a client terminate or disconnect request.
+	ClientTerminating bool `json:"clientTerminating,omitempty"`
+	// AdapterTerminating records the adapter's terminated event or termination request.
+	AdapterTerminating bool `json:"adapterTerminating,omitempty"`
+	// ResourceTerminating records shutdown initiated by DCP.
+	ResourceTerminating bool `json:"resourceTerminating,omitempty"`
+	// DebuggeeExited records the adapter's exited event, not independently observed target termination.
+	DebuggeeExited bool `json:"debuggeeExited,omitempty"`
+	// DebuggeeExitCode is the exit code supplied in the adapter's exited event.
+	DebuggeeExitCode *int32 `json:"debuggeeExitCode,omitempty"`
+	// ClientDisconnected records that the client stream was lost or closed.
+	ClientDisconnected bool `json:"clientDisconnected,omitempty"`
+	// AdapterDisconnected records that the adapter stream was lost or closed.
+	AdapterDisconnected bool `json:"adapterDisconnected,omitempty"`
+	// ClientDisconnectMessage describes client stream loss or bridge-initiated closure.
+	ClientDisconnectMessage string `json:"clientDisconnectMessage,omitempty"`
+	// AdapterDisconnectMessage describes adapter stream loss or bridge-initiated closure.
+	AdapterDisconnectMessage string `json:"adapterDisconnectMessage,omitempty"`
+	// Message is the current protocol diagnostic; request/response payloads and history are not retained.
 	Message string `json:"message,omitempty"`
 }
 

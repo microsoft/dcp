@@ -133,7 +133,7 @@ func TestProjectDebugConnectionEOFFinishesBlockedSession(t *testing.T) {
 				completed <- dap.Bridge(ctx,
 					&debugDAPTransport{reader: bufio.NewReader(client), writer: client, close: client.Close},
 					&debugDAPTransport{reader: bufio.NewReader(transport), writer: transport, close: transport.Close},
-					executionDone, transport.readDone, apiv2.ProjectDebugShutdownGrace, nil)
+					executionDone, transport.readDone, apiv2.ProjectDebugShutdownGrace, nil, nil)
 			}()
 			require.NoError(t, dap.WriteMessage(upstream, dap.Message{
 				"seq": json.RawMessage("1"), "type": json.RawMessage(`"event"`),
@@ -247,7 +247,7 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 				defer stopOutputFailure()
 				go func() {
 					defer close(completed)
-					completed <- dap.Bridge(bridgeCtx, client, adapter, execution.done, adapterStream.readDone, apiv2.ProjectDebugShutdownGrace, nil)
+					completed <- dap.Bridge(bridgeCtx, client, adapter, execution.done, adapterStream.readDone, apiv2.ProjectDebugShutdownGrace, nil, nil)
 				}()
 				t.Cleanup(func() {
 					_ = clientStream.Close()

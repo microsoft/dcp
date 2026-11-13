@@ -39,6 +39,51 @@ type archiveCopyOrchestrator struct {
 	copies     atomic.Int32
 }
 
+// Verifies that PhysicalContainer never deletes a directory supplied incorrectly as a tar source,
+// including after copy failure, initial stop, and deletion before preparation.
+func TestV2PhysicalContainerCopyCleanupPreservesDirectories(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"copy-failure", "early-stop", "delete"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			server, _, startErr := StartTestEnvironment(t, ctx, PhysicalContainerController|PhysicalContainerImageController,
+				t.Name(), t.TempDir())
+			require.NoError(t, startErr)
+			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-copy-directory-"+scenario)
+			image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: "image", Namespace: namespace.Name},
+				Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}}}
+			require.NoError(t, server.Client.Create(ctx, image))
+			source := t.TempDir()
+			resource := &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+				Spec: apiv2.PhysicalContainerSpec{Stop: scenario == "early-stop", Container: &apiv2.PhysicalContainerConfig{
+					ImageRef: image.Name, ContainerName: namespace.Name,
+					CopyFiles: []apiv2.ContainerCopyFileContext{{Source: source, SHA256: strings.Repeat("0", 64), DeleteAfterCopy: true}},
+				}}}
+			require.NoError(t, server.Client.Create(ctx, resource))
+			if scenario == "copy-failure" {
+				failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+					return current.Status.Phase == apiv2.PhysicalContainerPhaseFailed, nil
+				})
+				require.Contains(t, failed.Status.Conditions[0].Message, "not a regular file")
+			} else if scenario == "early-stop" {
+				waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+					for _, condition := range current.Status.Conditions {
+						if condition.Reason == string(apiv2.PhysicalContainerReasonStopRequested) {
+							return true, nil
+						}
+					}
+					return false, nil
+				})
+			}
+			require.NoError(t, server.Client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+			require.DirExists(t, source)
+		})
+	}
+}
+
 func (orchestrator *archiveCopyOrchestrator) CreateContainer(ctx context.Context, options containers.CreateContainerOptions) (string, error) {
 	if orchestrator.failCreate {
 		return "", errors.Join(containers.ErrCouldNotAllocate, errors.New("container creation denied"))

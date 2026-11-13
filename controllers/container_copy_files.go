@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/go-logr/logr"
@@ -26,6 +27,18 @@ func removeContainerCopySources(config *apiv2.PhysicalContainerConfig, log logr.
 }
 
 func removeCopyArchive(source string, log logr.Logger) {
+	info, inspectErr := os.Lstat(source)
+	if errors.Is(inspectErr, os.ErrNotExist) {
+		return
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect copy archive for removal", "Source", source)
+		return
+	}
+	if info.IsDir() {
+		log.Error(fmt.Errorf("copy archive source is a directory"), "Refusing to remove directory as copy archive", "Source", source)
+		return
+	}
 	if removeErr := os.Remove(source); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 		log.Error(removeErr, "Failed to remove copy archive", "Source", source)
 	}

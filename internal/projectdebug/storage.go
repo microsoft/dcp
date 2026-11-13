@@ -383,8 +383,7 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 		}
 	}()
 	session.ExecutionID = execution.status.ID
-	session.Phase = apiv2.ProjectDebugPhaseRunning
-	session.Conditions = debugConditions("TransportReady", "The adapter transport is connected.", true, project.Generation)
+	session.Conditions = debugConditions("ClientConnectionPending", "The adapter transport is connected; waiting for the client stream.", false, project.Generation)
 	if _, publishErr := storage.runtime.writer.update(ctx, project.NamespacedName(), project.UID, nil, session); publishErr != nil {
 		sessionErr = publishErr
 		responder.Error(publishErr)
@@ -398,18 +397,23 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 	}
 	defer connection.Close()
 	connection.SetReadLimit(9 * 1024 * 1024)
+	session.Phase = apiv2.ProjectDebugPhaseRunning
+	session.Conditions = debugConditions("DAPInitializationPending", "Both streams are connected; waiting for DAP initialization.", false, project.Generation)
+	if _, publishErr := storage.runtime.writer.update(ctx, project.NamespacedName(), project.UID, nil, session); publishErr != nil {
+		sessionErr = publishErr
+		return
+	}
 	stream := &debugWebSocketStream{connection: connection}
 	sessionErr = dap.Bridge(ctx,
 		&debugDAPTransport{reader: bufio.NewReader(stream), writer: stream, close: connection.Close},
 		&debugDAPTransport{reader: bufio.NewReader(transport), writer: transport, close: transport.Close},
 		execution.done, transport.readDone, apiv2.ProjectDebugShutdownGrace, func(direction dap.Direction, message dap.Message) error {
-			if protocolErr := storage.runtime.observeProtocolMessage(project, session.ID, direction, message); protocolErr != nil {
-				return protocolErr
-			}
 			if direction != dap.AdapterToClient {
 				return nil
 			}
 			return storage.runtime.observeProcessMessage(project, session.ID, message)
+		}, func(state dap.SessionState) error {
+			return storage.runtime.publishProgress(project, session.ID, state)
 		})
 	if ctx.Err() != nil && !errors.Is(context.Cause(ctx), dap.ErrShutdownRequested) {
 		sessionErr = errors.Join(sessionErr, context.Cause(ctx))
