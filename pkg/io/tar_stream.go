@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"sync"
 )
 
@@ -23,7 +24,8 @@ type directoryTarStream struct {
 
 // OpenDirectoryTar streams directory contents beneath destination in a tar archive without staging a file.
 // The caller closes the reader to release the producer, including on early copy failure.
-func OpenDirectoryTar(ctx context.Context, source, destination string, uid, gid int32) io.ReadCloser {
+func OpenDirectoryTar(ctx context.Context, source, destination string, uid, gid int32, executableFiles []string) io.ReadCloser {
+	executableFiles = slices.Clone(executableFiles)
 	lifetime, cancel := context.WithCancel(ctx)
 	reader, writer := io.Pipe()
 	stopCancellation := context.AfterFunc(lifetime, func() { _ = writer.CloseWithError(context.Cause(lifetime)) })
@@ -32,7 +34,7 @@ func OpenDirectoryTar(ctx context.Context, source, destination string, uid, gid 
 		defer close(stream.done)
 		defer stopCancellation()
 		tarWriter := NewTarWriterTo(writer)
-		copyErr := tarWriter.CopyDirectory(lifetime, source, destination, uid, gid)
+		copyErr := tarWriter.CopyDirectory(lifetime, source, destination, uid, gid, executableFiles)
 		finalizeErr := tarWriter.Close()
 		stream.producerErr = errors.Join(copyErr, finalizeErr)
 		_ = writer.CloseWithError(stream.producerErr)

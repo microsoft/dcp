@@ -754,7 +754,7 @@ func (wco *WslcCliOrchestrator) CopyFiles(ctx context.Context, options container
 		cmd,
 		nil,
 		nil,
-		ordinaryCommandTimeout,
+		containers.CopyFilesTimeout,
 	)
 	if runErr != nil {
 		return errors.Join(runErr, normalizeCliErrors(errBuf, containerNotFoundMatch))

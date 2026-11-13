@@ -1302,7 +1302,7 @@ func (r *PhysicalContainerReconciler) copyPhysicalContainerCreateFiles(
 		var archive io.ReadCloser
 		var openErr error
 		if copyContext.Directory != "" {
-			archive = usvc_io.OpenDirectoryTar(ctx, copyContext.Directory, strings.TrimPrefix(path.Clean(destination), "/"), 0, 0)
+			archive = usvc_io.OpenDirectoryTar(ctx, copyContext.Directory, strings.TrimPrefix(path.Clean(destination), "/"), 0, 0, copyContext.ExecutableFiles)
 			destination = "/"
 		} else {
 			archive, openErr = usvc_io.OpenTarArchive(ctx, copyContext.Source, copyContext.SHA256, copyContext.RawContents)

@@ -87,6 +87,10 @@ type DebugAdapterConfig struct {
 	// ContainerDirectory overrides the container installation directory, defaulting to /opt/dcp/debug-adapter.
 	// It is forbidden for process Projects.
 	ContainerDirectory string `json:"containerDirectory,omitempty"`
+	// ExecutableFiles lists regular files relative to Directory that gain execute permissions when copied into a container.
+	// Paths use forward slashes without "." or ".." components; forbidden for process Projects.
+	// +listType=atomic
+	ExecutableFiles []string `json:"executableFiles,omitempty"`
 	// Args contains the executable name or path followed by its arguments.
 	// TCP modes replace {{port}} with the host-allocated port or the prepared container's internal port.
 	// {{adapterDirectory}} expands to Directory for process Projects or the installation directory for container Projects.
@@ -165,6 +169,10 @@ func (config DebugAdapterConfig) GetConnectionTimeout() time.Duration {
 
 func (config *DebugAdapterConfig) validate(configPath *field.Path, container bool) field.ErrorList {
 	var errorList field.ErrorList
+	if len(config.ExecutableFiles) != 0 && !container {
+		errorList = append(errorList, field.Forbidden(configPath.Child("executableFiles"), "executableFiles requires a container Project"))
+	}
+	errorList = append(errorList, validateExecutableFiles(config.ExecutableFiles, configPath.Child("executableFiles"))...)
 	if !filepath.IsAbs(config.Directory) || strings.ContainsRune(config.Directory, '\x00') {
 		errorList = append(errorList, field.Invalid(configPath.Child("directory"), config.Directory, "directory must be an absolute host directory path"))
 	}
@@ -343,6 +351,8 @@ type ProjectDebugProcessStatus struct {
 	Name string `json:"name,omitempty"`
 	// PID is the reported operating system process ID, if provided.
 	PID *int64 `json:"pid,omitempty"`
+	// Attached indicates that the adapter attached to an externally owned process; DCP observes but does not stop it.
+	Attached bool `json:"attached,omitempty"`
 	// ContainerID scopes a reported PID to the prepared container, never the DCP host.
 	ContainerID string `json:"containerID,omitempty"`
 	// IdentityTimestamp captures local PID-reuse identity; absent when identity could not be resolved.
@@ -367,6 +377,7 @@ type ProjectDebugProcessCleanup string
 const (
 	ProjectDebugProcessCleanupComplete    ProjectDebugProcessCleanup = "Complete"
 	ProjectDebugProcessCleanupUnconfirmed ProjectDebugProcessCleanup = "Unconfirmed"
+	ProjectDebugProcessCleanupNotOwned    ProjectDebugProcessCleanup = "NotOwned"
 )
 
 // ProjectDebugProcessObservation describes an observed process instance and its cleanup disposition.
@@ -377,8 +388,8 @@ type ProjectDebugProcessObservation struct {
 	Phase ProjectDebugProcessPhase `json:"phase,omitempty"`
 	// FinishedAt records when exit or absence was confirmed, without claiming an unavailable exit code.
 	FinishedAt metav1.MicroTime `json:"finishedAt,omitempty"`
-	// Cleanup is empty while pending, Complete when confirmed, or Unconfirmed when cleanup cannot be confirmed.
-	// +kubebuilder:validation:Enum=Complete;Unconfirmed
+	// Cleanup is empty while pending, Complete when confirmed, Unconfirmed when uncertain, or NotOwned for attached targets.
+	// +kubebuilder:validation:Enum=Complete;Unconfirmed;NotOwned
 	Cleanup ProjectDebugProcessCleanup `json:"cleanup,omitempty"`
 	// Message describes observation failures or unconfirmed cleanup.
 	Message string `json:"message,omitempty"`

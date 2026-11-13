@@ -73,6 +73,9 @@ type TimeoutOption struct {
 	Timeout time.Duration
 }
 
+// CopyFilesTimeout bounds streamed archive transfers while honoring earlier caller cancellation.
+const CopyFilesTimeout = 10 * time.Minute
+
 // CLICommandRunner abstracts the ability to create and run container runtime CLI commands.
 // Both Docker and Podman orchestrators implement this interface, allowing shared logic
 // (such as image layer application) to invoke runtime-specific CLI commands.

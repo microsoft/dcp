@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,6 +20,7 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/dap"
+	internaltest "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -77,6 +79,43 @@ func TestProjectDebugProcessFieldOwnership(t *testing.T) {
 	require.True(t, stopping.Status.Debug.Sessions[0].ProcessTrackingUnconfirmed)
 	_, wrongUIDErr := writer.registerProcess(ctx, project.NamespacedName(), "replacement-uid", session.ID, late)
 	require.True(t, apierrors.IsConflict(wrongUIDErr))
+}
+
+// Verifies that failed process registration rolls back launched targets but never stops
+// targets reported as attach or attachForSuspendedLaunch.
+func TestProjectDebugRegistrationFailurePreservesAttachedTargets(t *testing.T) {
+	for _, method := range []string{"launch", "attach", "attachForSuspendedLaunch"} {
+		t.Run(method, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			defer cancel()
+			apiClient, writer := startProjectDebugStatusServer(t, ctx)
+			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "registration-failure"},
+				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{
+					LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"},
+				}}}
+			require.NoError(t, apiClient.Create(ctx, project))
+			session := &apiv2.ProjectDebugSessionStatus{ID: "session", Phase: apiv2.ProjectDebugPhaseRunning}
+			_, sessionErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, session)
+			require.NoError(t, sessionErr)
+			executor := internaltest.NewTestProcessExecutor(ctx)
+			defer executor.Dispose()
+			handle, startWait, startErr := executor.StartProcess(ctx, exec.Command("reported-target"), nil, 0, nil)
+			require.NoError(t, startErr)
+			startWait()
+			debugRuntime := newProjectDebugRuntime(ctx, executor, writer, logr.Discard())
+			project.UID = "stale-project-uid"
+			var message dap.Message
+			require.NoError(t, json.Unmarshal([]byte(fmt.Sprintf(
+				`{"type":"event","event":"process","body":{"systemProcessId":%d,"startMethod":%q}}`, handle.Pid, method)), &message))
+			require.True(t, apierrors.IsConflict(debugRuntime.observeProcessMessage(project, session.ID, message)))
+			runningErr := executor.CheckProcessRunning(handle)
+			if method == "launch" {
+				require.True(t, process.IsProcessGoneErr(runningErr))
+			} else {
+				require.NoError(t, runningErr)
+			}
+		})
+	}
 }
 
 // Verifies that process events capture all local targets before forwarding, deduplicate repeated
@@ -143,6 +182,7 @@ func TestProjectDebugRejectsMalformedProcessMessages(t *testing.T) {
 		`{"type":"response","command":"launch","success":"yes"}`,
 		`{"type":"event","event":true}`,
 		`{"type":"event","event":"process","body":{"systemProcessId":"invalid"}}`,
+		`{"type":"event","event":"process","body":{"startMethod":true}}`,
 	} {
 		var message dap.Message
 		require.NoError(t, json.Unmarshal([]byte(payload), &message))

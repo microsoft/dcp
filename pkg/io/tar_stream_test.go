@@ -27,7 +27,7 @@ func TestDirectoryTarStreamContents(t *testing.T) {
 	defer cancel()
 	source := t.TempDir()
 	require.NoError(t, usvc_io.WriteFile(filepath.Join(source, "dependency"), []byte("data"), 0644))
-	stream := usvc_io.OpenDirectoryTar(ctx, source, "", 0, 0)
+	stream := usvc_io.OpenDirectoryTar(ctx, source, "", 0, 0, nil)
 	contents, readErr := io.ReadAll(stream)
 	require.NoError(t, readErr)
 	require.NoError(t, stream.Close())
@@ -54,7 +54,7 @@ func TestDirectoryTarStreamCancellation(t *testing.T) {
 			defer cancel()
 			source := t.TempDir()
 			require.NoError(t, usvc_io.WriteFile(filepath.Join(source, "data"), make([]byte, 128*1024), 0644))
-			stream := usvc_io.OpenDirectoryTar(ctx, source, "adapter", 0, 0)
+			stream := usvc_io.OpenDirectoryTar(ctx, source, "adapter", 0, 0, nil)
 			if canceled {
 				cancel()
 				_, readErr := io.ReadAll(stream)

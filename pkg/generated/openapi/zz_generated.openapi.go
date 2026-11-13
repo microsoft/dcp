@@ -4462,6 +4462,25 @@ func schema_microsoft_dcp_api_v2_ContainerCopyFileContext(ref common.ReferenceCa
 							Format:      "",
 						},
 					},
+					"executableFiles": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "ExecutableFiles lists regular files relative to Directory that gain execute permissions in the archive. Paths use forward slashes without \".\" or \"..\" components; source files are not modified.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
 					"source": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Source is a host tar file. Mutually exclusive with Directory and RawContents.",
@@ -4822,6 +4841,25 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 							Description: "ContainerDirectory overrides the container installation directory, defaulting to /opt/dcp/debug-adapter. It is forbidden for process Projects.",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"executableFiles": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "ExecutableFiles lists regular files relative to Directory that gain execute permissions when copied into a container. Paths use forward slashes without \".\" or \"..\" components; forbidden for process Projects.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
 						},
 					},
 					"args": {
@@ -9653,7 +9691,7 @@ func schema_microsoft_dcp_api_v2_ProjectDebugProcessObservation(ref common.Refer
 					},
 					"cleanup": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Cleanup is empty while pending, Complete when confirmed, or Unconfirmed when cleanup cannot be confirmed.",
+							Description: "Cleanup is empty while pending, Complete when confirmed, Unconfirmed when uncertain, or NotOwned for attached targets.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -9700,6 +9738,13 @@ func schema_microsoft_dcp_api_v2_ProjectDebugProcessStatus(ref common.ReferenceC
 							Description: "PID is the reported operating system process ID, if provided.",
 							Type:        []string{"integer"},
 							Format:      "int64",
+						},
+					},
+					"attached": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Attached indicates that the adapter attached to an externally owned process; DCP observes but does not stop it.",
+							Type:        []string{"boolean"},
+							Format:      "",
 						},
 					},
 					"containerID": {

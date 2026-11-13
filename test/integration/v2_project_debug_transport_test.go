@@ -145,10 +145,10 @@ func readProjectDebugMessage(t *testing.T, connection *websocket.Conn) dap.Messa
 }
 
 // Verifies that Project installs adapter files at the default or overridden destination before readiness,
-// reports missing sources as preparation failures, and does not launch an adapter during installation.
+// applies declared execute bits, reports missing sources/files as preparation failures, and does not launch an adapter.
 func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"default", "custom", "missing"} {
+	for _, scenario := range []string{"default", "custom", "missing", "executable", "missing-executable"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -158,6 +158,7 @@ func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-adapter-directory-"+scenario)
 			source := t.TempDir()
 			require.NoError(t, usvc_io.WriteFile(filepath.Join(source, "dependency.dll"), []byte("dependency"), 0644))
+			require.NoError(t, usvc_io.WriteFile(filepath.Join(source, "adapter"), []byte("binary"), 0644))
 			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
 					Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
@@ -171,17 +172,25 @@ func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 				project.Spec.DebugAdapter.ContainerDirectory = destination
 			} else if scenario == "missing" {
 				project.Spec.DebugAdapter.Directory = filepath.Join(source, "missing")
+			} else if scenario == "executable" {
+				project.Spec.DebugAdapter.ExecutableFiles = []string{"adapter"}
+			} else if scenario == "missing-executable" {
+				project.Spec.DebugAdapter.ExecutableFiles = []string{"missing"}
 			}
 			require.NoError(t, server.Client.Create(ctx, project))
 			expectedPhase := apiv2.ProjectPhaseReady
-			if scenario == "missing" {
+			if scenario == "missing" || scenario == "missing-executable" {
 				expectedPhase = apiv2.ProjectPhaseFailed
 			}
 			observed := waitProjectPhase(t, ctx, server.Client, project, expectedPhase)
 			require.Nil(t, observed.Status.Debug)
-			if scenario == "missing" {
+			if scenario == "missing" || scenario == "missing-executable" {
 				requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
-				require.Contains(t, observed.Status.Conditions[0].Message, "directory source")
+				if scenario == "missing" {
+					require.Contains(t, observed.Status.Conditions[0].Message, "directory source")
+				} else {
+					require.Contains(t, observed.Status.Conditions[0].Message, "executable file")
+				}
 			} else {
 				physical := &apiv2.PhysicalContainer{}
 				require.NoError(t, server.Client.Get(ctx, ctrlclient.ObjectKey{Namespace: project.Namespace, Name: observed.Status.PhysicalContainerRef}, physical))
@@ -189,6 +198,7 @@ func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 				require.Len(t, physical.Spec.Container.CopyFiles, 1)
 				require.Equal(t, source, physical.Spec.Container.CopyFiles[0].Directory)
 				require.Equal(t, destination, physical.Spec.Container.CopyFiles[0].Destination)
+				require.Equal(t, project.Spec.DebugAdapter.ExecutableFiles, physical.Spec.Container.CopyFiles[0].ExecutableFiles)
 				require.Empty(t, physical.Spec.Container.CopyFiles[0].Source)
 				require.False(t, physical.Spec.Container.CopyFiles[0].DeleteAfterCopy)
 				require.DirExists(t, source)
@@ -198,12 +208,17 @@ func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 				require.Len(t, copied, 1)
 				reader := tar.NewReader(bytes.NewReader(copied[0].Tar.Bytes()))
 				found := false
+				foundExecutable := false
 				for {
 					header, nextErr := reader.Next()
 					if nextErr == io.EOF {
 						break
 					}
 					require.NoError(t, nextErr)
+					if header.Name == strings.TrimPrefix(destination, "/")+"/adapter" && scenario == "executable" {
+						require.EqualValues(t, 0111, header.Mode&0111)
+						foundExecutable = true
+					}
 					if header.Name == strings.TrimPrefix(destination, "/")+"/dependency.dll" {
 						payload, readErr := io.ReadAll(reader)
 						require.NoError(t, readErr)
@@ -212,6 +227,9 @@ func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 					}
 				}
 				require.True(t, found)
+				if scenario == "executable" {
+					require.True(t, foundExecutable)
+				}
 			}
 			require.NoError(t, server.Client.Delete(ctx, project))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)

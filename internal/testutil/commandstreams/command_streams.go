@@ -35,32 +35,47 @@ type commandStreamExecutor struct {
 	command   []string
 	stdin     io.Reader
 	fail      bool
+	deadline  time.Time
 }
 
-// VerifyTarCopy checks archive-reader ownership and exact copy arguments without invoking a container runtime.
+// VerifyTarCopy checks archive-reader ownership, copy arguments, and transfer deadlines without invoking a container runtime.
 func VerifyTarCopy(t *testing.T, prefix []string, run func(context.Context, process.Executor, io.Reader) error) {
 	t.Helper()
-	for _, fail := range []bool{false, true} {
-		name := "copy"
-		if fail {
-			name = "launch-failure"
-		}
+	for _, name := range []string{"copy", "launch-failure", "caller-deadline"} {
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := testutil.GetTestContext(t, 0)
+			testCtx, cancel := testutil.GetTestContext(t, 0)
 			defer cancel()
+			ctx, cancelCopy := context.WithCancel(context.WithoutCancel(testCtx))
+			defer cancelCopy()
+			stopCancellation := context.AfterFunc(testCtx, cancelCopy)
+			defer stopCancellation()
+			if name == "caller-deadline" {
+				deadlineCtx, cancelDeadline := context.WithTimeout(testCtx, time.Minute)
+				defer cancelDeadline()
+				ctx = deadlineCtx
+			}
 			tool, toolErr := internal_testutil.GetTestToolPath("delay")
 			require.NoError(t, toolErr)
 			owner := process.NewOSExecutor(logr.Discard())
 			defer owner.Dispose()
-			executor := &commandStreamExecutor{Executor: owner, tool: tool, arguments: []string{"--echo-stdio"}, fail: fail}
+			executor := &commandStreamExecutor{Executor: owner, tool: tool, arguments: []string{"--echo-stdio"}, fail: name == "launch-failure"}
 			archive := bytes.NewReader([]byte("tar archive payload"))
+			before := time.Now()
 			copyErr := run(ctx, executor, archive)
-			if fail {
+			if name == "launch-failure" {
 				require.ErrorContains(t, copyErr, "injected exec start failure")
 			} else {
 				require.NoError(t, copyErr)
 			}
 			require.Same(t, archive, executor.stdin)
+			if name == "caller-deadline" {
+				deadline, found := ctx.Deadline()
+				require.True(t, found)
+				require.Equal(t, deadline, executor.deadline)
+			} else {
+				require.False(t, executor.deadline.Before(before.Add(10*time.Minute)))
+				require.False(t, executor.deadline.After(time.Now().Add(10*time.Minute)))
+			}
 			expected := append(slices.Clone(prefix), "container", "cp", "-a=false", "-", "pinned-id:/workspace")
 			require.Equal(t, prefix[0], strings.TrimSuffix(filepath.Base(executor.command[0]), ".exe"))
 			require.Equal(t, expected[1:], executor.command[1:])
@@ -73,6 +88,7 @@ func (executor *commandStreamExecutor) StartProcess(
 ) (process.ProcessHandle, func(), error) {
 	executor.command = slices.Clone(cmd.Args)
 	executor.stdin = cmd.Stdin
+	executor.deadline, _ = ctx.Deadline()
 	if executor.fail {
 		return process.ProcessHandle{}, nil, errors.New("injected exec start failure")
 	}

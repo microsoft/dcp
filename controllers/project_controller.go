@@ -927,8 +927,9 @@ func projectContainerSpec(resource *apiv2.Project, data *projectData) apiv2.Phys
 	var copyFiles []apiv2.ContainerCopyFileContext
 	if resource.Spec.DebugAdapter != nil {
 		copyFiles = append(copyFiles, apiv2.ContainerCopyFileContext{
-			Directory:   resource.Spec.DebugAdapter.Directory,
-			Destination: resource.Spec.DebugAdapter.GetAdapterDirectory(true),
+			Directory:       resource.Spec.DebugAdapter.Directory,
+			Destination:     resource.Spec.DebugAdapter.GetAdapterDirectory(true),
+			ExecutableFiles: slices.Clone(resource.Spec.DebugAdapter.ExecutableFiles),
 		})
 	}
 	return apiv2.PhysicalContainerSpec{Stop: resource.Spec.Stop, Container: &apiv2.PhysicalContainerConfig{

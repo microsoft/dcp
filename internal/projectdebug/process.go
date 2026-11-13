@@ -42,7 +42,7 @@ func (writer *projectDebugStatusWriter) registerProcess(
 		session := &project.Status.Debug.Sessions[index]
 		if snapshot != nil {
 			for _, existing := range session.Processes {
-				if existing.ID == snapshot.ID || (existing.PID != nil && snapshot.PID != nil && existing.ContainerID == snapshot.ContainerID &&
+				if existing.ID == snapshot.ID || (existing.Attached == snapshot.Attached && existing.PID != nil && snapshot.PID != nil && existing.ContainerID == snapshot.ContainerID &&
 					!existing.IdentityTimestamp.IsZero() && osutil.MicroEqual(existing.IdentityTimestamp, snapshot.IdentityTimestamp) &&
 					*existing.PID == *snapshot.PID) {
 					return nil
@@ -99,9 +99,10 @@ func (runtime *projectDebugRuntime) observeProcessMessage(project *apiv2.Project
 		return nil
 	}
 	var body struct {
-		Name  string `json:"name"`
-		PID   *int64 `json:"systemProcessId"`
-		Local *bool  `json:"isLocalProcess"`
+		Name        string `json:"name"`
+		PID         *int64 `json:"systemProcessId"`
+		Local       *bool  `json:"isLocalProcess"`
+		StartMethod string `json:"startMethod"`
 	}
 	if decodeErr := json.Unmarshal(message["body"], &body); decodeErr != nil {
 		return fmt.Errorf("decode DAP process event: %w", decodeErr)
@@ -111,6 +112,7 @@ func (runtime *projectDebugRuntime) observeProcessMessage(project *apiv2.Project
 		return fmt.Errorf("create process registration identity: %w", idErr)
 	}
 	entry := &apiv2.ProjectDebugProcessStatus{ID: string(id), Name: body.Name, PID: body.PID}
+	entry.Attached = body.StartMethod == "attach" || body.StartMethod == "attachForSuspendedLaunch"
 	var handle process.ProcessHandle
 	switch {
 	case project.Spec.Container != nil:
@@ -139,7 +141,7 @@ func (runtime *projectDebugRuntime) observeProcessMessage(project *apiv2.Project
 	}
 	if publishErr := runtime.publishProcess(project, sessionID, entry); publishErr != nil {
 		// If ownership cannot be handed off, roll back the captured target rather than silently losing it.
-		if handle.Pid > 0 {
+		if handle.Pid > 0 && !entry.Attached {
 			cleanupCtx, cancel := process.WithDetachedStopTimeout(runtime.ctx)
 			stopErr := runtime.executor.StopProcess(cleanupCtx, handle)
 			cancel()

@@ -301,6 +301,10 @@ type ContainerCopyFileContext struct {
 	// Directory is an absolute host directory packaged as a tar stream during copy.
 	// Source permissions and relative internal symlinks are preserved; absolute or escaping links are rejected.
 	Directory string `json:"directory,omitempty"`
+	// ExecutableFiles lists regular files relative to Directory that gain execute permissions in the archive.
+	// Paths use forward slashes without "." or ".." components; source files are not modified.
+	// +listType=atomic
+	ExecutableFiles []string `json:"executableFiles,omitempty"`
 	// Source is a host tar file. Mutually exclusive with Directory and RawContents.
 	Source string `json:"source,omitempty"`
 	// SHA256 verifies the archive at Source. Required when Source is set.
@@ -331,6 +335,10 @@ func validateCopyFiles(contexts []ContainerCopyFileContext, contextsPath *field.
 		if copyContext.Directory != "" && !filepath.IsAbs(copyContext.Directory) {
 			errorList = append(errorList, field.Invalid(contextPath.Child("directory"), copyContext.Directory, "directory must be an absolute host path"))
 		}
+		if len(copyContext.ExecutableFiles) != 0 && copyContext.Directory == "" {
+			errorList = append(errorList, field.Forbidden(contextPath.Child("executableFiles"), "executableFiles requires directory"))
+		}
+		errorList = append(errorList, validateExecutableFiles(copyContext.ExecutableFiles, contextPath.Child("executableFiles"))...)
 		if copyContext.Source != "" && copyContext.SHA256 == "" {
 			errorList = append(errorList, field.Required(contextPath.Child("sha256"), "sha256 is required with source"))
 		}
@@ -353,6 +361,16 @@ func validateCopyFiles(contexts []ContainerCopyFileContext, contextsPath *field.
 			if _, decodeErr := base64.StdEncoding.DecodeString(copyContext.RawContents); decodeErr != nil {
 				errorList = append(errorList, field.Invalid(contextPath.Child("rawContents"), "<base64 data>", decodeErr.Error()))
 			}
+		}
+	}
+	return errorList
+}
+
+func validateExecutableFiles(files []string, filesPath *field.Path) field.ErrorList {
+	var errorList field.ErrorList
+	for index, name := range files {
+		if name == "." || !fs.ValidPath(name) || strings.ContainsAny(name, "\\:\x00") {
+			errorList = append(errorList, field.Invalid(filesPath.Index(index), name, "must be a root-relative file path using forward slashes without '.' or '..' components"))
 		}
 	}
 	return errorList

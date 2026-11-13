@@ -41,6 +41,9 @@ func TestProjectDebugAdapterValidation(t *testing.T) {
 	}{
 		{name: "explicit host", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}},
 		{name: "container stdio", container: true, config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}},
+		{name: "container executables", container: true, config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, ExecutableFiles: []string{"bin/adapter"}}},
+		{name: "host executables forbidden", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, ExecutableFiles: []string{"bin/adapter"}}, field: "spec.debugAdapter.executableFiles"},
+		{name: "escaping executable", container: true, config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, ExecutableFiles: []string{"../adapter"}}, field: "spec.debugAdapter.executableFiles[0]"},
 		{name: "container directory requires context", config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, ContainerDirectory: "/adapter"}, field: "spec.debugAdapter.containerDirectory"},
 		{name: "container tcp default", container: true, config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Mode: DebugAdapterModeTCPConnect}},
 		{name: "container tcp explicit", container: true, config: DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, Mode: DebugAdapterModeTCPConnect, TCP: &DebugAdapterTCPConfig{Port: 5678}}},

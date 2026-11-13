@@ -24,6 +24,7 @@ type projectProcessData struct {
 	observation              apiv2.ProjectDebugProcessObservation
 	cleanupAttempted         bool
 	deletionCleanupAttempted bool
+	cleanupOwned             bool
 }
 
 func logUnconfirmedProjectTargets(resource *apiv2.Project, log logr.Logger) {
@@ -64,6 +65,7 @@ func (r *ProjectReconciler) observeProjectProcesses(resource *apiv2.Project, dat
 				continue
 			}
 			current := data.processes[handle]
+			current.cleanupOwned = current.cleanupOwned || !registered.Attached
 			runningErr := r.processExecutor.CheckProcessRunning(handle)
 			switch {
 			case runningErr == nil:
@@ -112,6 +114,9 @@ func projectProcessObservations(resource *apiv2.Project, data *projectData) obje
 			} else {
 				continue
 			}
+			if registered.Attached {
+				observation.Cleanup = apiv2.ProjectDebugProcessCleanupNotOwned
+			}
 			change |= setValue(&registered.Observation.Phase, observation.Phase)
 			change |= setTimestamp(&registered.Observation.FinishedAt, observation.FinishedAt)
 			change |= setValue(&registered.Observation.Cleanup, observation.Cleanup)
@@ -128,6 +133,9 @@ func (r *ProjectReconciler) settleProjectProcesses(resource *apiv2.Project, data
 	}
 	var handles []process.ProcessHandle
 	for handle, target := range data.processes {
+		if !target.cleanupOwned {
+			continue
+		}
 		if !target.cleanupAttempted || (!resource.DeletionTimestamp.IsZero() &&
 			target.observation.Cleanup == apiv2.ProjectDebugProcessCleanupUnconfirmed && !target.deletionCleanupAttempted) {
 			handles = append(handles, handle)

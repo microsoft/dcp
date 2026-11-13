@@ -18,8 +18,9 @@ import (
 
 // CopyDirectory writes a directory's contents beneath destination in the archive, preserving permissions.
 // Relative symlinks within the source are preserved; absolute or escaping links and special files are rejected.
+// executableFiles selects root-relative regular files that gain execute bits without modifying their sources.
 // uid and gid apply to every entry. The caller finalizes the archive with Close or Buffer.
-func (tw *TarWriter) CopyDirectory(ctx context.Context, source, destination string, uid, gid int32) error {
+func (tw *TarWriter) CopyDirectory(ctx context.Context, source, destination string, uid, gid int32, executableFiles []string) error {
 	if cancellationErr := ctx.Err(); cancellationErr != nil {
 		return cancellationErr
 	}
@@ -40,6 +41,28 @@ func (tw *TarWriter) CopyDirectory(ctx context.Context, source, destination stri
 	}
 	if !rootInfo.IsDir() {
 		return fmt.Errorf("directory source %q is not a directory", source)
+	}
+	executables := make(map[string]struct{}, len(executableFiles))
+	for _, name := range executableFiles {
+		if name == "." || !fs.ValidPath(name) || strings.ContainsAny(name, "\\:\x00") {
+			return fmt.Errorf("executable file %q must be a root-relative path using forward slashes without '.' or '..' components", name)
+		}
+		current := root
+		components := strings.Split(name, "/")
+		for index, component := range components {
+			if cancellationErr := ctx.Err(); cancellationErr != nil {
+				return cancellationErr
+			}
+			current = filepath.Join(current, component)
+			info, inspectErr := os.Lstat(current)
+			if inspectErr != nil {
+				return fmt.Errorf("inspect executable file %q: %w", name, inspectErr)
+			}
+			if (index < len(components)-1 && !info.IsDir()) || (index == len(components)-1 && !info.Mode().IsRegular()) {
+				return fmt.Errorf("executable file %q must identify a regular file without symlink traversal", name)
+			}
+		}
+		executables[name] = struct{}{}
 	}
 	return filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
 		if cancellationErr := ctx.Err(); cancellationErr != nil {
@@ -81,7 +104,11 @@ func (tw *TarWriter) CopyDirectory(ctx context.Context, source, destination stri
 				return fmt.Errorf("open directory entry %q: %w", current, openErr)
 			}
 			copyCtx, cancelCopy := context.WithCancel(ctx)
-			copyErr := tw.CopyFile(NewContextReader(copyCtx, file, false), info.Size(), name, uid, gid, info.Mode().Perm(), info.ModTime(), info.ModTime(), info.ModTime())
+			mode := info.Mode().Perm()
+			if _, executable := executables[filepath.ToSlash(relative)]; executable {
+				mode |= 0111
+			}
+			copyErr := tw.CopyFile(NewContextReader(copyCtx, file, false), info.Size(), name, uid, gid, mode, info.ModTime(), info.ModTime(), info.ModTime())
 			cancelCopy()
 			closeErr := file.Close()
 			return errors.Join(copyErr, closeErr)

@@ -850,7 +850,7 @@ func (pco *PodmanCliOrchestrator) CopyFiles(ctx context.Context, options contain
 
 	cmd.Stdin = options.Archive
 
-	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CopyFile", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CopyFile", cmd, nil, nil, containers.CopyFilesTimeout)
 	if err != nil {
 		return errors.Join(err, normalizeCliErrors(errBuf))
 	}

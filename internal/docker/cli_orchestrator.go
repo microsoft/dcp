@@ -951,7 +951,7 @@ func (dco *DockerCliOrchestrator) CopyFiles(ctx context.Context, options contain
 	}
 	cmd := makeDockerCommand("container", "cp", "-a=false", "-", options.Container+":"+options.Destination)
 	cmd.Stdin = options.Archive
-	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "CopyFile", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "CopyFile", cmd, nil, nil, containers.CopyFilesTimeout)
 	if err != nil {
 		return errors.Join(err, normalizeCliErrors(errBuf))
 	}
