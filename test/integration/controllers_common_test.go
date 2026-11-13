@@ -35,6 +35,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/internal/projectdebug"
 	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/internal/testutil/containertest"
@@ -42,6 +43,7 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -119,6 +121,11 @@ func v1VolumeMountsToCreateContainerVolumeMounts(mounts []apiv1.VolumeMount) []c
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv(kubeconfig.DCP_SECURE_TOKEN) == "" && os.Getenv(projectdebug.DCP_DEBUG_SESSION_TOKEN) == "" {
+		if tokenErr := os.Setenv(projectdebug.DCP_DEBUG_SESSION_TOKEN, "integration-debug-session-token"); tokenErr != nil {
+			panic(tokenErr)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	serverInfo, teInfo, envStartErr := StartTestEnvironment(nil, ctx, AllControllers, "IntegrationTests", "")

@@ -9,11 +9,13 @@ package projectdebug
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 
@@ -33,19 +35,24 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/dap"
+	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/randdata"
 )
 
+const DCP_DEBUG_SESSION_TOKEN = "DCP_DEBUG_SESSION_TOKEN"
+
 type projectDebugStorage struct {
-	parent     rest.StandardStorage
-	namespaces rest.Getter
-	runtime    *projectDebugRuntime
-	ctx        context.Context
-	cancel     context.CancelFunc
-	mu         sync.Mutex
-	active     sync.WaitGroup
-	destroy    sync.Once
+	parent                rest.StandardStorage
+	namespaces            rest.Getter
+	runtime               *projectDebugRuntime
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	mu                    sync.Mutex
+	active                sync.WaitGroup
+	destroy               sync.Once
+	secureTokenConfigured bool
+	debugSessionToken     string
 }
 
 // Configure registers Project debug serving and isolates API-owned status observations.
@@ -88,7 +95,9 @@ func newProjectDebugStorage(
 	lifetime, cancel := context.WithCancel(ctx)
 	storage := &projectDebugStorage{
 		parent: parent, namespaces: namespaces, ctx: lifetime, cancel: cancel,
-		runtime: newProjectDebugRuntime(lifetime, executor, writer, log),
+		runtime:               newProjectDebugRuntime(lifetime, executor, writer, log),
+		secureTokenConfigured: os.Getenv(kubeconfig.DCP_SECURE_TOKEN) != "",
+		debugSessionToken:     os.Getenv(DCP_DEBUG_SESSION_TOKEN),
 	}
 	context.AfterFunc(ctx, storage.Destroy)
 	return storage
@@ -301,6 +310,20 @@ func (storage *projectDebugStorage) monitor(
 }
 
 func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *http.Request, project *apiv2.Project, responder rest.Responder) {
+	if !storage.secureTokenConfigured && storage.debugSessionToken == "" {
+		responder.Error(apierrors.NewForbidden(project.GetGroupVersionResource().GroupResource(), project.Name,
+			fmt.Errorf("debug requires DCP_SECURE_TOKEN or DCP_DEBUG_SESSION_TOKEN configuration")))
+		return
+	}
+	if storage.debugSessionToken != "" {
+		tokens := request.Header.Values("X-DCP-Debug-Session-Token")
+		if len(tokens) != 1 ||
+			subtle.ConstantTimeCompare([]byte(tokens[0]), []byte(storage.debugSessionToken)) != 1 {
+			responder.Error(apierrors.NewForbidden(project.GetGroupVersionResource().GroupResource(), project.Name,
+				fmt.Errorf("invalid debug session token")))
+			return
+		}
+	}
 	if upgradeErr := validateDebugUpgrade(request); upgradeErr != nil {
 		responder.Error(upgradeErr)
 		return

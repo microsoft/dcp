@@ -35,6 +35,7 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
+	"github.com/microsoft/dcp/internal/projectdebug"
 	internaltest "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -192,6 +193,9 @@ func connectProjectDebug(t *testing.T, ctx context.Context, config *clientrest.C
 		config.Host+"/apis/"+apiv2.GroupVersion.String()+"/namespaces/"+project.Namespace+"/projects/"+project.Name+"/debug", nil)
 	if requestErr != nil {
 		return nil, requestErr
+	}
+	if token := os.Getenv(projectdebug.DCP_DEBUG_SESSION_TOKEN); token != "" {
+		request.Header.Set("X-DCP-Debug-Session-Token", token)
 	}
 	connection, connectionErr := clientwebsocket.Negotiate(transport, holder, request, "dap")
 	if connectionErr == nil {

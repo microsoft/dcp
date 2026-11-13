@@ -16,6 +16,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -44,6 +45,7 @@ import (
 	"github.com/microsoft/dcp/internal/dcppaths"
 	internaltest "github.com/microsoft/dcp/internal/testutil"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -684,6 +686,8 @@ func startDebugServingTest(t *testing.T, ctx context.Context, containerRuntime .
 				return nil, namespaceErr
 			}
 			storage := newProjectDebugStorage(ctx, parent.(rest.StandardStorage), namespaces.(rest.Getter), writer, executor, logr.Discard())
+			// This fixture authenticates with an explicitly configured test bearer token.
+			storage.secureTokenConfigured, storage.debugSessionToken = true, ""
 			if len(containerRuntime) != 0 {
 				storage.runtime.findContainerRuntime = containerRuntime[0]
 			}
@@ -691,6 +695,96 @@ func startDebugServingTest(t *testing.T, ctx context.Context, containerRuntime .
 		}
 	})
 	return apiClient, clientConfig, executor
+}
+
+// Verifies that Project debug serving requires explicitly configured credentials and validates
+// the separate header token before creating a session, without weakening API bearer authentication.
+func TestProjectDebugServingTokens(t *testing.T) {
+	const sessionToken = "test+debug/session=&"
+	for _, scenario := range []struct {
+		name        string
+		secureToken string
+		debugToken  string
+		tokens      []string
+		query       string
+		badBearer   bool
+		status      int
+	}{
+		{name: "neither-configured", status: http.StatusForbidden},
+		{name: "header-without-configuration", tokens: []string{sessionToken}, status: http.StatusForbidden},
+		{name: "secure-only", secureToken: "test-secure-token", status: http.StatusSwitchingProtocols},
+		{name: "debug-only-missing", debugToken: sessionToken, status: http.StatusForbidden},
+		{name: "debug-only-empty", debugToken: sessionToken, tokens: []string{""}, status: http.StatusForbidden},
+		{name: "debug-only-wrong", debugToken: sessionToken, tokens: []string{"wrong"}, status: http.StatusForbidden},
+		{name: "debug-only-correct", debugToken: sessionToken, tokens: []string{sessionToken}, status: http.StatusSwitchingProtocols},
+		{name: "duplicate-token", debugToken: sessionToken, tokens: []string{sessionToken, "wrong"}, status: http.StatusForbidden},
+		{name: "query-token-not-accepted", debugToken: sessionToken, query: "token=" + url.QueryEscape(sessionToken), status: http.StatusForbidden},
+		{name: "both-missing", secureToken: "test-secure-token", debugToken: sessionToken, status: http.StatusForbidden},
+		{name: "both-wrong", secureToken: "test-secure-token", debugToken: sessionToken, tokens: []string{"wrong"}, status: http.StatusForbidden},
+		{name: "both-correct", secureToken: "test-secure-token", debugToken: sessionToken, tokens: []string{sessionToken}, status: http.StatusSwitchingProtocols},
+		{name: "invalid-bearer", debugToken: sessionToken, tokens: []string{sessionToken}, badBearer: true, status: http.StatusForbidden},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Setenv(kubeconfig.DCP_SECURE_TOKEN, scenario.secureToken)
+			t.Setenv(DCP_DEBUG_SESSION_TOKEN, scenario.debugToken)
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			defer cancel()
+			var config *clientrest.Config
+			apiClient, _ := startProjectDebugStatusServer(t, ctx, func(serverConfig *tiltapiserver.Config, writer *projectDebugStatusWriter) {
+				config = clientrest.CopyConfig(serverConfig.GenericConfig.LoopbackClientConfig)
+				registerDebugServingTestStorage(serverConfig, ctx, writer, logr.Discard())
+			})
+			tool, toolErr := internaltest.GetTestToolPath("delay")
+			require.NoError(t, toolErr)
+			project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
+			require.NoError(t, apiClient.Delete(ctx, project))
+			project.ResourceVersion, project.UID = "", ""
+			project.Spec.DebugAdapter.Args = []string{tool, "--dap-stdio"}
+			prepared := project.Status
+			project.Status = apiv2.ProjectStatus{}
+			require.NoError(t, apiClient.Create(ctx, project))
+			project.Status = prepared
+			require.NoError(t, apiClient.Status().Update(ctx, project))
+			if scenario.badBearer {
+				config.BearerToken = "invalid-test-bearer"
+			}
+			tlsConfig, tlsErr := clientrest.TLSConfigFor(config)
+			require.NoError(t, tlsErr)
+			headers := http.Header{"Authorization": []string{"Bearer " + config.BearerToken}}
+			for _, token := range scenario.tokens {
+				headers.Add("X-DCP-Debug-Session-Token", token)
+			}
+			location := strings.Replace(config.Host, "https://", "wss://", 1) +
+				"/apis/" + apiv2.GroupVersion.String() + "/namespaces/debug/projects/project/debug"
+			if scenario.query != "" {
+				location += "?" + scenario.query
+			}
+			dialer := &websocket.Dialer{TLSClientConfig: tlsConfig, Subprotocols: []string{"dap"}}
+			connection, response, connectErr := dialer.DialContext(ctx, location, headers)
+			require.NotNil(t, response)
+			defer response.Body.Close()
+			require.Equal(t, scenario.status, response.StatusCode)
+			if scenario.status != http.StatusSwitchingProtocols {
+				require.Error(t, connectErr)
+				body, readErr := io.ReadAll(response.Body)
+				require.NoError(t, readErr)
+				require.NotContains(t, string(body), sessionToken)
+				require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
+				require.Nil(t, project.Status.Debug)
+			} else {
+				require.NoError(t, connectErr)
+				require.NoError(t, connection.Close())
+				require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
+					if getErr := apiClient.Get(ctx, project.NamespacedName(), project); getErr != nil {
+						return false, getErr
+					}
+					return project.Status.Debug != nil && len(project.Status.Debug.Sessions) == 1 &&
+						(project.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseFailed ||
+							project.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseExited), nil
+				}))
+			}
+		})
+	}
 }
 
 func createDebugServingProject(t *testing.T, ctx context.Context, apiClient ctrlclient.Client, mode apiv2.DebugAdapterMode, command string, container ...bool) *apiv2.Project {

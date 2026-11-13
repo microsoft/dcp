@@ -12,7 +12,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -24,7 +23,6 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
-	clientwebsocket "k8s.io/client-go/transport/websocket"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -63,12 +61,7 @@ func TestV2ProjectDebugTransportLifecycle(t *testing.T) {
 			require.NoError(t, apiClient.Create(ctx, project))
 			running := waitProjectPhase(t, ctx, apiClient, project, apiv2.ProjectPhaseReady)
 			require.Nil(t, running.Status.Debug)
-			transport, holder, transportErr := clientwebsocket.RoundTripperFor(serverInfo.ClientConfig)
-			require.NoError(t, transportErr)
-			request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet,
-				serverInfo.ClientConfig.Host+"/apis/"+apiv2.GroupVersion.String()+"/namespaces/"+namespace.Name+"/projects/"+project.Name+"/debug", nil)
-			require.NoError(t, requestErr)
-			connection, connectErr := clientwebsocket.Negotiate(transport, holder, request, "dap")
+			connection, connectErr := connectProjectDebug(t, ctx, serverInfo.ClientConfig, project)
 			require.NoError(t, connectErr)
 			defer connection.Close()
 			if deadline, exists := ctx.Deadline(); exists {
