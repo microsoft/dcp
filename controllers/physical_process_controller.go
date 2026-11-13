@@ -119,6 +119,9 @@ func (r *PhysicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if apierrors.IsNotFound(getErr) {
 			_, missingData := r.processData.BorrowByNamespacedName(req.NamespacedName)
 			if missingData != nil {
+				if missingData.exitWatch != nil {
+					missingData.exitWatch.cancel()
+				}
 				missingProcess := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{UID: missingData.resourceUID}}
 				defer logger.ReleaseResourceLog(missingProcess.GetResourceId())
 				if !missingData.operationInProgress() {
@@ -210,6 +213,14 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(
 	}
 	handler := getStateInitializer(physicalProcessDataHandlers, data.state, log)
 	change := handler(ctx, r, physicalProcess, data.state, data, log)
+	if physicalProcess.Spec.PID != nil && data.state == physicalProcessStateRunning && data.exitWatch == nil {
+		r.watchAdoptedPhysicalProcess(physicalProcess, data, log)
+	}
+	if data.exitWatch != nil && (data.state == physicalProcessStateExited || data.state == physicalProcessStateMissing ||
+		data.state == physicalProcessStateInvalid || data.state == physicalProcessStateResolveFailed) {
+		data.exitWatch.cancel()
+		data.exitWatch = nil
+	}
 	stateKey, _ := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())
 	_ = r.processData.Update(physicalProcess.NamespacedName(), stateKey, data)
 	dataChange, delay, valid := data.applyTo(physicalProcess)
@@ -218,6 +229,40 @@ func (r *PhysicalProcessReconciler) managePhysicalProcess(
 			"Physical process reached invalid reconciliation state")
 	}
 	return change | dataChange, delay
+}
+
+func (r *PhysicalProcessReconciler) watchAdoptedPhysicalProcess(resource *apiv2.PhysicalProcess, data *physicalProcessData, log logr.Logger) {
+	watchCtx, cancelWatch := context.WithCancel(r.LifetimeCtx)
+	watcher := &physicalProcessExitWatch{cancel: cancelWatch}
+	data.exitWatch = watcher
+	name, uid, handle := resource.NamespacedName(), resource.UID, data.handle
+	go func() {
+		defer cancelWatch()
+		waitErr := r.processExecutor.WaitForProcessExit(watchCtx, handle)
+		if watchCtx.Err() != nil {
+			return
+		}
+		if waitErr != nil {
+			log.Error(waitErr, "Failed to watch adopted physical process", "PID", handle.Pid)
+		}
+		queued := r.processData.QueueDeferredOp(name, func(currentName types.NamespacedName, _ physicalProcessDataStateKey, currentResource *apiv2.PhysicalProcess) {
+			key, current := r.processData.BorrowByNamespacedName(currentName)
+			if currentResource.UID != uid || current == nil || current.resourceUID != uid || current.handle != handle || current.exitWatch != watcher {
+				return
+			}
+			current.exitWatch = nil
+			if waitErr != nil && !current.operationInProgress() {
+				current.state = physicalProcessStateInspectFailed
+				current.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed
+				current.failureMessage = fmt.Sprintf("Failed to observe adopted process exit: %v", waitErr)
+				current.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			}
+			_ = r.processData.Update(currentName, key, current)
+		})
+		if queued {
+			r.ScheduleReconciliation(name)
+		}
+	}()
 }
 
 func handlePhysicalProcessResolve(
@@ -474,6 +519,9 @@ func (r *PhysicalProcessReconciler) claimPhysicalProcessTracking(
 	if data.handle == handle && data.cleanupUnconfirmed {
 		markDescendantCleanupUnconfirmed(claimedData, data.failureMessage)
 	}
+	if data.handle == handle {
+		claimedData.exitWatch = data.exitWatch
+	}
 	newStateKey := physicalProcessHandleDataKey(handle)
 	owner, updated := r.processData.UpdateChangingStateKeyIfUnclaimed(
 		physicalProcess.NamespacedName(),
@@ -695,9 +743,13 @@ func (r *PhysicalProcessReconciler) queuePhysicalProcessDataResult(
 			!result.cleanupUnconfirmed
 		preserveOutputCompletion := currentData != nil && currentData.handle == result.handle &&
 			currentData.outputComplete && !result.outputComplete
-		if preserveExitCode || preserveFinishedAt || preserveObservedExit || preserveCleanupUnconfirmed || preserveOutputCompletion {
+		preserveExitWatch := currentData != nil && currentData.handle == result.handle && currentData.exitWatch != result.exitWatch
+		if preserveExitCode || preserveFinishedAt || preserveObservedExit || preserveCleanupUnconfirmed || preserveOutputCompletion || preserveExitWatch {
 			// Root exit notifications can arrive while a tree stop is still producing its result.
 			resultToStore = result.Clone()
+			if preserveExitWatch {
+				resultToStore.exitWatch = currentData.exitWatch
+			}
 			if preserveOutputCompletion {
 				resultToStore.outputComplete = true
 			}
@@ -956,6 +1008,9 @@ func (r *PhysicalProcessReconciler) handleDeletionRequest(
 			if !valid || dataChange&statusChanged != 0 {
 				return dataChange | additionalReconciliationNeeded, StandardDelay
 			}
+		}
+		if data != nil && data.exitWatch != nil {
+			data.exitWatch.cancel()
 		}
 		r.processData.DeleteByNamespacedName(physicalProcess.NamespacedName())
 		data = nil

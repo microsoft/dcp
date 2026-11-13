@@ -900,6 +900,47 @@ func (e *OSExecutor) CheckProcessRunning(handle ProcessHandle) error {
 	return nil
 }
 
+func (e *OSExecutor) WaitForProcessExit(ctx context.Context, handle ProcessHandle) error {
+	if handleErr := handle.Validate(); handleErr != nil {
+		return handleErr
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	watchCtx, cancelWatch := context.WithCancel(ctx)
+	defer cancelWatch()
+	stopLifetimeCancellation := context.AfterFunc(e.lifetimeCtx, cancelWatch)
+	defer stopLifetimeCancellation()
+	e.acquireLock()
+	tracked, found := e.procsWaiting[handle]
+	var waitable Waitable
+	if found {
+		waitable = tracked.waitable
+	}
+	e.releaseLock()
+	if found && waitable != nil {
+		tracked, _ = e.tryStartWaiting(handle, waitable, waitReasonMonitoring)
+		return waitForTrackedProcessExit(watchCtx, handle.Pid, tracked, 0)
+	}
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-watchCtx.Done():
+			return watchCtx.Err()
+		case <-timer.C:
+			inspectErr := e.CheckProcessRunning(handle)
+			if IsProcessGoneErr(inspectErr) {
+				return nil
+			}
+			if inspectErr != nil {
+				return inspectErr
+			}
+			timer.Reset(defaultWaitPollInterval)
+		}
+	}
+}
+
 func (e *OSExecutor) FindProcessHandle(pid Pid_t) (ProcessHandle, error) {
 	return FindProcessHandle(pid)
 }

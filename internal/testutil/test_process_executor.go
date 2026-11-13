@@ -266,6 +266,28 @@ func (e *TestProcessExecutor) FindProcessHandle(pid process.Pid_t) (process.Proc
 	return process.NewHandle(pid, execution.StartedAt), nil
 }
 
+func (e *TestProcessExecutor) WaitForProcessExit(ctx context.Context, handle process.ProcessHandle) error {
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-e.lifetimeCtx.Done():
+			return e.lifetimeCtx.Err()
+		case <-timer.C:
+			inspectErr := e.CheckProcessRunning(handle)
+			if process.IsProcessGoneErr(inspectErr) {
+				return nil
+			}
+			if inspectErr != nil {
+				return inspectErr
+			}
+			timer.Reset(2 * time.Second)
+		}
+	}
+}
+
 // Called by tests to simulate a process exit with specific exit code.
 func (e *TestProcessExecutor) SimulateProcessExit(t *testing.T, pid process.Pid_t, exitCode int32) {
 	handle, handleErr := e.FindProcessHandle(pid)
