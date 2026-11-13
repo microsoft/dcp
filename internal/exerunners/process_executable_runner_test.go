@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
@@ -239,7 +240,7 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 	exe := &apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "wait-delay",
-			UID:  types.UID(fmt.Sprintf("wait-delay-%d", time.Now().UnixNano())),
+			UID:  types.UID(fmt.Sprintf("wait-delay-%s", uuid.NewUUID())),
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: delayPath,
