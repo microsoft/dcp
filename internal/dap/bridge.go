@@ -58,17 +58,14 @@ func (writer *messageWriter) send(message Message, local bool) error {
 	writer.writeMu.Lock()
 	defer writer.writeMu.Unlock()
 	if message.text("type") == "request" {
+		if writer.shutdown {
+			return nil
+		}
 		command := message.text("command")
 		if command == "cancel" {
 			if cancelErr := writer.remapRequestID(message, "arguments", true); cancelErr != nil {
 				return cancelErr
 			}
-		}
-		if writer.shutdown {
-			if local {
-				return nil
-			}
-			return fmt.Errorf("DAP request received after shutdown began")
 		}
 		if command == "disconnect" {
 			writer.shutdown = true
@@ -161,6 +158,7 @@ func (writer *messageWriter) remap(message Message) (bool, bool, error) {
 // Bridge forwards DAP while preserving extension payloads and request correlation in both directions.
 // On ErrShutdownRequested it injects disconnect unless disconnect was already forwarded, allowing
 // final messages to drain until adapter EOF or grace expiry. Other cancellation and client loss fail.
+// Requests received after disconnect are discarded; responses and events continue draining without synthetic replies.
 // Client closure after the adapter acknowledges a client disconnect completes normally; earlier client loss fails.
 // Execution exit or upstream read completion starts a bounded final-output drain.
 // It never synthesizes application exit or terminated events.

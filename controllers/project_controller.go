@@ -278,21 +278,23 @@ func (r *ProjectReconciler) prepareProjectValues(
 		data.reason = apiv2.ProjectReasonPreparing
 		return evaluationErr
 	}
-	if resource.Spec.Process != nil && resource.Spec.Process.AmbientEnvironment.EffectiveBehavior() == apiv2.EnvironmentBehaviorInherit {
-		resolvedEnv = mergeProjectAmbientEnvironment(resolvedEnv)
-	}
-	resolvedEnv = slices.DeleteFunc(resolvedEnv, func(variable commonapi.EnvVar) bool {
-		name := variable.Name
-		if osutil.IsWindows() {
-			name = strings.ToUpper(name)
+	if resource.Spec.Process != nil {
+		if resource.Spec.Process.AmbientEnvironment.EffectiveBehavior() == apiv2.EnvironmentBehaviorInherit {
+			resolvedEnv = mergeProjectAmbientEnvironment(resolvedEnv)
 		}
-		for _, prefix := range suppressVarPrefixes {
-			if strings.HasPrefix(name, prefix) {
-				return true
+		resolvedEnv = slices.DeleteFunc(resolvedEnv, func(variable commonapi.EnvVar) bool {
+			name := variable.Name
+			if osutil.IsWindows() {
+				name = strings.ToUpper(name)
 			}
-		}
-		return false
-	})
+			for _, prefix := range suppressVarPrefixes {
+				if strings.HasPrefix(name, prefix) {
+					return true
+				}
+			}
+			return false
+		})
+	}
 	data.effectiveArgs, data.effectiveEnv = resolvedArgs, resolvedEnv
 	data.ports, data.inputsPrepared = logicalPortSelections(ports, requests), true
 	return nil

@@ -111,7 +111,7 @@ func TestV2ProjectPreparedEnvironmentCasing(t *testing.T) {
 }
 
 // Verifies that Project evaluates declared environment before merging over literal ambient values
-// for processes only, honors inheritance and suppression, and freezes the prepared snapshot.
+// for processes only, suppresses reserved names only for processes, and freezes the prepared snapshot.
 func TestV2ProjectPreparedEnvironmentSnapshot(t *testing.T) {
 	const inherited = "PROJECT_PREPARED_INPUT_TEST"
 	t.Setenv(inherited, "initial-value")
@@ -132,6 +132,8 @@ func TestV2ProjectPreparedEnvironmentSnapshot(t *testing.T) {
 					{Name: "PROJECT_OVERRIDDEN_TEST", Value: `{{printf "explicit-value"}}`},
 					{Name: "PROJECT_DECLARED_LITERAL_TEST", Value: `{{printf "{{literal}}"}}`},
 					{Name: "project_case_override_test", Value: `{{printf "declared-case"}}`},
+					{Name: "DCP_PROJECT_DECLARED_TEST", Value: "explicit-process-value"},
+					{Name: "DEBUG_SESSION_PROJECT_DECLARED_TEST", Value: "explicit-process-value"},
 				},
 			},
 		}}}
@@ -155,6 +157,8 @@ func TestV2ProjectPreparedEnvironmentSnapshot(t *testing.T) {
 	}
 	require.NotContains(t, environment, "DCP_PROJECT_PREPARED_SECRET")
 	require.NotContains(t, environment, "DEBUG_SESSION_PROJECT_TEST")
+	require.NotContains(t, environment, "DCP_PROJECT_DECLARED_TEST")
+	require.NotContains(t, environment, "DEBUG_SESSION_PROJECT_DECLARED_TEST")
 	t.Setenv(inherited, "changed-after-preparation")
 	require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
 		[]byte(`{"metadata":{"annotations":{"prepared-snapshot-probe":"changed"}}}`))))
@@ -177,16 +181,26 @@ func TestV2ProjectPreparedEnvironmentSnapshot(t *testing.T) {
 		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
 			LogicalContainerConfig: apiv2.LogicalContainerConfig{
 				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
-				Env:   []commonapi.EnvVar{{Name: "PROJECT_OVERRIDDEN_TEST", Value: `{{printf "container-value"}}`}},
+				Env: []commonapi.EnvVar{
+					{Name: "PROJECT_OVERRIDDEN_TEST", Value: `{{printf "container-value"}}`},
+					{Name: "DCP_PROJECT_DECLARED_TEST", Value: `{{printf "container-dcp-value"}}`},
+					{Name: "DEBUG_SESSION_PROJECT_DECLARED_TEST", Value: "container-debug-value"},
+					{Name: "dcp_project_declared_test", Value: "container-lowercase-value"},
+				},
 			},
 		}}}
 	require.NoError(t, client.Create(ctx, container))
 	preparedContainer := waitProjectPhase(t, ctx, client, container, apiv2.ProjectPhaseReady)
-	expectedContainerEnv := []commonapi.EnvVar{{Name: "PROJECT_OVERRIDDEN_TEST", Value: "container-value"}}
-	require.Equal(t, expectedContainerEnv, preparedContainer.Status.EffectiveEnv)
+	expectedContainerEnv := []commonapi.EnvVar{
+		{Name: "PROJECT_OVERRIDDEN_TEST", Value: "container-value"},
+		{Name: "DCP_PROJECT_DECLARED_TEST", Value: "container-dcp-value"},
+		{Name: "DEBUG_SESSION_PROJECT_DECLARED_TEST", Value: "container-debug-value"},
+		{Name: "dcp_project_declared_test", Value: "container-lowercase-value"},
+	}
+	require.ElementsMatch(t, expectedContainerEnv, preparedContainer.Status.EffectiveEnv)
 	physical := &apiv2.PhysicalContainer{}
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Name: preparedContainer.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
-	require.Equal(t, expectedContainerEnv, physical.Spec.Container.Env)
+	require.ElementsMatch(t, expectedContainerEnv, physical.Spec.Container.Env)
 }
 
 // Verifies that explicit stop moves Ready to Stopped without launching an application

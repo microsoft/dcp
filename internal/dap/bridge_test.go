@@ -326,6 +326,63 @@ func TestBridgeResourceShutdownDrainsFinalEvents(t *testing.T) {
 	require.NoError(t, <-done)
 }
 
+// Verifies that requests after client- or resource-initiated disconnect are discarded without
+// failing shutdown, creating responses, or interrupting final adapter-event forwarding.
+func TestBridgeDiscardsRequestsAfterDisconnect(t *testing.T) {
+	t.Parallel()
+	for _, initiator := range []string{"client", "resource"} {
+		t.Run(initiator, func(t *testing.T) {
+			lifetime, cancelLifetime := testutil.GetTestContext(t, 0)
+			defer cancelLifetime()
+			ctx, cancel := context.WithCancelCause(lifetime)
+			defer cancel(nil)
+			client, adapter, done := bridgeEndpoints(t, ctx, time.Second, nil)
+			if initiator == "client" {
+				require.NoError(t, client.WriteMessage(testRequest(40, "disconnect")))
+			} else {
+				cancel(ErrShutdownRequested)
+			}
+			request, readErr := adapter.ReadMessage()
+			require.NoError(t, readErr)
+			require.Equal(t, "disconnect", request.text("command"))
+			require.NoError(t, adapter.WriteMessage(testResponse(41, request.number("seq"), "disconnect")))
+			if initiator == "client" {
+				response, responseErr := client.ReadMessage()
+				require.NoError(t, responseErr)
+				require.EqualValues(t, 40, response.number("request_seq"))
+			}
+			require.NoError(t, adapter.WriteMessage(Message{
+				"seq": json.RawMessage("42"), "type": json.RawMessage(`"event"`), "event": json.RawMessage(`"terminated"`),
+			}))
+			terminated, terminatedErr := client.ReadMessage()
+			require.NoError(t, terminatedErr)
+			require.Equal(t, "terminated", terminated.text("event"))
+			for index, command := range []string{"disconnect", "threads", "cancel", "initialize", "launch", "attach"} {
+				late := testRequest(int64(50+index), command)
+				if command == "cancel" {
+					late["arguments"] = json.RawMessage(`{"requestId":-1}`)
+				}
+				require.NoError(t, client.WriteMessage(late))
+			}
+			require.NoError(t, adapter.WriteMessage(Message{
+				"seq": json.RawMessage("43"), "type": json.RawMessage(`"event"`),
+				"event": json.RawMessage(`"output"`), "body": json.RawMessage(`{"output":"final output"}`),
+			}))
+			final, finalErr := client.ReadMessage()
+			require.NoError(t, finalErr)
+			require.Equal(t, "output", final.text("event"), "discarded requests must not synthesize responses")
+			require.JSONEq(t, `{"output":"final output"}`, string(final["body"]))
+			require.NoError(t, adapter.Close())
+			select {
+			case bridgeErr := <-done:
+				require.NoError(t, bridgeErr)
+			case <-lifetime.Done():
+				t.Fatal("late requests prevented bridge completion")
+			}
+		})
+	}
+}
+
 // Verifies that deletion does not inject another disconnect after a client shutdown request,
 // while the client's response remains correctly correlated and final output drains.
 func TestBridgePreservesClientShutdown(t *testing.T) {
