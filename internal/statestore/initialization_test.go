@@ -365,26 +365,33 @@ func TestOpenConcurrentColdStore(t *testing.T) {
 func TestOpenWaitsForInitializationLockBeforeCreatingDatabase(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
-	defer cancel()
-	storePath := initializationTestPath(t)
-	initializationLock, newLockErr := lockfile.NewLockfile(storePath + ".migrate.lock")
-	require.NoError(t, newLockErr)
-	require.NoError(t, initializationLock.TryLock(ctx, lockfile.DefaultLockRetryInterval))
-	defer func() {
-		require.NoError(t, initializationLock.Close())
-	}()
-
-	waitCtx, cancelWait := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancelWait()
-	started := time.Now()
-	store, openErr := Open(waitCtx, Options{Path: storePath, BusyTimeout: 25 * time.Millisecond})
-	if store != nil {
-		require.NoError(t, store.Close())
-	}
-	t.Logf("Open while initialization lock held: elapsed=%s, error=%v", time.Since(started), openErr)
-	require.ErrorIs(t, openErr, context.DeadlineExceeded)
-	require.NoFileExists(t, storePath)
+	runSynctestWithTestContext(t, stateStoreTestTimeout, func(test *testing.T, ctx context.Context) {
+		storePath := initializationTestPath(test)
+		initializationLock, newLockErr := lockfile.NewLockfile(storePath + ".migrate.lock")
+		require.NoError(test, newLockErr)
+		require.NoError(test, initializationLock.TryLock(ctx, lockfile.DefaultLockRetryInterval))
+		defer func() {
+			require.NoError(test, initializationLock.Close())
+		}()
+		waitCtx, cancelWait := context.WithCancel(ctx)
+		defer cancelWait()
+		pending := startStoreOpen(test, waitCtx, Options{Path: storePath})
+		synctest.Wait()
+		select {
+		case <-pending.done:
+			test.Fatalf("Open returned while the initialization lock was held: %v", pending.err)
+		default:
+		}
+		require.NoFileExists(test, storePath)
+		cancelWait()
+		select {
+		case <-pending.done:
+		case <-ctx.Done():
+			test.Fatal(ctx.Err())
+		}
+		require.ErrorIs(test, pending.err, context.Canceled)
+		require.NoFileExists(test, storePath)
+	})
 }
 
 // Verifies that Open retries a non-cooperating SQLite lock holder and succeeds after an observed BUSY attempt.
@@ -582,61 +589,62 @@ func TestOpenInitializesAfterLongInitializationLockWait(t *testing.T) {
 func TestOpenHoldsInitializationLockThroughoutSchemaRecovery(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
-	defer cancel()
-	storePath := initializationTestPath(t)
-	seedStore := openTestStore(t, ctx, storePath)
-	_, dirtyErr := seedStore.db.ExecContext(ctx, "UPDATE schema_minor_migrations_v1 SET dirty = 1")
-	require.NoError(t, dirtyErr)
-	require.NoError(t, seedStore.Close())
-
-	recoveryObserved := make(chan struct{}, 1)
-	resumeRecovery := make(chan struct{})
-	log := funcr.New(func(_, _ string) {
+	runSynctestWithTestContext(t, stateStoreTestTimeout, func(test *testing.T, ctx context.Context) {
+		storePath := initializationTestPath(test)
+		seedStore := openTestStore(test, ctx, storePath)
+		_, dirtyErr := seedStore.db.ExecContext(ctx, "UPDATE schema_minor_migrations_v1 SET dirty = 1")
+		require.NoError(test, dirtyErr)
+		require.NoError(test, seedStore.Close())
+		recoveryObserved := make(chan struct{}, 1)
+		resumeRecovery := make(chan struct{})
+		log := funcr.New(func(_, _ string) {
+			select {
+			case recoveryObserved <- struct{}{}:
+			default:
+			}
+			select {
+			case <-resumeRecovery:
+			case <-ctx.Done():
+			}
+		}, funcr.Options{Verbosity: 1})
+		const busyTimeout = time.Second
+		pending := startStoreOpen(test, ctx, Options{Path: storePath, BusyTimeout: busyTimeout, Log: log})
 		select {
-		case recoveryObserved <- struct{}{}:
+		case <-recoveryObserved:
+		case <-pending.done:
+			test.Fatalf("Open returned before schema recovery was observed: %v", pending.err)
+		case <-ctx.Done():
+			test.Fatal(ctx.Err())
+		}
+		competingCtx, cancelCompeting := context.WithCancel(ctx)
+		defer cancelCompeting()
+		competing := startStoreOpen(test, competingCtx, Options{Path: storePath, BusyTimeout: busyTimeout})
+		synctest.Wait()
+		select {
+		case <-competing.done:
+			test.Fatalf("competing Open returned during schema recovery: %v", competing.err)
 		default:
 		}
+		cancelCompeting()
 		select {
-		case <-resumeRecovery:
+		case <-competing.done:
 		case <-ctx.Done():
+			test.Fatal(ctx.Err())
 		}
-	}, funcr.Options{Verbosity: 1})
-	const busyTimeout = time.Second
-	pending := startStoreOpen(t, ctx, Options{Path: storePath, BusyTimeout: busyTimeout, Log: log})
-	select {
-	case <-recoveryObserved:
-	case <-pending.done:
-		t.Fatalf("Open returned before schema recovery was observed: %v", pending.err)
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	holdTimer := time.NewTimer(2 * busyTimeout)
-	defer holdTimer.Stop()
-
-	competingCtx, cancelCompeting := context.WithTimeout(ctx, 50*time.Millisecond)
-	defer cancelCompeting()
-	competingStore, competingErr := Open(competingCtx, Options{Path: storePath, BusyTimeout: busyTimeout})
-	if competingStore != nil {
-		require.NoError(t, competingStore.Close())
-	}
-	require.Nil(t, competingStore)
-	require.ErrorIs(t, competingErr, context.DeadlineExceeded)
-	require.ErrorContains(t, competingErr, "could not acquire state store initialization lock")
-	select {
-	case <-holdTimer.C:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	close(resumeRecovery)
-	select {
-	case <-pending.done:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	require.NoError(t, pending.err)
-	requireSchemaMajorVersion(t, ctx, pending.store, currentSchemaMajorVersion)
-	requireSchemaMinorVersion(t, ctx, pending.store, currentSchemaMinorVersion)
+		require.Nil(test, competing.store)
+		require.ErrorIs(test, competing.err, context.Canceled)
+		require.ErrorContains(test, competing.err, "could not acquire state store initialization lock")
+		time.Sleep(2 * busyTimeout)
+		close(resumeRecovery)
+		select {
+		case <-pending.done:
+		case <-ctx.Done():
+			test.Fatal(ctx.Err())
+		}
+		require.NoError(test, pending.err)
+		requireSchemaMajorVersion(test, ctx, pending.store, currentSchemaMajorVersion)
+		requireSchemaMinorVersion(test, ctx, pending.store, currentSchemaMinorVersion)
+	})
 }
 
 // Verifies that Open does not retry permanent SQLite errors and releases failed initialization resources.

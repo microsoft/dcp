@@ -237,12 +237,15 @@ func TestTunnelPreparationIdempotency(t *testing.T) {
 
 	const testServerPort = 29307 // Value does not matter, just need a reasonable port number.
 
+	clientProxyPort, clientPortErr := networking.GetFreePort(commonapi.PortProtocolTCP, networking.IPv4LocalhostDefaultAddress, log)
+	require.NoError(t, clientPortErr, "Failed to get free port for client proxy")
+
 	// Define the same tunnel request parameters
 	tunnelReq := &proto.TunnelReq{
 		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
 		ServerPort:         stdproto.Int32(int32(testServerPort)),
 		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
-		ClientProxyPort:    stdproto.Int32(8080), // Use a fixed port instead of auto-allocate for idempotency
+		ClientProxyPort:    stdproto.Int32(int32(clientProxyPort)),
 	}
 
 	// Call PrepareTunnel multiple times with the same parameters
@@ -269,11 +272,13 @@ func TestTunnelPreparationIdempotency(t *testing.T) {
 	}
 
 	// Test that a tunnel with different parameters gets a different TunnelID
+	differentProxyPort, differentPortErr := networking.GetFreePort(commonapi.PortProtocolTCP, networking.IPv4LocalhostDefaultAddress, log)
+	require.NoError(t, differentPortErr, "Failed to get free port for different client proxy")
 	differentTunnelReq := &proto.TunnelReq{
 		ServerAddress:      stdproto.String(networking.IPv4LocalhostDefaultAddress),
 		ServerPort:         stdproto.Int32(int32(testServerPort)),
 		ClientProxyAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
-		ClientProxyPort:    stdproto.Int32(8081), // Different port
+		ClientProxyPort:    stdproto.Int32(int32(differentProxyPort)),
 	}
 
 	differentTunnelSpec, prepareDifferentErr := serverProxyClient.PrepareTunnel(ctx, differentTunnelReq)

@@ -35,6 +35,7 @@ type cleanupTestOrchestrator struct {
 	inspectionStarted  chan struct{}
 	continueInspection chan struct{}
 	inspectionStart    sync.Once
+	verificationError  error
 }
 
 func newCleanupTestOrchestrator(resources ...Resource) *cleanupTestOrchestrator {
@@ -103,6 +104,9 @@ func (orchestrator *cleanupTestOrchestrator) remove(kind ResourceKind, identifie
 			continue
 		}
 		if orchestrator.retained[kind][identifier] {
+			if orchestrator.verificationError != nil {
+				orchestrator.inspectErrors[kind][identifier] = orchestrator.verificationError
+			}
 			removed = append(removed, identifier)
 			continue
 		}
@@ -324,6 +328,7 @@ func TestCleanupResourceDoesNotRemoveAfterInspectionFailure(t *testing.T) {
 	require.Empty(t, orchestrator.removed)
 }
 
+// Verifies that a removal-verification deadline error does not prevent cleanup of subsequent resources.
 func TestCleanupResourcesContinuesAfterStuckResource(t *testing.T) {
 	t.Parallel()
 
@@ -336,7 +341,8 @@ func TestCleanupResourcesContinuesAfterStuckResource(t *testing.T) {
 	orchestrator := newCleanupTestOrchestrator(resources...)
 	orchestrator.setOwned(tracker.header, resources...)
 	orchestrator.retained[ResourceContainer]["stuck"] = true
-	ctx, cancel := testutil.GetTestContext(t, time.Second)
+	orchestrator.verificationError = context.DeadlineExceeded
+	ctx, cancel := testutil.GetTestContext(t, 0)
 	defer cancel()
 
 	cleanupErr := cleanupResources(ctx, orchestrator, tracker.header, resources)
@@ -357,6 +363,7 @@ func TestRecoverStaleJournalAcceptsConcurrentRemoval(t *testing.T) {
 	require.NoError(t, recoverStaleJournalResources(t.Context(), orchestrator, journalHeader{}, missingJournalPath))
 }
 
+// Verifies that failed removal verification preserves a stale journal for a subsequent successful cleanup.
 func TestFailedStaleRecoveryRetainsJournal(t *testing.T) {
 	t.Parallel()
 
@@ -366,6 +373,7 @@ func TestFailedStaleRecoveryRetainsJournal(t *testing.T) {
 	orchestrator := newCleanupTestOrchestrator(resource)
 	orchestrator.setOwned(tracker.header, resource)
 	orchestrator.retained[ResourceContainer][resource.Identifier] = true
+	orchestrator.verificationError = context.DeadlineExceeded
 	require.NoError(t, tracker.Track(resource.Kind, resource.Identifier))
 
 	tracker.lock.Lock()
@@ -374,15 +382,16 @@ func TestFailedStaleRecoveryRetainsJournal(t *testing.T) {
 	journalPath := tracker.journalPath
 	tracker.lock.Unlock()
 
-	ctx, cancel := testutil.GetTestContext(t, 500*time.Millisecond)
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
 	recoveryErr := recoverStaleJournalResources(ctx, orchestrator, tracker.header, journalPath)
-	cancel()
 
 	require.ErrorIs(t, recoveryErr, context.DeadlineExceeded)
 	require.FileExists(t, journalPath)
 
 	delete(orchestrator.retained[ResourceContainer], resource.Identifier)
-	require.NoError(t, tracker.Cleanup(t.Context(), orchestrator))
+	orchestrator.setInspectError(resource, nil)
+	require.NoError(t, tracker.Cleanup(ctx, orchestrator))
 }
 
 func TestReadJournalResourcesToleratesTruncatedFinalRecordForRecovery(t *testing.T) {
@@ -516,6 +525,7 @@ func TestCleanupContinuesAfterOwnershipMismatchAndRetainsJournal(t *testing.T) {
 	require.NoFileExists(t, journalPath)
 }
 
+// Verifies that failed removal verification closes tracking but retains its journal until cleanup succeeds.
 func TestResourceTrackerCleanupRetriesAfterFailure(t *testing.T) {
 	t.Parallel()
 
@@ -528,16 +538,18 @@ func TestResourceTrackerCleanupRetriesAfterFailure(t *testing.T) {
 	orchestrator := newCleanupTestOrchestrator(resource)
 	orchestrator.setOwned(tracker.header, resource)
 	orchestrator.retained[resource.Kind][resource.Identifier] = true
-	ctx, cancel := testutil.GetTestContext(t, 500*time.Millisecond)
+	orchestrator.verificationError = context.DeadlineExceeded
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
 	cleanupErr := tracker.Cleanup(ctx, orchestrator)
-	cancel()
 
 	require.ErrorIs(t, cleanupErr, context.DeadlineExceeded)
 	require.FileExists(t, journalPath)
 	require.ErrorContains(t, tracker.TrackImage("late"), "resource tracker is closed")
 
 	delete(orchestrator.retained[resource.Kind], resource.Identifier)
-	require.NoError(t, tracker.Cleanup(t.Context(), orchestrator))
+	orchestrator.setInspectError(resource, nil)
+	require.NoError(t, tracker.Cleanup(ctx, orchestrator))
 	require.NoFileExists(t, journalPath)
 }
 

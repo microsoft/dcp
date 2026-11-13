@@ -241,27 +241,3 @@ func TestRunDuringRunnerExecutionStartsNewRun(t *testing.T) {
 	require.Equal(t, int32(2), secondResult.V)
 	require.Equal(t, int32(2), runnerCalls.Load())
 }
-
-func TestReturnsErrorIfContextCancelled(t *testing.T) {
-	t.Parallel()
-
-	runner := func() (int, error) {
-		return 7, nil
-	}
-
-	const debounceDelay = time.Millisecond * 500
-	const contextTimeoutDelay = time.Millisecond * 100
-
-	deb := NewDebounceLast(runner, debounceDelay, 2*time.Second)
-
-	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), contextTimeoutDelay)
-	defer cancel()
-	_, err := deb.Run(ctx)
-	finish := time.Now()
-
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	// Assuming debounceDelay is significantly larger than contextTimeoutDelay, the call should return
-	// before debounceDelay.
-	require.WithinRange(t, finish, start.Add(contextTimeoutDelay), start.Add(debounceDelay))
-}

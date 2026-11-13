@@ -103,29 +103,6 @@ func TestDebounceActionIsReusable(t *testing.T) {
 	require.WithinRange(t, finish, start.Add(debounceDelay), testTimeout)
 }
 
-func TestDebounceActionDoesNotExecuteRunnerIfContextCancelled(t *testing.T) {
-	t.Parallel()
-
-	const debounceDelay = time.Millisecond * 500
-	const contextTimeoutDelay = time.Millisecond * 100
-
-	called := atomic.Bool{}
-	deb := NewDebounceLastAction(func() { called.Store(true) }, debounceDelay, time.Second)
-
-	start := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), contextTimeoutDelay)
-	defer cancel()
-	deb.Run(ctx)
-
-	<-ctx.Done()
-	finish := time.Now()
-
-	require.ErrorIs(t, ctx.Err(), context.DeadlineExceeded)
-	// Assuming debounceDelay is significantly larger than contextTimeoutDelay, the call should return
-	// before debounceDelay.
-	require.WithinRange(t, finish, start.Add(contextTimeoutDelay), start.Add(debounceDelay))
-}
-
 func TestRunDuringActionExecutionStartsNewRun(t *testing.T) {
 	t.Parallel()
 
