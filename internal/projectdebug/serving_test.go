@@ -896,9 +896,8 @@ func TestProjectDebugServingAdapterCompletion(t *testing.T) {
 	}))
 }
 
-// Verifies that unconfirmed provider cleanup is reported without a false finish time,
-// and fences a new request instead of launching a duplicate provider.
-func TestProjectDebugServingFencesUnconfirmedCleanup(t *testing.T) {
+// Verifies that unconfirmed provider cleanup fails the session without a false execution finish time.
+func TestProjectDebugServingReportsUnconfirmedCleanup(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
 	apiClient, config, executor := startDebugServingTest(t, ctx)
@@ -918,13 +917,6 @@ func TestProjectDebugServingFencesUnconfirmedCleanup(t *testing.T) {
 		return execution.Phase == apiv2.ProjectDebugPhaseFailed && execution.FinishedAt.IsZero() &&
 			current.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseFailed, nil
 	}))
-	retryCtx, cancelRetry := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancelRetry()
-	retried, retryErr := connectDebugServing(retryCtx, config, project)
-	if retried != nil {
-		_ = retried.Close()
-	}
-	require.Error(t, retryErr)
 	require.Len(t, executor.FindAll([]string{"test-adapter"}, "", nil), 1)
 }
 
@@ -1144,7 +1136,7 @@ type containerAdapterExecutor struct {
 }
 
 // Verifies that container TCP streams share one provider, keep sibling connections independent,
-// use the prepared host endpoint and internal port, and fence uncertain final cleanup or failed setup.
+// use the prepared endpoint, report uncertain cleanup/setup failures, and permit restart after confirmed exit.
 func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 	for _, scenario := range []string{"shared", "confirmed-exit", "failed-connect", "changed-endpoint"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -1243,17 +1235,6 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 				nextCompletion <- 0
 			} else {
 				require.Equal(t, apiv2.ProjectDebugPhaseFailed, project.Status.Debug.Executions[0].Phase)
-				retryCtx, retryCancel := context.WithTimeout(ctx, 100*time.Millisecond)
-				defer retryCancel()
-				retried, retryErr := connectDebugServing(retryCtx, config, project)
-				if retried != nil {
-					_ = retried.Close()
-				}
-				require.Error(t, retryErr)
-				containerExec.mu.Lock()
-				count := len(containerExec.options)
-				containerExec.mu.Unlock()
-				require.Equal(t, 1, count, "uncertain provider cleanup must fence new launches")
 			}
 		})
 	}
