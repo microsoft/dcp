@@ -255,7 +255,7 @@ func (r *PhysicalProcessReconciler) watchAdoptedPhysicalProcess(resource *apiv2.
 				current.state = physicalProcessStateInspectFailed
 				current.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed
 				current.failureMessage = fmt.Sprintf("Failed to observe adopted process exit: %v", waitErr)
-				current.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+				current.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 			}
 			_ = r.processData.Update(currentName, key, current)
 		})
@@ -332,7 +332,7 @@ func handlePhysicalProcessRunning(
 		data.state = physicalProcessStateInspectFailed
 		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime process: %v", runningErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(reconciler.ReconciliationDelay(LongDelay))
 		return noChange
 	}
 
@@ -373,7 +373,7 @@ func handlePhysicalProcessInspectFailed(
 		log.Error(runningErr, "Failed to inspect runtime process", "PID", data.handle.Pid)
 		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime process: %v", runningErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(reconciler.ReconciliationDelay(LongDelay))
 		return noChange
 	}
 	data.state, data.retryAfter = physicalProcessStateRunning, time.Time{}
@@ -481,14 +481,14 @@ func (r *PhysicalProcessReconciler) establishPhysicalProcessTracking(
 		data.state = physicalProcessStateResolveRetry
 		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime process: %v", probeErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		return noChange
 	}
 	if probedHandle.IdentityTime.IsZero() {
 		data.state = physicalProcessStateResolveRetry
 		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessInspectFailed
 		data.failureMessage = "Failed to determine the runtime process identity timestamp."
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		return noChange
 	}
 	if !physicalProcess.Spec.IdentityTimestamp.IsZero() &&
@@ -537,7 +537,7 @@ func (r *PhysicalProcessReconciler) claimPhysicalProcessTracking(
 		data.handle = handle
 		data.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessAlreadyTracked
 		data.failureMessage = fmt.Sprintf("Runtime process is already tracked by PhysicalProcess %q.", owner.String())
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		return noChange
 	}
 	*data = *claimedData.Clone()
@@ -588,7 +588,7 @@ func (r *PhysicalProcessReconciler) schedulePhysicalProcessLaunch(
 		failedData.state = physicalProcessStateLaunchRetry
 		failedData.workInProgress = false
 		failedData.failureMessage = fmt.Sprintf("Failed to queue physical process launch: %v", enqueueErr)
-		failedData.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		failedData.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		currentData.UpdateFrom(failedData)
 		return noChange, StandardDelay
 	}
@@ -607,7 +607,7 @@ func (r *PhysicalProcessReconciler) launchPhysicalProcess(
 		_ = data.closeOutputLogs(logs.CaptureFileCloseDefault, log)
 		data.state = physicalProcessStateLaunchRetry
 		data.failureMessage = fmt.Sprintf("Physical process launch canceled before starting: %v", operationErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 		return
 	}
@@ -782,7 +782,7 @@ func (r *PhysicalProcessReconciler) queuePhysicalProcessDataResult(
 				conflictedResult.state = physicalProcessStateResolveRetry
 				conflictedResult.failureReason = apiv2.PhysicalProcessReasonRuntimeProcessAlreadyTracked
 				conflictedResult.failureMessage = fmt.Sprintf("Runtime process is already tracked by PhysicalProcess %q.", owner.String())
-				conflictedResult.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+				conflictedResult.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 				_ = r.processData.Update(name, currentStateKey, conflictedResult)
 			}
 		} else {
@@ -859,7 +859,7 @@ func (r *PhysicalProcessReconciler) schedulePhysicalProcessStop(
 		stoppingData.workInProgress = false
 		stoppingData.failureReason = apiv2.PhysicalProcessReasonStopFailed
 		stoppingData.failureMessage = fmt.Sprintf("Failed to queue physical process termination: %v", enqueueErr)
-		stoppingData.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		stoppingData.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		data.UpdateFrom(stoppingData)
 		return noChange, StandardDelay
 	}
@@ -905,7 +905,7 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 				errors.Join(stopErr, rootRunningErr),
 			)
 		}
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 		return
 	}
@@ -915,7 +915,7 @@ func (r *PhysicalProcessReconciler) stopPhysicalProcess(
 		data.cleanupUnconfirmed = true
 		data.failureReason = apiv2.PhysicalProcessReasonStopFailed
 		data.failureMessage = fmt.Sprintf("Failed to stop physical process: %v", stopErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		r.queuePhysicalProcessDataResult(physicalProcess, stateKey, data)
 		return
 	}

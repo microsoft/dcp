@@ -988,10 +988,12 @@ func TestV2LogicalProcessControllerReleasesLeaseForExitedAdoptedProcess(t *testi
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	const namespaceName = "v2-process-exited-adoption-registration"
+	timing := testReconciliationTiming
+	timing.MonitoringDelay = 30 * time.Second
 	var reader *namespaceWorkloadFailureReader
 	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
-		TestEnvironmentOptions{DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
+		TestEnvironmentOptions{ReconciliationTiming: &timing, DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
 			reader = &namespaceWorkloadFailureReader{Reader: apiReader, namespaceName: namespaceName}
 			return reader
 		}})

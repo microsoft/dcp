@@ -411,7 +411,7 @@ func (r *PhysicalContainerNetworkReconciler) createPhysicalContainerNetwork(
 
 			data.state = physicalContainerNetworkStateReplaceRetry
 			data.failureMessage = fmt.Sprintf("Failed to replace existing container network: %v", replaceErr)
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 			r.queuePhysicalContainerNetworkDataResult(network, stateKey, data)
 			return
 		}
@@ -426,7 +426,7 @@ func (r *PhysicalContainerNetworkReconciler) createPhysicalContainerNetwork(
 		IPv6:   networkConfig.IPv6,
 		Labels: physicalContainerNetworkCreationLabels(network, log),
 	})
-	applyPhysicalContainerNetworkCreateResult(network, data, networkID, createErr, log)
+	applyPhysicalContainerNetworkCreateResult(network, data, networkID, createErr, r.ReconciliationDelay(LongDelay), log)
 	r.queuePhysicalContainerNetworkDataResult(network, stateKey, data)
 }
 
@@ -483,6 +483,7 @@ func applyPhysicalContainerNetworkCreateResult(
 	data *physicalContainerNetworkData,
 	networkID string,
 	createErr error,
+	retryDelay time.Duration,
 	log logr.Logger,
 ) {
 	networkConfig := network.Spec.Network
@@ -490,7 +491,7 @@ func applyPhysicalContainerNetworkCreateResult(
 		log.Error(createErr, "Container network create returned an error; reconciliation will verify the outcome", "NetworkName", networkConfig.NetworkName)
 		data.state = physicalContainerNetworkStateCreateRetry
 		data.failureMessage = fmt.Sprintf("Container network create returned an error: %v", createErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(retryDelay)
 	} else if networkID == "" {
 		log.Error(errors.New("container network create succeeded without returning a network ID"), "Container network create succeeded without returning a network ID", "NetworkName", networkConfig.NetworkName)
 
@@ -660,7 +661,7 @@ func handlePhysicalContainerNetworkRecoverableCreateFailed(
 	if !errors.Is(inspectErr, containers.ErrNotFound) {
 		log.Error(inspectErr, "Failed to verify container network creation outcome", "NetworkName", networkConfig.NetworkName)
 		data.failureMessage = fmt.Sprintf("Failed to verify whether container network creation succeeded: %v", inspectErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(reconciler.ReconciliationDelay(LongDelay))
 		return additionalReconciliationNeeded
 	}
 
@@ -851,7 +852,7 @@ func (r *PhysicalContainerNetworkReconciler) schedulePhysicalContainerNetworkRem
 	data.state = physicalContainerNetworkStateRemoveRetry
 	data.workInProgress = false
 	data.failureMessage = fmt.Sprintf("Failed to queue container network removal: %v", enqueueErr)
-	data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+	data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 	currentData.UpdateFrom(data)
 	return additionalReconciliationNeeded
 }
@@ -891,7 +892,7 @@ func (r *PhysicalContainerNetworkReconciler) removePhysicalContainerNetwork(
 
 		data.state = physicalContainerNetworkStateRemoveRetry
 		data.failureMessage = fmt.Sprintf("Failed to remove container network: %v", removeErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 	} else {
 
 		data.state = physicalContainerNetworkStateRemoved

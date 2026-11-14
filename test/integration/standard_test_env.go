@@ -55,6 +55,8 @@ type TestEnvironmentInfo struct {
 }
 
 type TestEnvironmentOptions struct {
+	// ReconciliationTiming overrides the default fast V2 controller timing for timing-sensitive tests.
+	ReconciliationTiming            *controllers.ReconciliationTiming
 	DecoratePhysicalProcessExecutor func(process.Executor) process.Executor
 	DecorateProjectProcessExecutor  func(process.Executor) process.Executor
 	DecorateAPIClient               func(ctrl_client.Client) ctrl_client.Client
@@ -109,6 +111,10 @@ func StartTestEnvironmentWithOptions(
 	error,
 ) {
 	ctx := parentCtx
+	timing := testReconciliationTiming
+	if options.ReconciliationTiming != nil {
+		timing = *options.ReconciliationTiming
+	}
 	var serverInfo *ctrl_testutil.ApiServerInfo
 	var testEnvironmentInfo *TestEnvironmentInfo
 	if t != nil {
@@ -236,6 +242,9 @@ func StartTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("NamespaceReconciler"),
 		)
+		if timingErr := namespaceR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure Namespace reconciliation timing: %w", timingErr)
+		}
 		if err = namespaceR.SetupWithManager(mgr, instanceTag+"-NamespaceReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Namespace reconciler: %w", err)
 		}
@@ -341,6 +350,9 @@ func StartTestEnvironmentWithOptions(
 				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: options.WorkloadID,
 			},
 		)
+		if timingErr := logicalContainerR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure LogicalContainer reconciliation timing: %w", timingErr)
+		}
 		if logicalContainerSetupErr := logicalContainerR.SetupWithManager(mgr, instanceTag+"-LogicalContainerReconciler"); logicalContainerSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize LogicalContainer reconciler: %w", logicalContainerSetupErr)
 		}
@@ -354,6 +366,9 @@ func StartTestEnvironmentWithOptions(
 				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: options.WorkloadID,
 			},
 		)
+		if timingErr := logicalNetworkR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure LogicalContainerNetwork reconciliation timing: %w", timingErr)
+		}
 		if logicalNetworkSetupErr := logicalNetworkR.SetupWithManager(mgr, instanceTag+"-LogicalContainerNetworkReconciler"); logicalNetworkSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize LogicalContainerNetwork reconciler: %w", logicalNetworkSetupErr)
 		}
@@ -367,6 +382,9 @@ func StartTestEnvironmentWithOptions(
 				StateStore: stateStore, ResourceLeaseOwner: leaseOwner, WorkloadID: options.WorkloadID,
 			},
 		)
+		if timingErr := logicalProcessR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure LogicalProcess reconciliation timing: %w", timingErr)
+		}
 		if logicalProcessSetupErr := logicalProcessR.SetupWithManager(mgr, instanceTag+"-LogicalProcessReconciler"); logicalProcessSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize LogicalProcess reconciler: %w", logicalProcessSetupErr)
 		}
@@ -382,6 +400,9 @@ func StartTestEnvironmentWithOptions(
 			}
 		}
 		projectR := controllers.NewProjectReconciler(ctx, mgr.GetClient(), controllerAPIReader, log.WithName("ProjectReconciler"), projectExecutor, serverInfo.ContainerOrchestrator.Name())
+		if timingErr := projectR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure Project reconciliation timing: %w", timingErr)
+		}
 		if projectSetupErr := projectR.SetupWithManager(mgr, instanceTag+"-ProjectReconciler"); projectSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Project reconciler: %w", projectSetupErr)
 		}
@@ -397,6 +418,9 @@ func StartTestEnvironmentWithOptions(
 			outputCleanupQueue,
 			controllers.PhysicalContainerImageReconcilerConfig{StateStore: stateStore, ResourceLeaseOwner: leaseOwner},
 		)
+		if timingErr := physicalContainerImageR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure PhysicalContainerImage reconciliation timing: %w", timingErr)
+		}
 		if err = physicalContainerImageR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerImageReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerImage reconciler: %w", err)
 		}
@@ -411,6 +435,9 @@ func StartTestEnvironmentWithOptions(
 			serverInfo.ContainerOrchestrator,
 			pex,
 		)
+		if timingErr := physicalContainerR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure PhysicalContainer reconciliation timing: %w", timingErr)
+		}
 		if err = physicalContainerR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainer reconciler: %w", err)
 		}
@@ -424,6 +451,9 @@ func StartTestEnvironmentWithOptions(
 			log.WithName("PhysicalContainerNetworkReconciler"),
 			serverInfo.ContainerOrchestrator,
 		)
+		if timingErr := physicalContainerNetworkR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure PhysicalContainerNetwork reconciliation timing: %w", timingErr)
+		}
 		if err = physicalContainerNetworkR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerNetworkReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerNetwork reconciler: %w", err)
 		}
@@ -437,6 +467,9 @@ func StartTestEnvironmentWithOptions(
 			log.WithName("PhysicalContainerVolumeReconciler"),
 			serverInfo.ContainerOrchestrator,
 		)
+		if timingErr := physicalContainerVolumeR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure PhysicalContainerVolume reconciliation timing: %w", timingErr)
+		}
 		if err = physicalContainerVolumeR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerVolumeReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerVolume reconciler: %w", err)
 		}
@@ -455,6 +488,9 @@ func StartTestEnvironmentWithOptions(
 			physicalExecutor,
 			outputCleanupQueue,
 		)
+		if timingErr := physicalProcessR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure PhysicalProcess reconciliation timing: %w", timingErr)
+		}
 		if err = physicalProcessR.SetupWithManager(mgr, instanceTag+"-PhysicalProcessReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalProcess reconciler: %w", err)
 		}
@@ -465,6 +501,9 @@ func StartTestEnvironmentWithOptions(
 			ctx, mgr.GetClient(), controllerAPIReader, log.WithName("PhysicalContainerExecReconciler"), serverInfo.ContainerOrchestrator,
 			outputCleanupQueue,
 		)
+		if timingErr := physicalExecR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure PhysicalContainerExec reconciliation timing: %w", timingErr)
+		}
 		if physicalExecSetupErr := physicalExecR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerExecReconciler"); physicalExecSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerExec reconciler: %w", physicalExecSetupErr)
 		}
@@ -473,6 +512,9 @@ func StartTestEnvironmentWithOptions(
 		logicalExecR := controllers.NewLogicalContainerExecReconciler(
 			ctx, mgr.GetClient(), controllerAPIReader, log.WithName("LogicalContainerExecReconciler"),
 		)
+		if timingErr := logicalExecR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure LogicalContainerExec reconciliation timing: %w", timingErr)
+		}
 		if logicalExecSetupErr := logicalExecR.SetupWithManager(mgr, instanceTag+"-LogicalContainerExecReconciler"); logicalExecSetupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize LogicalContainerExec reconciler: %w", logicalExecSetupErr)
 		}
@@ -515,6 +557,9 @@ func StartTestEnvironmentWithOptions(
 			createServiceProxy = ctrl_testutil.NewTestProxy
 		}
 		logicalServiceR := controllers.NewLogicalServiceReconciler(ctx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalServiceReconciler"), createServiceProxy)
+		if timingErr := logicalServiceR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure LogicalService reconciliation timing: %w", timingErr)
+		}
 		if setupErr := logicalServiceR.SetupWithManager(mgr, instanceTag+"-LogicalServiceReconciler"); setupErr != nil {
 			return nil, nil, fmt.Errorf("failed to initialize LogicalService reconciler: %w", setupErr)
 		}
