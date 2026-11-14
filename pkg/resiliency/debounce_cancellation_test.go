@@ -17,7 +17,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-func runDebounceCancellationTest(t *testing.T, run func(*testing.T, context.Context)) {
+func runDebounceTest(t *testing.T, run func(*testing.T, context.Context)) {
 	t.Helper()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
 	deadline, hasDeadline := testCtx.Deadline()
@@ -37,7 +37,7 @@ func runDebounceCancellationTest(t *testing.T, run func(*testing.T, context.Cont
 // Verifies that cancelling a pending debounce returns cancellation without executing the runner.
 func TestReturnsErrorIfContextCancelled(t *testing.T) {
 	t.Parallel()
-	runDebounceCancellationTest(t, func(test *testing.T, testCtx context.Context) {
+	runDebounceTest(t, func(test *testing.T, testCtx context.Context) {
 		ctx, cancel := context.WithCancel(testCtx)
 		defer cancel()
 		called := false
@@ -63,7 +63,7 @@ func TestReturnsErrorIfContextCancelled(t *testing.T) {
 // Verifies that cancelling a pending debounce action prevents runner execution.
 func TestDebounceActionDoesNotExecuteRunnerIfContextCancelled(t *testing.T) {
 	t.Parallel()
-	runDebounceCancellationTest(t, func(test *testing.T, testCtx context.Context) {
+	runDebounceTest(t, func(test *testing.T, testCtx context.Context) {
 		ctx, cancel := context.WithCancel(testCtx)
 		defer cancel()
 		called := false

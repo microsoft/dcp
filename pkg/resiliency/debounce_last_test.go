@@ -3,241 +3,179 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package resiliency
+package resiliency_test
 
 import (
 	"context"
-	"fmt"
-	"sync"
+	"errors"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
+// Verifies that DebounceLast executes its runner after the configured delay and returns its result.
 func TestExecutesRunnerAfterDelay(t *testing.T) {
 	t.Parallel()
-
-	runner := func() (int, error) {
-		return 7, nil
-	}
-
-	const debounceDelay = time.Millisecond * 100
-	const testTimeoutDelay = time.Millisecond * 1000
-
-	deb := NewDebounceLast(runner, debounceDelay, testTimeoutDelay)
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
-	defer cancel()
-
-	start := time.Now()
-	res, err := deb.Run(ctx)
-	finish := time.Now()
-
-	require.NoError(t, err)
-	require.Equal(t, 7, res)
-
-	// The call should happen after debounceDelay
-	require.WithinRange(t, finish, start.Add(debounceDelay), time.Now().Add(testTimeoutDelay))
+	runDebounceTest(t, func(test *testing.T, ctx context.Context) {
+		calls := atomic.Int32{}
+		deb := resiliency.NewDebounceLast(func() (int, error) { calls.Add(1); return 7, nil }, time.Second, 5*time.Second)
+		started := time.Now()
+		result, runErr := deb.Run(ctx)
+		require.NoError(test, runErr)
+		require.Equal(test, 7, result)
+		require.EqualValues(test, 1, calls.Load())
+		require.Equal(test, time.Second, time.Since(started))
+	})
 }
 
+// Verifies that DebounceLast preserves the runner's error after the configured delay.
 func TestReturnsErrorFromRunner(t *testing.T) {
 	t.Parallel()
-
-	runner := func() (int, error) {
-		return 0, fmt.Errorf("sorry")
-	}
-
-	const debounceDelay = time.Millisecond * 100
-	const testTimeoutDelay = time.Millisecond * 1000
-
-	deb := NewDebounceLast(runner, debounceDelay, testTimeoutDelay)
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
-	defer cancel()
-
-	start := time.Now()
-	_, err := deb.Run(ctx)
-	finish := time.Now()
-
-	require.Error(t, err)
-
-	require.WithinRange(t, finish, start.Add(debounceDelay), time.Now().Add(testTimeoutDelay))
+	runDebounceTest(t, func(test *testing.T, ctx context.Context) {
+		failure := errors.New("runner failure")
+		deb := resiliency.NewDebounceLast(func() (int, error) { return 0, failure }, time.Second, 5*time.Second)
+		started := time.Now()
+		_, runErr := deb.Run(ctx)
+		require.ErrorIs(test, runErr, failure)
+		require.Equal(test, time.Second, time.Since(started))
+	})
 }
 
+// Verifies that DebounceLast postpones execution after each rapid call and returns one shared result.
 func TestDebouncesRapidInvocations(t *testing.T) {
 	t.Parallel()
-
-	runnerCalls := atomic.Int32{}
-	runner := func() (int, error) {
-		return int(runnerCalls.Add(1)), nil
-	}
-
-	const debounceDelay = time.Millisecond * 200
-	const testTimeoutDelay = time.Millisecond * 1000
-
-	deb := NewDebounceLast(runner, debounceDelay, testTimeoutDelay)
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
-	defer cancel()
-
-	const numCalls = 5
-
-	results := make([]int, numCalls)
-	wg := sync.WaitGroup{}
-	wg.Add(numCalls)
-
-	start := time.Now()
-	// Make numCalls calls to runner as fast as possible.
-	for i := 0; i < numCalls; i++ {
-		go func(index int) {
-			res, err := deb.Run(ctx)
-			require.NoError(t, err)
-			results[index] = res
-			wg.Done()
-		}(i)
-	}
-
-	wg.Wait()
-	finish := time.Now()
-
-	// The results should all be the same
-	require.IsNonIncreasing(t, results)
-	require.IsNonDecreasing(t, results)
-
-	require.Equal(t, 1, results[0])
-	require.Equal(t, int32(1), runnerCalls.Load())
-
-	require.WithinRange(t, finish, start.Add(debounceDelay), time.Now().Add(testTimeoutDelay))
+	runDebounceTest(t, func(test *testing.T, ctx context.Context) {
+		const numCalls = 5
+		calls := atomic.Int32{}
+		deb := resiliency.NewDebounceLast(func() (int, error) { return int(calls.Add(1)), nil }, time.Second, 5*time.Second)
+		results := make(chan resiliency.ResultWithError[int], numCalls)
+		for index := range numCalls {
+			if index != 0 {
+				time.Sleep(100 * time.Millisecond)
+			}
+			go func() {
+				result, runErr := deb.Run(ctx)
+				results <- resiliency.ResultWithError[int]{V: result, Err: runErr}
+			}()
+			synctest.Wait()
+			require.Zero(test, calls.Load())
+		}
+		lastCall := time.Now()
+		for range numCalls {
+			select {
+			case result := <-results:
+				require.NoError(test, result.Err)
+				require.Equal(test, 1, result.V)
+			case <-ctx.Done():
+				test.Fatal("debounced call did not complete")
+			}
+		}
+		synctest.Wait()
+		require.EqualValues(test, 1, calls.Load())
+		require.Equal(test, time.Second, time.Since(lastCall))
+	})
 }
 
+// Verifies that DebounceLast starts a fresh coalesced run after the previous run completes.
 func TestDebounceIsReusable(t *testing.T) {
 	t.Parallel()
-
-	runnerCalls := atomic.Int32{}
-	runner := func() (int32, error) {
-		runnerCalls.Add(1)
-		return 1, nil
-	}
-
-	const debounceDelay = time.Millisecond * 150
-	const testTimeoutDelay = time.Millisecond * 1000
-	const numCalls = 3
-
-	deb := NewDebounceLast(runner, debounceDelay, testTimeoutDelay)
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
-	defer cancel()
-
-	wg := sync.WaitGroup{}
-	var sum int32
-
-	makeCalls := func() {
-		wg.Add(numCalls)
-
-		for i := 0; i < numCalls; i++ {
-			go func() {
-				res, err := deb.Run(ctx)
-				require.NoError(t, err)
-				atomic.AddInt32(&sum, res)
-				wg.Done()
-			}()
+	runDebounceTest(t, func(test *testing.T, ctx context.Context) {
+		const numCalls = 3
+		calls := atomic.Int32{}
+		deb := resiliency.NewDebounceLast(func() (int, error) { return int(calls.Add(1)), nil }, time.Second, 5*time.Second)
+		for round := 1; round <= 2; round++ {
+			started := time.Now()
+			results := make(chan resiliency.ResultWithError[int], numCalls)
+			for range numCalls {
+				go func() {
+					result, runErr := deb.Run(ctx)
+					results <- resiliency.ResultWithError[int]{V: result, Err: runErr}
+				}()
+			}
+			synctest.Wait()
+			require.EqualValues(test, round-1, calls.Load())
+			for range numCalls {
+				select {
+				case result := <-results:
+					require.NoError(test, result.Err)
+					require.Equal(test, round, result.V)
+				case <-ctx.Done():
+					test.Fatal("reused debounce did not complete")
+				}
+			}
+			require.EqualValues(test, round, calls.Load())
+			require.Equal(test, time.Second, time.Since(started))
 		}
-
-		wg.Wait()
-	}
-
-	start := time.Now()
-	testTimeout := start.Add(testTimeoutDelay)
-	makeCalls()
-	finish := time.Now()
-
-	// Verify all calls were made and the results add up to expected value
-	require.WithinRange(t, finish, start.Add(debounceDelay), testTimeout)
-	require.Equal(t, int32(numCalls), sum)
-	require.Equal(t, int32(1), runnerCalls.Load())
-
-	// Now the same debounce should be ready for another round of calls
-	sum = 0
-
-	start = time.Now()
-	makeCalls()
-	finish = time.Now()
-
-	require.WithinRange(t, finish, start.Add(debounceDelay), testTimeout)
-	require.Equal(t, int32(numCalls), sum)
-	require.Equal(t, int32(2), runnerCalls.Load())
+	})
 }
 
+// Verifies that a new DebounceLast run can execute while the prior runner remains blocked,
+// and completing the first run does not complete the second run.
 func TestRunDuringRunnerExecutionStartsNewRun(t *testing.T) {
 	t.Parallel()
-
-	const debounceDelay = time.Millisecond * 500
-	const testTimeoutDelay = time.Second * 5
-
-	firstStarted := make(chan struct{})
-	secondStarted := make(chan struct{})
-	releaseFirst := make(chan struct{})
-	releaseSecond := make(chan struct{})
-	runnerCalls := atomic.Int32{}
-
-	runner := func() (int32, error) {
-		call := runnerCalls.Add(1)
-
-		switch call {
-		case 1:
-			close(firstStarted)
-			<-releaseFirst
-			return 1, nil
-		case 2:
-			close(secondStarted)
-			<-releaseSecond
-			return 2, nil
-		default:
-			return 0, fmt.Errorf("unexpected runner call: %d", call)
+	runDebounceTest(t, func(test *testing.T, ctx context.Context) {
+		firstStarted, secondStarted := make(chan struct{}), make(chan struct{})
+		releaseFirst, releaseSecond := make(chan struct{}), make(chan struct{})
+		calls := atomic.Int32{}
+		deb := resiliency.NewDebounceLast(func() (int, error) {
+			call := int(calls.Add(1))
+			var release <-chan struct{}
+			switch call {
+			case 1:
+				close(firstStarted)
+				release = releaseFirst
+			case 2:
+				close(secondStarted)
+				release = releaseSecond
+			default:
+				return 0, errors.New("unexpected runner invocation")
+			}
+			select {
+			case <-release:
+				return call, nil
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		}, time.Second, 5*time.Second)
+		firstResult := make(chan resiliency.ResultWithError[int], 1)
+		secondResult := make(chan resiliency.ResultWithError[int], 1)
+		go func() {
+			result, runErr := deb.Run(ctx)
+			firstResult <- resiliency.ResultWithError[int]{V: result, Err: runErr}
+		}()
+		select {
+		case <-firstStarted:
+		case <-ctx.Done():
+			test.Fatal("first runner did not start")
 		}
-	}
-
-	deb := NewDebounceLast(runner, debounceDelay, testTimeoutDelay)
-	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
-	defer cancel()
-
-	firstResultC := make(chan ResultWithError[int32], 1)
-	secondResultC := make(chan ResultWithError[int32], 1)
-
-	go func() {
-		v, err := deb.Run(ctx)
-		firstResultC <- ResultWithError[int32]{V: v, Err: err}
-	}()
-
-	select {
-	case <-firstStarted:
-	case <-time.After(testTimeoutDelay):
-		require.FailNow(t, "first runner call did not start in time")
-	}
-
-	go func() {
-		v, err := deb.Run(ctx)
-		secondResultC <- ResultWithError[int32]{V: v, Err: err}
-	}()
-
-	select {
-	case <-secondStarted:
-	case <-time.After(testTimeoutDelay):
-		require.FailNow(t, "second runner call did not start as a new run")
-	}
-
-	close(releaseFirst)
-	firstResult := <-firstResultC
-	require.NoError(t, firstResult.Err)
-	require.Equal(t, int32(1), firstResult.V)
-
-	select {
-	case secondResult := <-secondResultC:
-		require.FailNowf(t, "second run should still be waiting", "unexpected result: %+v", secondResult)
-	case <-time.After(debounceDelay):
-	}
-
-	close(releaseSecond)
-	secondResult := <-secondResultC
-	require.NoError(t, secondResult.Err)
-	require.Equal(t, int32(2), secondResult.V)
-	require.Equal(t, int32(2), runnerCalls.Load())
+		go func() {
+			result, runErr := deb.Run(ctx)
+			secondResult <- resiliency.ResultWithError[int]{V: result, Err: runErr}
+		}()
+		select {
+		case <-secondStarted:
+		case <-ctx.Done():
+			test.Fatal("second runner did not start independently")
+		}
+		close(releaseFirst)
+		first := <-firstResult
+		require.NoError(test, first.Err)
+		require.Equal(test, 1, first.V)
+		synctest.Wait()
+		select {
+		case unexpected := <-secondResult:
+			test.Fatalf("second run completed before its runner was released: %+v", unexpected)
+		default:
+		}
+		close(releaseSecond)
+		second := <-secondResult
+		require.NoError(test, second.Err)
+		require.Equal(test, 2, second.V)
+		require.EqualValues(test, 2, calls.Load())
+	})
 }
