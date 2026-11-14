@@ -420,7 +420,7 @@ func handlePhysicalContainerResolve(
 			data.state = physicalContainerStateResolveRetry
 			data.containerID = containerID
 			data.failureMessage = fmt.Sprintf("Runtime container is already tracked by PhysicalContainer %q.", owner.String())
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			data.retryAfter = time.Now().Add(reconciler.ReconciliationDelay(LongDelay))
 			return additionalReconciliationNeeded
 		}
 		return additionalReconciliationNeeded
@@ -815,7 +815,7 @@ func (r *PhysicalContainerReconciler) removePartiallyCreatedPhysicalContainer(
 			data.state = physicalContainerStateCleanupRetry
 		}
 		data.cleanupMessage = fmt.Sprintf("Failed to remove partially created runtime container: %v", removeErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		return additionalReconciliationNeeded, false
 	}
 
@@ -1101,7 +1101,7 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 			log.Error(replaceErr, "Failed to replace existing physical container")
 			data.state = physicalContainerStateReplaceRetry
 			data.failureMessage = fmt.Sprintf("Failed to replace existing physical container: %v", replaceErr)
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 			r.queuePhysicalContainerDataResult(container, stateKey, data)
 			return
 		}
@@ -1120,7 +1120,7 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		} else {
 
 			data.state = physicalContainerStateCreateRetry
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		}
 	} else if containerID == "" {
 		missingContainerIDErr := errors.New("physical container create succeeded without returning a runtime container ID")
@@ -1364,7 +1364,7 @@ func (r *PhysicalContainerReconciler) queuePhysicalContainerDataResult(
 				conflictedResult := result.Clone()
 				conflictedResult.state = physicalContainerStateResolveRetry
 				conflictedResult.failureMessage = fmt.Sprintf("Runtime container is already tracked by PhysicalContainer %q.", owner.String())
-				conflictedResult.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+				conflictedResult.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 				_ = r.containerData.Update(name, currentStateKey, conflictedResult)
 			}
 		} else {

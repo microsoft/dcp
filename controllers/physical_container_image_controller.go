@@ -835,7 +835,7 @@ func (r *PhysicalContainerImageReconciler) pullPhysicalContainerImage(
 	pulledImageID, pullErr := r.pullPhysicalContainerImageWithRetry(ctx, image, data, outputImage, data.startupStreams(), log)
 	if errors.Is(pullErr, statestore.ErrResourceLeaseHeld) {
 		data.failureMessage = "Waiting for image pull lease."
-		data.retryAfter = time.Now().Add(delayDurations[StandardDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(StandardDelay))
 		r.queuePhysicalContainerImageDataResult(image, stateKey, data)
 		return
 	}
@@ -850,7 +850,7 @@ func (r *PhysicalContainerImageReconciler) pullPhysicalContainerImage(
 
 			data.state = physicalContainerImageStatePullRetry
 			data.failureMessage = "Image pull completed without an image ID."
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 			r.queuePhysicalContainerImageDataResult(image, stateKey, data)
 			return
 		}
@@ -883,7 +883,7 @@ func (r *PhysicalContainerImageReconciler) buildPhysicalContainerImage(
 	if resolveErr != nil {
 		if errors.Is(resolveErr, statestore.ErrResourceLeaseHeld) {
 			data.failureMessage = "Waiting for image pull lease."
-			data.retryAfter = time.Now().Add(delayDurations[StandardDelay].Duration)
+			data.retryAfter = time.Now().Add(r.ReconciliationDelay(StandardDelay))
 			return
 		}
 		if errors.Is(resolveErr, containers.ErrRuntimeNotHealthy) {
