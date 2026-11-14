@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -87,6 +88,41 @@ func resolveUnobservedLogicalChildren[T commonapi.ObjectStruct, PT commonapi.POb
 
 // LogicalBackingFinalizer retains an owned physical API object until its logical owner observes cleanup.
 const LogicalBackingFinalizer = "usvc-dev.developer.microsoft.com/logical-backing"
+
+// createLogicalBacking declares an owned physical resource and validates AlreadyExists collisions.
+// validateExisting checks immutable inputs where an earlier committed declaration is not authoritative.
+func createLogicalBacking[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
+	ctx context.Context, client ctrl_client.Client, reader ctrl_client.Reader, owner ctrl_client.Object,
+	child PT, physicalFinalizer string, expectedUID *types.UID, pending *unobservedLogicalChildren,
+	validateExisting func(PT) error,
+) (PT, error) {
+	InitializeLogicalBackingFinalizers(child, physicalFinalizer)
+	if ownerErr := ctrl.SetControllerReference(owner, child, client.Scheme()); ownerErr != nil {
+		return nil, fmt.Errorf("set physical resource owner: %w", ownerErr)
+	}
+	pending.recordCreateAttempt(child)
+	createErr := client.Create(ctx, child)
+	if child.GetUID() != "" {
+		*expectedUID = child.GetUID()
+	}
+	if createErr == nil || !apierrors.IsAlreadyExists(createErr) {
+		return child, createErr
+	}
+	existing := PT(new(T))
+	if lookupErr := reader.Get(ctx, ctrl_client.ObjectKeyFromObject(child), existing); lookupErr != nil {
+		return child, fmt.Errorf("get existing physical resource: %w", lookupErr)
+	}
+	if identityErr := validatePhysicalResourceIdentity(owner, existing, *expectedUID); identityErr != nil {
+		return nil, fmt.Errorf("%v: %w", identityErr, createErr)
+	}
+	if validateExisting != nil {
+		if validationErr := validateExisting(existing); validationErr != nil {
+			return nil, fmt.Errorf("%v: %w", validationErr, createErr)
+		}
+	}
+	*expectedUID = existing.GetUID()
+	return existing, nil
+}
 
 func validatePhysicalResourceIdentity(owner, physical ctrl_client.Object, expectedUID types.UID) error {
 	if !metav1.IsControlledBy(physical, owner) || (expectedUID != "" && physical.GetUID() != expectedUID) ||

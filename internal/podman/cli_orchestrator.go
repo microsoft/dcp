@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path"
 	"regexp"
 	"runtime"
 	"strings"
@@ -620,6 +621,9 @@ func (pco *PodmanCliOrchestrator) RunContainer(ctx context.Context, options cont
 
 func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
 	args := []string{"exec"}
+	if options.StdInStream != nil {
+		args = append(args, "--interactive")
+	}
 
 	if options.WorkingDirectory != "" {
 		args = append(args, "--workdir", options.WorkingDirectory)
@@ -642,6 +646,7 @@ func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options con
 
 	cmd := makePodmanCommand(args...)
 
+	cmd.Stdin = options.StdInStream
 	cmd.Stdout = options.StdOutStream
 	cmd.Stderr = options.StdErrStream
 	cmd.WaitDelay = 2 * time.Second
@@ -818,14 +823,6 @@ func (pco *PodmanCliOrchestrator) RemoveContainers(ctx context.Context, options 
 }
 
 func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
-	args := []string{"container", "cp"}
-
-	// Read the tar file to copy from standard input
-	// Apply ownership information from the tar file
-	args = append(args, "-a=false", "-")
-
-	args = append(args, options.Container+":/")
-
 	buffer, archiveErr := containers.CreateFilesArchive(ctx, pco.log, options)
 	if archiveErr != nil {
 		return archiveErr
@@ -835,6 +832,14 @@ func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options conta
 		return nil
 	}
 
+	return pco.CopyFiles(ctx, containers.CopyFilesOptions{Container: options.Container, Destination: "/", Archive: buffer})
+}
+
+func (pco *PodmanCliOrchestrator) CopyFiles(ctx context.Context, options containers.CopyFilesOptions) error {
+	if options.Container == "" || !path.IsAbs(options.Destination) || options.Archive == nil {
+		return fmt.Errorf("container, absolute destination, and archive are required")
+	}
+	args := []string{"container", "cp", "-a=false", "-", options.Container + ":" + options.Destination}
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		// TODO: Remove this workaround once podman cli supports copy via stdio on Windows
@@ -843,9 +848,9 @@ func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options conta
 		cmd = makePodmanCommand(args...)
 	}
 
-	cmd.Stdin = buffer
+	cmd.Stdin = options.Archive
 
-	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CopyFile", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CopyFile", cmd, nil, nil, containers.CopyFilesTimeout)
 	if err != nil {
 		return errors.Join(err, normalizeCliErrors(errBuf))
 	}

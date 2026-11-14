@@ -7,6 +7,7 @@ package v2
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,46 @@ import (
 
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
+
+// Verifies that PhysicalContainer validates copy archive inputs, hash references, destinations,
+// and source-deletion requests without permitting deletion of inline-only archives.
+func TestPhysicalContainerCopyContextValidation(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name  string
+		copy  ContainerCopyFileContext
+		valid bool
+	}{
+		{name: "file", copy: ContainerCopyFileContext{Source: "copy.tar", SHA256: strings.Repeat("a", 64), DeleteAfterCopy: true}, valid: true},
+		{name: "inline", copy: ContainerCopyFileContext{RawContents: "dGFy"}, valid: true},
+		{name: "directory", copy: ContainerCopyFileContext{Directory: t.TempDir()}, valid: true},
+		{name: "directory executables", copy: ContainerCopyFileContext{Directory: t.TempDir(), ExecutableFiles: []string{"bin/adapter"}}, valid: true},
+		{name: "executable requires directory", copy: ContainerCopyFileContext{RawContents: "dGFy", ExecutableFiles: []string{"adapter"}}},
+		{name: "escaping executable", copy: ContainerCopyFileContext{Directory: t.TempDir(), ExecutableFiles: []string{"../adapter"}}},
+		{name: "absolute executable", copy: ContainerCopyFileContext{Directory: t.TempDir(), ExecutableFiles: []string{"/adapter"}}},
+		{name: "Windows executable path", copy: ContainerCopyFileContext{Directory: t.TempDir(), ExecutableFiles: []string{`C:\adapter`}}},
+		{name: "relative directory", copy: ContainerCopyFileContext{Directory: "relative"}},
+		{name: "directory and archive", copy: ContainerCopyFileContext{Directory: t.TempDir(), Source: "copy.tar", SHA256: strings.Repeat("a", 64)}},
+		{name: "delete directory", copy: ContainerCopyFileContext{Directory: t.TempDir(), DeleteAfterCopy: true}},
+		{name: "missing"},
+		{name: "missing hash", copy: ContainerCopyFileContext{Source: "copy.tar"}},
+		{name: "conflicting inputs", copy: ContainerCopyFileContext{Source: "copy.tar", SHA256: strings.Repeat("a", 64), RawContents: "dGFy"}},
+		{name: "invalid hash", copy: ContainerCopyFileContext{Source: "copy.tar", SHA256: "invalid"}},
+		{name: "delete inline", copy: ContainerCopyFileContext{RawContents: "dGFy", DeleteAfterCopy: true}},
+		{name: "relative destination", copy: ContainerCopyFileContext{RawContents: "dGFy", Destination: "relative"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			resource := &PhysicalContainer{ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: "test"},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "image", CopyFiles: []ContainerCopyFileContext{testCase.copy}}}}
+			validationErrors := resource.Validate(context.Background())
+			if testCase.valid {
+				require.Empty(t, validationErrors)
+			} else {
+				require.NotEmpty(t, validationErrors)
+			}
+		})
+	}
+}
 
 // Verifies that GetLogSource completes confirmed missing runtime output without enabling
 // capture for a container that never started or completing transient inspection failures.

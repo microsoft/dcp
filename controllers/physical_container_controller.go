@@ -10,6 +10,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"path"
 	std_slices "slices"
 	"strconv"
 	"strings"
@@ -33,6 +35,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -290,11 +293,15 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, container.GetResourceId())
 	if owner := metav1.GetControllerOf(&container); owner != nil &&
-		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainer" && owner.UID != "" {
+		owner.APIVersion == apiv2.GroupVersion.String() && (owner.Kind == "LogicalContainer" || owner.Kind == "Project") && owner.UID != "" {
 		logicalOwner := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}
-		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, logicalOwner.GetResourceId())
+		ownerStream := logicalOwner.GetResourceId()
+		if owner.Kind == "Project" {
+			ownerStream = (&apiv2.Project{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}).GetResourceId()
+		}
+		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, ownerStream)
 		if forwardErr != nil {
-			log.Error(forwardErr, "Failed to attach logical container system log stream")
+			log.Error(forwardErr, "Failed to attach owner system log stream")
 		} else {
 			log = forwardedLog
 		}
@@ -348,6 +355,9 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 	}
 	initializer := getStateInitializer(physicalContainerDataInitializers, data.state, log)
 	change := initializer(ctx, r, container, data.state, data, log)
+	if !data.workInProgress && (container.Spec.Stop || physicalContainerArchiveCleanupRequired(data.state)) {
+		removeContainerCopySources(container.Spec.Container, log)
+	}
 	stateKey, _ := r.containerData.BorrowByNamespacedName(container.NamespacedName())
 	_ = r.containerData.Update(container.NamespacedName(), stateKey, data)
 	dataChange, delay, valid := data.applyTo(container)
@@ -420,7 +430,7 @@ func handlePhysicalContainerResolve(
 			data.state = physicalContainerStateResolveRetry
 			data.containerID = containerID
 			data.failureMessage = fmt.Sprintf("Runtime container is already tracked by PhysicalContainer %q.", owner.String())
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			data.retryAfter = time.Now().Add(reconciler.ReconciliationDelay(LongDelay))
 			return additionalReconciliationNeeded
 		}
 		return additionalReconciliationNeeded
@@ -697,7 +707,7 @@ func handlePhysicalContainerCreated(
 		data.state = physicalContainerStateStopping
 		return additionalReconciliationNeeded
 	}
-	if len(container.Spec.Container.CreateFiles) > 0 {
+	if len(container.Spec.Container.CreateFiles) > 0 || len(container.Spec.Container.CopyFiles) > 0 {
 		return reconciler.schedulePhysicalContainerCreateFiles(container, data, log)
 	}
 	return reconciler.schedulePhysicalContainerStart(container, data, log)
@@ -815,7 +825,7 @@ func (r *PhysicalContainerReconciler) removePartiallyCreatedPhysicalContainer(
 			data.state = physicalContainerStateCleanupRetry
 		}
 		data.cleanupMessage = fmt.Sprintf("Failed to remove partially created runtime container: %v", removeErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		return additionalReconciliationNeeded, false
 	}
 
@@ -1101,7 +1111,7 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 			log.Error(replaceErr, "Failed to replace existing physical container")
 			data.state = physicalContainerStateReplaceRetry
 			data.failureMessage = fmt.Sprintf("Failed to replace existing physical container: %v", replaceErr)
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 			r.queuePhysicalContainerDataResult(container, stateKey, data)
 			return
 		}
@@ -1120,7 +1130,7 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		} else {
 
 			data.state = physicalContainerStateCreateRetry
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		}
 	} else if containerID == "" {
 		missingContainerIDErr := errors.New("physical container create succeeded without returning a runtime container ID")
@@ -1254,6 +1264,10 @@ func (r *PhysicalContainerReconciler) copyPhysicalContainerCreateFiles(
 	fileModTime time.Time,
 	log logr.Logger,
 ) {
+	defer func() {
+		removeContainerCopySources(container.Spec.Container, log)
+		r.queuePhysicalContainerDataResult(container, stateKey, data)
+	}()
 	for _, createFileRequest := range container.Spec.Container.CreateFiles {
 		umask := osutil.DefaultUmaskBitmask
 		if createFileRequest.Umask != nil {
@@ -1276,16 +1290,43 @@ func (r *PhysicalContainerReconciler) copyPhysicalContainerCreateFiles(
 
 			data.state = physicalContainerStateFileCopyFailed
 			data.failureMessage = fmt.Sprintf("Failed to copy files to physical container: %v", copyErr)
-			r.queuePhysicalContainerDataResult(container, stateKey, data)
 			return
 		}
-
 		log.V(1).Info("Files copied to the physical container", "ContainerID", data.containerID, "Destination", createFileRequest.Destination)
+	}
+	for _, copyContext := range container.Spec.Container.CopyFiles {
+		destination := copyContext.Destination
+		if destination == "" {
+			destination = "/"
+		}
+		var archive io.ReadCloser
+		var openErr error
+		if copyContext.Directory != "" {
+			archive = usvc_io.OpenDirectoryTar(ctx, copyContext.Directory, strings.TrimPrefix(path.Clean(destination), "/"), 0, 0, copyContext.ExecutableFiles)
+			destination = "/"
+		} else {
+			archive, openErr = usvc_io.OpenTarArchive(ctx, copyContext.Source, copyContext.SHA256, copyContext.RawContents)
+		}
+		if openErr != nil {
+			data.state = physicalContainerStateFileCopyFailed
+			data.failureMessage = fmt.Sprintf("Failed to open container copy archive: %v", openErr)
+			log.Error(openErr, "Failed to open container copy archive")
+			return
+		}
+		copyErr := r.orchestrator.CopyFiles(ctx, containers.CopyFilesOptions{
+			Container: data.containerID, Destination: destination, Archive: archive,
+		})
+		closeErr := archive.Close()
+		if operationErr := errors.Join(copyErr, closeErr); operationErr != nil {
+			data.state = physicalContainerStateFileCopyFailed
+			data.failureMessage = fmt.Sprintf("Failed to copy container archive: %v", operationErr)
+			log.Error(operationErr, "Failed to copy container archive")
+			return
+		}
 	}
 
 	data.state = physicalContainerStateFilesCopied
 	data.failureMessage = ""
-	r.queuePhysicalContainerDataResult(container, stateKey, data)
 }
 
 func (r *PhysicalContainerReconciler) schedulePhysicalContainerStart(
@@ -1364,7 +1405,7 @@ func (r *PhysicalContainerReconciler) queuePhysicalContainerDataResult(
 				conflictedResult := result.Clone()
 				conflictedResult.state = physicalContainerStateResolveRetry
 				conflictedResult.failureMessage = fmt.Sprintf("Runtime container is already tracked by PhysicalContainer %q.", owner.String())
-				conflictedResult.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+				conflictedResult.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 				_ = r.containerData.Update(name, currentStateKey, conflictedResult)
 			}
 		} else {
@@ -1534,6 +1575,7 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(
 	log logr.Logger,
 ) (change objectChange, delay AdditionalReconciliationDelay) {
 	delay = StandardDelay
+	removeContainerCopySources(container.Spec.Container, log)
 	if data == nil {
 		defer logger.ReleaseResourceLog(container.GetResourceId())
 		return deleteFinalizer(container, physicalContainerFinalizer, log), delay

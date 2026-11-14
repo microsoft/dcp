@@ -941,6 +941,11 @@ func (*stopRunTestExecutor) CheckProcessRunning(process.ProcessHandle) error {
 	return nil
 }
 
+func (*stopRunTestExecutor) WaitForProcessExit(ctx context.Context, _ process.ProcessHandle) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (executor *stopRunTestExecutor) FindProcessHandle(process.Pid_t) (process.ProcessHandle, error) {
 	return executor.handle, nil
 }

@@ -6,10 +6,13 @@
 package v2
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io/fs"
 	"path"
+	"path/filepath"
 	"slices"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
@@ -286,6 +289,91 @@ type ContainerBuildContextArchive struct {
 
 	// Base64-encoded tar file contents. Mutually exclusive with Source.
 	RawContents string `json:"rawContents,omitempty"`
+}
+
+// ContainerCopyFileContext describes a tar archive to extract into a container before startup.
+// Exactly one of Directory, Source and RawContents is required.
+// +k8s:openapi-gen=true
+type ContainerCopyFileContext struct {
+	// Destination is the absolute container destination, defaulting to "/".
+	// File and inline archives require an existing destination; Directory creates it through the streamed archive.
+	Destination string `json:"destination,omitempty"`
+	// Directory is an absolute host directory packaged as a tar stream during copy.
+	// Source permissions and relative internal symlinks are preserved; absolute or escaping links are rejected.
+	Directory string `json:"directory,omitempty"`
+	// ExecutableFiles lists regular files relative to Directory that gain execute permissions in the archive.
+	// Paths use forward slashes without "." or ".." components; source files are not modified.
+	// +listType=atomic
+	ExecutableFiles []string `json:"executableFiles,omitempty"`
+	// Source is a host tar file. Mutually exclusive with Directory and RawContents.
+	Source string `json:"source,omitempty"`
+	// SHA256 verifies the archive at Source. Required when Source is set.
+	SHA256 string `json:"sha256,omitempty"`
+	// RawContents contains a base64-encoded tar archive. Mutually exclusive with Directory and Source.
+	RawContents string `json:"rawContents,omitempty"`
+	// DeleteAfterCopy deletes Source after copying or terminal failure, including stop/deletion.
+	// The file is retained while an operation is outstanding or a retry remains possible.
+	DeleteAfterCopy bool `json:"deleteAfterCopy,omitempty"`
+}
+
+func validateCopyFiles(contexts []ContainerCopyFileContext, contextsPath *field.Path) field.ErrorList {
+	var errorList field.ErrorList
+	for index, copyContext := range contexts {
+		contextPath := contextsPath.Index(index)
+		if copyContext.Destination != "" && !path.IsAbs(copyContext.Destination) {
+			errorList = append(errorList, field.Invalid(contextPath.Child("destination"), copyContext.Destination, "destination must be absolute"))
+		}
+		inputs := 0
+		for _, input := range []string{copyContext.Directory, copyContext.Source, copyContext.RawContents} {
+			if input != "" {
+				inputs++
+			}
+		}
+		if inputs != 1 {
+			errorList = append(errorList, field.Invalid(contextPath, nil, "exactly one of directory, source, or rawContents is required"))
+		}
+		if copyContext.Directory != "" && !filepath.IsAbs(copyContext.Directory) {
+			errorList = append(errorList, field.Invalid(contextPath.Child("directory"), copyContext.Directory, "directory must be an absolute host path"))
+		}
+		if len(copyContext.ExecutableFiles) != 0 && copyContext.Directory == "" {
+			errorList = append(errorList, field.Forbidden(contextPath.Child("executableFiles"), "executableFiles requires directory"))
+		}
+		errorList = append(errorList, validateExecutableFiles(copyContext.ExecutableFiles, contextPath.Child("executableFiles"))...)
+		if copyContext.Source != "" && copyContext.SHA256 == "" {
+			errorList = append(errorList, field.Required(contextPath.Child("sha256"), "sha256 is required with source"))
+		}
+		if copyContext.Source == "" && copyContext.SHA256 != "" {
+			errorList = append(errorList, field.Forbidden(contextPath.Child("sha256"), "sha256 requires source"))
+		}
+		if copyContext.SHA256 != "" {
+			hash := copyContext.SHA256
+			if strings.HasPrefix(strings.ToLower(hash), "sha256:") {
+				hash = hash[len("sha256:"):]
+			}
+			if !validSHA256HexRegexp.MatchString(hash) {
+				errorList = append(errorList, field.Invalid(contextPath.Child("sha256"), copyContext.SHA256, "sha256 must be a 64-character hex string, optionally prefixed with sha256:"))
+			}
+		}
+		if copyContext.DeleteAfterCopy && copyContext.Source == "" {
+			errorList = append(errorList, field.Forbidden(contextPath.Child("deleteAfterCopy"), "deleteAfterCopy requires source"))
+		}
+		if copyContext.RawContents != "" {
+			if _, decodeErr := base64.StdEncoding.DecodeString(copyContext.RawContents); decodeErr != nil {
+				errorList = append(errorList, field.Invalid(contextPath.Child("rawContents"), "<base64 data>", decodeErr.Error()))
+			}
+		}
+	}
+	return errorList
+}
+
+func validateExecutableFiles(files []string, filesPath *field.Path) field.ErrorList {
+	var errorList field.ErrorList
+	for index, name := range files {
+		if name == "." || !fs.ValidPath(name) || strings.ContainsAny(name, "\\:\x00") {
+			errorList = append(errorList, field.Invalid(filesPath.Index(index), name, "must be a root-relative file path using forward slashes without '.' or '..' components"))
+		}
+	}
+	return errorList
 }
 
 type ImagePullPolicy string

@@ -32,6 +32,12 @@ DCP supports Docker, Podman, and WSLC (Windows only). The runtime's CLI must be 
 
 Select a runtime explicitly with `--container-runtime docker`, `--container-runtime podman`, or `--container-runtime wslc`. When no runtime is specified, DCP prefers healthy Docker, then Podman, then WSLC.
 
+### Project debug-adapter validation
+
+The Project Delve E2E scenario exercises a real Delve adapter through the V2 Project debug endpoint without a terminal or container. It covers breakpoint handling, stack/local-variable inspection, continuation and cleanup, including deleting Project while the target is stopped. The debug target lives in `test/projectdebug`.
+
+`make test-ci` (and the equivalent Windows CI driver) acquires the pinned Delve Go tool from `go.mod`, builds the debug target, and enables the scenario. Ordinary `make test` skips it unless explicitly opted in with `DCP_TEST_ENABLE_DELVE=true`; that setting also adds `cache-delve` and `projectdebug-tool` to the prerequisites. Missing prerequisites fail when enabled. DCP itself does not acquire adapters. Agent-driven real Delve/E2E execution is kept in CI, while native compilation and synthetic test-client checks can run locally.
+
 ### Environment variables affecting DCP behavior
 
 DCP has knowledge of a number of environment variables that can change its behavior; they are used mostly for testing.

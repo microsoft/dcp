@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -20,6 +21,21 @@ type pulledImageInspector struct {
 	failures        int
 	results         []InspectedImage
 	inspectionError error
+}
+
+// Verifies that NewImageInspectionBackoff returns independent policies with the established
+// initial interval, exponential growth, jitter and elapsed-time budget.
+func TestNewImageInspectionBackoff(t *testing.T) {
+	t.Parallel()
+	policy := NewImageInspectionBackoff()
+	other := NewImageInspectionBackoff()
+	require.NotSame(t, policy, other)
+	require.Equal(t, 200*time.Millisecond, policy.InitialInterval)
+	require.Equal(t, float64(2), policy.Multiplier)
+	require.Equal(t, 0.1, policy.RandomizationFactor)
+	require.Equal(t, 6*time.Second, policy.MaxElapsedTime)
+	require.GreaterOrEqual(t, policy.NextBackOff(), 180*time.Millisecond)
+	require.LessOrEqual(t, other.NextBackOff(), 220*time.Millisecond)
 }
 
 func (inspector *pulledImageInspector) InspectImages(_ context.Context, _ InspectImagesOptions) ([]InspectedImage, error) {

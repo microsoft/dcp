@@ -17,6 +17,7 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -109,41 +110,34 @@ func TestRunToCompletionDeadlineExceeded(t *testing.T) {
 	}
 }
 
-// Tests that RunWithTimeout() call returns almost immediately when the context is cancelled.
+// Verifies that RunWithTimeout returns cancellation after process startup without waiting for normal completion.
 func TestRunWithTimeout(t *testing.T) {
 	t.Parallel()
 
-	delayToolDir, err := getDelayToolDir()
-	require.NoError(t, err)
-
-	executor := process.NewOSExecutor(log)
+	testCtx, cancelTest := testutil.GetTestContext(t, 0)
+	defer cancelTest()
+	executor := int_testutil.NewTestProcessExecutor(testCtx)
 	defer executor.Dispose()
 
-	// Command returns on its own after 5 seconds. This prevents the test from hanging
-	// or leaving processes running after the test is done.
-	cmd := exec.Command("./delay", "-d", "5s")
-	cmd.Dir = delayToolDir
-	ctx, cancelFn := context.WithCancel(context.Background())
-	runCallEndedCh := make(chan struct{})
+	cmd := exec.Command("run-with-timeout-test")
+	ctx, cancelRun := context.WithCancel(testCtx)
+	defer cancelRun()
+	runCallEndedCh := make(chan error, 1)
 
 	go func() {
-		_, _ = process.RunWithTimeout(ctx, executor, cmd)
-		runCallEndedCh <- struct{}{}
+		_, runErr := process.RunWithTimeout(ctx, executor, cmd)
+		runCallEndedCh <- runErr
 	}()
 
-	// Sleep for a bit to make sure the process is started.
-	time.Sleep(1 * time.Second)
-
-	start := time.Now()
-	cancelFn()
-	<-runCallEndedCh
-	elapsed := time.Since(start)
-	elapsedStr := osutil.FormatDuration(elapsed)
-
-	// Normally we expect the RunWithTimeout() call to return much faster than 500 ms,
-	// but we allow for some slack in case the test is running on a heavily loaded machine.
-	if elapsed > 500*time.Millisecond {
-		t.Fatal("RunWithTimeout() call did not return immediately after context cancellation, elapsed time was ", elapsedStr)
+	require.NoError(t, wait.PollUntilContextCancel(testCtx, time.Millisecond, true, func(_ context.Context) (bool, error) {
+		return len(executor.FindAll([]string{"run-with-timeout-test"}, "", nil)) == 1, nil
+	}))
+	cancelRun()
+	select {
+	case runErr := <-runCallEndedCh:
+		require.ErrorIs(t, runErr, context.Canceled)
+	case <-testCtx.Done():
+		t.Fatal("RunWithTimeout did not return after cancellation")
 	}
 }
 

@@ -8,6 +8,7 @@ package ctrlutil
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,54 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that simulated exec leaves input ownership with its caller on completion or cancellation
+// and omits live streams from recorded invocation snapshots.
+func TestContainerExecLeavesCallerInputOpen(t *testing.T) {
+	t.Parallel()
+	for _, ending := range []string{"complete", "cancel"} {
+		t.Run(ending, func(t *testing.T) {
+			t.Parallel()
+			testCtx, testCancel := testutil.GetTestContext(t, 0)
+			defer testCancel()
+			ctx, cancel := context.WithCancel(testCtx)
+			defer cancel()
+			orchestrator, orchestratorErr := NewTestContainerOrchestrator(testCtx, logr.Discard(), TcoOptionNone)
+			require.NoError(t, orchestratorErr)
+			defer func() { require.NoError(t, orchestrator.Close()) }()
+			image, pullErr := orchestrator.PullImage(testCtx, containers.PullImageOptions{Image: "exec-input-image"})
+			require.NoError(t, pullErr)
+			containerID, runErr := orchestrator.RunContainer(testCtx, containers.RunContainerOptions{
+				CreateContainerOptions: containers.CreateContainerOptions{Name: "exec-input", Image: image},
+			})
+			require.NoError(t, runErr)
+			reader, writer, pipeErr := os.Pipe()
+			require.NoError(t, pipeErr)
+			defer reader.Close()
+			defer writer.Close()
+			exits, execErr := orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
+				Container: containerID, Command: "adapter", StdInStream: reader,
+			})
+			require.NoError(t, execErr)
+			recorded, recordErr := orchestrator.GetContainerExecOptions(containerID, "adapter")
+			require.NoError(t, recordErr)
+			require.Nil(t, recorded.StdInStream)
+			if ending == "cancel" {
+				cancel()
+			} else {
+				require.NoError(t, orchestrator.SimulateContainerExecExit(testCtx, containerID, "adapter", 0))
+			}
+			select {
+			case _, open := <-exits:
+				require.True(t, open)
+			case <-testCtx.Done():
+				t.Fatal("simulated exec did not finish")
+			}
+			_, statErr := reader.Stat()
+			require.NoError(t, statErr, "simulated exec must not close caller-owned stdin")
+		})
+	}
+}
 
 // Verifies that TestContainerOrchestrator allows queued removal failures before blocking recovery and handles concurrent removal of another batch member.
 func TestContainerRemovalBlocksRecoveryAfterFailures(t *testing.T) {

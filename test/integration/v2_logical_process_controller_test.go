@@ -981,17 +981,19 @@ func TestV2LogicalProcessControllerStopsDuringPersistenceFailureAndReleasesTermi
 	require.ErrorIs(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, resource, environmentInfo.ResourceLeaseOwner), statestore.ErrResourceLeaseNotHeld)
 }
 
-// Verifies that a polled exit of an adopted process permits completion and startup lease release
+// Verifies that a watched exit of an adopted process promptly permits completion and startup lease release
 // without consulting unavailable workload ownership or removing its existing reuse record.
 func TestV2LogicalProcessControllerReleasesLeaseForExitedAdoptedProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	const namespaceName = "v2-process-exited-adoption-registration"
+	timing := testReconciliationTiming
+	timing.MonitoringDelay = 30 * time.Second
 	var reader *namespaceWorkloadFailureReader
 	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
 		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
-		TestEnvironmentOptions{DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
+		TestEnvironmentOptions{ReconciliationTiming: &timing, DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
 			reader = &namespaceWorkloadFailureReader{Reader: apiReader, namespaceName: namespaceName}
 			return reader
 		}})
@@ -1022,12 +1024,15 @@ func TestV2LogicalProcessControllerReleasesLeaseForExitedAdoptedProcess(t *testi
 	})
 	require.NoError(t, environment.StateStore.VerifyResourceLeaseHeld(ctx, resource, environment.ResourceLeaseOwner))
 	require.NoError(t, environment.TestProcessExecutor.StopProcess(ctx, handle))
+	// This bound distinguishes exit notification from the 30-second monitoring fallback.
+	exitCtx, cancelExit := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelExit()
 	physicalName := types.NamespacedName{Namespace: namespaceName, Name: running.Status.PhysicalProcessRef}
-	waitObjectAssumesStateEx(t, ctx, server.Client, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
+	waitObjectAssumesStateEx(t, exitCtx, server.Client, physicalName, func(current *apiv2.PhysicalProcess) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return ready != nil && ready.Reason == string(apiv2.PhysicalProcessReasonRuntimeProcessExited), nil
 	})
-	completed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+	completed := waitObjectAssumesStateEx(t, exitCtx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
 	})
 	requireReadyCondition(t, completed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonCompleted)

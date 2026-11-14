@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -46,6 +47,8 @@ type delayFlagData struct {
 	forkChildren   bool
 	reportReady    bool
 	readyFile      string
+	dapStdio       bool
+	echoStdio      bool
 }
 
 var (
@@ -62,6 +65,8 @@ const (
 	forkChildrenFlag   = "fork-children"
 	reportReadyFlag    = "report-ready"
 	readyFileFlag      = "ready-file"
+	dapStdioFlag       = "dap-stdio"
+	echoStdioFlag      = "echo-stdio"
 )
 
 func newMainCommand(log *logger.Logger) *cobra.Command {
@@ -87,8 +92,18 @@ You can also ask it to exit with a specific exit code.`,
 	cmd.Flags().BoolVar(&flags.forkChildren, forkChildrenFlag, false, "If specified, child processes are started in a separate process group; on Windows they are also started in a separate console.")
 	cmd.Flags().BoolVar(&flags.reportReady, reportReadyFlag, false, "If specified, write the process PID to stdout after signal handling and child startup are ready.")
 	cmd.Flags().StringVar(&flags.readyFile, readyFileFlag, "", "Create this file after all direct children have started. The file must not already exist. This option is not passed to children.")
+	cmd.Flags().BoolVar(&flags.dapStdio, dapStdioFlag, false, "Serve minimal DAP responses on stdin/stdout and exit after disconnect. This option is not passed to children.")
+	cmd.Flags().BoolVar(&flags.echoStdio, echoStdioFlag, false, "Echo raw stdin to stdout until EOF and announce readiness on stderr. This option is not passed to children.")
 
 	return cmd
+}
+
+func echoStdio(input io.Reader, output, diagnostic io.Writer) error {
+	if _, readyErr := fmt.Fprintln(diagnostic, "stdio echo ready"); readyErr != nil {
+		return readyErr
+	}
+	_, copyErr := io.Copy(output, input)
+	return copyErr
 }
 
 func runMain(log logr.Logger) error {
@@ -100,6 +115,18 @@ func runMain(log logr.Logger) error {
 	}
 	if flags.holdPipe && flags.childSpec == "" {
 		return fmt.Errorf("the %s flag requires %s", holdPipeFlag, childSpecFlag)
+	}
+	if flags.dapStdio {
+		if flags.childSpec != "" || flags.reportReady || flags.readyFile != "" || flags.echoStdio {
+			return fmt.Errorf("DAP mode cannot be combined with child or readiness output")
+		}
+		return serveDAP(os.Stdin, os.Stdout)
+	}
+	if flags.echoStdio {
+		if flags.childSpec != "" || flags.reportReady || flags.readyFile != "" {
+			return fmt.Errorf("stdio echo mode cannot be combined with child or readiness output")
+		}
+		return echoStdio(os.Stdin, os.Stdout, os.Stderr)
 	}
 
 	shutdownCh := make(chan os.Signal, 1)

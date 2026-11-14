@@ -73,6 +73,9 @@ type TimeoutOption struct {
 	Timeout time.Duration
 }
 
+// CopyFilesTimeout bounds streamed archive transfers while honoring earlier caller cancellation.
+const CopyFilesTimeout = 10 * time.Minute
+
 // CLICommandRunner abstracts the ability to create and run container runtime CLI commands.
 // Both Docker and Podman orchestrators implement this interface, allowing shared logic
 // (such as image layer application) to invoke runtime-specific CLI commands.
@@ -484,6 +487,10 @@ type ExecContainerOptions struct {
 	// The arguments to pass to the command
 	Args []string
 
+	// StdInStream supplies input and enables interactive exec without allocating a terminal.
+	// The caller owns the stream. Use an OS pipe for long-lived input to avoid waiting for a blocked reader on command exit.
+	StdInStream io.Reader
+
 	StreamCommandOptions
 }
 
@@ -600,6 +607,18 @@ type CreateFiles interface {
 	CreateFiles(ctx context.Context, options CreateFilesOptions) error
 }
 
+// CopyFilesOptions supplies a tar archive to extract beneath an absolute container destination.
+// The caller owns Archive and keeps it open until CopyFiles returns.
+type CopyFilesOptions struct {
+	Container   string
+	Destination string
+	Archive     io.Reader
+}
+
+type CopyFiles interface {
+	CopyFiles(ctx context.Context, options CopyFilesOptions) error
+}
+
 // ApplyImageLayers command types
 
 type ApplyImageLayersOptions struct {
@@ -678,6 +697,7 @@ type ContainerOrchestrator interface {
 	ExecContainers
 	AttachContainer
 	CreateFiles
+	CopyFiles
 	ApplyImageLayers
 
 	// Subscribes to events about container state changes

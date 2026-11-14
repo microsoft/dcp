@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,9 +21,40 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/commandstreams"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that Podman copies caller-owned tar streams through its native or machine transport
+// and surfaces command launch failures.
+func TestCopyFilesArchive(t *testing.T) {
+	t.Parallel()
+	prefix := []string{"podman"}
+	if osutil.IsWindows() {
+		prefix = append(prefix, "machine", "ssh", "podman")
+	}
+	commandstreams.VerifyTarCopy(t, prefix, func(ctx context.Context, executor process.Executor, archive io.Reader) error {
+		orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+		return orchestrator.CopyFiles(ctx, containers.CopyFilesOptions{Container: "pinned-id", Destination: "/workspace", Archive: archive})
+	})
+}
+
+// Verifies that Podman exec forwards caller-owned stdin without a TTY, preserves raw duplex IO,
+// keeps stderr separate and retains its existing completion, cancellation and startup-failure behavior.
+func TestExecContainerStreams(t *testing.T) {
+	t.Parallel()
+	commandstreams.VerifyCommandStreams(t, []string{"podman", "exec"},
+		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
+			orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+			return orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
+				Container: "pinned-id", Command: "adapter", Args: []string{"--flag"}, StdInStream: stdin,
+				StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
+			})
+		})
+}
 
 // Verifies that container inspection preserves runtime identity, environment, networking,
 // and separate entrypoint and command values alongside their combined arguments.

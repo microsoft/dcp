@@ -116,6 +116,16 @@ type durationAndJitter struct {
 	Jitter time.Duration
 }
 
+// ReconciliationTiming specifies fixed scheduling intervals without jitter.
+// Configure it before starting a reconciler; omitted configuration preserves production timing.
+type ReconciliationTiming struct {
+	StandardDelay    time.Duration
+	RetryDelay       time.Duration
+	MonitoringDelay  time.Duration
+	DebounceDelay    time.Duration
+	MaxDebounceDelay time.Duration
+}
+
 var (
 	// Maps additionalReconciliationDelay values to actual time.Duration values for delay and jitter.
 	delayDurations = map[AdditionalReconciliationDelay]durationAndJitter{

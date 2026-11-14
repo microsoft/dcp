@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"sync/atomic"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	ct "github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/commandstreams"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
@@ -36,6 +38,30 @@ const (
 	actionPoll      = 200 * time.Millisecond
 	pollImmediately = true // Don't wait before polling for the first time
 )
+
+// Verifies that Docker copies caller-owned tar streams to the selected container destination
+// and surfaces command launch failures.
+func TestCopyFilesArchive(t *testing.T) {
+	t.Parallel()
+	commandstreams.VerifyTarCopy(t, []string{"docker"}, func(ctx context.Context, executor process.Executor, archive io.Reader) error {
+		orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
+		return orchestrator.CopyFiles(ctx, ct.CopyFilesOptions{Container: "pinned-id", Destination: "/workspace", Archive: archive})
+	})
+}
+
+// Verifies that Docker exec forwards caller-owned stdin without a TTY, preserves raw duplex IO,
+// keeps stderr separate and retains its existing completion, cancellation and startup-failure behavior.
+func TestExecContainerStreams(t *testing.T) {
+	t.Parallel()
+	commandstreams.VerifyCommandStreams(t, []string{"docker", "exec"},
+		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
+			orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
+			return orchestrator.ExecContainer(ctx, ct.ExecContainerOptions{
+				Container: "pinned-id", Command: "adapter", Args: []string{"--flag"}, StdInStream: stdin,
+				StreamCommandOptions: ct.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
+			})
+		})
+}
 
 func TestExpectStringsSingleLine(t *testing.T) {
 	b := bytes.Buffer{}

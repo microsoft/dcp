@@ -519,7 +519,7 @@ func handleLogicalContainerPending(
 	}
 	if physical == nil {
 		if spec.Container != nil {
-			networksResolved, physicalNetworks, networkMessage, resolveErr := reconciler.resolveLogicalContainerNetworks(ctx, container)
+			networksResolved, physicalNetworks, networkMessage, resolveErr := resolveLogicalContainerNetworks(ctx, reconciler.Client, container.Namespace, container.Spec.Container.Networks)
 			if resolveErr != nil {
 
 				log.Error(resolveErr, "Failed to resolve logical container networks")
@@ -601,16 +601,16 @@ func physicalContainerConfigFromLogicalSpec(spec *apiv2.LogicalContainerSpec, po
 	return config.DeepCopy()
 }
 
-func (r *LogicalContainerReconciler) resolveLogicalContainerNetworks(
-	ctx context.Context, container *apiv2.LogicalContainer,
+func resolveLogicalContainerNetworks(
+	ctx context.Context, reader ctrl_client.Reader, namespace string, networks []apiv2.LogicalContainerNetworkConnectionConfig,
 ) (bool, []apiv2.ContainerNetworkConnectionConfig, string, error) {
 	var resolved []apiv2.ContainerNetworkConnectionConfig
 	var pendingMessage string
 	var resolutionErr error
-	for _, requested := range container.Spec.Container.Networks {
+	for _, requested := range networks {
 		network := &apiv2.LogicalContainerNetwork{}
-		networkName := commonapi.AsNamespacedName(requested.NetworkRef, container.Namespace)
-		getErr := r.Get(ctx, networkName, network)
+		networkName := commonapi.AsNamespacedName(requested.NetworkRef, namespace)
+		getErr := reader.Get(ctx, networkName, network)
 		if apierrors.IsNotFound(getErr) {
 			if pendingMessage == "" {
 				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q does not exist.", networkName)

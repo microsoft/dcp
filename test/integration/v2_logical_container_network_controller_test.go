@@ -743,9 +743,11 @@ func TestV2LogicalContainerNetworkControllerRetriesNamespaceOwnershipFailure(t *
 	require.NoError(t, wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
 		return reader.failures.Load() > failuresBeforeDeletion, nil
 	}))
-	physical := &apiv2.PhysicalContainerNetwork{}
-	require.NoError(t, serverInfo.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: failed.Status.PhysicalNetworkRef}, physical))
-	require.False(t, physical.DeletionTimestamp.IsZero())
+	physical := waitObjectAssumesStateEx(t, ctx, serverInfo.Client,
+		types.NamespacedName{Namespace: namespace.Name, Name: failed.Status.PhysicalNetworkRef},
+		func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
+			return !current.DeletionTimestamp.IsZero(), nil
+		})
 	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
 	require.NoError(t, environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, network, environmentInfo.ResourceLeaseOwner))
 	reader.fail.Store(false)
