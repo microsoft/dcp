@@ -101,8 +101,11 @@ func (ns *unixSocketNotificationSource) Subscribe(in *emptypb.Empty, stream prot
 			}
 
 			if sendErr != nil {
+				// Any other error aborts the stream, and Send will keep returning the same error.
+				// End the subscription so that the client can establish a new one.
 				ns.log.Error(sendErr, "Failed to send notification to client", "SubscriptionID", sid, "Notification", n)
-				continue // Try again with next notification.
+				forgetSubscription()
+				return nil
 			}
 		}
 	}
