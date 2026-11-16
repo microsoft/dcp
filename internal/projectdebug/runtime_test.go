@@ -17,8 +17,48 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	internaltest "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that a shared host provider preserves an incomplete-descendant cleanup warning
+// after confirmed root exit while allowing a subsequent provider to launch.
+func TestProjectDebugReleasePreservesDescendantCleanupWarning(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	apiClient, writer := startProjectDebugStatusServer(t, ctx)
+	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen")
+	executor := &adapterServingExecutor{
+		TestProcessExecutor: internaltest.NewTestProcessExecutor(context.WithoutCancel(ctx)),
+		stops:               make(map[process.Pid_t]func()),
+	}
+	t.Cleanup(executor.Dispose)
+	debugRuntime := newProjectDebugRuntime(ctx, executor, writer, logr.Discard())
+	execution, transport, release, acquireErr := debugRuntime.acquire(ctx, project)
+	require.NoError(t, acquireErr)
+	require.NoError(t, transport.Close())
+	executor.incompleteTree.Store(true)
+	require.ErrorIs(t, release(), process.ErrIncompleteProcessTree)
+	require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(execution.handle)))
+	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
+	require.Len(t, project.Status.Debug.Executions, 1)
+	completed := project.Status.Debug.Executions[0]
+	require.Equal(t, apiv2.ProjectDebugPhaseExited, completed.Phase)
+	require.False(t, completed.FinishedAt.IsZero())
+	require.Len(t, completed.Conditions, 1)
+	require.Equal(t, "DescendantCleanupUnconfirmed", completed.Conditions[0].Reason)
+	require.Contains(t, completed.Conditions[0].Message, process.ErrIncompleteProcessTree.Error())
+
+	executor.incompleteTree.Store(false)
+	replacement, replacementTransport, releaseReplacement, replacementErr := debugRuntime.acquire(ctx, project)
+	require.NoError(t, replacementErr)
+	require.NotEqual(t, execution.status.ID, replacement.status.ID)
+	require.NoError(t, replacementTransport.Close())
+	require.NoError(t, releaseReplacement())
+	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
+	require.Len(t, project.Status.Debug.Executions, 2)
+	require.Equal(t, "DescendantCleanupUnconfirmed", project.Status.Debug.Executions[0].Conditions[0].Reason)
+}
 
 // Verifies that acquisition waits behind stopping host/container providers without launching,
 // cancellation preserves the fence, and a waiting acquisition proceeds when a ready provider replaces it.

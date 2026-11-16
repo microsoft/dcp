@@ -166,8 +166,18 @@ func (execution *projectDebugExecution) stopExecution() error {
 		stopErr = errors.Join(stopErr, publishErr)
 	} else {
 		execution.statusMu.Lock()
-		if execution.status.FinishedAt.IsZero() {
+		publishCompletion := execution.status.FinishedAt.IsZero()
+		if publishCompletion {
 			execution.status.FinishedAt = metav1.NowMicro()
+		}
+		if errors.Is(stopErr, process.ErrIncompleteProcessTree) {
+			execution.status.Phase = apiv2.ProjectDebugPhaseExited
+			execution.status.Conditions = debugConditions("DescendantCleanupUnconfirmed",
+				fmt.Sprintf("The adapter root exited, but descendant cleanup could not be confirmed: %v", stopErr),
+				false, execution.generation)
+			publishCompletion = true
+		}
+		if publishCompletion {
 			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{
 				Name: execution.projectName.Name, Namespace: execution.projectName.Namespace, UID: execution.projectUID,
 			}}

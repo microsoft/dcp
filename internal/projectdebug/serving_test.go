@@ -53,9 +53,10 @@ import (
 // adapterServingExecutor injects echo-adapter behavior only at the process-executor boundary.
 type adapterServingExecutor struct {
 	*internaltest.TestProcessExecutor
-	mu          sync.Mutex
-	stops       map[process.Pid_t]func()
-	unconfirmed atomic.Bool
+	mu             sync.Mutex
+	stops          map[process.Pid_t]func()
+	unconfirmed    atomic.Bool
+	incompleteTree atomic.Bool
 }
 
 type adapterRunningStatusInterceptor struct {
@@ -652,6 +653,9 @@ func (executor *adapterServingExecutor) StopProcess(ctx context.Context, handle 
 		stop()
 	}
 	stopErr := executor.TestProcessExecutor.StopProcess(ctx, handle, options...)
+	if executor.incompleteTree.Load() {
+		stopErr = errors.Join(stopErr, process.ErrIncompleteProcessTree)
+	}
 	if executor.unconfirmed.Load() {
 		return errors.Join(stopErr, errors.New("injected adapter cleanup uncertainty"))
 	}
