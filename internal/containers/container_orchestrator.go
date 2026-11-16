@@ -495,8 +495,9 @@ type ExecContainerOptions struct {
 }
 
 type ExecContainers interface {
-	// Executes a command in a running container. Returns a channel that will emit the final exit code of running the command.
+	// Executes a command in a running container. Returns a channel that emits the attached runtime command's exit code.
 	// Successful launch starts the attached runtime command, not necessarily the in-container process.
+	// A known exit code can reflect a CLI/runtime/transport failure rather than in-container process termination.
 	// Cancellation requests attached-session shutdown and does not guarantee host cleanup or in-container process termination.
 	// The completion channel emits once when the executor reports completion, then closes.
 	// Output drain is bounded; cleanup can remain unconfirmed and remaining output may be lost.
