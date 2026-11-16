@@ -49,7 +49,7 @@ const (
 	ProjectReasonDebugSessionsActive ConditionReason = "DebugSessionsActive"
 	// ProjectReasonPaused indicates that the prepared container is paused.
 	ProjectReasonPaused ConditionReason = "Paused"
-	// ProjectReasonStopping indicates that session, target, or backing cleanup is in progress.
+	// ProjectReasonStopping indicates that session, adapter, or backing cleanup is in progress.
 	ProjectReasonStopping ConditionReason = "Stopping"
 	// ProjectReasonStopped indicates that requested shutdown has completed.
 	ProjectReasonStopped ConditionReason = "Stopped"
@@ -351,7 +351,7 @@ type ProjectDebugProcessStatus struct {
 	Name string `json:"name,omitempty"`
 	// PID is the reported operating system process ID, if provided.
 	PID *int64 `json:"pid,omitempty"`
-	// Attached indicates that the adapter attached to an externally owned process; DCP observes but does not stop it.
+	// Attached records an adapter-reported attachment; DCP does not take cleanup ownership of any reported target.
 	Attached bool `json:"attached,omitempty"`
 	// ContainerID scopes a reported PID to the prepared container, never the DCP host.
 	ContainerID string `json:"containerID,omitempty"`
@@ -360,7 +360,7 @@ type ProjectDebugProcessStatus struct {
 	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
 	// TrackingError reports unavailable or non-local process identity without failing the DAP session.
 	TrackingError string `json:"trackingError,omitempty"`
-	// Observation reports Project-owned process observation and cleanup independently of session phase.
+	// Observation reports process liveness independently of session phase, without taking cleanup ownership.
 	Observation ProjectDebugProcessObservation `json:"observation,omitempty"`
 }
 
@@ -372,15 +372,7 @@ const (
 	ProjectDebugProcessExited  ProjectDebugProcessPhase = "Exited"
 )
 
-type ProjectDebugProcessCleanup string
-
-const (
-	ProjectDebugProcessCleanupComplete    ProjectDebugProcessCleanup = "Complete"
-	ProjectDebugProcessCleanupUnconfirmed ProjectDebugProcessCleanup = "Unconfirmed"
-	ProjectDebugProcessCleanupNotOwned    ProjectDebugProcessCleanup = "NotOwned"
-)
-
-// ProjectDebugProcessObservation describes an observed process instance and its cleanup disposition.
+// ProjectDebugProcessObservation describes the observed liveness of an adapter-reported process instance.
 // +k8s:openapi-gen=true
 type ProjectDebugProcessObservation struct {
 	// Phase is Unknown, Running, or Exited; Exited also covers confirmed absence or PID reuse.
@@ -388,10 +380,7 @@ type ProjectDebugProcessObservation struct {
 	Phase ProjectDebugProcessPhase `json:"phase,omitempty"`
 	// FinishedAt records when exit or absence was confirmed, without claiming an unavailable exit code.
 	FinishedAt metav1.MicroTime `json:"finishedAt,omitempty"`
-	// Cleanup is empty while pending, Complete when confirmed, Unconfirmed when uncertain, or NotOwned for attached targets.
-	// +kubebuilder:validation:Enum=Complete;Unconfirmed;NotOwned
-	Cleanup ProjectDebugProcessCleanup `json:"cleanup,omitempty"`
-	// Message describes observation failures or unconfirmed cleanup.
+	// Message describes observation failures.
 	Message string `json:"message,omitempty"`
 }
 

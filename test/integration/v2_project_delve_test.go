@@ -173,7 +173,7 @@ func TestProjectDelveClientBoundsPendingMessages(t *testing.T) {
 }
 
 // Verifies in opt-in CI that a real Delve adapter runs through the production Project DAP endpoint:
-// breakpoint, stack/variable inspection, continuation and cleanup work without a TTY or V1 IDE protocol.
+// breakpoint, stack/variable inspection, continuation and adapter cleanup work without a TTY or V1 IDE protocol.
 func TestV2ProjectDelveEndToEnd(t *testing.T) {
 	if !osutil.EnvVarSwitchEnabled("DCP_TEST_ENABLE_DELVE") {
 		t.Skip("real Delve E2E requires DCP_TEST_ENABLE_DELVE from the test entry point")
@@ -334,7 +334,11 @@ func TestV2ProjectDelveEndToEnd(t *testing.T) {
 			}
 			require.NoError(t, server.Client.Delete(ctx, project))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
-			for _, handle := range handles {
+			observedExits := handles[:1]
+			if ending == "continue" {
+				observedExits = handles
+			}
+			for _, handle := range observedExits {
 				require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
 					checkErr := executor.CheckProcessRunning(handle)
 					if checkErr == nil {

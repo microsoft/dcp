@@ -26,18 +26,13 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that Project waits for adapter cleanup before stopping surviving targets, even when
-// a suspended adapter cannot finish DAP shutdown and must outlive the protocol grace window.
-func TestV2ProjectAdapterCleanupPrecedesTargets(t *testing.T) {
+// Verifies that Project stops a suspended adapter after bounded DAP shutdown without stopping
+// an independently launched target reported by that adapter.
+func TestV2ProjectCleansAdapterWithoutStoppingReportedTarget(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	var tracked *projectTargetExecutor
-	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, ProjectController, t.Name(), t.TempDir(),
-		TestEnvironmentOptions{DecorateProjectProcessExecutor: func(executor process.Executor) process.Executor {
-			tracked = &projectTargetExecutor{Executor: executor, stops: make(map[process.ProcessHandle]int)}
-			return tracked
-		}})
+	server, _, startupErr := StartTestEnvironment(t, ctx, ProjectController, t.Name(), t.TempDir())
 	require.NoError(t, startupErr)
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-shutdown-order")
 	tool, toolErr := internaltest.GetTestToolPath("delay")
@@ -64,7 +59,6 @@ func TestV2ProjectAdapterCleanupPrecedesTargets(t *testing.T) {
 	pid, pidErr := process.Int64_ToPidT(*entry.PID)
 	require.NoError(t, pidErr)
 	adapter := process.NewHandle(pid, entry.IdentityTimestamp.Time)
-	tracked.adapter.Store(&adapter)
 	proc, procErr := adapter.OsProcess()
 	require.NoError(t, procErr)
 	require.NoError(t, proc.Signal(syscall.SIGSTOP))
@@ -87,10 +81,9 @@ func TestV2ProjectAdapterCleanupPrecedesTargets(t *testing.T) {
 	t.Cleanup(resume)
 	require.NoError(t, server.Client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 	stopped := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseStopped)
-	require.False(t, tracked.orderFailed.Load(), "target cleanup started before adapter termination settled")
 	require.True(t, process.IsProcessGoneErr(ownerExecutor.CheckProcessRunning(adapter)))
-	require.True(t, process.IsProcessGoneErr(ownerExecutor.CheckProcessRunning(target)))
-	require.Equal(t, apiv2.ProjectDebugProcessCleanupComplete, stopped.Status.Debug.Sessions[0].Processes[0].Observation.Cleanup)
+	require.NoError(t, ownerExecutor.CheckProcessRunning(target))
+	require.Equal(t, apiv2.ProjectDebugProcessRunning, stopped.Status.Debug.Sessions[0].Processes[0].Observation.Phase)
 	require.NoError(t, server.Client.Delete(ctx, project))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
 }

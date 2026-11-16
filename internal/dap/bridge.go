@@ -155,6 +155,31 @@ func (writer *messageWriter) remap(message Message) (bool, bool, error) {
 	return true, found, nil
 }
 
+type bridgeEndpoint int
+
+const (
+	bridgeClient bridgeEndpoint = iota
+	bridgeAdapter
+)
+
+type bridgeResult struct {
+	endpoint    bridgeEndpoint
+	err         error
+	progressErr error
+}
+
+type bridgeSession struct {
+	client, adapter        Transport
+	toAdapter, toClient    *messageWriter
+	tracker                *sessionTracker
+	observe                func(Direction, Message) error
+	results                chan bridgeResult
+	workers                sync.WaitGroup
+	disconnectAcknowledged atomic.Bool
+	drainTimer             *time.Timer
+	drainExpired           chan struct{}
+}
+
 // Bridge forwards DAP while preserving extension payloads and request correlation in both directions.
 // On ErrShutdownRequested it injects disconnect unless disconnect was already forwarded, allowing
 // final messages to drain until adapter EOF or grace expiry. Other cancellation and client loss fail.
@@ -168,190 +193,190 @@ func (writer *messageWriter) remap(message Message) (bool, bool, error) {
 func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-chan struct{}, grace time.Duration,
 	observe func(Direction, Message) error, observeState func(SessionState) error,
 ) (bridgeErr error) {
-	toAdapter, toClient := newMessageWriter(adapter), newMessageWriter(client)
-	tracker := &sessionTracker{publish: observeState}
-	type result struct {
-		client      bool
-		err         error
-		progressErr error
+	session := &bridgeSession{
+		client: client, adapter: adapter,
+		toAdapter: newMessageWriter(adapter), toClient: newMessageWriter(client),
+		tracker: &sessionTracker{publish: observeState}, observe: observe,
+		results: make(chan bridgeResult, 2), drainExpired: make(chan struct{}),
 	}
-	results := make(chan result, 2)
-	var disconnectAcknowledged atomic.Bool
-	var workers sync.WaitGroup
 	defer func() {
-		_ = client.Close()
-		_ = adapter.Close()
-		workers.Wait()
-		bridgeErr = errors.Join(bridgeErr, tracker.disconnect(true, "Stream closed by bridge."),
-			tracker.disconnect(false, "Stream closed by bridge."))
+		bridgeErr = errors.Join(bridgeErr, session.close())
 	}()
-	if connectedErr := tracker.update(func(state *SessionState) error {
+	if connectedErr := session.tracker.update(func(state *SessionState) error {
 		state.Phase, state.StreamsConnected = ConnectionConnected, true
 		return nil
 	}); connectedErr != nil {
 		return connectedErr
 	}
-	workers.Add(2)
+	session.workers.Add(2)
 	go func() {
-		defer workers.Done()
-		for {
-			message, readErr := client.ReadMessage()
-			if readErr != nil {
-				results <- result{client: true, err: readErr, progressErr: tracker.disconnect(true, readErr.Error())}
-				return
-			}
-			forward, matched, remapErr := toClient.remap(message)
-			if remapErr != nil {
-				results <- result{client: true, err: remapErr}
-				return
-			}
-			if forward {
-				if message.text("type") != "response" || matched {
-					if progressErr := tracker.message(ClientToAdapter, message); progressErr != nil {
-						results <- result{client: true, progressErr: progressErr}
-						return
-					}
-				}
-				if observe != nil && (message.text("type") != "response" || matched) {
-					if observationErr := observe(ClientToAdapter, message); observationErr != nil {
-						results <- result{client: true, err: observationErr}
-						return
-					}
-				}
-				if writeErr := toAdapter.send(message, false); writeErr != nil {
-					results <- result{err: writeErr, progressErr: tracker.disconnect(false, writeErr.Error())}
-					return
-				}
-			}
-		}
+		defer session.workers.Done()
+		session.results <- session.forwardClientToAdapter()
 	}()
 	go func() {
-		defer workers.Done()
-		for {
-			message, readErr := adapter.ReadMessage()
-			if readErr != nil {
-				results <- result{err: readErr, progressErr: tracker.disconnect(false, readErr.Error())}
-				return
-			}
-			forward, matched, remapErr := toAdapter.remap(message)
-			if remapErr != nil {
-				results <- result{err: remapErr}
-				return
-			}
-			if forward {
-				if message.text("type") != "response" || matched {
-					if progressErr := tracker.message(AdapterToClient, message); progressErr != nil {
-						results <- result{progressErr: progressErr}
-						return
-					}
-				}
-				if observe != nil && (message.text("type") != "response" || matched) {
-					if observationErr := observe(AdapterToClient, message); observationErr != nil {
-						results <- result{err: observationErr}
-						return
-					}
-				}
-				if matched && message.text("type") == "response" && message.text("command") == "disconnect" {
-					var success bool
-					// Record before forwarding so a client closing immediately after receipt cannot race the flag.
-					disconnectAcknowledged.Store(json.Unmarshal(message["success"], &success) == nil && success)
-				}
-				if writeErr := toClient.send(message, false); writeErr != nil {
-					results <- result{client: true, err: writeErr, progressErr: tracker.disconnect(true, writeErr.Error())}
-					return
-				}
-			}
-		}
+		defer session.workers.Done()
+		session.results <- session.forwardAdapterToClient()
 	}()
-	finish := func(completed result) error {
-		if completed.progressErr != nil {
-			return errors.Join(completed.err, completed.progressErr)
+
+	shutdownRequested, forwardingErr := session.forwardUntilShutdown(ctx, exited, readDone)
+	if forwardingErr != nil || !shutdownRequested {
+		return forwardingErr
+	}
+	return session.disconnectAndDrain(ctx, grace)
+}
+
+func (session *bridgeSession) forwardClientToAdapter() bridgeResult {
+	for {
+		message, readErr := session.client.ReadMessage()
+		if readErr != nil {
+			return bridgeResult{endpoint: bridgeClient, err: readErr, progressErr: session.tracker.disconnect(true, readErr.Error())}
 		}
-		if completed.client {
-			if disconnectAcknowledged.Load() {
-				return nil
+		forward, matched, remapErr := session.toClient.remap(message)
+		if remapErr != nil {
+			return bridgeResult{endpoint: bridgeClient, err: remapErr}
+		}
+		if !forward {
+			continue
+		}
+		if message.text("type") != "response" || matched {
+			if progressErr := session.tracker.message(ClientToAdapter, message); progressErr != nil {
+				return bridgeResult{endpoint: bridgeClient, progressErr: progressErr}
 			}
-			return fmt.Errorf("debug client disconnected: %w", completed.err)
+			if session.observe != nil {
+				if observationErr := session.observe(ClientToAdapter, message); observationErr != nil {
+					return bridgeResult{endpoint: bridgeClient, err: observationErr}
+				}
+			}
 		}
-		if errors.Is(completed.err, io.EOF) {
+		if writeErr := session.toAdapter.send(message, false); writeErr != nil {
+			return bridgeResult{endpoint: bridgeAdapter, err: writeErr, progressErr: session.tracker.disconnect(false, writeErr.Error())}
+		}
+	}
+}
+
+func (session *bridgeSession) forwardAdapterToClient() bridgeResult {
+	for {
+		message, readErr := session.adapter.ReadMessage()
+		if readErr != nil {
+			return bridgeResult{endpoint: bridgeAdapter, err: readErr, progressErr: session.tracker.disconnect(false, readErr.Error())}
+		}
+		forward, matched, remapErr := session.toAdapter.remap(message)
+		if remapErr != nil {
+			return bridgeResult{endpoint: bridgeAdapter, err: remapErr}
+		}
+		if !forward {
+			continue
+		}
+		if message.text("type") != "response" || matched {
+			if progressErr := session.tracker.message(AdapterToClient, message); progressErr != nil {
+				return bridgeResult{endpoint: bridgeAdapter, progressErr: progressErr}
+			}
+			if session.observe != nil {
+				if observationErr := session.observe(AdapterToClient, message); observationErr != nil {
+					return bridgeResult{endpoint: bridgeAdapter, err: observationErr}
+				}
+			}
+		}
+		if matched && message.text("type") == "response" && message.text("command") == "disconnect" {
+			var success bool
+			// Publish before forwarding so immediate client closure cannot race the acknowledgement.
+			session.disconnectAcknowledged.Store(json.Unmarshal(message["success"], &success) == nil && success)
+		}
+		if writeErr := session.toClient.send(message, false); writeErr != nil {
+			return bridgeResult{endpoint: bridgeClient, err: writeErr, progressErr: session.tracker.disconnect(true, writeErr.Error())}
+		}
+	}
+}
+
+func (session *bridgeSession) forwardingResult(completed bridgeResult) error {
+	if completed.progressErr != nil {
+		return errors.Join(completed.err, completed.progressErr)
+	}
+	if completed.endpoint == bridgeClient {
+		if session.disconnectAcknowledged.Load() {
 			return nil
 		}
-		return fmt.Errorf("debug adapter transport failed: %w", completed.err)
+		return fmt.Errorf("debug client disconnected: %w", completed.err)
 	}
-	var drainTimer *time.Timer
-	defer func() {
-		if drainTimer != nil {
-			drainTimer.Stop()
-		}
-	}()
-	drainExpired := make(chan struct{})
-	startDrain := func() {
-		exited, readDone = nil, nil
-		drainTimer = time.AfterFunc(2*time.Second, func() {
-			close(drainExpired)
-			_ = client.Close()
-			_ = adapter.Close()
-		})
+	if errors.Is(completed.err, io.EOF) {
+		return nil
 	}
-forwarding:
+	return fmt.Errorf("debug adapter transport failed: %w", completed.err)
+}
+
+// forwardUntilShutdown distinguishes protocol shutdown requests from completed or failed forwarding.
+func (session *bridgeSession) forwardUntilShutdown(ctx context.Context, exited, readDone <-chan struct{}) (bool, error) {
 	for {
 		select {
-		case completed := <-results:
+		case completed := <-session.results:
 			select {
-			case <-drainExpired:
-				return fmt.Errorf("debug adapter output drain timed out")
+			case <-session.drainExpired:
+				return false, fmt.Errorf("debug adapter output drain timed out")
 			default:
 			}
-			return finish(completed)
-		case <-drainExpired:
-			return fmt.Errorf("debug adapter output drain timed out")
+			return false, session.forwardingResult(completed)
+		case <-session.drainExpired:
+			return false, fmt.Errorf("debug adapter output drain timed out")
 		case <-exited:
-			if terminationErr := tracker.update(func(state *SessionState) error {
+			if terminationErr := session.tracker.update(func(state *SessionState) error {
 				state.AdapterTerminating = true
 				if state.Phase != ConnectionDisconnected {
 					state.Phase = ConnectionTerminating
 				}
 				return nil
 			}); terminationErr != nil {
-				return terminationErr
+				return false, terminationErr
 			}
-			startDrain()
+			exited, readDone = nil, nil
+			session.startOutputDrain()
 		case <-readDone:
-			if disconnectedErr := tracker.disconnect(false, "Adapter output stream ended."); disconnectedErr != nil {
-				return disconnectedErr
+			if disconnectedErr := session.tracker.disconnect(false, "Adapter output stream ended."); disconnectedErr != nil {
+				return false, disconnectedErr
 			}
-			startDrain()
+			exited, readDone = nil, nil
+			session.startOutputDrain()
 		case <-ctx.Done():
-			if terminationErr := tracker.update(func(state *SessionState) error {
+			if terminationErr := session.tracker.update(func(state *SessionState) error {
 				state.ResourceTerminating = true
 				if state.Phase != ConnectionDisconnected {
 					state.Phase = ConnectionTerminating
 				}
 				return nil
 			}); terminationErr != nil {
-				return errors.Join(context.Cause(ctx), terminationErr)
+				return false, errors.Join(context.Cause(ctx), terminationErr)
 			}
 			if !errors.Is(context.Cause(ctx), ErrShutdownRequested) {
-				return context.Cause(ctx)
+				return false, context.Cause(ctx)
 			}
-			break forwarding
+			return true, nil
 		}
 	}
+}
+
+func (session *bridgeSession) startOutputDrain() {
+	session.drainTimer = time.AfterFunc(2*time.Second, func() {
+		close(session.drainExpired)
+		_ = session.client.Close()
+		_ = session.adapter.Close()
+	})
+}
+
+func (session *bridgeSession) disconnectAndDrain(ctx context.Context, grace time.Duration) error {
 	// Closing on expiry also releases a writer blocked behind backpressure.
 	graceCtx, graceCancel := context.WithTimeout(context.WithoutCancel(ctx), grace)
 	defer graceCancel()
-	stopExpiry := context.AfterFunc(graceCtx, func() { _ = client.Close(); _ = adapter.Close() })
+	stopExpiry := context.AfterFunc(graceCtx, func() { _ = session.client.Close(); _ = session.adapter.Close() })
 	defer stopExpiry()
 	shutdownDone := make(chan struct{})
 	var shutdownErr error
 	go func() {
 		defer close(shutdownDone)
-		shutdownErr = toAdapter.send(Message{
+		shutdownErr = session.toAdapter.send(Message{
 			"seq": json.RawMessage("1"), "type": json.RawMessage(`"request"`),
 			"command": json.RawMessage(`"disconnect"`), "arguments": json.RawMessage(`{}`),
 		}, true)
 	}()
-	defer func() { _ = adapter.Close(); <-shutdownDone }()
+	defer func() { _ = session.adapter.Close(); <-shutdownDone }()
 	shutdownResult := shutdownDone
 	for {
 		select {
@@ -363,13 +388,25 @@ forwarding:
 				}
 				return fmt.Errorf("send debug disconnect: %w", shutdownErr)
 			}
-		case completed := <-results:
+		case completed := <-session.results:
 			if graceCtx.Err() != nil {
 				return fmt.Errorf("debug graceful shutdown timed out")
 			}
-			return finish(completed)
+			return session.forwardingResult(completed)
 		case <-graceCtx.Done():
 			return fmt.Errorf("debug graceful shutdown timed out")
 		}
 	}
+
+}
+
+func (session *bridgeSession) close() error {
+	if session.drainTimer != nil {
+		session.drainTimer.Stop()
+	}
+	_ = session.client.Close()
+	_ = session.adapter.Close()
+	session.workers.Wait()
+	return errors.Join(session.tracker.disconnect(true, "Stream closed by bridge."),
+		session.tracker.disconnect(false, "Stream closed by bridge."))
 }

@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -29,7 +28,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that completed archive hashing, decoding, and directory copying release their temporary
+// Verifies that completed file hashing and directory copying release their temporary
 // ContextReader workers without waiting for the parent context to be cancelled.
 func TestTarOperationsReleaseReaderWorkers(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 0)
@@ -46,17 +45,9 @@ func TestTarOperationsReleaseReaderWorkers(t *testing.T) {
 	}
 	source := filepath.Join(root, "file-0")
 	hash := sha256.Sum256([]byte("data"))
-	for _, fileSource := range []bool{true, false} {
-		var archiveSource, archiveHash, raw string
-		if fileSource {
-			archiveSource, archiveHash = source, fmt.Sprintf("%x", hash)
-		} else {
-			raw = base64.StdEncoding.EncodeToString([]byte("data"))
-		}
-		reader, openErr := usvc_io.OpenTarArchive(ctx, archiveSource, archiveHash, raw)
-		require.NoError(t, openErr)
-		require.NoError(t, reader.Close())
-	}
+	reader, openErr := usvc_io.OpenSHA256VerifiedFile(ctx, source, fmt.Sprintf("%x", hash))
+	require.NoError(t, openErr)
+	require.NoError(t, reader.Close())
 	writer := usvc_io.NewTarWriter()
 	require.NoError(t, writer.CopyDirectory(ctx, root, "adapter", 0, 0, nil))
 	require.NoError(t, writer.Close())
@@ -66,7 +57,7 @@ func TestTarOperationsReleaseReaderWorkers(t *testing.T) {
 	require.NoError(t, ctx.Err())
 }
 
-// Verifies that OpenTarArchive verifies file contents before exposing them, supports hash prefixes,
+// Verifies that OpenSHA256VerifiedFile verifies contents before exposing them, supports hash prefixes,
 // and rejects a source changed after its expected hash was calculated.
 func TestTarArchiveSourceVerification(t *testing.T) {
 	t.Parallel()
@@ -76,14 +67,14 @@ func TestTarArchiveSourceVerification(t *testing.T) {
 	contents := []byte("archive contents")
 	require.NoError(t, usvc_io.WriteFile(source, contents, 0600))
 	hash := sha256.Sum256(contents)
-	reader, openErr := usvc_io.OpenTarArchive(ctx, source, fmt.Sprintf("sha256:%x", hash), "")
+	reader, openErr := usvc_io.OpenSHA256VerifiedFile(ctx, source, fmt.Sprintf("sha256:%x", hash))
 	require.NoError(t, openErr)
 	actual, readErr := io.ReadAll(reader)
 	require.NoError(t, readErr)
 	require.NoError(t, reader.Close())
 	require.Equal(t, contents, actual)
 	require.NoError(t, usvc_io.WriteFile(source, []byte("changed"), 0600))
-	_, changedErr := usvc_io.OpenTarArchive(ctx, source, fmt.Sprintf("%x", hash), "")
+	_, changedErr := usvc_io.OpenSHA256VerifiedFile(ctx, source, fmt.Sprintf("%x", hash))
 	require.ErrorContains(t, changedErr, "SHA256 mismatch")
 }
 

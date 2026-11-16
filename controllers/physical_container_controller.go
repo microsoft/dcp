@@ -6,8 +6,10 @@
 package controllers
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -1304,8 +1306,14 @@ func (r *PhysicalContainerReconciler) copyPhysicalContainerCreateFiles(
 		if copyContext.Directory != "" {
 			archive = usvc_io.OpenDirectoryTar(ctx, copyContext.Directory, strings.TrimPrefix(path.Clean(destination), "/"), 0, 0, copyContext.ExecutableFiles)
 			destination = "/"
+		} else if copyContext.Source != "" {
+			archive, openErr = usvc_io.OpenSHA256VerifiedFile(ctx, copyContext.Source, copyContext.SHA256)
 		} else {
-			archive, openErr = usvc_io.OpenTarArchive(ctx, copyContext.Source, copyContext.SHA256, copyContext.RawContents)
+			var contents []byte
+			contents, openErr = base64.StdEncoding.DecodeString(copyContext.RawContents)
+			if openErr == nil {
+				archive = io.NopCloser(bytes.NewReader(contents))
+			}
 		}
 		if openErr != nil {
 			data.state = physicalContainerStateFileCopyFailed

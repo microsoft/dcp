@@ -143,17 +143,16 @@ type projectData struct {
 	effectiveEnv       []commonapi.EnvVar
 	inputsPrepared     bool
 	// Records successful preparation independently of temporary observation failures.
-	prepared               bool
-	processes              map[process.ProcessHandle]projectProcessData
-	processCleanupsPending int
-	processPoll            bool
-	adapterAddress         string
+	prepared       bool
+	processes      map[process.ProcessHandle]apiv2.ProjectDebugProcessObservation
+	processPoll    bool
+	adapterAddress string
 }
 
 func (data *projectData) Clone() *projectData {
 	cloned := *data
 	if data.processes != nil {
-		cloned.processes = make(map[process.ProcessHandle]projectProcessData, len(data.processes))
+		cloned.processes = make(map[process.ProcessHandle]apiv2.ProjectDebugProcessObservation, len(data.processes))
 		for handle, target := range data.processes {
 			cloned.processes[handle] = target
 		}

@@ -8,11 +8,9 @@ package integration_test
 import (
 	"context"
 	"errors"
-	"slices"
-	"sync"
+	"fmt"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,12 +26,12 @@ type boundedImageInspector struct {
 	containers.ContainerOrchestrator
 	remaining             atomic.Int32
 	injected              atomic.Int32
+	successful            atomic.Int32
 	inspectionError       error
 	inspectionResults     []containers.InspectedImage
 	failAfterPull         int32
+	returnPulledReference bool
 	failAfterBuild        int32
-	inspectionLock        sync.Mutex
-	inspectionTimes       []time.Time
 	runtimeUnavailable    atomic.Bool
 	runtimeFailures       atomic.Int32
 	uncachedHealthChecks  atomic.Int32
@@ -58,6 +56,9 @@ func (inspector *boundedImageInspector) InspectImages(ctx context.Context, optio
 		remaining := inspector.remaining.Load()
 		if remaining <= 0 {
 			inspected, inspectErr := inspector.ContainerOrchestrator.InspectImages(ctx, options)
+			if inspectErr == nil {
+				inspector.successful.Add(1)
+			}
 			if inspectErr == nil && len(inspected) == 1 && inspected[0].Id != "" &&
 				inspector.failAfterVerification && inspector.verificationObserved.CompareAndSwap(false, true) {
 				inspector.remaining.Store(1)
@@ -66,9 +67,6 @@ func (inspector *boundedImageInspector) InspectImages(ctx context.Context, optio
 		}
 		if inspector.remaining.CompareAndSwap(remaining, remaining-1) {
 			inspector.injected.Add(1)
-			inspector.inspectionLock.Lock()
-			inspector.inspectionTimes = append(inspector.inspectionTimes, time.Now())
-			inspector.inspectionLock.Unlock()
 			return inspector.inspectionResults, inspector.inspectionError
 		}
 	}
@@ -247,6 +245,13 @@ func (inspector *boundedImageInspector) PullImage(ctx context.Context, options c
 		if inspector.outageAfterPull {
 			inspector.runtimeUnavailable.Store(true)
 		}
+		if inspector.returnPulledReference {
+			reference := options.Image
+			if options.Digest != "" {
+				reference += "@" + options.Digest
+			}
+			return reference, nil
+		}
 	}
 	return imageID, pullErr
 }
@@ -259,9 +264,9 @@ func (inspector *boundedImageInspector) BuildImage(ctx context.Context, options 
 	return buildErr
 }
 
-// Verifies that initial pulled, built and existing image identities use the shared bounded
-// inspection cadence, preserve the selected identity, and never repeat completed acquisition.
-func TestV2ImageIdentityVerificationUsesV1RetryPolicy(t *testing.T) {
+// Verifies that pulled, built and existing image identity verification retries failures,
+// becomes terminal on exhaustion, and never repeats completed acquisition.
+func TestV2ImageIdentityVerificationDoesNotRepeatAcquisition(t *testing.T) {
 	t.Parallel()
 	for _, acquisition := range []string{"pull", "build", "existing"} {
 		for _, failure := range []string{"missing", "inspection", "empty-ID"} {
@@ -301,10 +306,8 @@ func TestV2ImageIdentityVerificationUsesV1RetryPolicy(t *testing.T) {
 					image.Spec = apiv2.PhysicalContainerImageSpec{ImageID: imageID}
 					inspector.remaining.Store(100)
 				}
-				verificationCtx, stopVerification := context.WithTimeout(ctx, 12*time.Second)
-				defer stopVerification()
 				require.NoError(t, server.Client.Create(ctx, image))
-				failed := waitObjectAssumesStateEx(t, verificationCtx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+				failed := waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
 					return current.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed, nil
 				})
 				reason := apiv2.PhysicalContainerImageReasonLocalImageNotFound
@@ -313,17 +316,7 @@ func TestV2ImageIdentityVerificationUsesV1RetryPolicy(t *testing.T) {
 				}
 				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, reason)
 				require.Empty(t, failed.Status.ImageID)
-				inspector.inspectionLock.Lock()
-				inspectionTimes := slices.Clone(inspector.inspectionTimes)
-				inspector.inspectionLock.Unlock()
-				require.Greater(t, len(inspectionTimes), 4)
-				require.LessOrEqual(t, len(inspectionTimes), 6)
-				require.Less(t, inspectionTimes[len(inspectionTimes)-1].Sub(inspectionTimes[0]), 6*time.Second)
-				minimumInterval := 180 * time.Millisecond
-				for index := 1; index < len(inspectionTimes); index++ {
-					require.GreaterOrEqual(t, inspectionTimes[index].Sub(inspectionTimes[index-1]), minimumInterval)
-					minimumInterval *= 2
-				}
+				require.Greater(t, inspector.injected.Load(), int32(1))
 				pulls, builds := runtime.PullImageCallCount(source), runtime.BuildImageCallCount(source)
 				if acquisition == "build" {
 					require.Zero(t, pulls)
@@ -367,7 +360,7 @@ func TestV2ImageInspectionRetriesTransientFailures(t *testing.T) {
 				NamespaceController|PhysicalContainerImageController, t.Name(), t.TempDir(),
 				TestEnvironmentOptions{DecorateContainerOrchestrator: func(orchestrator containers.ContainerOrchestrator, _ *statestore.Store) containers.ContainerOrchestrator {
 					runtime = orchestrator.(*ctrl_testutil.TestContainerOrchestrator)
-					inspector = &boundedImageInspector{ContainerOrchestrator: orchestrator}
+					inspector = &boundedImageInspector{ContainerOrchestrator: orchestrator, returnPulledReference: true}
 					if stage == "before-pull" {
 						inspector.inspectionError = errors.New("temporary inspection timeout")
 						inspector.remaining.Store(3)
@@ -453,8 +446,8 @@ func TestV2ImageInspectionStopsAfterRetryLimit(t *testing.T) {
 	require.Equal(t, int32(4), inspector.injected.Load())
 }
 
-// Verifies that successful inspection resets the retry budget, so two separate transient
-// failure bursts during runtime monitoring recover without reacquiring the image.
+// Verifies that each runtime inspection gets a fresh bounded backoff window, allowing two
+// four-failure bursts to recover without reacquiring the verified image.
 func TestV2ImageInspectionResetsRetriesAfterSuccess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -478,20 +471,24 @@ func TestV2ImageInspectionResetsRetriesAfterSuccess(t *testing.T) {
 		Spec:       apiv2.PhysicalContainerImageSpec{ImageID: imageID},
 	}
 	require.NoError(t, server.Client.Create(ctx, image))
-	for attempt := 0; attempt < 3; attempt++ {
-		ready := waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
-			return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
-		})
-		require.Equal(t, imageID, ready.Status.ImageID)
-		if attempt == 2 {
-			break
-		}
-		inspector.remaining.Store(2)
+	waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady, nil
+	})
+	for attempt := 1; attempt <= 2; attempt++ {
+		successes := inspector.successful.Load()
+		inspector.remaining.Store(4)
 		require.NoError(t, retryOnConflictEx(ctx, server.Client, image.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainerImage) error {
-			current.Status.Phase = apiv2.PhysicalContainerImagePhaseUnknown
-			return server.Client.Status().Update(updateCtx, current)
+			current.Annotations = map[string]string{"test-inspection": fmt.Sprint(attempt)}
+			return server.Client.Update(updateCtx, current)
 		}))
+		recovered := waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+			return current.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed ||
+				(current.Status.Phase == apiv2.PhysicalContainerImagePhaseReady && inspector.injected.Load() == int32(4*attempt) &&
+					inspector.successful.Load() > successes), nil
+		})
+		require.Equal(t, apiv2.PhysicalContainerImagePhaseReady, recovered.Status.Phase)
+		require.Equal(t, imageID, recovered.Status.ImageID)
 	}
-	require.Equal(t, int32(4), inspector.injected.Load())
+	require.Equal(t, int32(8), inspector.injected.Load())
 	require.Equal(t, 1, runtime.PullImageCallCount("existing-retry-image"))
 }

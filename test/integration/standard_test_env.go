@@ -58,7 +58,6 @@ type TestEnvironmentOptions struct {
 	// ReconciliationTiming overrides the default fast V2 controller timing for timing-sensitive tests.
 	ReconciliationTiming            *controllers.ReconciliationTiming
 	DecoratePhysicalProcessExecutor func(process.Executor) process.Executor
-	DecorateProjectProcessExecutor  func(process.Executor) process.Executor
 	DecorateAPIClient               func(ctrl_client.Client) ctrl_client.Client
 	WorkloadID                      commonapi.WorkloadID
 	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
@@ -393,12 +392,6 @@ func StartTestEnvironmentWithOptions(
 	if inclCtrl&ProjectController != 0 {
 		projectExecutor := process.NewOSExecutor(log.WithName("ProjectProcessExecutor"))
 		_ = context.AfterFunc(ctx, projectExecutor.Dispose)
-		if options.DecorateProjectProcessExecutor != nil {
-			projectExecutor = options.DecorateProjectProcessExecutor(projectExecutor)
-			if projectExecutor == nil {
-				return nil, nil, fmt.Errorf("Project process executor decorator returned nil")
-			}
-		}
 		projectR := controllers.NewProjectReconciler(ctx, mgr.GetClient(), controllerAPIReader, log.WithName("ProjectReconciler"), projectExecutor, serverInfo.ContainerOrchestrator.Name())
 		if timingErr := projectR.ConfigureReconciliationTiming(timing); timingErr != nil {
 			return nil, nil, fmt.Errorf("failed to configure Project reconciliation timing: %w", timingErr)

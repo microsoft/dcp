@@ -9673,7 +9673,7 @@ func schema_microsoft_dcp_api_v2_ProjectDebugProcessObservation(ref common.Refer
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ProjectDebugProcessObservation describes an observed process instance and its cleanup disposition.",
+				Description: "ProjectDebugProcessObservation describes the observed liveness of an adapter-reported process instance.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"phase": {
@@ -9689,16 +9689,9 @@ func schema_microsoft_dcp_api_v2_ProjectDebugProcessObservation(ref common.Refer
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
-					"cleanup": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Cleanup is empty while pending, Complete when confirmed, Unconfirmed when uncertain, or NotOwned for attached targets.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
 					"message": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Message describes observation failures or unconfirmed cleanup.",
+							Description: "Message describes observation failures.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -9742,7 +9735,7 @@ func schema_microsoft_dcp_api_v2_ProjectDebugProcessStatus(ref common.ReferenceC
 					},
 					"attached": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Attached indicates that the adapter attached to an externally owned process; DCP observes but does not stop it.",
+							Description: "Attached records an adapter-reported attachment; DCP does not take cleanup ownership of any reported target.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -9769,7 +9762,7 @@ func schema_microsoft_dcp_api_v2_ProjectDebugProcessStatus(ref common.ReferenceC
 					},
 					"observation": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Observation reports Project-owned process observation and cleanup independently of session phase.",
+							Description: "Observation reports process liveness independently of session phase, without taking cleanup ownership.",
 							Default:     map[string]interface{}{},
 							Ref:         ref(v2.ProjectDebugProcessObservation{}.OpenAPIModelName()),
 						},

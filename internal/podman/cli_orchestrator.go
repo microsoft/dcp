@@ -415,11 +415,7 @@ func (pco *PodmanCliOrchestrator) PullImage(ctx context.Context, options contain
 		return "", errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
 	}
 
-	imageID, inspectErr := containers.InspectPulledImage(ctx, pco, imageReference)
-	if inspectErr != nil {
-		return "", fmt.Errorf("inspect pulled image %q: %w", imageReference, inspectErr)
-	}
-	return imageID, nil
+	return imageReference, nil
 }
 
 func (pco *PodmanCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {

@@ -8,7 +8,6 @@ package projectdebug
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 
@@ -113,25 +112,23 @@ func (runtime *projectDebugRuntime) observeProcessMessage(project *apiv2.Project
 	}
 	entry := &apiv2.ProjectDebugProcessStatus{ID: string(id), Name: body.Name, PID: body.PID}
 	entry.Attached = body.StartMethod == "attach" || body.StartMethod == "attachForSuspendedLaunch"
-	var handle process.ProcessHandle
 	switch {
 	case project.Spec.Container != nil:
 		entry.ContainerID = project.Status.ContainerID
-		entry.TrackingError = "Container-scoped target identity and individual cleanup are unconfirmed; the Project owns final container cleanup."
+		entry.TrackingError = "Container-scoped target identity and liveness are unconfirmed."
 	case body.Local != nil && !*body.Local:
-		entry.TrackingError = "The adapter reported a non-local target; host process tracking and cleanup are unconfirmed."
+		entry.TrackingError = "The adapter reported a non-local target; host process tracking is unconfirmed."
 	case body.PID == nil:
-		entry.TrackingError = "The adapter did not report a target PID; tracking and cleanup are unconfirmed."
+		entry.TrackingError = "The adapter did not report a target PID; tracking is unconfirmed."
 	default:
 		pid, pidErr := process.Int64_ToPidT(*body.PID)
 		if pidErr != nil {
-			entry.TrackingError = fmt.Sprintf("Target PID is invalid; tracking and cleanup are unconfirmed: %v", pidErr)
+			entry.TrackingError = fmt.Sprintf("Target PID is invalid; tracking is unconfirmed: %v", pidErr)
 		} else {
 			captured, captureErr := runtime.executor.FindProcessHandle(pid)
 			if captureErr != nil {
-				entry.TrackingError = fmt.Sprintf("Target process identity is unavailable; tracking and cleanup are unconfirmed: %v", captureErr)
+				entry.TrackingError = fmt.Sprintf("Target process identity is unavailable; tracking is unconfirmed: %v", captureErr)
 			} else {
-				handle = captured
 				entry.IdentityTimestamp = metav1.NewMicroTime(captured.IdentityTime)
 			}
 		}
@@ -139,20 +136,7 @@ func (runtime *projectDebugRuntime) observeProcessMessage(project *apiv2.Project
 	if entry.TrackingError != "" {
 		runtime.log.Info("Debug target tracking is unconfirmed", "Project", project.NamespacedName(), "Session", sessionID, "Reason", entry.TrackingError)
 	}
-	if publishErr := runtime.publishProcess(project, sessionID, entry); publishErr != nil {
-		// If ownership cannot be handed off, roll back the captured target rather than silently losing it.
-		if handle.Pid > 0 && !entry.Attached {
-			cleanupCtx, cancel := process.WithDetachedStopTimeout(runtime.ctx)
-			stopErr := runtime.executor.StopProcess(cleanupCtx, handle)
-			cancel()
-			if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
-				runtime.log.Error(stopErr, "Failed to clean up target after registration failure", "Project", project.NamespacedName(), "PID", handle.Pid)
-				return errors.Join(publishErr, stopErr)
-			}
-		}
-		return publishErr
-	}
-	return nil
+	return runtime.publishProcess(project, sessionID, entry)
 }
 
 func (runtime *projectDebugRuntime) publishProcess(project *apiv2.Project, sessionID string, entry *apiv2.ProjectDebugProcessStatus) error {

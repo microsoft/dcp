@@ -81,10 +81,9 @@ func TestProjectDebugProcessFieldOwnership(t *testing.T) {
 	require.True(t, apierrors.IsConflict(wrongUIDErr))
 }
 
-// Verifies that failed process registration rolls back launched targets but never stops
-// targets reported as attach or attachForSuspendedLaunch.
-func TestProjectDebugRegistrationFailurePreservesAttachedTargets(t *testing.T) {
-	for _, method := range []string{"launch", "attach", "attachForSuspendedLaunch"} {
+// Verifies that failed process registration never stops reported targets, regardless of the adapter's start method.
+func TestProjectDebugRegistrationFailurePreservesTargets(t *testing.T) {
+	for _, method := range []string{"", "launch", "attach", "attachForSuspendedLaunch"} {
 		t.Run(method, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, 0)
 			defer cancel()
@@ -108,12 +107,7 @@ func TestProjectDebugRegistrationFailurePreservesAttachedTargets(t *testing.T) {
 			require.NoError(t, json.Unmarshal([]byte(fmt.Sprintf(
 				`{"type":"event","event":"process","body":{"systemProcessId":%d,"startMethod":%q}}`, handle.Pid, method)), &message))
 			require.True(t, apierrors.IsConflict(debugRuntime.observeProcessMessage(project, session.ID, message)))
-			runningErr := executor.CheckProcessRunning(handle)
-			if method == "launch" {
-				require.True(t, process.IsProcessGoneErr(runningErr))
-			} else {
-				require.NoError(t, runningErr)
-			}
+			require.NoError(t, executor.CheckProcessRunning(handle))
 		})
 	}
 }
@@ -170,7 +164,7 @@ func TestProjectDebugServingProcessEvents(t *testing.T) {
 	require.True(t, project.Status.Debug.Sessions[0].ProcessTrackingUnconfirmed)
 	require.WithinDuration(t, handles[0].IdentityTime, project.Status.Debug.Sessions[0].Processes[0].IdentityTimestamp.Time, time.Microsecond)
 	closeDebugServing(t, connection)
-	require.NoError(t, executor.CheckProcessRunning(handles[0]), "ending an adapter session must not erase target ownership")
+	require.NoError(t, executor.CheckProcessRunning(handles[0]), "ending an adapter session must not stop reported targets")
 }
 
 // Verifies that malformed process-observation fields fail explicitly rather than hiding tracking failures.

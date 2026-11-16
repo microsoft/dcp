@@ -47,6 +47,35 @@ func exponentialBackoff(timeout time.Duration) *backoff.ExponentialBackOff {
 	)
 }
 
+// inspectContainerImage resolves an immutable identity within the bounded V1 inspection retry window.
+// Runtime outages return immediately so the consumer can defer recovery.
+func inspectContainerImage(ctx context.Context, inspector containers.InspectImages, image string) (*containers.InspectedImage, error) {
+	return resiliency.RetryGet(ctx, exponentialBackoff(containerInspectionTimeout), func() (*containers.InspectedImage, error) {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, resiliency.Permanent(contextErr)
+		}
+		inspected, inspectErr := inspectContainerImageOnce(ctx, inspector, image)
+		if errors.Is(inspectErr, containers.ErrRuntimeNotHealthy) {
+			return nil, resiliency.Permanent(inspectErr)
+		}
+		return inspected, inspectErr
+	})
+}
+
+func inspectContainerImageOnce(ctx context.Context, inspector containers.InspectImages, image string) (*containers.InspectedImage, error) {
+	images, inspectErr := inspector.InspectImages(ctx, containers.InspectImagesOptions{Images: []string{image}})
+	if inspectErr != nil {
+		return nil, inspectErr
+	}
+	if len(images) == 0 {
+		return nil, containers.ErrNotFound
+	}
+	if len(images) != 1 || images[0].Id == "" {
+		return nil, fmt.Errorf("image %q inspection did not return exactly one non-empty image ID", image)
+	}
+	return &images[0], nil
+}
+
 func callWithRetryAndVerification[RT any](
 	callContext context.Context,
 	b backoff.BackOff,

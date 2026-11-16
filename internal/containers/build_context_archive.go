@@ -6,7 +6,9 @@
 package containers
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 
@@ -21,13 +23,22 @@ func OpenBuildContextArchive(ctx context.Context, archive *ContainerBuildContext
 	if archive == nil {
 		return nil, fmt.Errorf("build context archive is required")
 	}
-	archiveFile, openErr := usvc_io.OpenTarArchive(ctx, archive.Source, archive.SHA256, archive.RawContents)
-	if openErr != nil {
-		if archive.Source == "" && archive.RawContents != "" {
-			return nil, fmt.Errorf("decode build context archive: %w", openErr)
-		}
-		return nil, fmt.Errorf("open build context archive: %w", openErr)
+	if archive.Source != "" && archive.RawContents != "" {
+		return nil, fmt.Errorf("build context archive source and raw contents are mutually exclusive")
 	}
-
-	return archiveFile, nil
+	if archive.Source == "" && archive.RawContents == "" {
+		return nil, fmt.Errorf("build context archive source or raw contents is required")
+	}
+	if archive.Source != "" {
+		archiveFile, openErr := usvc_io.OpenSHA256VerifiedFile(ctx, archive.Source, archive.SHA256)
+		if openErr != nil {
+			return nil, fmt.Errorf("open build context archive: %w", openErr)
+		}
+		return archiveFile, nil
+	}
+	contents, decodeErr := base64.StdEncoding.DecodeString(archive.RawContents)
+	if decodeErr != nil {
+		return nil, fmt.Errorf("decode build context archive: %w", decodeErr)
+	}
+	return io.NopCloser(bytes.NewReader(contents)), nil
 }

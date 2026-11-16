@@ -36,6 +36,8 @@ Select a runtime explicitly with `--container-runtime docker`, `--container-runt
 
 The Project Delve E2E scenario exercises a real Delve adapter through the V2 Project debug endpoint without a terminal or container. It covers breakpoint handling, stack/local-variable inspection, continuation and cleanup, including deleting Project while the target is stopped. The debug target lives in `test/projectdebug`.
 
+Adapter-reported debuggee processes are informational: Project observes available identities but does not stop them on session closure, Project stop/deletion, or failed observation publication. DCP owns cleanup of the adapter instances it launches and the prepared container context, not independently surviving debuggees. Adapter shutdown or container teardown may still terminate debuggees; their survival is not guaranteed.
+
 `make test-ci` (and the equivalent Windows CI driver) acquires the pinned Delve Go tool from `go.mod`, builds the debug target, and enables the scenario. Ordinary `make test` skips it unless explicitly opted in with `DCP_TEST_ENABLE_DELVE=true`; that setting also adds `cache-delve` and `projectdebug-tool` to the prerequisites. Missing prerequisites fail when enabled. DCP itself does not acquire adapters. Agent-driven real Delve/E2E execution is kept in CI, while native compilation and synthetic test-client checks can run locally.
 
 ### Environment variables affecting DCP behavior

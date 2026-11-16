@@ -34,7 +34,6 @@ import (
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
-	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 const (
@@ -68,7 +67,6 @@ type ProjectReconciler struct {
 	*ReconcilerBase[apiv2.Project, *apiv2.Project]
 	projects             *ObjectStateMap[types.UID, projectData, *projectData, *apiv2.Project]
 	processExecutor      process.Executor
-	processCleanupQueue  *resiliency.WorkQueue
 	containerRuntimeName string
 }
 
@@ -77,7 +75,6 @@ func NewProjectReconciler(ctx context.Context, client ctrl_client.Client, reader
 		ReconcilerBase:       NewReconcilerBase[apiv2.Project](client, reader, log, ctx),
 		projects:             NewObjectStateMap[types.UID, projectData, *projectData, *apiv2.Project](),
 		processExecutor:      executor,
-		processCleanupQueue:  resiliency.NewWorkQueue(ctx, MaxConcurrentReconciles),
 		containerRuntimeName: containerRuntimeName,
 	}
 }
@@ -163,7 +160,6 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		logger.ReleaseResourceLog(resource.GetResourceId())
 		return ctrl.Result{}, nil
 	}
-	r.projects.RunDeferredOps(req.NamespacedName, &resource)
 	stateKey, data := r.projects.BorrowByNamespacedName(req.NamespacedName)
 	if data != nil && stateKey != resource.UID {
 		logger.ReleaseResourceLog((&apiv2.Project{ObjectMeta: metav1.ObjectMeta{UID: stateKey}}).GetResourceId())
@@ -577,9 +573,7 @@ func handleProjectStopped(
 	ctx context.Context, reconciler *ProjectReconciler, resource *apiv2.Project,
 	_ projectState, data *projectData, log logr.Logger,
 ) objectChange {
-	if !reconciler.settleProjectProcesses(resource, data, log) {
-		return additionalReconciliationNeeded
-	}
+	reconciler.observeProjectProcesses(resource, data, log)
 	return noChange
 }
 
@@ -793,9 +787,7 @@ func (r *ProjectReconciler) handleDeletionRequest(
 		return additionalReconciliationNeeded, delay
 	}
 
-	if !r.settleProjectProcesses(resource, data, log) {
-		return additionalReconciliationNeeded, delay
-	}
+	r.observeProjectProcesses(resource, data, log)
 	cleaned, cleanupErr := r.cleanupProjectBackings(ctx, resource, data, log)
 	if cleanupErr != nil {
 		delay = LongDelay
@@ -804,7 +796,6 @@ func (r *ProjectReconciler) handleDeletionRequest(
 	if !cleaned {
 		return additionalReconciliationNeeded, delay
 	}
-	logUnconfirmedProjectTargets(resource, log)
 	return deleteFinalizer(resource, projectFinalizer, log), delay
 }
 
@@ -872,9 +863,7 @@ func handleProjectStopping(
 		data.reason, data.message = apiv2.ProjectReasonStopping, "Waiting for debug sessions and adapter cleanup to finish."
 		return additionalReconciliationNeeded
 	}
-	if !reconciler.settleProjectProcesses(resource, data, log) {
-		return additionalReconciliationNeeded
-	}
+	reconciler.observeProjectProcesses(resource, data, log)
 	cleaned, cleanupErr := reconciler.cleanupProjectBackings(ctx, resource, data, log)
 	if cleanupErr != nil {
 		return additionalReconciliationNeeded
@@ -883,7 +872,6 @@ func handleProjectStopping(
 		return additionalReconciliationNeeded
 	}
 	data.state = projectStateStopped
-	logUnconfirmedProjectTargets(resource, log)
 	return noChange
 }
 
