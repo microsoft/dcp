@@ -4457,7 +4457,7 @@ func schema_microsoft_dcp_api_v2_ContainerCopyFileContext(ref common.ReferenceCa
 					},
 					"directory": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Directory is an absolute host directory packaged as a tar stream during copy. Source permissions and relative internal symlinks are preserved; absolute or escaping links are rejected.",
+							Description: "Directory is an absolute host directory packaged as a tar stream during copy. Source permissions and relative internal symlinks are preserved; absolute, dangling or escaping links are rejected.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

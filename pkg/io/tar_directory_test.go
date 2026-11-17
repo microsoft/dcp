@@ -186,13 +186,13 @@ func TestTarDirectoryExecutableFiles(t *testing.T) {
 }
 
 // Verifies that TarWriter.CopyDirectory preserves internal relative symlinks and rejects
-// absolute links, escaping links, and an internal link chain that escapes the directory.
+// absolute, dangling and escaping links, including internal link chains that escape the directory.
 func TestTarDirectorySymlinks(t *testing.T) {
 	if osutil.IsWindows() {
 		t.Skip("creating symlinks requires Windows developer mode or elevated privileges")
 	}
 	t.Parallel()
-	for _, scenario := range []string{"internal", "absolute", "escaping", "chained-escape", "composed-escape", "composed-internal"} {
+	for _, scenario := range []string{"internal", "absolute", "escaping", "dangling", "chained-escape", "composed-escape", "composed-internal"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, 0)
 			defer cancel()
@@ -205,6 +205,8 @@ func TestTarDirectorySymlinks(t *testing.T) {
 				target = filepath.Join(root, "dependency")
 			case "escaping":
 				target = "../../outside"
+			case "dangling":
+				target = "../missing"
 			case "chained-escape":
 				require.NoError(t, os.Symlink("../outside", filepath.Join(root, "dependency-link")))
 				target = "../dependency-link"

@@ -299,7 +299,7 @@ type ContainerCopyFileContext struct {
 	// File and inline archives require an existing destination; Directory creates it through the streamed archive.
 	Destination string `json:"destination,omitempty"`
 	// Directory is an absolute host directory packaged as a tar stream during copy.
-	// Source permissions and relative internal symlinks are preserved; absolute or escaping links are rejected.
+	// Source permissions and relative internal symlinks are preserved; absolute, dangling or escaping links are rejected.
 	Directory string `json:"directory,omitempty"`
 	// ExecutableFiles lists regular files relative to Directory that gain execute permissions in the archive.
 	// Paths use forward slashes without "." or ".." components; source files are not modified.
