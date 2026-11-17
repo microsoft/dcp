@@ -17,10 +17,11 @@ import (
 )
 
 // CopyDirectory writes a directory's contents beneath destination in the archive, preserving permissions.
-// Relative symlinks resolving within the source are preserved; absolute, dangling or escaping links and special files are rejected.
+// Links in the source path itself are followed. Within the source, relative symlinks resolving inside it are
+// preserved; absolute, dangling or escaping symlinks, Windows junctions, and other special files are rejected.
 // executableFiles selects root-relative regular files that gain execute bits without modifying their sources.
 // uid and gid apply to every entry. The caller finalizes the archive with Close or Buffer.
-func (tw *TarWriter) CopyDirectory(ctx context.Context, source, destination string, uid, gid int32, executableFiles []string) error {
+func (tw *TarWriter) CopyDirectory(ctx context.Context, source, destination string, uid, gid int32, executableFiles []string) (copyErr error) {
 	if cancellationErr := ctx.Err(); cancellationErr != nil {
 		return cancellationErr
 	}
@@ -31,30 +32,28 @@ func (tw *TarWriter) CopyDirectory(ctx context.Context, source, destination stri
 	if !filepath.IsAbs(source) {
 		return fmt.Errorf("directory source must be absolute")
 	}
-	root, resolveErr := filepath.EvalSymlinks(source)
-	if resolveErr != nil {
-		return fmt.Errorf("resolve directory source %q: %w", source, resolveErr)
+	// os.Root confines link resolution to the source tree without resolving the source path's own ancestors,
+	// which may include junctions that filepath.EvalSymlinks cannot traverse on Windows.
+	root, openErr := os.OpenRoot(source)
+	if openErr != nil {
+		return fmt.Errorf("open directory source %q: %w", source, openErr)
 	}
-	rootInfo, statErr := os.Stat(root)
-	if statErr != nil {
-		return fmt.Errorf("inspect directory source %q: %w", source, statErr)
-	}
-	if !rootInfo.IsDir() {
-		return fmt.Errorf("directory source %q is not a directory", source)
-	}
+	defer func() {
+		if closeErr := root.Close(); closeErr != nil {
+			copyErr = errors.Join(copyErr, fmt.Errorf("close directory source %q: %w", source, closeErr))
+		}
+	}()
 	executables := make(map[string]struct{}, len(executableFiles))
 	for _, name := range executableFiles {
 		if name == "." || !fs.ValidPath(name) || strings.ContainsAny(name, "\\:\x00") {
 			return fmt.Errorf("executable file %q must be a root-relative path using forward slashes without '.' or '..' components", name)
 		}
-		current := root
 		components := strings.Split(name, "/")
-		for index, component := range components {
+		for index := range components {
 			if cancellationErr := ctx.Err(); cancellationErr != nil {
 				return cancellationErr
 			}
-			current = filepath.Join(current, component)
-			info, inspectErr := os.Lstat(current)
+			info, inspectErr := root.Lstat(filepath.FromSlash(path.Join(components[:index+1]...)))
 			if inspectErr != nil {
 				return fmt.Errorf("inspect executable file %q: %w", name, inspectErr)
 			}
@@ -64,10 +63,11 @@ func (tw *TarWriter) CopyDirectory(ctx context.Context, source, destination stri
 		}
 		executables[name] = struct{}{}
 	}
-	return filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
+	return fs.WalkDir(root.FS(), ".", func(relative string, entry fs.DirEntry, walkErr error) error {
 		if cancellationErr := ctx.Err(); cancellationErr != nil {
 			return cancellationErr
 		}
+		current := filepath.Join(source, filepath.FromSlash(relative))
 		if walkErr != nil {
 			return fmt.Errorf("walk directory source %q: %w", current, walkErr)
 		}
@@ -75,17 +75,13 @@ func (tw *TarWriter) CopyDirectory(ctx context.Context, source, destination stri
 		if infoErr != nil {
 			return fmt.Errorf("inspect directory entry %q: %w", current, infoErr)
 		}
-		relative, relativeErr := filepath.Rel(root, current)
-		if relativeErr != nil {
-			return fmt.Errorf("resolve archive entry %q: %w", current, relativeErr)
-		}
 		if relative == "." && prefix == "." {
 			return nil
 		}
-		name := path.Join(prefix, filepath.ToSlash(relative))
+		name := path.Join(prefix, relative)
 		switch {
 		case info.Mode()&fs.ModeSymlink != 0:
-			target, linkErr := os.Readlink(current)
+			target, linkErr := root.Readlink(filepath.FromSlash(relative))
 			if linkErr != nil {
 				return fmt.Errorf("read source symlink %q: %w", current, linkErr)
 			}
@@ -94,34 +90,30 @@ func (tw *TarWriter) CopyDirectory(ctx context.Context, source, destination stri
 			if filepath.IsAbs(target) || filepath.VolumeName(target) != "" || path.IsAbs(archiveTarget) {
 				return fmt.Errorf("source symlink %q must be relative and remain within the source directory", current)
 			}
-			resolved, resolveLinkErr := filepath.EvalSymlinks(current)
-			if resolveLinkErr != nil {
-				return fmt.Errorf("source symlink %q must be relative and remain within the source directory: %w", current, resolveLinkErr)
-			}
-			contained, containedErr := filepath.Rel(root, resolved)
-			if containedErr != nil || contained == ".." || strings.HasPrefix(contained, ".."+string(filepath.Separator)) {
-				return errors.Join(fmt.Errorf("source symlink %q must be relative and remain within the source directory", current), containedErr)
+			// Root.Stat follows links only within the source and fails for escaping or dangling targets.
+			if _, resolveErr := root.Stat(filepath.FromSlash(relative)); resolveErr != nil {
+				return fmt.Errorf("source symlink %q must be relative and remain within the source directory: %w", current, resolveErr)
 			}
 			return tw.WriteSymlink(name, archiveTarget, uid, gid, info.ModTime(), info.ModTime(), info.ModTime())
 		case info.IsDir():
 			return tw.WriteDir(name, uid, gid, info.Mode().Perm(), info.ModTime(), info.ModTime(), info.ModTime())
 		case info.Mode().IsRegular():
-			file, openErr := OpenFileReadOnly(current)
-			if openErr != nil {
-				return fmt.Errorf("open directory entry %q: %w", current, openErr)
+			file, fileOpenErr := root.Open(filepath.FromSlash(relative))
+			if fileOpenErr != nil {
+				return fmt.Errorf("open directory entry %q: %w", current, fileOpenErr)
 			}
 			copyCtx, cancelCopy := context.WithCancel(ctx)
 			mode := info.Mode().Perm()
-			if _, executable := executables[filepath.ToSlash(relative)]; executable {
+			if _, executable := executables[relative]; executable {
 				mode |= 0111
 			}
-			copyErr := tw.CopyFile(NewContextReader(copyCtx, file, false), info.Size(), name, uid, gid, mode, info.ModTime(), info.ModTime(), info.ModTime())
+			fileCopyErr := tw.CopyFile(NewContextReader(copyCtx, file, false), info.Size(), name, uid, gid, mode, info.ModTime(), info.ModTime(), info.ModTime())
 			cancelCopy()
 			closeErr := file.Close()
-			return errors.Join(copyErr, closeErr)
+			return errors.Join(fileCopyErr, closeErr)
 		default:
-			return fmt.Errorf("unsupported directory entry %q with mode %s", current, info.Mode())
+			// Includes Windows junctions, whose absolute targets cannot be represented inside the archive.
+			return fmt.Errorf("unsupported directory entry %q with mode %s; only directories, regular files and relative symlinks are supported", current, info.Mode())
 		}
-
 	})
 }
