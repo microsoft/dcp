@@ -25,6 +25,7 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/apiserver"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/proxy"
@@ -32,6 +33,7 @@ import (
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	dcpio "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -66,35 +68,76 @@ func requirePortReservationBinding(t *testing.T, ctx context.Context, db *sql.DB
 	require.Equal(t, binding, ports.Binding{Protocol: protocol, IP: ip, Port: port})
 }
 
-// Verifies that dcp start-apiserver configures SQLite-backed port allocation before
-// kubeconfig creation, so strict state-store mode starts and reserves its actual listener.
-func TestApiServerUsesStateStorePortAllocator(t *testing.T) {
-	t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
-	t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26120")
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-	sessionFolder, sessionErr := testutil.CreateTestSessionDir()
-	require.NoError(t, sessionErr)
-	server, startupErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone,
-		testutil.NewLogForTesting(t.Name()), sessionFolder)
-	require.NoError(t, startupErr)
-	t.Cleanup(server.Dispose)
-	db, openErr := sql.Open("sqlite", filepath.Join(sessionFolder, "state.sqlite3"))
-	require.NoError(t, openErr)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	serverURL, urlErr := url.Parse(server.ClientConfig.Host)
-	require.NoError(t, urlErr)
-	ip, ipErr := netip.ParseAddr(serverURL.Hostname())
-	require.NoError(t, ipErr)
-	port, portErr := strconv.Atoi(serverURL.Port())
-	require.NoError(t, portErr)
-	require.GreaterOrEqual(t, port, 26100)
-	require.LessOrEqual(t, port, 26120)
-	waitPortReservationCount(t, ctx, db, 1)
-	requirePortReservationBinding(t, ctx, db, ports.Binding{Protocol: "TCP", IP: ip, Port: int32(port)})
-	var ownerPID int64
-	require.NoError(t, db.QueryRowContext(ctx, "SELECT owner_pid FROM port_allocations").Scan(&ownerPID))
-	require.Equal(t, int64(server.ApiServerPID), ownerPID)
+// Verifies that API-server automatic and explicit bindings have SQLite claims in state-store
+// mode, explicit claims release on shutdown, and MRU mode does not write SQLite claims.
+func TestApiServerPortReservationLifecycle(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		mode       string
+		preference string
+		port       int32
+	}{
+		{"automatic", "statestore", "IPv4", 0},
+		{"explicit-ipv4", "statestore", "IPv4", 26101},
+		{"explicit-ipv6", "statestore", "IPv6", 26101},
+		{"explicit-mru", "mru", "IPv4", 26101},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if testCase.preference == "IPv6" && !nettest.SupportsIPv6() {
+				t.Skip("IPv6 is unavailable")
+			}
+			t.Setenv(networking.DCP_PORT_ALLOCATOR, testCase.mode)
+			t.Setenv(networking.DCP_PORT_ALLOCATION_RANGE, "26100-26120")
+			t.Setenv("DCP_IP_VERSION_PREFERENCE", testCase.preference)
+			t.Setenv(dcpio.DCP_PRESERVE_EXECUTABLE_LOGS, "true")
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			sessionFolder, sessionErr := testutil.CreateTestSessionDir()
+			require.NoError(t, sessionErr)
+			server, startupErr := ctrl_testutil.StartApiServerWithOptions(ctx,
+				ctrl_testutil.ApiServerOptions{Port: testCase.port}, testutil.NewLogForTesting(t.Name()), sessionFolder)
+			require.NoError(t, startupErr)
+			t.Cleanup(server.Dispose)
+			db, openErr := sql.Open("sqlite", filepath.Join(sessionFolder, "state.sqlite3"))
+			require.NoError(t, openErr)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+			serverURL, urlErr := url.Parse(server.ClientConfig.Host)
+			require.NoError(t, urlErr)
+			ip, ipErr := netip.ParseAddr(serverURL.Hostname())
+			require.NoError(t, ipErr)
+			require.Equal(t, testCase.preference == "IPv4", ip.Is4())
+			port, portErr := strconv.Atoi(serverURL.Port())
+			require.NoError(t, portErr)
+			if testCase.port != 0 {
+				require.Equal(t, int(testCase.port), port)
+			} else {
+				require.GreaterOrEqual(t, port, 26100)
+				require.LessOrEqual(t, port, 26120)
+			}
+			expectedClaims := 1
+			if testCase.mode == "mru" {
+				expectedClaims = 0
+			}
+			var claimCount int
+			require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM port_allocations").Scan(&claimCount))
+			require.Equal(t, expectedClaims, claimCount)
+			if expectedClaims != 0 {
+				requirePortReservationBinding(t, ctx, db, ports.Binding{Protocol: "TCP", IP: ip, Port: int32(port)})
+				var ownerPID int64
+				require.NoError(t, db.QueryRowContext(ctx, "SELECT owner_pid FROM port_allocations").Scan(&ownerPID))
+				require.Equal(t, int64(server.ApiServerPID), ownerPID)
+			}
+			require.NoError(t, apiserver.RequestApiServerShutdown(ctx, server.RestClient))
+			select {
+			case <-server.ApiServerExited.Wait():
+			case <-ctx.Done():
+				t.Fatal("API server did not finish shutting down")
+			}
+			if testCase.port != 0 {
+				waitPortReservationCount(t, ctx, db, 0)
+			}
+		})
+	}
 }
 
 // Verifies that Executable template allocation and Endpoint publication share the wildcard

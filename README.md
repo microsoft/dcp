@@ -66,8 +66,10 @@ DCP has knowledge of a number of environment variables that can change its behav
 | `DCP_DISABLE_PROCESS_CLEANUP_JOB` | On Windows, DCP will use a Win32 Job object to ensure that processes it launches are terminated when it shuts down. This alters standard process startup sequence and might not work on tightly locked-down machines, or might be flagged as "suspicious behavior" by antivirus software. If DCP cannot start processes and complains about "process cleanup job" errors, setting `DCP_DISABLE_PROCESS_CLEANUP_JOB` to `1` or `true` should help. |
 
 State-store port allocation is initialized in both the API-server and controller processes.
+When using state-store allocation, an explicit API-server `--port` binding is reserved before startup and released after shutdown; automatic API-server port selection is unchanged.
 Claims use the listener's bind IP, not its advertised client address; for example, a wildcard `0.0.0.0` listener remains reserved on `0.0.0.0` even when its Endpoint advertises `127.0.0.1`.
 IPv6 wildcard `::` claims conservatively conflict with IPv4 bindings because those listeners may serve both address families; specific IPv4 and IPv6 addresses remain independent.
 An omitted transport protocol is treated as TCP.
 Executable template allocations belong to their workload, including while startup waits for dependencies, and are released after confirmed startup failure or workload stop.
 Caller cancellation stops allocation without MRU fallback; the allocator's own timeout may still permit best-effort MRU allocation when the caller remains active.
+Reservation lock waits honor caller cancellation, except release waits for the lock to discard ownership before attempting one-shot backend cleanup with the original caller context.

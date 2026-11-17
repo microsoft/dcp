@@ -9,11 +9,11 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"sync"
 
 	"github.com/go-logr/logr"
 
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/ports"
 )
 
@@ -29,10 +29,11 @@ type portReservationKey struct {
 }
 
 var portReservations = struct {
-	sync.Mutex
+	*concurrency.ContextAwareLock
 	owners map[portReservationKey]map[*PortReservationSet]struct{}
 }{
-	owners: make(map[portReservationKey]map[*PortReservationSet]struct{}),
+	ContextAwareLock: concurrency.NewContextAwareLock(),
+	owners:           make(map[portReservationKey]map[*PortReservationSet]struct{}),
 }
 
 // GetFreePort allocates a port and retains its exact binding and allocation backend for release.
@@ -48,7 +49,9 @@ func (reservations *PortReservationSet) GetFreePort(
 	if parseErr != nil {
 		return 0, parseErr
 	}
-	portReservations.Lock()
+	if lockErr := portReservations.Lock(ctx); lockErr != nil {
+		return 0, lockErr
+	}
 	defer portReservations.Unlock()
 	port, config, fallback, allocationErr := allocatePortFromStateStoreRange(ctx, protocol, normalizedAddress, log)
 	if allocationErr != nil && fallback {
@@ -71,7 +74,9 @@ func (reservations *PortReservationSet) Reserve(ctx context.Context, binding por
 	if !binding.IP.IsValid() || !IsValidPort(int(binding.Port)) {
 		return fmt.Errorf("invalid port reservation binding: %s/%s/%d", binding.Protocol, binding.IP, binding.Port)
 	}
-	portReservations.Lock()
+	if lockErr := portReservations.Lock(ctx); lockErr != nil {
+		return lockErr
+	}
 	defer portReservations.Unlock()
 	for retained := range reservations.bindings {
 		if retained.binding == binding {
@@ -105,7 +110,9 @@ func (reservations *PortReservationSet) CheckPortAvailable(
 	if parseErr != nil {
 		return parseErr
 	}
-	portReservations.Lock()
+	if lockErr := portReservations.Lock(ctx); lockErr != nil {
+		return lockErr
+	}
 	defer portReservations.Unlock()
 	config, fallback, checkErr := checkPortAvailableWithStateStore(ctx, protocol, normalizedAddress, port, log)
 	if checkErr != nil {
@@ -125,11 +132,15 @@ func (reservations *PortReservationSet) CheckPortAvailable(
 
 // Release relinquishes this owner's claims without retrying failed backend releases.
 // Claims shared with another owner remain reserved.
+// Lock acquisition ignores cancellation so ownership is discarded; ctx still applies to backend cleanup.
 func (reservations *PortReservationSet) Release(ctx context.Context, log logr.Logger) {
 	if reservations == nil {
 		return
 	}
-	portReservations.Lock()
+	if lockErr := portReservations.Lock(context.WithoutCancel(ctx)); lockErr != nil {
+		log.Error(lockErr, "Could not acquire port reservation lock for release")
+		return
+	}
 	defer portReservations.Unlock()
 	for key := range reservations.bindings {
 		owners := portReservations.owners[key]

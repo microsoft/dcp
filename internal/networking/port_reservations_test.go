@@ -43,7 +43,7 @@ func newPortReservationTestStore(t *testing.T) (context.Context, *statestore.Sto
 	t.Setenv(DCP_PORT_ALLOCATION_RANGE, "26010-26020")
 	ConfigureStateStorePortAllocator(store, owner)
 	t.Cleanup(func() {
-		portReservations.Lock()
+		require.NoError(t, portReservations.Lock(context.WithoutCancel(ctx)))
 		ownerCount := len(portReservations.owners)
 		portReservations.Unlock()
 		require.Zero(t, ownerCount)
@@ -59,6 +59,83 @@ func portReservationCount(t *testing.T, ctx context.Context, db *sql.DB) int {
 	var count int
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM port_allocations").Scan(&count))
 	return count
+}
+
+// Verifies that PortReservationSet allocation and reservation calls return cancellation
+// while another operation still holds the ownership lock, without retaining any claims.
+func TestPortReservationLockWaitHonorsCancellation(t *testing.T) {
+	for _, operation := range []string{"allocate", "reserve", "check"} {
+		t.Run(operation, func(t *testing.T) {
+			ctx, _, db := newPortReservationTestStore(t)
+			callerCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			var owner PortReservationSet
+			defer owner.Release(ctx, log)
+			require.NoError(t, portReservations.Lock(ctx))
+			locked := true
+			defer func() {
+				if locked {
+					portReservations.Unlock()
+				}
+			}()
+			started := make(chan struct{})
+			completed := make(chan error, 1)
+			go func() {
+				close(started)
+				switch operation {
+				case "allocate":
+					_, allocationErr := owner.GetFreePort(callerCtx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+					completed <- allocationErr
+				case "reserve":
+					completed <- owner.Reserve(callerCtx, ports.Binding{
+						Protocol: "TCP", IP: netip.MustParseAddr(IPv4LocalhostDefaultAddress), Port: 26010,
+					}, log)
+				case "check":
+					completed <- owner.CheckPortAvailable(callerCtx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, 26010, log)
+				}
+			}()
+			<-started
+			cancel()
+			select {
+			case operationErr, received := <-completed:
+				require.True(t, received)
+				require.ErrorIs(t, operationErr, context.Canceled)
+			case <-ctx.Done():
+				t.Fatal("cancelled reservation operation did not stop waiting for the lock")
+			}
+			require.Empty(t, owner.bindings)
+			portReservations.Unlock()
+			locked = false
+			require.Zero(t, portReservationCount(t, ctx, db))
+		})
+	}
+}
+
+// Verifies that PortReservationSet.Release discards cancelled owners without releasing shared
+// claims, and does not retry the last owner's backend cleanup after cancellation.
+func TestPortReservationCancelledReleaseDiscardsOwnershipWithoutRetry(t *testing.T) {
+	ctx, _, db := newPortReservationTestStore(t)
+	var first, second PortReservationSet
+	defer first.Release(ctx, log)
+	defer second.Release(ctx, log)
+	binding := ports.Binding{Protocol: "TCP", IP: netip.MustParseAddr(IPv4LocalhostDefaultAddress), Port: 26010}
+	require.NoError(t, first.Reserve(ctx, binding, log))
+	require.NoError(t, second.Reserve(ctx, binding, log))
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	first.Release(cancelled, log)
+	require.Empty(t, first.bindings)
+	require.Equal(t, 1, portReservationCount(t, ctx, db))
+	second.Release(cancelled, log)
+	require.Empty(t, second.bindings)
+	require.NoError(t, portReservations.Lock(ctx))
+	ownerCount := len(portReservations.owners)
+	portReservations.Unlock()
+	require.Zero(t, ownerCount)
+	require.Equal(t, 1, portReservationCount(t, ctx, db))
+	first.Release(ctx, log)
+	second.Release(ctx, log)
+	require.Equal(t, 1, portReservationCount(t, ctx, db))
 }
 
 // Verifies that PortReservationSet shares exact claims, releases idempotently,

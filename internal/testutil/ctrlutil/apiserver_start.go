@@ -102,6 +102,7 @@ const (
 type ApiServerOptions struct {
 	Flags                 ApiServerFlag
 	ContainerOrchestrator containers.ContainerOrchestrator
+	Port                  int32
 }
 
 // Starts the API server in a separate process.
@@ -197,6 +198,9 @@ func StartApiServerWithOptions(
 		"--server-only",
 		"--kubeconfig", info.kubeconfigPath,
 		"--monitor", strconv.Itoa(os.Getpid()),
+	}
+	if options.Port != 0 {
+		dcpArgs = append(dcpArgs, "--"+kubeconfig.PortFlagName, strconv.Itoa(int(options.Port)))
 	}
 
 	pe := process.NewOSExecutor(log)
