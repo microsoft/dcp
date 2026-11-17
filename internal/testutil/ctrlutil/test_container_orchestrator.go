@@ -2906,7 +2906,9 @@ func (to *TestContainerOrchestrator) CopyFiles(ctx context.Context, options cont
 		return fmt.Errorf("container, absolute destination, and archive are required")
 	}
 	buffer := &bytes.Buffer{}
-	if _, copyErr := io.Copy(buffer, usvc_io.NewContextReader(ctx, options.Archive, false)); copyErr != nil {
+	readCtx, cancelRead := context.WithCancel(ctx)
+	defer cancelRead()
+	if _, copyErr := io.Copy(buffer, usvc_io.NewContextReader(readCtx, options.Archive, false)); copyErr != nil {
 		return copyErr
 	}
 	to.mutex.Lock()

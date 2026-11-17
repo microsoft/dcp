@@ -24,6 +24,14 @@ func OpenSHA256VerifiedFile(ctx context.Context, source, expectedSHA256 string) 
 	if cancellationErr := ctx.Err(); cancellationErr != nil {
 		return nil, cancellationErr
 	}
+	// Opening a FIFO blocks until a writer appears and cannot be cancelled, so reject special files first.
+	sourceInfo, sourceStatErr := os.Stat(source)
+	if sourceStatErr != nil {
+		return nil, fmt.Errorf("inspect file %q: %w", source, sourceStatErr)
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return nil, fmt.Errorf("file %q is not a regular file", source)
+	}
 	file, openErr := OpenFileReadOnly(source)
 	if openErr != nil {
 		return nil, fmt.Errorf("open file %q: %w", source, openErr)
