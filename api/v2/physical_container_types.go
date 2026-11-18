@@ -87,6 +87,10 @@ const (
 	// PhysicalContainerReasonStarted indicates that runtime container start completed.
 	PhysicalContainerReasonStarted ConditionReason = "Started"
 
+	// PhysicalContainerReasonAwaitingStart indicates that the container is fully prepared and waiting to be started
+	// because start is false.
+	PhysicalContainerReasonAwaitingStart ConditionReason = "AwaitingStart"
+
 	// PhysicalContainerReasonStopRequested indicates that stop completed without creating or starting the container.
 	PhysicalContainerReasonStopRequested ConditionReason = "StopRequested"
 
@@ -186,6 +190,12 @@ type PhysicalContainerConfig struct {
 	// ReplaceExisting removes an existing runtime container with containerName before creating a new one.
 	ReplaceExisting bool `json:"replaceExisting,omitempty"`
 
+	// Start requests that the controller start the container after creation and file preparation. Defaults to true.
+	// When false, the prepared container remains created for another component to start; a runtime start
+	// is then observed like any other lifecycle change. It may be changed from false to true, but not back to false.
+	// +kubebuilder:default:=true
+	Start *bool `json:"start,omitempty"`
+
 	// Entrypoint is the container runtime entrypoint to run.
 	Entrypoint string `json:"entrypoint,omitempty"`
 
@@ -229,6 +239,11 @@ type PhysicalContainerConfig struct {
 	// +listType=map
 	// +listMapKey=key
 	Labels []commonapi.Label `json:"labels,omitempty"`
+}
+
+// ShouldStart reports whether the controller should start the created container.
+func (config *PhysicalContainerConfig) ShouldStart() bool {
+	return config.Start == nil || *config.Start
 }
 
 // PhysicalContainerPortMapping describes the observed host binding for one runtime container port.
@@ -457,10 +472,17 @@ func (pc *PhysicalContainer) ValidateUpdate(ctx context.Context, old runtime.Obj
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "stop cannot be set to false once it has been set to true"))
 	}
 
-	oldSpec := oldPhysicalContainer.Spec
-	newSpec := pc.Spec
+	oldSpec := *oldPhysicalContainer.Spec.DeepCopy()
+	newSpec := *pc.Spec.DeepCopy()
 	oldSpec.Stop = false
 	newSpec.Stop = false
+	if oldSpec.Container != nil && newSpec.Container != nil {
+		if oldSpec.Container.ShouldStart() && !newSpec.Container.ShouldStart() {
+			errorList = append(errorList, field.Forbidden(field.NewPath("spec", "container", "start"), "start cannot be set to false once it is true"))
+		}
+		oldSpec.Container.Start = nil
+		newSpec.Container.Start = nil
+	}
 	if !reflect.DeepEqual(oldSpec, newSpec) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec"), "spec is immutable"))
 	}

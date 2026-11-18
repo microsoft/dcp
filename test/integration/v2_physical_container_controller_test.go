@@ -20,6 +20,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -2250,4 +2251,150 @@ func removeRuntimeNetworkOnCleanup(t *testing.T, networkName string) {
 		}
 		require.NoError(t, removeErr)
 	})
+}
+
+// Verifies that the PhysicalContainer controller prepares a container with start set to false without starting it,
+// and starts it once start is set to true.
+func TestV2PhysicalContainerControllerDefersStartUntilRequested(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-deferred-start")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "deferred-start-image", "deferred-start-image")
+	start := false
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "deferred-start-container", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef:      image.Name,
+			ContainerName: "v2-pctr-deferred-start",
+			Start:         &start,
+			CreateFiles: []apiv2.CreateFileSystem{{
+				Destination: "/workspace",
+				Entries:     []apiv2.FileSystemEntry{{Name: "hello.txt", Contents: "hello"}},
+			}},
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerReadyReason(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerReasonAwaitingStart)
+	containerID := updatedContainer.Status.ContainerID
+	require.NotEmpty(t, containerID)
+	removeRuntimeContainerOnCleanup(t, containerID)
+	require.Equal(t, apiv2.PhysicalContainerPhasePending, updatedContainer.Status.Phase)
+	files, getFileErr := containerOrchestrator.GetCreatedFiles(containerID)
+	require.NoError(t, getFileErr)
+	require.Len(t, files, 1)
+	requireRuntimeContainerStatus(t, ctx, containerID, containers.ContainerStatusCreated)
+
+	updateErr := retryOnConflict[apiv2.PhysicalContainer](ctx, container.NamespacedName(), func(ctx context.Context, currentContainer *apiv2.PhysicalContainer) error {
+		requestedStart := true
+		currentContainer.Spec.Container.Start = &requestedStart
+		return client.Update(ctx, currentContainer)
+	})
+	require.NoError(t, updateErr)
+
+	updatedContainer = waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	require.Equal(t, containerID, updatedContainer.Status.ContainerID)
+	requireRuntimeContainerStatus(t, ctx, containerID, containers.ContainerStatusRunning)
+}
+
+// Verifies that the PhysicalContainer controller adopts a runtime start performed outside the controller for a
+// container awaiting start, and covers the retained container with a single lifecycle monitor.
+func TestV2PhysicalContainerControllerAdoptsExternalStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-external-start")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "external-start-image", "external-start-image")
+	start := false
+	monitorPID := int64(12346)
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "external-start-container", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef:               image.Name,
+			ContainerName:          "v2-pctr-external-start",
+			Start:                  &start,
+			RetainRuntimeContainer: true,
+			MonitorPID:             &monitorPID,
+			MonitorTimestamp:       metav1.NewMicroTime(time.Now().Add(-time.Minute)),
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerReadyReason(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerReasonAwaitingStart)
+	containerID := updatedContainer.Status.ContainerID
+	require.NotEmpty(t, containerID)
+	removeRuntimeContainerOnCleanup(t, containerID)
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(context.Context) (bool, error) {
+		return len(physicalContainerMonitorProcesses(containerID)) == 1, nil
+	})
+	require.NoError(t, waitErr)
+
+	_, startErr := containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{Containers: []string{containerID}})
+	require.NoError(t, startErr)
+
+	updatedContainer = waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	require.Equal(t, containerID, updatedContainer.Status.ContainerID)
+	requireReadyCondition(t, updatedContainer.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerReasonRuntimeContainerRunning)
+	require.Len(t, physicalContainerMonitorProcesses(containerID), 1)
+}
+
+// Verifies that the PhysicalContainer controller stops a container awaiting start without starting it.
+func TestV2PhysicalContainerControllerStopsContainerAwaitingStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-stop-awaiting")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "stop-awaiting-image", "stop-awaiting-image")
+	start := false
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "stop-awaiting-container", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef:      image.Name,
+			ContainerName: "v2-pctr-stop-awaiting",
+			Start:         &start,
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	updatedContainer := waitPhysicalContainerReadyReason(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerReasonAwaitingStart)
+	containerID := updatedContainer.Status.ContainerID
+	require.NotEmpty(t, containerID)
+	removeRuntimeContainerOnCleanup(t, containerID)
+
+	updateErr := retryOnConflict[apiv2.PhysicalContainer](ctx, container.NamespacedName(), func(ctx context.Context, currentContainer *apiv2.PhysicalContainer) error {
+		currentContainer.Spec.Stop = true
+		return client.Update(ctx, currentContainer)
+	})
+	require.NoError(t, updateErr)
+
+	updatedContainer = waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseExited)
+	requireReadyCondition(t, updatedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonStopRequested)
+	requireRuntimeContainerStatus(t, ctx, containerID, containers.ContainerStatusCreated)
+}
+
+func waitPhysicalContainerReadyReason(
+	t *testing.T,
+	ctx context.Context,
+	name types.NamespacedName,
+	reason apiv2.ConditionReason,
+) *apiv2.PhysicalContainer {
+	t.Helper()
+
+	return waitObjectAssumesState(t, ctx, name, func(container *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(container.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil && readyCondition.Reason == string(reason), nil
+	})
+}
+
+func requireRuntimeContainerStatus(t *testing.T, ctx context.Context, containerID string, status containers.ContainerStatus) {
+	t.Helper()
+
+	inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspected, 1)
+	require.Equal(t, status, inspected[0].Status)
 }

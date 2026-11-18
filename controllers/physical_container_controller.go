@@ -71,6 +71,7 @@ var (
 		physicalContainerStateCopyFiles:              handlePhysicalContainerOperationInProgress,
 		physicalContainerStateFilesCopied:            handlePhysicalContainerFilesCreated,
 		physicalContainerStateFileCopyFailed:         handlePhysicalContainerOperationFailed,
+		physicalContainerStateAwaitingStart:          handlePhysicalContainerAwaitingStart,
 		physicalContainerStateStart:                  handlePhysicalContainerOperationInProgress,
 		physicalContainerStateStarted:                handlePhysicalContainerStarting,
 		physicalContainerStateStartFailed:            handlePhysicalContainerOperationFailed,
@@ -712,6 +713,10 @@ func handlePhysicalContainerCreated(
 	if len(container.Spec.Container.CreateFiles) > 0 || len(container.Spec.Container.CopyFiles) > 0 {
 		return reconciler.schedulePhysicalContainerCreateFiles(container, data, log)
 	}
+	if !container.Spec.Container.ShouldStart() {
+		data.state = physicalContainerStateAwaitingStart
+		return setValue(&container.Status.ContainerID, data.containerID) | additionalReconciliationNeeded
+	}
 	return reconciler.schedulePhysicalContainerStart(container, data, log)
 }
 
@@ -739,7 +744,52 @@ func handlePhysicalContainerFilesCreated(
 		data.state = physicalContainerStateStopping
 		return additionalReconciliationNeeded
 	}
+	if !container.Spec.Container.ShouldStart() {
+		data.state = physicalContainerStateAwaitingStart
+		return additionalReconciliationNeeded
+	}
 	return reconciler.schedulePhysicalContainerStart(container, data, log)
+}
+
+// Waits for a prepared container whose start is deferred, adopting a runtime start performed by another component.
+func handlePhysicalContainerAwaitingStart(
+	ctx context.Context,
+	reconciler *PhysicalContainerReconciler,
+	container *apiv2.PhysicalContainer,
+	_ physicalContainerState,
+	data *physicalContainerData,
+	log logr.Logger,
+) objectChange {
+	if data.containerID == "" {
+		data.state = physicalContainerStateResolve
+		return additionalReconciliationNeeded
+	}
+	reconciler.ensurePhysicalContainerWatch(container, log)
+	if container.Spec.Stop {
+		data.state = physicalContainerStateStopping
+		return additionalReconciliationNeeded
+	}
+	if container.Spec.Container.ShouldStart() {
+		return reconciler.schedulePhysicalContainerStart(container, data, log)
+	}
+
+	inspected, inspectErr := reconciler.inspectPhysicalContainer(ctx, data.containerID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		data.state, data.failureMessage = physicalContainerStateMissing, ""
+		return additionalReconciliationNeeded
+	}
+	if inspectErr != nil {
+		// Remain awaiting start so that a later start request is still honored.
+		log.Error(inspectErr, "Failed to inspect runtime container awaiting start", "ContainerID", data.containerID)
+		data.failureMessage = fmt.Sprintf("Failed to inspect runtime container: %v", inspectErr)
+		return noChange
+	}
+	change := reconciler.applyInspectedPhysicalContainerStatus(container, data, inspected, log)
+	if data.state == physicalContainerStateNotStarted {
+		data.state = physicalContainerStateAwaitingStart
+		return change
+	}
+	return change | additionalReconciliationNeeded
 }
 
 func handlePhysicalContainerOperationFailed(
@@ -1148,6 +1198,10 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
 		r.runPhysicalContainerCleanupMonitor(container, containerID, log)
+		if !container.Spec.Container.ShouldStart() {
+			// Another component may start the container, so the retained lifecycle monitor must cover it from creation.
+			data.retainedMonitorStarted = r.runRetainedPhysicalContainerLifecycleMonitor(container, containerID, log)
+		}
 	}
 
 	r.queuePhysicalContainerDataResult(container, stateKey, data)
@@ -1169,28 +1223,28 @@ func (r *PhysicalContainerReconciler) runPhysicalContainerCleanupMonitor(contain
 	dcpproc.RunContainerWatcher(r.processExecutor, containerID, log)
 }
 
-// Starts a stop-only monitor for a retained runtime container after it has started.
+// Starts a stop-only monitor for a retained runtime container and reports whether the monitor was launched.
 // Failures are logged but not surfaced, because the monitor is a best-effort reliability enhancement.
 func (r *PhysicalContainerReconciler) runRetainedPhysicalContainerLifecycleMonitor(
 	container *apiv2.PhysicalContainer,
 	containerID string,
 	log logr.Logger,
-) {
+) bool {
 	containerConfig := container.Spec.Container
 	if containerConfig == nil || !containerConfig.RetainRuntimeContainer || containerID == "" {
-		return
+		return false
 	}
 	monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(containerConfig.MonitorPID, containerConfig.MonitorTimestamp)
 	if monitorErr != nil {
 		log.Error(monitorErr, "Could not start retained PhysicalContainer lifecycle monitor")
-		return
+		return false
 	}
 	if !found {
-		return
+		return false
 	}
 	if r.processExecutor == nil {
 		log.Error(errors.New("process executor is not configured"), "Could not start retained PhysicalContainer lifecycle monitor")
-		return
+		return false
 	}
 	dcpproc.RunContainerWatcherForMonitorWithOptions(
 		r.processExecutor,
@@ -1199,6 +1253,7 @@ func (r *PhysicalContainerReconciler) runRetainedPhysicalContainerLifecycleMonit
 		dcpproc.ContainerWatcherOptions{StopOnly: true},
 		log,
 	)
+	return true
 }
 
 func (r *PhysicalContainerReconciler) removePhysicalContainerForReplacement(ctx context.Context, containerName string, log logr.Logger) error {
@@ -1388,7 +1443,9 @@ func (r *PhysicalContainerReconciler) startPhysicalContainer(
 
 		data.state = physicalContainerStateStarted
 		data.failureMessage = ""
-		r.runRetainedPhysicalContainerLifecycleMonitor(container, data.containerID, log)
+		if !data.retainedMonitorStarted {
+			data.retainedMonitorStarted = r.runRetainedPhysicalContainerLifecycleMonitor(container, data.containerID, log)
+		}
 	}
 
 	r.queuePhysicalContainerDataResult(container, stateKey, data)

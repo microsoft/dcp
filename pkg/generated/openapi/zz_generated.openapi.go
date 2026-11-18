@@ -7359,6 +7359,13 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref common.ReferenceCal
 							Format:      "",
 						},
 					},
+					"start": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Start requests that the controller start the container after creation and file preparation. Defaults to true. When false, the prepared container remains created for another component to start; a runtime start is then observed like any other lifecycle change. It may be changed from false to true, but not back to false.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"entrypoint": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Entrypoint is the container runtime entrypoint to run.",
