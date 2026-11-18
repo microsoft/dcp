@@ -649,49 +649,56 @@ func (connection *redialingAdapterConnection) forward() {
 }
 
 func (connection *redialingAdapterConnection) Read(payload []byte) (int, error) {
-	for {
-		connection.mu.Lock()
-		current, proven := connection.connection, connection.proven
-		connection.mu.Unlock()
-		count, readErr := current.Read(payload)
-		if count > 0 && !proven {
+	connection.mu.Lock()
+	current, proven := connection.connection, connection.proven
+	connection.mu.Unlock()
+	if proven {
+		return current.Read(payload)
+	}
+
+	var count int
+	var readErr error
+	first := true
+	retryErr := resiliency.RetryExponential(connection.ctx, func() error {
+		if !first {
+			replacement, redialErr := connection.redial(current)
+			if redialErr != nil {
+				return redialErr
+			}
+			current = replacement
+		}
+		first = false
+		count, readErr = current.Read(payload)
+		if count > 0 {
 			connection.mu.Lock()
 			connection.proven, connection.replay = true, nil
 			connection.mu.Unlock()
+			return nil
 		}
-		if count > 0 || proven || readErr == nil {
-			return count, readErr
-		}
-		if connection.ctx.Err() != nil {
-			return 0, readErr
-		}
-		if redialErr := connection.redial(current); redialErr != nil {
-			return 0, errors.Join(readErr, redialErr)
-		}
+		return readErr
+	})
+	if retryErr != nil {
+		return 0, fmt.Errorf("container adapter connection closed before the adapter responded: %w", retryErr)
 	}
+	return count, readErr
 }
 
-func (connection *redialingAdapterConnection) redial(stale net.Conn) error {
+func (connection *redialingAdapterConnection) redial(stale net.Conn) (net.Conn, error) {
 	connection.mu.Lock()
 	defer connection.mu.Unlock()
 	_ = stale.Close()
-	var replacement net.Conn
-	redialErr := resiliency.RetryExponential(connection.ctx, func() error {
-		candidate, dialErr := connection.dial(connection.ctx)
-		if dialErr != nil {
-			return dialErr
-		}
-		if _, writeErr := candidate.Write(connection.replay); writeErr != nil {
-			return errors.Join(writeErr, candidate.Close())
-		}
-		replacement = candidate
-		return nil
-	})
-	if redialErr != nil {
-		return fmt.Errorf("container adapter connection closed before the adapter responded: %w", redialErr)
+	candidate, dialErr := connection.dial(connection.ctx)
+	if dialErr != nil {
+		return nil, dialErr
 	}
-	connection.connection = replacement
-	return nil
+	stopCancellation := context.AfterFunc(connection.ctx, func() { _ = candidate.Close() })
+	_, writeErr := candidate.Write(connection.replay)
+	stopCancellation()
+	if writeErr != nil {
+		return nil, errors.Join(writeErr, candidate.Close())
+	}
+	connection.connection = candidate
+	return candidate, nil
 }
 
 func (connection *redialingAdapterConnection) Write(payload []byte) (int, error) {

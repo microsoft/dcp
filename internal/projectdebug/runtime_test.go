@@ -229,3 +229,99 @@ func TestRedialingAdapterConnection(t *testing.T) {
 		})
 	}
 }
+
+type earlyClosingAdapterConnection struct {
+	net.Conn
+}
+
+func (*earlyClosingAdapterConnection) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (*earlyClosingAdapterConnection) Write(payload []byte) (int, error) {
+	return len(payload), nil
+}
+
+func (*earlyClosingAdapterConnection) Close() error {
+	return nil
+}
+
+// Verifies that redialingAdapterConnection backs off between connections closed before the adapter responds.
+func TestRedialingAdapterConnectionBacksOffOnEarlyClose(t *testing.T) {
+	synctest.Test(t, func(test *testing.T) {
+		ctx, cancel := context.WithCancel(test.Context())
+		defer cancel()
+		dials := make(chan struct{}, 1)
+		dial := func(dialCtx context.Context) (net.Conn, error) {
+			select {
+			case dials <- struct{}{}:
+				return &earlyClosingAdapterConnection{}, nil
+			case <-dialCtx.Done():
+				return nil, dialCtx.Err()
+			}
+		}
+		connection := &redialingAdapterConnection{
+			ctx: ctx, cancel: cancel, dial: dial, connection: &earlyClosingAdapterConnection{},
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, readErr := connection.Read(make([]byte, 1))
+			done <- readErr
+		}()
+
+		synctest.Wait()
+		if len(dials) != 0 {
+			test.Error("redialed immediately after the initial connection closed")
+			cancel()
+			<-done
+			return
+		}
+		<-dials
+		synctest.Wait()
+		if len(dials) != 0 {
+			test.Error("redialed immediately after the replacement connection closed")
+		}
+		cancel()
+		require.ErrorIs(test, <-done, context.Canceled)
+	})
+}
+
+// Verifies that redialingAdapterConnection cancels an in-progress replay when its context is canceled.
+func TestRedialingAdapterConnectionCancelsBlockedReplay(t *testing.T) {
+	synctest.Test(t, func(test *testing.T) {
+		ctx, cancel := context.WithCancel(test.Context())
+		defer cancel()
+		candidate, peer := net.Pipe()
+		defer peer.Close()
+		dials := make(chan struct{})
+		dial := func(dialCtx context.Context) (net.Conn, error) {
+			select {
+			case dials <- struct{}{}:
+				return candidate, nil
+			case <-dialCtx.Done():
+				return nil, dialCtx.Err()
+			}
+		}
+		connection := &redialingAdapterConnection{
+			ctx: ctx, cancel: cancel, dial: dial,
+			connection: &earlyClosingAdapterConnection{}, replay: []byte("request"),
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, readErr := connection.Read(make([]byte, 1))
+			done <- readErr
+		}()
+		<-dials
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
+		select {
+		case readErr := <-done:
+			require.ErrorIs(test, readErr, context.Canceled)
+		default:
+			test.Error("replay did not stop when the connection context was canceled")
+			require.NoError(test, peer.Close())
+			<-done
+		}
+	})
+}
