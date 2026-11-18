@@ -207,6 +207,11 @@ func (network *LogicalContainerNetwork) GetResourceId() string {
 	return fmt.Sprintf("logicalcontainernetwork-%s", network.UID)
 }
 
+// GetLogStreams reports that networks expose only the system log.
+func (*LogicalContainerNetwork) GetLogStreams() LogStreams {
+	return LogStreams{}
+}
+
 func (*LogicalContainerNetwork) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{&LogicalContainerNetworkLogResource{}}
 }
@@ -336,6 +341,7 @@ func init() {
 }
 
 var _ apiserver_resource.Object = (*LogicalContainerNetwork)(nil)
+var _ LogStreamingResource = (*LogicalContainerNetwork)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*LogicalContainerNetwork)(nil)
 var _ apiserver_resource.ObjectWithGenericSubResource = (*LogicalContainerNetwork)(nil)
 var _ apiserver_resource.GenericSubResource = (*LogicalContainerNetworkLogResource)(nil)

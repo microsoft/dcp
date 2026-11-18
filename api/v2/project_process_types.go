@@ -74,6 +74,11 @@ func (resource *ProjectProcess) GetLogSource() *LogSource {
 	return resource.Status.RuntimeLogs
 }
 
+// GetLogStreams describes the immediate execution output.
+func (resource *ProjectProcess) GetLogStreams() LogStreams {
+	return resource.Status.runtimeLogStreams()
+}
+
 func (*ProjectProcess) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{&ProjectLogResource{}}
 }
@@ -151,6 +156,7 @@ func init() {
 
 var _ ProjectObject = (*ProjectProcess)(nil)
 var _ apiserver_resource.Object = (*ProjectProcess)(nil)
+var _ LogStreamingResource = (*ProjectProcess)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*ProjectProcess)(nil)
 var _ apiserver_resource.ObjectWithGenericSubResource = (*ProjectProcess)(nil)
 var _ apiserver_resource.StatusSubResource = (*ProjectProcessStatus)(nil)

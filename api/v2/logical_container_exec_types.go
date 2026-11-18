@@ -128,6 +128,13 @@ func (resource *LogicalContainerExec) GetLogSource() *LogSource {
 	return resource.Status.RuntimeLogs
 }
 
+func (resource *LogicalContainerExec) GetLogStreams() LogStreams {
+	return LogStreams{
+		OutputSupported: true, Runtime: resource.Status.RuntimeLogs,
+		Complete: resource.Status.Phase == LogicalContainerExecPhaseExited || resource.Status.Phase == LogicalContainerExecPhaseFailed,
+	}
+}
+
 func (resource *LogicalContainerExec) Validate(context.Context) field.ErrorList {
 	errorList := ValidateNamespacedResourceMetadata(resource)
 	if commonapi.ResourceCreationProhibited.Load() && resource.DeletionTimestamp.IsZero() {
@@ -178,6 +185,7 @@ func (list *LogicalContainerExecList) GetItems() []*LogicalContainerExec {
 func init() { SchemeBuilder.Register(&LogicalContainerExec{}, &LogicalContainerExecList{}) }
 
 var _ apiserver_resource.Object = (*LogicalContainerExec)(nil)
+var _ LogStreamingResource = (*LogicalContainerExec)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*LogicalContainerExec)(nil)
 var _ apiserver_resource.StatusSubResource = (*LogicalContainerExecStatus)(nil)
 var _ apiserver_resource.ObjectList = (*LogicalContainerExecList)(nil)

@@ -93,6 +93,17 @@ func (resource *ProjectContainer) GetLogSource() *LogSource {
 	return resource.Status.RuntimeLogs
 }
 
+// GetLogStreams treats startup as complete when no image acquisition is owned or execution has finished.
+func (resource *ProjectContainer) GetLogStreams() LogStreams {
+	streams := resource.Status.runtimeLogStreams()
+	streams.StartupSupported = true
+	streams.Startup = resource.Status.StartupLogs
+	if streams.Startup == nil && (resource.Spec.Container.Image == nil || streams.Complete) {
+		streams.Startup = &LogSource{Complete: true}
+	}
+	return streams
+}
+
 func (*ProjectContainer) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{&ProjectLogResource{}}
 }
@@ -167,6 +178,7 @@ func init() {
 
 var _ ProjectObject = (*ProjectContainer)(nil)
 var _ apiserver_resource.Object = (*ProjectContainer)(nil)
+var _ LogStreamingResource = (*ProjectContainer)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*ProjectContainer)(nil)
 var _ apiserver_resource.ObjectWithGenericSubResource = (*ProjectContainer)(nil)
 var _ apiserver_resource.StatusSubResource = (*ProjectContainerStatus)(nil)

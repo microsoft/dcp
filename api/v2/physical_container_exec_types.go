@@ -93,6 +93,10 @@ func (resource *PhysicalContainerExec) GetLogSource() *LogSource {
 		Available: resource.Status.StdoutFile != "" && resource.Status.StderrFile != "", Complete: resource.Status.LogsComplete}
 }
 
+func (resource *PhysicalContainerExec) GetLogStreams() LogStreams {
+	return capturedLogStreams(resource.GetLogSource())
+}
+
 func (resource *PhysicalContainerExec) Validate(context.Context) field.ErrorList {
 	errorList := ValidateNamespacedResourceMetadata(resource)
 	if commonapi.ResourceCreationProhibited.Load() && resource.DeletionTimestamp.IsZero() {
@@ -143,6 +147,7 @@ func (list *PhysicalContainerExecList) GetItems() []*PhysicalContainerExec {
 func init() { SchemeBuilder.Register(&PhysicalContainerExec{}, &PhysicalContainerExecList{}) }
 
 var _ apiserver_resource.Object = (*PhysicalContainerExec)(nil)
+var _ LogStreamingResource = (*PhysicalContainerExec)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalContainerExec)(nil)
 var _ apiserver_resource.StatusSubResource = (*PhysicalContainerExecStatus)(nil)
 var _ apiserver_resource.ObjectList = (*PhysicalContainerExecList)(nil)

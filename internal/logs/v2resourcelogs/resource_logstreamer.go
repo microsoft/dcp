@@ -37,16 +37,10 @@ import (
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
-type logSourceProvider interface {
-	GetLogSource() *apiv2.LogSource
-}
-
 type resourceSnapshot struct {
+	apiv2.LogStreams
 	ownerUID types.UID
 	systemID string
-	runtime  *apiv2.LogSource
-	startup  *apiv2.LogSource
-	complete bool
 }
 
 type logSession struct {
@@ -79,82 +73,23 @@ func NewLogStreamer(log logr.Logger) *resourceLogStreamer {
 }
 
 func snapshot(obj resource.Object) (resourceSnapshot, error) {
-	switch network := obj.(type) {
-	case *apiv2.PhysicalContainerNetwork:
-		return resourceSnapshot{ownerUID: network.UID, systemID: network.GetResourceId()}, nil
-	case *apiv2.LogicalContainerNetwork:
-		return resourceSnapshot{ownerUID: network.UID, systemID: network.GetResourceId()}, nil
-	}
-	provider, supported := obj.(logSourceProvider)
+	streaming, supported := obj.(apiv2.LogStreamingResource)
 	if !supported {
 		return resourceSnapshot{}, fmt.Errorf("unsupported log resource %T", obj)
 	}
-	result := resourceSnapshot{ownerUID: obj.GetObjectMeta().UID, runtime: provider.GetLogSource()}
-	switch container := obj.(type) {
-	case *apiv2.PhysicalContainer:
-		result.systemID = container.GetResourceId()
-		result.complete = result.runtime.Complete
-	case *apiv2.LogicalContainer:
-		result.startup = container.Status.StartupLogs
-		result.systemID = container.GetResourceId()
-		result.complete = container.Status.Phase == apiv2.LogicalContainerPhaseExited || container.Status.Phase == apiv2.LogicalContainerPhaseFailed
-		if result.startup == nil && (container.Spec.Container == nil || container.Spec.Container.Image == nil ||
-			!container.Status.StartedAt.IsZero() || result.complete) {
-			result.startup = &apiv2.LogSource{Complete: true}
-		}
-	case *apiv2.PhysicalContainerImage:
-		result.systemID = container.GetResourceId()
-		result.complete = result.runtime.Complete
-	case *apiv2.PhysicalProcess:
-		result.systemID = container.GetResourceId()
-		result.runtime = container.GetLogSource()
-		result.complete = result.runtime.Complete
-	case *apiv2.LogicalProcess:
-		result.systemID = container.GetResourceId()
-		result.runtime = container.Status.RuntimeLogs
-		result.complete = container.Status.Phase == apiv2.LogicalProcessPhaseExited ||
-			container.Status.Phase == apiv2.LogicalProcessPhaseFailed
-	case *apiv2.PhysicalContainerExec:
-		result.systemID = container.GetResourceId()
-		result.runtime = container.GetLogSource()
-		result.complete = result.runtime.Complete
-	case *apiv2.LogicalContainerExec:
-		result.systemID = container.GetResourceId()
-		result.runtime = container.Status.RuntimeLogs
-		result.complete = container.Status.Phase == apiv2.LogicalContainerExecPhaseExited ||
-			container.Status.Phase == apiv2.LogicalContainerExecPhaseFailed
-	case *apiv2.ProjectProcess:
-		result.systemID = container.GetResourceId()
-		result.runtime = container.Status.RuntimeLogs
-		result.complete = container.Status.Phase == apiv2.ProjectPhaseStopped || container.Status.Phase == apiv2.ProjectPhaseFailed ||
-			(container.Status.Phase == apiv2.ProjectPhaseExited && (result.runtime == nil || result.runtime.Complete))
-		if result.runtime == nil && result.complete {
-			result.runtime = &apiv2.LogSource{Complete: true}
-		}
-		result.startup = &apiv2.LogSource{Complete: true}
-	case *apiv2.ProjectContainer:
-		result.systemID = container.GetResourceId()
-		result.runtime, result.startup = container.Status.RuntimeLogs, container.Status.StartupLogs
-		result.complete = container.Status.Phase == apiv2.ProjectPhaseStopped || container.Status.Phase == apiv2.ProjectPhaseFailed ||
-			(container.Status.Phase == apiv2.ProjectPhaseExited && (result.runtime == nil || result.runtime.Complete))
-		if result.runtime == nil && result.complete {
-			result.runtime = &apiv2.LogSource{Complete: true}
-		}
-		if result.startup == nil && (container.Spec.Container.Image == nil || result.complete) {
-			result.startup = &apiv2.LogSource{Complete: true}
-		}
-	default:
-		return resourceSnapshot{}, fmt.Errorf("unsupported log resource %T", obj)
-	}
-	return result, nil
+	return resourceSnapshot{
+		LogStreams: streaming.GetLogStreams(),
+		ownerUID:   streaming.GetObjectMeta().UID,
+		systemID:   streaming.GetResourceId(),
+	}, nil
 }
 
 func (state resourceSnapshot) logSource(source string) *apiv2.LogSource {
 	switch source {
 	case string(apiv2.LogStreamSourceStartupStdout), string(apiv2.LogStreamSourceStartupStderr):
-		return state.startup
+		return state.Startup
 	default:
-		return state.runtime
+		return state.Runtime
 	}
 }
 
@@ -166,27 +101,15 @@ func (streamer *resourceLogStreamer) Preflight(obj resource.Object, opts *apiv2.
 	if snapshotErr != nil {
 		return apierrors.NewInternalError(snapshotErr)
 	}
-	switch obj.(type) {
-	case *apiv2.PhysicalContainerNetwork, *apiv2.LogicalContainerNetwork:
-		if opts.Source != string(apiv2.LogStreamSourceSystem) {
-			return apierrors.NewBadRequest("network log source must be system")
+	switch opts.Source {
+	case string(apiv2.LogStreamSourceSystem):
+	case string(apiv2.LogStreamSourceStartupStdout), string(apiv2.LogStreamSourceStartupStderr):
+		if !state.StartupSupported {
+			return apierrors.NewBadRequest(fmt.Sprintf("%s does not support startup log sources", obj.GetGroupVersionResource().Resource))
 		}
-	}
-	startup := opts.Source == string(apiv2.LogStreamSourceStartupStdout) || opts.Source == string(apiv2.LogStreamSourceStartupStderr)
-	if _, physical := obj.(*apiv2.PhysicalContainer); physical && startup {
-		return apierrors.NewBadRequest("physical container log sources are stdout, stderr, and system")
-	}
-	if _, image := obj.(*apiv2.PhysicalContainerImage); image && startup {
-		return apierrors.NewBadRequest("image log sources are stdout, stderr, and system")
-	}
-	switch obj.(type) {
-	case *apiv2.LogicalProcess, *apiv2.PhysicalProcess, *apiv2.ProjectProcess:
-		if startup {
-			return apierrors.NewBadRequest("process log sources are stdout, stderr, and system")
-		}
-	case *apiv2.LogicalContainerExec, *apiv2.PhysicalContainerExec:
-		if startup {
-			return apierrors.NewBadRequest("execution log sources are stdout, stderr, and system")
+	default:
+		if !state.OutputSupported {
+			return apierrors.NewBadRequest(fmt.Sprintf("%s supports only the system log source", obj.GetGroupVersionResource().Resource))
 		}
 	}
 	capture := state.logSource(opts.Source)
@@ -239,7 +162,7 @@ func (streamer *resourceLogStreamer) StreamLogs(
 	system := opts.Source == string(apiv2.LogStreamSourceSystem)
 	capture := state.logSource(opts.Source)
 	if !system && (capture == nil || !capture.Available) {
-		if state.complete || (capture != nil && capture.Complete) {
+		if state.Complete || (capture != nil && capture.Complete) {
 			return logstream.ResourceStreamStatusDone, nil, nil
 		}
 		return logstream.ResourceStreamStatusNotReady, nil, nil
@@ -420,22 +343,19 @@ func (streamer *resourceLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcher
 		streamer.log.Error(snapshotErr, "Failed to process log resource update")
 		return
 	}
-	_, physical := evt.Object.(*apiv2.PhysicalContainer)
-	_, image := evt.Object.(*apiv2.PhysicalContainerImage)
-	_, process := evt.Object.(*apiv2.PhysicalProcess)
-	_, execution := evt.Object.(*apiv2.PhysicalContainerExec)
 	var streamsToStop []*usvc_io.FollowWriter
 	streamer.lock.Lock()
 	for ownerUID, sessions := range streamer.sessions {
 		for _, session := range sessions {
 			system := session.source == string(apiv2.LogStreamSourceSystem)
-			sourceUpdated := !system && (physical || image || process || execution) && session.capture.UID == state.ownerUID
+			// A capture UID equals the UID of the resource that owns the capture, so this event may complete sessions of consumers projecting it.
+			sourceUpdated := !system && session.capture.UID == state.ownerUID
 			if ownerUID != state.ownerUID && !sourceUpdated {
 				continue
 			}
 			capture := state.logSource(session.source)
 			if sourceUpdated {
-				capture = state.runtime
+				capture = state.Runtime
 			}
 			if evt.Type != watch.Deleted &&
 				(system || capture == nil || capture.UID != session.capture.UID || !capture.Complete) {
@@ -456,10 +376,10 @@ func (streamer *resourceLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcher
 	if len(streamsToStop) > 0 {
 		logs.DelayStopFollowing(streamsToStop)
 	}
-	if evt.Type == watch.Deleted && state.runtime != nil && state.runtime.UID != "" {
+	if evt.Type == watch.Deleted && state.Runtime != nil && state.Runtime.UID != "" {
 		streamer.captureLock.Lock()
 		if streamer.captures != nil {
-			streamer.captures.ReleaseForResource(state.runtime.UID)
+			streamer.captures.ReleaseForResource(state.Runtime.UID)
 		}
 		streamer.captureLock.Unlock()
 	}

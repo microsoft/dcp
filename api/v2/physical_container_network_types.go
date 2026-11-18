@@ -195,6 +195,11 @@ func (pn *PhysicalContainerNetwork) GetResourceId() string {
 	return fmt.Sprintf("physicalcontainernetwork-%s", pn.UID)
 }
 
+// GetLogStreams reports that networks expose only the system log.
+func (*PhysicalContainerNetwork) GetLogStreams() LogStreams {
+	return LogStreams{}
+}
+
 func (*PhysicalContainerNetwork) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{&PhysicalContainerNetworkLogResource{}}
 }
@@ -322,6 +327,7 @@ func init() {
 
 // Ensure types support interfaces expected by our API server.
 var _ apiserver_resource.Object = (*PhysicalContainerNetwork)(nil)
+var _ LogStreamingResource = (*PhysicalContainerNetwork)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalContainerNetwork)(nil)
 var _ apiserver_resource.ObjectWithGenericSubResource = (*PhysicalContainerNetwork)(nil)
 var _ apiserver_resource.GenericSubResource = (*PhysicalContainerNetworkLogResource)(nil)

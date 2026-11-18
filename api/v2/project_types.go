@@ -463,6 +463,17 @@ func (spec *ProjectCommonSpec) ShouldStart() bool {
 	return spec.Start == nil || *spec.Start
 }
 
+// runtimeLogStreams describes the immediate execution output; an exited Project completes only after its capture does.
+func (status *ProjectCommonStatus) runtimeLogStreams() LogStreams {
+	streams := LogStreams{OutputSupported: true, Runtime: status.RuntimeLogs}
+	streams.Complete = status.Phase == ProjectPhaseStopped || status.Phase == ProjectPhaseFailed ||
+		(status.Phase == ProjectPhaseExited && (streams.Runtime == nil || streams.Runtime.Complete))
+	if streams.Runtime == nil && streams.Complete {
+		streams.Runtime = &LogSource{Complete: true}
+	}
+	return streams
+}
+
 // EffectiveLaunchMode returns the selected launch mode, defaulting to adapter-driven launch.
 func (spec *ProjectCommonSpec) EffectiveLaunchMode() ProjectLaunchMode {
 	if spec.LaunchMode == "" {

@@ -249,6 +249,13 @@ func (resource *LogicalProcess) GetLogSource() *LogSource {
 	return resource.Status.RuntimeLogs
 }
 
+func (resource *LogicalProcess) GetLogStreams() LogStreams {
+	return LogStreams{
+		OutputSupported: true, Runtime: resource.Status.RuntimeLogs,
+		Complete: resource.Status.Phase == LogicalProcessPhaseExited || resource.Status.Phase == LogicalProcessPhaseFailed,
+	}
+}
+
 func (*LogicalProcess) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{&LogicalProcessLogResource{}}
 }
@@ -401,6 +408,7 @@ func init() {
 }
 
 var _ apiserver_resource.Object = (*LogicalProcess)(nil)
+var _ LogStreamingResource = (*LogicalProcess)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*LogicalProcess)(nil)
 var _ apiserver_resource.StatusSubResource = (*LogicalProcessStatus)(nil)
 var _ apiserver_resource.ObjectList = (*LogicalProcessList)(nil)
