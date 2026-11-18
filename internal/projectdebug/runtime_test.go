@@ -7,6 +7,8 @@ package projectdebug
 
 import (
 	"context"
+	"io"
+	"net"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -173,6 +175,57 @@ func TestProjectDebugAcquireFencesStoppingProvider(t *testing.T) {
 				require.Empty(test, executor.Executions)
 				require.Empty(test, debugRuntime.launches)
 			})
+		})
+	}
+}
+
+// Verifies that redialingAdapterConnection replays client output on a new connection when a runtime port proxy
+// closes the first connection before the adapter responds, and fails once its deadline expires without a response.
+func TestRedialingAdapterConnection(t *testing.T) {
+	for _, scenario := range []string{"proxy-close", "never-listening"} {
+		t.Run(scenario, func(t *testing.T) {
+			listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, listenErr)
+			defer listener.Close()
+			go func() {
+				for attempt := 0; ; attempt++ {
+					accepted, acceptErr := listener.Accept()
+					if acceptErr != nil {
+						return
+					}
+					request := make([]byte, len("request"))
+					_, readErr := io.ReadFull(accepted, request)
+					if readErr == nil && scenario == "proxy-close" && attempt > 0 {
+						_, _ = accepted.Write(append([]byte("reply:"), request...))
+						_, _ = io.Copy(io.Discard, accepted)
+					}
+					_ = accepted.Close()
+				}
+			}()
+
+			ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+			defer cancel()
+			// The never-listening scenario needs a short deadline to observe redial expiry.
+			redialCtx, redialCancel := context.WithTimeout(ctx, 2*time.Second)
+			dial := func(dialCtx context.Context) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(dialCtx, "tcp", listener.Addr().String())
+			}
+			first, dialErr := dial(redialCtx)
+			require.NoError(t, dialErr)
+			connection := newRedialingAdapterConnection(redialCtx, redialCancel, dial, first)
+			defer connection.Close()
+
+			written, writeErr := connection.Write([]byte("request"))
+			require.NoError(t, writeErr)
+			require.Equal(t, len("request"), written)
+			response := make([]byte, len("reply:request"))
+			_, readErr := io.ReadFull(connection, response)
+			if scenario == "never-listening" {
+				require.Error(t, readErr)
+				return
+			}
+			require.NoError(t, readErr)
+			require.Equal(t, "reply:request", string(response))
 		})
 	}
 }

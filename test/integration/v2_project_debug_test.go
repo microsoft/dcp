@@ -211,6 +211,120 @@ func TestV2ProjectContainerAdapterWithRealOrchestrator(t *testing.T) {
 	})
 }
 
+// Verifies through each enabled real runtime that overlapping container TCP-connect sessions share one
+// in-container adapter provider through the runtime-assigned host binding, and that the idle adapter is retained for a later session.
+func TestV2ProjectContainerTCPAdapterWithRealOrchestrator(t *testing.T) {
+	t.Parallel()
+	testCtx, testCancel := testutil.GetTestContext(t, 3*time.Minute)
+	t.Cleanup(testCancel)
+	containertest.ForEachHealthyRuntime(t, testCtx, func(t *testing.T, runtimeCtx context.Context, runtime containertest.Runtime) {
+		ctx, cancel := context.WithCancel(runtimeCtx)
+		defer cancel()
+		tracker := containertest.NewResourceTracker(t, runtime)
+		server, environment, startupErr := StartAdvancedTestEnvironmentWithOptions(ctx,
+			projectTestControllers, containertest.UniqueName(t, "project-tcp-adapter-environment"), t.TempDir(),
+			AdvancedTestEnvironmentOptions{ApiServerFlags: ctrl_testutil.ApiServerUseTrueContainerOrchestrator, ContainerOrchestrator: runtime.Orchestrator})
+		require.NoError(t, startupErr)
+		defer environment.ProcessExecutor.Dispose()
+		defer shutdownAdvancedTestEnvironment(t, ctx, cancel, server)
+		namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: containertest.UniqueName(t, "project-tcp-adapter-namespace")}}
+		require.NoError(t, server.Client.Create(ctx, namespace))
+		var labels []commonapi.Label
+		for name, value := range tracker.MapLabels() {
+			labels = append(labels, commonapi.Label{Key: name, Value: value})
+		}
+		// Busybox nc with a repeated -l forks a cat echo server per accepted connection.
+		project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+			Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
+				Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+					Image: &apiv2.PhysicalContainerImageConfig{Image: "busybox:latest"}, Labels: labels,
+				}},
+				DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Mode: apiv2.DebugAdapterModeTCPConnect,
+					Args: []string{"nc", "-ll", "-p", "{{port}}", "-e", "cat"}},
+			}}
+		require.NoError(t, server.Client.Create(ctx, project))
+		prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
+		require.NoError(t, tracker.TrackContainer(prepared.Status.ContainerName))
+		require.Equal(t, apiv2.DefaultContainerDebugAdapterPort, prepared.Status.DebugAdapterPort)
+		require.NotEmpty(t, prepared.Status.DebugAdapterAddress)
+
+		var connections []*websocket.Conn
+		for index := range 2 {
+			connection, connectErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
+			require.NoError(t, connectErr)
+			defer connection.Close()
+			if deadline, exists := ctx.Deadline(); exists {
+				require.NoError(t, connection.SetReadDeadline(deadline))
+			}
+			sendProjectProtocolRequest(t, connection, fmt.Sprintf(`{"seq":%d,"type":"request","command":"initialize","arguments":{"session":%d}}`, 41+index, index))
+			echo := readProjectDebugMessage(t, connection)
+			require.JSONEq(t, `"initialize"`, string(echo["command"]))
+			require.JSONEq(t, fmt.Sprintf(`{"session":%d}`, index), string(echo["arguments"]))
+			connections = append(connections, connection)
+		}
+		shared := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 2 {
+				return false, nil
+			}
+			for _, session := range current.Status.Debug.Sessions {
+				if session.Phase != apiv2.ProjectDebugPhaseRunning {
+					return false, nil
+				}
+			}
+			return true, nil
+		})
+		require.Len(t, shared.Status.Debug.Executions, 1, "overlapping TCP-connect sessions must share one adapter provider")
+		execution := shared.Status.Debug.Executions[0]
+		require.Equal(t, apiv2.ProjectDebugPhaseRunning, execution.Phase)
+		require.Nil(t, execution.PID)
+		for _, session := range shared.Status.Debug.Sessions {
+			require.Equal(t, execution.ID, session.ExecutionID)
+		}
+
+		for _, connection := range connections {
+			require.NoError(t, connection.Close())
+		}
+		released := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			if current.Status.Phase != apiv2.ProjectPhaseReady || len(current.Status.Debug.Executions) != 1 {
+				return false, nil
+			}
+			for _, session := range current.Status.Debug.Sessions {
+				if session.Phase == apiv2.ProjectDebugPhasePending || session.Phase == apiv2.ProjectDebugPhaseRunning {
+					return false, nil
+				}
+			}
+			return true, nil
+		})
+		require.Equal(t, prepared.Status.ContainerID, released.Status.ContainerID)
+		require.Equal(t, prepared.Status.DebugAdapterAddress, released.Status.DebugAdapterAddress)
+		require.Equal(t, execution.ID, released.Status.Debug.Executions[0].ID)
+		require.Equal(t, apiv2.ProjectDebugPhaseRunning, released.Status.Debug.Executions[0].Phase,
+			"final release must leave the in-container adapter running")
+
+		reused, reuseErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
+		require.NoError(t, reuseErr)
+		defer reused.Close()
+		if deadline, exists := ctx.Deadline(); exists {
+			require.NoError(t, reused.SetReadDeadline(deadline))
+		}
+		sendProjectProtocolRequest(t, reused, `{"seq":43,"type":"request","command":"initialize","arguments":{"session":2}}`)
+		reusedEcho := readProjectDebugMessage(t, reused)
+		require.JSONEq(t, `{"session":2}`, string(reusedEcho["arguments"]))
+		current := &apiv2.Project{}
+		require.NoError(t, server.Client.Get(ctx, project.NamespacedName(), current))
+		require.Len(t, current.Status.Debug.Executions, 1, "a later session must reuse the retained adapter")
+		for _, session := range current.Status.Debug.Sessions {
+			require.Equal(t, execution.ID, session.ExecutionID)
+		}
+		require.NoError(t, reused.Close())
+
+		require.NoError(t, server.Client.Delete(ctx, project))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
+		require.NoError(t, server.Client.Delete(ctx, namespace))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, namespace)
+	})
+}
+
 func sendProjectProtocolRequest(t *testing.T, connection *websocket.Conn, body string) {
 	t.Helper()
 	require.NoError(t, connection.WriteMessage(websocket.BinaryMessage, []byte(fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(body), body))))
@@ -344,6 +458,71 @@ func TestV2ProjectProtocolProgress(t *testing.T) {
 				releaseProjectInspection(t, ctx, server.Client, project)
 				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
 			}
+		})
+	}
+}
+
+// Verifies that the Project controller publishes service endpoints only after a ready debug session
+// requests launch, and withdraws them when that session disconnects or the Project is deleted.
+func TestV2ProjectEndpointsFollowLaunchedSession(t *testing.T) {
+	t.Parallel()
+	for _, ending := range []string{"disconnect", "delete"} {
+		t.Run(ending, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			server, _, startupErr := StartTestEnvironment(t, ctx, ProjectController|LogicalServiceController, t.Name(), t.TempDir())
+			require.NoError(t, startupErr)
+			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-endpoints-"+ending)
+			tool, toolErr := internaltest.GetTestToolPath("delay")
+			require.NoError(t, toolErr)
+			project := serviceProject("project", namespace.Name, t.TempDir(), "process", nil, nil)
+			project.Spec.DebugAdapter = &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}}
+			require.NoError(t, server.Client.Create(ctx, project))
+			prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
+			require.Len(t, prepared.Status.Ports, 1)
+			connection, connectErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
+			require.NoError(t, connectErr)
+			defer connection.Close()
+
+			sendProjectProtocolRequest(t, connection, `{"seq":1,"type":"request","command":"initialize","arguments":{}}`)
+			readProjectDebugMessage(t, connection)
+			sendProjectProtocolRequest(t, connection, `{"seq":2,"type":"request","command":"reportInitialized","arguments":{}}`)
+			readProjectDebugMessage(t, connection)
+			readProjectDebugMessage(t, connection)
+			waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				return current.Status.Phase == apiv2.ProjectPhaseActive && current.Status.Debug != nil && len(current.Status.Debug.Sessions) == 1 &&
+					len(current.Status.Debug.Sessions[0].Conditions) == 1 && current.Status.Debug.Sessions[0].Conditions[0].Status == metav1.ConditionTrue, nil
+			})
+			var endpoints apiv2.ServiceEndpointList
+			require.NoError(t, server.Client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
+			require.Empty(t, endpoints.Items, "endpoints must not be published before launch")
+
+			sendProjectProtocolRequest(t, connection, `{"seq":3,"type":"request","command":"launch","arguments":{"noDebug":true}}`)
+			readProjectDebugMessage(t, connection)
+			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+				listErr := server.Client.List(pollCtx, &endpoints, ctrl_client.InNamespace(namespace.Name))
+				return listErr == nil && len(endpoints.Items) == 1, nil
+			}))
+			endpoint := endpoints.Items[0]
+			require.True(t, metav1.IsControlledBy(&endpoint, prepared))
+			require.Equal(t, prepared.Status.Ports[0].ServiceRef, endpoint.Spec.ServiceRef)
+			require.Equal(t, []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: prepared.Status.Ports[0].Port}}, endpoint.Spec.Addresses)
+
+			if ending == "disconnect" {
+				require.NoError(t, connection.Close())
+			} else {
+				require.NoError(t, server.Client.Delete(ctx, project))
+			}
+			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+				listErr := server.Client.List(pollCtx, &endpoints, ctrl_client.InNamespace(namespace.Name))
+				return listErr == nil && len(endpoints.Items) == 0, nil
+			}))
+			if ending == "disconnect" {
+				waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
+				require.NoError(t, server.Client.Delete(ctx, project))
+			}
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
 		})
 	}
 }

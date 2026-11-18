@@ -1139,8 +1139,8 @@ type containerAdapterExecutor struct {
 	run          func(context.Context, containers.ExecContainerOptions) (<-chan int32, error)
 }
 
-// Verifies that container TCP streams share one provider, keep sibling connections independent,
-// use the prepared endpoint, report uncertain cleanup/setup failures, and permit restart after confirmed exit.
+// Verifies that container TCP streams share one provider, keep sibling connections independent, use the prepared endpoint,
+// retain an idle adapter for reuse, abandon it for a superseded endpoint, report setup failures, and permit restart after confirmed exit.
 func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 	for _, scenario := range []string{"shared", "confirmed-exit", "failed-connect", "changed-endpoint"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -1193,9 +1193,6 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 						}
 						return project.Status.Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseExited, nil
 					}))
-				} else if scenario == "changed-endpoint" {
-					require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
-						[]byte(`{"status":{"debugAdapterAddress":"127.0.0.1:1"}}`))))
 				}
 				_ = connections[1].Close()
 			}
@@ -1227,7 +1224,9 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 				require.NoError(t, restartErr)
 				defer restartedListener.Close()
 				nextCompletion := make(chan int32, 1)
+				containerExec.mu.Lock()
 				containerExec.tcpListener, containerExec.tcpComplete = restartedListener, nextCompletion
+				containerExec.mu.Unlock()
 				restarted, reconnectErr := connectDebugServing(ctx, config, project)
 				require.NoError(t, reconnectErr)
 				defer restarted.Close()
@@ -1237,8 +1236,55 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 				containerExec.mu.Unlock()
 				require.Equal(t, 2, restartedCount, "confirmed provider exit permits a new launch")
 				nextCompletion <- 0
-			} else {
+			} else if scenario == "failed-connect" {
 				require.Equal(t, apiv2.ProjectDebugPhaseFailed, project.Status.Debug.Executions[0].Phase)
+			} else {
+				require.Equal(t, apiv2.ProjectDebugPhaseRunning, project.Status.Debug.Executions[0].Phase,
+					"final release must not cancel an attached container adapter execution")
+				retainedID := project.Status.Debug.Executions[0].ID
+				nextCompletion := make(chan int32, 1)
+				expectedInvocations := 1
+				if scenario == "changed-endpoint" {
+					movedListener, moveErr := net.Listen("tcp", "127.0.0.1:0")
+					require.NoError(t, moveErr)
+					defer movedListener.Close()
+					containerExec.mu.Lock()
+					containerExec.tcpListener, containerExec.tcpComplete = movedListener, nextCompletion
+					containerExec.mu.Unlock()
+					require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
+						[]byte(fmt.Sprintf(`{"status":{"debugAdapterAddress":%q}}`, movedListener.Addr().String())))))
+					expectedInvocations = 2
+				}
+				reused, reuseErr := connectDebugServing(ctx, config, project)
+				require.NoError(t, reuseErr)
+				defer reused.Close()
+				exchangeDebugBytes(t, ctx, reused)
+				containerExec.mu.Lock()
+				reusedCount := len(containerExec.options)
+				containerExec.mu.Unlock()
+				require.Equal(t, expectedInvocations, reusedCount)
+				require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
+				if scenario == "shared" {
+					require.Len(t, project.Status.Debug.Executions, 1, "an idle container adapter is reused by a later session")
+					for _, session := range project.Status.Debug.Sessions {
+						require.Equal(t, retainedID, session.ExecutionID)
+					}
+					completion <- 0
+				} else {
+					require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+						if getErr := apiClient.Get(pollCtx, project.NamespacedName(), project); getErr != nil {
+							return false, getErr
+						}
+						for _, execution := range project.Status.Debug.Executions {
+							if execution.ID == retainedID {
+								return execution.Phase == apiv2.ProjectDebugPhaseFailed, nil
+							}
+						}
+						return false, nil
+					}))
+					require.Len(t, project.Status.Debug.Executions, 2, "a superseded endpoint launches a new adapter")
+					nextCompletion <- 0
+				}
 			}
 		})
 	}
@@ -1247,6 +1293,7 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 func (executor *containerAdapterExecutor) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
 	executor.mu.Lock()
 	executor.options = append(executor.options, options)
+	listener, complete := executor.tcpListener, executor.tcpComplete
 	executor.mu.Unlock()
 	if executor.fail {
 		return nil, errors.New("injected container adapter launch failure")
@@ -1258,8 +1305,7 @@ func (executor *containerAdapterExecutor) ExecContainer(ctx context.Context, opt
 		return executor.run(ctx, options)
 	}
 	exits := make(chan int32, 1)
-	if executor.tcpListener != nil {
-		listener := executor.tcpListener
+	if listener != nil {
 		var connectionsMu sync.Mutex
 		var connections []net.Conn
 		stop := func() {
@@ -1289,7 +1335,7 @@ func (executor *containerAdapterExecutor) ExecContainer(ctx context.Context, opt
 		go func() {
 			defer stop()
 			select {
-			case code, open := <-executor.tcpComplete:
+			case code, open := <-complete:
 				if open {
 					exits <- code
 				}

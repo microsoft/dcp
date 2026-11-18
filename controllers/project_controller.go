@@ -23,8 +23,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	templating "github.com/microsoft/dcp/internal/templating"
@@ -98,7 +100,7 @@ func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager, name string) erro
 			return fmt.Errorf("index project %s: %w", fieldName, indexErr)
 		}
 	}
-	for _, backing := range []ctrl_client.Object{&apiv2.PhysicalContainer{}, &apiv2.PhysicalContainerImage{}} {
+	for _, backing := range []ctrl_client.Object{&apiv2.PhysicalContainer{}, &apiv2.PhysicalContainerImage{}, &apiv2.ServiceEndpoint{}} {
 		indexErr := mgr.GetFieldIndexer().IndexField(r.LifetimeCtx, backing, projectOwnerUIDField, func(obj ctrl_client.Object) []string {
 			owner := metav1.GetControllerOf(obj)
 			if owner == nil {
@@ -114,6 +116,7 @@ func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager, name string) erro
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.Project{}).
 		Owns(&apiv2.PhysicalContainer{}).Owns(&apiv2.PhysicalContainerImage{}).
+		Owns(&apiv2.ServiceEndpoint{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Watches(&apiv2.LogicalContainerNetwork{}, handler.EnqueueRequestsFromMapFunc(r.mapProjectReference(projectNetworkRefField))).
 		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.ProjectList{}))).
 		WatchesRawSource(r.GetReconciliationEventSource()).Named(name).Complete(r)
@@ -474,7 +477,7 @@ func handleProjectReady(
 		return additionalReconciliationNeeded
 	}
 	reconciler.observeProjectProcesses(resource, data, log)
-	change, contextReady := reconciler.observePreparedProject(ctx, resource, data, log)
+	physical, change, contextReady := reconciler.observePreparedProject(ctx, resource, data, log)
 	if !contextReady {
 		return change | additionalReconciliationNeeded
 	}
@@ -483,7 +486,7 @@ func handleProjectReady(
 		return change | additionalReconciliationNeeded
 	}
 	data.state, data.reason, data.message = projectStateReady, "", ""
-	return change
+	return change | reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
 }
 
 func handleProjectActive(
@@ -494,7 +497,7 @@ func handleProjectActive(
 		return additionalReconciliationNeeded
 	}
 	reconciler.observeProjectProcesses(resource, data, log)
-	change, contextReady := reconciler.observePreparedProject(ctx, resource, data, log)
+	physical, change, contextReady := reconciler.observePreparedProject(ctx, resource, data, log)
 	if !contextReady {
 		return change | additionalReconciliationNeeded
 	}
@@ -504,34 +507,75 @@ func handleProjectActive(
 	}
 	data.message = "Project has active debug sessions."
 	data.state, data.reason = projectStateActive, ""
-	return change
+	return change | reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
 }
 
-func (r *ProjectReconciler) observePreparedProject(ctx context.Context, resource *apiv2.Project, data *projectData, log logr.Logger) (objectChange, bool) {
-	change := noChange
-	if resource.Spec.Container != nil {
-		physical, observationChange, getErr := r.observeProjectContainer(ctx, resource, data)
-		change |= observationChange
-		if getErr != nil {
-			log.Error(getErr, "Failed to observe prepared Project container")
-			return change, false
-		}
-		data.updateLifecycleFromContainer(resource, physical)
-		if data.state != projectStateReady && data.state != projectStateActive {
-			return change, false
-		}
-		image, imageErr := r.findProjectImage(ctx, resource, data)
-		if imageErr != nil {
-			log.Error(imageErr, "Failed to observe prepared Project startup image")
-			return change | additionalReconciliationNeeded, false
-		}
-		if image == nil && data.imageUID != "" {
-			data.failMissing("The owned PhysicalContainerImage is no longer available.")
-			return change, false
-		}
-		change |= applyProjectImageLogs(resource, image)
+// observePreparedProject returns the observed container context, or nil for process Projects.
+func (r *ProjectReconciler) observePreparedProject(
+	ctx context.Context, resource *apiv2.Project, data *projectData, log logr.Logger,
+) (*apiv2.PhysicalContainer, objectChange, bool) {
+	if resource.Spec.Container == nil {
+		return nil, noChange, true
 	}
-	return change, true
+	physical, change, getErr := r.observeProjectContainer(ctx, resource, data)
+	if getErr != nil {
+		log.Error(getErr, "Failed to observe prepared Project container")
+		return nil, change, false
+	}
+	data.updateLifecycleFromContainer(resource, physical)
+	if data.state != projectStateReady && data.state != projectStateActive {
+		return nil, change, false
+	}
+	image, imageErr := r.findProjectImage(ctx, resource, data)
+	if imageErr != nil {
+		log.Error(imageErr, "Failed to observe prepared Project startup image")
+		return nil, change | additionalReconciliationNeeded, false
+	}
+	if image == nil && data.imageUID != "" {
+		data.failMissing("The owned PhysicalContainerImage is no longer available.")
+		return nil, change, false
+	}
+	return physical, change | applyProjectImageLogs(resource, image), true
+}
+
+// syncProjectEndpoints publishes service endpoints only while the Project is active and a launched debug session is ready,
+// and withdraws them otherwise. physical supplies container port mappings and must be nil for process Projects.
+func (r *ProjectReconciler) syncProjectEndpoints(
+	ctx context.Context, resource *apiv2.Project, data *projectData, physical *apiv2.PhysicalContainer, log logr.Logger,
+) objectChange {
+	if len(projectPortRequests(resource)) == 0 {
+		return noChange
+	}
+	publish := data.state == projectStateActive && data.inputsPrepared && projectLaunchedSessionReady(resource)
+	var mappings []apiv2.PhysicalContainerPortMapping
+	if physical != nil {
+		mappings = physical.Status.PortMappings
+	}
+	addressesReady, endpointErr := syncLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, data, projectOwnerUIDField,
+		&data.unobservedChildren, publish, mappings...)
+	if endpointErr != nil {
+		log.Error(endpointErr, "Failed to synchronize Project endpoints", "Publish", publish)
+		return additionalReconciliationNeeded
+	}
+	if publish && !addressesReady {
+		data.message = "Waiting for container port mappings to publish service endpoints."
+		return additionalReconciliationNeeded
+	}
+	return noChange
+}
+
+// projectLaunchedSessionReady reports whether a connected session has completed DAP initialization and requested launch.
+func projectLaunchedSessionReady(resource *apiv2.Project) bool {
+	if resource.Status.Debug == nil {
+		return false
+	}
+	for _, session := range resource.Status.Debug.Sessions {
+		if session.Phase == apiv2.ProjectDebugPhaseRunning && session.Progress != nil && session.Progress.LaunchRequested &&
+			apimeta.IsStatusConditionTrue(session.Conditions, string(apiv2.ConditionReady)) {
+			return true
+		}
+	}
+	return false
 }
 
 func projectDebugSessionsActive(resource *apiv2.Project) bool {
@@ -550,7 +594,7 @@ func handleProjectFailed(
 	_ projectState, data *projectData, log logr.Logger,
 ) objectChange {
 	reconciler.observeProjectProcesses(resource, data, log)
-	change := noChange
+	change := reconciler.syncProjectEndpoints(ctx, resource, data, nil, log)
 	if data.physicalUID != "" {
 		lookupData := *data
 		_, observationChange, getErr := reconciler.observeProjectContainer(ctx, resource, &lookupData)
@@ -574,7 +618,7 @@ func handleProjectStopped(
 	_ projectState, data *projectData, log logr.Logger,
 ) objectChange {
 	reconciler.observeProjectProcesses(resource, data, log)
-	return noChange
+	return reconciler.syncProjectEndpoints(ctx, resource, data, nil, log)
 }
 
 func handleProjectUnknown(
@@ -585,7 +629,7 @@ func handleProjectUnknown(
 		return additionalReconciliationNeeded
 	}
 	reconciler.observeProjectProcesses(resource, data, log)
-	change, ready := reconciler.observePreparedProject(ctx, resource, data, log)
+	physical, change, ready := reconciler.observePreparedProject(ctx, resource, data, log)
 	if !ready {
 		return change | additionalReconciliationNeeded
 	}
@@ -593,7 +637,7 @@ func handleProjectUnknown(
 	if projectDebugSessionsActive(resource) {
 		data.state = projectStateActive
 	}
-	return change | additionalReconciliationNeeded
+	return change | reconciler.syncProjectEndpoints(ctx, resource, data, physical, log) | additionalReconciliationNeeded
 }
 
 func (r *ProjectReconciler) listProjectBackings(
@@ -771,6 +815,9 @@ func (r *ProjectReconciler) handleDeletionRequest(
 				data.unobservedChildren.recordCreateAttempt(&apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: projectPhysicalName(resource)}})
 			}
 		}
+		for _, request := range projectPortRequests(resource) {
+			data.unobservedChildren.recordCreateAttempt(&apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: logicalPortResourceName(resource, request.binding.Name)}})
+		}
 		r.projects.Store(resource.NamespacedName(), resource.UID, data.Clone())
 	}
 	defer func() {
@@ -783,6 +830,11 @@ func (r *ProjectReconciler) handleDeletionRequest(
 			}
 		}
 	}()
+	// Endpoints are withdrawn before waiting for debug sessions so deletion stops routing immediately.
+	endpointsDeleted, endpointDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, projectOwnerUIDField, data.unobservedChildren)
+	if endpointDeleteErr != nil {
+		log.Error(endpointDeleteErr, "Failed to delete Project endpoints")
+	}
 	if projectDebugSessionsActive(resource) {
 		return additionalReconciliationNeeded, delay
 	}
@@ -793,7 +845,7 @@ func (r *ProjectReconciler) handleDeletionRequest(
 		delay = LongDelay
 		return additionalReconciliationNeeded, delay
 	}
-	if !cleaned {
+	if !cleaned || !endpointsDeleted || endpointDeleteErr != nil {
 		return additionalReconciliationNeeded, delay
 	}
 	return deleteFinalizer(resource, projectFinalizer, log), delay
@@ -859,6 +911,9 @@ func handleProjectStopping(
 	_ projectState, data *projectData, log logr.Logger,
 ) objectChange {
 	data.reason, data.message = "", ""
+	if endpointChange := reconciler.syncProjectEndpoints(ctx, resource, data, nil, log); endpointChange != noChange {
+		return endpointChange
+	}
 	if projectDebugSessionsActive(resource) {
 		data.reason, data.message = apiv2.ProjectReasonStopping, "Waiting for debug sessions and adapter cleanup to finish."
 		return additionalReconciliationNeeded

@@ -9571,7 +9571,7 @@ func schema_microsoft_dcp_api_v2_ProjectContainerTemplate(ref common.ReferenceCa
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Ports declares named service-backed endpoints for the container.",
+							Description: "Ports declares named service-backed endpoints for the container. Endpoints are published while a ready debug session has requested launch.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -10198,7 +10198,7 @@ func schema_microsoft_dcp_api_v2_ProjectProcessTemplate(ref common.ReferenceCall
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Ports declares named service-backed endpoints for the process.",
+							Description: "Ports declares named service-backed endpoints for the process. Endpoints are published while a ready debug session has requested launch.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{

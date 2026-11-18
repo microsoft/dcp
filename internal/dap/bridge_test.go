@@ -292,6 +292,64 @@ func TestBridgeRejectsInvalidRequestReferences(t *testing.T) {
 	}
 }
 
+// Verifies that Bridge removes only explicit terminateDebuggee=false from client disconnect
+// arguments, preserving other fields, explicit termination and response correlation.
+func TestBridgeDisconnectRemovesTerminationOptOut(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []struct {
+		name      string
+		arguments string
+		expected  string
+	}{
+		{"false", `{"terminateDebuggee":false,"restart":true,"extension":{"keep":42}}`, `{"restart":true,"extension":{"keep":42}}`},
+		{"true", `{"terminateDebuggee":true,"extension":42}`, `{"terminateDebuggee":true,"extension":42}`},
+		{"omitted", `{"restart":false,"extension":42}`, `{"restart":false,"extension":42}`},
+		{"null", `{"terminateDebuggee":null}`, `{"terminateDebuggee":null}`},
+		{"no-arguments", "", ""},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			defer cancel()
+			client, adapter, done := bridgeEndpoints(t, ctx, time.Second, nil)
+			request := testRequest(40, "disconnect")
+			if scenario.arguments != "" {
+				request["arguments"] = json.RawMessage(scenario.arguments)
+			}
+			require.NoError(t, client.WriteMessage(request))
+			forwarded, readErr := adapter.ReadMessage()
+			require.NoError(t, readErr)
+			if scenario.expected == "" {
+				require.NotContains(t, forwarded, "arguments")
+			} else {
+				require.JSONEq(t, scenario.expected, string(forwarded["arguments"]))
+			}
+			require.NoError(t, adapter.WriteMessage(testResponse(41, forwarded.number("seq"), "disconnect")))
+			response, responseErr := client.ReadMessage()
+			require.NoError(t, responseErr)
+			require.EqualValues(t, 40, response.number("request_seq"))
+			require.NoError(t, adapter.Close())
+			require.NoError(t, <-done)
+		})
+	}
+}
+
+// Verifies that Bridge reports malformed disconnect arguments instead of silently forwarding
+// an invalid termination policy or dropping unrelated client fields.
+func TestBridgeRejectsMalformedDisconnectArguments(t *testing.T) {
+	t.Parallel()
+	for _, arguments := range []string{`[]`, `{"terminateDebuggee":"false"}`} {
+		t.Run(arguments, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			defer cancel()
+			client, _, done := bridgeEndpoints(t, ctx, time.Second, nil)
+			request := testRequest(40, "disconnect")
+			request["arguments"] = json.RawMessage(arguments)
+			require.NoError(t, client.WriteMessage(request))
+			require.ErrorContains(t, <-done, "decode DAP disconnect")
+		})
+	}
+}
+
 // Verifies that deletion injects one ordered disconnect, consumes its private response, and
 // forwards final adapter events before EOF without synthesizing completion messages.
 func TestBridgeResourceShutdownDrainsFinalEvents(t *testing.T) {
@@ -359,6 +417,9 @@ func TestBridgeDiscardsRequestsAfterDisconnect(t *testing.T) {
 			require.Equal(t, "terminated", terminated.text("event"))
 			for index, command := range []string{"disconnect", "threads", "cancel", "initialize", "launch", "attach"} {
 				late := testRequest(int64(50+index), command)
+				if command == "disconnect" {
+					late["arguments"] = json.RawMessage(`{"terminateDebuggee":"invalid"}`)
+				}
 				if command == "cancel" {
 					late["arguments"] = json.RawMessage(`{"requestId":-1}`)
 				}

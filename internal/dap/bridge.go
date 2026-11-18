@@ -68,6 +68,26 @@ func (writer *messageWriter) send(message Message, local bool) error {
 			}
 		}
 		if command == "disconnect" {
+			if !local && len(message["arguments"]) != 0 {
+				var arguments map[string]json.RawMessage
+				if decodeErr := json.Unmarshal(message["arguments"], &arguments); decodeErr != nil {
+					return fmt.Errorf("decode DAP disconnect arguments: %w", decodeErr)
+				}
+				if raw, present := arguments["terminateDebuggee"]; present {
+					var terminate *bool
+					if decodeErr := json.Unmarshal(raw, &terminate); decodeErr != nil {
+						return fmt.Errorf("decode DAP disconnect terminateDebuggee: %w", decodeErr)
+					}
+					if terminate != nil && !*terminate {
+						delete(arguments, "terminateDebuggee")
+						encoded, encodeErr := json.Marshal(arguments)
+						if encodeErr != nil {
+							return fmt.Errorf("encode DAP disconnect arguments: %w", encodeErr)
+						}
+						message["arguments"] = encoded
+					}
+				}
+			}
 			writer.shutdown = true
 		}
 	}
@@ -181,6 +201,7 @@ type bridgeSession struct {
 }
 
 // Bridge forwards DAP while preserving extension payloads and request correlation in both directions.
+// Client disconnect requests omit explicit terminateDebuggee=false, leaving termination to adapter defaults.
 // On ErrShutdownRequested it injects disconnect unless disconnect was already forwarded, allowing
 // final messages to drain until adapter EOF or grace expiry. Other cancellation and client loss fail.
 // Requests received after disconnect are discarded; responses and events continue draining without synthetic replies.

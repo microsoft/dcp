@@ -28,6 +28,7 @@ import (
 	container_runtimes "github.com/microsoft/dcp/internal/containers/runtimes"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/internal/proxy"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
@@ -54,6 +55,7 @@ type projectDebugProvider struct {
 	stopped   chan struct{}
 	refs      int
 	stopping  bool
+	fenced    bool
 	execution *projectDebugExecution
 	initial   *projectDebugTransport
 	err       error
@@ -552,19 +554,160 @@ func (execution *projectDebugExecution) stopContainer() error {
 	return errors.Join(stopErr, execution.runtime.publish(project, execution.status.DeepCopy(), nil))
 }
 
-func (execution *projectDebugExecution) connect(ctx context.Context) (net.Conn, error) {
-	var connection net.Conn
-	dialErr := resiliency.RetryExponential(ctx, func() error {
+func (execution *projectDebugExecution) connect(ctx context.Context) (io.ReadWriteCloser, error) {
+	dial := func(dialCtx context.Context) (net.Conn, error) {
 		select {
 		case <-execution.done:
-			return resiliency.Permanent(fmt.Errorf("adapter exited before connection"))
+			return nil, resiliency.Permanent(fmt.Errorf("adapter exited before connection"))
 		default:
 		}
+		return (&net.Dialer{}).DialContext(dialCtx, "tcp", execution.address)
+	}
+	var connection net.Conn
+	dialErr := resiliency.RetryExponential(ctx, func() error {
 		var connectErr error
-		connection, connectErr = (&net.Dialer{}).DialContext(ctx, "tcp", execution.address)
+		connection, connectErr = dial(ctx)
 		return connectErr
 	})
-	return connection, dialErr
+	if dialErr != nil || execution.containerID == "" {
+		return connection, dialErr
+	}
+	// Container runtime port proxies accept connections before the in-container adapter listens,
+	// so the connection remains redialable until the adapter's first output proves it reached the adapter.
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		return nil, errors.Join(fmt.Errorf("container adapter connection requires a deadline"), connection.Close())
+	}
+	redialCtx, redialCancel := context.WithDeadline(execution.runtime.ctx, deadline)
+	return newRedialingAdapterConnection(redialCtx, redialCancel, dial, connection), nil
+}
+
+// redialingAdapterConnection queues client output in a bounded pipe and forwards it to the adapter connection,
+// retaining forwarded output until the adapter's first output arrives. If the connection ends before then, it dials
+// again and replays the retained output, as a runtime port proxy may accept and then close a connection that has
+// no in-container listener behind it.
+type redialingAdapterConnection struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	dial   func(context.Context) (net.Conn, error)
+
+	pendingReader io.ReadCloser
+	pendingWriter io.WriteCloser
+	forwarded     chan struct{}
+
+	// mu guards the fields below; a redial holds it until the replacement connection has received the replay.
+	mu         sync.Mutex
+	connection net.Conn
+	// replay holds forwarded output that must be resent if the connection ends before the adapter responds,
+	// because reads from the pending pipe consume its data.
+	replay []byte
+	proven bool
+}
+
+func newRedialingAdapterConnection(
+	ctx context.Context, cancel context.CancelFunc, dial func(context.Context) (net.Conn, error), connection net.Conn,
+) *redialingAdapterConnection {
+	pendingReader, pendingWriter := usvc_io.NewBufferedPipeWithMaxSize(proxy.ParkedConnectionMaxBufferSize)
+	redialing := &redialingAdapterConnection{
+		ctx: ctx, cancel: cancel, dial: dial,
+		pendingReader: pendingReader, pendingWriter: pendingWriter, forwarded: make(chan struct{}),
+		connection: connection,
+	}
+	go redialing.forward()
+	return redialing
+}
+
+func (connection *redialingAdapterConnection) forward() {
+	defer close(connection.forwarded)
+	chunk := make([]byte, 32*1024)
+	for {
+		count, readErr := connection.pendingReader.Read(chunk)
+		if count > 0 {
+			connection.mu.Lock()
+			current, proven := connection.connection, connection.proven
+			if !proven {
+				if len(connection.replay)+count > proxy.ParkedConnectionMaxBufferSize {
+					connection.mu.Unlock()
+					overflowErr := fmt.Errorf("container adapter connection buffered more than %d bytes before the adapter responded", proxy.ParkedConnectionMaxBufferSize)
+					_ = connection.pendingReader.(*usvc_io.BufferedPipeReader).CloseWithError(overflowErr)
+					_ = current.Close()
+					return
+				}
+				connection.replay = append(connection.replay, chunk[:count]...)
+			}
+			connection.mu.Unlock()
+			// A failed write before the adapter responds is replayed by the redial that the ended read triggers.
+			if _, writeErr := current.Write(chunk[:count]); writeErr != nil && proven {
+				_ = connection.pendingReader.(*usvc_io.BufferedPipeReader).CloseWithError(writeErr)
+				return
+			}
+		}
+		if readErr != nil {
+			return
+		}
+	}
+}
+
+func (connection *redialingAdapterConnection) Read(payload []byte) (int, error) {
+	for {
+		connection.mu.Lock()
+		current, proven := connection.connection, connection.proven
+		connection.mu.Unlock()
+		count, readErr := current.Read(payload)
+		if count > 0 && !proven {
+			connection.mu.Lock()
+			connection.proven, connection.replay = true, nil
+			connection.mu.Unlock()
+		}
+		if count > 0 || proven || readErr == nil {
+			return count, readErr
+		}
+		if connection.ctx.Err() != nil {
+			return 0, readErr
+		}
+		if redialErr := connection.redial(current); redialErr != nil {
+			return 0, errors.Join(readErr, redialErr)
+		}
+	}
+}
+
+func (connection *redialingAdapterConnection) redial(stale net.Conn) error {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	_ = stale.Close()
+	var replacement net.Conn
+	redialErr := resiliency.RetryExponential(connection.ctx, func() error {
+		candidate, dialErr := connection.dial(connection.ctx)
+		if dialErr != nil {
+			return dialErr
+		}
+		if _, writeErr := candidate.Write(connection.replay); writeErr != nil {
+			return errors.Join(writeErr, candidate.Close())
+		}
+		replacement = candidate
+		return nil
+	})
+	if redialErr != nil {
+		return fmt.Errorf("container adapter connection closed before the adapter responded: %w", redialErr)
+	}
+	connection.connection = replacement
+	return nil
+}
+
+func (connection *redialingAdapterConnection) Write(payload []byte) (int, error) {
+	return connection.pendingWriter.Write(payload)
+}
+
+func (connection *redialingAdapterConnection) Close() error {
+	connection.cancel()
+	_ = connection.pendingWriter.Close()
+	_ = connection.pendingReader.Close()
+	connection.mu.Lock()
+	current := connection.connection
+	connection.mu.Unlock()
+	closeErr := current.Close()
+	<-connection.forwarded
+	return closeErr
 }
 
 func (runtime *projectDebugRuntime) acquire(
@@ -580,6 +723,13 @@ func (runtime *projectDebugRuntime) acquire(
 	for {
 		runtime.mu.Lock()
 		provider := runtime.providers[project.UID]
+		if provider != nil && provider.refs == 0 && (provider.fenced && provider.execution.containerID != "" || !provider.stopping && provider.retained()) &&
+			(provider.execution.containerID != project.Status.ContainerID || provider.execution.address != project.Status.DebugAdapterAddress) {
+			// A retained adapter belongs to a superseded container endpoint, so it cannot collide with a new launch.
+			runtime.forget(project.UID, provider)
+			provider.execution.cancel()
+			provider = nil
+		}
 		if provider != nil && provider.stopping {
 			runtime.mu.Unlock()
 			select {
@@ -598,6 +748,9 @@ func (runtime *projectDebugRuntime) acquire(
 				active.execution, active.initial, active.err = runtime.launch(startCtx, project, apiv2.DebugAdapterModeTCPConnect)
 				close(active.ready)
 				startCancel()
+				if active.err == nil && active.execution.containerID != "" {
+					go runtime.forgetOnExit(project.UID, active)
+				}
 			}(provider)
 		}
 		provider.refs++
@@ -637,6 +790,16 @@ func (runtime *projectDebugRuntime) release(uid types.UID, provider *projectDebu
 		runtime.mu.Unlock()
 		return nil
 	}
+	if provider.retained() {
+		// Container runtimes cannot terminate an exec'd process, so the adapter stays available until it exits on its own.
+		initial := provider.initial
+		provider.initial = nil
+		runtime.mu.Unlock()
+		if initial != nil {
+			return initial.Close()
+		}
+		return nil
+	}
 	provider.stopping = true
 	provider.cancel()
 	runtime.mu.Unlock()
@@ -657,14 +820,62 @@ func (runtime *projectDebugRuntime) release(uid types.UID, provider *projectDebu
 		}
 		if !confirmed {
 			// Keep the provider fenced when termination is unconfirmed; a new request must not launch a duplicate.
+			runtime.mu.Lock()
+			provider.fenced = true
+			runtime.mu.Unlock()
 			return errors.Join(stopErr, fmt.Errorf("shared adapter provider termination is unconfirmed"))
 		}
 	}
 	runtime.mu.Lock()
-	delete(runtime.providers, uid)
-	close(provider.stopped)
+	runtime.forget(uid, provider)
 	runtime.mu.Unlock()
 	return stopErr
+}
+
+// retained reports whether an idle provider is a still-running container adapter; callers must hold runtime.mu.
+func (provider *projectDebugProvider) retained() bool {
+	select {
+	case <-provider.ready:
+	default:
+		return false
+	}
+	if provider.err != nil || provider.execution.containerID == "" {
+		return false
+	}
+	select {
+	case <-provider.execution.done:
+		return false
+	default:
+		return true
+	}
+}
+
+// forget removes a provider and unblocks waiting acquisitions; callers must hold runtime.mu.
+func (runtime *projectDebugRuntime) forget(uid types.UID, provider *projectDebugProvider) {
+	provider.stopping = true
+	if runtime.providers[uid] == provider {
+		delete(runtime.providers, uid)
+	}
+	close(provider.stopped)
+}
+
+// forgetOnExit removes an idle container provider once its adapter completes on its own.
+func (runtime *projectDebugRuntime) forgetOnExit(uid types.UID, provider *projectDebugProvider) {
+	<-provider.execution.done
+	provider.execution.statusMu.Lock()
+	confirmed := provider.execution.status.Phase == apiv2.ProjectDebugPhaseExited && !provider.execution.status.FinishedAt.IsZero()
+	provider.execution.statusMu.Unlock()
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if provider.refs != 0 || provider.stopping {
+		return
+	}
+	if confirmed {
+		runtime.forget(uid, provider)
+	} else {
+		// Unconfirmed termination keeps the provider fenced, matching final release of an active provider.
+		provider.stopping, provider.fenced = true, true
+	}
 }
 
 func debugConditions(reason, message string, ready bool, generation int64) []metav1.Condition {

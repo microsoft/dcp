@@ -402,6 +402,7 @@ const (
 type ProjectProcessTemplate struct {
 	LogicalProcessConfig `json:",inline"`
 	// Ports declares named service-backed endpoints for the process.
+	// Endpoints are published while a ready debug session has requested launch.
 	// +listType=atomic
 	Ports []LogicalProcessPort `json:"ports,omitempty"`
 }
@@ -411,6 +412,7 @@ type ProjectProcessTemplate struct {
 type ProjectContainerTemplate struct {
 	LogicalContainerConfig `json:",inline"`
 	// Ports declares named service-backed endpoints for the container.
+	// Endpoints are published while a ready debug session has requested launch.
 	// +listType=atomic
 	Ports []LogicalContainerPort `json:"ports,omitempty"`
 }

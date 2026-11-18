@@ -194,6 +194,12 @@ func syncLogicalEndpoints[Resource commonapi.DcpModelObject](
 			addresses = processEndpointAddresses(ports)
 		case *apiv2.LogicalContainer:
 			addresses = containerEndpointAddresses(resource.Spec.Ports, ports, mappings)
+		case *apiv2.Project:
+			if resource.Spec.Process != nil {
+				addresses = processEndpointAddresses(ports)
+			} else {
+				addresses = containerEndpointAddresses(resource.Spec.Container.Ports, ports, mappings)
+			}
 		default:
 			return false, fmt.Errorf("unsupported logical endpoint resource %T", owner)
 		}
