@@ -713,7 +713,7 @@ func handlePhysicalContainerCreated(
 	if len(container.Spec.Container.CreateFiles) > 0 || len(container.Spec.Container.CopyFiles) > 0 {
 		return reconciler.schedulePhysicalContainerCreateFiles(container, data, log)
 	}
-	if !container.Spec.Container.ShouldStart() {
+	if !container.Spec.ShouldStart() {
 		data.state = physicalContainerStateAwaitingStart
 		return setValue(&container.Status.ContainerID, data.containerID) | additionalReconciliationNeeded
 	}
@@ -744,7 +744,7 @@ func handlePhysicalContainerFilesCreated(
 		data.state = physicalContainerStateStopping
 		return additionalReconciliationNeeded
 	}
-	if !container.Spec.Container.ShouldStart() {
+	if !container.Spec.ShouldStart() {
 		data.state = physicalContainerStateAwaitingStart
 		return additionalReconciliationNeeded
 	}
@@ -769,7 +769,7 @@ func handlePhysicalContainerAwaitingStart(
 		data.state = physicalContainerStateStopping
 		return additionalReconciliationNeeded
 	}
-	if container.Spec.Container.ShouldStart() {
+	if container.Spec.ShouldStart() {
 		return reconciler.schedulePhysicalContainerStart(container, data, log)
 	}
 
@@ -1198,7 +1198,7 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		data.failureMessage = ""
 		data.retryAfter = time.Time{}
 		r.runPhysicalContainerCleanupMonitor(container, containerID, log)
-		if !container.Spec.Container.ShouldStart() {
+		if !container.Spec.ShouldStart() {
 			// Another component may start the container, so the retained lifecycle monitor must cover it from creation.
 			data.retainedMonitorStarted = r.runRetainedPhysicalContainerLifecycleMonitor(container, containerID, log)
 		}

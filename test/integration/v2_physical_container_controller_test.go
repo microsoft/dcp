@@ -2265,10 +2265,9 @@ func TestV2PhysicalContainerControllerDefersStartUntilRequested(t *testing.T) {
 	start := false
 	container := &apiv2.PhysicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "deferred-start-container", Namespace: namespace.Name},
-		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+		Spec: apiv2.PhysicalContainerSpec{Start: &start, Container: &apiv2.PhysicalContainerConfig{
 			ImageRef:      image.Name,
 			ContainerName: "v2-pctr-deferred-start",
-			Start:         &start,
 			CreateFiles: []apiv2.CreateFileSystem{{
 				Destination: "/workspace",
 				Entries:     []apiv2.FileSystemEntry{{Name: "hello.txt", Contents: "hello"}},
@@ -2289,7 +2288,7 @@ func TestV2PhysicalContainerControllerDefersStartUntilRequested(t *testing.T) {
 
 	updateErr := retryOnConflict[apiv2.PhysicalContainer](ctx, container.NamespacedName(), func(ctx context.Context, currentContainer *apiv2.PhysicalContainer) error {
 		requestedStart := true
-		currentContainer.Spec.Container.Start = &requestedStart
+		currentContainer.Spec.Start = &requestedStart
 		return client.Update(ctx, currentContainer)
 	})
 	require.NoError(t, updateErr)
@@ -2312,10 +2311,9 @@ func TestV2PhysicalContainerControllerAdoptsExternalStart(t *testing.T) {
 	monitorPID := int64(12346)
 	container := &apiv2.PhysicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "external-start-container", Namespace: namespace.Name},
-		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+		Spec: apiv2.PhysicalContainerSpec{Start: &start, Container: &apiv2.PhysicalContainerConfig{
 			ImageRef:               image.Name,
 			ContainerName:          "v2-pctr-external-start",
-			Start:                  &start,
 			RetainRuntimeContainer: true,
 			MonitorPID:             &monitorPID,
 			MonitorTimestamp:       metav1.NewMicroTime(time.Now().Add(-time.Minute)),
@@ -2352,10 +2350,9 @@ func TestV2PhysicalContainerControllerStopsContainerAwaitingStart(t *testing.T) 
 	start := false
 	container := &apiv2.PhysicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "stop-awaiting-container", Namespace: namespace.Name},
-		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+		Spec: apiv2.PhysicalContainerSpec{Start: &start, Container: &apiv2.PhysicalContainerConfig{
 			ImageRef:      image.Name,
 			ContainerName: "v2-pctr-stop-awaiting",
-			Start:         &start,
 		}},
 	}
 	require.NoError(t, client.Create(ctx, container))

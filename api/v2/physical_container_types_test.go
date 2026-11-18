@@ -658,8 +658,47 @@ func TestPhysicalContainerValidateUpdateRejectsClearingStop(t *testing.T) {
 	require.Contains(t, errorList.ToAggregate().Error(), "spec.stop")
 }
 
-// Verifies that PhysicalContainer.ValidateUpdate allows a deferred start to be requested and rejects deferring an
-// already requested start.
+// Verifies that PhysicalContainer.Validate rejects deferring start for an existing container,
+// permits default or explicit true for references, and permits deferred creation.
+func TestPhysicalContainerValidateStartWithExistingContainer(t *testing.T) {
+	t.Parallel()
+	startFalse, startTrue := false, true
+	for _, testCase := range []struct {
+		name     string
+		start    *bool
+		existing bool
+		valid    bool
+	}{
+		{name: "existing default", existing: true, valid: true},
+		{name: "existing true", start: &startTrue, existing: true, valid: true},
+		{name: "existing false", start: &startFalse, existing: true},
+		{name: "created default", valid: true},
+		{name: "created true", start: &startTrue, valid: true},
+		{name: "created false", start: &startFalse, valid: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			container := &PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: "test"},
+				Spec:       PhysicalContainerSpec{Start: testCase.start},
+			}
+			if testCase.existing {
+				container.Spec.ContainerID = "existing-container"
+			} else {
+				container.Spec.Container = &PhysicalContainerConfig{ImageRef: "image"}
+			}
+			errorList := container.Validate(context.Background())
+			if testCase.valid {
+				require.Empty(t, errorList)
+			} else {
+				require.NotEmpty(t, errorList)
+				require.Contains(t, errorList.ToAggregate().Error(), "spec.start")
+			}
+		})
+	}
+}
+
+// Verifies that PhysicalContainer.ValidateUpdate allows requesting a deferred start, rejects deferring an
+// already requested start, and leaves both input objects unchanged.
 func TestPhysicalContainerValidateUpdateStartTransitions(t *testing.T) {
 	t.Parallel()
 
@@ -675,6 +714,8 @@ func TestPhysicalContainerValidateUpdateStartTransitions(t *testing.T) {
 		{name: "false to default", oldStart: &falseValue, newStart: nil, allowed: true},
 		{name: "default to false", oldStart: nil, newStart: &falseValue, allowed: false},
 		{name: "true to false", oldStart: &trueValue, newStart: &falseValue, allowed: false},
+		{name: "true to default", oldStart: &trueValue, newStart: nil, allowed: true},
+		{name: "default to true", oldStart: nil, newStart: &trueValue, allowed: true},
 	}
 
 	for _, testCase := range testCases {
@@ -683,20 +724,22 @@ func TestPhysicalContainerValidateUpdateStartTransitions(t *testing.T) {
 
 			oldContainer := &PhysicalContainer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-container", Namespace: "test-namespace"},
-				Spec:       PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image", Start: testCase.oldStart}},
+				Spec:       PhysicalContainerSpec{Start: testCase.oldStart, Container: &PhysicalContainerConfig{ImageRef: "test-image"}},
 			}
 			newContainer := oldContainer.DeepCopy()
-			newContainer.Spec.Container.Start = testCase.newStart
+			newContainer.Spec.Start = testCase.newStart
+			oldSnapshot, newSnapshot := oldContainer.DeepCopy(), newContainer.DeepCopy()
 
 			errorList := newContainer.ValidateUpdate(context.Background(), oldContainer)
 
 			if testCase.allowed {
 				require.Empty(t, errorList)
-				require.Equal(t, testCase.oldStart, oldContainer.Spec.Container.Start)
 			} else {
 				require.NotEmpty(t, errorList)
-				require.Contains(t, errorList.ToAggregate().Error(), "spec.container.start")
+				require.Contains(t, errorList.ToAggregate().Error(), "spec.start")
 			}
+			require.Equal(t, oldSnapshot, oldContainer)
+			require.Equal(t, newSnapshot, newContainer)
 		})
 	}
 }

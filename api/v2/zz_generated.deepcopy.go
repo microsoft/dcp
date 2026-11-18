@@ -1309,11 +1309,6 @@ func (in *PhysicalContainerConfig) DeepCopyInto(out *PhysicalContainerConfig) {
 		**out = **in
 	}
 	in.MonitorTimestamp.DeepCopyInto(&out.MonitorTimestamp)
-	if in.Start != nil {
-		in, out := &in.Start, &out.Start
-		*out = new(bool)
-		**out = **in
-	}
 	if in.Command != nil {
 		in, out := &in.Command, &out.Command
 		*out = make([]string, len(*in))
@@ -1868,6 +1863,11 @@ func (in *PhysicalContainerSpec) DeepCopyInto(out *PhysicalContainerSpec) {
 		in, out := &in.Container, &out.Container
 		*out = new(PhysicalContainerConfig)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.Start != nil {
+		in, out := &in.Start, &out.Start
+		*out = new(bool)
+		**out = **in
 	}
 }
 

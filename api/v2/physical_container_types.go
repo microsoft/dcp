@@ -161,6 +161,13 @@ type PhysicalContainerSpec struct {
 	// Container describes a runtime container to create. Exactly one of containerID or container must be set.
 	Container *PhysicalContainerConfig `json:"container,omitempty"`
 
+	// Start requests that the controller start a created container after file preparation. Defaults to true.
+	// When false, the prepared container remains created for another component to start; a runtime start
+	// is then observed like any other lifecycle change. It may be changed from false to true, but not back to false.
+	// False is forbidden when containerID is set; referenced containers are not started by the controller.
+	// +kubebuilder:default:=true
+	Start *bool `json:"start,omitempty"`
+
 	// Stop requests that the tracked runtime container be stopped or prevents creation if it has not begun.
 	// Once true, it cannot be reset.
 	Stop bool `json:"stop,omitempty"`
@@ -189,12 +196,6 @@ type PhysicalContainerConfig struct {
 
 	// ReplaceExisting removes an existing runtime container with containerName before creating a new one.
 	ReplaceExisting bool `json:"replaceExisting,omitempty"`
-
-	// Start requests that the controller start the container after creation and file preparation. Defaults to true.
-	// When false, the prepared container remains created for another component to start; a runtime start
-	// is then observed like any other lifecycle change. It may be changed from false to true, but not back to false.
-	// +kubebuilder:default:=true
-	Start *bool `json:"start,omitempty"`
 
 	// Entrypoint is the container runtime entrypoint to run.
 	Entrypoint string `json:"entrypoint,omitempty"`
@@ -242,8 +243,8 @@ type PhysicalContainerConfig struct {
 }
 
 // ShouldStart reports whether the controller should start the created container.
-func (config *PhysicalContainerConfig) ShouldStart() bool {
-	return config.Start == nil || *config.Start
+func (spec *PhysicalContainerSpec) ShouldStart() bool {
+	return spec.Start == nil || *spec.Start
 }
 
 // PhysicalContainerPortMapping describes the observed host binding for one runtime container port.
@@ -431,6 +432,9 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 		return errorList
 	}
 	if pc.Spec.Container == nil {
+		if !pc.Spec.ShouldStart() {
+			errorList = append(errorList, field.Forbidden(specPath.Child("start"), "start cannot be false when containerID is set"))
+		}
 		return errorList
 	}
 
@@ -472,17 +476,16 @@ func (pc *PhysicalContainer) ValidateUpdate(ctx context.Context, old runtime.Obj
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "stop cannot be set to false once it has been set to true"))
 	}
 
-	oldSpec := *oldPhysicalContainer.Spec.DeepCopy()
-	newSpec := *pc.Spec.DeepCopy()
+	if oldPhysicalContainer.Spec.ShouldStart() && !pc.Spec.ShouldStart() {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "start"), "start cannot be set to false once it is true"))
+	}
+
+	oldSpec := oldPhysicalContainer.Spec
+	newSpec := pc.Spec
 	oldSpec.Stop = false
 	newSpec.Stop = false
-	if oldSpec.Container != nil && newSpec.Container != nil {
-		if oldSpec.Container.ShouldStart() && !newSpec.Container.ShouldStart() {
-			errorList = append(errorList, field.Forbidden(field.NewPath("spec", "container", "start"), "start cannot be set to false once it is true"))
-		}
-		oldSpec.Container.Start = nil
-		newSpec.Container.Start = nil
-	}
+	oldSpec.Start = nil
+	newSpec.Start = nil
 	if !reflect.DeepEqual(oldSpec, newSpec) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec"), "spec is immutable"))
 	}
