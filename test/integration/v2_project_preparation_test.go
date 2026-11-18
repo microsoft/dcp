@@ -34,14 +34,14 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that Project prepares and publishes its image capture before waiting for networks,
+// Verifies that ProjectContainer prepares and publishes its image capture before waiting for networks,
 // but does not publish an inline image reference while its namespace prevents creation.
-func TestV2ProjectPreparesImageBeforeNetworks(t *testing.T) {
+func TestV2ProjectContainerPreparesImageBeforeNetworks(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-image-before-network"},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "v2-project-image-before-network-image"},
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-image-before-network"},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "v2-project-image-before-network-image"},
 			Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "missing-network"}}},
 		}}}
 	require.NoError(t, client.Create(ctx, resource))
@@ -52,7 +52,7 @@ func TestV2ProjectPreparesImageBeforeNetworks(t *testing.T) {
 	image := waitPhysicalContainerImagePhase(t, ctx, types.NamespacedName{
 		Namespace: resource.Namespace, Name: "project-" + string(resource.UID),
 	}, apiv2.PhysicalContainerImagePhaseReady)
-	prepared := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	prepared := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return ready != nil && ready.Reason == string(apiv2.ProjectReasonPreparing) &&
 			current.Status.StartupLogs != nil && current.Status.StartupLogs.Complete, nil
@@ -67,9 +67,9 @@ func TestV2ProjectPreparesImageBeforeNetworks(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, image)
 }
 
-// Verifies that stopping Project before preparation publishes no unrealized inline image reference,
+// Verifies that stopping ProjectContainer before preparation publishes no unrealized inline image reference,
 // and stopping after image preparation still observes image capture completion without launching execution.
-func TestV2ProjectStopPreservesPreparedImageLifecycle(t *testing.T) {
+func TestV2ProjectContainerStopPreservesPreparedImageLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, prepare := range []bool{false, true} {
 		name := "unprepared"
@@ -83,13 +83,13 @@ func TestV2ProjectStopPreservesPreparedImageLifecycle(t *testing.T) {
 			source := namespace.Name + "-image"
 			releasePull := sync.OnceFunc(containerOrchestrator.BlockPullImage(source))
 			t.Cleanup(releasePull)
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Stop: !prepare, Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: source},
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir(), Stop: !prepare}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: source},
 					Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "missing-network"}}},
 				}}}
 			require.NoError(t, client.Create(ctx, resource))
 			if prepare {
-				waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 					return current.Status.StartupLogs != nil && current.Status.StartupLogs.Available && !current.Status.StartupLogs.Complete, nil
 				})
 				require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
@@ -99,7 +99,7 @@ func TestV2ProjectStopPreservesPreparedImageLifecycle(t *testing.T) {
 			if prepare {
 				require.NotEmpty(t, stopped.Status.ImageRef)
 				releasePull()
-				waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 					return current.Status.Phase == apiv2.ProjectPhaseStopped && current.Status.StartupLogs != nil && current.Status.StartupLogs.Complete, nil
 				})
 			} else {
@@ -122,7 +122,7 @@ type projectRejectedCreateClient struct {
 
 func (apiClient *projectRejectedCreateClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
 	owner := metav1.GetControllerOf(obj)
-	if _, physical := obj.(*apiv2.PhysicalContainer); physical && owner != nil && owner.Kind == "Project" {
+	if _, physical := obj.(*apiv2.PhysicalContainer); physical && owner != nil && owner.Kind == "ProjectContainer" {
 		apiClient.attempts.Add(1)
 		if apiClient.rejected.CompareAndSwap(false, true) {
 			close(apiClient.entered)
@@ -143,9 +143,9 @@ func (apiClient *projectRejectedCreateClient) Create(ctx context.Context, obj ct
 	return apiClient.Client.Create(ctx, obj, options...)
 }
 
-// Verifies that a rejected container declaration leaves Project Pending rather than inventing
+// Verifies that a rejected container declaration leaves ProjectContainer Pending rather than inventing
 // observation uncertainty, and retries the same prepared inputs to realize one backing.
-func TestV2ProjectRejectedCreatePreservesPreparationState(t *testing.T) {
+func TestV2ProjectContainerRejectedCreatePreservesPreparationState(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -161,8 +161,8 @@ func TestV2ProjectRejectedCreatePreservesPreparationState(t *testing.T) {
 	releaseRetry := sync.OnceFunc(func() { close(rejectedCreate.retryRelease) })
 	t.Cleanup(releaseRetry)
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-rejected-preparation")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 			LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 		}}}
 	require.NoError(t, server.Client.Create(ctx, resource))
@@ -172,7 +172,7 @@ func TestV2ProjectRejectedCreatePreservesPreparationState(t *testing.T) {
 		t.Fatal("Project did not attempt backing creation")
 	}
 	release()
-	pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return current.Status.Phase == apiv2.ProjectPhasePending && current.Status.PhysicalContainerRef == "" &&
 			len(current.Status.Conditions) != 0, nil
 	})
@@ -188,9 +188,9 @@ func TestV2ProjectRejectedCreatePreservesPreparationState(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
-// Verifies that Project resolves network references again after a rejected declaration and uses
+// Verifies that ProjectContainer resolves network references again after a rejected declaration and uses
 // the current published backing when no container declaration committed the earlier selection.
-func TestV2ProjectResolvesNetworksAfterRejectedCreate(t *testing.T) {
+func TestV2ProjectContainerResolvesNetworksAfterRejectedCreate(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -213,8 +213,8 @@ func TestV2ProjectResolvesNetworksAfterRejectedCreate(t *testing.T) {
 	waitObjectAssumesStateEx(t, ctx, apiClient, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
 	})
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace + "-image"},
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace + "-image"},
 			Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: network.Name}}},
 		}}}
 	require.NoError(t, apiClient.Create(ctx, resource))
@@ -266,7 +266,7 @@ func (apiClient *projectImageObservationClient) List(ctx context.Context, object
 
 // Verifies that startup-log lookup errors preserve Ready or terminal preparation failure
 // and the previously observed image capture, without requiring terminal observation to poll.
-func TestV2ProjectImageLogFailurePreservesExecutionState(t *testing.T) {
+func TestV2ProjectContainerImageLogFailurePreservesExecutionState(t *testing.T) {
 	t.Parallel()
 	for _, phase := range []apiv2.ProjectPhase{apiv2.ProjectPhaseReady, apiv2.ProjectPhaseFailed} {
 		t.Run(string(phase), func(t *testing.T) {
@@ -284,8 +284,8 @@ func TestV2ProjectImageLogFailurePreservesExecutionState(t *testing.T) {
 			createV2ExecNamespace(t, ctx, apiClient, namespace)
 			orchestrator, simulated := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 			require.True(t, simulated)
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace + "-image"}}}}}
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace + "-image"}}}}}
 			if phase == apiv2.ProjectPhaseFailed {
 				orchestrator.FailNextPullImage(resource.Spec.Container.Image.Image, errors.New("injected terminal image failure"))
 				noRetries := int32(0)
@@ -297,7 +297,7 @@ func TestV2ProjectImageLogFailurePreservesExecutionState(t *testing.T) {
 			require.NotNil(t, initial.Status.StartupLogs)
 			imageReader.enabled.Store(true)
 			require.NoError(t, apiClient.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"project-log-probe":"enabled"}}}`))))
-			observed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			observed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 				return imageReader.failures.Load() >= 1 && current.Status.Phase == phase, nil
 			})
 			require.Equal(t, initial.Status.StartupLogs, observed.Status.StartupLogs)
@@ -306,19 +306,19 @@ func TestV2ProjectImageLogFailurePreservesExecutionState(t *testing.T) {
 	}
 }
 
-// Verifies that an owned image's logical hold preserves startup capture for late Project followers
-// after physical image cleanup, and Project deletion releases the hold without recreating the image.
-func TestV2ProjectOwnedImageDeletionPreservesLateStartupLogs(t *testing.T) {
+// Verifies that an owned image's logical hold preserves startup capture for late ProjectContainer followers
+// after physical image cleanup, and ProjectContainer deletion releases the hold without recreating the image.
+func TestV2ProjectContainerOwnedImageDeletionPreservesLateStartupLogs(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
 	namespace := createActiveV2Namespace(t, ctx, "v2-project-held-startup")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
 			Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "missing"}}},
 		}}}
 	require.NoError(t, client.Create(ctx, resource))
-	prepared := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	prepared := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return current.Status.StartupLogs != nil && current.Status.StartupLogs.Complete, nil
 	})
 	image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: prepared.Status.ImageRef, Namespace: namespace.Name}}
@@ -337,69 +337,116 @@ func TestV2ProjectOwnedImageDeletionPreservesLateStartupLogs(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, image)
 }
 
-// Verifies that Project rejects terminating service dependencies during port or template preparation
+// Verifies that ProjectProcess rejects terminating service dependencies during port or template preparation
 // and preserves that terminal failure after the dependency is replaced and Stop is requested.
-func TestV2ProjectTerminalServicePreparation(t *testing.T) {
+func TestV2ProjectProcessTerminalServicePreparation(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"process", "container"} {
-		for _, source := range []string{"port", "template"} {
-			t.Run(kind+"/"+source, func(t *testing.T) {
-				t.Parallel()
-				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-				defer cancel()
-				namespace := createActiveV2Namespace(t, ctx, "v2-project-terminal-service-"+kind+"-"+source)
-				service, releaseService := createTerminatingPreparationService(t, ctx, namespace.Name)
-				resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-					Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir()}}
-				arguments := []string{`{{portFor "dependency"}}`}
-				binding := apiv2.LogicalServiceBinding{Name: "application", ServiceRef: service.Name}
-				if source == "port" {
-					arguments = []string{"literal"}
-				}
-				if kind == "process" {
-					resource.Spec.Process = &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
-						ExecutablePath: "application", Args: arguments,
-						AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
-					}}
-					if source == "port" {
-						resource.Spec.Process.Ports = []apiv2.LogicalProcessPort{{LogicalServiceBinding: binding, Port: 8080}}
-					}
-				} else {
-					resource.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
-						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Command: arguments,
-					}}
-					if source == "port" {
-						resource.Spec.Container.Ports = []apiv2.LogicalContainerPort{{LogicalServiceBinding: binding, ContainerPort: 8080}}
-					}
-				}
-				require.NoError(t, client.Create(ctx, resource))
-				failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
-				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
-				require.Empty(t, failed.Status.PhysicalContainerRef)
-				releaseService()
-				replacement := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: service.Name, Namespace: namespace.Name}, Spec: service.Spec}
-				require.NoError(t, client.Create(ctx, replacement))
-				require.NotEqual(t, service.UID, replacement.UID)
-				require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-				require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.Project) error {
-					current.Status.Phase, current.Status.Conditions = apiv2.ProjectPhaseUnknown, nil
-					return client.Status().Update(updateCtx, current)
-				}))
-				terminal := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
-				requireReadyCondition(t, terminal.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
-				require.Equal(t, failed.Status.Conditions[0].Message, terminal.Status.Conditions[0].Message)
-				var backings apiv2.PhysicalContainerList
-				require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-				require.Empty(t, backings.Items)
-				require.NoError(t, client.Delete(ctx, namespace))
-				ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
-			})
-		}
+	kind := "process"
+
+	for _, source := range []string{"port", "template"} {
+		t.Run(kind+"/"+source, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			namespace := createActiveV2Namespace(t, ctx, "v2-project-terminal-service-"+kind+"-"+source)
+			service, releaseService := createTerminatingPreparationService(t, ctx, namespace.Name)
+			resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}}}
+			arguments := []string{`{{portFor "dependency"}}`}
+			binding := apiv2.LogicalServiceBinding{Name: "application", ServiceRef: service.Name}
+			if source == "port" {
+				arguments = []string{"literal"}
+			}
+
+			resource.Spec.Process = apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
+				ExecutablePath: "application", Args: arguments,
+				AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
+			}}
+			if source == "port" {
+				resource.Spec.Process.Ports = []apiv2.LogicalProcessPort{{LogicalServiceBinding: binding, Port: 8080}}
+			}
+
+			require.NoError(t, client.Create(ctx, resource))
+			failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
+			releaseService()
+			replacement := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: service.Name, Namespace: namespace.Name}, Spec: service.Spec}
+			require.NoError(t, client.Create(ctx, replacement))
+			require.NotEqual(t, service.UID, replacement.UID)
+			require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+			require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.ProjectProcess) error {
+				current.Status.Phase, current.Status.Conditions = apiv2.ProjectPhaseUnknown, nil
+				return client.Status().Update(updateCtx, current)
+			}))
+			terminal := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
+			requireReadyCondition(t, terminal.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
+			require.Equal(t, failed.Status.Conditions[0].Message, terminal.Status.Conditions[0].Message)
+			var backings apiv2.PhysicalContainerList
+			require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+			require.Empty(t, backings.Items)
+			require.NoError(t, client.Delete(ctx, namespace))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
+		})
 	}
+
+}
+
+// Verifies that ProjectContainer rejects terminating service dependencies during port or template preparation
+// and preserves that terminal failure after the dependency is replaced and Stop is requested.
+func TestV2ProjectContainerTerminalServicePreparation(t *testing.T) {
+	t.Parallel()
+	kind := "container"
+
+	for _, source := range []string{"port", "template"} {
+		t.Run(kind+"/"+source, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			namespace := createActiveV2Namespace(t, ctx, "v2-project-terminal-service-"+kind+"-"+source)
+			service, releaseService := createTerminatingPreparationService(t, ctx, namespace.Name)
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}}}
+			arguments := []string{`{{portFor "dependency"}}`}
+			binding := apiv2.LogicalServiceBinding{Name: "application", ServiceRef: service.Name}
+			if source == "port" {
+				arguments = []string{"literal"}
+			}
+
+			resource.Spec.Container = apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Command: arguments,
+			}}
+			if source == "port" {
+				resource.Spec.Container.Ports = []apiv2.LogicalContainerPort{{LogicalServiceBinding: binding, ContainerPort: 8080}}
+			}
+
+			require.NoError(t, client.Create(ctx, resource))
+			failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
+			require.Empty(t, failed.Status.PhysicalContainerRef)
+			releaseService()
+			replacement := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: service.Name, Namespace: namespace.Name}, Spec: service.Spec}
+			require.NoError(t, client.Create(ctx, replacement))
+			require.NotEqual(t, service.UID, replacement.UID)
+			require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+			require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.ProjectContainer) error {
+				current.Status.Phase, current.Status.Conditions = apiv2.ProjectPhaseUnknown, nil
+				return client.Status().Update(updateCtx, current)
+			}))
+			terminal := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
+			requireReadyCondition(t, terminal.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
+			require.Equal(t, failed.Status.Conditions[0].Message, terminal.Status.Conditions[0].Message)
+			var backings apiv2.PhysicalContainerList
+			require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+			require.Empty(t, backings.Items)
+			require.NoError(t, client.Delete(ctx, namespace))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
+		})
+	}
+
 }
 
 // Verifies that container TCP adapter ports are declared before creation with runtime-assigned
-// loopback bindings, published through Project and rejected on TCP application-port conflicts.
+// loopback bindings, published through ProjectContainer and rejected on TCP application-port conflicts.
 func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"default", "zero", "explicit", "tcp-conflict", "udp-coexist", "pending-binding"} {
@@ -416,13 +463,12 @@ func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 				}})
 			require.NoError(t, startupErr)
 			namespace := createV2ExecNamespace(t, ctx, server.Client, "project-tcp-port-"+scenario)
-			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-					Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
-						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
-					}},
-					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter", "--port={{port}}"},
-						Mode: apiv2.DebugAdapterModeTCPConnect},
+			project := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+					Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
+				}},
+					DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter", "--port={{port}}"},
+						Mode: apiv2.DebugAdapterModeTCPConnect}},
 				}}
 			expectedPort := int32(4711)
 			if scenario == "zero" {
@@ -443,7 +489,7 @@ func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 			}
 			require.NoError(t, server.Client.Create(ctx, project))
 			if scenario == "pending-binding" {
-				pending := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				pending := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 					return current.Status.ContainerID != "" && len(current.Status.Conditions) != 0 &&
 						current.Status.Conditions[0].Reason == string(apiv2.ProjectReasonPreparing) &&
 						strings.Contains(current.Status.Conditions[0].Message, "adapter port binding"), nil
@@ -500,150 +546,268 @@ func (client *projectAdapterMappingClient) List(ctx context.Context, list ctrl_c
 	return nil
 }
 
-func serviceProject(name, namespace, root, kind string, arguments []string, environment []commonapi.EnvVar) *apiv2.Project {
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: apiv2.ProjectSpec{RootDirectory: root}}
+func serviceProjectProcess(name, namespace, root string, arguments []string, environment []commonapi.EnvVar) *apiv2.ProjectProcess {
+	resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: root}}}
 	binding := apiv2.LogicalServiceBinding{Name: "http", Service: &apiv2.LogicalServiceTemplate{
 		Name: "management", LogicalServiceSpec: apiv2.LogicalServiceSpec{Address: "127.0.0.1", Protocol: commonapi.PortProtocolUDP},
 	}}
-	if kind == "process" {
-		resource.Spec.Process = &apiv2.ProjectProcessTemplate{
-			LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace + "-command", Args: arguments, Env: environment,
-				AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit}},
-			Ports: []apiv2.LogicalProcessPort{{LogicalServiceBinding: binding, Address: "127.0.0.1"}},
-		}
-	} else {
-		resource.Spec.Container = &apiv2.ProjectContainerTemplate{
-			LogicalContainerConfig: apiv2.LogicalContainerConfig{
-				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace + "-image"}, Command: arguments, Env: environment,
-			},
-			Ports: []apiv2.LogicalContainerPort{{LogicalServiceBinding: binding, ContainerPort: 8080, Address: "127.0.0.1"}},
-		}
+
+	resource.Spec.Process = apiv2.ProjectProcessTemplate{
+		LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace + "-command", Args: arguments, Env: environment,
+			AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit}},
+		Ports: []apiv2.LogicalProcessPort{{LogicalServiceBinding: binding, Address: "127.0.0.1"}},
 	}
+
 	return resource
 }
 
-// Verifies that Project prepares service-backed inputs without registering an application endpoint,
-// preserves the declared values and keeps independently named services across replacement.
-func TestV2ProjectServicePortsAndEvaluatedValues(t *testing.T) {
-	t.Parallel()
-	for _, kind := range []string{"process", "container"} {
-		t.Run(kind, func(t *testing.T) {
-			t.Parallel()
-			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-			t.Cleanup(cancel)
-			namespace := createV2ExecNamespace(t, ctx, client, "v2-project-services-"+kind)
-			arguments := []string{`--listen={{addressForServing "http"}}:{{portForServing "http"}}`,
-				`--consumer={{addressFor "project-management"}}:{{portFor "project-management"}}`}
-			environment := []commonapi.EnvVar{
-				{Name: "VALUE", Value: "{{"}, {Name: "VALUE", Value: `{{portForServing "http"}}`},
-				{Name: "FRONT", Value: `{{addressFor "project-management"}}:{{portFor "project-management"}}`},
-			}
-			resource := serviceProject("project", namespace.Name, t.TempDir(), kind, arguments, environment)
-			require.NoError(t, client.Create(ctx, resource))
-			running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
-			require.Len(t, running.Status.Ports, 1)
-			port := running.Status.Ports[0]
-			require.Positive(t, port.Port)
-			require.Equal(t, "project-management", port.ServiceRef)
-			service := waitObjectAssumesStateEx(t, ctx, client, types.NamespacedName{Namespace: namespace.Name, Name: port.ServiceRef},
-				func(current *apiv2.LogicalService) (bool, error) {
-					return len(current.Status.EffectiveAddresses) != 0, nil
-				})
-			require.Empty(t, service.OwnerReferences)
-			front := service.Status.EffectiveAddresses[0]
-			expectedArgs := []string{fmt.Sprintf("--listen=127.0.0.1:%d", port.Port), fmt.Sprintf("--consumer=%s:%d", front.Address, front.Port)}
-			expectedEnv := []commonapi.EnvVar{{Name: "VALUE", Value: fmt.Sprint(port.Port)}, {Name: "FRONT", Value: fmt.Sprintf("%s:%d", front.Address, front.Port)}}
-			require.Equal(t, expectedArgs, running.Status.EffectiveArgs)
-			require.ElementsMatch(t, expectedEnv, running.Status.EffectiveEnv)
-			var endpoints apiv2.ServiceEndpointList
-			require.NoError(t, client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
-			require.Empty(t, endpoints.Items)
-			if kind == "process" {
-				var physicals apiv2.PhysicalProcessList
-				require.NoError(t, client.List(ctx, &physicals, ctrl_client.InNamespace(namespace.Name)))
-				require.Empty(t, physicals.Items)
-				require.Equal(t, arguments, running.Spec.Process.Args)
-				require.Equal(t, environment, running.Spec.Process.Env)
-			} else {
-				physical := &apiv2.PhysicalContainer{}
-				require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef}, physical))
-				require.Equal(t, []string{"-f", "/dev/null"}, physical.Spec.Container.Command)
-				require.Equal(t, expectedEnv, physical.Spec.Container.Env)
-				require.Equal(t, int32(8080), physical.Spec.Container.Ports[0].ContainerPort)
-				require.Equal(t, commonapi.PortProtocolUDP, physical.Spec.Container.Ports[0].Protocol)
-				require.Equal(t, arguments, running.Spec.Container.Command)
-				require.Equal(t, environment, running.Spec.Container.Env)
-			}
-			require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-			waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
-			require.NoError(t, client.Delete(ctx, resource))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
-			retained := &apiv2.LogicalService{}
-			require.NoError(t, client.Get(ctx, service.NamespacedName(), retained))
-			require.Equal(t, service.UID, retained.UID)
-			replacement := serviceProject("project", namespace.Name, t.TempDir(), kind, arguments, environment)
-			require.NoError(t, client.Create(ctx, replacement))
-			replacementRunning := waitProjectPhase(t, ctx, client, replacement, apiv2.ProjectPhaseReady)
-			require.NotEqual(t, resource.UID, replacement.UID)
-			require.Equal(t, service.Name, replacementRunning.Status.Ports[0].ServiceRef)
-			require.NoError(t, client.Get(ctx, service.NamespacedName(), retained))
-			require.Equal(t, service.UID, retained.UID)
-			require.NoError(t, client.Delete(ctx, replacement))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, client, replacement)
-		})
+func serviceProjectContainer(name, namespace, root string, arguments []string, environment []commonapi.EnvVar) *apiv2.ProjectContainer {
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: root}}}
+	binding := apiv2.LogicalServiceBinding{Name: "http", Service: &apiv2.LogicalServiceTemplate{
+		Name: "management", LogicalServiceSpec: apiv2.LogicalServiceSpec{Address: "127.0.0.1", Protocol: commonapi.PortProtocolUDP},
+	}}
+
+	resource.Spec.Container = apiv2.ProjectContainerTemplate{
+		LogicalContainerConfig: apiv2.LogicalContainerConfig{
+			Image: &apiv2.PhysicalContainerImageConfig{Image: namespace + "-image"}, Command: arguments, Env: environment,
+		},
+		Ports: []apiv2.LogicalContainerPort{{LogicalServiceBinding: binding, ContainerPort: 8080, Address: "127.0.0.1"}},
 	}
+
+	return resource
+}
+
+// Verifies that ProjectProcess prepares service-backed inputs without registering an application endpoint,
+// preserves the declared values and keeps independently named services across replacement.
+func TestV2ProjectProcessServicePortsAndEvaluatedValues(t *testing.T) {
+	t.Parallel()
+	kind := "process"
+
+	t.Run(kind, func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+		t.Cleanup(cancel)
+		namespace := createV2ExecNamespace(t, ctx, client, "v2-project-services-"+kind)
+		arguments := []string{`--listen={{addressForServing "http"}}:{{portForServing "http"}}`,
+			`--consumer={{addressFor "project-management"}}:{{portFor "project-management"}}`}
+		environment := []commonapi.EnvVar{
+			{Name: "VALUE", Value: "{{"}, {Name: "VALUE", Value: `{{portForServing "http"}}`},
+			{Name: "FRONT", Value: `{{addressFor "project-management"}}:{{portFor "project-management"}}`},
+		}
+		resource := serviceProjectProcess("project", namespace.Name, t.TempDir(), arguments, environment)
+		require.NoError(t, client.Create(ctx, resource))
+		running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+		require.Len(t, running.Status.Ports, 1)
+		port := running.Status.Ports[0]
+		require.Positive(t, port.Port)
+		require.Equal(t, "project-management", port.ServiceRef)
+		service := waitObjectAssumesStateEx(t, ctx, client, types.NamespacedName{Namespace: namespace.Name, Name: port.ServiceRef},
+			func(current *apiv2.LogicalService) (bool, error) {
+				return len(current.Status.EffectiveAddresses) != 0, nil
+			})
+		require.Empty(t, service.OwnerReferences)
+		front := service.Status.EffectiveAddresses[0]
+		expectedArgs := []string{fmt.Sprintf("--listen=127.0.0.1:%d", port.Port), fmt.Sprintf("--consumer=%s:%d", front.Address, front.Port)}
+		expectedEnv := []commonapi.EnvVar{{Name: "VALUE", Value: fmt.Sprint(port.Port)}, {Name: "FRONT", Value: fmt.Sprintf("%s:%d", front.Address, front.Port)}}
+		require.Equal(t, expectedArgs, running.Status.EffectiveArgs)
+		require.ElementsMatch(t, expectedEnv, running.Status.EffectiveEnv)
+		var endpoints apiv2.ServiceEndpointList
+		require.NoError(t, client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
+		require.Empty(t, endpoints.Items)
+
+		var physicals apiv2.PhysicalProcessList
+		require.NoError(t, client.List(ctx, &physicals, ctrl_client.InNamespace(namespace.Name)))
+		require.Empty(t, physicals.Items)
+		require.Equal(t, arguments, running.Spec.Process.Args)
+		require.Equal(t, environment, running.Spec.Process.Env)
+
+		require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+		waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
+		require.NoError(t, client.Delete(ctx, resource))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+		retained := &apiv2.LogicalService{}
+		require.NoError(t, client.Get(ctx, service.NamespacedName(), retained))
+		require.Equal(t, service.UID, retained.UID)
+		replacement := serviceProjectProcess("project", namespace.Name, t.TempDir(), arguments, environment)
+		require.NoError(t, client.Create(ctx, replacement))
+		replacementRunning := waitProjectPhase(t, ctx, client, replacement, apiv2.ProjectPhaseReady)
+		require.NotEqual(t, resource.UID, replacement.UID)
+		require.Equal(t, service.Name, replacementRunning.Status.Ports[0].ServiceRef)
+		require.NoError(t, client.Get(ctx, service.NamespacedName(), retained))
+		require.Equal(t, service.UID, retained.UID)
+		require.NoError(t, client.Delete(ctx, replacement))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, client, replacement)
+	})
+
+}
+
+// Verifies that ProjectContainer prepares service-backed inputs without registering an application endpoint,
+// preserves the declared values and keeps independently named services across replacement.
+func TestV2ProjectContainerServicePortsAndEvaluatedValues(t *testing.T) {
+	t.Parallel()
+	kind := "container"
+
+	t.Run(kind, func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+		t.Cleanup(cancel)
+		namespace := createV2ExecNamespace(t, ctx, client, "v2-project-services-"+kind)
+		arguments := []string{`--listen={{addressForServing "http"}}:{{portForServing "http"}}`,
+			`--consumer={{addressFor "project-management"}}:{{portFor "project-management"}}`}
+		environment := []commonapi.EnvVar{
+			{Name: "VALUE", Value: "{{"}, {Name: "VALUE", Value: `{{portForServing "http"}}`},
+			{Name: "FRONT", Value: `{{addressFor "project-management"}}:{{portFor "project-management"}}`},
+		}
+		resource := serviceProjectContainer("project", namespace.Name, t.TempDir(), arguments, environment)
+		require.NoError(t, client.Create(ctx, resource))
+		running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+		require.Len(t, running.Status.Ports, 1)
+		port := running.Status.Ports[0]
+		require.Positive(t, port.Port)
+		require.Equal(t, "project-management", port.ServiceRef)
+		service := waitObjectAssumesStateEx(t, ctx, client, types.NamespacedName{Namespace: namespace.Name, Name: port.ServiceRef},
+			func(current *apiv2.LogicalService) (bool, error) {
+				return len(current.Status.EffectiveAddresses) != 0, nil
+			})
+		require.Empty(t, service.OwnerReferences)
+		front := service.Status.EffectiveAddresses[0]
+		expectedArgs := []string{fmt.Sprintf("--listen=127.0.0.1:%d", port.Port), fmt.Sprintf("--consumer=%s:%d", front.Address, front.Port)}
+		expectedEnv := []commonapi.EnvVar{{Name: "VALUE", Value: fmt.Sprint(port.Port)}, {Name: "FRONT", Value: fmt.Sprintf("%s:%d", front.Address, front.Port)}}
+		require.Equal(t, expectedArgs, running.Status.EffectiveArgs)
+		require.ElementsMatch(t, expectedEnv, running.Status.EffectiveEnv)
+		var endpoints apiv2.ServiceEndpointList
+		require.NoError(t, client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
+		require.Empty(t, endpoints.Items)
+
+		physical := &apiv2.PhysicalContainer{}
+		require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef}, physical))
+		require.Equal(t, []string{"-f", "/dev/null"}, physical.Spec.Container.Command)
+		require.Equal(t, expectedEnv, physical.Spec.Container.Env)
+		require.Equal(t, int32(8080), physical.Spec.Container.Ports[0].ContainerPort)
+		require.Equal(t, commonapi.PortProtocolUDP, physical.Spec.Container.Ports[0].Protocol)
+		require.Equal(t, arguments, running.Spec.Container.Command)
+		require.Equal(t, environment, running.Spec.Container.Env)
+
+		require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+		waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
+		require.NoError(t, client.Delete(ctx, resource))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+		retained := &apiv2.LogicalService{}
+		require.NoError(t, client.Get(ctx, service.NamespacedName(), retained))
+		require.Equal(t, service.UID, retained.UID)
+		replacement := serviceProjectContainer("project", namespace.Name, t.TempDir(), arguments, environment)
+		require.NoError(t, client.Create(ctx, replacement))
+		replacementRunning := waitProjectPhase(t, ctx, client, replacement, apiv2.ProjectPhaseReady)
+		require.NotEqual(t, resource.UID, replacement.UID)
+		require.Equal(t, service.Name, replacementRunning.Status.Ports[0].ServiceRef)
+		require.NoError(t, client.Get(ctx, service.NamespacedName(), retained))
+		require.Equal(t, service.UID, retained.UID)
+		require.NoError(t, client.Delete(ctx, replacement))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, client, replacement)
+	})
+
 }
 
 // Verifies that a missing service template dependency retries without launching a backing,
 // malformed templates remain terminal after Stop, and deletion can clean either preparation outcome.
-func TestV2ProjectTemplatePreparationFailures(t *testing.T) {
+func TestV2ProjectProcessTemplatePreparationFailures(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"process", "container"} {
-		for _, malformed := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/malformed=%t", kind, malformed), func(t *testing.T) {
-				t.Parallel()
-				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-				t.Cleanup(cancel)
-				namespace := createV2ExecNamespace(t, ctx, client, fmt.Sprintf("v2-project-template-%s-%t", kind, malformed))
-				arguments := []string{`{{portFor "absent"}}`}
-				if malformed {
-					arguments = []string{"{{"}
-				}
-				resource := serviceProject("project", namespace.Name, t.TempDir(), kind, arguments, nil)
-				if kind == "process" {
-					resource.Spec.Process.Ports = nil
-				} else {
-					resource.Spec.Container.Ports = nil
-				}
-				require.NoError(t, client.Create(ctx, resource))
-				expected := apiv2.ProjectPhasePending
-				expectedReason := apiv2.ProjectReasonPreparing
-				if malformed {
-					expected = apiv2.ProjectPhaseFailed
-					expectedReason = apiv2.ProjectReasonPreparationFailed
-				}
-				waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
-					return current.Status.Phase == expected && len(current.Status.Conditions) != 0 &&
-						current.Status.Conditions[0].Reason == string(expectedReason) &&
-						current.Status.Conditions[0].Message != "", nil
-				})
-				if malformed {
-					require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-					waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
-						return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Spec.Stop &&
-							current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
-					})
-				} else {
-					service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "absent", Namespace: namespace.Name},
-						Spec: apiv2.LogicalServiceSpec{Address: "127.0.0.1"}}
-					require.NoError(t, client.Create(ctx, service))
-					waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
-				}
-				require.NoError(t, client.Delete(ctx, resource))
-				ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+	kind := "process"
+
+	for _, malformed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("%s/malformed=%t", kind, malformed), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			namespace := createV2ExecNamespace(t, ctx, client, fmt.Sprintf("v2-project-template-%s-%t", kind, malformed))
+			arguments := []string{`{{portFor "absent"}}`}
+			if malformed {
+				arguments = []string{"{{"}
+			}
+			resource := serviceProjectProcess("project", namespace.Name, t.TempDir(), arguments, nil)
+
+			resource.Spec.Process.Ports = nil
+
+			require.NoError(t, client.Create(ctx, resource))
+			expected := apiv2.ProjectPhasePending
+			expectedReason := apiv2.ProjectReasonPreparing
+			if malformed {
+				expected = apiv2.ProjectPhaseFailed
+				expectedReason = apiv2.ProjectReasonPreparationFailed
+			}
+			waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
+				return current.Status.Phase == expected && len(current.Status.Conditions) != 0 &&
+					current.Status.Conditions[0].Reason == string(expectedReason) &&
+					current.Status.Conditions[0].Message != "", nil
 			})
-		}
+			if malformed {
+				require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+				waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
+					return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Spec.Stop &&
+						current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
+				})
+			} else {
+				service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "absent", Namespace: namespace.Name},
+					Spec: apiv2.LogicalServiceSpec{Address: "127.0.0.1"}}
+				require.NoError(t, client.Create(ctx, service))
+				waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+			}
+			require.NoError(t, client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+		})
 	}
+
+}
+
+// Verifies that a missing service template dependency retries without launching a backing,
+// malformed templates remain terminal after Stop, and deletion can clean either preparation outcome.
+func TestV2ProjectContainerTemplatePreparationFailures(t *testing.T) {
+	t.Parallel()
+	kind := "container"
+
+	for _, malformed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("%s/malformed=%t", kind, malformed), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			namespace := createV2ExecNamespace(t, ctx, client, fmt.Sprintf("v2-project-template-%s-%t", kind, malformed))
+			arguments := []string{`{{portFor "absent"}}`}
+			if malformed {
+				arguments = []string{"{{"}
+			}
+			resource := serviceProjectContainer("project", namespace.Name, t.TempDir(), arguments, nil)
+
+			resource.Spec.Container.Ports = nil
+
+			require.NoError(t, client.Create(ctx, resource))
+			expected := apiv2.ProjectPhasePending
+			expectedReason := apiv2.ProjectReasonPreparing
+			if malformed {
+				expected = apiv2.ProjectPhaseFailed
+				expectedReason = apiv2.ProjectReasonPreparationFailed
+			}
+			waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
+				return current.Status.Phase == expected && len(current.Status.Conditions) != 0 &&
+					current.Status.Conditions[0].Reason == string(expectedReason) &&
+					current.Status.Conditions[0].Message != "", nil
+			})
+			if malformed {
+				require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+				waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
+					return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Spec.Stop &&
+						current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
+				})
+			} else {
+				service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "absent", Namespace: namespace.Name},
+					Spec: apiv2.LogicalServiceSpec{Address: "127.0.0.1"}}
+				require.NoError(t, client.Create(ctx, service))
+				waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+			}
+			require.NoError(t, client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+		})
+	}
+
 }
 
 type projectEvaluatedCreateClient struct {
@@ -661,7 +825,7 @@ func (apiClient *projectEvaluatedCreateClient) Create(ctx context.Context, objec
 	owner := metav1.GetControllerOf(object)
 	_, process := object.(*apiv2.PhysicalProcess)
 	_, container := object.(*apiv2.PhysicalContainer)
-	if owner != nil && owner.Kind == "Project" && (process || container) && apiClient.lost.CompareAndSwap(false, true) {
+	if owner != nil && owner.Kind == "ProjectContainer" && (process || container) && apiClient.lost.CompareAndSwap(false, true) {
 		apiClient.created <- object.DeepCopyObject().(ctrl_client.Object)
 		select {
 		case <-apiClient.release:
@@ -672,16 +836,16 @@ func (apiClient *projectEvaluatedCreateClient) Create(ctx context.Context, objec
 	return nil
 }
 
-// Verifies that a committed physical create pins evaluated launch values even if a managed
+// Verifies that ProjectContainer pins evaluated launch values after a committed physical create even if a managed
 // service's producer addresses change before recovery, without evaluating or launching again.
-func TestV2ProjectPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
+func TestV2ProjectContainerPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"container"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
 			var decorated *projectEvaluatedCreateClient
-			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers|LogicalServiceController, t.Name(), t.TempDir(),
+			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers|LogicalServiceController, t.Name(), t.TempDir(),
 				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
 					decorated = &projectEvaluatedCreateClient{Client: apiClient, created: make(chan ctrl_client.Object, 1), release: make(chan struct{})}
 					return decorated
@@ -700,12 +864,10 @@ func TestV2ProjectPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 				return current.Status.Phase == apiv2.LogicalServicePhaseRunning && len(current.Status.EffectiveAddresses) == 1 &&
 					current.Status.EffectiveAddresses[0].Port == 43210, nil
 			})
-			resource := serviceProject("project", namespace.Name, t.TempDir(), kind, []string{`{{portFor "source"}}`}, nil)
-			if kind == "process" {
-				resource.Spec.Process.Ports = nil
-			} else {
-				resource.Spec.Container.Ports = nil
-			}
+			resource := serviceProjectContainer("project", namespace.Name, t.TempDir(), []string{`{{portFor "source"}}`}, nil)
+
+			resource.Spec.Container.Ports = nil
+
 			require.NoError(t, server.Client.Create(ctx, resource))
 			var backing ctrl_client.Object
 			select {
@@ -726,26 +888,21 @@ func TestV2ProjectPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 			release()
 			running := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
 			require.Equal(t, backing.GetUID(), running.Status.RuntimeLogs.UID)
-			if kind == "process" {
-				physical := &apiv2.PhysicalProcess{}
-				require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(backing), physical))
-				require.Equal(t, []string{"43210"}, physical.Spec.Process.Args)
-				require.Len(t, environment.TestProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil), 1)
-			} else {
-				physical := &apiv2.PhysicalContainer{}
-				require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(backing), physical))
-				require.Equal(t, []string{"43210"}, running.Status.EffectiveArgs)
-				require.Equal(t, []string{"-f", "/dev/null"}, physical.Spec.Container.Command)
-				simulated := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
-				require.Equal(t, 1, simulated.CreateContainerCallCount(physical.Spec.Container.ContainerName))
-			}
+
+			physical := &apiv2.PhysicalContainer{}
+			require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(backing), physical))
+			require.Equal(t, []string{"43210"}, running.Status.EffectiveArgs)
+			require.Equal(t, []string{"-f", "/dev/null"}, physical.Spec.Container.Command)
+			simulated := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+			require.Equal(t, 1, simulated.CreateContainerCallCount(physical.Spec.Container.ContainerName))
+
 			require.NoError(t, server.Client.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 		})
 	}
 }
 
-// Verifies that Project installs adapter files at the default or overridden destination before readiness,
+// Verifies that ProjectContainer installs adapter files at the default or overridden destination before readiness,
 // applies declared execute bits, reports missing sources/files as preparation failures, and does not launch an adapter.
 func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 	t.Parallel()
@@ -758,12 +915,11 @@ func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 			source := t.TempDir()
 			require.NoError(t, usvc_io.WriteFile(filepath.Join(source, "dependency.dll"), []byte("dependency"), 0644))
 			require.NoError(t, usvc_io.WriteFile(filepath.Join(source, "adapter"), []byte("binary"), 0644))
-			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-					Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
-						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
-					}},
-					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: source, Args: []string{"{{adapterDirectory}}/adapter"}},
+			project := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+					Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
+				}},
+					DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: source, Args: []string{"{{adapterDirectory}}/adapter"}}},
 				}}
 			destination := apiv2.DefaultContainerDebugAdapterDirectory
 			if scenario == "custom" {

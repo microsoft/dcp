@@ -392,12 +392,19 @@ func StartTestEnvironmentWithOptions(
 	if inclCtrl&ProjectController != 0 {
 		projectExecutor := process.NewOSExecutor(log.WithName("ProjectProcessExecutor"))
 		_ = context.AfterFunc(ctx, projectExecutor.Dispose)
-		projectR := controllers.NewProjectReconciler(ctx, mgr.GetClient(), controllerAPIReader, log.WithName("ProjectReconciler"), projectExecutor, serverInfo.ContainerOrchestrator.Name())
-		if timingErr := projectR.ConfigureReconciliationTiming(timing); timingErr != nil {
-			return nil, nil, fmt.Errorf("failed to configure Project reconciliation timing: %w", timingErr)
+		projectProcessR := controllers.NewProjectProcessReconciler(ctx, mgr.GetClient(), controllerAPIReader, log.WithName("ProjectProcessReconciler"), projectExecutor)
+		if timingErr := projectProcessR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure ProjectProcess reconciliation timing: %w", timingErr)
 		}
-		if projectSetupErr := projectR.SetupWithManager(mgr, instanceTag+"-ProjectReconciler"); projectSetupErr != nil {
-			return nil, nil, fmt.Errorf("failed to initialize Project reconciler: %w", projectSetupErr)
+		if setupErr := projectProcessR.SetupWithManager(mgr, instanceTag+"-ProjectProcessReconciler"); setupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize ProjectProcess reconciler: %w", setupErr)
+		}
+		projectContainerR := controllers.NewProjectContainerReconciler(ctx, mgr.GetClient(), controllerAPIReader, log.WithName("ProjectContainerReconciler"), projectExecutor, serverInfo.ContainerOrchestrator.Name())
+		if timingErr := projectContainerR.ConfigureReconciliationTiming(timing); timingErr != nil {
+			return nil, nil, fmt.Errorf("failed to configure ProjectContainer reconciliation timing: %w", timingErr)
+		}
+		if setupErr := projectContainerR.SetupWithManager(mgr, instanceTag+"-ProjectContainerReconciler"); setupErr != nil {
+			return nil, nil, fmt.Errorf("failed to initialize ProjectContainer reconciler: %w", setupErr)
 		}
 	}
 

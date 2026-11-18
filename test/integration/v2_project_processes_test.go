@@ -64,7 +64,7 @@ func reportProjectTarget(t *testing.T, connection *websocket.Conn, pid process.P
 	require.JSONEq(t, `"response"`, string(response["type"]))
 }
 
-func releaseProjectInspection(t *testing.T, ctx context.Context, client ctrl_client.Client, project *apiv2.Project) {
+func releaseProjectInspection(t *testing.T, ctx context.Context, client ctrl_client.Client, project *apiv2.ProjectProcess) {
 	t.Helper()
 	require.NoError(t, retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if getErr := client.Get(ctx, project.NamespacedName(), project); getErr != nil {
@@ -75,9 +75,9 @@ func releaseProjectInspection(t *testing.T, ctx context.Context, client ctrl_cli
 	}))
 }
 
-// Verifies that Project retains informational target observations after session closure and preserves
-// reported targets through stop, Project deletion and namespace deletion, regardless of launch or attach intent.
-func TestV2ProjectObservesTargetsWithoutCleanupOwnership(t *testing.T) {
+// Verifies that ProjectProcess retains informational target observations after session closure and preserves
+// reported targets through stop, ProjectProcess deletion and namespace deletion, regardless of launch or attach intent.
+func TestV2ProjectProcessObservesTargetsWithoutCleanupOwnership(t *testing.T) {
 	t.Parallel()
 	for _, ending := range []string{"stop", "delete", "namespace"} {
 		t.Run(ending, func(t *testing.T) {
@@ -93,9 +93,8 @@ func TestV2ProjectObservesTargetsWithoutCleanupOwnership(t *testing.T) {
 			for index := range handles {
 				handles[index] = startProjectTarget(t, ctx, owner, tool)
 			}
-			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-					Process:      &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}},
+			project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}},
 					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}},
 				}}
 			require.NoError(t, client.Create(ctx, project))
@@ -111,7 +110,7 @@ func TestV2ProjectObservesTargetsWithoutCleanupOwnership(t *testing.T) {
 				readProjectDebugMessage(t, connection)
 			}
 			reportProjectTarget(t, connection, handles[0].Pid)
-			observed := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			observed := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 				if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 1 ||
 					len(current.Status.Debug.Sessions[0].Processes) != len(handles) {
 					return false, nil
@@ -132,7 +131,7 @@ func TestV2ProjectObservesTargetsWithoutCleanupOwnership(t *testing.T) {
 
 			// Independently observed target exit must not depend on adapter or session lifetime.
 			require.NoError(t, owner.StopProcess(ctx, handles[0]))
-			waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 				observation := current.Status.Debug.Sessions[0].Processes[0].Observation
 				return current.Status.Phase == apiv2.ProjectPhaseReady &&
 					observation.Phase == apiv2.ProjectDebugProcessExited && !observation.FinishedAt.IsZero(), nil

@@ -70,10 +70,10 @@ func (storage *adapterRunningStatusInterceptor) Update(
 	forceAllowCreate bool, options *metav1.UpdateOptions,
 ) (runtime.Object, bool, error) {
 	observed := rest.WrapUpdatedObjectInfo(info, func(_ context.Context, proposed, _ runtime.Object) (runtime.Object, error) {
-		project := proposed.(*apiv2.Project)
-		if project.Status.Debug != nil {
-			for index := range project.Status.Debug.Executions {
-				execution := &project.Status.Debug.Executions[index]
+		project := proposed.(*apiv2.ProjectProcess)
+		if project.GetProjectStatus().Debug != nil {
+			for index := range project.GetProjectStatus().Debug.Executions {
+				execution := &project.GetProjectStatus().Debug.Executions[index]
 				if execution.Phase == apiv2.ProjectDebugPhaseRunning && execution.PID != nil {
 					if interceptErr := storage.intercept(execution); interceptErr != nil {
 						return nil, interceptErr
@@ -158,14 +158,14 @@ func TestProjectDebugServingDisconnectsSlowClient(t *testing.T) {
 			}()
 			t.Cleanup(func() { _ = connection.Close(); <-floodDone })
 			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
-				current := &apiv2.Project{}
+				current := &apiv2.ProjectProcess{}
 				if getErr := apiClient.Get(ctx, project.NamespacedName(), current); getErr != nil {
 					return false, getErr
 				}
-				if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 1 {
+				if current.GetProjectStatus().Debug == nil || len(current.GetProjectStatus().Debug.Sessions) != 1 {
 					return false, nil
 				}
-				session := current.Status.Debug.Sessions[0]
+				session := current.GetProjectStatus().Debug.Sessions[0]
 				if session.Phase != apiv2.ProjectDebugPhaseFailed {
 					return false, nil
 				}
@@ -214,11 +214,11 @@ func TestProjectDebugServingWaitsForPrerequisites(t *testing.T) {
 			require.NoError(t, apiClient.Delete(ctx, project))
 			project.ResourceVersion, project.UID = "", ""
 			project.Spec.DebugAdapter.ConnectionTimeout = &metav1.Duration{Duration: 100 * time.Millisecond}
-			project.Status = apiv2.ProjectStatus{}
+			project.Status = apiv2.ProjectProcessStatus{}
 			require.NoError(t, apiClient.Create(ctx, project))
-			project.Status.Phase = scenario.phase
+			project.GetProjectStatus().Phase = scenario.phase
 			if scenario.status != "" {
-				project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: scenario.status,
+				project.GetProjectStatus().Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: scenario.status,
 					Reason: string(scenario.reason), LastTransitionTime: metav1.Now()}}
 			}
 			require.NoError(t, apiClient.Status().Update(ctx, project))
@@ -234,11 +234,11 @@ func TestProjectDebugServingWaitsForPrerequisites(t *testing.T) {
 				connected <- result{connection, connectErr}
 			}()
 			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-				current := &apiv2.Project{}
+				current := &apiv2.ProjectProcess{}
 				if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 					return false, getErr
 				}
-				return current.Status.Debug != nil && len(current.Status.Debug.Sessions) == 1, nil
+				return current.GetProjectStatus().Debug != nil && len(current.GetProjectStatus().Debug.Sessions) == 1, nil
 			}))
 			timer := time.NewTimer(2 * project.Spec.DebugAdapter.GetConnectionTimeout())
 			defer timer.Stop()
@@ -254,12 +254,12 @@ func TestProjectDebugServingWaitsForPrerequisites(t *testing.T) {
 			}
 			require.Empty(t, executor.FindAll([]string{"test-adapter"}, "", nil))
 			require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-			project.Status.Phase = apiv2.ProjectPhaseReady
-			project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
+			project.GetProjectStatus().Phase = apiv2.ProjectPhaseReady
+			project.GetProjectStatus().Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
 				Reason: string(apiv2.ProjectReasonPrepared), LastTransitionTime: metav1.Now()}}
 			if scenario.active {
-				project.Status.Phase = apiv2.ProjectPhaseActive
-				project.Status.Conditions[0].Reason = string(apiv2.ProjectReasonDebugSessionsActive)
+				project.GetProjectStatus().Phase = apiv2.ProjectPhaseActive
+				project.GetProjectStatus().Conditions[0].Reason = string(apiv2.ProjectReasonDebugSessionsActive)
 			}
 			require.NoError(t, apiClient.Status().Update(ctx, project))
 			select {
@@ -286,10 +286,10 @@ func TestProjectDebugServingSetupTimeout(t *testing.T) {
 			require.NoError(t, apiClient.Delete(ctx, project))
 			project.ResourceVersion, project.UID = "", ""
 			project.Spec.DebugAdapter.ConnectionTimeout = &metav1.Duration{Duration: 100 * time.Millisecond}
-			project.Status = apiv2.ProjectStatus{}
+			project.Status = apiv2.ProjectProcessStatus{}
 			require.NoError(t, apiClient.Create(ctx, project))
-			project.Status.Phase = apiv2.ProjectPhaseReady
-			project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
+			project.GetProjectStatus().Phase = apiv2.ProjectPhaseReady
+			project.GetProjectStatus().Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
 				Reason: string(apiv2.ProjectReasonPrepared), LastTransitionTime: metav1.Now()}}
 			require.NoError(t, apiClient.Status().Update(ctx, project))
 			executor.unconfirmed.Store(unconfirmed)
@@ -309,20 +309,20 @@ func TestProjectDebugServingSetupTimeout(t *testing.T) {
 				executions := executor.FindAll([]string{"test-adapter"}, "", nil)
 				require.Len(t, executions, expectedExecutions)
 				require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-					current := &apiv2.Project{}
+					current := &apiv2.ProjectProcess{}
 					if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 						return false, getErr
 					}
-					if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != attempt ||
-						len(current.Status.Debug.Executions) != expectedExecutions {
+					if current.GetProjectStatus().Debug == nil || len(current.GetProjectStatus().Debug.Sessions) != attempt ||
+						len(current.GetProjectStatus().Debug.Executions) != expectedExecutions {
 						return false, nil
 					}
-					for _, session := range current.Status.Debug.Sessions {
+					for _, session := range current.GetProjectStatus().Debug.Sessions {
 						if session.Phase != apiv2.ProjectDebugPhaseFailed {
 							return false, nil
 						}
 					}
-					for _, observed := range current.Status.Debug.Executions {
+					for _, observed := range current.GetProjectStatus().Debug.Executions {
 						if observed.Phase != apiv2.ProjectDebugPhaseFailed || observed.FinishedAt.IsZero() != unconfirmed {
 							return false, nil
 						}
@@ -378,11 +378,11 @@ func TestProjectDebugServingConcurrentProviderAcquisition(t *testing.T) {
 		closeDebugServing(t, connection)
 	}
 	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		current := &apiv2.Project{}
+		current := &apiv2.ProjectProcess{}
 		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 			return false, getErr
 		}
-		for _, session := range current.Status.Debug.Sessions {
+		for _, session := range current.GetProjectStatus().Debug.Sessions {
 			if session.Phase == apiv2.ProjectDebugPhaseRunning {
 				return false, nil
 			}
@@ -409,19 +409,19 @@ func TestProjectDebugServingParentStop(t *testing.T) {
 	defer connection.Close()
 	exchangeDebugBytes(t, ctx, connection)
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	project.Spec.Stop = true
+	project.GetProjectSpec().Stop = true
 	require.NoError(t, apiClient.Update(ctx, project))
 	_, _, readErr := connection.ReadMessage()
 	require.Error(t, readErr)
 	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		current := &apiv2.Project{}
+		current := &apiv2.ProjectProcess{}
 		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 			return false, getErr
 		}
-		if len(current.Status.Debug.Executions) != 1 {
+		if len(current.GetProjectStatus().Debug.Executions) != 1 {
 			return false, nil
 		}
-		return current.Status.Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseExited, nil
+		return current.GetProjectStatus().Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseExited, nil
 	}))
 	executions := executor.FindAll([]string{"test-adapter"}, "", nil)
 	require.Len(t, executions, 1)
@@ -435,14 +435,14 @@ func TestProjectDebugServingCancelsPendingSession(t *testing.T) {
 	defer cancel()
 	apiClient, config, executor := startDebugServingTest(t, ctx)
 	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
-	project.Status.Conditions = nil
+	project.GetProjectStatus().Conditions = nil
 	require.NoError(t, apiClient.Status().Update(ctx, project))
 	requestCtx, cancelRequest := context.WithCancel(ctx)
 	defer cancelRequest()
 	httpClient, clientErr := clientrest.HTTPClientFor(config)
 	require.NoError(t, clientErr)
 	request, requestErr := http.NewRequestWithContext(requestCtx, http.MethodGet,
-		config.Host+"/apis/"+apiv2.GroupVersion.String()+"/namespaces/debug/projects/project/debug", nil)
+		config.Host+"/apis/"+apiv2.GroupVersion.String()+"/namespaces/debug/projectprocesses/project/debug", nil)
 	require.NoError(t, requestErr)
 	request.Header.Set("Connection", "Upgrade")
 	request.Header.Set("Upgrade", "websocket")
@@ -457,11 +457,11 @@ func TestProjectDebugServingCancelsPendingSession(t *testing.T) {
 		result <- connectErr
 	}()
 	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		current := &apiv2.Project{}
+		current := &apiv2.ProjectProcess{}
 		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 			return false, getErr
 		}
-		return current.Status.Debug != nil && len(current.Status.Debug.Sessions) == 1, nil
+		return current.GetProjectStatus().Debug != nil && len(current.GetProjectStatus().Debug.Sessions) == 1, nil
 	}))
 	cancelRequest()
 	select {
@@ -471,11 +471,11 @@ func TestProjectDebugServingCancelsPendingSession(t *testing.T) {
 		t.Fatal("cancelled debug request did not return")
 	}
 	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		current := &apiv2.Project{}
+		current := &apiv2.ProjectProcess{}
 		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 			return false, getErr
 		}
-		return current.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseFailed, nil
+		return current.GetProjectStatus().Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseFailed, nil
 	}))
 	require.Empty(t, executor.FindAll([]string{"test-adapter"}, "", nil))
 }
@@ -491,19 +491,19 @@ func TestProjectDebugServingAdmission(t *testing.T) {
 			project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
 			require.NoError(t, apiClient.Delete(ctx, project))
 			project.ResourceVersion, project.UID = "", ""
-			project.Status = apiv2.ProjectStatus{}
+			project.Status = apiv2.ProjectProcessStatus{}
 			switch scenario {
 			case "unconfigured":
 				project.Spec.DebugAdapter = nil
 			case "stopping":
-				project.Spec.Stop = true
+				project.GetProjectSpec().Stop = true
 			}
 			require.NoError(t, apiClient.Create(ctx, project))
 			if scenario == "not-websocket" {
 				httpClient, httpClientErr := clientrest.HTTPClientFor(config)
 				require.NoError(t, httpClientErr)
 				request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet,
-					config.Host+"/apis/"+apiv2.GroupVersion.String()+"/namespaces/debug/projects/project/debug", nil)
+					config.Host+"/apis/"+apiv2.GroupVersion.String()+"/namespaces/debug/projectprocesses/project/debug", nil)
 				require.NoError(t, requestErr)
 				response, responseErr := httpClient.Do(request)
 				require.NoError(t, responseErr)
@@ -676,7 +676,7 @@ func startDebugServingTest(t *testing.T, ctx context.Context, containerRuntime .
 	var clientConfig *clientrest.Config
 	apiClient, _ := startProjectDebugStatusServer(t, ctx, func(config *tiltapiserver.Config, writer *projectDebugStatusWriter) {
 		clientConfig = clientrest.CopyConfig(config.GenericConfig.LoopbackClientConfig)
-		gvr := (&apiv2.Project{}).GetGroupVersionResource()
+		gvr := writer.prototype.GetGroupVersionResource()
 		parentProvider := config.ExtraConfig.APIs[gvr]
 		namespaceProvider := config.ExtraConfig.APIs[(&apiv2.Namespace{}).GetGroupVersionResource()]
 		gvr.Resource += "/" + apiv2.DebugSubresourceName
@@ -745,7 +745,7 @@ func TestProjectDebugServingTokens(t *testing.T) {
 			project.ResourceVersion, project.UID = "", ""
 			project.Spec.DebugAdapter.Args = []string{tool, "--dap-stdio"}
 			prepared := project.Status
-			project.Status = apiv2.ProjectStatus{}
+			project.Status = apiv2.ProjectProcessStatus{}
 			require.NoError(t, apiClient.Create(ctx, project))
 			project.Status = prepared
 			require.NoError(t, apiClient.Status().Update(ctx, project))
@@ -759,7 +759,7 @@ func TestProjectDebugServingTokens(t *testing.T) {
 				headers.Add("X-DCP-Debug-Session-Token", token)
 			}
 			location := strings.Replace(config.Host, "https://", "wss://", 1) +
-				"/apis/" + apiv2.GroupVersion.String() + "/namespaces/debug/projects/project/debug"
+				"/apis/" + apiv2.GroupVersion.String() + "/namespaces/debug/projectprocesses/project/debug"
 			if scenario.query != "" {
 				location += "?" + scenario.query
 			}
@@ -774,7 +774,7 @@ func TestProjectDebugServingTokens(t *testing.T) {
 				require.NoError(t, readErr)
 				require.NotContains(t, string(body), sessionToken)
 				require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-				require.Nil(t, project.Status.Debug)
+				require.Nil(t, project.GetProjectStatus().Debug)
 			} else {
 				require.NoError(t, connectErr)
 				require.NoError(t, connection.Close())
@@ -782,45 +782,61 @@ func TestProjectDebugServingTokens(t *testing.T) {
 					if getErr := apiClient.Get(ctx, project.NamespacedName(), project); getErr != nil {
 						return false, getErr
 					}
-					return project.Status.Debug != nil && len(project.Status.Debug.Sessions) == 1 &&
-						(project.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseFailed ||
-							project.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseExited), nil
+					return project.GetProjectStatus().Debug != nil && len(project.GetProjectStatus().Debug.Sessions) == 1 &&
+						(project.GetProjectStatus().Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseFailed ||
+							project.GetProjectStatus().Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseExited), nil
 				}))
 			}
 		})
 	}
 }
 
-func createDebugServingProject(t *testing.T, ctx context.Context, apiClient ctrlclient.Client, mode apiv2.DebugAdapterMode, command string, container ...bool) *apiv2.Project {
+func createDebugServingProject(t *testing.T, ctx context.Context, apiClient ctrlclient.Client, mode apiv2.DebugAdapterMode, command string) *apiv2.ProjectProcess {
+	t.Helper()
+	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: createDebugServingNamespace(t, ctx, apiClient)},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()},
+			Process:      apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "application"}},
+			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"test-adapter", command, "{{port}}"}, Mode: mode}}}
+	require.NoError(t, apiClient.Create(ctx, project))
+	project.Status.ProjectCommonStatus = readyDebugServingStatus()
+	require.NoError(t, apiClient.Status().Update(ctx, project))
+	return project
+}
+
+func createDebugServingContainerProject(t *testing.T, ctx context.Context, apiClient ctrlclient.Client, mode apiv2.DebugAdapterMode, command string) *apiv2.ProjectContainer {
+	t.Helper()
+	project := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: createDebugServingNamespace(t, ctx, apiClient)},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()},
+			Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "image"}},
+			DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{
+				Directory: t.TempDir(), Args: []string{"test-adapter", command, "{{port}}"}, Mode: mode}}}}
+	require.NoError(t, apiClient.Create(ctx, project))
+	project.Status.ProjectCommonStatus = readyDebugServingStatus()
+	project.Status.ContainerID, project.Status.ContainerRuntime = "container-id", "test-runtime"
+	require.NoError(t, apiClient.Status().Update(ctx, project))
+	return project
+}
+
+func createDebugServingNamespace(t *testing.T, ctx context.Context, apiClient ctrlclient.Client) string {
 	t.Helper()
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "debug"}}
 	require.NoError(t, apiClient.Create(ctx, namespace))
 	namespace.Status.Phase = apiv2.NamespacePhaseActive
 	require.NoError(t, apiClient.Status().Update(ctx, namespace))
-	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "application"}},
-			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"test-adapter", command, "{{port}}"}, Mode: mode}}}
-	if len(container) != 0 && container[0] {
-		project.Spec.Process = nil
-		project.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "image"}}
-	}
-	require.NoError(t, apiClient.Create(ctx, project))
-	project.Status.Phase = apiv2.ProjectPhaseReady
-	project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
-		Reason: string(apiv2.ProjectReasonPrepared), LastTransitionTime: metav1.Now()}}
-	if project.Spec.Container != nil {
-		project.Status.ContainerID, project.Status.ContainerRuntime = "container-id", "test-runtime"
-	}
-	require.NoError(t, apiClient.Status().Update(ctx, project))
-	return project
+	return namespace.Name
 }
 
-func connectDebugServing(ctx context.Context, config *clientrest.Config, project *apiv2.Project) (*websocket.Conn, error) {
+func readyDebugServingStatus() apiv2.ProjectCommonStatus {
+	return apiv2.ProjectCommonStatus{Phase: apiv2.ProjectPhaseReady, Conditions: []metav1.Condition{{Type: string(apiv2.ConditionReady),
+		Status: metav1.ConditionTrue, Reason: string(apiv2.ProjectReasonPrepared), LastTransitionTime: metav1.Now()}}}
+}
+
+func connectDebugServing(ctx context.Context, config *clientrest.Config, project apiv2.ProjectObject) (*websocket.Conn, error) {
 	transport, holder, transportErr := clientwebsocket.RoundTripperFor(config)
 	if transportErr != nil {
 		return nil, transportErr
 	}
-	location := config.Host + "/apis/" + apiv2.GroupVersion.String() + "/namespaces/" + project.Namespace + "/projects/" + project.Name + "/debug"
+	location := config.Host + "/apis/" + apiv2.GroupVersion.String() + "/namespaces/" + project.GetNamespace() + "/" + project.GetGroupVersionResource().Resource + "/" + project.GetName() + "/debug"
 	request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, location, nil)
 	if requestErr != nil {
 		return nil, requestErr
@@ -883,19 +899,19 @@ func TestProjectDebugServingAdapterCompletion(t *testing.T) {
 	require.NoError(t, decodeErr)
 	require.JSONEq(t, `"terminated"`, string(actual["event"]))
 	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		current := &apiv2.Project{}
+		current := &apiv2.ProjectProcess{}
 		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 			return false, getErr
 		}
-		if current.Status.Debug == nil || len(current.Status.Debug.Executions) != 1 || len(current.Status.Debug.Sessions) != 1 {
+		if current.GetProjectStatus().Debug == nil || len(current.GetProjectStatus().Debug.Executions) != 1 || len(current.GetProjectStatus().Debug.Sessions) != 1 {
 			return false, nil
 		}
-		if current.Status.Debug.Sessions[0].Phase != apiv2.ProjectDebugPhaseExited {
+		if current.GetProjectStatus().Debug.Sessions[0].Phase != apiv2.ProjectDebugPhaseExited {
 			return false, nil
 		}
-		require.Equal(t, apiv2.ProjectPhaseReady, current.Status.Phase)
-		require.NotNil(t, current.Status.Debug.Executions[0].ExitCode)
-		require.Equal(t, int32(7), *current.Status.Debug.Executions[0].ExitCode)
+		require.Equal(t, apiv2.ProjectPhaseReady, current.GetProjectStatus().Phase)
+		require.NotNil(t, current.GetProjectStatus().Debug.Executions[0].ExitCode)
+		require.Equal(t, int32(7), *current.GetProjectStatus().Debug.Executions[0].ExitCode)
 		return true, nil
 	}))
 }
@@ -913,13 +929,13 @@ func TestProjectDebugServingReportsUnconfirmedCleanup(t *testing.T) {
 	defer executor.unconfirmed.Store(false)
 	closeDebugServing(t, connection)
 	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		current := &apiv2.Project{}
+		current := &apiv2.ProjectProcess{}
 		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 			return false, getErr
 		}
-		execution := current.Status.Debug.Executions[0]
+		execution := current.GetProjectStatus().Debug.Executions[0]
 		return execution.Phase == apiv2.ProjectDebugPhaseFailed && execution.FinishedAt.IsZero() &&
-			current.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseFailed, nil
+			current.GetProjectStatus().Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseFailed, nil
 	}))
 	require.Len(t, executor.FindAll([]string{"test-adapter"}, "", nil), 1)
 }
@@ -962,15 +978,15 @@ func TestProjectDebugServingSharedConnectionEOFBoundsDrain(t *testing.T) {
 	}))
 	require.NoError(t, first.WriteMessage(websocket.BinaryMessage, frame.Bytes()))
 	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		current := &apiv2.Project{}
+		current := &apiv2.ProjectProcess{}
 		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 			return false, getErr
 		}
-		if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 2 || len(current.Status.Debug.Executions) != 1 {
+		if current.GetProjectStatus().Debug == nil || len(current.GetProjectStatus().Debug.Sessions) != 2 || len(current.GetProjectStatus().Debug.Executions) != 1 {
 			return false, nil
 		}
 		var failed, running int
-		for _, session := range current.Status.Debug.Sessions {
+		for _, session := range current.GetProjectStatus().Debug.Sessions {
 			if session.Phase == apiv2.ProjectDebugPhaseFailed {
 				require.NotEmpty(t, session.Conditions)
 				require.Contains(t, session.Conditions[0].Message, "output drain timed out")
@@ -979,7 +995,7 @@ func TestProjectDebugServingSharedConnectionEOFBoundsDrain(t *testing.T) {
 				running++
 			}
 		}
-		return failed == 1 && running == 1 && current.Status.Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseRunning, nil
+		return failed == 1 && running == 1 && current.GetProjectStatus().Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseRunning, nil
 	}))
 	exchangeDebugBytes(t, ctx, second)
 	executions := executor.FindAll([]string{"test-adapter"}, "", nil)
@@ -1023,25 +1039,25 @@ func TestProjectDebugServingTransportsAndSharing(t *testing.T) {
 			exchangeDebugBytes(t, ctx, second)
 			closeDebugServing(t, second)
 			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-				current := &apiv2.Project{}
+				current := &apiv2.ProjectProcess{}
 				if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 					return false, getErr
 				}
-				if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 2 || len(current.Status.Debug.Executions) != testCase.executions {
+				if current.GetProjectStatus().Debug == nil || len(current.GetProjectStatus().Debug.Sessions) != 2 || len(current.GetProjectStatus().Debug.Executions) != testCase.executions {
 					return false, nil
 				}
-				for _, session := range current.Status.Debug.Sessions {
+				for _, session := range current.GetProjectStatus().Debug.Sessions {
 					if session.Phase != apiv2.ProjectDebugPhaseFailed {
 						return false, nil
 					}
 				}
-				for _, execution := range current.Status.Debug.Executions {
+				for _, execution := range current.GetProjectStatus().Debug.Executions {
 					if execution.Phase != apiv2.ProjectDebugPhaseExited {
 						return false, nil
 					}
 				}
-				require.Equal(t, apiv2.ProjectPhaseReady, current.Status.Phase)
-				require.Equal(t, string(apiv2.ProjectReasonPrepared), current.Status.Conditions[0].Reason)
+				require.Equal(t, apiv2.ProjectPhaseReady, current.GetProjectStatus().Phase)
+				require.Equal(t, string(apiv2.ProjectReasonPrepared), current.GetProjectStatus().Conditions[0].Reason)
 				return true, nil
 			}))
 		})
@@ -1059,20 +1075,20 @@ func TestProjectDebugServingLaunchFailure(t *testing.T) {
 	require.Error(t, connectErr)
 	require.Nil(t, connection)
 	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		current := &apiv2.Project{}
+		current := &apiv2.ProjectProcess{}
 		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 			return false, getErr
 		}
 
-		if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 1 || len(current.Status.Debug.Executions) != 1 {
+		if current.GetProjectStatus().Debug == nil || len(current.GetProjectStatus().Debug.Sessions) != 1 || len(current.GetProjectStatus().Debug.Executions) != 1 {
 			return false, nil
 		}
-		if current.Status.Debug.Sessions[0].Phase != apiv2.ProjectDebugPhaseFailed {
+		if current.GetProjectStatus().Debug.Sessions[0].Phase != apiv2.ProjectDebugPhaseFailed {
 			return false, nil
 		}
-		require.Equal(t, apiv2.ProjectDebugPhaseFailed, current.Status.Debug.Executions[0].Phase)
-		require.Nil(t, current.Status.Debug.Executions[0].PID)
-		require.Equal(t, apiv2.ProjectPhaseReady, current.Status.Phase)
+		require.Equal(t, apiv2.ProjectDebugPhaseFailed, current.GetProjectStatus().Debug.Executions[0].Phase)
+		require.Nil(t, current.GetProjectStatus().Debug.Executions[0].PID)
+		require.Equal(t, apiv2.ProjectPhaseReady, current.GetProjectStatus().Phase)
 		return true, nil
 	}))
 }
@@ -1089,9 +1105,9 @@ func TestProjectDebugServingWaitsForContainerTCPEndpoint(t *testing.T) {
 	containerExec := &containerAdapterExecutor{tcpListener: listener, tcpComplete: completion}
 	apiClient, config, _ := startDebugServingTest(t, ctx,
 		func(context.Context, string) (containers.ExecContainers, error) { return containerExec, nil })
-	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen", true)
-	project.Status.Phase = apiv2.ProjectPhasePending
-	project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
+	project := createDebugServingContainerProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen")
+	project.GetProjectStatus().Phase = apiv2.ProjectPhasePending
+	project.GetProjectStatus().Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
 		Reason: string(apiv2.ProjectReasonPreparing), LastTransitionTime: metav1.Now()}}
 	require.NoError(t, apiClient.Status().Update(ctx, project))
 	type result struct {
@@ -1105,11 +1121,11 @@ func TestProjectDebugServingWaitsForContainerTCPEndpoint(t *testing.T) {
 		connected <- result{connection, connectErr}
 	}()
 	require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		current := &apiv2.Project{}
+		current := &apiv2.ProjectContainer{}
 		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
 			return false, getErr
 		}
-		return current.Status.Debug != nil && len(current.Status.Debug.Sessions) == 1, nil
+		return current.GetProjectStatus().Debug != nil && len(current.GetProjectStatus().Debug.Sessions) == 1, nil
 	}))
 	containerExec.mu.Lock()
 	count := len(containerExec.options)
@@ -1153,7 +1169,7 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 			containerExec := &containerAdapterExecutor{tcpListener: listener, tcpComplete: completion}
 			apiClient, config, hostExecutor := startDebugServingTest(t, ctx,
 				func(context.Context, string) (containers.ExecContainers, error) { return containerExec, nil })
-			project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen", true)
+			project := createDebugServingContainerProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen")
 			require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
 				[]byte(fmt.Sprintf(`{"status":{"debugAdapterPort":4711,"debugAdapterAddress":%q}}`, listener.Addr().String())))))
 			if scenario == "failed-connect" {
@@ -1191,7 +1207,7 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 						if getErr := apiClient.Get(pollCtx, project.NamespacedName(), project); getErr != nil {
 							return false, getErr
 						}
-						return project.Status.Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseExited, nil
+						return project.GetProjectStatus().Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseExited, nil
 					}))
 				}
 				_ = connections[1].Close()
@@ -1200,10 +1216,10 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 				if getErr := apiClient.Get(pollCtx, project.NamespacedName(), project); getErr != nil {
 					return false, getErr
 				}
-				if len(project.Status.Debug.Sessions) == 0 {
+				if len(project.GetProjectStatus().Debug.Sessions) == 0 {
 					return false, nil
 				}
-				for _, session := range project.Status.Debug.Sessions {
+				for _, session := range project.GetProjectStatus().Debug.Sessions {
 					if session.Phase == apiv2.ProjectDebugPhasePending || session.Phase == apiv2.ProjectDebugPhaseRunning {
 						return false, nil
 					}
@@ -1218,7 +1234,7 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 			require.Equal(t, []string{"listen", "4711"}, invocations[0].Args)
 			require.Nil(t, invocations[0].StdInStream)
 			require.Empty(t, hostExecutor.FindAll([]string{"test-adapter"}, "", nil))
-			require.Len(t, project.Status.Debug.Executions, 1)
+			require.Len(t, project.GetProjectStatus().Debug.Executions, 1)
 			if scenario == "confirmed-exit" {
 				restartedListener, restartErr := net.Listen("tcp", listener.Addr().String())
 				require.NoError(t, restartErr)
@@ -1237,11 +1253,11 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 				require.Equal(t, 2, restartedCount, "confirmed provider exit permits a new launch")
 				nextCompletion <- 0
 			} else if scenario == "failed-connect" {
-				require.Equal(t, apiv2.ProjectDebugPhaseFailed, project.Status.Debug.Executions[0].Phase)
+				require.Equal(t, apiv2.ProjectDebugPhaseFailed, project.GetProjectStatus().Debug.Executions[0].Phase)
 			} else {
-				require.Equal(t, apiv2.ProjectDebugPhaseRunning, project.Status.Debug.Executions[0].Phase,
+				require.Equal(t, apiv2.ProjectDebugPhaseRunning, project.GetProjectStatus().Debug.Executions[0].Phase,
 					"final release must not cancel an attached container adapter execution")
-				retainedID := project.Status.Debug.Executions[0].ID
+				retainedID := project.GetProjectStatus().Debug.Executions[0].ID
 				nextCompletion := make(chan int32, 1)
 				expectedInvocations := 1
 				if scenario == "changed-endpoint" {
@@ -1265,8 +1281,8 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 				require.Equal(t, expectedInvocations, reusedCount)
 				require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
 				if scenario == "shared" {
-					require.Len(t, project.Status.Debug.Executions, 1, "an idle container adapter is reused by a later session")
-					for _, session := range project.Status.Debug.Sessions {
+					require.Len(t, project.GetProjectStatus().Debug.Executions, 1, "an idle container adapter is reused by a later session")
+					for _, session := range project.GetProjectStatus().Debug.Sessions {
 						require.Equal(t, retainedID, session.ExecutionID)
 					}
 					completion <- 0
@@ -1275,14 +1291,14 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 						if getErr := apiClient.Get(pollCtx, project.NamespacedName(), project); getErr != nil {
 							return false, getErr
 						}
-						for _, execution := range project.Status.Debug.Executions {
+						for _, execution := range project.GetProjectStatus().Debug.Executions {
 							if execution.ID == retainedID {
 								return execution.Phase == apiv2.ProjectDebugPhaseFailed, nil
 							}
 						}
 						return false, nil
 					}))
-					require.Len(t, project.Status.Debug.Executions, 2, "a superseded endpoint launches a new adapter")
+					require.Len(t, project.GetProjectStatus().Debug.Executions, 2, "a superseded endpoint launches a new adapter")
 					nextCompletion <- 0
 				}
 			}
@@ -1364,7 +1380,7 @@ func TestProjectDebugServingContainerAdapters(t *testing.T) {
 			defer cancel()
 			containerExec := &containerAdapterExecutor{fail: scenario == "start-failure", noCompletion: scenario == "no-completion"}
 			var apiClient ctrlclient.WithWatch
-			var project *apiv2.Project
+			var project apiv2.ProjectObject
 			lookup := func(lookupCtx context.Context, name string) (containers.ExecContainers, error) {
 				if name != "test-runtime" {
 					return nil, fmt.Errorf("wrong selected runtime %q", name)
@@ -1390,11 +1406,11 @@ func TestProjectDebugServingContainerAdapters(t *testing.T) {
 			var config *clientrest.Config
 			var hostExecutor *adapterServingExecutor
 			apiClient, config, hostExecutor = startDebugServingTest(t, ctx, lookup)
-			container := true
 			if scenario == "host" {
-				container = false
+				project = createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
+			} else {
+				project = createDebugServingContainerProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
 			}
-			project = createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio", container)
 			connection, connectErr := connectDebugServing(ctx, config, project)
 			if scenario == "lookup-failure" || scenario == "setup-timeout" || scenario == "replace-before-exec" || scenario == "start-failure" || scenario == "no-completion" {
 				if connection != nil {
@@ -1402,8 +1418,8 @@ func TestProjectDebugServingContainerAdapters(t *testing.T) {
 				}
 				require.Error(t, connectErr)
 				require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-				require.Nil(t, project.Status.Debug.Executions[0].PID)
-				require.Equal(t, apiv2.ProjectDebugPhaseFailed, project.Status.Debug.Executions[0].Phase)
+				require.Nil(t, project.GetProjectStatus().Debug.Executions[0].PID)
+				require.Equal(t, apiv2.ProjectDebugPhaseFailed, project.GetProjectStatus().Debug.Executions[0].Phase)
 				if scenario == "replace-before-exec" || scenario == "lookup-failure" {
 					require.Empty(t, containerExec.options)
 				}
@@ -1413,7 +1429,7 @@ func TestProjectDebugServingContainerAdapters(t *testing.T) {
 			defer connection.Close()
 			exchangeDebugBytes(t, ctx, connection)
 			require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-			execution := project.Status.Debug.Executions[0]
+			execution := project.GetProjectStatus().Debug.Executions[0]
 			if scenario == "host" {
 				require.NotNil(t, execution.PID)
 				require.Empty(t, containerExec.options)
@@ -1426,8 +1442,8 @@ func TestProjectDebugServingContainerAdapters(t *testing.T) {
 			require.NoError(t, encodeErr)
 			require.NotContains(t, string(encodedExecution), "containerID")
 			require.NotContains(t, string(encodedExecution), "containerRuntime")
-			require.Equal(t, "container-id", project.Status.ContainerID)
-			require.Equal(t, "test-runtime", project.Status.ContainerRuntime)
+			require.Equal(t, "container-id", project.(*apiv2.ProjectContainer).Status.ContainerID)
+			require.Equal(t, "test-runtime", project.(*apiv2.ProjectContainer).Status.ContainerRuntime)
 			require.Empty(t, hostExecutor.FindAll([]string{"test-adapter"}, "", nil))
 			containerExec.mu.Lock()
 			options := containerExec.options[0]
@@ -1443,12 +1459,12 @@ func TestProjectDebugServingContainerAdapters(t *testing.T) {
 			_, _, eventErr := connection.ReadMessage()
 			require.NoError(t, eventErr)
 			require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-			target := project.Status.Debug.Sessions[0].Processes[0]
+			target := project.GetProjectStatus().Debug.Sessions[0].Processes[0]
 			require.Equal(t, "container-id", target.ContainerID)
 			require.True(t, target.IdentityTimestamp.IsZero())
 			require.NotEmpty(t, target.TrackingError)
 			if scenario == "stdio" {
-				project.Spec.Stop = true
+				project.GetProjectSpec().Stop = true
 				require.NoError(t, apiClient.Update(ctx, project))
 			} else if scenario == "replace-live" {
 				require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
@@ -1460,10 +1476,10 @@ func TestProjectDebugServingContainerAdapters(t *testing.T) {
 				if getErr := apiClient.Get(pollCtx, project.NamespacedName(), project); getErr != nil {
 					return false, getErr
 				}
-				phase := project.Status.Debug.Sessions[0].Phase
+				phase := project.GetProjectStatus().Debug.Sessions[0].Phase
 				return phase == apiv2.ProjectDebugPhaseExited || phase == apiv2.ProjectDebugPhaseFailed, nil
 			}))
-			completed := project.Status.Debug.Executions[0]
+			completed := project.GetProjectStatus().Debug.Executions[0]
 			if scenario == "stdio" {
 				require.Equal(t, apiv2.ProjectDebugPhaseExited, completed.Phase)
 				require.NotNil(t, completed.ExitCode)

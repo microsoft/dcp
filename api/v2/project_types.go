@@ -6,8 +6,6 @@
 package v2
 
 import (
-	"context"
-	"fmt"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -15,14 +13,11 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
-	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
@@ -77,30 +72,20 @@ const (
 	DebugAdapterModeTCPCallback DebugAdapterMode = "tcp-callback"
 )
 
-// DebugAdapterConfig declares an adapter to launch only on an explicit debug-subresource request.
+// DebugAdapterConfig declares a host adapter to launch only on an explicit debug-subresource request.
 // DAP initialize, launch, and attach configuration is supplied over the debug stream, not through this spec.
 // +k8s:openapi-gen=true
 type DebugAdapterConfig struct {
 	// Directory is the absolute host directory containing the adapter and its dependencies.
-	// Container Projects copy its contents before starting the prepared container.
 	Directory string `json:"directory"`
-	// ContainerDirectory overrides the container installation directory, defaulting to /opt/dcp/debug-adapter.
-	// It is forbidden for process Projects.
-	ContainerDirectory string `json:"containerDirectory,omitempty"`
-	// ExecutableFiles lists regular files relative to Directory that gain execute permissions when copied into a container.
-	// Paths use forward slashes without "." or ".." components; forbidden for process Projects.
-	// +listType=atomic
-	ExecutableFiles []string `json:"executableFiles,omitempty"`
 	// Args contains the executable name or path followed by its arguments.
-	// TCP modes replace {{port}} with the host-allocated port or the prepared container's internal port.
-	// {{adapterDirectory}} expands to Directory for process Projects or the installation directory for container Projects.
+	// TCP modes replace {{port}} with the selected listening port.
+	// {{adapterDirectory}} expands to the adapter directory in the execution context.
 	// +listType=atomic
 	Args []string `json:"args"`
 	// Mode selects the adapter DAP transport. Defaults to stdio.
 	// +kubebuilder:default:=stdio
 	Mode DebugAdapterMode `json:"mode,omitempty"`
-	// TCP configures the internal listener for container tcp-connect adapters.
-	TCP *DebugAdapterTCPConfig `json:"tcp,omitempty"`
 	// Env contains explicit adapter environment variables that override inherited values.
 	// +listType=map
 	// +listMapKey=name
@@ -108,6 +93,21 @@ type DebugAdapterConfig struct {
 	// ConnectionTimeout bounds pre-upgrade adapter transport setup, including shared-provider availability.
 	// Omitted or zero uses 10 seconds. It does not limit the established debug stream or DAP initialization.
 	ConnectionTimeout *metav1.Duration `json:"connectionTimeout,omitempty"`
+}
+
+// ContainerDebugAdapterConfig declares an adapter copied into and launched inside the prepared container.
+// +k8s:openapi-gen=true
+type ContainerDebugAdapterConfig struct {
+	// DebugAdapterConfig.Directory is copied from the DCP host into the container before the prepared container starts.
+	DebugAdapterConfig `json:",inline"`
+	// ContainerDirectory overrides the container installation directory, defaulting to /opt/dcp/debug-adapter.
+	ContainerDirectory string `json:"containerDirectory,omitempty"`
+	// ExecutableFiles lists regular files relative to Directory that gain execute permissions when copied into the container.
+	// Paths use forward slashes without "." or ".." components.
+	// +listType=atomic
+	ExecutableFiles []string `json:"executableFiles,omitempty"`
+	// TCP configures the internal listener for tcp-connect adapters.
+	TCP *DebugAdapterTCPConfig `json:"tcp,omitempty"`
 }
 
 // DebugAdapterTCPConfig declares the internal container listener, not its runtime-assigned host binding.
@@ -119,36 +119,9 @@ type DebugAdapterTCPConfig struct {
 	Port int32 `json:"port,omitempty"`
 }
 
-// GetContainerTCPPort returns the selected container TCP port, or zero when no listener is required.
-func (config DebugAdapterConfig) GetContainerTCPPort(container bool) int32 {
-	if !container || config.EffectiveMode() != DebugAdapterModeTCPConnect {
-		return 0
-	}
-	if config.TCP != nil && config.TCP.Port != 0 {
-		return config.TCP.Port
-	}
-	return DefaultContainerDebugAdapterPort
-}
-
-// GetAdapterDirectory resolves the adapter directory in the selected execution context.
-func (config DebugAdapterConfig) GetAdapterDirectory(container bool) string {
-	if !container {
-		return config.Directory
-	}
-	if config.ContainerDirectory != "" {
-		return config.ContainerDirectory
-	}
-	return DefaultContainerDebugAdapterDirectory
-}
-
-// GetArgs resolves adapter-directory references without interpreting other argument contents.
-func (config DebugAdapterConfig) GetArgs(container bool) []string {
-	arguments := make([]string, len(config.Args))
-	directory := config.GetAdapterDirectory(container)
-	for index, argument := range config.Args {
-		arguments[index] = strings.ReplaceAll(argument, "{{adapterDirectory}}", directory)
-	}
-	return arguments
+// GetArgs resolves adapter-directory references to Directory without interpreting other argument contents.
+func (config DebugAdapterConfig) GetArgs() []string {
+	return expandAdapterDirectory(config.Args, config.Directory)
 }
 
 // EffectiveMode returns the declared transport, defaulting to stdio when omitted.
@@ -167,32 +140,42 @@ func (config DebugAdapterConfig) GetConnectionTimeout() time.Duration {
 	return config.ConnectionTimeout.Duration
 }
 
-func (config *DebugAdapterConfig) validate(configPath *field.Path, container bool) field.ErrorList {
-	var errorList field.ErrorList
-	if len(config.ExecutableFiles) != 0 && !container {
-		errorList = append(errorList, field.Forbidden(configPath.Child("executableFiles"), "executableFiles requires a container Project"))
+// GetTCPPort returns the selected internal TCP port, or zero when no listener is required.
+func (config ContainerDebugAdapterConfig) GetTCPPort() int32 {
+	if config.EffectiveMode() != DebugAdapterModeTCPConnect {
+		return 0
 	}
-	errorList = append(errorList, validateExecutableFiles(config.ExecutableFiles, configPath.Child("executableFiles"))...)
+	if config.TCP != nil && config.TCP.Port != 0 {
+		return config.TCP.Port
+	}
+	return DefaultContainerDebugAdapterPort
+}
+
+// GetContainerDirectory returns the adapter installation directory inside the container.
+func (config ContainerDebugAdapterConfig) GetContainerDirectory() string {
+	if config.ContainerDirectory != "" {
+		return config.ContainerDirectory
+	}
+	return DefaultContainerDebugAdapterDirectory
+}
+
+// GetArgs resolves adapter-directory references to the container installation directory.
+func (config ContainerDebugAdapterConfig) GetArgs() []string {
+	return expandAdapterDirectory(config.Args, config.GetContainerDirectory())
+}
+
+func expandAdapterDirectory(args []string, directory string) []string {
+	arguments := make([]string, len(args))
+	for index, argument := range args {
+		arguments[index] = strings.ReplaceAll(argument, "{{adapterDirectory}}", directory)
+	}
+	return arguments
+}
+
+func (config *DebugAdapterConfig) validate(configPath *field.Path) field.ErrorList {
+	var errorList field.ErrorList
 	if !filepath.IsAbs(config.Directory) || strings.ContainsRune(config.Directory, '\x00') {
 		errorList = append(errorList, field.Invalid(configPath.Child("directory"), config.Directory, "directory must be an absolute host directory path"))
-	}
-	if config.ContainerDirectory != "" {
-		if !container {
-			errorList = append(errorList, field.Forbidden(configPath.Child("containerDirectory"), "containerDirectory requires a container Project"))
-		} else if !path.IsAbs(config.ContainerDirectory) || strings.ContainsRune(config.ContainerDirectory, '\x00') {
-			errorList = append(errorList, field.Invalid(configPath.Child("containerDirectory"), config.ContainerDirectory, "containerDirectory must be an absolute container path"))
-		}
-	}
-	if container && config.EffectiveMode() == DebugAdapterModeTCPCallback {
-		errorList = append(errorList, field.Forbidden(configPath.Child("mode"), "container adapters do not support tcp-callback"))
-	}
-	if config.TCP != nil {
-		if !container || config.EffectiveMode() != DebugAdapterModeTCPConnect {
-			errorList = append(errorList, field.Forbidden(configPath.Child("tcp"), "TCP options require container tcp-connect placement"))
-		}
-		if config.TCP.Port < 0 || config.TCP.Port > 65535 {
-			errorList = append(errorList, field.Invalid(configPath.Child("tcp", "port"), config.TCP.Port, "port must be between 0 and 65535"))
-		}
 	}
 	if len(config.Args) == 0 {
 		errorList = append(errorList, field.Required(configPath.Child("args"), "args must contain the adapter executable"))
@@ -213,6 +196,26 @@ func (config *DebugAdapterConfig) validate(configPath *field.Path, container boo
 	}
 	if config.ConnectionTimeout != nil && config.ConnectionTimeout.Duration < 0 {
 		errorList = append(errorList, field.Invalid(configPath.Child("connectionTimeout"), config.ConnectionTimeout.String(), "connectionTimeout must not be negative"))
+	}
+	return errorList
+}
+
+func (config *ContainerDebugAdapterConfig) validate(configPath *field.Path) field.ErrorList {
+	errorList := config.DebugAdapterConfig.validate(configPath)
+	errorList = append(errorList, validateExecutableFiles(config.ExecutableFiles, configPath.Child("executableFiles"))...)
+	if config.ContainerDirectory != "" && (!path.IsAbs(config.ContainerDirectory) || strings.ContainsRune(config.ContainerDirectory, '\x00')) {
+		errorList = append(errorList, field.Invalid(configPath.Child("containerDirectory"), config.ContainerDirectory, "containerDirectory must be an absolute container path"))
+	}
+	if config.EffectiveMode() == DebugAdapterModeTCPCallback {
+		errorList = append(errorList, field.Forbidden(configPath.Child("mode"), "container adapters do not support tcp-callback"))
+	}
+	if config.TCP != nil {
+		if config.EffectiveMode() != DebugAdapterModeTCPConnect {
+			errorList = append(errorList, field.Forbidden(configPath.Child("tcp"), "TCP options require tcp-connect mode"))
+		}
+		if config.TCP.Port < 0 || config.TCP.Port > 65535 {
+			errorList = append(errorList, field.Invalid(configPath.Child("tcp", "port"), config.TCP.Port, "port must be between 0 and 65535"))
+		}
 	}
 	return errorList
 }
@@ -419,26 +422,19 @@ type ProjectContainerTemplate struct {
 	Ports []LogicalContainerPort `json:"ports,omitempty"`
 }
 
-// ProjectSpec identifies source code and exactly one process or container launch configuration.
+// ProjectCommonSpec contains source configuration and lifecycle requests shared by Project kinds.
 // +k8s:openapi-gen=true
-type ProjectSpec struct {
+type ProjectCommonSpec struct {
 	// RootDirectory is an absolute source directory on the DCP host. It is informational:
 	// it does not default working directories, resolve paths, or create container mounts.
 	RootDirectory string `json:"rootDirectory"`
-	// Process describes how to run the code as a process. Exactly one of process or container must be set.
-	Process *ProjectProcessTemplate `json:"process,omitempty"`
-	// Container describes how to run the code as a container. Exactly one of process or container must be set.
-	Container *ProjectContainerTemplate `json:"container,omitempty"`
-	// DebugAdapter declares an adapter; configuration alone does not launch it.
-	// The application template determines whether the adapter runs on the host or in the prepared container.
-	DebugAdapter *DebugAdapterConfig `json:"debugAdapter,omitempty"`
 	// Stop requests termination or prevents launch. Once true, it cannot be reset.
 	Stop bool `json:"stop,omitempty"`
 }
 
-// ProjectStatus describes prepared execution context and debugging progress.
+// ProjectCommonStatus describes launch inputs and debugging progress shared by Project kinds.
 // +k8s:openapi-gen=true
-type ProjectStatus struct {
+type ProjectCommonStatus struct {
 	// EffectiveArgs contains evaluated application launch arguments, never the container placeholder's arguments.
 	// +listType=atomic
 	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
@@ -456,73 +452,28 @@ type ProjectStatus struct {
 	// Phase summarizes Project preparation, debug activity and shutdown.
 	// +kubebuilder:validation:Enum=Pending;Ready;Active;Stopping;Stopped;Unknown;Failed
 	Phase ProjectPhase `json:"phase,omitempty"`
-	// PhysicalContainerRef identifies the same-namespace backing PhysicalContainer.
-	// Cross-namespace references are not supported.
-	PhysicalContainerRef string `json:"physicalContainerRef,omitempty"`
-	// ContainerRuntime identifies the controller-selected runtime for the prepared container.
-	ContainerRuntime string `json:"containerRuntime,omitempty"`
-	// DebugAdapterPort is the prepared internal TCP listening port, absent for other adapter transports.
-	DebugAdapterPort int32 `json:"debugAdapterPort,omitempty"`
-	// DebugAdapterAddress is the runtime-published host TCP endpoint for the prepared adapter listener.
-	DebugAdapterAddress string `json:"debugAdapterAddress,omitempty"`
-	// ImageRef identifies the supplied or owned PhysicalContainerImage.
-	// Cross-namespace references are not supported.
-	ImageRef string `json:"imageRef,omitempty"`
-	// ContainerID is the observed runtime container identity.
-	ContainerID string `json:"containerID,omitempty"`
-	// ContainerName is the observed runtime container name.
-	ContainerName string `json:"containerName,omitempty"`
-	// Image is the resolved runtime image reference.
-	Image string `json:"image,omitempty"`
-	// CreatedAt is the runtime container creation time.
-	CreatedAt metav1.MicroTime `json:"createdAt,omitempty"`
-	// StartedAt is the runtime container start time.
-	StartedAt metav1.MicroTime `json:"startedAt,omitempty"`
-	// PortMappings are the observed host bindings for container ports.
-	// +listType=atomic
-	PortMappings []PhysicalContainerPortMapping `json:"portMappings,omitempty"`
 	// RuntimeLogs describes capture owned by the immediate physical execution.
 	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
-	// StartupLogs describes image acquisition capture for container execution.
-	StartupLogs *LogSource `json:"startupLogs,omitempty"`
 	// Conditions describe readiness and reconciliation progress.
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-func (status ProjectStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
-	status.DeepCopyInto(&dest.(*Project).Status)
-}
-
-// Project prepares user-code launch inputs and execution context for AppHost-controlled debugging.
-// +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
-// +k8s:openapi-gen=true
-// +kubebuilder:resource:scope=Namespaced,path=projects
-type Project struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              ProjectSpec   `json:"spec,omitempty"`
-	Status            ProjectStatus `json:"status,omitempty"`
-}
-
-func (*Project) GetGroupVersionResource() schema.GroupVersionResource {
-	return schema.GroupVersionResource{Group: GroupName, Version: Version, Resource: "projects"}
-}
-
-// GetResourceId identifies the Project system log stream.
-func (resource *Project) GetResourceId() string {
-	return fmt.Sprintf("project-%s", resource.UID)
-}
-
-// GetLogSource returns the observed immediate physical execution output source.
-func (resource *Project) GetLogSource() *LogSource {
-	return resource.Status.RuntimeLogs
-}
-
-func (*Project) GenericSubResources() []apiserver_resource.GenericSubResource {
-	return []apiserver_resource.GenericSubResource{&ProjectLogResource{}}
+// ProjectObject is implemented by Project kinds that run user code and serve debug sessions.
+// +k8s:openapi-gen=false
+// +kubebuilder:object:generate=false
+type ProjectObject interface {
+	apiserver_resource.Object
+	metav1.Object
+	NamespacedName() types.NamespacedName
+	GetResourceId() string
+	// GetProjectSpec returns the shared spec fields.
+	GetProjectSpec() *ProjectCommonSpec
+	// GetProjectStatus returns the shared status fields for in-place updates.
+	GetProjectStatus() *ProjectCommonStatus
+	// GetDebugAdapter returns the execution-independent adapter configuration, or nil when none is declared.
+	GetDebugAdapter() *DebugAdapterConfig
 }
 
 // ProjectLogResource registers Project output and system log storage.
@@ -538,95 +489,32 @@ func (*ProjectLogResource) GetStorageProvider(
 	return newLogStorageProvider(obj, parentProvider)
 }
 
-func (resource *Project) GetObjectMeta() *metav1.ObjectMeta               { return &resource.ObjectMeta }
-func (resource *Project) GetStatus() apiserver_resource.StatusSubResource { return resource.Status }
-func (*Project) New() runtime.Object                                      { return &Project{} }
-func (*Project) NewList() runtime.Object                                  { return &ProjectList{} }
-func (*Project) IsStorageVersion() bool                                   { return true }
-func (*Project) NamespaceScoped() bool                                    { return true }
-func (resource *Project) NamespacedName() types.NamespacedName            { return NamespacedName(resource) }
-
-// PrepareForCreate prevents callers from supplying prepared inputs or debug observations.
-func (resource *Project) PrepareForCreate(context.Context) {
-	resource.Status = ProjectStatus{}
-}
-
-func (resource *Project) Validate(context.Context) field.ErrorList {
+// validateProject validates metadata and shared spec fields common to Project kinds.
+func validateProject(resource ProjectObject, specPath *field.Path) field.ErrorList {
 	errorList := ValidateNamespacedResourceMetadata(resource)
-	specPath := field.NewPath("spec")
-	if commonapi.ResourceCreationProhibited.Load() && resource.DeletionTimestamp.IsZero() {
+	if commonapi.ResourceCreationProhibited.Load() && resource.GetDeletionTimestamp().IsZero() {
 		errorList = append(errorList, field.Forbidden(nil, commonapi.ErrResourceCreationProhibited.Error()))
 	}
-	errorList = append(errorList, commonapi.ValidateAnnotationsSize(resource.Annotations, field.NewPath("metadata", "annotations"))...)
-	if !filepath.IsAbs(resource.Spec.RootDirectory) || strings.ContainsRune(resource.Spec.RootDirectory, '\x00') {
-		errorList = append(errorList, field.Invalid(specPath.Child("rootDirectory"), resource.Spec.RootDirectory, "rootDirectory must be an absolute host directory path"))
-	}
-	if resource.Spec.Process == nil && resource.Spec.Container == nil {
-		errorList = append(errorList, field.Required(specPath, "exactly one of process or container must be set"))
-	}
-	if resource.Spec.Process != nil && resource.Spec.Container != nil {
-		errorList = append(errorList, field.Forbidden(specPath.Child("container"), "container cannot be set when process is set"))
-	}
-	if resource.Spec.Process != nil && strings.TrimSpace(resource.Spec.Process.ExecutablePath) == "" {
-		errorList = append(errorList, field.Required(specPath.Child("process", "executablePath"), "executablePath must be set"))
-	}
-	if resource.Spec.Process != nil {
-		errorList = append(errorList, validateLogicalProcessPorts(resource.Spec.Process.Ports, resource.Namespace, resource.Name, specPath.Child("process", "ports"))...)
-		errorList = append(errorList, resource.Spec.Process.AmbientEnvironment.validate(specPath.Child("process", "ambientEnvironment"))...)
-	}
-	if resource.Spec.Container != nil {
-		errorList = append(errorList, resource.Spec.Container.Validate(resource.Namespace, specPath.Child("container"))...)
-		errorList = append(errorList, validateLogicalContainerPorts(resource.Spec.Container.Ports, resource.Namespace, resource.Name, specPath.Child("container", "ports"))...)
-	}
-	if resource.Spec.DebugAdapter != nil {
-		errorList = append(errorList, resource.Spec.DebugAdapter.validate(specPath.Child("debugAdapter"), resource.Spec.Container != nil)...)
+	errorList = append(errorList, commonapi.ValidateAnnotationsSize(resource.GetAnnotations(), field.NewPath("metadata", "annotations"))...)
+	root := resource.GetProjectSpec().RootDirectory
+	if !filepath.IsAbs(root) || strings.ContainsRune(root, '\x00') {
+		errorList = append(errorList, field.Invalid(specPath.Child("rootDirectory"), root, "rootDirectory must be an absolute host directory path"))
 	}
 	return errorList
 }
 
-func (resource *Project) ValidateUpdate(_ context.Context, old runtime.Object) field.ErrorList {
+// validateProjectUpdate permits only a one-way stop request on copies of the old and new specs.
+func validateProjectUpdate[S any](oldSpec, newSpec S, commonSpec func(*S) *ProjectCommonSpec) field.ErrorList {
 	errorList := field.ErrorList{}
-	oldResource := old.(*Project)
-	if oldResource.Spec.Stop && !resource.Spec.Stop {
+	oldCommon, newCommon := commonSpec(&oldSpec), commonSpec(&newSpec)
+	if oldCommon.Stop && !newCommon.Stop {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "stop cannot be set to false once it has been set to true"))
 	}
-	oldSpec, newSpec := oldResource.Spec, resource.Spec
-	oldSpec.Stop, newSpec.Stop = false, false
+	oldCommon.Stop, newCommon.Stop = false, false
 	if !reflect.DeepEqual(oldSpec, newSpec) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec"), "spec is immutable"))
 	}
 	return errorList
 }
 
-// ProjectList contains a list of Project instances.
-// +kubebuilder:object:root=true
-// +k8s:openapi-gen=true
-type ProjectList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []Project `json:"items"`
-}
-
-func (list *ProjectList) GetListMeta() *metav1.ListMeta { return &list.ListMeta }
-func (list *ProjectList) ItemCount() uint32             { return uint32(len(list.Items)) }
-func (list *ProjectList) GetItems() []*Project {
-	items := make([]*Project, len(list.Items))
-	for i := range list.Items {
-		items[i] = &list.Items[i]
-	}
-	return items
-}
-
-func init() {
-	SchemeBuilder.Register(&Project{}, &ProjectList{})
-}
-
-var _ apiserver_resource.Object = (*Project)(nil)
-var _ apiserver_resource.ObjectWithStatusSubResource = (*Project)(nil)
-var _ apiserver_resource.ObjectWithGenericSubResource = (*Project)(nil)
 var _ apiserver_resource.GenericSubResource = (*ProjectLogResource)(nil)
-var _ apiserver_resource.StatusSubResource = (*ProjectStatus)(nil)
-var _ apiserver_resource.ObjectList = (*ProjectList)(nil)
-var _ commonapi.ListWithObjectItems[Project, *Project] = (*ProjectList)(nil)
-var _ apiserver_resourcestrategy.Validater = (*Project)(nil)
-var _ apiserver_resourcestrategy.ValidateUpdater = (*Project)(nil)

@@ -307,12 +307,20 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return logicalProcessSetupErr
 		}
 
-		projectCtrl := controllers.NewProjectReconciler(
-			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("ProjectReconciler"), processExecutor, containerOrchestrator.Name(),
+		projectProcessCtrl := controllers.NewProjectProcessReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("ProjectProcessReconciler"), processExecutor,
 		)
-		if projectSetupErr := projectCtrl.SetupWithManager(mgr, defaultControllerName); projectSetupErr != nil {
-			log.Error(projectSetupErr, "Unable to set up Project controller")
-			return projectSetupErr
+		if projectProcessSetupErr := projectProcessCtrl.SetupWithManager(mgr, defaultControllerName); projectProcessSetupErr != nil {
+			log.Error(projectProcessSetupErr, "Unable to set up ProjectProcess controller")
+			return projectProcessSetupErr
+		}
+
+		projectContainerCtrl := controllers.NewProjectContainerReconciler(
+			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("ProjectContainerReconciler"), processExecutor, containerOrchestrator.Name(),
+		)
+		if projectContainerSetupErr := projectContainerCtrl.SetupWithManager(mgr, defaultControllerName); projectContainerSetupErr != nil {
+			log.Error(projectContainerSetupErr, "Unable to set up ProjectContainer controller")
+			return projectContainerSetupErr
 		}
 
 		physicalContainerImageCtrl := controllers.NewPhysicalContainerImageReconciler(

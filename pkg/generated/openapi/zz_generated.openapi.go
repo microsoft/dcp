@@ -92,6 +92,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.ContainerBuildContextArchive{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_ContainerBuildContextArchive(ref),
 		v2.ContainerBuildSecret{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_ContainerBuildSecret(ref),
 		v2.ContainerCopyFileContext{}.OpenAPIModelName():                schema_microsoft_dcp_api_v2_ContainerCopyFileContext(ref),
+		v2.ContainerDebugAdapterConfig{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_ContainerDebugAdapterConfig(ref),
 		v2.ContainerExecConfig{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ContainerExecConfig(ref),
 		v2.ContainerExecStatus{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ContainerExecStatus(ref),
 		v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName():        schema_microsoft_dcp_api_v2_ContainerNetworkConnectionConfig(ref),
@@ -165,7 +166,12 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.PhysicalProcessList{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_PhysicalProcessList(ref),
 		v2.PhysicalProcessSpec{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_PhysicalProcessSpec(ref),
 		v2.PhysicalProcessStatus{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref),
-		v2.Project{}.OpenAPIModelName():                                 schema_microsoft_dcp_api_v2_Project(ref),
+		v2.ProjectCommonSpec{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v2_ProjectCommonSpec(ref),
+		v2.ProjectCommonStatus{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ProjectCommonStatus(ref),
+		v2.ProjectContainer{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v2_ProjectContainer(ref),
+		v2.ProjectContainerList{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_ProjectContainerList(ref),
+		v2.ProjectContainerSpec{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_ProjectContainerSpec(ref),
+		v2.ProjectContainerStatus{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_ProjectContainerStatus(ref),
 		v2.ProjectContainerTemplate{}.OpenAPIModelName():                schema_microsoft_dcp_api_v2_ProjectContainerTemplate(ref),
 		v2.ProjectDebugExecutionStatus{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_ProjectDebugExecutionStatus(ref),
 		v2.ProjectDebugProcessObservation{}.OpenAPIModelName():          schema_microsoft_dcp_api_v2_ProjectDebugProcessObservation(ref),
@@ -173,10 +179,11 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.ProjectDebugSessionProgress{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_ProjectDebugSessionProgress(ref),
 		v2.ProjectDebugSessionStatus{}.OpenAPIModelName():               schema_microsoft_dcp_api_v2_ProjectDebugSessionStatus(ref),
 		v2.ProjectDebugStatus{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_ProjectDebugStatus(ref),
-		v2.ProjectList{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v2_ProjectList(ref),
+		v2.ProjectProcess{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v2_ProjectProcess(ref),
+		v2.ProjectProcessList{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_ProjectProcessList(ref),
+		v2.ProjectProcessSpec{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_ProjectProcessSpec(ref),
+		v2.ProjectProcessStatus{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_ProjectProcessStatus(ref),
 		v2.ProjectProcessTemplate{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_ProjectProcessTemplate(ref),
-		v2.ProjectSpec{}.OpenAPIModelName():                             schema_microsoft_dcp_api_v2_ProjectSpec(ref),
-		v2.ProjectStatus{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v2_ProjectStatus(ref),
 		v2.ResourceLogOptions{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v2_ResourceLogOptions(ref),
 		v2.ResourceLogResponse{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ResourceLogResponse(ref),
 		v2.ServiceAddress{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v2_ServiceAddress(ref),
@@ -4515,6 +4522,115 @@ func schema_microsoft_dcp_api_v2_ContainerCopyFileContext(ref common.ReferenceCa
 	}
 }
 
+func schema_microsoft_dcp_api_v2_ContainerDebugAdapterConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerDebugAdapterConfig declares an adapter copied into and launched inside the prepared container.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"directory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Directory is the absolute host directory containing the adapter and its dependencies.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"args": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Args contains the executable name or path followed by its arguments. TCP modes replace {{port}} with the selected listening port. {{adapterDirectory}} expands to the adapter directory in the execution context.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Mode selects the adapter DAP transport. Defaults to stdio.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"env": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Env contains explicit adapter environment variables that override inherited values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"connectionTimeout": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ConnectionTimeout bounds pre-upgrade adapter transport setup, including shared-provider availability. Omitted or zero uses 10 seconds. It does not limit the established debug stream or DAP initialization.",
+							Ref:         ref(metav1.Duration{}.OpenAPIModelName()),
+						},
+					},
+					"containerDirectory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerDirectory overrides the container installation directory, defaulting to /opt/dcp/debug-adapter.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"executableFiles": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "ExecutableFiles lists regular files relative to Directory that gain execute permissions when copied into the container. Paths use forward slashes without \".\" or \"..\" components.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"tcp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "TCP configures the internal listener for tcp-connect adapters.",
+							Ref:         ref(v2.DebugAdapterTCPConfig{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"directory", "args"},
+			},
+		},
+		Dependencies: []string{
+			v2.DebugAdapterTCPConfig{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Duration{}.OpenAPIModelName()},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_ContainerExecConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -4825,41 +4941,15 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "DebugAdapterConfig declares an adapter to launch only on an explicit debug-subresource request. DAP initialize, launch, and attach configuration is supplied over the debug stream, not through this spec.",
+				Description: "DebugAdapterConfig declares a host adapter to launch only on an explicit debug-subresource request. DAP initialize, launch, and attach configuration is supplied over the debug stream, not through this spec.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"directory": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Directory is the absolute host directory containing the adapter and its dependencies. Container Projects copy its contents before starting the prepared container.",
+							Description: "Directory is the absolute host directory containing the adapter and its dependencies.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
-						},
-					},
-					"containerDirectory": {
-						SchemaProps: spec.SchemaProps{
-							Description: "ContainerDirectory overrides the container installation directory, defaulting to /opt/dcp/debug-adapter. It is forbidden for process Projects.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"executableFiles": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "ExecutableFiles lists regular files relative to Directory that gain execute permissions when copied into a container. Paths use forward slashes without \".\" or \"..\" components; forbidden for process Projects.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Type:   []string{"string"},
-										Format: "",
-									},
-								},
-							},
 						},
 					},
 					"args": {
@@ -4869,7 +4959,7 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Args contains the executable name or path followed by its arguments. TCP modes replace {{port}} with the host-allocated port or the prepared container's internal port. {{adapterDirectory}} expands to Directory for process Projects or the installation directory for container Projects.",
+							Description: "Args contains the executable name or path followed by its arguments. TCP modes replace {{port}} with the selected listening port. {{adapterDirectory}} expands to the adapter directory in the execution context.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -4886,12 +4976,6 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 							Description: "Mode selects the adapter DAP transport. Defaults to stdio.",
 							Type:        []string{"string"},
 							Format:      "",
-						},
-					},
-					"tcp": {
-						SchemaProps: spec.SchemaProps{
-							Description: "TCP configures the internal listener for container tcp-connect adapters.",
-							Ref:         ref(v2.DebugAdapterTCPConfig{}.OpenAPIModelName()),
 						},
 					},
 					"env": {
@@ -4926,7 +5010,7 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 			},
 		},
 		Dependencies: []string{
-			v2.DebugAdapterTCPConfig{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Duration{}.OpenAPIModelName()},
+			commonapi.EnvVar{}.OpenAPIModelName(), metav1.Duration{}.OpenAPIModelName()},
 	}
 }
 
@@ -9363,11 +9447,156 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessStatus(ref common.ReferenceCallb
 	}
 }
 
-func schema_microsoft_dcp_api_v2_Project(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v2_ProjectCommonSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "Project prepares user-code launch inputs and execution context for AppHost-controlled debugging.",
+				Description: "ProjectCommonSpec contains source configuration and lifecycle requests shared by Project kinds.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"rootDirectory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RootDirectory is an absolute source directory on the DCP host. It is informational: it does not default working directories, resolve paths, or create container mounts.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stop": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Stop requests termination or prevents launch. Once true, it cannot be reset.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"rootDirectory"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ProjectCommonStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProjectCommonStatus describes launch inputs and debugging progress shared by Project kinds.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"effectiveArgs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveArgs contains evaluated application launch arguments, never the container placeholder's arguments.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEnv": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEnv contains the observed container environment, including image-provided values, or the prepared process launch environment, including permitted host inheritance.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"ports": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Ports reports allocated listening addresses and selected services, independently of proxy readiness.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalPortStatus{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"debug": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Debug contains API-server-owned adapter/session observations and controller-owned target observations.",
+							Ref:         ref(v2.ProjectDebugStatus{}.OpenAPIModelName()),
+						},
+					},
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase summarizes Project preparation, debug activity and shutdown.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"runtimeLogs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RuntimeLogs describes capture owned by the immediate physical execution.",
+							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe readiness and reconciliation progress.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.ProjectDebugStatus{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ProjectContainer(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProjectContainer runs user code in a container prepared for adapter-controlled launch.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -9393,20 +9622,320 @@ func schema_microsoft_dcp_api_v2_Project(ref common.ReferenceCallback) common.Op
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v2.ProjectSpec{}.OpenAPIModelName()),
+							Ref:     ref(v2.ProjectContainerSpec{}.OpenAPIModelName()),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v2.ProjectStatus{}.OpenAPIModelName()),
+							Ref:     ref(v2.ProjectContainerStatus{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			v2.ProjectSpec{}.OpenAPIModelName(), v2.ProjectStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+			v2.ProjectContainerSpec{}.OpenAPIModelName(), v2.ProjectContainerStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ProjectContainerList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProjectContainerList contains a list of ProjectContainer instances.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.ProjectContainer{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v2.ProjectContainer{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ProjectContainerSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProjectContainerSpec identifies source code and its container launch configuration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"rootDirectory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RootDirectory is an absolute source directory on the DCP host. It is informational: it does not default working directories, resolve paths, or create container mounts.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stop": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Stop requests termination or prevents launch. Once true, it cannot be reset.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"container": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Container describes how to run the code as a container.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(v2.ProjectContainerTemplate{}.OpenAPIModelName()),
+						},
+					},
+					"debugAdapter": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DebugAdapter declares an adapter; configuration alone does not launch it.",
+							Ref:         ref(v2.ContainerDebugAdapterConfig{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"rootDirectory", "container"},
+			},
+		},
+		Dependencies: []string{
+			v2.ContainerDebugAdapterConfig{}.OpenAPIModelName(), v2.ProjectContainerTemplate{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ProjectContainerStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProjectContainerStatus describes the prepared container, launch inputs and debugging progress.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"effectiveArgs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveArgs contains evaluated application launch arguments, never the container placeholder's arguments.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEnv": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEnv contains the observed container environment, including image-provided values, or the prepared process launch environment, including permitted host inheritance.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"ports": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Ports reports allocated listening addresses and selected services, independently of proxy readiness.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalPortStatus{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"debug": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Debug contains API-server-owned adapter/session observations and controller-owned target observations.",
+							Ref:         ref(v2.ProjectDebugStatus{}.OpenAPIModelName()),
+						},
+					},
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase summarizes Project preparation, debug activity and shutdown.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"runtimeLogs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RuntimeLogs describes capture owned by the immediate physical execution.",
+							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe readiness and reconciliation progress.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"physicalContainerRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PhysicalContainerRef identifies the same-namespace backing PhysicalContainer. Cross-namespace references are not supported.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerRuntime": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerRuntime identifies the controller-selected runtime for the prepared container.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"debugAdapterPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DebugAdapterPort is the prepared internal TCP listening port, absent for other adapter transports.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"debugAdapterAddress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DebugAdapterAddress is the runtime-published host TCP endpoint for the prepared adapter listener.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"imageRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ImageRef identifies the supplied or owned PhysicalContainerImage. Cross-namespace references are not supported.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerID is the observed runtime container identity.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerName is the observed runtime container name.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"image": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Image is the resolved runtime image reference.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"createdAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CreatedAt is the runtime container creation time.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"startedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StartedAt is the runtime container start time.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"portMappings": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "PortMappings are the observed host bindings for container ports.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.PhysicalContainerPortMapping{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"startupLogs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StartupLogs describes image acquisition capture.",
+							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), v2.ProjectDebugStatus{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -10088,11 +10617,58 @@ func schema_microsoft_dcp_api_v2_ProjectDebugStatus(ref common.ReferenceCallback
 	}
 }
 
-func schema_microsoft_dcp_api_v2_ProjectList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v2_ProjectProcess(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ProjectList contains a list of Project instances.",
+				Description: "ProjectProcess runs user code as a host process prepared for adapter-controlled launch.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.ProjectProcessSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.ProjectProcessStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.ProjectProcessSpec{}.OpenAPIModelName(), v2.ProjectProcessStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ProjectProcessList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProjectProcessList contains a list of ProjectProcess instances.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -10121,7 +10697,7 @@ func schema_microsoft_dcp_api_v2_ProjectList(ref common.ReferenceCallback) commo
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
-										Ref: ref(v2.Project{}.OpenAPIModelName()),
+										Ref: ref(v2.ProjectProcess{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -10132,7 +10708,167 @@ func schema_microsoft_dcp_api_v2_ProjectList(ref common.ReferenceCallback) commo
 			},
 		},
 		Dependencies: []string{
-			v2.Project{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+			v2.ProjectProcess{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ProjectProcessSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProjectProcessSpec identifies source code and its host process launch configuration.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"rootDirectory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RootDirectory is an absolute source directory on the DCP host. It is informational: it does not default working directories, resolve paths, or create container mounts.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stop": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Stop requests termination or prevents launch. Once true, it cannot be reset.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"process": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Process describes how to run the code as a host process.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(v2.ProjectProcessTemplate{}.OpenAPIModelName()),
+						},
+					},
+					"debugAdapter": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DebugAdapter declares an adapter; configuration alone does not launch it.",
+							Ref:         ref(v2.DebugAdapterConfig{}.OpenAPIModelName()),
+						},
+					},
+				},
+				Required: []string{"rootDirectory", "process"},
+			},
+		},
+		Dependencies: []string{
+			v2.DebugAdapterConfig{}.OpenAPIModelName(), v2.ProjectProcessTemplate{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ProjectProcessStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProjectProcessStatus describes prepared process launch inputs and debugging progress.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"effectiveArgs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveArgs contains evaluated application launch arguments, never the container placeholder's arguments.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEnv": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEnv contains the observed container environment, including image-provided values, or the prepared process launch environment, including permitted host inheritance.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"ports": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Ports reports allocated listening addresses and selected services, independently of proxy readiness.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(v2.LogicalPortStatus{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"debug": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Debug contains API-server-owned adapter/session observations and controller-owned target observations.",
+							Ref:         ref(v2.ProjectDebugStatus{}.OpenAPIModelName()),
+						},
+					},
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase summarizes Project preparation, debug activity and shutdown.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"runtimeLogs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RuntimeLogs describes capture owned by the immediate physical execution.",
+							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe readiness and reconciliation progress.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.ProjectDebugStatus{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName()},
 	}
 }
 
@@ -10229,263 +10965,6 @@ func schema_microsoft_dcp_api_v2_ProjectProcessTemplate(ref common.ReferenceCall
 		},
 		Dependencies: []string{
 			v2.AmbientEnvironment{}.OpenAPIModelName(), v2.LogicalProcessPort{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName()},
-	}
-}
-
-func schema_microsoft_dcp_api_v2_ProjectSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "ProjectSpec identifies source code and exactly one process or container launch configuration.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"rootDirectory": {
-						SchemaProps: spec.SchemaProps{
-							Description: "RootDirectory is an absolute source directory on the DCP host. It is informational: it does not default working directories, resolve paths, or create container mounts.",
-							Default:     "",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"process": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Process describes how to run the code as a process. Exactly one of process or container must be set.",
-							Ref:         ref(v2.ProjectProcessTemplate{}.OpenAPIModelName()),
-						},
-					},
-					"container": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Container describes how to run the code as a container. Exactly one of process or container must be set.",
-							Ref:         ref(v2.ProjectContainerTemplate{}.OpenAPIModelName()),
-						},
-					},
-					"debugAdapter": {
-						SchemaProps: spec.SchemaProps{
-							Description: "DebugAdapter declares an adapter; configuration alone does not launch it. The application template determines whether the adapter runs on the host or in the prepared container.",
-							Ref:         ref(v2.DebugAdapterConfig{}.OpenAPIModelName()),
-						},
-					},
-					"stop": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Stop requests termination or prevents launch. Once true, it cannot be reset.",
-							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
-				},
-				Required: []string{"rootDirectory"},
-			},
-		},
-		Dependencies: []string{
-			v2.DebugAdapterConfig{}.OpenAPIModelName(), v2.ProjectContainerTemplate{}.OpenAPIModelName(), v2.ProjectProcessTemplate{}.OpenAPIModelName()},
-	}
-}
-
-func schema_microsoft_dcp_api_v2_ProjectStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "ProjectStatus describes prepared execution context and debugging progress.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"effectiveArgs": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "EffectiveArgs contains evaluated application launch arguments, never the container placeholder's arguments.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Type:   []string{"string"},
-										Format: "",
-									},
-								},
-							},
-						},
-					},
-					"effectiveEnv": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"name",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "EffectiveEnv contains the observed container environment, including image-provided values, or the prepared process launch environment, including permitted host inheritance.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-					"ports": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"name",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Ports reports allocated listening addresses and selected services, independently of proxy readiness.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Ref: ref(v2.LogicalPortStatus{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-					"debug": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Debug contains API-server-owned adapter/session observations and controller-owned target observations.",
-							Ref:         ref(v2.ProjectDebugStatus{}.OpenAPIModelName()),
-						},
-					},
-					"phase": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Phase summarizes Project preparation, debug activity and shutdown.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"physicalContainerRef": {
-						SchemaProps: spec.SchemaProps{
-							Description: "PhysicalContainerRef identifies the same-namespace backing PhysicalContainer. Cross-namespace references are not supported.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"containerRuntime": {
-						SchemaProps: spec.SchemaProps{
-							Description: "ContainerRuntime identifies the controller-selected runtime for the prepared container.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"debugAdapterPort": {
-						SchemaProps: spec.SchemaProps{
-							Description: "DebugAdapterPort is the prepared internal TCP listening port, absent for other adapter transports.",
-							Type:        []string{"integer"},
-							Format:      "int32",
-						},
-					},
-					"debugAdapterAddress": {
-						SchemaProps: spec.SchemaProps{
-							Description: "DebugAdapterAddress is the runtime-published host TCP endpoint for the prepared adapter listener.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"imageRef": {
-						SchemaProps: spec.SchemaProps{
-							Description: "ImageRef identifies the supplied or owned PhysicalContainerImage. Cross-namespace references are not supported.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"containerID": {
-						SchemaProps: spec.SchemaProps{
-							Description: "ContainerID is the observed runtime container identity.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"containerName": {
-						SchemaProps: spec.SchemaProps{
-							Description: "ContainerName is the observed runtime container name.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"image": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Image is the resolved runtime image reference.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"createdAt": {
-						SchemaProps: spec.SchemaProps{
-							Description: "CreatedAt is the runtime container creation time.",
-							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
-						},
-					},
-					"startedAt": {
-						SchemaProps: spec.SchemaProps{
-							Description: "StartedAt is the runtime container start time.",
-							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
-						},
-					},
-					"portMappings": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "PortMappings are the observed host bindings for container ports.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Ref: ref(v2.PhysicalContainerPortMapping{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-					"runtimeLogs": {
-						SchemaProps: spec.SchemaProps{
-							Description: "RuntimeLogs describes capture owned by the immediate physical execution.",
-							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
-						},
-					},
-					"startupLogs": {
-						SchemaProps: spec.SchemaProps{
-							Description: "StartupLogs describes image acquisition capture for container execution.",
-							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
-						},
-					},
-					"conditions": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"type",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Conditions describe readiness and reconciliation progress.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Ref: ref(metav1.Condition{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), v2.ProjectDebugStatus{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 

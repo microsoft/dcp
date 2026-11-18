@@ -32,12 +32,15 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+// startProjectDebugStatusServer serves both Project kinds, applying each configure function once per kind's
+// status writer, and returns the ProjectProcess writer.
 func startProjectDebugStatusServer(
 	t *testing.T, ctx context.Context, configure ...func(*tiltapiserver.Config, *projectDebugStatusWriter),
 ) (ctrlclient.WithWatch, *projectDebugStatusWriter) {
 	t.Helper()
 	serverBuilder := builder.NewServerBuilder().
-		WithResourceMemoryStorage(&apiv2.Project{}, "data").
+		WithResourceMemoryStorage(&apiv2.ProjectProcess{}, "data").
+		WithResourceMemoryStorage(&apiv2.ProjectContainer{}, "data").
 		WithResourceMemoryStorage(&apiv2.Namespace{}, "data").
 		WithOpenAPIDefinitions("debug-status-test", "1", openapi.GetOpenAPIDefinitions).
 		WithBearerToken("debug-status-test-token")
@@ -54,16 +57,18 @@ func startProjectDebugStatusServer(
 	options.ServingOptions.BindPort = listener.Addr().(*net.TCPAddr).Port
 	config, configErr := options.Config()
 	require.NoError(t, configErr)
-	config.GenericConfig.OpenAPIConfig.IgnorePrefixes = append(config.GenericConfig.OpenAPIConfig.IgnorePrefixes,
-		"/apis/"+apiv2.GroupVersion.String()+"/projects/"+apiv2.LogSubresourceName)
 	config.GenericConfig.LongRunningFunc = kubeserverfilters.BasicLongRunningRequestCheck(
 		sets.NewString("watch"), sets.NewString(apiv2.DebugSubresourceName))
-	apiv2.ResourceLogStreamers.Store((&apiv2.Project{}).GetGroupVersionResource(),
-		v2resourcelogs.NewLogStreamer(testutil.NewLogForTesting(t.Name())))
-	writer := &projectDebugStatusWriter{}
-	require.NoError(t, configureProjectDebugStatus(config, writer))
-	for _, apply := range configure {
-		apply(config, writer)
+	writers := []*projectDebugStatusWriter{{prototype: &apiv2.ProjectProcess{}}, {prototype: &apiv2.ProjectContainer{}}}
+	for _, writer := range writers {
+		gvr := writer.prototype.GetGroupVersionResource()
+		config.GenericConfig.OpenAPIConfig.IgnorePrefixes = append(config.GenericConfig.OpenAPIConfig.IgnorePrefixes,
+			"/apis/"+apiv2.GroupVersion.String()+"/"+gvr.Resource+"/"+apiv2.LogSubresourceName)
+		apiv2.ResourceLogStreamers.Store(gvr, v2resourcelogs.NewLogStreamer(testutil.NewLogForTesting(t.Name())))
+		require.NoError(t, configureProjectDebugStatus(config, writer))
+		for _, apply := range configure {
+			apply(config, writer)
+		}
 	}
 	serverCtx, cancelServer := context.WithCancel(ctx)
 	t.Cleanup(cancelServer)
@@ -76,7 +81,7 @@ func startProjectDebugStatusServer(
 	apiClient, clientErr := ctrlclient.NewWithWatch(clientrest.CopyConfig(config.GenericConfig.LoopbackClientConfig),
 		ctrlclient.Options{Scheme: dcpclient.NewScheme()})
 	require.NoError(t, clientErr)
-	return apiClient, writer
+	return apiClient, writers[0]
 }
 
 // Verifies that Project debug observations are server-owned, survive ordinary status/parent writes,
@@ -86,60 +91,60 @@ func TestProjectDebugStatusIsolatesWriterOwnership(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
 	apiClient, writer := startProjectDebugStatusServer(t, ctx)
-	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug-status"},
-		Spec:   apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}},
-		Status: apiv2.ProjectStatus{Debug: &apiv2.ProjectDebugStatus{Sessions: []apiv2.ProjectDebugSessionStatus{{ID: "forged"}}}}}
+	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug-status"},
+		Spec:   apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}},
+		Status: apiv2.ProjectProcessStatus{ProjectCommonStatus: apiv2.ProjectCommonStatus{Debug: &apiv2.ProjectDebugStatus{Sessions: []apiv2.ProjectDebugSessionStatus{{ID: "forged"}}}}}}
 	require.NoError(t, apiClient.Create(ctx, project))
-	require.Nil(t, project.Status.Debug)
-	project.Status.Phase = apiv2.ProjectPhaseReady
+	require.Nil(t, project.GetProjectStatus().Debug)
+	project.GetProjectStatus().Phase = apiv2.ProjectPhaseReady
 	require.NoError(t, apiClient.Status().Update(ctx, project))
 	stale := project.DeepCopy()
-	watcher, watchErr := apiClient.Watch(ctx, &apiv2.ProjectList{}, ctrlclient.InNamespace(project.Namespace))
+	watcher, watchErr := apiClient.Watch(ctx, &apiv2.ProjectProcessList{}, ctrlclient.InNamespace(project.Namespace))
 	require.NoError(t, watchErr)
 	defer watcher.Stop()
 	first := &apiv2.ProjectDebugSessionStatus{ID: "first", Phase: apiv2.ProjectDebugPhasePending}
 	execution := &apiv2.ProjectDebugExecutionStatus{ID: "provider", Phase: apiv2.ProjectDebugPhaseRunning}
 	updated, publishErr := writer.update(ctx, project.NamespacedName(), project.UID, execution, first)
 	require.NoError(t, publishErr)
-	require.Equal(t, apiv2.ProjectPhaseReady, updated.Status.Phase)
+	require.Equal(t, apiv2.ProjectPhaseReady, updated.GetProjectStatus().Phase)
 	for observedUpdate := false; !observedUpdate; {
 		select {
 		case event, open := <-watcher.ResultChan():
 			require.True(t, open)
-			observed, isProject := event.Object.(*apiv2.Project)
+			observed, isProject := event.Object.(*apiv2.ProjectProcess)
 			require.True(t, isProject, "%T", event.Object)
-			if observed.ResourceVersion == updated.ResourceVersion {
-				require.Equal(t, updated.Status.Debug, observed.Status.Debug)
+			if observed.ResourceVersion == updated.GetResourceVersion() {
+				require.Equal(t, updated.GetProjectStatus().Debug, observed.GetProjectStatus().Debug)
 				observedUpdate = true
 			}
 		case <-ctx.Done():
 			t.Fatal("debug observation update did not reach the resource watch")
 		}
 	}
-	stale.Status.Phase = apiv2.ProjectPhaseStopped
+	stale.GetProjectStatus().Phase = apiv2.ProjectPhaseStopped
 	require.True(t, apierrors.IsConflict(apiClient.Status().Update(ctx, stale)))
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	project.Status.Phase = apiv2.ProjectPhasePending
-	project.Status.Debug = nil
+	project.GetProjectStatus().Phase = apiv2.ProjectPhasePending
+	project.GetProjectStatus().Debug = nil
 	require.NoError(t, apiClient.Status().Update(ctx, project))
-	require.Len(t, project.Status.Debug.Executions, 1)
-	require.Len(t, project.Status.Debug.Sessions, 1)
-	require.Equal(t, apiv2.ProjectPhasePending, project.Status.Phase)
+	require.Len(t, project.GetProjectStatus().Debug.Executions, 1)
+	require.Len(t, project.GetProjectStatus().Debug.Sessions, 1)
+	require.Equal(t, apiv2.ProjectPhasePending, project.GetProjectStatus().Phase)
 	second := &apiv2.ProjectDebugSessionStatus{ID: "second", ExecutionID: "provider", Phase: apiv2.ProjectDebugPhaseRunning}
 	_, secondErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, second)
 	require.NoError(t, secondErr)
 	require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
 		[]byte(`{"status":{"phase":"Ready","debug":{"sessions":[{"id":"forged","phase":"Running"}]}}}`))))
-	require.Equal(t, apiv2.ProjectPhaseReady, project.Status.Phase)
-	require.Len(t, project.Status.Debug.Sessions, 2)
+	require.Equal(t, apiv2.ProjectPhaseReady, project.GetProjectStatus().Phase)
+	require.Len(t, project.GetProjectStatus().Debug.Sessions, 2)
 	// Use the status client for a patch so that the normal HTTP /status handler and wrapper execute.
 	require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
 		[]byte(`{"status":{"phase":"Ready","debug":null}}`))))
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	require.Equal(t, apiv2.ProjectPhaseReady, project.Status.Phase)
-	require.Len(t, project.Status.Debug.Sessions, 2)
-	require.Equal(t, "first", project.Status.Debug.Sessions[0].ID)
-	require.Equal(t, "second", project.Status.Debug.Sessions[1].ID)
+	require.Equal(t, apiv2.ProjectPhaseReady, project.GetProjectStatus().Phase)
+	require.Len(t, project.GetProjectStatus().Debug.Sessions, 2)
+	require.Equal(t, "first", project.GetProjectStatus().Debug.Sessions[0].ID)
+	require.Equal(t, "second", project.GetProjectStatus().Debug.Sessions[1].ID)
 	first.Phase, first.FinishedAt = apiv2.ProjectDebugPhaseFailed, metav1.NowMicro()
 	first.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionFalse, Reason: "ConnectionFailed",
 		Message: "injected connection failure", LastTransitionTime: metav1.Now()}}
@@ -148,10 +153,10 @@ func TestProjectDebugStatusIsolatesWriterOwnership(t *testing.T) {
 	_, repeatedErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, first)
 	require.NoError(t, repeatedErr)
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	require.Len(t, project.Status.Debug.Sessions, 2)
-	require.Equal(t, apiv2.ProjectDebugPhaseFailed, project.Status.Debug.Sessions[0].Phase)
-	require.Equal(t, apiv2.ProjectDebugPhaseRunning, project.Status.Debug.Sessions[1].Phase)
-	require.Equal(t, apiv2.ProjectPhaseReady, project.Status.Phase)
+	require.Len(t, project.GetProjectStatus().Debug.Sessions, 2)
+	require.Equal(t, apiv2.ProjectDebugPhaseFailed, project.GetProjectStatus().Debug.Sessions[0].Phase)
+	require.Equal(t, apiv2.ProjectDebugPhaseRunning, project.GetProjectStatus().Debug.Sessions[1].Phase)
+	require.Equal(t, apiv2.ProjectPhaseReady, project.GetProjectStatus().Phase)
 	launchFailure := &apiv2.ProjectDebugExecutionStatus{
 		ID: "failed-launch", Phase: apiv2.ProjectDebugPhaseFailed, FinishedAt: metav1.NowMicro(),
 		Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionFalse, Reason: "LaunchFailed",
@@ -161,15 +166,15 @@ func TestProjectDebugStatusIsolatesWriterOwnership(t *testing.T) {
 	_, launchFailureErr := writer.update(ctx, project.NamespacedName(), project.UID, launchFailure, nil)
 	require.NoError(t, launchFailureErr)
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	require.Len(t, project.Status.Debug.Executions, 2)
-	require.Nil(t, project.Status.Debug.Executions[1].PID)
-	require.Nil(t, project.Status.Debug.Executions[1].ExitCode)
-	require.Equal(t, apiv2.ProjectPhaseReady, project.Status.Phase)
-	project.Spec.Stop = true
-	project.Status.Debug = nil
+	require.Len(t, project.GetProjectStatus().Debug.Executions, 2)
+	require.Nil(t, project.GetProjectStatus().Debug.Executions[1].PID)
+	require.Nil(t, project.GetProjectStatus().Debug.Executions[1].ExitCode)
+	require.Equal(t, apiv2.ProjectPhaseReady, project.GetProjectStatus().Phase)
+	project.GetProjectSpec().Stop = true
+	project.GetProjectStatus().Debug = nil
 	require.NoError(t, apiClient.Update(ctx, project))
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	require.Len(t, project.Status.Debug.Sessions, 2)
+	require.Len(t, project.GetProjectStatus().Debug.Sessions, 2)
 }
 
 // Verifies that internal API-owned observation updates are published through the normal Project API watch.
@@ -177,10 +182,10 @@ func TestProjectDebugStatusPublishesWatchEvents(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
 	apiClient, writer := startProjectDebugStatusServer(t, ctx)
-	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug-watch"},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
+	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug-watch"},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
 	require.NoError(t, apiClient.Create(ctx, project))
-	watcher, watchErr := apiClient.Watch(ctx, &apiv2.ProjectList{}, ctrlclient.InNamespace(project.Namespace))
+	watcher, watchErr := apiClient.Watch(ctx, &apiv2.ProjectProcessList{}, ctrlclient.InNamespace(project.Namespace))
 	require.NoError(t, watchErr)
 	defer watcher.Stop()
 	updated, publishErr := writer.update(ctx, project.NamespacedName(), project.UID, nil,
@@ -190,10 +195,10 @@ func TestProjectDebugStatusPublishesWatchEvents(t *testing.T) {
 		select {
 		case event, open := <-watcher.ResultChan():
 			require.True(t, open)
-			observed, isProject := event.Object.(*apiv2.Project)
+			observed, isProject := event.Object.(*apiv2.ProjectProcess)
 			require.True(t, isProject, "%T", event.Object)
-			if observed.ResourceVersion == updated.ResourceVersion {
-				require.Equal(t, updated.Status.Debug, observed.Status.Debug)
+			if observed.ResourceVersion == updated.GetResourceVersion() {
+				require.Equal(t, updated.GetProjectStatus().Debug, observed.GetProjectStatus().Debug)
 				return
 			}
 		case <-ctx.Done():
@@ -208,8 +213,8 @@ func TestProjectDebugStatusConcurrentUpdates(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
 	apiClient, writer := startProjectDebugStatusServer(t, ctx)
-	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug-concurrent"},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
+	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug-concurrent"},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
 	require.NoError(t, apiClient.Create(ctx, project))
 	const sessions = 12
 	outcomes := make(chan error, sessions+1)
@@ -227,12 +232,12 @@ func TestProjectDebugStatusConcurrentUpdates(t *testing.T) {
 	go func() {
 		defer work.Done()
 		statusErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			current := &apiv2.Project{}
+			current := &apiv2.ProjectProcess{}
 			getErr := apiClient.Get(ctx, project.NamespacedName(), current)
 			if getErr != nil {
 				return getErr
 			}
-			current.Status = apiv2.ProjectStatus{Phase: apiv2.ProjectPhaseReady}
+			current.Status = apiv2.ProjectProcessStatus{ProjectCommonStatus: apiv2.ProjectCommonStatus{Phase: apiv2.ProjectPhaseReady}}
 			return apiClient.Status().Update(ctx, current)
 		})
 		outcomes <- statusErr
@@ -243,8 +248,8 @@ func TestProjectDebugStatusConcurrentUpdates(t *testing.T) {
 		require.NoError(t, updateErr)
 	}
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	require.Len(t, project.Status.Debug.Sessions, sessions)
-	require.Equal(t, apiv2.ProjectPhaseReady, project.Status.Phase)
+	require.Len(t, project.GetProjectStatus().Debug.Sessions, sessions)
+	require.Equal(t, apiv2.ProjectPhaseReady, project.GetProjectStatus().Phase)
 }
 
 // Verifies that deleting Projects accept completion of existing debug history but reject new entries,
@@ -253,8 +258,8 @@ func TestProjectDebugStatusDeletionAndReplacement(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
 	apiClient, writer := startProjectDebugStatusServer(t, ctx)
-	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug-delete", Finalizers: []string{"test/retain"}},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
+	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug-delete", Finalizers: []string{"test/retain"}},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
 	require.NoError(t, apiClient.Create(ctx, project))
 	oldUID := project.UID
 	session := &apiv2.ProjectDebugSessionStatus{ID: "existing", Phase: apiv2.ProjectDebugPhaseRunning}
@@ -272,10 +277,10 @@ func TestProjectDebugStatusDeletionAndReplacement(t *testing.T) {
 	require.NoError(t, apiClient.Update(ctx, project))
 	_, missingErr := writer.update(ctx, project.NamespacedName(), oldUID, nil, session)
 	require.True(t, apierrors.IsNotFound(missingErr), "%v", missingErr)
-	replacement := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: project.Name, Namespace: project.Namespace}, Spec: *project.Spec.DeepCopy()}
+	replacement := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: project.Name, Namespace: project.Namespace}, Spec: *project.Spec.DeepCopy()}
 	require.NoError(t, apiClient.Create(ctx, replacement))
 	_, staleErr := writer.update(ctx, replacement.NamespacedName(), oldUID, nil, session)
 	require.True(t, apierrors.IsConflict(staleErr), "%v", staleErr)
 	require.NoError(t, apiClient.Get(ctx, replacement.NamespacedName(), replacement))
-	require.Nil(t, replacement.Status.Debug)
+	require.Nil(t, replacement.GetProjectStatus().Debug)
 }

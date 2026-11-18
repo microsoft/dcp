@@ -47,7 +47,7 @@ type duplexProbeStorage struct {
 	setupCancelled chan error
 }
 
-func (*duplexProbeStorage) New() runtime.Object                               { return &apiv2.Project{} }
+func (*duplexProbeStorage) New() runtime.Object                               { return &apiv2.ProjectProcess{} }
 func (*duplexProbeStorage) Destroy()                                          {}
 func (*duplexProbeStorage) NamespaceScoped() bool                             { return true }
 func (*duplexProbeStorage) NewConnectOptions() (runtime.Object, bool, string) { return nil, false, "" }
@@ -114,7 +114,7 @@ func TestDuplexSubresourceWebSocketTransport(t *testing.T) {
 		disconnected: make(chan error, 1), setupDelay: 500 * time.Millisecond,
 		setupCancelled: make(chan error, 1),
 	}
-	parent := &apiv2.Project{}
+	parent := &apiv2.ProjectProcess{}
 	serverBuilder := builder.NewServerBuilder().
 		WithResourceMemoryStorage(parent, "data").
 		WithOpenAPIDefinitions("duplex-probe", "1", openapi.GetOpenAPIDefinitions).
@@ -155,20 +155,20 @@ func TestDuplexSubresourceWebSocketTransport(t *testing.T) {
 		cancel()
 		<-stopped
 	})
-	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: "duplex"},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
+	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: "duplex"},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
 	clientConfig := clientrest.CopyConfig(config.GenericConfig.LoopbackClientConfig)
 	apiClient, clientErr := ctrlclient.New(clientConfig, ctrlclient.Options{Scheme: dcpclient.NewScheme()})
 	require.NoError(t, clientErr)
 	require.NoError(t, apiClient.Create(ctx, project))
-	location := clientConfig.Host + "/apis/" + apiv2.GroupVersion.String() + "/namespaces/duplex/projects/probe/duplexprobe"
+	location := clientConfig.Host + "/apis/" + apiv2.GroupVersion.String() + "/namespaces/duplex/projectprocesses/probe/duplexprobe"
 	for _, testCase := range []struct {
 		name     string
 		token    string
 		location string
 	}{
 		{name: "invalid credentials", token: "invalid-probe-token", location: location},
-		{name: "missing parent", token: clientConfig.BearerToken, location: strings.Replace(location, "/projects/probe/", "/projects/missing/", 1)},
+		{name: "missing parent", token: clientConfig.BearerToken, location: strings.Replace(location, "/projectprocesses/probe/", "/projectprocesses/missing/", 1)},
 		{name: "ordinary request timeout", token: clientConfig.BearerToken, location: strings.Replace(location, "/duplexprobe", "/duplextimeout", 1)},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

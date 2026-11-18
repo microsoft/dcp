@@ -123,14 +123,22 @@ func snapshot(obj resource.Object) (resourceSnapshot, error) {
 		result.runtime = container.Status.RuntimeLogs
 		result.complete = container.Status.Phase == apiv2.LogicalContainerExecPhaseExited ||
 			container.Status.Phase == apiv2.LogicalContainerExecPhaseFailed
-	case *apiv2.Project:
+	case *apiv2.ProjectProcess:
+		result.systemID = container.GetResourceId()
+		result.runtime = container.Status.RuntimeLogs
+		result.complete = container.Status.Phase == apiv2.ProjectPhaseStopped || container.Status.Phase == apiv2.ProjectPhaseFailed
+		if result.runtime == nil && result.complete {
+			result.runtime = &apiv2.LogSource{Complete: true}
+		}
+		result.startup = &apiv2.LogSource{Complete: true}
+	case *apiv2.ProjectContainer:
 		result.systemID = container.GetResourceId()
 		result.runtime, result.startup = container.Status.RuntimeLogs, container.Status.StartupLogs
 		result.complete = container.Status.Phase == apiv2.ProjectPhaseStopped || container.Status.Phase == apiv2.ProjectPhaseFailed
 		if result.runtime == nil && result.complete {
 			result.runtime = &apiv2.LogSource{Complete: true}
 		}
-		if result.startup == nil && (container.Spec.Container == nil || container.Spec.Container.Image == nil || result.complete) {
+		if result.startup == nil && (container.Spec.Container.Image == nil || result.complete) {
 			result.startup = &apiv2.LogSource{Complete: true}
 		}
 	default:
@@ -170,17 +178,13 @@ func (streamer *resourceLogStreamer) Preflight(obj resource.Object, opts *apiv2.
 		return apierrors.NewBadRequest("image log sources are stdout, stderr, and system")
 	}
 	switch obj.(type) {
-	case *apiv2.LogicalProcess, *apiv2.PhysicalProcess:
+	case *apiv2.LogicalProcess, *apiv2.PhysicalProcess, *apiv2.ProjectProcess:
 		if startup {
 			return apierrors.NewBadRequest("process log sources are stdout, stderr, and system")
 		}
 	case *apiv2.LogicalContainerExec, *apiv2.PhysicalContainerExec:
 		if startup {
 			return apierrors.NewBadRequest("execution log sources are stdout, stderr, and system")
-		}
-	case *apiv2.Project:
-		if obj.(*apiv2.Project).Spec.Process != nil && startup {
-			return apierrors.NewBadRequest("process Project log sources are stdout, stderr, and system")
 		}
 	}
 	capture := state.logSource(opts.Source)

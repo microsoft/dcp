@@ -40,8 +40,8 @@ import (
 
 // Verifies that the production API-server process launches a real host adapter only on upgrade,
 // reports its identity, drains graceful DAP shutdown, fails unexpected disconnect, and bounds
-// Project deletion when an adapter ignores disconnect without changing application lifetime.
-func TestV2ProjectDebugTransportLifecycle(t *testing.T) {
+// ProjectProcess deletion when an adapter ignores disconnect without changing application lifetime.
+func TestV2ProjectProcessDebugTransportLifecycle(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"disconnect", "graceful", "delete", "unresponsive-delete"} {
 		t.Run(name, func(t *testing.T) {
@@ -54,8 +54,8 @@ func TestV2ProjectDebugTransportLifecycle(t *testing.T) {
 			if name == "unresponsive-delete" {
 				args = args[:1]
 			}
-			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-application"}},
+			project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-application"}},
 					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: args}}}
 			require.NoError(t, client.Create(ctx, project))
 			running := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
@@ -66,7 +66,7 @@ func TestV2ProjectDebugTransportLifecycle(t *testing.T) {
 			if deadline, exists := ctx.Deadline(); exists {
 				require.NoError(t, connection.SetReadDeadline(deadline))
 			}
-			active := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			active := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 				return current.Status.Debug != nil && len(current.Status.Debug.Executions) == 1 &&
 					current.Status.Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseRunning &&
 					len(current.Status.Debug.Sessions) == 1 && current.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseRunning, nil
@@ -108,7 +108,7 @@ func TestV2ProjectDebugTransportLifecycle(t *testing.T) {
 				require.JSONEq(t, "93", string(response["request_seq"]))
 				event := readProjectDebugMessage(t, connection)
 				require.JSONEq(t, `"terminated"`, string(event["event"]))
-				completed := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				completed := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 					return current.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseExited &&
 						current.Status.Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseExited, nil
 				})
@@ -119,7 +119,7 @@ func TestV2ProjectDebugTransportLifecycle(t *testing.T) {
 			default:
 				require.NoError(t, connection.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")))
 				require.NoError(t, connection.Close())
-				completed := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				completed := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 					return current.Status.Debug != nil && current.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseFailed &&
 						current.Status.Debug.Executions[0].Phase == apiv2.ProjectDebugPhaseExited, nil
 				})
@@ -144,7 +144,7 @@ func readProjectDebugMessage(t *testing.T, connection *websocket.Conn) dap.Messa
 }
 
 // Verifies through each enabled real runtime that container stdio adapter sessions use the
-// prepared context without host PIDs and retain that context across connections until Project deletion.
+// prepared context without host PIDs and retain that context across connections until ProjectContainer deletion.
 func TestV2ProjectContainerAdapterWithRealOrchestrator(t *testing.T) {
 	t.Parallel()
 	testCtx, testCancel := testutil.GetTestContext(t, 3*time.Minute)
@@ -165,12 +165,11 @@ func TestV2ProjectContainerAdapterWithRealOrchestrator(t *testing.T) {
 		for name, value := range tracker.MapLabels() {
 			labels = append(labels, commonapi.Label{Key: name, Value: value})
 		}
-		project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-			Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-				Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
-					Image: &apiv2.PhysicalContainerImageConfig{Image: "busybox:latest"}, Labels: labels,
-				}},
-				DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"cat"}},
+		project := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+			Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+				Image: &apiv2.PhysicalContainerImageConfig{Image: "busybox:latest"}, Labels: labels,
+			}},
+				DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"cat"}}},
 			}}
 		require.NoError(t, server.Client.Create(ctx, project))
 		prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
@@ -184,7 +183,7 @@ func TestV2ProjectContainerAdapterWithRealOrchestrator(t *testing.T) {
 			require.JSONEq(t, `"initialize"`, string(echo["command"]))
 			require.JSONEq(t, `{"extension":"unchanged"}`, string(echo["arguments"]))
 			require.NoError(t, connection.Close())
-			ready := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			ready := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 				if current.Status.Phase != apiv2.ProjectPhaseReady {
 					return false, nil
 				}
@@ -230,14 +229,14 @@ func TestV2ProjectContainerTCPAdapterWithRealOrchestrator(t *testing.T) {
 		for name, value := range tracker.MapLabels() {
 			labels = append(labels, commonapi.Label{Key: name, Value: value})
 		}
+
 		// Busybox nc with a repeated -l forks a cat echo server per accepted connection.
-		project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-			Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-				Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
-					Image: &apiv2.PhysicalContainerImageConfig{Image: "busybox:latest"}, Labels: labels,
-				}},
-				DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Mode: apiv2.DebugAdapterModeTCPConnect,
-					Args: []string{"nc", "-ll", "-p", "{{port}}", "-e", "cat"}},
+		project := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+			Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+				Image: &apiv2.PhysicalContainerImageConfig{Image: "busybox:latest"}, Labels: labels,
+			}},
+				DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Mode: apiv2.DebugAdapterModeTCPConnect,
+					Args: []string{"nc", "-ll", "-p", "{{port}}", "-e", "cat"}}},
 			}}
 		require.NoError(t, server.Client.Create(ctx, project))
 		prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
@@ -259,7 +258,7 @@ func TestV2ProjectContainerTCPAdapterWithRealOrchestrator(t *testing.T) {
 			require.JSONEq(t, fmt.Sprintf(`{"session":%d}`, index), string(echo["arguments"]))
 			connections = append(connections, connection)
 		}
-		shared := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		shared := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 			if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 2 {
 				return false, nil
 			}
@@ -281,7 +280,7 @@ func TestV2ProjectContainerTCPAdapterWithRealOrchestrator(t *testing.T) {
 		for _, connection := range connections {
 			require.NoError(t, connection.Close())
 		}
-		released := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		released := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 			if current.Status.Phase != apiv2.ProjectPhaseReady || len(current.Status.Debug.Executions) != 1 {
 				return false, nil
 			}
@@ -307,7 +306,7 @@ func TestV2ProjectContainerTCPAdapterWithRealOrchestrator(t *testing.T) {
 		sendProjectProtocolRequest(t, reused, `{"seq":43,"type":"request","command":"initialize","arguments":{"session":2}}`)
 		reusedEcho := readProjectDebugMessage(t, reused)
 		require.JSONEq(t, `{"session":2}`, string(reusedEcho["arguments"]))
-		current := &apiv2.Project{}
+		current := &apiv2.ProjectContainer{}
 		require.NoError(t, server.Client.Get(ctx, project.NamespacedName(), current))
 		require.Len(t, current.Status.Debug.Executions, 1, "a later session must reuse the retained adapter")
 		for _, session := range current.Status.Debug.Sessions {
@@ -329,7 +328,7 @@ func sendProjectProtocolRequest(t *testing.T, connection *websocket.Conn, body s
 
 // Verifies that a real adapter's DAP messages establish session milestones without request history,
 // publish debuggee exit independently, and retain terminal connection observations after shutdown.
-func TestV2ProjectProtocolProgress(t *testing.T) {
+func TestV2ProjectProcessProtocolProgress(t *testing.T) {
 	t.Parallel()
 	for _, ending := range []string{"disconnect", "stop", "delete"} {
 		t.Run(ending, func(t *testing.T) {
@@ -338,10 +337,9 @@ func TestV2ProjectProtocolProgress(t *testing.T) {
 			namespace := createV2ExecNamespace(t, ctx, client, "v2-project-protocol-"+ending)
 			tool, toolErr := internaltest.GetTestToolPath("delay")
 			require.NoError(t, toolErr)
-			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-					Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
-						ExecutablePath: "adapter-started", AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit}}},
+			project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
+					ExecutablePath: "adapter-started", AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit}}},
 					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}},
 				}}
 			if ending == "delete" {
@@ -359,7 +357,7 @@ func TestV2ProjectProtocolProgress(t *testing.T) {
 			connection, connectErr := connectProjectDebug(t, ctx, clientConfig, project)
 			require.NoError(t, connectErr)
 			defer connection.Close()
-			connected := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			connected := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 				return current.Status.Debug != nil && len(current.Status.Debug.Sessions) != 0 &&
 					current.Status.Debug.Sessions[0].Progress != nil &&
 					current.Status.Debug.Sessions[0].Progress.StreamsConnected, nil
@@ -377,7 +375,7 @@ func TestV2ProjectProtocolProgress(t *testing.T) {
 				require.JSONEq(t, fmt.Sprint(22+index), string(response["request_seq"]))
 				require.JSONEq(t, fmt.Sprint(index%2 == 1), string(response["success"]))
 				if index%2 == 0 {
-					rejected := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+					rejected := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 						return current.Status.Debug != nil && len(current.Status.Debug.Sessions) != 0 &&
 							current.Status.Debug.Sessions[0].Progress != nil &&
 							current.Status.Debug.Sessions[0].Progress.Message != "", nil
@@ -398,7 +396,7 @@ func TestV2ProjectProtocolProgress(t *testing.T) {
 			require.JSONEq(t, `"process"`, string(reported["event"]))
 			readProjectDebugMessage(t, connection)
 			sendProjectProtocolRequest(t, connection, `{"seq":29,"type":"request","command":"attach","arguments":{"_testResponse":"defer"}}`)
-			active := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			active := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 				if current.Status.Debug == nil || len(current.Status.Debug.Sessions) == 0 {
 					return false, nil
 				}
@@ -433,7 +431,7 @@ func TestV2ProjectProtocolProgress(t *testing.T) {
 				event := readProjectDebugMessage(t, connection)
 				require.JSONEq(t, `"terminated"`, string(event["event"]))
 			}
-			completed := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			completed := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 				session := current.Status.Debug.Sessions[0]
 				return (session.Phase == apiv2.ProjectDebugPhaseExited || session.Phase == apiv2.ProjectDebugPhaseFailed) &&
 					session.Progress != nil && session.Progress.Phase == apiv2.ProjectDebugConnectionDisconnected &&
@@ -466,7 +464,7 @@ func TestV2ProjectProtocolProgress(t *testing.T) {
 
 // Verifies that debug sessions remain usable when Projects with the same name in different
 // namespaces are created, updated, and disconnected.
-func TestV2ProjectDebugSessionsAcrossNamespaces(t *testing.T) {
+func TestV2ProjectProcessDebugSessionsAcrossNamespaces(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -475,10 +473,9 @@ func TestV2ProjectDebugSessionsAcrossNamespaces(t *testing.T) {
 	tool, toolErr := internaltest.GetTestToolPath("delay")
 	require.NoError(t, toolErr)
 
-	startSession := func(namespace string) (*apiv2.Project, *websocket.Conn) {
-		project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace},
-			Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-				Process:      &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace + "-application"}},
+	startSession := func(namespace string) (*apiv2.ProjectProcess, *websocket.Conn) {
+		project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace},
+			Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace + "-application"}},
 				DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}}}}
 		require.NoError(t, client.Create(ctx, project))
 		waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
@@ -489,7 +486,7 @@ func TestV2ProjectDebugSessionsAcrossNamespaces(t *testing.T) {
 		readProjectDebugMessage(t, connection)
 		sendProjectProtocolRequest(t, connection, `{"seq":2,"type":"request","command":"launch","arguments":{"noDebug":true}}`)
 		readProjectDebugMessage(t, connection)
-		waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+		waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 			return current.Status.Debug != nil && len(current.Status.Debug.Sessions) == 1 &&
 				current.Status.Debug.Sessions[0].Progress != nil && current.Status.Debug.Sessions[0].Progress.LaunchSucceeded &&
 				current.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseRunning, nil
@@ -506,17 +503,17 @@ func TestV2ProjectDebugSessionsAcrossNamespaces(t *testing.T) {
 	event := readProjectDebugMessage(t, firstConnection)
 	require.JSONEq(t, `"process"`, string(event["event"]))
 	readProjectDebugMessage(t, firstConnection)
-	waitObjectAssumesStateEx(t, ctx, client, first.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	waitObjectAssumesStateEx(t, ctx, client, first.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 		return current.Status.Debug != nil && len(current.Status.Debug.Sessions) == 1 &&
 			current.Status.Debug.Sessions[0].Progress != nil && current.Status.Debug.Sessions[0].Progress.ProcessReported &&
 			current.Status.Debug.Sessions[0].Phase == apiv2.ProjectDebugPhaseRunning, nil
 	})
 }
 
-// Verifies that the Project controller publishes service endpoints only after a ready debug session
+// Verifies that the ProjectProcess controller publishes service endpoints only after a ready debug session
 // requests launch, including a noDebug launch whose adapter omits initialized, and withdraws them when
-// that session disconnects or the Project is deleted.
-func TestV2ProjectEndpointsFollowLaunchedSession(t *testing.T) {
+// that session disconnects or the ProjectProcess is deleted.
+func TestV2ProjectProcessEndpointsFollowLaunchedSession(t *testing.T) {
 	t.Parallel()
 	for _, ending := range []string{"disconnect", "delete", "uninitialized-launch"} {
 		t.Run(ending, func(t *testing.T) {
@@ -526,7 +523,7 @@ func TestV2ProjectEndpointsFollowLaunchedSession(t *testing.T) {
 			namespace := createV2ExecNamespace(t, ctx, client, "v2-project-endpoints-"+ending)
 			tool, toolErr := internaltest.GetTestToolPath("delay")
 			require.NoError(t, toolErr)
-			project := serviceProject("project", namespace.Name, t.TempDir(), "process", nil, nil)
+			project := serviceProjectProcess("project", namespace.Name, t.TempDir(), nil, nil)
 			project.Spec.DebugAdapter = &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}}
 			require.NoError(t, client.Create(ctx, project))
 			prepared := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
@@ -544,7 +541,7 @@ func TestV2ProjectEndpointsFollowLaunchedSession(t *testing.T) {
 				readProjectDebugMessage(t, connection)
 				expectedReady = metav1.ConditionTrue
 			}
-			waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 				return current.Status.Phase == apiv2.ProjectPhaseActive && current.Status.Debug != nil && len(current.Status.Debug.Sessions) == 1 &&
 					current.Status.Debug.Sessions[0].Progress != nil && current.Status.Debug.Sessions[0].Progress.InitializeRequested &&
 					len(current.Status.Debug.Sessions[0].Conditions) == 1 && current.Status.Debug.Sessions[0].Conditions[0].Status == expectedReady, nil
@@ -582,21 +579,21 @@ func TestV2ProjectEndpointsFollowLaunchedSession(t *testing.T) {
 	}
 }
 
-// Verifies that the Project controller keeps service endpoints published while any launched debug session
+// Verifies that the ProjectProcess controller keeps service endpoints published while any launched debug session
 // remains ready, and withdraws them only after the last ready launched session ends.
-func TestV2ProjectEndpointsFollowLastReadySession(t *testing.T) {
+func TestV2ProjectProcessEndpointsFollowLastReadySession(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
 	namespace := createV2ExecNamespace(t, ctx, client, "v2-project-endpoints-last-session")
 	tool, toolErr := internaltest.GetTestToolPath("delay")
 	require.NoError(t, toolErr)
-	project := serviceProject("project", namespace.Name, t.TempDir(), "process", nil, nil)
+	project := serviceProjectProcess("project", namespace.Name, t.TempDir(), nil, nil)
 	project.Spec.DebugAdapter = &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}}
 	require.NoError(t, client.Create(ctx, project))
 	waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
 
-	readySessions := func(current *apiv2.Project) (running int, ready int) {
+	readySessions := func(current *apiv2.ProjectProcess) (running int, ready int) {
 		if current.Status.Debug == nil {
 			return 0, 0
 		}
@@ -622,7 +619,7 @@ func TestV2ProjectEndpointsFollowLastReadySession(t *testing.T) {
 		sendProjectProtocolRequest(t, connection, `{"seq":2,"type":"request","command":"launch","arguments":{"noDebug":true}}`)
 		readProjectDebugMessage(t, connection)
 	}
-	waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 		_, ready := readySessions(current)
 		return ready == 2, nil
 	})
@@ -634,7 +631,7 @@ func TestV2ProjectEndpointsFollowLastReadySession(t *testing.T) {
 	publishedUID := endpoints.Items[0].UID
 
 	require.NoError(t, connections[0].Close())
-	waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 		running, ready := readySessions(current)
 		return running == 1 && ready == 1, nil
 	})
@@ -652,14 +649,18 @@ func TestV2ProjectEndpointsFollowLastReadySession(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, project)
 }
 
-func connectProjectDebug(t *testing.T, ctx context.Context, config *clientrest.Config, project *apiv2.Project) (*websocket.Conn, error) {
+func connectProjectDebug(t *testing.T, ctx context.Context, config *clientrest.Config, project apiv2.ProjectObject) (*websocket.Conn, error) {
 	t.Helper()
 	transport, holder, transportErr := clientwebsocket.RoundTripperFor(config)
 	if transportErr != nil {
 		return nil, transportErr
 	}
+	plural := "projectprocesses"
+	if _, container := project.(*apiv2.ProjectContainer); container {
+		plural = "projectcontainers"
+	}
 	request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet,
-		config.Host+"/apis/"+apiv2.GroupVersion.String()+"/namespaces/"+project.Namespace+"/projects/"+project.Name+"/debug", nil)
+		config.Host+"/apis/"+apiv2.GroupVersion.String()+"/namespaces/"+project.GetNamespace()+"/"+plural+"/"+project.GetName()+"/debug", nil)
 	if requestErr != nil {
 		return nil, requestErr
 	}

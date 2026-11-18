@@ -23,8 +23,8 @@ func TestProjectDebugSessionProgressOwnership(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 0)
 	defer cancel()
 	apiClient, writer := startProjectDebugStatusServer(t, ctx)
-	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "progress-ownership"},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{
+	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "progress-ownership"},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{
 			LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"},
 		}}}
 	require.NoError(t, apiClient.Create(ctx, project))
@@ -40,19 +40,19 @@ func TestProjectDebugSessionProgressOwnership(t *testing.T) {
 	require.NoError(t, progressErr)
 	stale, staleErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, session)
 	require.NoError(t, staleErr)
-	require.Equal(t, progress, stale.Status.Debug.Sessions[0].Progress)
-	requireReadyCondition := func(resource *apiv2.Project, ready metav1.ConditionStatus, reason string) {
+	require.Equal(t, progress, stale.GetProjectStatus().Debug.Sessions[0].Progress)
+	requireReadyCondition := func(resource apiv2.ProjectObject, ready metav1.ConditionStatus, reason string) {
 		t.Helper()
-		require.Equal(t, ready, resource.Status.Debug.Sessions[0].Conditions[0].Status)
-		require.Equal(t, reason, resource.Status.Debug.Sessions[0].Conditions[0].Reason)
+		require.Equal(t, ready, resource.GetProjectStatus().Debug.Sessions[0].Conditions[0].Status)
+		require.Equal(t, reason, resource.GetProjectStatus().Debug.Sessions[0].Conditions[0].Reason)
 	}
 	requireReadyCondition(stale, metav1.ConditionTrue, "DAPInitialized")
-	require.Nil(t, stale.Status.Debug.Sessions[1].Progress)
+	require.Nil(t, stale.GetProjectStatus().Debug.Sessions[1].Progress)
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	project.Status.Debug.Sessions[0].Progress = nil
-	project.Status.Phase = apiv2.ProjectPhaseReady
+	project.GetProjectStatus().Debug.Sessions[0].Progress = nil
+	project.GetProjectStatus().Phase = apiv2.ProjectPhaseReady
 	require.NoError(t, apiClient.Status().Update(ctx, project))
-	require.Equal(t, progress, project.Status.Debug.Sessions[0].Progress)
+	require.Equal(t, progress, project.GetProjectStatus().Debug.Sessions[0].Progress)
 	progress.Phase, progress.ClientTerminating = apiv2.ProjectDebugConnectionTerminating, true
 	terminating, terminationErr := writer.updateProgress(ctx, project.NamespacedName(), project.UID, session.ID, progress)
 	require.NoError(t, terminationErr)
@@ -65,14 +65,14 @@ func TestProjectDebugSessionProgressOwnership(t *testing.T) {
 	session.Conditions = debugConditions("SessionClosed", "Session closed.", false, project.Generation)
 	completed, completionErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, session)
 	require.NoError(t, completionErr)
-	require.Equal(t, progress, completed.Status.Debug.Sessions[0].Progress)
+	require.Equal(t, progress, completed.GetProjectStatus().Debug.Sessions[0].Progress)
 	session.Phase, session.FinishedAt = apiv2.ProjectDebugPhaseRunning, metav1.MicroTime{}
 	stillCompleted, oldWriteErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, session)
 	require.NoError(t, oldWriteErr)
-	require.Equal(t, apiv2.ProjectDebugPhaseExited, stillCompleted.Status.Debug.Sessions[0].Phase)
-	require.WithinDuration(t, completed.Status.Debug.Sessions[0].FinishedAt.Time,
-		stillCompleted.Status.Debug.Sessions[0].FinishedAt.Time, time.Microsecond)
-	require.Equal(t, progress, stillCompleted.Status.Debug.Sessions[0].Progress)
+	require.Equal(t, apiv2.ProjectDebugPhaseExited, stillCompleted.GetProjectStatus().Debug.Sessions[0].Phase)
+	require.WithinDuration(t, completed.GetProjectStatus().Debug.Sessions[0].FinishedAt.Time,
+		stillCompleted.GetProjectStatus().Debug.Sessions[0].FinishedAt.Time, time.Microsecond)
+	require.Equal(t, progress, stillCompleted.GetProjectStatus().Debug.Sessions[0].Progress)
 	_, wrongUIDErr := writer.updateProgress(ctx, project.NamespacedName(), "wrong-uid", session.ID, progress)
 	require.True(t, apierrors.IsConflict(wrongUIDErr))
 }

@@ -20,7 +20,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that Project waits for runtime and image capture, rejects process startup sources,
+// Verifies that ProjectProcess and ProjectContainer wait for runtime and image capture, rejects process startup sources,
 // and completes empty output when stopped or failed before physical capture exists.
 func TestProjectLogAvailabilityAndSources(t *testing.T) {
 	t.Parallel()
@@ -29,11 +29,16 @@ func TestProjectLogAvailabilityAndSources(t *testing.T) {
 	streamer := NewLogStreamer(logr.Discard())
 	defer func() { require.NoError(t, streamer.Dispose()) }()
 	for _, container := range []bool{false, true} {
-		resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", UID: "project-uid"}}
+		var resource apiv2.ProjectObject
+		meta := metav1.ObjectMeta{Name: "project", UID: "project-uid"}
 		if container {
-			resource.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "image"}}}
+			resource = &apiv2.ProjectContainer{ObjectMeta: meta, Spec: apiv2.ProjectContainerSpec{
+				Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "image"}}},
+			}}
 		} else {
-			resource.Spec.Process = &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "program"}}
+			resource = &apiv2.ProjectProcess{ObjectMeta: meta, Spec: apiv2.ProjectProcessSpec{
+				Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "program"}},
+			}}
 		}
 		for _, source := range []string{"stdout", "stderr", "startup_stdout", "startup_stderr"} {
 			opts := &apiv2.ResourceLogOptions{Source: source, Follow: true}
@@ -44,12 +49,12 @@ func TestProjectLogAvailabilityAndSources(t *testing.T) {
 			}
 			require.NoError(t, preflightErr)
 			var output bytes.Buffer
-			resource.Status.Phase = apiv2.ProjectPhasePending
+			resource.GetProjectStatus().Phase = apiv2.ProjectPhasePending
 			status, _, streamErr := streamer.StreamLogs(ctx, &output, resource, opts, logr.Discard())
 			require.NoError(t, streamErr)
 			require.Equal(t, logstream.ResourceStreamStatusNotReady, status)
 			for _, phase := range []apiv2.ProjectPhase{apiv2.ProjectPhaseStopped, apiv2.ProjectPhaseFailed} {
-				resource.Status.Phase = phase
+				resource.GetProjectStatus().Phase = phase
 				status, _, streamErr = streamer.StreamLogs(ctx, &output, resource, opts, logr.Discard())
 				require.NoError(t, streamErr)
 				require.Equal(t, logstream.ResourceStreamStatusDone, status)

@@ -116,12 +116,12 @@ func newProjectDebugRuntime(ctx context.Context, executor process.Executor, writ
 }
 
 func (runtime *projectDebugRuntime) publish(
-	project *apiv2.Project, execution *apiv2.ProjectDebugExecutionStatus, session *apiv2.ProjectDebugSessionStatus,
+	name types.NamespacedName, uid types.UID, execution *apiv2.ProjectDebugExecutionStatus, session *apiv2.ProjectDebugSessionStatus,
 ) error {
 	publishCtx, cancel := process.WithDetachedStopTimeout(runtime.ctx)
 	defer cancel()
 	return resiliency.RetryExponential(publishCtx, func() error {
-		_, updateErr := runtime.writer.update(publishCtx, project.NamespacedName(), project.UID, execution, session)
+		_, updateErr := runtime.writer.update(publishCtx, name, uid, execution, session)
 		if apierrors.IsNotFound(updateErr) || apierrors.IsConflict(updateErr) || apierrors.IsForbidden(updateErr) {
 			return resiliency.Permanent(updateErr)
 		}
@@ -160,10 +160,7 @@ func (execution *projectDebugExecution) stopExecution() error {
 		execution.statusMu.Lock()
 		execution.status.Phase, execution.status.FinishedAt = apiv2.ProjectDebugPhaseFailed, metav1.MicroTime{}
 		execution.status.Conditions = debugConditions("StopFailed", stopErr.Error(), false, execution.generation)
-		project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{
-			Name: execution.projectName.Name, Namespace: execution.projectName.Namespace, UID: execution.projectUID,
-		}}
-		publishErr := execution.runtime.publish(project, execution.status.DeepCopy(), nil)
+		publishErr := execution.runtime.publish(execution.projectName, execution.projectUID, execution.status.DeepCopy(), nil)
 		execution.statusMu.Unlock()
 		stopErr = errors.Join(stopErr, publishErr)
 	} else {
@@ -180,10 +177,7 @@ func (execution *projectDebugExecution) stopExecution() error {
 			publishCompletion = true
 		}
 		if publishCompletion {
-			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{
-				Name: execution.projectName.Name, Namespace: execution.projectName.Namespace, UID: execution.projectUID,
-			}}
-			stopErr = errors.Join(stopErr, execution.runtime.publish(project, execution.status.DeepCopy(), nil))
+			stopErr = errors.Join(stopErr, execution.runtime.publish(execution.projectName, execution.projectUID, execution.status.DeepCopy(), nil))
 		}
 		execution.statusMu.Unlock()
 	}
@@ -192,7 +186,7 @@ func (execution *projectDebugExecution) stopExecution() error {
 
 // launch leaves process lifetime separate from the caller's transport setup deadline.
 func (runtime *projectDebugRuntime) launch(
-	setupCtx context.Context, project *apiv2.Project, mode apiv2.DebugAdapterMode,
+	setupCtx context.Context, project apiv2.ProjectObject, mode apiv2.DebugAdapterMode,
 ) (*projectDebugExecution, *projectDebugTransport, error) {
 	select {
 	case runtime.launches <- struct{}{}:
@@ -207,20 +201,21 @@ func (runtime *projectDebugRuntime) launch(
 	executionCtx, cancel := context.WithCancel(runtime.ctx)
 	execution := &projectDebugExecution{
 		runtime: runtime, cancel: cancel, done: make(chan struct{}),
-		projectName: project.NamespacedName(), projectUID: project.UID, generation: project.Generation,
+		projectName: project.NamespacedName(), projectUID: project.GetUID(), generation: project.GetGeneration(),
 		status: apiv2.ProjectDebugExecutionStatus{ID: string(id), Phase: apiv2.ProjectDebugPhasePending},
 	}
-	if project.Spec.Container != nil {
-		execution.containerID = project.Status.ContainerID
+	container, isContainer := project.(*apiv2.ProjectContainer)
+	if isContainer {
+		execution.containerID = container.Status.ContainerID
 	}
-	if _, publishErr := runtime.writer.update(setupCtx, project.NamespacedName(), project.UID, execution.status.DeepCopy(), nil); publishErr != nil {
+	if _, publishErr := runtime.writer.update(setupCtx, project.NamespacedName(), project.GetUID(), execution.status.DeepCopy(), nil); publishErr != nil {
 		cancel()
 		return nil, nil, publishErr
 	}
 	stopSetup := context.AfterFunc(setupCtx, cancel)
 	defer stopSetup()
-	if project.Spec.Container != nil {
-		return runtime.launchContainer(setupCtx, executionCtx, project, execution)
+	if isContainer {
+		return runtime.launchContainer(setupCtx, executionCtx, container, execution)
 	}
 	var listener net.Listener
 	var transport *projectDebugTransport
@@ -245,22 +240,22 @@ func (runtime *projectDebugRuntime) launch(
 		if execution.handle.Pid > 0 && !process.IsProcessGoneErr(runtime.executor.CheckProcessRunning(execution.handle)) {
 			execution.status.FinishedAt = metav1.MicroTime{}
 		}
-		execution.status.Conditions = debugConditions("LaunchFailed", launchErr.Error(), false, project.Generation)
-		publishErr := runtime.publish(project, execution.status.DeepCopy(), nil)
+		execution.status.Conditions = debugConditions("LaunchFailed", launchErr.Error(), false, project.GetGeneration())
+		publishErr := runtime.publish(project.NamespacedName(), project.GetUID(), execution.status.DeepCopy(), nil)
 		execution.statusMu.Unlock()
 		if execution.handle.Pid > 0 {
 			return execution, nil, errors.Join(launchErr, publishErr)
 		}
 		return nil, nil, errors.Join(launchErr, publishErr)
 	}
-	directoryInfo, directoryErr := os.Stat(project.Spec.DebugAdapter.Directory)
+	directoryInfo, directoryErr := os.Stat(project.GetDebugAdapter().Directory)
 	if directoryErr != nil {
 		return fail(fmt.Errorf("inspect adapter directory: %w", directoryErr))
 	}
 	if !directoryInfo.IsDir() {
-		return fail(fmt.Errorf("adapter directory %q is not a directory", project.Spec.DebugAdapter.Directory))
+		return fail(fmt.Errorf("adapter directory %q is not a directory", project.GetDebugAdapter().Directory))
 	}
-	args := project.Spec.DebugAdapter.GetArgs(false)
+	args := project.GetDebugAdapter().GetArgs()
 	if mode != apiv2.DebugAdapterModeStdio {
 		port, portErr := networking.GetFreePort(commonapi.PortProtocolTCP, "127.0.0.1", runtime.log)
 		if portErr != nil {
@@ -285,7 +280,7 @@ func (runtime *projectDebugRuntime) launch(
 		}
 	}
 	cmd = exec.Command(args[0], args[1:]...)
-	cmd.Env = debugAdapterEnvironment(project.Spec.DebugAdapter)
+	cmd.Env = debugAdapterEnvironment(project.GetDebugAdapter())
 	cmd.WaitDelay = 2 * time.Second
 	diagnostic := adapterDiagnosticWriter{log: runtime.log.WithValues(
 		logger.RESOURCE_LOG_STREAM_ID, project.GetResourceId(), "Project", project.NamespacedName(), "Execution", string(id))}
@@ -330,12 +325,12 @@ func (runtime *projectDebugRuntime) launch(
 			if code == process.UnknownExitCode {
 				execution.status.Phase, execution.status.FinishedAt = apiv2.ProjectDebugPhaseFailed, metav1.MicroTime{}
 			}
-			execution.status.Conditions = debugConditions("AdapterExited", exitErr.Error(), false, project.Generation)
+			execution.status.Conditions = debugConditions("AdapterExited", exitErr.Error(), false, project.GetGeneration())
 		} else {
-			execution.status.Conditions = debugConditions("AdapterExited", "The adapter process exited.", false, project.Generation)
+			execution.status.Conditions = debugConditions("AdapterExited", "The adapter process exited.", false, project.GetGeneration())
 		}
 		close(execution.done)
-		if publishErr := runtime.publish(project, execution.status.DeepCopy(), nil); publishErr != nil {
+		if publishErr := runtime.publish(project.NamespacedName(), project.GetUID(), execution.status.DeepCopy(), nil); publishErr != nil {
 			runtime.log.Error(publishErr, "Failed to publish debug adapter completion")
 		}
 	})
@@ -350,9 +345,9 @@ func (runtime *projectDebugRuntime) launch(
 	execution.status.PID, execution.status.IdentityTimestamp = &pid, metav1.NewMicroTime(handle.IdentityTime)
 	if execution.status.Phase == apiv2.ProjectDebugPhasePending {
 		execution.status.Phase = apiv2.ProjectDebugPhaseRunning
-		execution.status.Conditions = debugConditions("AdapterRunning", "The adapter process was launched.", true, project.Generation)
+		execution.status.Conditions = debugConditions("AdapterRunning", "The adapter process was launched.", true, project.GetGeneration())
 	}
-	_, publishErr := runtime.writer.update(setupCtx, project.NamespacedName(), project.UID, execution.status.DeepCopy(), nil)
+	_, publishErr := runtime.writer.update(setupCtx, project.NamespacedName(), project.GetUID(), execution.status.DeepCopy(), nil)
 	execution.statusMu.Unlock()
 	wait()
 	if publishErr != nil {
@@ -385,7 +380,7 @@ func (runtime *projectDebugRuntime) launch(
 }
 
 func (runtime *projectDebugRuntime) launchContainer(
-	setupCtx, executionCtx context.Context, project *apiv2.Project, execution *projectDebugExecution,
+	setupCtx, executionCtx context.Context, project *apiv2.ProjectContainer, execution *projectDebugExecution,
 ) (*projectDebugExecution, *projectDebugTransport, error) {
 	var transport *projectDebugTransport
 	var stdout *io.PipeWriter
@@ -408,8 +403,8 @@ func (runtime *projectDebugRuntime) launchContainer(
 		if !started {
 			execution.status.FinishedAt = metav1.NowMicro()
 		}
-		execution.status.Conditions = debugConditions("LaunchFailed", launchErr.Error(), false, project.Generation)
-		publishErr := runtime.publish(project, execution.status.DeepCopy(), nil)
+		execution.status.Conditions = debugConditions("LaunchFailed", launchErr.Error(), false, project.GetGeneration())
+		publishErr := runtime.publish(project.NamespacedName(), project.GetUID(), execution.status.DeepCopy(), nil)
 		execution.statusMu.Unlock()
 		if started {
 			return execution, nil, errors.Join(launchErr, publishErr)
@@ -429,12 +424,12 @@ func (runtime *projectDebugRuntime) launchContainer(
 	}
 	diagnostic := adapterDiagnosticWriter{log: runtime.log.WithValues(
 		logger.RESOURCE_LOG_STREAM_ID, project.GetResourceId(), "Project", project.NamespacedName(), "Execution", execution.status.ID)}
-	args := project.Spec.DebugAdapter.GetArgs(true)
+	args := project.Spec.DebugAdapter.GetArgs()
 	options := containers.ExecContainerOptions{
 		Container: execution.containerID, Env: environment,
 		StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: usvc_io.NopWriteCloser(diagnostic), StdErrStream: usvc_io.NopWriteCloser(diagnostic)},
 	}
-	if project.Spec.DebugAdapter.EffectiveMode() == apiv2.DebugAdapterModeStdio {
+	if project.GetDebugAdapter().EffectiveMode() == apiv2.DebugAdapterModeStdio {
 		stdin, input, pipeErr := os.Pipe()
 		if pipeErr != nil {
 			return fail(fmt.Errorf("create container adapter input pipe: %w", pipeErr))
@@ -476,8 +471,8 @@ func (runtime *projectDebugRuntime) launchContainer(
 	}
 	execution.statusMu.Lock()
 	execution.status.Phase = apiv2.ProjectDebugPhaseRunning
-	execution.status.Conditions = debugConditions("AdapterExecRunning", "The container adapter's attached execution was started.", true, project.Generation)
-	_, publishErr := runtime.writer.update(setupCtx, project.NamespacedName(), project.UID, execution.status.DeepCopy(), nil)
+	execution.status.Conditions = debugConditions("AdapterExecRunning", "The container adapter's attached execution was started.", true, project.GetGeneration())
+	_, publishErr := runtime.writer.update(setupCtx, project.NamespacedName(), project.GetUID(), execution.status.DeepCopy(), nil)
 	execution.statusMu.Unlock()
 	go func() {
 		defer execution.cancel()
@@ -502,15 +497,15 @@ func (runtime *projectDebugRuntime) launchContainer(
 		if !open || code == process.UnknownExitCode || executionCtx.Err() != nil {
 			execution.status.Phase, execution.status.FinishedAt = apiv2.ProjectDebugPhaseFailed, metav1.MicroTime{}
 			execution.status.Conditions = debugConditions("ContainerAdapterCleanupUnconfirmed",
-				"The attached execution ended without confirming in-container adapter termination.", false, project.Generation)
+				"The attached execution ended without confirming in-container adapter termination.", false, project.GetGeneration())
 		} else {
 			execution.status.Phase, execution.status.FinishedAt = apiv2.ProjectDebugPhaseExited, metav1.NowMicro()
 			execution.status.ExitCode = &code
 			execution.status.Conditions = debugConditions("AdapterExecExited",
-				"The runtime reported completion of the container adapter command.", false, project.Generation)
+				"The runtime reported completion of the container adapter command.", false, project.GetGeneration())
 		}
 		close(execution.done)
-		if completionErr := runtime.publish(project, execution.status.DeepCopy(), nil); completionErr != nil {
+		if completionErr := runtime.publish(project.NamespacedName(), project.GetUID(), execution.status.DeepCopy(), nil); completionErr != nil {
 			runtime.log.Error(completionErr, "Failed to publish container adapter completion", "Project", project.NamespacedName())
 		}
 		execution.statusMu.Unlock()
@@ -521,7 +516,7 @@ func (runtime *projectDebugRuntime) launchContainer(
 	if setupErr := setupCtx.Err(); setupErr != nil {
 		return fail(setupErr)
 	}
-	if project.Spec.DebugAdapter.EffectiveMode() == apiv2.DebugAdapterModeTCPConnect {
+	if project.GetDebugAdapter().EffectiveMode() == apiv2.DebugAdapterModeTCPConnect {
 		connection, connectErr := execution.connect(setupCtx)
 		if connectErr != nil {
 			return fail(connectErr)
@@ -550,8 +545,7 @@ func (execution *projectDebugExecution) stopContainer() error {
 	stopErr := errors.Join(cleanupCtx.Err(), fmt.Errorf("in-container adapter termination is unconfirmed"))
 	execution.status.Phase, execution.status.FinishedAt = apiv2.ProjectDebugPhaseFailed, metav1.MicroTime{}
 	execution.status.Conditions = debugConditions("ContainerAdapterCleanupUnconfirmed", stopErr.Error(), false, execution.generation)
-	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: execution.projectName.Name, Namespace: execution.projectName.Namespace, UID: execution.projectUID}}
-	return errors.Join(stopErr, execution.runtime.publish(project, execution.status.DeepCopy(), nil))
+	return errors.Join(stopErr, execution.runtime.publish(execution.projectName, execution.projectUID, execution.status.DeepCopy(), nil))
 }
 
 func (execution *projectDebugExecution) connect(ctx context.Context) (io.ReadWriteCloser, error) {
@@ -718,22 +712,23 @@ func (connection *redialingAdapterConnection) Close() error {
 }
 
 func (runtime *projectDebugRuntime) acquire(
-	ctx context.Context, project *apiv2.Project,
+	ctx context.Context, project apiv2.ProjectObject,
 ) (*projectDebugExecution, *projectDebugTransport, func() error, error) {
-	if project.Spec.DebugAdapter.EffectiveMode() != apiv2.DebugAdapterModeTCPConnect {
-		execution, transport, launchErr := runtime.launch(ctx, project, project.Spec.DebugAdapter.EffectiveMode())
+	if project.GetDebugAdapter().EffectiveMode() != apiv2.DebugAdapterModeTCPConnect {
+		execution, transport, launchErr := runtime.launch(ctx, project, project.GetDebugAdapter().EffectiveMode())
 		if launchErr != nil {
 			return nil, nil, nil, launchErr
 		}
 		return execution, transport, execution.stop, nil
 	}
+	containerID, adapterAddress := preparedContainerAdapterEndpoint(project)
 	for {
 		runtime.mu.Lock()
-		provider := runtime.providers[project.UID]
+		provider := runtime.providers[project.GetUID()]
 		if provider != nil && provider.refs == 0 && (provider.fenced && provider.execution.containerID != "" || !provider.stopping && provider.retained()) &&
-			(provider.execution.containerID != project.Status.ContainerID || provider.execution.address != project.Status.DebugAdapterAddress) {
+			(provider.execution.containerID != containerID || provider.execution.address != adapterAddress) {
 			// A retained adapter belongs to a superseded container endpoint, so it cannot collide with a new launch.
-			runtime.forget(project.UID, provider)
+			runtime.forget(project.GetUID(), provider)
 			provider.execution.cancel()
 			provider = nil
 		}
@@ -748,21 +743,21 @@ func (runtime *projectDebugRuntime) acquire(
 		}
 		first := provider == nil
 		if first {
-			startCtx, startCancel := context.WithTimeout(runtime.ctx, project.Spec.DebugAdapter.GetConnectionTimeout())
+			startCtx, startCancel := context.WithTimeout(runtime.ctx, project.GetDebugAdapter().GetConnectionTimeout())
 			provider = &projectDebugProvider{ready: make(chan struct{}), stopped: make(chan struct{}), cancel: startCancel}
-			runtime.providers[project.UID] = provider
+			runtime.providers[project.GetUID()] = provider
 			go func(active *projectDebugProvider) {
 				active.execution, active.initial, active.err = runtime.launch(startCtx, project, apiv2.DebugAdapterModeTCPConnect)
 				close(active.ready)
 				startCancel()
 				if active.err == nil && active.execution.containerID != "" {
-					go runtime.forgetOnExit(project.UID, active)
+					go runtime.forgetOnExit(project.GetUID(), active)
 				}
 			}(provider)
 		}
 		provider.refs++
 		runtime.mu.Unlock()
-		release := func() error { return runtime.release(project.UID, provider) }
+		release := func() error { return runtime.release(project.GetUID(), provider) }
 		select {
 		case <-provider.ready:
 		case <-ctx.Done():
@@ -772,7 +767,7 @@ func (runtime *projectDebugRuntime) acquire(
 			return nil, nil, nil, errors.Join(provider.err, release())
 		}
 		if provider.execution.containerID != "" &&
-			(provider.execution.containerID != project.Status.ContainerID || provider.execution.address != project.Status.DebugAdapterAddress) {
+			(provider.execution.containerID != containerID || provider.execution.address != adapterAddress) {
 			return nil, nil, nil, errors.Join(fmt.Errorf("prepared container adapter endpoint changed"), release())
 		}
 		runtime.mu.Lock()
@@ -906,4 +901,12 @@ func debugAdapterEnvironment(config *apiv2.DebugAdapterConfig) []string {
 		environment = append(environment, entry.Name+"="+entry.Value)
 	}
 	return environment
+}
+
+// preparedContainerAdapterEndpoint returns the selected container and adapter address, which are empty for host targets.
+func preparedContainerAdapterEndpoint(project apiv2.ProjectObject) (string, string) {
+	if container, isContainer := project.(*apiv2.ProjectContainer); isContainer {
+		return container.Status.ContainerID, container.Status.DebugAdapterAddress
+	}
+	return "", ""
 }

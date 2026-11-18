@@ -31,8 +31,8 @@ func TestProjectDebugProcessFieldOwnership(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
 	apiClient, writer := startProjectDebugStatusServer(t, ctx)
-	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "process-ownership"},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{
+	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "process-ownership"},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{
 			LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"},
 		}}}
 	require.NoError(t, apiClient.Create(ctx, project))
@@ -41,42 +41,42 @@ func TestProjectDebugProcessFieldOwnership(t *testing.T) {
 	require.NoError(t, sessionErr)
 	unconfirmed, unconfirmedErr := writer.registerProcess(ctx, project.NamespacedName(), project.UID, session.ID, nil)
 	require.NoError(t, unconfirmedErr)
-	require.True(t, unconfirmed.Status.Debug.Sessions[0].ProcessTrackingUnconfirmed)
+	require.True(t, unconfirmed.GetProjectStatus().Debug.Sessions[0].ProcessTrackingUnconfirmed)
 	pid := int64(123)
 	first := &apiv2.ProjectDebugProcessStatus{ID: "first", PID: &pid,
 		IdentityTimestamp: metav1.NewMicroTime(time.Unix(1_700_000_000, 123_456_789)), Name: "target"}
 	registered, registrationErr := writer.registerProcess(ctx, project.NamespacedName(), project.UID, session.ID, first)
 	require.NoError(t, registrationErr)
-	require.False(t, registered.Status.Debug.Sessions[0].ProcessTrackingUnconfirmed)
+	require.False(t, registered.GetProjectStatus().Debug.Sessions[0].ProcessTrackingUnconfirmed)
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), registered))
-	require.False(t, registered.Status.Debug.Sessions[0].Processes[0].IdentityTimestamp.Equal(&first.IdentityTimestamp))
+	require.False(t, registered.GetProjectStatus().Debug.Sessions[0].Processes[0].IdentityTimestamp.Equal(&first.IdentityTimestamp))
 	duplicate := first.DeepCopy()
 	duplicate.ID = "duplicate"
 	deduplicated, duplicateErr := writer.registerProcess(ctx, project.NamespacedName(), project.UID, session.ID, duplicate)
 	require.NoError(t, duplicateErr)
-	require.Len(t, deduplicated.Status.Debug.Sessions[0].Processes, 1)
+	require.Len(t, deduplicated.GetProjectStatus().Debug.Sessions[0].Processes, 1)
 	reused := first.DeepCopy()
 	reused.ID = "reused"
 	reused.IdentityTimestamp = metav1.NewMicroTime(first.IdentityTimestamp.Add(3 * time.Microsecond))
 	registered, registrationErr = writer.registerProcess(ctx, project.NamespacedName(), project.UID, session.ID, reused)
 	require.NoError(t, registrationErr)
-	require.Len(t, registered.Status.Debug.Sessions[0].Processes, 2)
-	registered.Status.Debug.Sessions[0].Processes[0].Name = "forged"
-	registered.Status.Debug.Sessions[0].Processes[0].Observation = apiv2.ProjectDebugProcessObservation{Phase: apiv2.ProjectDebugProcessRunning}
+	require.Len(t, registered.GetProjectStatus().Debug.Sessions[0].Processes, 2)
+	registered.GetProjectStatus().Debug.Sessions[0].Processes[0].Name = "forged"
+	registered.GetProjectStatus().Debug.Sessions[0].Processes[0].Observation = apiv2.ProjectDebugProcessObservation{Phase: apiv2.ProjectDebugProcessRunning}
 	require.NoError(t, apiClient.Status().Update(ctx, registered))
 	session.Phase = apiv2.ProjectDebugPhaseExited
 	completed, completionErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, session)
 	require.NoError(t, completionErr)
-	require.Len(t, completed.Status.Debug.Sessions[0].Processes, 2)
-	require.Equal(t, "target", completed.Status.Debug.Sessions[0].Processes[0].Name)
-	require.Equal(t, apiv2.ProjectDebugProcessRunning, completed.Status.Debug.Sessions[0].Processes[0].Observation.Phase)
-	completed.Spec.Stop = true
+	require.Len(t, completed.GetProjectStatus().Debug.Sessions[0].Processes, 2)
+	require.Equal(t, "target", completed.GetProjectStatus().Debug.Sessions[0].Processes[0].Name)
+	require.Equal(t, apiv2.ProjectDebugProcessRunning, completed.GetProjectStatus().Debug.Sessions[0].Processes[0].Observation.Phase)
+	completed.GetProjectSpec().Stop = true
 	require.NoError(t, apiClient.Update(ctx, completed))
 	late := &apiv2.ProjectDebugProcessStatus{ID: "late", TrackingError: "local PID unavailable"}
 	stopping, stoppingErr := writer.registerProcess(ctx, project.NamespacedName(), project.UID, session.ID, late)
 	require.NoError(t, stoppingErr)
-	require.Len(t, stopping.Status.Debug.Sessions[0].Processes, 3)
-	require.True(t, stopping.Status.Debug.Sessions[0].ProcessTrackingUnconfirmed)
+	require.Len(t, stopping.GetProjectStatus().Debug.Sessions[0].Processes, 3)
+	require.True(t, stopping.GetProjectStatus().Debug.Sessions[0].ProcessTrackingUnconfirmed)
 	_, wrongUIDErr := writer.registerProcess(ctx, project.NamespacedName(), "replacement-uid", session.ID, late)
 	require.True(t, apierrors.IsConflict(wrongUIDErr))
 }
@@ -88,8 +88,8 @@ func TestProjectDebugRegistrationFailurePreservesTargets(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, 0)
 			defer cancel()
 			apiClient, writer := startProjectDebugStatusServer(t, ctx)
-			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "registration-failure"},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{
+			project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "registration-failure"},
+				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{
 					LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"},
 				}}}
 			require.NoError(t, apiClient.Create(ctx, project))
@@ -135,7 +135,7 @@ func TestProjectDebugServingProcessEvents(t *testing.T) {
 	_, _, launchReadErr := connection.ReadMessage()
 	require.NoError(t, launchReadErr)
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	require.True(t, project.Status.Debug.Sessions[0].ProcessTrackingUnconfirmed)
+	require.True(t, project.GetProjectStatus().Debug.Sessions[0].ProcessTrackingUnconfirmed)
 	var handles []process.ProcessHandle
 	for range 2 {
 		handle, wait, startErr := executor.TestProcessExecutor.StartProcess(ctx, exec.Command("reported-target"), nil, 0, nil)
@@ -152,17 +152,17 @@ func TestProjectDebugServingProcessEvents(t *testing.T) {
 	}
 	sendEvent(fmt.Sprintf(`{"name":"first","systemProcessId":%d}`, handles[0].Pid))
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	require.False(t, project.Status.Debug.Sessions[0].ProcessTrackingUnconfirmed)
+	require.False(t, project.GetProjectStatus().Debug.Sessions[0].ProcessTrackingUnconfirmed)
 	sendEvent(fmt.Sprintf(`{"name":"duplicate","systemProcessId":%d}`, handles[0].Pid))
 	sendEvent(fmt.Sprintf(`{"name":"fork","systemProcessId":%d}`, handles[1].Pid))
 	sendEvent(`{"name":"remote","systemProcessId":999,"isLocalProcess":false}`)
 	sendEvent(`{"name":"unknown"}`)
 	sendEvent(`{"name":"unavailable","systemProcessId":999}`)
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	require.Len(t, project.Status.Debug.Sessions[0].Processes, 5)
-	require.Equal(t, apiv2.ProjectDebugPhaseRunning, project.Status.Debug.Sessions[0].Phase)
-	require.True(t, project.Status.Debug.Sessions[0].ProcessTrackingUnconfirmed)
-	require.WithinDuration(t, handles[0].IdentityTime, project.Status.Debug.Sessions[0].Processes[0].IdentityTimestamp.Time, time.Microsecond)
+	require.Len(t, project.GetProjectStatus().Debug.Sessions[0].Processes, 5)
+	require.Equal(t, apiv2.ProjectDebugPhaseRunning, project.GetProjectStatus().Debug.Sessions[0].Phase)
+	require.True(t, project.GetProjectStatus().Debug.Sessions[0].ProcessTrackingUnconfirmed)
+	require.WithinDuration(t, handles[0].IdentityTime, project.GetProjectStatus().Debug.Sessions[0].Processes[0].IdentityTimestamp.Time, time.Microsecond)
 	closeDebugServing(t, connection)
 	require.NoError(t, executor.CheckProcessRunning(handles[0]), "ending an adapter session must not stop reported targets")
 }
@@ -181,6 +181,6 @@ func TestProjectDebugRejectsMalformedProcessMessages(t *testing.T) {
 		var message dap.Message
 		require.NoError(t, json.Unmarshal([]byte(payload), &message))
 		debugRuntime := &projectDebugRuntime{}
-		require.Error(t, debugRuntime.observeProcessMessage(&apiv2.Project{}, "session", message))
+		require.Error(t, debugRuntime.observeProcessMessage(&apiv2.ProjectProcess{}, "session", message))
 	}
 }

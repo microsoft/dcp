@@ -4,7 +4,7 @@ This document tracks decisions and bounded tasks for extending Project with debu
 
 ## Current baseline
 
-- [x] Project accepts exactly one process or container launch configuration. Container Projects directly own their physical container context; process Projects prepare inputs without automatically creating an application process.
+- [x] Project is split into `ProjectProcess` and `ProjectContainer` kinds, each requiring its own launch configuration and exposing its own `debug` subresource. "Process Projects" and "container Projects" below refer to these kinds. Container Projects directly own their physical container context; process Projects prepare inputs without automatically creating an application process.
 - [x] Source root is configured independently of execution working directory. It does not implicitly change paths or add source mounts.
 - [x] Preparation includes lifecycle projection, stop, deletion, namespace cleanup, owned startup/context logs, and ambiguous container-create recovery.
 - [x] Align initial execution with the existing V2 logical lifecycle patterns.

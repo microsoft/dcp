@@ -25,20 +25,20 @@ import (
 
 func (writer *projectDebugStatusWriter) registerProcess(
 	ctx context.Context, name types.NamespacedName, uid types.UID, sessionID string, registration *apiv2.ProjectDebugProcessStatus,
-) (*apiv2.Project, error) {
+) (apiv2.ProjectObject, error) {
 	snapshot := registration.DeepCopy()
 	if snapshot != nil && snapshot.ID == "" {
 		return nil, fmt.Errorf("process registration ID is required")
 	}
-	return writer.mutate(ctx, name, uid, func(project *apiv2.Project) error {
-		if project.Status.Debug == nil {
+	return writer.mutate(ctx, name, uid, func(project apiv2.ProjectObject) error {
+		if project.GetProjectStatus().Debug == nil {
 			return fmt.Errorf("debug session %q is not registered", sessionID)
 		}
-		index := slices.IndexFunc(project.Status.Debug.Sessions, func(session apiv2.ProjectDebugSessionStatus) bool { return session.ID == sessionID })
+		index := slices.IndexFunc(project.GetProjectStatus().Debug.Sessions, func(session apiv2.ProjectDebugSessionStatus) bool { return session.ID == sessionID })
 		if index < 0 {
 			return fmt.Errorf("debug session %q is not registered", sessionID)
 		}
-		session := &project.Status.Debug.Sessions[index]
+		session := &project.GetProjectStatus().Debug.Sessions[index]
 		if snapshot != nil {
 			for _, existing := range session.Processes {
 				if existing.ID == snapshot.ID || (existing.Attached == snapshot.Attached && existing.PID != nil && snapshot.PID != nil && existing.ContainerID == snapshot.ContainerID &&
@@ -67,7 +67,7 @@ func (writer *projectDebugStatusWriter) registerProcess(
 	})
 }
 
-func (runtime *projectDebugRuntime) observeProcessMessage(project *apiv2.Project, sessionID string, message dap.Message) error {
+func (runtime *projectDebugRuntime) observeProcessMessage(project apiv2.ProjectObject, sessionID string, message dap.Message) error {
 	var kind, event, command string
 	if decodeErr := json.Unmarshal(message["type"], &kind); decodeErr != nil {
 		return fmt.Errorf("decode DAP process message type: %w", decodeErr)
@@ -112,9 +112,10 @@ func (runtime *projectDebugRuntime) observeProcessMessage(project *apiv2.Project
 	}
 	entry := &apiv2.ProjectDebugProcessStatus{ID: string(id), Name: body.Name, PID: body.PID}
 	entry.Attached = body.StartMethod == "attach" || body.StartMethod == "attachForSuspendedLaunch"
+	container, isContainer := project.(*apiv2.ProjectContainer)
 	switch {
-	case project.Spec.Container != nil:
-		entry.ContainerID = project.Status.ContainerID
+	case isContainer:
+		entry.ContainerID = container.Status.ContainerID
 		entry.TrackingError = "Container-scoped target identity and liveness are unconfirmed."
 	case body.Local != nil && !*body.Local:
 		entry.TrackingError = "The adapter reported a non-local target; host process tracking is unconfirmed."
@@ -139,11 +140,11 @@ func (runtime *projectDebugRuntime) observeProcessMessage(project *apiv2.Project
 	return runtime.publishProcess(project, sessionID, entry)
 }
 
-func (runtime *projectDebugRuntime) publishProcess(project *apiv2.Project, sessionID string, entry *apiv2.ProjectDebugProcessStatus) error {
+func (runtime *projectDebugRuntime) publishProcess(project apiv2.ProjectObject, sessionID string, entry *apiv2.ProjectDebugProcessStatus) error {
 	ctx, cancel := process.WithDetachedStopTimeout(runtime.ctx)
 	defer cancel()
 	return resiliency.RetryExponential(ctx, func() error {
-		_, updateErr := runtime.writer.registerProcess(ctx, project.NamespacedName(), project.UID, sessionID, entry)
+		_, updateErr := runtime.writer.registerProcess(ctx, project.NamespacedName(), project.GetUID(), sessionID, entry)
 		if apierrors.IsNotFound(updateErr) || apierrors.IsConflict(updateErr) || apierrors.IsForbidden(updateErr) {
 			return resiliency.Permanent(updateErr)
 		}

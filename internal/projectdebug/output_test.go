@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	tiltapiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
+
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -170,27 +172,36 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 				t.Setenv("DCP_DISABLE_MONITOR_PROCESS", "true")
 				ctx, cancel := testutil.GetTestContext(t, 0)
 				t.Cleanup(cancel)
-				apiClient, statusWriter := startProjectDebugStatusServer(t, ctx)
+				var containerStatusWriter *projectDebugStatusWriter
+				apiClient, statusWriter := startProjectDebugStatusServer(t, ctx, func(_ *tiltapiserver.Config, writer *projectDebugStatusWriter) {
+					if _, isContainer := writer.prototype.(*apiv2.ProjectContainer); isContainer {
+						containerStatusWriter = writer
+					}
+				})
 				executor := process.NewOSExecutor(logr.Discard())
 				t.Cleanup(executor.Dispose)
 				tool, toolErr := internaltest.GetTestToolPath("delay")
 				require.NoError(t, toolErr)
-				project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "blocked-forwarding"},
-					Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-						Process:      &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}},
-						DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}}}}
+				adapterConfig := apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}}
 				if overflow {
-					project.Spec.DebugAdapter.Args[1] = "--echo-stdio"
+					adapterConfig.Args[1] = "--echo-stdio"
 				}
+				meta := metav1.ObjectMeta{Name: "project", Namespace: "blocked-forwarding"}
+				common := apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}
+				var project apiv2.ProjectObject = &apiv2.ProjectProcess{ObjectMeta: meta, Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: common,
+					Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}, DebugAdapter: &adapterConfig}}
 				if placement == "container" {
-					project.Spec.Process = nil
-					project.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "unused"}}
+					statusWriter = containerStatusWriter
+					project = &apiv2.ProjectContainer{ObjectMeta: meta, Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: common,
+						Container:    apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "unused"}},
+						DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: adapterConfig}}}
 				}
 				require.NoError(t, apiClient.Create(ctx, project))
 				debugRuntime := newProjectDebugRuntime(ctx, executor, statusWriter, logr.Discard())
 				var adapterHandle process.ProcessHandle
 				if placement == "container" {
-					project.Status.ContainerID, project.Status.ContainerRuntime = "native-cli-target", "native-cli-runtime"
+					containerProject := project.(*apiv2.ProjectContainer)
+					containerProject.Status.ContainerID, containerProject.Status.ContainerRuntime = "native-cli-target", "native-cli-runtime"
 					require.NoError(t, apiClient.Status().Update(ctx, project))
 					containerExec := &containerAdapterExecutor{run: func(execCtx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
 						require.IsType(t, (*io.PipeWriter)(nil), options.StdOutStream)
@@ -319,9 +330,9 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 					t.Fatal("process exit did not release blocked forwarding within the drain bound")
 				}
 				require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-				require.Equal(t, apiv2.ProjectDebugPhaseExited, project.Status.Debug.Executions[0].Phase)
-				require.NotNil(t, project.Status.Debug.Executions[0].ExitCode)
-				require.Zero(t, *project.Status.Debug.Executions[0].ExitCode)
+				require.Equal(t, apiv2.ProjectDebugPhaseExited, project.GetProjectStatus().Debug.Executions[0].Phase)
+				require.NotNil(t, project.GetProjectStatus().Debug.Executions[0].ExitCode)
+				require.Zero(t, *project.GetProjectStatus().Debug.Executions[0].ExitCode)
 			})
 		}
 	}

@@ -26,9 +26,9 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that Project stops a suspended adapter after bounded DAP shutdown without stopping
+// Verifies that ProjectProcess stops a suspended adapter after bounded DAP shutdown without stopping
 // an independently launched target reported by that adapter.
-func TestV2ProjectCleansAdapterWithoutStoppingReportedTarget(t *testing.T) {
+func TestV2ProjectProcessCleansAdapterWithoutStoppingReportedTarget(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -38,9 +38,8 @@ func TestV2ProjectCleansAdapterWithoutStoppingReportedTarget(t *testing.T) {
 	ownerExecutor := process.NewOSExecutor(logr.Discard())
 	t.Cleanup(ownerExecutor.Dispose)
 	target := startProjectTarget(t, ctx, ownerExecutor, tool)
-	project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-			Process:      &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "adapter-started"}},
+	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "adapter-started"}},
 			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}}}}
 	require.NoError(t, client.Create(ctx, project))
 	waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
@@ -48,7 +47,7 @@ func TestV2ProjectCleansAdapterWithoutStoppingReportedTarget(t *testing.T) {
 	require.NoError(t, connectionErr)
 	defer connection.Close()
 	reportProjectTarget(t, connection, target.Pid)
-	running := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	running := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 		return current.Status.Debug != nil && len(current.Status.Debug.Executions) == 1 &&
 			current.Status.Debug.Executions[0].PID != nil && len(current.Status.Debug.Sessions) == 1 &&
 			len(current.Status.Debug.Sessions[0].Processes) == 1, nil

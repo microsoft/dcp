@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	requestinfo "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/generic"
@@ -55,13 +56,22 @@ type projectDebugStorage struct {
 	debugSessionToken     string
 }
 
-// Configure registers Project debug serving and isolates API-owned status observations.
+// Configure registers debug serving for each Project kind and isolates API-owned status observations.
 func Configure(config *tiltapiserver.Config, ctx context.Context, log logr.Logger) error {
-	writer := &projectDebugStatusWriter{}
+	for _, prototype := range []apiv2.ProjectObject{&apiv2.ProjectProcess{}, &apiv2.ProjectContainer{}} {
+		if configureErr := configureProjectKind(config, ctx, prototype, log); configureErr != nil {
+			return configureErr
+		}
+	}
+	return nil
+}
+
+func configureProjectKind(config *tiltapiserver.Config, ctx context.Context, prototype apiv2.ProjectObject, log logr.Logger) error {
+	writer := &projectDebugStatusWriter{prototype: prototype}
 	if statusErr := configureProjectDebugStatus(config, writer); statusErr != nil {
 		return statusErr
 	}
-	projectGVR := (&apiv2.Project{}).GetGroupVersionResource()
+	projectGVR := prototype.GetGroupVersionResource()
 	parentProvider := config.ExtraConfig.APIs[projectGVR]
 	namespaceProvider := config.ExtraConfig.APIs[(&apiv2.Namespace{}).GetGroupVersionResource()]
 	if parentProvider == nil || namespaceProvider == nil {
@@ -103,7 +113,9 @@ func newProjectDebugStorage(
 	return storage
 }
 
-func (*projectDebugStorage) New() runtime.Object                               { return &apiv2.Project{} }
+func (storage *projectDebugStorage) New() runtime.Object {
+	return storage.runtime.writer.prototype.DeepCopyObject()
+}
 func (*projectDebugStorage) NamespaceScoped() bool                             { return true }
 func (*projectDebugStorage) ConnectMethods() []string                          { return []string{http.MethodGet} }
 func (*projectDebugStorage) NewConnectOptions() (runtime.Object, bool, string) { return nil, false, "" }
@@ -125,7 +137,7 @@ func (storage *projectDebugStorage) Connect(
 	if getErr != nil {
 		return nil, getErr
 	}
-	project := parent.(*apiv2.Project)
+	project := parent.(apiv2.ProjectObject)
 	if admissionErr := debugProjectAdmission(project); admissionErr != nil {
 		return nil, admissionErr
 	}
@@ -134,18 +146,18 @@ func (storage *projectDebugStorage) Connect(
 	}), nil
 }
 
-func debugProjectAdmission(project *apiv2.Project) error {
+func debugProjectAdmission(project apiv2.ProjectObject) error {
 	resource := project.GetGroupVersionResource().GroupResource()
-	if project.Spec.DebugAdapter == nil {
+	if project.GetDebugAdapter() == nil {
 		return apierrors.NewBadRequest("project has no debugAdapter configuration")
 	}
-	if !project.DeletionTimestamp.IsZero() || project.Spec.Stop {
-		return apierrors.NewForbidden(resource, project.Name, dap.ErrShutdownRequested)
+	if !project.GetDeletionTimestamp().IsZero() || project.GetProjectSpec().Stop {
+		return apierrors.NewForbidden(resource, project.GetName(), dap.ErrShutdownRequested)
 	}
 	return nil
 }
 
-func validateDebugUpgrade(request *http.Request) error {
+func validateDebugUpgrade(request *http.Request, resource schema.GroupResource) error {
 	if !websocket.IsWebSocketUpgrade(request) || request.Header.Get("Sec-WebSocket-Version") != "13" {
 		return apierrors.NewBadRequest("debug requires a WebSocket upgrade")
 	}
@@ -156,36 +168,42 @@ func validateDebugUpgrade(request *http.Request) error {
 	if origin := request.Header.Get("Origin"); origin != "" {
 		location, originErr := url.Parse(origin)
 		if originErr != nil || !strings.EqualFold(location.Host, request.Host) {
-			return apierrors.NewForbidden((&apiv2.Project{}).GetGroupVersionResource().GroupResource(), "", fmt.Errorf("cross-origin debug request"))
+			return apierrors.NewForbidden(resource, "", fmt.Errorf("cross-origin debug request"))
 		}
 	}
 	return nil
 }
 
-func validateDebugProjectSnapshot(selected, current *apiv2.Project) error {
-	if current.UID != selected.UID {
-		return apierrors.NewConflict(current.GetGroupVersionResource().GroupResource(), current.Name, fmt.Errorf("project identity changed"))
+func validateDebugProjectSnapshot(selected, current apiv2.ProjectObject) error {
+	resource := current.GetGroupVersionResource().GroupResource()
+	if current.GetUID() != selected.GetUID() {
+		return apierrors.NewConflict(resource, current.GetName(), fmt.Errorf("project identity changed"))
 	}
 	if admissionErr := debugProjectAdmission(current); admissionErr != nil {
 		return admissionErr
 	}
-	if current.Status.Phase == apiv2.ProjectPhaseFailed {
-		return apierrors.NewConflict(current.GetGroupVersionResource().GroupResource(), current.Name, fmt.Errorf("project execution context failed"))
+	if current.GetProjectStatus().Phase == apiv2.ProjectPhaseFailed {
+		return apierrors.NewConflict(resource, current.GetName(), fmt.Errorf("project execution context failed"))
 	}
-	if selected.Spec.Container != nil && selected.Status.ContainerID != "" &&
-		(current.Status.ContainerID != selected.Status.ContainerID ||
-			current.Status.ContainerRuntime != selected.Status.ContainerRuntime ||
-			(selected.Status.DebugAdapterAddress != "" &&
-				(current.Status.DebugAdapterAddress != selected.Status.DebugAdapterAddress ||
-					current.Status.DebugAdapterPort != selected.Status.DebugAdapterPort))) {
-		return apierrors.NewConflict(current.GetGroupVersionResource().GroupResource(), current.Name, fmt.Errorf("prepared container identity changed"))
+	selectedContainer, selectedIsContainer := selected.(*apiv2.ProjectContainer)
+	currentContainer, currentIsContainer := current.(*apiv2.ProjectContainer)
+	if selectedIsContainer != currentIsContainer {
+		return apierrors.NewConflict(resource, current.GetName(), fmt.Errorf("project kind changed"))
+	}
+	if selectedIsContainer && selectedContainer.Status.ContainerID != "" &&
+		(currentContainer.Status.ContainerID != selectedContainer.Status.ContainerID ||
+			currentContainer.Status.ContainerRuntime != selectedContainer.Status.ContainerRuntime ||
+			(selectedContainer.Status.DebugAdapterAddress != "" &&
+				(currentContainer.Status.DebugAdapterAddress != selectedContainer.Status.DebugAdapterAddress ||
+					currentContainer.Status.DebugAdapterPort != selectedContainer.Status.DebugAdapterPort))) {
+		return apierrors.NewConflict(resource, current.GetName(), fmt.Errorf("prepared container identity changed"))
 	}
 	return nil
 }
 
 // monitor watches the parent for prerequisite changes and cancellation for the entire debug request.
 func (storage *projectDebugStorage) monitor(
-	ctx context.Context, selected *apiv2.Project, ready chan<- *apiv2.Project, cancel context.CancelCauseFunc,
+	ctx context.Context, selected apiv2.ProjectObject, ready chan<- apiv2.ProjectObject, cancel context.CancelCauseFunc,
 ) {
 	namespaceSource, supportsWatch := storage.namespaces.(rest.Watcher)
 	if !supportsWatch {
@@ -193,15 +211,15 @@ func (storage *projectDebugStorage) monitor(
 		return
 	}
 	namespaceWatch, namespaceWatchErr := namespaceSource.Watch(ctx, &metainternal.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("metadata.name", selected.Namespace),
+		FieldSelector: fields.OneTermEqualSelector("metadata.name", selected.GetNamespace()),
 	})
 	if namespaceWatchErr != nil {
 		cancel(namespaceWatchErr)
 		return
 	}
 	defer namespaceWatch.Stop()
-	parentWatch, watchErr := storage.parent.Watch(requestinfo.WithNamespace(ctx, selected.Namespace), &metainternal.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("metadata.name", selected.Name),
+	parentWatch, watchErr := storage.parent.Watch(requestinfo.WithNamespace(ctx, selected.GetNamespace()), &metainternal.ListOptions{
+		FieldSelector: fields.OneTermEqualSelector("metadata.name", selected.GetName()),
 	})
 	if watchErr != nil {
 		cancel(watchErr)
@@ -210,17 +228,17 @@ func (storage *projectDebugStorage) monitor(
 	defer parentWatch.Stop()
 	// Tilt registers each watch before its initial snapshot. Check only for a Project
 	// that disappeared during subscription; readiness comes exclusively from watch objects.
-	parent, getErr := storage.parent.Get(requestinfo.WithNamespace(ctx, selected.Namespace), selected.Name, &metav1.GetOptions{})
+	parent, getErr := storage.parent.Get(requestinfo.WithNamespace(ctx, selected.GetNamespace()), selected.GetName(), &metav1.GetOptions{})
 	if getErr != nil {
 		cancel(getErr)
 		return
 	}
-	if parent.(*apiv2.Project).UID != selected.UID {
+	if parent.(apiv2.ProjectObject).GetUID() != selected.GetUID() {
 		cancel(fmt.Errorf("project identity changed during watch subscription"))
 		return
 	}
 	prepared := false
-	var current *apiv2.Project
+	var current apiv2.ProjectObject
 	var namespace *apiv2.Namespace
 	for {
 		select {
@@ -242,13 +260,13 @@ func (storage *projectDebugStorage) monitor(
 				cancel(fmt.Errorf("invalid Project watch event %q", event.Type))
 				return
 			}
-			snapshot, valid := event.Object.(*apiv2.Project)
-			if !valid || snapshot.Name != selected.Name {
+			snapshot, valid := event.Object.(apiv2.ProjectObject)
+			if !valid || snapshot.GetName() != selected.GetName() {
 				cancel(fmt.Errorf("invalid Project watch snapshot"))
 				return
 			}
 			// Tilt filters live watch events by name but not by namespace.
-			if snapshot.Namespace != selected.Namespace {
+			if snapshot.GetNamespace() != selected.GetNamespace() {
 				continue
 			}
 			if event.Type == watch.Deleted {
@@ -280,7 +298,7 @@ func (storage *projectDebugStorage) monitor(
 				return
 			}
 			snapshot, valid := event.Object.(*apiv2.Namespace)
-			if !valid || snapshot.Name != selected.Namespace {
+			if !valid || snapshot.Name != selected.GetNamespace() {
 				cancel(fmt.Errorf("invalid Namespace watch snapshot"))
 				return
 			}
@@ -297,14 +315,15 @@ func (storage *projectDebugStorage) monitor(
 		}
 		isReady := false
 		if current != nil && namespace != nil && namespace.Status.Phase == apiv2.NamespacePhaseActive {
-			condition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+			currentStatus := current.GetProjectStatus()
+			condition := apimeta.FindStatusCondition(currentStatus.Conditions, string(apiv2.ConditionReady))
 			isReady = condition != nil && condition.Status == metav1.ConditionTrue &&
-				((current.Status.Phase == apiv2.ProjectPhaseReady && condition.Reason == string(apiv2.ProjectReasonPrepared)) ||
-					(current.Status.Phase == apiv2.ProjectPhaseActive && condition.Reason == string(apiv2.ProjectReasonDebugSessionsActive)))
+				((currentStatus.Phase == apiv2.ProjectPhaseReady && condition.Reason == string(apiv2.ProjectReasonPrepared)) ||
+					(currentStatus.Phase == apiv2.ProjectPhaseActive && condition.Reason == string(apiv2.ProjectReasonDebugSessionsActive)))
 		}
 		if isReady && !prepared {
 			prepared = true
-			selected = current.DeepCopy()
+			selected = current.DeepCopyObject().(apiv2.ProjectObject)
 			ready <- selected
 		} else if prepared && !isReady {
 			cancel(fmt.Errorf("project debug prerequisites are no longer available"))
@@ -313,9 +332,9 @@ func (storage *projectDebugStorage) monitor(
 	}
 }
 
-func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *http.Request, project *apiv2.Project, responder rest.Responder) {
+func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *http.Request, project apiv2.ProjectObject, responder rest.Responder) {
 	if !storage.secureTokenConfigured && storage.debugSessionToken == "" {
-		responder.Error(apierrors.NewForbidden(project.GetGroupVersionResource().GroupResource(), project.Name,
+		responder.Error(apierrors.NewForbidden(project.GetGroupVersionResource().GroupResource(), project.GetName(),
 			fmt.Errorf("debug requires DCP_SECURE_TOKEN or DCP_DEBUG_SESSION_TOKEN configuration")))
 		return
 	}
@@ -323,12 +342,12 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 		tokens := request.Header.Values("X-DCP-Debug-Session-Token")
 		if len(tokens) != 1 ||
 			subtle.ConstantTimeCompare([]byte(tokens[0]), []byte(storage.debugSessionToken)) != 1 {
-			responder.Error(apierrors.NewForbidden(project.GetGroupVersionResource().GroupResource(), project.Name,
+			responder.Error(apierrors.NewForbidden(project.GetGroupVersionResource().GroupResource(), project.GetName(),
 				fmt.Errorf("invalid debug session token")))
 			return
 		}
 	}
-	if upgradeErr := validateDebugUpgrade(request); upgradeErr != nil {
+	if upgradeErr := validateDebugUpgrade(request, project.GetGroupVersionResource().GroupResource()); upgradeErr != nil {
 		responder.Error(upgradeErr)
 		return
 	}
@@ -351,30 +370,30 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 		return
 	}
 	session := &apiv2.ProjectDebugSessionStatus{ID: string(sessionID), Phase: apiv2.ProjectDebugPhasePending}
-	if _, publishErr := storage.runtime.writer.update(ctx, project.NamespacedName(), project.UID, nil, session); publishErr != nil {
+	if _, publishErr := storage.runtime.writer.update(ctx, project.NamespacedName(), project.GetUID(), nil, session); publishErr != nil {
 		responder.Error(publishErr)
 		return
 	}
 	var sessionErr error
 	defer func() {
 		session.Phase, session.FinishedAt = apiv2.ProjectDebugPhaseExited, metav1.NowMicro()
-		session.Conditions = debugConditions("SessionClosed", "The debug session closed.", false, project.Generation)
+		session.Conditions = debugConditions("SessionClosed", "The debug session closed.", false, project.GetGeneration())
 		if sessionErr != nil {
 			session.Phase = apiv2.ProjectDebugPhaseFailed
-			session.Conditions = debugConditions("SessionFailed", sessionErr.Error(), false, project.Generation)
+			session.Conditions = debugConditions("SessionFailed", sessionErr.Error(), false, project.GetGeneration())
 		}
-		if publishErr := storage.runtime.publish(project, nil, session); publishErr != nil {
+		if publishErr := storage.runtime.publish(project.NamespacedName(), project.GetUID(), nil, session); publishErr != nil {
 			storage.runtime.log.Error(publishErr, "Failed to publish debug session completion")
 		}
 	}()
-	ready := make(chan *apiv2.Project, 1)
+	ready := make(chan apiv2.ProjectObject, 1)
 	monitorDone := make(chan struct{})
 	go func() {
 		defer close(monitorDone)
 		storage.monitor(ctx, project, ready, cancel)
 	}()
 	defer func() { cancel(nil); <-monitorDone }()
-	var prepared *apiv2.Project
+	var prepared apiv2.ProjectObject
 	select {
 	case prepared = <-ready:
 	case <-ctx.Done():
@@ -383,7 +402,7 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 		return
 	}
 	project = prepared
-	setupCtx, setupCancel := context.WithTimeout(ctx, project.Spec.DebugAdapter.GetConnectionTimeout())
+	setupCtx, setupCancel := context.WithTimeout(ctx, project.GetDebugAdapter().GetConnectionTimeout())
 	execution, transport, release, acquireErr := storage.runtime.acquire(setupCtx, project)
 	setupCancel()
 	if acquireErr != nil {
@@ -410,8 +429,8 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 		}
 	}()
 	session.ExecutionID = execution.status.ID
-	session.Conditions = debugConditions("ClientConnectionPending", "The adapter transport is connected; waiting for the client stream.", false, project.Generation)
-	if _, publishErr := storage.runtime.writer.update(ctx, project.NamespacedName(), project.UID, nil, session); publishErr != nil {
+	session.Conditions = debugConditions("ClientConnectionPending", "The adapter transport is connected; waiting for the client stream.", false, project.GetGeneration())
+	if _, publishErr := storage.runtime.writer.update(ctx, project.NamespacedName(), project.GetUID(), nil, session); publishErr != nil {
 		sessionErr = publishErr
 		responder.Error(publishErr)
 		return
@@ -425,8 +444,8 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 	defer connection.Close()
 	connection.SetReadLimit(9 * 1024 * 1024)
 	session.Phase = apiv2.ProjectDebugPhaseRunning
-	session.Conditions = debugConditions("DAPInitializationPending", "Both streams are connected; waiting for DAP initialization.", false, project.Generation)
-	if _, publishErr := storage.runtime.writer.update(ctx, project.NamespacedName(), project.UID, nil, session); publishErr != nil {
+	session.Conditions = debugConditions("DAPInitializationPending", "Both streams are connected; waiting for DAP initialization.", false, project.GetGeneration())
+	if _, publishErr := storage.runtime.writer.update(ctx, project.NamespacedName(), project.GetUID(), nil, session); publishErr != nil {
 		sessionErr = publishErr
 		return
 	}

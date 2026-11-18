@@ -62,7 +62,7 @@ func (storage *debugLookupFaultStorage) Get(ctx context.Context, name string, op
 }
 
 func registerDebugServingTestStorage(config *tiltapiserver.Config, ctx context.Context, writer *projectDebugStatusWriter, log logr.Logger) {
-	gvr := (&apiv2.Project{}).GetGroupVersionResource()
+	gvr := writer.prototype.GetGroupVersionResource()
 	parentProvider := config.ExtraConfig.APIs[gvr]
 	namespaceProvider := config.ExtraConfig.APIs[(&apiv2.Namespace{}).GetGroupVersionResource()]
 	gvr.Resource += "/" + apiv2.DebugSubresourceName
@@ -129,6 +129,9 @@ func TestProjectDebugTokensDoNotAppearInServerLogs(t *testing.T) {
 	dcppaths.EnableTestPathProbing()
 	var config *clientrest.Config
 	apiClient, _ := startProjectDebugStatusServer(t, ctx, func(serverConfig *tiltapiserver.Config, writer *projectDebugStatusWriter) {
+		if _, isProcess := writer.prototype.(*apiv2.ProjectProcess); !isProcess {
+			return
+		}
 		config = clientrest.CopyConfig(serverConfig.GenericConfig.LoopbackClientConfig)
 		bearerToken = config.BearerToken
 		originalChain := serverConfig.GenericConfig.BuildHandlerChainFunc
@@ -145,7 +148,7 @@ func TestProjectDebugTokensDoNotAppearInServerLogs(t *testing.T) {
 			Rules: []auditinternal.PolicyRule{{Level: auditinternal.LevelRequestResponse}},
 		})
 		registerDebugServingTestStorage(serverConfig, ctx, writer, log)
-		gvr := (&apiv2.Project{}).GetGroupVersionResource()
+		gvr := writer.prototype.GetGroupVersionResource()
 		gvr.Resource += "/" + apiv2.DebugSubresourceName
 		debugProvider := serverConfig.ExtraConfig.APIs[gvr]
 		serverConfig.ExtraConfig.APIs[gvr] = func(scheme *runtime.Scheme, getter generic.RESTOptionsGetter) (rest.Storage, error) {
@@ -164,7 +167,7 @@ func TestProjectDebugTokensDoNotAppearInServerLogs(t *testing.T) {
 	successful := project.DeepCopy()
 	successful.Name, successful.ResourceVersion, successful.UID = "successful-debug-log-probe", "", ""
 	successful.Spec.DebugAdapter.Args = []string{tool, "--dap-stdio"}
-	successful.Status = apiv2.ProjectStatus{}
+	successful.Status = apiv2.ProjectProcessStatus{}
 	require.NoError(t, apiClient.Create(ctx, successful))
 	successful.Status = project.Status
 	require.NoError(t, apiClient.Status().Update(ctx, successful))
@@ -174,7 +177,7 @@ func TestProjectDebugTokensDoNotAppearInServerLogs(t *testing.T) {
 		transport := &http.Transport{TLSClientConfig: tlsConfig}
 		defer transport.CloseIdleConnections()
 		request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet,
-			config.Host+"/apis/"+apiv2.GroupVersion.String()+"/namespaces/debug/projects/"+project.Name+"/debug", nil)
+			config.Host+"/apis/"+apiv2.GroupVersion.String()+"/namespaces/debug/projectprocesses/"+project.Name+"/debug", nil)
 		require.NoError(t, requestErr)
 		request.Header.Set("Authorization", "Bearer "+bearerToken)
 		request.Header.Set("X-DCP-Debug-Session-Token", token)
@@ -210,7 +213,7 @@ func TestProjectDebugTokensDoNotAppearInServerLogs(t *testing.T) {
 				headers.Set("X-DCP-Debug-Session-Token", scenario.token)
 			}
 			location := strings.Replace(config.Host, "https://", "wss://", 1) +
-				"/apis/" + apiv2.GroupVersion.String() + "/namespaces/debug/projects/" + scenario.target + "/debug"
+				"/apis/" + apiv2.GroupVersion.String() + "/namespaces/debug/projectprocesses/" + scenario.target + "/debug"
 			connection, response, connectErr := dialer.DialContext(ctx, location, headers)
 			if response != nil {
 				defer response.Body.Close()

@@ -172,9 +172,9 @@ func TestProjectDelveClientBoundsPendingMessages(t *testing.T) {
 	require.ErrorIs(t, emptyErr, io.EOF)
 }
 
-// Verifies in opt-in CI that a real Delve adapter runs through the production Project DAP endpoint:
+// Verifies in opt-in CI that a real Delve adapter runs through the production ProjectProcess DAP endpoint:
 // breakpoint, stack/variable inspection, continuation and adapter cleanup work without a TTY or V1 IDE protocol.
-func TestV2ProjectDelveEndToEnd(t *testing.T) {
+func TestV2ProjectProcessDelveEndToEnd(t *testing.T) {
 	if !osutil.EnvVarSwitchEnabled("DCP_TEST_ENABLE_DELVE") {
 		t.Skip("real Delve E2E requires DCP_TEST_ENABLE_DELVE from the test entry point")
 	}
@@ -209,11 +209,10 @@ func TestV2ProjectDelveEndToEnd(t *testing.T) {
 			require.True(t, filepath.IsAbs(delve), "go tool must resolve an absolute Delve binary path")
 
 			namespace := createV2ExecNamespace(t, ctx, client, "v2-project-delve-"+ending)
-			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: filepath.Dir(source),
-					Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
-						ExecutablePath: binary, AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
-					}},
+			project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: filepath.Dir(source)}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
+					ExecutablePath: binary, AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
+				}},
 					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(),
 						Args: []string{delve, "dap", "--client-addr=127.0.0.1:{{port}}"}, Mode: apiv2.DebugAdapterModeTCPCallback,
 					},
@@ -287,7 +286,7 @@ func TestV2ProjectDelveEndToEnd(t *testing.T) {
 			}
 			require.True(t, foundResult, "the computed local must be inspectable")
 
-			observed := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			observed := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 				return len(current.Status.Debug.Executions) == 1 && len(current.Status.Debug.Sessions[0].Processes) == 1 &&
 					current.Status.Debug.Sessions[0].Processes[0].Observation.Phase == apiv2.ProjectDebugProcessRunning, nil
 			})

@@ -21,21 +21,21 @@ import (
 
 func (writer *projectDebugStatusWriter) updateProgress(ctx context.Context, name types.NamespacedName, uid types.UID,
 	sessionID string, progress *apiv2.ProjectDebugSessionProgress,
-) (*apiv2.Project, error) {
+) (apiv2.ProjectObject, error) {
 	snapshot := progress.DeepCopy()
-	return writer.mutate(ctx, name, uid, func(project *apiv2.Project) error {
-		if project.Status.Debug == nil {
+	return writer.mutate(ctx, name, uid, func(project apiv2.ProjectObject) error {
+		if project.GetProjectStatus().Debug == nil {
 			return fmt.Errorf("debug session %q is not registered", sessionID)
 		}
-		index := slices.IndexFunc(project.Status.Debug.Sessions, func(session apiv2.ProjectDebugSessionStatus) bool {
+		index := slices.IndexFunc(project.GetProjectStatus().Debug.Sessions, func(session apiv2.ProjectDebugSessionStatus) bool {
 			return session.ID == sessionID
 		})
 		if index < 0 {
 			return fmt.Errorf("debug session %q is not registered", sessionID)
 		}
-		session := &project.Status.Debug.Sessions[index]
+		session := &project.GetProjectStatus().Debug.Sessions[index]
 		session.Progress = snapshot.DeepCopy()
-		applyProjectDebugSessionProgress(session, project.Generation)
+		applyProjectDebugSessionProgress(session, project.GetGeneration())
 		return nil
 	})
 }
@@ -66,7 +66,7 @@ func applyProjectDebugSessionProgress(session *apiv2.ProjectDebugSessionStatus, 
 	}
 }
 
-func (runtime *projectDebugRuntime) publishProgress(project *apiv2.Project, sessionID string, state dap.SessionState) error {
+func (runtime *projectDebugRuntime) publishProgress(project apiv2.ProjectObject, sessionID string, state dap.SessionState) error {
 	var phase apiv2.ProjectDebugConnectionPhase
 	switch state.Phase {
 	case dap.ConnectionConnected:
@@ -89,7 +89,7 @@ func (runtime *projectDebugRuntime) publishProgress(project *apiv2.Project, sess
 	ctx, cancel := process.WithDetachedStopTimeout(runtime.ctx)
 	defer cancel()
 	return resiliency.RetryExponential(ctx, func() error {
-		_, updateErr := runtime.writer.updateProgress(ctx, project.NamespacedName(), project.UID, sessionID, progress)
+		_, updateErr := runtime.writer.updateProgress(ctx, project.NamespacedName(), project.GetUID(), sessionID, progress)
 		if apierrors.IsNotFound(updateErr) || apierrors.IsConflict(updateErr) || apierrors.IsForbidden(updateErr) {
 			return resiliency.Permanent(updateErr)
 		}

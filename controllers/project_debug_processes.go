@@ -27,22 +27,23 @@ func registeredProjectProcess(entry apiv2.ProjectDebugProcessStatus) (process.Pr
 	return handle, handle.Validate()
 }
 
-func (r *ProjectReconciler) observeProjectProcesses(resource *apiv2.Project, data *projectData, log logr.Logger) {
+// observeProjectProcesses checks liveness of registered local debug targets.
+func observeProjectProcesses(executor process.Executor, status *apiv2.ProjectCommonStatus, data *projectData, log logr.Logger) {
 	data.processPoll = false
 	if data.processes == nil {
 		data.processes = make(map[process.ProcessHandle]apiv2.ProjectDebugProcessObservation)
 	}
-	if resource.Status.Debug == nil {
+	if status.Debug == nil {
 		return
 	}
-	for _, session := range resource.Status.Debug.Sessions {
+	for _, session := range status.Debug.Sessions {
 		for _, registered := range session.Processes {
 			handle, handleErr := registeredProjectProcess(registered)
 			if handleErr != nil {
 				continue
 			}
 			current := data.processes[handle]
-			runningErr := r.processExecutor.CheckProcessRunning(handle)
+			runningErr := executor.CheckProcessRunning(handle)
 			switch {
 			case runningErr == nil:
 				current.Phase, current.Message = apiv2.ProjectDebugProcessRunning, ""
@@ -64,13 +65,13 @@ func (r *ProjectReconciler) observeProjectProcesses(resource *apiv2.Project, dat
 	}
 }
 
-func projectProcessObservations(resource *apiv2.Project, data *projectData) objectChange {
-	if resource.Status.Debug == nil {
+func projectProcessObservations(status *apiv2.ProjectCommonStatus, data *projectData) objectChange {
+	if status.Debug == nil {
 		return noChange
 	}
 	change := noChange
-	for sessionIndex := range resource.Status.Debug.Sessions {
-		session := &resource.Status.Debug.Sessions[sessionIndex]
+	for sessionIndex := range status.Debug.Sessions {
+		session := &status.Debug.Sessions[sessionIndex]
 		for processIndex := range session.Processes {
 			registered := &session.Processes[processIndex]
 			handle, handleErr := registeredProjectProcess(*registered)

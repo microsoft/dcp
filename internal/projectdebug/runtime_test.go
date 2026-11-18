@@ -43,8 +43,8 @@ func TestProjectDebugReleasePreservesDescendantCleanupWarning(t *testing.T) {
 	require.ErrorIs(t, release(), process.ErrIncompleteProcessTree)
 	require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(execution.handle)))
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	require.Len(t, project.Status.Debug.Executions, 1)
-	completed := project.Status.Debug.Executions[0]
+	require.Len(t, project.GetProjectStatus().Debug.Executions, 1)
+	completed := project.GetProjectStatus().Debug.Executions[0]
 	require.Equal(t, apiv2.ProjectDebugPhaseExited, completed.Phase)
 	require.False(t, completed.FinishedAt.IsZero())
 	require.Len(t, completed.Conditions, 1)
@@ -58,8 +58,8 @@ func TestProjectDebugReleasePreservesDescendantCleanupWarning(t *testing.T) {
 	require.NoError(t, replacementTransport.Close())
 	require.NoError(t, releaseReplacement())
 	require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-	require.Len(t, project.Status.Debug.Executions, 2)
-	require.Equal(t, "DescendantCleanupUnconfirmed", project.Status.Debug.Executions[0].Conditions[0].Reason)
+	require.Len(t, project.GetProjectStatus().Debug.Executions, 2)
+	require.Equal(t, "DescendantCleanupUnconfirmed", project.GetProjectStatus().Debug.Executions[0].Conditions[0].Reason)
 }
 
 // Verifies that acquisition waits behind stopping host/container providers without launching,
@@ -81,25 +81,24 @@ func TestProjectDebugAcquireFencesStoppingProvider(t *testing.T) {
 				}
 				executor := internaltest.NewTestProcessExecutor(ctx)
 				defer executor.Dispose()
-				debugRuntime := newProjectDebugRuntime(ctx, executor, &projectDebugStatusWriter{}, logr.Discard())
-				project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug", UID: "project-uid"},
-					Spec: apiv2.ProjectSpec{DebugAdapter: &apiv2.DebugAdapterConfig{Mode: apiv2.DebugAdapterModeTCPConnect}}}
+				meta := metav1.ObjectMeta{Name: "project", Namespace: "debug", UID: "project-uid"}
+				adapterConfig := apiv2.DebugAdapterConfig{Mode: apiv2.DebugAdapterModeTCPConnect}
+				var project apiv2.ProjectObject = &apiv2.ProjectProcess{ObjectMeta: meta, Spec: apiv2.ProjectProcessSpec{DebugAdapter: &adapterConfig}}
+				var containerID, adapterAddress string
 				if mode == "container" {
-					project.Spec.Container = &apiv2.ProjectContainerTemplate{}
-					project.Status.ContainerID = "prepared-container"
-					project.Status.DebugAdapterAddress = "prepared-endpoint"
-				} else {
-					project.Spec.Process = &apiv2.ProjectProcessTemplate{}
+					containerID, adapterAddress = "prepared-container", "prepared-endpoint"
+					project = &apiv2.ProjectContainer{ObjectMeta: meta,
+						Spec:   apiv2.ProjectContainerSpec{DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: adapterConfig}},
+						Status: apiv2.ProjectContainerStatus{ContainerID: containerID, DebugAdapterAddress: adapterAddress}}
 				}
-				fencedExecution := &projectDebugExecution{
-					containerID: project.Status.ContainerID, address: project.Status.DebugAdapterAddress,
-				}
+				debugRuntime := newProjectDebugRuntime(ctx, executor, &projectDebugStatusWriter{prototype: project}, logr.Discard())
+				fencedExecution := &projectDebugExecution{containerID: containerID, address: adapterAddress}
 				fenced := &projectDebugProvider{
 					stopping: true, stopped: make(chan struct{}), ready: make(chan struct{}),
 					execution: fencedExecution, initial: &projectDebugTransport{},
 				}
 				close(fenced.ready)
-				debugRuntime.providers[project.UID] = fenced
+				debugRuntime.providers[project.GetUID()] = fenced
 				type acquisition struct {
 					execution *projectDebugExecution
 					transport *projectDebugTransport
@@ -119,7 +118,7 @@ func TestProjectDebugAcquireFencesStoppingProvider(t *testing.T) {
 						test.Fatalf("acquisition completed while provider remained fenced: %v", result.err)
 					default:
 					}
-					require.Same(test, fenced, debugRuntime.providers[project.UID])
+					require.Same(test, fenced, debugRuntime.providers[project.GetUID()])
 					require.Zero(test, fenced.refs)
 					require.Empty(test, executor.Executions)
 					require.Empty(test, debugRuntime.launches)
@@ -138,7 +137,7 @@ func TestProjectDebugAcquireFencesStoppingProvider(t *testing.T) {
 				case <-ctx.Done():
 					test.Fatal("fenced acquisition did not return after cancellation")
 				}
-				require.Same(test, fenced, debugRuntime.providers[project.UID])
+				require.Same(test, fenced, debugRuntime.providers[project.GetUID()])
 				select {
 				case <-fenced.stopped:
 					test.Fatal("request cancellation released the provider fence")
@@ -147,9 +146,7 @@ func TestProjectDebugAcquireFencesStoppingProvider(t *testing.T) {
 
 				go acquire(ctx)
 				assertFenced()
-				execution := &projectDebugExecution{
-					containerID: project.Status.ContainerID, address: project.Status.DebugAdapterAddress,
-				}
+				execution := &projectDebugExecution{containerID: containerID, address: adapterAddress}
 				transport := &projectDebugTransport{}
 				replacement := &projectDebugProvider{
 					ready: make(chan struct{}), stopped: make(chan struct{}),
@@ -157,7 +154,7 @@ func TestProjectDebugAcquireFencesStoppingProvider(t *testing.T) {
 				}
 				close(replacement.ready)
 				debugRuntime.mu.Lock()
-				debugRuntime.providers[project.UID] = replacement
+				debugRuntime.providers[project.GetUID()] = replacement
 				close(fenced.stopped)
 				debugRuntime.mu.Unlock()
 				select {

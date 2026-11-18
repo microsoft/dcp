@@ -52,9 +52,9 @@ func (orchestrator *projectContainerEnvironmentOrchestrator) InspectContainers(
 	return inspected, nil
 }
 
-// Verifies that container Project reports the inspected environment, including image defaults
+// Verifies that ProjectContainer reports the inspected environment, including image defaults
 // and explicit overrides, without changing its declared inputs or losing observations on stop.
-func TestV2ProjectReportsObservedContainerEnvironment(t *testing.T) {
+func TestV2ProjectContainerReportsObservedContainerEnvironment(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -64,8 +64,8 @@ func TestV2ProjectReportsObservedContainerEnvironment(t *testing.T) {
 		}})
 	require.NoError(t, startupErr)
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-observed-env")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 			LogicalContainerConfig: apiv2.LogicalContainerConfig{
 				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
 				Env:   []commonapi.EnvVar{{Name: "OVERRIDE", Value: `{{printf "configured-value"}}`}},
@@ -86,7 +86,7 @@ func TestV2ProjectReportsObservedContainerEnvironment(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
-// Verifies that Project prepares a process snapshot independently of its source root,
+// Verifies that ProjectProcess prepares a process snapshot independently of its source root,
 // becomes Ready without launching it, and retains that snapshot until explicit stop/deletion.
 func TestV2ProjectProcessLifecycle(t *testing.T) {
 	t.Parallel()
@@ -95,17 +95,15 @@ func TestV2ProjectProcessLifecycle(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
 			namespace := createActiveV2Namespace(t, ctx, "v2-project-process-"+directory+"case")
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: filepath.Join(t.TempDir(), "source-not-working-directory"),
-					Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-command", Args: []string{"literal"},
-						WorkingDirectory: directory, AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
-						Env: []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}}}}}}
+			resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: filepath.Join(t.TempDir(), "source-not-working-directory")}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-command", Args: []string{"literal"},
+					WorkingDirectory: directory, AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
+					Env: []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}}}}}}
 			require.NoError(t, client.Create(ctx, resource))
 			running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
 			require.Equal(t, []string{"literal"}, running.Status.EffectiveArgs)
 			require.Equal(t, []commonapi.EnvVar{{Name: "VALUE", Value: "expected"}}, running.Status.EffectiveEnv)
 			require.Equal(t, directory, running.Spec.Process.WorkingDirectory)
-			require.Empty(t, running.Status.PhysicalContainerRef)
 			var logical apiv2.LogicalProcessList
 			require.NoError(t, client.List(ctx, &logical, ctrl_client.InNamespace(namespace.Name)))
 			require.Empty(t, logical.Items)
@@ -124,17 +122,17 @@ func TestV2ProjectProcessLifecycle(t *testing.T) {
 	}
 }
 
-// Verifies that Project waits for namespace readiness and that stop before preparation never launches a process.
-func TestV2ProjectNamespaceAndEarlyStop(t *testing.T) {
+// Verifies that ProjectProcess waits for namespace readiness and that stop before preparation never launches a process.
+func TestV2ProjectProcessNamespaceAndEarlyStop(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-missing-namespace"},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "v2-project-early-stop-command"}}}}
+	resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-missing-namespace"},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "v2-project-early-stop-command"}}}}
 	require.NoError(t, client.Create(ctx, resource))
 	pending := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhasePending)
 	requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparing)
-	require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.Project) error {
+	require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.ProjectProcess) error {
 		current.Spec.Stop = true
 		return client.Update(updateCtx, current)
 	}))
@@ -149,7 +147,7 @@ func TestV2ProjectNamespaceAndEarlyStop(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
 }
 
-// Verifies that Project owns a physical container and inline image, preserves explicit mounts and run arguments,
+// Verifies that ProjectContainer owns a physical container and inline image, preserves explicit mounts and run arguments,
 // shares runtime capture, retains its prepared lifecycle while paused, and removes execution on stop/deletion.
 func TestV2ProjectContainerLifecycle(t *testing.T) {
 	t.Parallel()
@@ -157,10 +155,9 @@ func TestV2ProjectContainerLifecycle(t *testing.T) {
 	defer cancel()
 	namespace := createActiveV2Namespace(t, ctx, "v2-project-container")
 	root := t.TempDir()
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: filepath.Join(root, "source"),
-			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"not-started"}},
-			Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: filepath.Join(root, "source")}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"not-started"}}},
+			Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
 				Entrypoint: "program", Command: []string{"one"}, RunArgs: []string{"--user", "1000"}, Env: []commonapi.EnvVar{{Name: "VALUE", Value: "literal"}},
 				VolumeMounts: []apiv2.VolumeMount{{Type: apiv2.BindMount, Source: filepath.Join(root, "assets"), Target: "/assets", ReadOnly: true}}},
 				Ports: []apiv2.LogicalContainerPort{{ContainerPort: 8080, LogicalServiceBinding: apiv2.LogicalServiceBinding{
@@ -191,7 +188,7 @@ func TestV2ProjectContainerLifecycle(t *testing.T) {
 	require.NoError(t, outputErr)
 	require.Equal(t, "container-project\n", output)
 	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, running.Status.ContainerID, containers.ContainerStatusPaused))
-	paused := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	paused := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return ready != nil && ready.Reason == string(apiv2.ProjectReasonPaused), nil
 	})
@@ -205,7 +202,7 @@ func TestV2ProjectContainerLifecycle(t *testing.T) {
 	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, running.Status.ContainerID, containers.ContainerStatusRunning))
 	recovered := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
 	require.Equal(t, running.Status.RuntimeLogs.UID, recovered.Status.RuntimeLogs.UID)
-	require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.Project) error {
+	require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.ProjectContainer) error {
 		current.Spec.Stop = true
 		return client.Update(updateCtx, current)
 	}))
@@ -220,8 +217,8 @@ func TestV2ProjectContainerLifecycle(t *testing.T) {
 	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(physical.Spec.Container.ContainerName))
 }
 
-// Verifies that Project preparation never invokes the application executable, even when execution would fail.
-func TestV2ProjectPreparationDoesNotLaunchApplication(t *testing.T) {
+// Verifies that ProjectProcess preparation never invokes the application executable, even when execution would fail.
+func TestV2ProjectProcessPreparationDoesNotLaunchApplication(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -232,16 +229,16 @@ func TestV2ProjectPreparationDoesNotLaunchApplication(t *testing.T) {
 		Condition: criteria, StartupError: func(*internaltest.ProcessExecution) error { return errors.New("project-launch-denied") },
 	})
 	defer testProcessExecutor.RemoveAutoExecution(criteria)
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: command}}}}
+	resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: command}}}}
 	require.NoError(t, client.Create(ctx, resource))
 	waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
 	require.Empty(t, testProcessExecutor.FindAll([]string{command}, "", nil))
 }
 
-// Verifies that Project delegates terminal image failure without creating a runtime container
-// and forwards image diagnostics through the Project's system stream.
-func TestV2ProjectImageFailure(t *testing.T) {
+// Verifies that ProjectContainer delegates terminal image failure without creating a runtime container
+// and forwards image diagnostics through the ProjectContainer's system stream.
+func TestV2ProjectContainerImageFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -249,12 +246,12 @@ func TestV2ProjectImageFailure(t *testing.T) {
 	source := namespace.Name + "-image"
 	containerOrchestrator.FailNextPullImage(source, errors.New("project-image-denied"))
 	noRetries := int32(0)
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: source, PullPolicy: apiv2.PullPolicyAlways, PullRetryLimit: &noRetries}}}}}
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: source, PullPolicy: apiv2.PullPolicyAlways, PullRetryLimit: &noRetries}}}}}
 	require.NoError(t, client.Create(ctx, resource))
 	failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
 	require.Empty(t, failed.Status.ContainerID)
-	drained := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	drained := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return current.Status.StartupLogs != nil && current.Status.StartupLogs.Complete, nil
 	})
 	require.Equal(t, apiv2.ProjectPhaseFailed, drained.Status.Phase)
@@ -270,10 +267,10 @@ func TestV2ProjectNamespaceCleanup(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	namespace := createActiveV2Namespace(t, ctx, "v2-project-namespace-cleanup")
-	processProject := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-command"}}}}
-	containerProject := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}}}}}
+	processProject := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-command"}}}}
+	containerProject := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}}}}}
 	require.NoError(t, client.Create(ctx, processProject))
 	require.NoError(t, client.Create(ctx, containerProject))
 	waitProjectPhase(t, ctx, client, processProject, apiv2.ProjectPhaseReady)
@@ -286,17 +283,17 @@ func TestV2ProjectNamespaceCleanup(t *testing.T) {
 	require.Empty(t, testProcessExecutor.FindAll([]string{processProject.Spec.Process.ExecutablePath}, "", nil))
 }
 
-// Verifies that Project watches logical network references, delegates external image readiness,
+// Verifies that ProjectContainer watches logical network references, delegates external image readiness,
 // and leaves independently owned dependencies and their startup logs separate.
 func TestV2ProjectContainerDependencyWatches(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 	namespace := createActiveV2Namespace(t, ctx, "v2-project-dependencies")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "shared-image", Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: namespace.Name + "/network", Aliases: []string{"project"}}}}}}}
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "shared-image", Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: namespace.Name + "/network", Aliases: []string{"project"}}}}}}}
 	require.NoError(t, client.Create(ctx, resource))
-	waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		return ready != nil && ready.Reason == string(apiv2.ProjectReasonPreparing) &&
 			strings.Contains(ready.Message, "LogicalContainerNetwork"), nil
@@ -307,7 +304,7 @@ func TestV2ProjectContainerDependencyWatches(t *testing.T) {
 	readyNetwork := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.LogicalContainerNetwork) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerNetworkPhaseReady, nil
 	})
-	pending := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	pending := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return current.Status.PhysicalContainerRef != "" && current.Status.Phase == apiv2.ProjectPhasePending, nil
 	})
 	physical := &apiv2.PhysicalContainer{}
@@ -326,41 +323,41 @@ func TestV2ProjectContainerDependencyWatches(t *testing.T) {
 	require.NoError(t, client.Get(ctx, network.NamespacedName(), &apiv2.LogicalContainerNetwork{}))
 }
 
-// Verifies that Project admission rejects incompatible templates and immutable launch changes
+// Verifies that ProjectProcess admission rejects reversing a stop request
 // through the real API server rather than relying only on Go validation calls.
-func TestV2ProjectAPIValidation(t *testing.T) {
+func TestV2ProjectProcessAPIValidation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-validation"},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir()}}
-	require.True(t, apierrors.IsInvalid(client.Create(ctx, resource)))
-	resource.Spec.Process = &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "program"}}
-	resource.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "image"}}
-	require.True(t, apierrors.IsInvalid(client.Create(ctx, resource)))
-	resource.Spec.Container = nil
-	resource.Spec.Stop = true
+	resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-validation"},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir(), Stop: true},
+			Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "program"}}}}
 	require.NoError(t, client.Create(ctx, resource))
 	require.True(t, apierrors.IsInvalid(client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":false}}`)))))
 }
 
-func waitProjectPhase(t *testing.T, ctx context.Context, apiClient ctrl_client.Client, resource *apiv2.Project, phase apiv2.ProjectPhase) *apiv2.Project {
+func waitProjectPhase[T commonapi.ObjectStruct, PT interface {
+	commonapi.PObjectStruct[T]
+	apiv2.ProjectObject
+}](t *testing.T, ctx context.Context, apiClient ctrl_client.Client, resource PT, phase apiv2.ProjectPhase) *T {
 	t.Helper()
-	return waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
-		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
-		return current.Status.Phase == phase && ready != nil && ready.ObservedGeneration == current.Generation, nil
+	return waitObjectAssumesStateEx[T, PT](t, ctx, apiClient, resource.NamespacedName(), func(current *T) (bool, error) {
+		project := PT(current)
+		status := project.GetProjectStatus()
+		ready := apimeta.FindStatusCondition(status.Conditions, string(apiv2.ConditionReady))
+		return status.Phase == phase && ready != nil && ready.ObservedGeneration == project.GetGeneration(), nil
 	})
 }
 
 // Verifies that an empty prepared environment survives API serialization without starving
-// Project finalizer removal, allowing both Project and namespace deletion to complete.
-func TestV2ProjectEmptyPreparedEnvironmentAllowsDeletion(t *testing.T) {
+// ProjectProcess finalizer removal, allowing both ProjectProcess and namespace deletion to complete.
+func TestV2ProjectProcessEmptyPreparedEnvironmentAllowsDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
 	namespace := createV2ExecNamespace(t, ctx, client, "v2-project-empty-environment")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{
+	resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{
 			LogicalProcessConfig: apiv2.LogicalProcessConfig{
 				ExecutablePath:     "not-started",
 				AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
@@ -378,65 +375,108 @@ func TestV2ProjectEmptyPreparedEnvironmentAllowsDeletion(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
 }
 
-// Verifies that Project preserves case-distinct container environment names on every host and
-// applies host-process casing before template evaluation, keeping published and physical inputs consistent.
-func TestV2ProjectPreparedEnvironmentCasing(t *testing.T) {
+// Verifies that ProjectProcess applies host environment-name casing before template evaluation,
+// so a superseded case-variant value cannot cause a preparation failure.
+func TestV2ProjectProcessPreparedEnvironmentCasing(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"process", "container"} {
-		for _, malformed := range []bool{false, true} {
-			name := kind + "-literal"
-			if malformed {
-				name = kind + "-malformed"
-			}
-			t.Run(name, func(t *testing.T) {
-				t.Parallel()
-				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-				t.Cleanup(cancel)
-				namespace := createActiveV2Namespace(t, ctx, "v2-project-env-"+name)
-				value := `{{printf "upper"}}`
-				if malformed {
-					value = "{{"
-				}
-				environment := []commonapi.EnvVar{{Name: "VALUE", Value: value}, {Name: "value", Value: "lower"}}
-				expected := []commonapi.EnvVar{{Name: "VALUE", Value: "upper"}, {Name: "value", Value: "lower"}}
-				ignoreCase := kind == "process" && osutil.IsWindows()
-				if ignoreCase {
-					expected = expected[1:]
-				}
-				resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-					Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir()}}
-				if kind == "process" {
-					resource.Spec.Process = &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
-						ExecutablePath: "not-started", Env: environment,
-						AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
-					}}
-				} else {
-					resource.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
-						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Env: environment,
-					}}
-				}
-				require.NoError(t, client.Create(ctx, resource))
-				observed := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
-					return current.Status.Phase == apiv2.ProjectPhaseReady || current.Status.Phase == apiv2.ProjectPhaseFailed, nil
-				})
-				if malformed && !ignoreCase {
-					require.Equal(t, apiv2.ProjectPhaseFailed, observed.Status.Phase)
-					requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
-					require.Empty(t, observed.Status.PhysicalContainerRef)
-				} else {
-					require.Equal(t, apiv2.ProjectPhaseReady, observed.Status.Phase)
-					require.Equal(t, expected, observed.Status.EffectiveEnv)
-					if kind == "container" {
-						physical := &apiv2.PhysicalContainer{}
-						require.NoError(t, client.Get(ctx, types.NamespacedName{
-							Name: observed.Status.PhysicalContainerRef, Namespace: namespace.Name,
-						}, physical))
-						require.Equal(t, expected, physical.Spec.Container.Env)
-					}
-				}
-			})
+	kind := "process"
+
+	for _, malformed := range []bool{false, true} {
+		name := kind + "-literal"
+		if malformed {
+			name = kind + "-malformed"
 		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			namespace := createActiveV2Namespace(t, ctx, "v2-project-env-"+name)
+			value := `{{printf "upper"}}`
+			if malformed {
+				value = "{{"
+			}
+			environment := []commonapi.EnvVar{{Name: "VALUE", Value: value}, {Name: "value", Value: "lower"}}
+			expected := []commonapi.EnvVar{{Name: "VALUE", Value: "upper"}, {Name: "value", Value: "lower"}}
+			ignoreCase := osutil.IsWindows()
+			if ignoreCase {
+				expected = expected[1:]
+			}
+			resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}}}
+
+			resource.Spec.Process = apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
+				ExecutablePath: "not-started", Env: environment,
+				AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
+			}}
+
+			require.NoError(t, client.Create(ctx, resource))
+			observed := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
+				return current.Status.Phase == apiv2.ProjectPhaseReady || current.Status.Phase == apiv2.ProjectPhaseFailed, nil
+			})
+			if malformed && !ignoreCase {
+				require.Equal(t, apiv2.ProjectPhaseFailed, observed.Status.Phase)
+				requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
+			} else {
+				require.Equal(t, apiv2.ProjectPhaseReady, observed.Status.Phase)
+				require.Equal(t, expected, observed.Status.EffectiveEnv)
+
+			}
+		})
 	}
+
+}
+
+// Verifies that ProjectContainer preserves case-distinct environment names on every host and
+// keeps its published environment consistent with the physical container inputs.
+func TestV2ProjectContainerPreparedEnvironmentCasing(t *testing.T) {
+	t.Parallel()
+	kind := "container"
+
+	for _, malformed := range []bool{false, true} {
+		name := kind + "-literal"
+		if malformed {
+			name = kind + "-malformed"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			namespace := createActiveV2Namespace(t, ctx, "v2-project-env-"+name)
+			value := `{{printf "upper"}}`
+			if malformed {
+				value = "{{"
+			}
+			environment := []commonapi.EnvVar{{Name: "VALUE", Value: value}, {Name: "value", Value: "lower"}}
+			expected := []commonapi.EnvVar{{Name: "VALUE", Value: "upper"}, {Name: "value", Value: "lower"}}
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}}}
+
+			resource.Spec.Container = apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Env: environment,
+			}}
+
+			require.NoError(t, client.Create(ctx, resource))
+			observed := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
+				return current.Status.Phase == apiv2.ProjectPhaseReady || current.Status.Phase == apiv2.ProjectPhaseFailed, nil
+			})
+			if malformed {
+				require.Equal(t, apiv2.ProjectPhaseFailed, observed.Status.Phase)
+				requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
+				require.Empty(t, observed.Status.PhysicalContainerRef)
+			} else {
+				require.Equal(t, apiv2.ProjectPhaseReady, observed.Status.Phase)
+				require.Equal(t, expected, observed.Status.EffectiveEnv)
+
+				physical := &apiv2.PhysicalContainer{}
+				require.NoError(t, client.Get(ctx, types.NamespacedName{
+					Name: observed.Status.PhysicalContainerRef, Namespace: namespace.Name,
+				}, physical))
+				require.Equal(t, expected, physical.Spec.Container.Env)
+
+			}
+		})
+	}
+
 }
 
 // Verifies that Project evaluates declared environment before merging over literal ambient values
@@ -453,8 +493,8 @@ func TestV2ProjectPreparedEnvironmentSnapshot(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
 	namespace := createActiveV2Namespace(t, ctx, "v2-project-prepared-environment")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{
+	resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{
 			LogicalProcessConfig: apiv2.LogicalProcessConfig{
 				ExecutablePath: "application-must-not-start", Args: []string{},
 				Env: []commonapi.EnvVar{
@@ -491,7 +531,7 @@ func TestV2ProjectPreparedEnvironmentSnapshot(t *testing.T) {
 	t.Setenv(inherited, "changed-after-preparation")
 	require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
 		[]byte(`{"metadata":{"annotations":{"prepared-snapshot-probe":"changed"}}}`))))
-	observed := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	observed := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 		return current.Annotations["prepared-snapshot-probe"] == "changed" && current.Status.Phase == apiv2.ProjectPhaseReady, nil
 	})
 	require.True(t, reflect.DeepEqual(prepared.Status.EffectiveEnv, observed.Status.EffectiveEnv))
@@ -506,8 +546,8 @@ func TestV2ProjectPreparedEnvironmentSnapshot(t *testing.T) {
 	empty := waitProjectPhase(t, ctx, client, noInheritance, apiv2.ProjectPhaseReady)
 	require.Zero(t, len(empty.Status.EffectiveEnv))
 	require.Empty(t, empty.Status.EffectiveArgs)
-	container := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+	container := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 			LogicalContainerConfig: apiv2.LogicalContainerConfig{
 				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
 				Env: []commonapi.EnvVar{
@@ -534,13 +574,13 @@ func TestV2ProjectPreparedEnvironmentSnapshot(t *testing.T) {
 
 // Verifies that explicit stop moves Ready to Stopped without launching an application
 // or discarding the prepared input snapshot.
-func TestV2ProjectReadyStopsWithoutApplication(t *testing.T) {
+func TestV2ProjectProcessReadyStopsWithoutApplication(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
 	namespace := createV2ExecNamespace(t, ctx, client, "v2-project-session-phases")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{
+	resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{
 			LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-not-started", Args: []string{"prepared"}},
 		}}}
 	require.NoError(t, client.Create(ctx, resource))
@@ -552,15 +592,14 @@ func TestV2ProjectReadyStopsWithoutApplication(t *testing.T) {
 }
 
 // Verifies that process debug prerequisites follow namespace admission independently of application
-// startup, and namespace deletion reaches Project deletion without launching an adapter.
+// startup, and namespace deletion reaches ProjectProcess deletion without launching an adapter.
 func TestV2ProjectProcessDebugPrerequisites(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-debug-prerequisites",
+	resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-debug-prerequisites",
 		Finalizers: []string{"test/debug-prerequisite-cleanup"}},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-			Process:      &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "v2-project-pending-application"}},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "v2-project-pending-application"}},
 			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"v2-project-prerequisite-adapter"}}}}
 	require.NoError(t, client.Create(ctx, resource))
 	releaseFinalizer := func() {
@@ -570,21 +609,21 @@ func TestV2ProjectProcessDebugPrerequisites(t *testing.T) {
 			[]byte(`{"metadata":{"finalizers":[]}}`)))))
 	}
 	t.Cleanup(releaseFinalizer)
-	pending := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	pending := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 		return current.Status.Phase == apiv2.ProjectPhasePending, nil
 	})
 	require.Nil(t, pending.Status.Debug)
 	namespace := createV2ExecNamespace(t, ctx, client, resource.Namespace)
 	// Release before namespace cleanup as well as after an early failure.
 	t.Cleanup(releaseFinalizer)
-	ready := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	ready := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 		return current.Status.Phase == apiv2.ProjectPhaseReady, nil
 	})
 	require.Equal(t, apiv2.ProjectPhaseReady, ready.Status.Phase)
 	requireReadyCondition(t, ready.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonPrepared)
 	require.Empty(t, testProcessExecutor.FindAll(resource.Spec.DebugAdapter.Args, "", nil))
 	require.NoError(t, client.Delete(ctx, namespace))
-	waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 		return !current.DeletionTimestamp.IsZero(), nil
 	})
 	require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
@@ -592,77 +631,144 @@ func TestV2ProjectProcessDebugPrerequisites(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
 }
 
-// Verifies that Project stores literal host adapter configuration independently of process/container
-// execution, freezes it on update, and does not launch the adapter when the application starts or stops.
-func TestV2ProjectDebugAdapterConfigurationDoesNotLaunch(t *testing.T) {
+// Verifies that ProjectProcess stores literal adapter configuration without launching it,
+// rejects configuration changes, and preserves the declaration after stop.
+func TestV2ProjectProcessDebugAdapterConfigurationDoesNotLaunch(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{"process", "container"} {
-		t.Run(kind, func(t *testing.T) {
-			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-			defer cancel()
-			namespace := createActiveV2Namespace(t, ctx, "v2-project-debug-config-"+kind)
-			adapterCommand := namespace.Name + "-adapter"
-			adapter := &apiv2.DebugAdapterConfig{Directory: t.TempDir(),
-				Args: []string{adapterCommand, "--port={{port}}", ""}, Mode: apiv2.DebugAdapterModeTCPConnect,
-				Env:               []commonapi.EnvVar{{Name: "VALUE", Value: "literal-{{port}}"}},
-				ConnectionTimeout: &metav1.Duration{Duration: 25 * time.Second},
-			}
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), DebugAdapter: adapter}}
-			if kind == "process" {
-				resource.Spec.Process = &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-application"}}
-			} else {
-				resource.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}}}
-			}
-			require.NoError(t, client.Create(ctx, resource))
-			running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
-			require.Equal(t, adapter, running.Spec.DebugAdapter)
-			requireReadyCondition(t, running.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonPrepared)
-			require.Nil(t, running.Status.Debug)
-			require.Empty(t, testProcessExecutor.FindAll([]string{adapterCommand}, "", nil))
-			for _, change := range []func(*apiv2.Project){
-				func(changed *apiv2.Project) { changed.Spec.DebugAdapter.Args[0] = "other-adapter" },
-				func(changed *apiv2.Project) { changed.Spec.DebugAdapter.Mode = apiv2.DebugAdapterModeTCPCallback },
-				func(changed *apiv2.Project) { changed.Spec.DebugAdapter.Env[0].Value = "changed" },
-				func(changed *apiv2.Project) { changed.Spec.DebugAdapter.ConnectionTimeout.Duration = time.Second },
-				func(changed *apiv2.Project) { changed.Spec.DebugAdapter = nil },
-			} {
-				require.NoError(t, client.Get(ctx, resource.NamespacedName(), running))
-				changed := running.DeepCopy()
-				change(changed)
-				require.True(t, apierrors.IsInvalid(client.Update(ctx, changed)))
-			}
-			for _, patch := range []string{
-				`{"spec":{"debugAdapter":{"args":["other-adapter"]}}}`,
-				`{"spec":{"debugAdapter":{"mode":"stdio"}}}`,
-				`{"spec":{"debugAdapter":{"env":[{"name":"VALUE","value":"changed"}]}}}`,
-				`{"spec":{"debugAdapter":{"connectionTimeout":"1s"}}}`,
-				`{"spec":{"debugAdapter":null}}`,
-			} {
-				patchErr := client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(patch)))
-				require.True(t, apierrors.IsInvalid(patchErr), "%v", patchErr)
-			}
-			require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.Project) error {
-				current.Spec.Stop = true
-				return client.Update(updateCtx, current)
-			}))
-			stopped := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
-			require.Equal(t, adapter, stopped.Spec.DebugAdapter)
-			requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonStopped)
-			require.Empty(t, testProcessExecutor.FindAll([]string{adapterCommand}, "", nil))
-		})
-	}
+	kind := "process"
+
+	t.Run(kind, func(t *testing.T) {
+		ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+		defer cancel()
+		namespace := createActiveV2Namespace(t, ctx, "v2-project-debug-config-"+kind)
+		adapterCommand := namespace.Name + "-adapter"
+		adapter := &apiv2.DebugAdapterConfig{Directory: t.TempDir(),
+			Args: []string{adapterCommand, "--port={{port}}", ""}, Mode: apiv2.DebugAdapterModeTCPConnect,
+			Env:               []commonapi.EnvVar{{Name: "VALUE", Value: "literal-{{port}}"}},
+			ConnectionTimeout: &metav1.Duration{Duration: 25 * time.Second},
+		}
+		resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+			Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, DebugAdapter: adapter}}
+
+		resource.Spec.Process = apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-application"}}
+
+		require.NoError(t, client.Create(ctx, resource))
+		running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+		require.Equal(t, adapter, running.Spec.DebugAdapter)
+		requireReadyCondition(t, running.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonPrepared)
+		require.Nil(t, running.Status.Debug)
+		require.Empty(t, testProcessExecutor.FindAll([]string{adapterCommand}, "", nil))
+		for _, change := range []func(*apiv2.ProjectProcess){
+			func(changed *apiv2.ProjectProcess) { changed.Spec.DebugAdapter.Args[0] = "other-adapter" },
+			func(changed *apiv2.ProjectProcess) {
+				changed.Spec.DebugAdapter.Mode = apiv2.DebugAdapterModeTCPCallback
+			},
+			func(changed *apiv2.ProjectProcess) { changed.Spec.DebugAdapter.Env[0].Value = "changed" },
+			func(changed *apiv2.ProjectProcess) {
+				changed.Spec.DebugAdapter.ConnectionTimeout.Duration = time.Second
+			},
+			func(changed *apiv2.ProjectProcess) { changed.Spec.DebugAdapter = nil },
+		} {
+			require.NoError(t, client.Get(ctx, resource.NamespacedName(), running))
+			changed := running.DeepCopy()
+			change(changed)
+			require.True(t, apierrors.IsInvalid(client.Update(ctx, changed)))
+		}
+		for _, patch := range []string{
+			`{"spec":{"debugAdapter":{"args":["other-adapter"]}}}`,
+			`{"spec":{"debugAdapter":{"mode":"stdio"}}}`,
+			`{"spec":{"debugAdapter":{"env":[{"name":"VALUE","value":"changed"}]}}}`,
+			`{"spec":{"debugAdapter":{"connectionTimeout":"1s"}}}`,
+			`{"spec":{"debugAdapter":null}}`,
+		} {
+			patchErr := client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(patch)))
+			require.True(t, apierrors.IsInvalid(patchErr), "%v", patchErr)
+		}
+		require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.ProjectProcess) error {
+			current.Spec.Stop = true
+			return client.Update(updateCtx, current)
+		}))
+		stopped := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
+		require.Equal(t, adapter, stopped.Spec.DebugAdapter)
+		requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonStopped)
+		require.Empty(t, testProcessExecutor.FindAll([]string{adapterCommand}, "", nil))
+	})
+
 }
 
-// Verifies that adding adapter configuration to an existing unconfigured Project is rejected
+// Verifies that ProjectContainer stores literal adapter configuration without launching it,
+// rejects configuration changes, and preserves the declaration after stop.
+func TestV2ProjectContainerDebugAdapterConfigurationDoesNotLaunch(t *testing.T) {
+	t.Parallel()
+	kind := "container"
+
+	t.Run(kind, func(t *testing.T) {
+		ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+		defer cancel()
+		namespace := createActiveV2Namespace(t, ctx, "v2-project-debug-config-"+kind)
+		adapterCommand := namespace.Name + "-adapter"
+		adapter := &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(),
+			Args: []string{adapterCommand, "--port={{port}}", ""}, Mode: apiv2.DebugAdapterModeTCPConnect,
+			Env:               []commonapi.EnvVar{{Name: "VALUE", Value: "literal-{{port}}"}},
+			ConnectionTimeout: &metav1.Duration{Duration: 25 * time.Second},
+		}}
+		resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+			Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, DebugAdapter: adapter}}
+
+		resource.Spec.Container = apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}}}
+
+		require.NoError(t, client.Create(ctx, resource))
+		running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+		require.Equal(t, adapter, running.Spec.DebugAdapter)
+		requireReadyCondition(t, running.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonPrepared)
+		require.Nil(t, running.Status.Debug)
+		require.Empty(t, testProcessExecutor.FindAll([]string{adapterCommand}, "", nil))
+		for _, change := range []func(*apiv2.ProjectContainer){
+			func(changed *apiv2.ProjectContainer) { changed.Spec.DebugAdapter.Args[0] = "other-adapter" },
+			func(changed *apiv2.ProjectContainer) {
+				changed.Spec.DebugAdapter.Mode = apiv2.DebugAdapterModeTCPCallback
+			},
+			func(changed *apiv2.ProjectContainer) { changed.Spec.DebugAdapter.Env[0].Value = "changed" },
+			func(changed *apiv2.ProjectContainer) {
+				changed.Spec.DebugAdapter.ConnectionTimeout.Duration = time.Second
+			},
+			func(changed *apiv2.ProjectContainer) { changed.Spec.DebugAdapter = nil },
+		} {
+			require.NoError(t, client.Get(ctx, resource.NamespacedName(), running))
+			changed := running.DeepCopy()
+			change(changed)
+			require.True(t, apierrors.IsInvalid(client.Update(ctx, changed)))
+		}
+		for _, patch := range []string{
+			`{"spec":{"debugAdapter":{"args":["other-adapter"]}}}`,
+			`{"spec":{"debugAdapter":{"mode":"stdio"}}}`,
+			`{"spec":{"debugAdapter":{"env":[{"name":"VALUE","value":"changed"}]}}}`,
+			`{"spec":{"debugAdapter":{"connectionTimeout":"1s"}}}`,
+			`{"spec":{"debugAdapter":null}}`,
+		} {
+			patchErr := client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(patch)))
+			require.True(t, apierrors.IsInvalid(patchErr), "%v", patchErr)
+		}
+		require.NoError(t, retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.ProjectContainer) error {
+			current.Spec.Stop = true
+			return client.Update(updateCtx, current)
+		}))
+		stopped := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
+		require.Equal(t, adapter, stopped.Spec.DebugAdapter)
+		requireReadyCondition(t, stopped.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonStopped)
+		require.Empty(t, testProcessExecutor.FindAll([]string{adapterCommand}, "", nil))
+	})
+
+}
+
+// Verifies that adding adapter configuration to an existing unconfigured ProjectProcess is rejected
 // through both update and patch, preserving the original launch declaration.
-func TestV2ProjectRejectsAddingDebugAdapter(t *testing.T) {
+func TestV2ProjectProcessRejectsAddingDebugAdapter(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-debug-addition"},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Stop: true,
-			Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
+	resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-debug-addition"},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir(), Stop: true}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
 	require.NoError(t, client.Create(ctx, resource))
 	current := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhasePending)
 	changed := current.DeepCopy()
@@ -675,9 +781,9 @@ func TestV2ProjectRejectsAddingDebugAdapter(t *testing.T) {
 	require.Nil(t, current.Spec.DebugAdapter)
 }
 
-// Verifies that the real Project API accepts all declared adapter transport modes and omitted/zero
+// Verifies that the real ProjectProcess API accepts all declared adapter transport modes and omitted/zero
 // timeout defaults, while rejecting missing commands, unsupported modes, empty environment names, and negative timeouts.
-func TestV2ProjectDebugAdapterAdmission(t *testing.T) {
+func TestV2ProjectProcessDebugAdapterAdmission(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -698,16 +804,15 @@ func TestV2ProjectDebugAdapterAdmission(t *testing.T) {
 		{name: "negative-timeout", config: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}, ConnectionTimeout: &metav1.Duration{Duration: -time.Second}}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: testCase.name, Namespace: "v2-project-debug-admission"},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Stop: true,
-					Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}, DebugAdapter: testCase.config.DeepCopy()}}
+			resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: testCase.name, Namespace: "v2-project-debug-admission"},
+				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir(), Stop: true}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}, DebugAdapter: testCase.config.DeepCopy()}}
 			createErr := client.Create(ctx, resource)
 			if !testCase.valid {
 				require.True(t, apierrors.IsInvalid(createErr), "%v", createErr)
 				return
 			}
 			require.NoError(t, createErr)
-			stored := &apiv2.Project{}
+			stored := &apiv2.ProjectProcess{}
 			require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: resource.Namespace, Name: resource.Name}, stored))
 			require.Equal(t, &testCase.config, stored.Spec.DebugAdapter)
 			require.Equal(t, 10*time.Second, stored.Spec.DebugAdapter.GetConnectionTimeout())
@@ -716,3 +821,67 @@ func TestV2ProjectDebugAdapterAdmission(t *testing.T) {
 }
 
 const projectTestControllers = ProjectController | PhysicalProcessController | PhysicalContainerController | PhysicalContainerImageController
+
+// Verifies that ProjectProcess and ProjectContainer with the same namespaced name prepare independently
+// and deleting either kind leaves the other kind and its prepared execution context intact.
+func TestV2ProjectKindsWithSameNameReconcileIndependently(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	namespace := createActiveV2Namespace(t, ctx, "v2-project-same-name")
+	processProject := &apiv2.ProjectProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectProcessSpec{
+			ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()},
+			Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
+				ExecutablePath: namespace.Name + "-command", Args: []string{"process-argument"},
+			}},
+		},
+	}
+	containerProject := &apiv2.ProjectContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: processProject.Name, Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{
+			ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()},
+			Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Command: []string{"container-argument"},
+			}},
+		},
+	}
+	require.NoError(t, client.Create(ctx, processProject))
+	require.NoError(t, client.Create(ctx, containerProject))
+	preparedProcess := waitProjectPhase(t, ctx, client, processProject, apiv2.ProjectPhaseReady)
+	preparedContainer := waitProjectPhase(t, ctx, client, containerProject, apiv2.ProjectPhaseReady)
+	require.Equal(t, []string{"process-argument"}, preparedProcess.Status.EffectiveArgs)
+	require.Equal(t, []string{"container-argument"}, preparedContainer.Status.EffectiveArgs)
+	require.NotEqual(t, preparedProcess.UID, preparedContainer.UID)
+	physical := &apiv2.PhysicalContainer{}
+	require.NoError(t, client.Get(ctx, types.NamespacedName{
+		Namespace: namespace.Name, Name: preparedContainer.Status.PhysicalContainerRef,
+	}, physical))
+	require.True(t, metav1.IsControlledBy(physical, containerProject))
+	require.Equal(t, "ProjectContainer", metav1.GetControllerOf(physical).Kind)
+
+	require.NoError(t, client.Delete(ctx, processProject))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, processProject)
+	retainedContainer := waitProjectPhase(t, ctx, client, containerProject, apiv2.ProjectPhaseReady)
+	require.Equal(t, preparedContainer.UID, retainedContainer.UID)
+	require.Equal(t, preparedContainer.Status.ContainerID, retainedContainer.Status.ContainerID)
+	require.NoError(t, client.Get(ctx, physical.NamespacedName(), physical))
+	require.True(t, physical.DeletionTimestamp.IsZero())
+
+	replacement := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{
+		Name: processProject.Name, Namespace: namespace.Name,
+	}, Spec: processProject.Spec}
+	require.NoError(t, client.Create(ctx, replacement))
+	waitProjectPhase(t, ctx, client, replacement, apiv2.ProjectPhaseReady)
+	require.NoError(t, client.Delete(ctx, containerProject))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, containerProject)
+	waitProjectBackingDeleted(t, ctx, client, physical)
+	retainedProcess := waitProjectPhase(t, ctx, client, replacement, apiv2.ProjectPhaseReady)
+	require.Equal(t, replacement.UID, retainedProcess.UID)
+	require.True(t, retainedProcess.DeletionTimestamp.IsZero())
+	require.Equal(t, preparedProcess.Status.EffectiveArgs, retainedProcess.Status.EffectiveArgs)
+	require.Empty(t, testProcessExecutor.FindAll([]string{replacement.Spec.Process.ExecutablePath}, "", nil))
+	require.NoError(t, client.Delete(ctx, replacement))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, replacement)
+}

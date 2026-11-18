@@ -69,7 +69,10 @@ func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 			var storage *projectDebugStorage
 			var projects, namespaces *debugWatchStorage
 			apiClient, _ := startProjectDebugStatusServer(t, ctx, func(config *tiltapiserver.Config, writer *projectDebugStatusWriter) {
-				gvr := (&apiv2.Project{}).GetGroupVersionResource()
+				if _, isProcess := writer.prototype.(*apiv2.ProjectProcess); !isProcess {
+					return
+				}
+				gvr := writer.prototype.GetGroupVersionResource()
 				parentProvider := config.ExtraConfig.APIs[gvr]
 				namespaceProvider := config.ExtraConfig.APIs[(&apiv2.Namespace{}).GetGroupVersionResource()]
 				gvr.Resource += "/" + apiv2.DebugSubresourceName
@@ -89,13 +92,13 @@ func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 				}
 			})
 			project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
-			project.Status.Conditions = nil
+			project.GetProjectStatus().Conditions = nil
 			require.NoError(t, apiClient.Status().Update(ctx, project))
 			namespace := &apiv2.Namespace{}
 			require.NoError(t, apiClient.Get(ctx, ctrlclient.ObjectKey{Name: project.Namespace}, namespace))
 			namespace.Status.Phase = ""
 			require.NoError(t, apiClient.Status().Update(ctx, namespace))
-			var other *apiv2.Project
+			var other *apiv2.ProjectProcess
 			if scenario == "other-namespace" {
 				otherNamespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "other"}}
 				require.NoError(t, apiClient.Create(ctx, otherNamespace))
@@ -116,7 +119,7 @@ func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 			}
 			lifetime, cancelMonitor := context.WithCancelCause(ctx)
 			defer cancelMonitor(nil)
-			ready := make(chan *apiv2.Project, 1)
+			ready := make(chan apiv2.ProjectObject, 1)
 			done := make(chan struct{})
 			selected := project.DeepCopy()
 			go func() {
@@ -133,15 +136,15 @@ func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 				}
 				return
 			}
-			project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
+			project.GetProjectStatus().Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
 				Reason: string(apiv2.ProjectReasonPrepared), LastTransitionTime: metav1.Now()}}
 			require.NoError(t, apiClient.Status().Update(ctx, project))
 			namespace.Status.Phase = apiv2.NamespacePhaseActive
 			require.NoError(t, apiClient.Status().Update(ctx, namespace))
 			select {
 			case prepared := <-ready:
-				require.Equal(t, project.UID, prepared.UID)
-				require.Equal(t, string(apiv2.ProjectReasonPrepared), prepared.Status.Conditions[0].Reason)
+				require.Equal(t, project.UID, prepared.GetUID())
+				require.Equal(t, string(apiv2.ProjectReasonPrepared), prepared.GetProjectStatus().Conditions[0].Reason)
 			case <-lifetime.Done():
 				t.Fatalf("watch readiness failed: %v", context.Cause(lifetime))
 			}

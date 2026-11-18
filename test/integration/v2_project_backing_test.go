@@ -55,10 +55,10 @@ type projectBackingClient struct {
 	namespaceLookups        atomic.Int32
 }
 
-// Verifies that a Failed Project preserves its original readable capture on ambiguous discovery
+// Verifies that a Failed ProjectContainer preserves its original readable capture on ambiguous discovery
 // or logical-hold loss, including existing followers and clients opening logs after the transition.
 // Later capture completion is observed without reopening the terminal lifecycle.
-func TestV2ProjectBackingInterferencePreservesRuntimeLogs(t *testing.T) {
+func TestV2ProjectContainerBackingInterferencePreservesRuntimeLogs(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"ambiguous", "hold-removed"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -66,15 +66,15 @@ func TestV2ProjectBackingInterferencePreservesRuntimeLogs(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
 			namespace := createV2ExecNamespace(t, ctx, client, "v2-project-logs-"+scenario)
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 					LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 				}}}
 			require.NoError(t, client.Create(ctx, resource))
 			prepared := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
 			require.NoError(t, containerOrchestrator.SimulateContainerLogging(prepared.Status.ContainerID, apiv1.LogStreamSourceStdout, []byte("before-unknown\n")))
 			follow, followErr := restClient.Get().
-				AbsPath("/apis", apiv2.GroupName, apiv2.Version, "namespaces", namespace.Name, "projects", resource.Name, "log").
+				AbsPath("/apis", apiv2.GroupName, apiv2.Version, "namespaces", namespace.Name, "projectcontainers", resource.Name, "log").
 				Param("follow", "true").Stream(ctx)
 			require.NoError(t, followErr)
 			defer follow.Close()
@@ -106,7 +106,7 @@ func TestV2ProjectBackingInterferencePreservesRuntimeLogs(t *testing.T) {
 			require.NoError(t, nextErr)
 			require.Equal(t, "after-unknown\n", string(next))
 			late, lateErr := restClient.Get().
-				AbsPath("/apis", apiv2.GroupName, apiv2.Version, "namespaces", namespace.Name, "projects", resource.Name, "log").
+				AbsPath("/apis", apiv2.GroupName, apiv2.Version, "namespaces", namespace.Name, "projectcontainers", resource.Name, "log").
 				Stream(ctx)
 			require.NoError(t, lateErr)
 			defer late.Close()
@@ -118,7 +118,7 @@ func TestV2ProjectBackingInterferencePreservesRuntimeLogs(t *testing.T) {
 				removeProjectBackingHold(t, ctx, client, duplicate)
 				ctrl_testutil.WaitObjectDeleted(t, ctx, client, duplicate)
 				require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, prepared.Status.ContainerID, containers.ContainerStatusDead))
-				completed := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				completed := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 					return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Status.RuntimeLogs != nil &&
 						current.Status.RuntimeLogs.Available && current.Status.RuntimeLogs.Complete, nil
 				})
@@ -137,7 +137,7 @@ func TestV2ProjectBackingInterferencePreservesRuntimeLogs(t *testing.T) {
 
 func (apiClient *projectBackingClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
 	owner := metav1.GetControllerOf(obj)
-	if owner == nil || owner.Kind != "Project" || !apiClient.hideBackings.Load() {
+	if owner == nil || owner.Kind != "ProjectContainer" || !apiClient.hideBackings.Load() {
 		return apiClient.Client.Create(ctx, obj, options...)
 	}
 	committed := obj.DeepCopyObject().(ctrl_client.Object)
@@ -185,7 +185,7 @@ func (apiClient *projectBackingClient) List(ctx context.Context, list ctrl_clien
 	}
 	listOptions := (&ctrl_client.ListOptions{}).ApplyOptions(options)
 	if !apiClient.hideBackings.Load() || listOptions.FieldSelector == nil ||
-		!strings.Contains(listOptions.FieldSelector.String(), ".metadata.projectOwnerUID") {
+		!strings.Contains(listOptions.FieldSelector.String(), ".metadata.projectContainerOwnerUID") {
 		return nil
 	}
 	switch children := list.(type) {
@@ -199,9 +199,9 @@ func (apiClient *projectBackingClient) List(ctx context.Context, list ctrl_clien
 	return nil
 }
 
-// Verifies that Project retains its terminal Failed state and original diagnostic after backing
+// Verifies that ProjectContainer retains its terminal Failed state and original diagnostic after backing
 // disappearance or identity replacement, while still completing missing log sources.
-func TestV2ProjectFailureSurvivesBackingChanges(t *testing.T) {
+func TestV2ProjectContainerFailureSurvivesBackingChanges(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"missing", "replaced"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -209,8 +209,8 @@ func TestV2ProjectFailureSurvivesBackingChanges(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
 			namespace := createV2ExecNamespace(t, ctx, client, "v2-project-failed-"+scenario)
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 					LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 				}}}
 			require.NoError(t, client.Create(ctx, resource))
@@ -232,7 +232,7 @@ func TestV2ProjectFailureSurvivesBackingChanges(t *testing.T) {
 				require.NotEqual(t, physical.UID, replacement.UID)
 			}
 			require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-			observed := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			observed := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 				if scenario == "missing" && (current.Status.RuntimeLogs == nil ||
 					!current.Status.RuntimeLogs.Complete || current.Status.RuntimeLogs.Available) {
 					return false, nil
@@ -258,9 +258,9 @@ func TestV2ProjectFailureSurvivesBackingChanges(t *testing.T) {
 	}
 }
 
-// Verifies that Project keeps namespace lookup failures in Pending/Preparing with diagnostic context
+// Verifies that ProjectProcess keeps namespace lookup failures in Pending/Preparing with diagnostic context
 // and becomes prepared after namespace observation recovers.
-func TestV2ProjectNamespaceLookupRetainsPreparation(t *testing.T) {
+func TestV2ProjectProcessNamespaceLookupRetainsPreparation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -274,12 +274,12 @@ func TestV2ProjectNamespaceLookupRetainsPreparation(t *testing.T) {
 	t.Cleanup(func() { decorated.failNamespace.Store(false) })
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-namespace-lookup")
 	decorated.failNamespace.Store(true)
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Process: &apiv2.ProjectProcessTemplate{
+	resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{
 			LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "application"},
 		}}}
 	require.NoError(t, server.Client.Create(ctx, resource))
-	pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 		return decorated.namespaceLookups.Load() > 0 && len(current.Status.Conditions) != 0 &&
 			strings.Contains(current.Status.Conditions[0].Message, "injected Project namespace lookup failure"), nil
 	})
@@ -291,9 +291,9 @@ func TestV2ProjectNamespaceLookupRetainsPreparation(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
-// Verifies that Project distinguishes preparation failure from loss of an established context,
+// Verifies that ProjectContainer distinguishes preparation failure from loss of an established context,
 // retaining successful preparation through Unknown and subsequent Pending backing observations.
-func TestV2ProjectContextLossReasons(t *testing.T) {
+func TestV2ProjectContainerContextLossReasons(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"preparing", "prepared", "unknown"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -313,16 +313,16 @@ func TestV2ProjectContextLossReasons(t *testing.T) {
 				decorated.reportContainerPending.Store(false)
 			})
 			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-context-loss-"+scenario)
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 					LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 				}}}
 			require.NoError(t, server.Client.Create(ctx, resource))
 			expectedReason := apiv2.ProjectReasonMissing
-			var observed *apiv2.Project
+			var observed *apiv2.ProjectContainer
 			if scenario == "preparing" {
 				expectedReason = apiv2.ProjectReasonPreparationFailed
-				observed = waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				observed = waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 					return current.Status.ContainerID != "" && len(current.Status.Conditions) != 0 &&
 						strings.Contains(current.Status.Conditions[0].Message, "PhysicalContainer reports"), nil
 				})
@@ -340,7 +340,7 @@ func TestV2ProjectContextLossReasons(t *testing.T) {
 					decorated.reportContainerUnknown.Store(false)
 					require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
 						[]byte(`{"metadata":{"annotations":{"context-observation":"pending"}}}`))))
-					pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+					pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 						return current.Status.Phase == apiv2.ProjectPhaseUnknown && len(current.Status.Conditions) != 0 &&
 							strings.Contains(current.Status.Conditions[0].Message, "injected pending backing observation"), nil
 					})
@@ -367,9 +367,9 @@ func TestV2ProjectContextLossReasons(t *testing.T) {
 	}
 }
 
-// Verifies that Project recovers from backing lookup errors during startup and after preparation,
+// Verifies that ProjectContainer recovers from backing lookup errors during startup and after preparation,
 // eventually becoming ready with the same container and log identity without creating a replacement.
-func TestV2ProjectRecoversFromBackingLookupErrors(t *testing.T) {
+func TestV2ProjectContainerRecoversFromBackingLookupErrors(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -382,15 +382,14 @@ func TestV2ProjectRecoversFromBackingLookupErrors(t *testing.T) {
 	require.NoError(t, startupErr)
 	t.Cleanup(func() { decorated.failContainerLists.Store(false) })
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-observation-recovery")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"not-started"}},
-			Container: &apiv2.ProjectContainerTemplate{
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"not-started"}}},
+			Container: apiv2.ProjectContainerTemplate{
 				LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 			}}}
 	decorated.failContainerLists.Store(true)
 	require.NoError(t, server.Client.Create(ctx, resource))
-	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(_ *apiv2.Project) (bool, error) {
+	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(_ *apiv2.ProjectContainer) (bool, error) {
 		return decorated.containerListFailures.Load() > 0, nil
 	})
 	decorated.failContainerLists.Store(false)
@@ -401,7 +400,7 @@ func TestV2ProjectRecoversFromBackingLookupErrors(t *testing.T) {
 	decorated.failContainerLists.Store(true)
 	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
 		[]byte(`{"metadata":{"annotations":{"observation-probe":"fail"}}}`))))
-	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(_ *apiv2.Project) (bool, error) {
+	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(_ *apiv2.ProjectContainer) (bool, error) {
 		return decorated.containerListFailures.Load() > initialFailures, nil
 	})
 	decorated.failContainerLists.Store(false)
@@ -419,9 +418,9 @@ func TestV2ProjectRecoversFromBackingLookupErrors(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
-// Verifies that Stop selects the Project Stopping handler before backing lookup and remains
+// Verifies that Stop selects the ProjectContainer Stopping handler before backing lookup and remains
 // Stopping while lookup fails, then finishes cleanup after reconciliation can observe the backing.
-func TestV2ProjectStopPrecedesBackingLookup(t *testing.T) {
+func TestV2ProjectContainerStopPrecedesBackingLookup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -434,15 +433,15 @@ func TestV2ProjectStopPrecedesBackingLookup(t *testing.T) {
 	require.NoError(t, startupErr)
 	t.Cleanup(func() { decorated.failContainerLists.Store(false) })
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-stop-lookup")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 			LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 		}}}
 	require.NoError(t, server.Client.Create(ctx, resource))
 	waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
 	decorated.failContainerLists.Store(true)
 	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-	stopping := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	stopping := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return current.Status.Phase == apiv2.ProjectPhaseStopping && decorated.containerListFailures.Load() != 0, nil
 	})
 	requireReadyCondition(t, stopping.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonStopping)
@@ -452,9 +451,9 @@ func TestV2ProjectStopPrecedesBackingLookup(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
-// Verifies that Project observes container lifecycle state without gating it on the physical
+// Verifies that ProjectContainer observes container lifecycle state without gating it on the physical
 // condition's generation, and that Failed survives later Running observations, Stop and cleanup lookup errors.
-func TestV2ProjectObservesContainerWithoutGenerationGate(t *testing.T) {
+func TestV2ProjectContainerObservesContainerWithoutGenerationGate(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -473,8 +472,8 @@ func TestV2ProjectObservesContainerWithoutGenerationGate(t *testing.T) {
 		decorated.reportContainerRunning.Store(false)
 	})
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-observed-generation")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 			LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 		}}}
 	require.NoError(t, server.Client.Create(ctx, resource))
@@ -484,14 +483,14 @@ func TestV2ProjectObservesContainerWithoutGenerationGate(t *testing.T) {
 	failed := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
 	decorated.reportContainerRunning.Store(true)
 	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-	stillFailed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	stillFailed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
 	})
 	require.Equal(t, failed.Status.Conditions[0].Message, stillFailed.Status.Conditions[0].Message)
 	decorated.failContainerLists.Store(true)
 	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
 		[]byte(`{"metadata":{"annotations":{"project-terminal-lookup":"failed"}}}`))))
-	lookupFailed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	lookupFailed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return decorated.containerListFailures.Load() != 0 && current.Status.Phase == apiv2.ProjectPhaseFailed, nil
 	})
 	require.Equal(t, failed.Status.Conditions[0].Reason, lookupFailed.Status.Conditions[0].Reason)
@@ -500,7 +499,7 @@ func TestV2ProjectObservesContainerWithoutGenerationGate(t *testing.T) {
 	previousLookupFailures := decorated.containerListFailures.Load()
 	require.NoError(t, server.Client.Delete(ctx, resource))
 	physical := &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}}
-	deleting := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	deleting := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return !current.DeletionTimestamp.IsZero() && decorated.containerListFailures.Load() > previousLookupFailures, nil
 	})
 	require.False(t, deleting.DeletionTimestamp.IsZero())
@@ -525,7 +524,7 @@ func (apiClient *projectBackingClient) Get(ctx context.Context, key ctrl_client.
 }
 
 func (apiClient *projectBackingClient) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.PatchOption) error {
-	if owner := metav1.GetControllerOf(obj); owner != nil && owner.Kind == "Project" &&
+	if owner := metav1.GetControllerOf(obj); owner != nil && owner.Kind == "ProjectContainer" &&
 		!obj.GetDeletionTimestamp().IsZero() && !slices.Contains(obj.GetFinalizers(), controllers.LogicalBackingFinalizer) &&
 		apiClient.loseHoldResponse.CompareAndSwap(true, false) {
 		if patchErr := apiClient.Client.Patch(ctx, obj, patch, options...); patchErr != nil {
@@ -562,7 +561,7 @@ func (reader *projectBackingReader) Get(ctx context.Context, key ctrl_client.Obj
 
 // Verifies that an ordinary image create error reports without immediate confirmation
 // and lets later reconciliation adopt the committed backing without repeating creation.
-func TestV2ProjectReconcilesAmbiguousCreate(t *testing.T) {
+func TestV2ProjectContainerReconcilesAmbiguousCreate(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -577,12 +576,12 @@ func TestV2ProjectReconcilesAmbiguousCreate(t *testing.T) {
 		})
 	require.NoError(t, startupErr)
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-create-confirmation")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 			LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 		}}}
 	require.NoError(t, server.Client.Create(ctx, resource))
-	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return decorated.undecodedCreates.Load() >= 1 && current.Status.Phase == apiv2.ProjectPhasePending, nil
 	})
 	decorated.hideBackings.Store(false)
@@ -614,9 +613,9 @@ func (writer *projectBackingStatusWriter) Patch(ctx context.Context, obj ctrl_cl
 	return writer.SubResourceWriter.Patch(ctx, obj, patch, options...)
 }
 
-// Verifies that Project requests child deletion immediately, retains both finalizers through
+// Verifies that ProjectContainer requests child deletion immediately, retains both finalizers through
 // cleanup status conflicts, and retries a committed logical-hold release with a lost response.
-func TestV2ProjectDeletionRetainsBackingUntilCleanupIsDurable(t *testing.T) {
+func TestV2ProjectContainerDeletionRetainsBackingUntilCleanupIsDurable(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"image"} {
 		t.Run(kind, func(t *testing.T) {
@@ -630,31 +629,25 @@ func TestV2ProjectDeletionRetainsBackingUntilCleanupIsDurable(t *testing.T) {
 				}})
 			require.NoError(t, startupErr)
 			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-durable-"+kind)
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir()}}
-			var backing ctrl_client.Object = &apiv2.PhysicalProcess{}
-			cleanupFinalizer := apiv2.GroupName + "/physicalprocess-reconciler"
-			if kind == "process" {
-				resource.Spec.Process = &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-command"}}
-			} else {
-				orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
-				source := namespace.Name + "-image"
-				releasePull := sync.OnceFunc(orchestrator.BlockPullImage(source))
-				t.Cleanup(releasePull)
-				resource.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: source},
-					Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "missing"}}},
-				}
-				backing = &apiv2.PhysicalContainerImage{}
-				cleanupFinalizer = apiv2.GroupName + "/physicalcontainerimage-reconciler"
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}}}
+			backing := &apiv2.PhysicalContainerImage{}
+			cleanupFinalizer := apiv2.GroupName + "/physicalcontainerimage-reconciler"
+
+			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+			source := namespace.Name + "-image"
+			releasePull := sync.OnceFunc(orchestrator.BlockPullImage(source))
+			t.Cleanup(releasePull)
+			resource.Spec.Container = apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: source},
+				Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "missing"}}},
 			}
+
 			require.NoError(t, server.Client.Create(ctx, resource))
-			if kind == "process" {
-				waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
-			} else {
-				waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
-					return current.Status.StartupLogs != nil && current.Status.StartupLogs.Available && !current.Status.StartupLogs.Complete, nil
-				})
-			}
+
+			waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
+				return current.Status.StartupLogs != nil && current.Status.StartupLogs.Available && !current.Status.StartupLogs.Complete, nil
+			})
+
 			name := types.NamespacedName{Namespace: namespace.Name, Name: "project-" + string(resource.UID)}
 			require.NoError(t, server.Client.Get(ctx, name, backing))
 			require.Contains(t, backing.GetFinalizers(), controllers.LogicalBackingFinalizer)
@@ -672,7 +665,7 @@ func TestV2ProjectDeletionRetainsBackingUntilCleanupIsDurable(t *testing.T) {
 			require.False(t, backing.GetDeletionTimestamp().IsZero())
 			require.Contains(t, backing.GetFinalizers(), cleanupFinalizer)
 			require.Contains(t, backing.GetFinalizers(), controllers.LogicalBackingFinalizer)
-			require.NoError(t, server.Client.Get(ctx, resource.NamespacedName(), &apiv2.Project{}))
+			require.NoError(t, server.Client.Get(ctx, resource.NamespacedName(), &apiv2.ProjectContainer{}))
 			decorated.blockFinalStatus.Store(false)
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 			waitProjectBackingDeleted(t, ctx, server.Client, backing)
@@ -681,9 +674,9 @@ func TestV2ProjectDeletionRetainsBackingUntilCleanupIsDurable(t *testing.T) {
 	}
 }
 
-// Verifies that Project observes undecoded creates through the cache and deletes
+// Verifies that ProjectContainer observes undecoded creates through the cache and deletes
 // every owned backing, including duplicates with unexpected names and no recorded UID.
-func TestV2ProjectDiscoversAndDeletesBackingsByOwner(t *testing.T) {
+func TestV2ProjectContainerDiscoversAndDeletesBackingsByOwner(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"container"} {
 		t.Run(kind, func(t *testing.T) {
@@ -698,15 +691,13 @@ func TestV2ProjectDiscoversAndDeletesBackingsByOwner(t *testing.T) {
 				}})
 			require.NoError(t, startupErr)
 			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-owner-"+kind)
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir()}}
-			if kind == "process" {
-				resource.Spec.Process = &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-command"}}
-			} else {
-				resource.Spec.Container = &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}}}
-			}
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}}}
+
+			resource.Spec.Container = apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}}}
+
 			require.NoError(t, server.Client.Create(ctx, resource))
-			waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 				return decorated.undecodedCreates.Load() >= 1, nil
 			})
 			decorated.hideBackings.Store(false)
@@ -714,10 +705,8 @@ func TestV2ProjectDiscoversAndDeletesBackingsByOwner(t *testing.T) {
 				[]byte(`{"metadata":{"annotations":{"cache-observation":"released"}}}`))))
 			running := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
 			require.InDelta(t, 1, decorated.undecodedCreates.Load(), 1)
-			var original ctrl_client.Object = &apiv2.PhysicalProcess{}
-			if kind == "container" {
-				original = &apiv2.PhysicalContainer{}
-			}
+			original := &apiv2.PhysicalContainer{}
+
 			require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.RuntimeLogs.Name}, original))
 			duplicate := original.DeepCopyObject().(ctrl_client.Object)
 			duplicate.SetName("unexpected-owned-backing")
@@ -725,11 +714,12 @@ func TestV2ProjectDiscoversAndDeletesBackingsByOwner(t *testing.T) {
 			duplicate.SetResourceVersion("")
 			duplicate.SetManagedFields(nil)
 			require.NoError(t, server.Client.Create(ctx, duplicate))
+
 			// A second owned resource invalidates normal observation, but must not block cleanup.
 			unknown := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
 			requireReadyCondition(t, unknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
 			require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-			stillUnknown := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			stillUnknown := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 				return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
 			})
 			requireReadyCondition(t, stillUnknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
@@ -757,8 +747,8 @@ func waitProjectBackingDeleted(t *testing.T, ctx context.Context, apiClient ctrl
 }
 
 // Verifies that deletion confirms a recorded undecoded create with a targeted read and retains
-// Project until that confirmation succeeds, without changing its established preparation lifecycle.
-func TestV2ProjectDeletionConfirmsUnobservedCreate(t *testing.T) {
+// ProjectContainer until that confirmation succeeds, without changing its established preparation lifecycle.
+func TestV2ProjectContainerDeletionConfirmsUnobservedCreate(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -778,24 +768,23 @@ func TestV2ProjectDeletionConfirmsUnobservedCreate(t *testing.T) {
 		})
 	require.NoError(t, startupErr)
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-delete-confirmation")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
-			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"not-started"}},
-			Container: &apiv2.ProjectContainerTemplate{
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"not-started"}}},
+			Container: apiv2.ProjectContainerTemplate{
 				LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: namespace.Name + "-image"},
 			}}}
 	require.NoError(t, server.Client.Create(ctx, resource))
-	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return decorated.undecodedCreates.Load() == 1 && current.Status.Phase == apiv2.ProjectPhasePending, nil
 	})
 	reader.failLists.Store(true)
 	t.Cleanup(func() { reader.failLists.Store(false) })
 	require.NoError(t, server.Client.Delete(ctx, resource))
-	failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return !current.DeletionTimestamp.IsZero() && reader.listFailures.Load() > 0, nil
 	})
 	require.Equal(t, apiv2.ProjectPhasePending, failed.Status.Phase)
-	require.Contains(t, failed.Finalizers, apiv2.GroupName+"/project-reconciler")
+	require.Contains(t, failed.Finalizers, apiv2.GroupName+"/projectcontainer-reconciler")
 	physical := &apiv2.PhysicalContainer{}
 	require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: "project-" + string(resource.UID)}, physical))
 	require.True(t, physical.DeletionTimestamp.IsZero())
@@ -804,9 +793,9 @@ func TestV2ProjectDeletionConfirmsUnobservedCreate(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
 }
 
-// Verifies that Project evaluates later network failures and lookup errors despite an earlier
+// Verifies that ProjectContainer evaluates later network failures and lookup errors despite an earlier
 // missing reference, and delegates readiness after a logical network publishes its backing reference.
-func TestV2ProjectChecksAllNetworkReferences(t *testing.T) {
+func TestV2ProjectContainerChecksAllNetworkReferences(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"failed", "lookup", "published"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -835,8 +824,8 @@ func TestV2ProjectChecksAllNetworkReferences(t *testing.T) {
 			}
 			require.NoError(t, server.Client.Status().Update(ctx, later))
 			decorated.failNetwork.Store(scenario == "lookup")
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "external-image", Networks: networks}}}}
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{ImageRef: "external-image", Networks: networks}}}}
 			require.NoError(t, server.Client.Create(ctx, resource))
 			switch scenario {
 			case "failed":
@@ -844,7 +833,7 @@ func TestV2ProjectChecksAllNetworkReferences(t *testing.T) {
 				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
 				require.Contains(t, failed.Status.Conditions[0].Message, "later failed")
 			case "lookup":
-				pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 					return len(current.Status.Conditions) != 0 &&
 						current.Status.Conditions[0].Reason == string(apiv2.ProjectReasonPreparing) &&
 						strings.Contains(current.Status.Conditions[0].Message, "later network lookup unavailable"), nil
@@ -854,7 +843,7 @@ func TestV2ProjectChecksAllNetworkReferences(t *testing.T) {
 				decorated.failNetwork.Store(false)
 				waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
 			case "published":
-				pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 					return current.Status.PhysicalContainerRef != "", nil
 				})
 				physical := &apiv2.PhysicalContainer{}
@@ -878,7 +867,7 @@ func (apiClient *projectCreateCollisionClient) Create(ctx context.Context, obj c
 	owner := metav1.GetControllerOf(obj)
 	_, image := obj.(*apiv2.PhysicalContainerImage)
 	_, container := obj.(*apiv2.PhysicalContainer)
-	if owner == nil || owner.Kind != "Project" || (apiClient.kind == "image" && !image) ||
+	if owner == nil || owner.Kind != "ProjectContainer" || (apiClient.kind == "image" && !image) ||
 		(apiClient.kind == "container" && !container) || !apiClient.injected.CompareAndSwap(false, true) {
 		return apiClient.Client.Create(ctx, obj, options...)
 	}
@@ -906,9 +895,9 @@ func (apiClient *projectCreateCollisionClient) Create(ctx context.Context, obj c
 	return apierrors.NewAlreadyExists(schema.GroupResource{Group: apiv2.GroupName, Resource: resource}, obj.GetName())
 }
 
-// Verifies that Project validates exact-name AlreadyExists collisions for physical containers
+// Verifies that ProjectContainer validates exact-name AlreadyExists collisions for physical containers
 // and images, accepting owned container declarations and rejecting incompatible identities or image inputs.
-func TestV2ProjectValidatesPhysicalCreateCollisions(t *testing.T) {
+func TestV2ProjectContainerValidatesPhysicalCreateCollisions(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"image", "container"} {
 		for _, scenario := range []string{"compatible", "owner", "hold", "spec"} {
@@ -922,8 +911,8 @@ func TestV2ProjectValidatesPhysicalCreateCollisions(t *testing.T) {
 					}})
 				require.NoError(t, startupErr)
 				namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-collision-"+kind+"-"+scenario)
-				resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-					Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+				resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+					Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 						LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 					}}}
 				require.NoError(t, server.Client.Create(ctx, resource))
@@ -942,8 +931,13 @@ func TestV2ProjectValidatesPhysicalCreateCollisions(t *testing.T) {
 					}
 					require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: "project-" + string(resource.UID)}, collision))
 					if scenario == "hold" {
-						collision.SetFinalizers(nil)
-						require.NoError(t, server.Client.Update(ctx, collision))
+						require.NoError(t, retry.RetryOnConflict(retry.DefaultRetry, func() error {
+							if getErr := server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(collision), collision); getErr != nil {
+								return getErr
+							}
+							collision.SetFinalizers(nil)
+							return server.Client.Update(ctx, collision)
+						}))
 					} else {
 						removeProjectBackingHold(t, ctx, server.Client, collision)
 					}
@@ -967,7 +961,7 @@ func (apiClient *projectLostCreateClient) Create(ctx context.Context, obj ctrl_c
 	createErr := apiClient.Client.Create(ctx, obj, options...)
 	owner := metav1.GetControllerOf(obj)
 	if _, container := obj.(*apiv2.PhysicalContainer); container && createErr == nil &&
-		owner != nil && owner.Kind == "Project" && apiClient.responseLost.CompareAndSwap(false, true) {
+		owner != nil && owner.Kind == "ProjectContainer" && apiClient.responseLost.CompareAndSwap(false, true) {
 		apiClient.created <- obj.DeepCopyObject().(ctrl_client.Object)
 		select {
 		case <-apiClient.release:
@@ -980,7 +974,7 @@ func (apiClient *projectLostCreateClient) Create(ctx context.Context, obj ctrl_c
 
 // Verifies that stop and deletion settle an ambiguous prepared-container create without
 // creating another container or invoking the application command.
-func TestV2ProjectRecoversLostCreateAndMutableStop(t *testing.T) {
+func TestV2ProjectContainerRecoversLostCreateAndMutableStop(t *testing.T) {
 	t.Parallel()
 	for _, deletion := range []bool{false, true} {
 		name := "stop"
@@ -1000,8 +994,8 @@ func TestV2ProjectRecoversLostCreateAndMutableStop(t *testing.T) {
 			release := sync.OnceFunc(func() { close(decorated.release) })
 			t.Cleanup(release)
 			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-lost-context-"+name)
-			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 					LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Command: []string{"application"}},
 				}}}
 			require.NoError(t, server.Client.Create(ctx, resource))
@@ -1048,18 +1042,18 @@ type projectStatusConflictWriter struct {
 }
 
 func (writer *projectStatusConflictWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
-	if resource, project := obj.(*apiv2.Project); project &&
+	if resource, project := obj.(*apiv2.ProjectContainer); project &&
 		resource.Status.Phase == apiv2.ProjectPhaseFailed &&
 		resource.Status.RuntimeLogs != nil && resource.Status.RuntimeLogs.Complete && !resource.Status.RuntimeLogs.Available &&
 		writer.client.conflicted.CompareAndSwap(false, true) {
-		return apierrors.NewConflict(schema.GroupResource{Group: apiv2.GroupName, Resource: "projects"}, resource.Name, errors.New("injected Project status conflict"))
+		return apierrors.NewConflict(schema.GroupResource{Group: apiv2.GroupName, Resource: "projectcontainers"}, resource.Name, errors.New("injected ProjectContainer status conflict"))
 	}
 	return writer.SubResourceWriter.Patch(ctx, obj, patch, options...)
 }
 
 // Verifies that forced disappearance of a prepared container retains either its observed termination
 // failure or missing-context outcome, preserves capture identity through conflicts, and completes followers.
-func TestV2ProjectMissingBackingCompletesFollowerThroughConflict(t *testing.T) {
+func TestV2ProjectContainerMissingBackingCompletesFollowerThroughConflict(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -1071,8 +1065,8 @@ func TestV2ProjectMissingBackingCompletesFollowerThroughConflict(t *testing.T) {
 		}})
 	require.NoError(t, startupErr)
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-missing-context")
-	resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 			LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 		}}}
 	require.NoError(t, server.Client.Create(ctx, resource))
@@ -1080,7 +1074,7 @@ func TestV2ProjectMissingBackingCompletesFollowerThroughConflict(t *testing.T) {
 	orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.NoError(t, orchestrator.SimulateContainerLogging(prepared.Status.ContainerID, apiv1.LogStreamSourceStdout, []byte("before-delete\n")))
 	follow, followErr := server.RestClient.Get().
-		AbsPath("/apis", apiv2.GroupName, apiv2.Version, "namespaces", namespace.Name, "projects", resource.Name, "log").
+		AbsPath("/apis", apiv2.GroupName, apiv2.Version, "namespaces", namespace.Name, "projectcontainers", resource.Name, "log").
 		Param("follow", "true").Stream(ctx)
 	require.NoError(t, followErr)
 	defer follow.Close()
@@ -1091,7 +1085,7 @@ func TestV2ProjectMissingBackingCompletesFollowerThroughConflict(t *testing.T) {
 	require.NoError(t, server.Client.Delete(ctx, physical))
 	removeProjectBackingHold(t, ctx, server.Client, physical)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
-	failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
 		if ready == nil {
 			return false, nil
