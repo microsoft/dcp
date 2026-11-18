@@ -325,7 +325,11 @@ func (streamer *resourceLogStreamer) followFile(
 	streamer.lock.Lock()
 	session.writer = writer
 	if session.finishing {
-		writer.StopFollow()
+		if opts.Follow && session.capture.ContainerID != "" {
+			logs.DelayStopFollowing([]*usvc_io.FollowWriter{writer})
+		} else {
+			writer.StopFollow()
+		}
 	}
 	streamer.lock.Unlock()
 	<-writer.Done()
