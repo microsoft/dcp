@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	clientcmd_api "k8s.io/client-go/tools/clientcmd/api"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
@@ -59,6 +60,39 @@ func TestKubeconfigWriteErrorPreservesOrdinaryFailure(t *testing.T) {
 
 	require.ErrorIs(t, writeErr, ordinaryErr)
 	require.NotErrorIs(t, writeErr, usvc_io.ErrRestrictedFilePolicy)
+}
+
+// Verifies that Kubeconfig.GetData accepts a valid listener port and rejects missing, zero, and out-of-range ports.
+func TestKubeconfigGetDataValidatesListenerPort(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name     string
+		suffix   string
+		wantPort int
+	}{
+		{name: "missing"},
+		{name: "zero", suffix: ":0"},
+		{name: "maximum", suffix: ":65535", wantPort: 65535},
+		{name: "above maximum", suffix: ":65536"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			config := &Kubeconfig{Config: &clientcmd_api.Config{
+				CurrentContext: "test",
+				Contexts:       map[string]*clientcmd_api.Context{"test": {Cluster: "test", AuthInfo: "test"}},
+				AuthInfos:      map[string]*clientcmd_api.AuthInfo{"test": {}},
+				Clusters:       map[string]*clientcmd_api.Cluster{"test": {Server: "https://127.0.0.1" + testCase.suffix}},
+			}}
+
+			_, listenerPort, _, _, dataErr := config.GetData()
+			if testCase.wantPort == 0 {
+				require.ErrorContains(t, dataErr, "port information in server URL")
+			} else {
+				require.NoError(t, dataErr)
+			}
+			require.Equal(t, testCase.wantPort, listenerPort)
+		})
+	}
 }
 
 func TestEnsureKubeconfigData_UsesCertificateFiles(t *testing.T) {

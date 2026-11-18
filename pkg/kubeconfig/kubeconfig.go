@@ -27,6 +27,7 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/security"
 )
@@ -95,7 +96,7 @@ func kubeconfigWriteError(path string, writeErr error) error {
 	return fmt.Errorf("could not write kubeconfig file: %w", writeErr)
 }
 
-// Reads Kubeconfig data and returns the address, port and security token of the current context,
+// Reads Kubeconfig data and returns the address, validated nonzero port and security token of the current context,
 // to be used to configure/connect to API server
 func (k *Kubeconfig) GetData() (net.IP, int, string, *security.ServerCertificateData, error) {
 	kubeContext, found := k.Config.Contexts[k.Config.CurrentContext]
@@ -118,10 +119,13 @@ func (k *Kubeconfig) GetData() (net.IP, int, string, *security.ServerCertificate
 		return nil, networking.InvalidPort, "", nil, fmt.Errorf("could not determine the port to use for the API server; the server URL in Kubeconfig file ('%s') is invalid: %w", cluster.Server, err)
 	}
 
-	// If the port is missing, Atoi() will return ErrSyntax
-	port, err := strconv.Atoi(clusterUrl.Port())
-	if err != nil || port <= networking.InvalidPort {
-		return nil, networking.InvalidPort, "", nil, fmt.Errorf("could not determine the port to use for the API server; the port information in server URL ('%s') is either missing or invalid: %w", clusterUrl.Port(), err)
+	parsedPort, portErr := strconv.ParseUint(clusterUrl.Port(), 10, 16)
+	if portErr != nil {
+		return nil, networking.InvalidPort, "", nil, fmt.Errorf("could not determine the port to use for the API server; the port information in server URL ('%s') is either missing or invalid: %w", clusterUrl.Port(), portErr)
+	}
+	listenerPort := int(parsedPort)
+	if !ports.IsValidPort(listenerPort) {
+		return nil, networking.InvalidPort, "", nil, fmt.Errorf("could not determine the port to use for the API server; the port information in server URL ('%s') is invalid", clusterUrl.Port())
 	}
 
 	ips, err := networking.LookupIP(clusterUrl.Hostname())
@@ -131,7 +135,7 @@ func (k *Kubeconfig) GetData() (net.IP, int, string, *security.ServerCertificate
 
 	// We are going to take the first resolved address, because Kubernetes API server does not support
 	// binding to multiple addresses and we have no extra information to prefer one over another.
-	return ips[0], port, user.Token, k.certificateData, nil
+	return ips[0], listenerPort, user.Token, k.certificateData, nil
 }
 
 // Get the path to the kubeconfig from the flag data.

@@ -18,6 +18,7 @@ import (
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/security"
 )
 
@@ -123,7 +124,7 @@ func RequireKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 		return "", fmt.Errorf("unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
 	}
 
-	if port < 0 || port > 65535 {
+	if !ports.IsBindablePort(int(port)) {
 		return "", fmt.Errorf("invalid port number: %d", port)
 	}
 
@@ -162,7 +163,7 @@ func EnsureKubeconfigData(ctx context.Context, flags *pflag.FlagSet, log logr.Lo
 		return nil, fmt.Errorf("unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
 	}
 
-	if port < 0 || port > 65535 {
+	if !ports.IsBindablePort(int(port)) {
 		return nil, fmt.Errorf("invalid port number: %d", port)
 	}
 
