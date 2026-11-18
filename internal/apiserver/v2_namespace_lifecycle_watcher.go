@@ -13,6 +13,7 @@ import (
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	clientgorest "k8s.io/client-go/rest"
@@ -68,9 +69,9 @@ func runV2NamespaceLifecycleWatcher(
 		}
 
 		deletions := make(chan struct{}, 1)
-		watchErrors := make(chan struct{}, 1)
+		watchErrors := make(chan runtime.Object, 1)
 		watchDone := make(chan struct{})
-		go readV2NamespaceWatchEvents(namespaceWatcher, deletions, watchErrors, watchDone, log)
+		go readV2NamespaceWatchEvents(namespaceWatcher, deletions, watchErrors, watchDone)
 
 		closedStates := gate.closedNamespaceStates()
 		namespaceList, listErr := source.List(ctx, metav1.ListOptions{})
@@ -104,7 +105,8 @@ func runV2NamespaceLifecycleWatcher(
 				log.V(1).Info("V2 Namespace lifecycle watch stream closed")
 				restartDelay = retryInterval
 				break watchLoop
-			case <-watchErrors:
+			case watchError := <-watchErrors:
+				log.Info("V2 Namespace lifecycle watcher received an error event", "Object", watchError)
 				restartDelay = retryInterval
 				break watchLoop
 			case <-deletions:
@@ -124,8 +126,9 @@ func runV2NamespaceLifecycleWatcher(
 
 func readV2NamespaceWatchEvents(
 	namespaceWatcher watch.Interface,
-	deletions, watchErrors, watchDone chan<- struct{},
-	log logr.Logger,
+	deletions chan<- struct{},
+	watchErrors chan<- runtime.Object,
+	watchDone chan<- struct{},
 ) {
 	defer close(watchDone)
 	for event := range namespaceWatcher.ResultChan() {
@@ -137,9 +140,8 @@ func readV2NamespaceWatchEvents(
 			default:
 			}
 		case watch.Error:
-			log.Info("V2 Namespace lifecycle watcher received an error event", "Object", event.Object)
 			select {
-			case watchErrors <- struct{}{}:
+			case watchErrors <- event.Object:
 			default:
 			}
 		}
