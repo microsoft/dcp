@@ -30,6 +30,7 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -53,6 +54,7 @@ type projectBackingClient struct {
 	reportContainerPending  atomic.Bool
 	failNamespace           atomic.Bool
 	namespaceLookups        atomic.Int32
+	onUndecodedCreate       func(ctrl_client.Object)
 }
 
 // Verifies that a Failed ProjectContainer preserves its original readable capture on ambiguous discovery
@@ -145,6 +147,9 @@ func (apiClient *projectBackingClient) Create(ctx context.Context, obj ctrl_clie
 		return createErr
 	}
 	apiClient.undecodedCreates.Add(1)
+	if apiClient.onUndecodedCreate != nil {
+		apiClient.onUndecodedCreate(committed)
+	}
 	return errors.New("Project backing create committed without a decoded response")
 }
 
@@ -559,8 +564,8 @@ func (reader *projectBackingReader) Get(ctx context.Context, key ctrl_client.Obj
 	return reader.Reader.Get(ctx, key, object, options...)
 }
 
-// Verifies that an ordinary image create error reports without immediate confirmation
-// and lets later reconciliation adopt the committed backing without repeating creation.
+// Verifies that ProjectContainer adopts committed image and container creations through
+// uncached lookups when responses are lost and the controller cache cannot see them.
 func TestV2ProjectContainerReconcilesAmbiguousCreate(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -581,14 +586,9 @@ func TestV2ProjectContainerReconcilesAmbiguousCreate(t *testing.T) {
 			LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 		}}}
 	require.NoError(t, server.Client.Create(ctx, resource))
-	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
-		return decorated.undecodedCreates.Load() >= 1 && current.Status.Phase == apiv2.ProjectPhasePending, nil
-	})
-	decorated.hideBackings.Store(false)
-	require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
-		[]byte(`{"metadata":{"annotations":{"cache-observation":"released"}}}`))))
 	prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
-	require.InDelta(t, 1, decorated.undecodedCreates.Load(), 1)
+	require.Equal(t, int32(2), decorated.undecodedCreates.Load())
+	decorated.hideBackings.Store(false)
 	var backings apiv2.PhysicalContainerList
 	require.NoError(t, server.Client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
 	require.Len(t, backings.Items, 1)
@@ -767,6 +767,11 @@ func TestV2ProjectContainerDeletionConfirmsUnobservedCreate(t *testing.T) {
 			},
 		})
 	require.NoError(t, startupErr)
+	decorated.onUndecodedCreate = func(object ctrl_client.Object) {
+		if _, isContainer := object.(*apiv2.PhysicalContainer); isContainer {
+			reader.failLists.Store(true)
+		}
+	}
 	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-delete-confirmation")
 	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"not-started"}}},
@@ -777,7 +782,6 @@ func TestV2ProjectContainerDeletionConfirmsUnobservedCreate(t *testing.T) {
 	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return decorated.undecodedCreates.Load() == 1 && current.Status.Phase == apiv2.ProjectPhasePending, nil
 	})
-	reader.failLists.Store(true)
 	t.Cleanup(func() { reader.failLists.Store(false) })
 	require.NoError(t, server.Client.Delete(ctx, resource))
 	failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
@@ -1025,6 +1029,297 @@ func TestV2ProjectContainerRecoversLostCreateAndMutableStop(t *testing.T) {
 			require.LessOrEqual(t, orchestrator.CreateContainerCallCount(backing.GetName()), 1)
 		})
 	}
+}
+
+type projectProcessLostCreateClient struct {
+	ctrl_client.Client
+	created  chan *apiv2.PhysicalProcess
+	release  chan struct{}
+	attempts atomic.Int32
+}
+
+func (apiClient *projectProcessLostCreateClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
+	physical, isProcess := obj.(*apiv2.PhysicalProcess)
+	owner := metav1.GetControllerOf(obj)
+	if !isProcess || owner == nil || owner.Kind != "ProjectProcess" {
+		return apiClient.Client.Create(ctx, obj, options...)
+	}
+	if apiClient.attempts.Add(1) != 1 {
+		return apiClient.Client.Create(ctx, obj, options...)
+	}
+	committed := physical.DeepCopy()
+	if createErr := apiClient.Client.Create(ctx, committed, options...); createErr != nil {
+		return createErr
+	}
+	apiClient.created <- committed
+	select {
+	case <-apiClient.release:
+		return errors.New("Project process create committed without a decoded response")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (apiClient *projectProcessLostCreateClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+	if listErr := apiClient.Client.List(ctx, list, options...); listErr != nil {
+		return listErr
+	}
+	listOptions := (&ctrl_client.ListOptions{}).ApplyOptions(options)
+	if processes, isProcessList := list.(*apiv2.PhysicalProcessList); isProcessList && listOptions.FieldSelector != nil &&
+		strings.Contains(listOptions.FieldSelector.String(), ".metadata.projectProcessOwnerUID") {
+		processes.Items = nil
+	}
+	return nil
+}
+
+type projectFailedServiceReader struct {
+	ctrl_client.Reader
+	fail atomic.Bool
+}
+
+func (reader *projectFailedServiceReader) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
+	if getErr := reader.Reader.Get(ctx, key, obj, options...); getErr != nil {
+		return getErr
+	}
+	if service, isService := obj.(*apiv2.LogicalService); isService && reader.fail.Load() {
+		service.Status.Phase = apiv2.LogicalServicePhaseFailed
+	}
+	return nil
+}
+
+// Verifies that an undecoded direct-process create is adopted without reallocating its inputs
+// or relaunching, and that stop or deletion settles the in-flight create and physical cleanup.
+func TestV2ProjectProcessRecoversLostCreateAndShutdown(t *testing.T) {
+	t.Parallel()
+	for _, action := range []string{"recover", "stop", "delete"} {
+		t.Run(action, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			var decorated *projectProcessLostCreateClient
+			var serviceReader *projectFailedServiceReader
+			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
+				TestEnvironmentOptions{
+					DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+						decorated = &projectProcessLostCreateClient{
+							Client: apiClient, created: make(chan *apiv2.PhysicalProcess, 1), release: make(chan struct{}),
+						}
+						return decorated
+					},
+					DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
+						serviceReader = &projectFailedServiceReader{Reader: apiReader}
+						return serviceReader
+					},
+				})
+			require.NoError(t, startupErr)
+			release := sync.OnceFunc(func() { close(decorated.release) })
+			t.Cleanup(release)
+			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-process-lost-"+action)
+			resource := serviceProjectProcess("project", namespace.Name, t.TempDir(),
+				[]string{`--port={{portForServing "http"}}`}, []commonapi.EnvVar{{Name: "PORT", Value: `{{portForServing "http"}}`}})
+			resource.Spec.LaunchMode = apiv2.ProjectLaunchModeDirect
+			require.NoError(t, server.Client.Create(ctx, resource))
+			var declared *apiv2.PhysicalProcess
+			select {
+			case declared = <-decorated.created:
+			case <-ctx.Done():
+				t.Fatal("Project did not declare its physical process")
+			}
+			physical := waitObjectAssumesStateEx(t, ctx, server.Client, declared.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
+				return current.Status.Phase == apiv2.PhysicalProcessPhaseRunning, nil
+			})
+			require.Equal(t, declared.UID, physical.UID)
+			require.Len(t, environment.TestProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil), 1)
+			serviceReader.fail.Store(true)
+			switch action {
+			case "stop":
+				require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+			case "delete":
+				require.NoError(t, server.Client.Delete(ctx, resource))
+			}
+			release()
+			if action == "recover" {
+				running := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseActive)
+				requireReadyCondition(t, running.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonApplicationRunning)
+				require.Equal(t, physical.Name, running.Status.PhysicalProcessRef)
+				require.Len(t, running.Status.Ports, 1)
+				require.Equal(t, []string{fmt.Sprintf("--port=%d", running.Status.Ports[0].Port)}, physical.Spec.Process.Args)
+				require.Equal(t, []commonapi.EnvVar{{Name: "PORT", Value: fmt.Sprint(running.Status.Ports[0].Port)}}, physical.Spec.Process.Env)
+				require.Equal(t, physical.Spec.Process.Args, running.Status.EffectiveArgs)
+				require.Equal(t, physical.Spec.Process.Env, running.Status.EffectiveEnv)
+			} else if action == "stop" {
+				waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseStopped)
+			}
+			if action != "delete" {
+				require.NoError(t, server.Client.Delete(ctx, resource))
+			}
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+			require.EqualValues(t, 1, decorated.attempts.Load())
+			require.Len(t, environment.TestProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil), 1)
+		})
+	}
+}
+
+// Verifies that ProjectProcess rejects an owned process backing whose launch inputs or
+// lifetime policy do not match the prepared application configuration.
+func TestV2ProjectProcessRejectsIncompatibleOwnedBacking(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"command", "args", "retained"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			namespace := createActiveV2Namespace(t, ctx, "v2-project-process-collision-"+scenario)
+			start := false
+			resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{
+					RootDirectory: t.TempDir(), LaunchMode: apiv2.ProjectLaunchModeDirect, Start: &start,
+				}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
+					ExecutablePath: namespace.Name + "-command", Args: []string{"expected"},
+					AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
+				}}}}
+			require.NoError(t, client.Create(ctx, resource))
+			prepared := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+			requireReadyCondition(t, prepared.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonAwaitingStart)
+
+			physical := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{
+				Name: "project-" + string(resource.UID), Namespace: namespace.Name,
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(resource, apiv2.GroupVersion.WithKind("ProjectProcess"))},
+			}, Spec: apiv2.PhysicalProcessSpec{Stop: true, Process: &apiv2.PhysicalProcessConfig{
+				ExecutablePath: resource.Spec.Process.ExecutablePath, Args: []string{"expected"},
+				AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
+			}}}
+			switch scenario {
+			case "command":
+				physical.Spec.Process.ExecutablePath += "-different"
+			case "args":
+				physical.Spec.Process.Args = []string{"different"}
+			case "retained":
+				physical.Spec.Process.RetainRuntimeProcess = true
+			}
+			controllers.InitializeLogicalBackingFinalizers(physical, apiv2.GroupName+"/physicalprocess-reconciler")
+			require.NoError(t, client.Create(ctx, physical))
+			cleanupProjectBacking(t, physical)
+			require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"start":true}}`))))
+			failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
+			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
+			require.Empty(t, testProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil))
+			require.NoError(t, client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
+		})
+	}
+}
+
+type projectFailedStopObserver struct {
+	ctrl_client.Client
+	processStop   atomic.Bool
+	containerStop atomic.Bool
+	processSeen   chan struct{}
+	containerSeen chan struct{}
+	processOnce   sync.Once
+	containerOnce sync.Once
+}
+
+func (observer *projectFailedStopObserver) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
+	if getErr := observer.Client.Get(ctx, key, obj, options...); getErr != nil {
+		return getErr
+	}
+	switch project := obj.(type) {
+	case *apiv2.ProjectProcess:
+		if project.Spec.Stop {
+			observer.processStop.Store(true)
+		}
+	case *apiv2.ProjectContainer:
+		if project.Spec.Stop {
+			observer.containerStop.Store(true)
+		}
+	}
+	return nil
+}
+
+func (observer *projectFailedStopObserver) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+	if listErr := observer.Client.List(ctx, list, options...); listErr != nil {
+		return listErr
+	}
+	listOptions := (&ctrl_client.ListOptions{}).ApplyOptions(options)
+	if listOptions.FieldSelector == nil {
+		return nil
+	}
+	selector := listOptions.FieldSelector.String()
+	if _, isProcess := list.(*apiv2.PhysicalProcessList); isProcess && observer.processStop.Load() &&
+		strings.Contains(selector, ".metadata.projectProcessOwnerUID") {
+		observer.processOnce.Do(func() { close(observer.processSeen) })
+	}
+	if _, isContainer := list.(*apiv2.PhysicalContainerList); isContainer && observer.containerStop.Load() &&
+		strings.Contains(selector, ".metadata.projectContainerOwnerUID") {
+		observer.containerOnce.Do(func() { close(observer.containerSeen) })
+	}
+	return nil
+}
+
+// Verifies that a later stop request does not replace a direct Project's terminal backing-failure
+// diagnosis, while deletion still cleans up the owned execution.
+func TestV2ProjectDirectFailureRemainsTerminalAfterStop(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	var observer *projectFailedStopObserver
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+			observer = &projectFailedStopObserver{Client: apiClient, processSeen: make(chan struct{}), containerSeen: make(chan struct{})}
+			return observer
+		}})
+	require.NoError(t, startupErr)
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-direct-failed-stop")
+	processProject := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: namespace.Name},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir(), LaunchMode: apiv2.ProjectLaunchModeDirect},
+			Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-command"}}}}
+	containerProject := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "container", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir(), LaunchMode: apiv2.ProjectLaunchModeDirect},
+			Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Entrypoint: "application",
+			}}}}
+	require.NoError(t, server.Client.Create(ctx, processProject))
+	require.NoError(t, server.Client.Create(ctx, containerProject))
+	processRunning := waitProjectPhase(t, ctx, server.Client, processProject, apiv2.ProjectPhaseActive)
+	containerRunning := waitProjectPhase(t, ctx, server.Client, containerProject, apiv2.ProjectPhaseActive)
+	physicalProcess := &apiv2.PhysicalProcess{}
+	physicalContainer := &apiv2.PhysicalContainer{}
+	require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: processRunning.Status.PhysicalProcessRef}, physicalProcess))
+	require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: containerRunning.Status.PhysicalContainerRef}, physicalContainer))
+	removeProjectBackingHold(t, ctx, server.Client, physicalProcess)
+	removeProjectBackingHold(t, ctx, server.Client, physicalContainer)
+	processFailed := waitProjectPhase(t, ctx, server.Client, processProject, apiv2.ProjectPhaseFailed)
+	containerFailed := waitProjectPhase(t, ctx, server.Client, containerProject, apiv2.ProjectPhaseFailed)
+	requireReadyCondition(t, processFailed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
+	requireReadyCondition(t, containerFailed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
+	require.NoError(t, server.Client.Patch(ctx, processProject, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	require.NoError(t, server.Client.Patch(ctx, containerProject, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	for _, observed := range []<-chan struct{}{observer.processSeen, observer.containerSeen} {
+		select {
+		case <-observed:
+		case <-ctx.Done():
+			t.Fatal("Project did not reconcile the stop request")
+		}
+	}
+	currentProcess := &apiv2.ProjectProcess{}
+	currentContainer := &apiv2.ProjectContainer{}
+	require.NoError(t, server.Client.Get(ctx, processProject.NamespacedName(), currentProcess))
+	require.NoError(t, server.Client.Get(ctx, containerProject.NamespacedName(), currentContainer))
+	require.Equal(t, apiv2.ProjectPhaseFailed, currentProcess.Status.Phase)
+	require.Equal(t, processFailed.Status.Conditions[0].Reason, currentProcess.Status.Conditions[0].Reason)
+	require.Equal(t, processFailed.Status.Conditions[0].Message, currentProcess.Status.Conditions[0].Message)
+	require.Equal(t, apiv2.ProjectPhaseFailed, currentContainer.Status.Phase)
+	require.Equal(t, containerFailed.Status.Conditions[0].Reason, currentContainer.Status.Conditions[0].Reason)
+	require.Equal(t, containerFailed.Status.Conditions[0].Message, currentContainer.Status.Conditions[0].Message)
+	require.NoError(t, server.Client.Delete(ctx, processProject))
+	require.NoError(t, server.Client.Delete(ctx, containerProject))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, processProject)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, containerProject)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physicalProcess)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physicalContainer)
 }
 
 type projectStatusConflictClient struct {

@@ -9462,6 +9462,20 @@ func schema_microsoft_dcp_api_v2_ProjectCommonSpec(ref common.ReferenceCallback)
 							Format:      "",
 						},
 					},
+					"launchMode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LaunchMode selects adapter-driven application launch or direct execution of the application template. Defaults to adapter. Direct execution does not require an adapter or a debug connection.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"start": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Start permits initial execution after preparation. Defaults to true. Once true, it cannot be reset. Stop takes precedence over start.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"stop": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Stop requests termination or prevents launch. Once true, it cannot be reset.",
@@ -9480,7 +9494,7 @@ func schema_microsoft_dcp_api_v2_ProjectCommonStatus(ref common.ReferenceCallbac
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ProjectCommonStatus describes launch inputs and debugging progress shared by Project kinds.",
+				Description: "ProjectCommonStatus describes launch inputs, execution, and debugging progress shared by Project kinds.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"effectiveArgs": {
@@ -9490,7 +9504,7 @@ func schema_microsoft_dcp_api_v2_ProjectCommonStatus(ref common.ReferenceCallbac
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "EffectiveArgs contains evaluated application launch arguments, never the container placeholder's arguments.",
+							Description: "EffectiveArgs contains evaluated application launch arguments.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -9552,9 +9566,22 @@ func schema_microsoft_dcp_api_v2_ProjectCommonStatus(ref common.ReferenceCallbac
 					},
 					"phase": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase summarizes Project preparation, debug activity and shutdown.",
+							Description: "Phase summarizes Project preparation, execution, debug activity and shutdown.",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"finishedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FinishedAt is the observed completion time of the directly launched application.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"exitCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExitCode is the directly launched application's exit code, when available.",
+							Type:        []string{"integer"},
+							Format:      "int32",
 						},
 					},
 					"runtimeLogs": {
@@ -9588,7 +9615,7 @@ func schema_microsoft_dcp_api_v2_ProjectCommonStatus(ref common.ReferenceCallbac
 			},
 		},
 		Dependencies: []string{
-			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.ProjectDebugStatus{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName()},
+			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.ProjectDebugStatus{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -9596,7 +9623,7 @@ func schema_microsoft_dcp_api_v2_ProjectContainer(ref common.ReferenceCallback) 
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ProjectContainer runs user code in a container prepared for adapter-controlled launch.",
+				Description: "ProjectContainer runs user code directly or prepares it for adapter-controlled container execution.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -9702,6 +9729,20 @@ func schema_microsoft_dcp_api_v2_ProjectContainerSpec(ref common.ReferenceCallba
 							Format:      "",
 						},
 					},
+					"launchMode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LaunchMode selects adapter-driven application launch or direct execution of the application template. Defaults to adapter. Direct execution does not require an adapter or a debug connection.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"start": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Start permits initial execution after preparation. Defaults to true. Once true, it cannot be reset. Stop takes precedence over start.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"stop": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Stop requests termination or prevents launch. Once true, it cannot be reset.",
@@ -9735,7 +9776,7 @@ func schema_microsoft_dcp_api_v2_ProjectContainerStatus(ref common.ReferenceCall
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ProjectContainerStatus describes the prepared container, launch inputs and debugging progress.",
+				Description: "ProjectContainerStatus describes the container, launch inputs, execution and debugging progress.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"effectiveArgs": {
@@ -9745,7 +9786,7 @@ func schema_microsoft_dcp_api_v2_ProjectContainerStatus(ref common.ReferenceCall
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "EffectiveArgs contains evaluated application launch arguments, never the container placeholder's arguments.",
+							Description: "EffectiveArgs contains evaluated application launch arguments.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -9807,9 +9848,22 @@ func schema_microsoft_dcp_api_v2_ProjectContainerStatus(ref common.ReferenceCall
 					},
 					"phase": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase summarizes Project preparation, debug activity and shutdown.",
+							Description: "Phase summarizes Project preparation, execution, debug activity and shutdown.",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"finishedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FinishedAt is the observed completion time of the directly launched application.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"exitCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExitCode is the directly launched application's exit code, when available.",
+							Type:        []string{"integer"},
+							Format:      "int32",
 						},
 					},
 					"runtimeLogs": {
@@ -10107,7 +10161,7 @@ func schema_microsoft_dcp_api_v2_ProjectContainerTemplate(ref common.ReferenceCa
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Ports declares named service-backed endpoints for the container. Endpoints are published while a ready debug session has requested launch.",
+							Description: "Ports declares named service-backed endpoints for the container. Endpoints are published while a direct application is running or a ready debug session has requested launch.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -10621,7 +10675,7 @@ func schema_microsoft_dcp_api_v2_ProjectProcess(ref common.ReferenceCallback) co
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ProjectProcess runs user code as a host process prepared for adapter-controlled launch.",
+				Description: "ProjectProcess runs user code directly or prepares it for adapter-controlled host execution.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -10727,6 +10781,20 @@ func schema_microsoft_dcp_api_v2_ProjectProcessSpec(ref common.ReferenceCallback
 							Format:      "",
 						},
 					},
+					"launchMode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LaunchMode selects adapter-driven application launch or direct execution of the application template. Defaults to adapter. Direct execution does not require an adapter or a debug connection.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"start": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Start permits initial execution after preparation. Defaults to true. Once true, it cannot be reset. Stop takes precedence over start.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"stop": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Stop requests termination or prevents launch. Once true, it cannot be reset.",
@@ -10760,7 +10828,7 @@ func schema_microsoft_dcp_api_v2_ProjectProcessStatus(ref common.ReferenceCallba
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ProjectProcessStatus describes prepared process launch inputs and debugging progress.",
+				Description: "ProjectProcessStatus describes process execution and debugging progress.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"effectiveArgs": {
@@ -10770,7 +10838,7 @@ func schema_microsoft_dcp_api_v2_ProjectProcessStatus(ref common.ReferenceCallba
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "EffectiveArgs contains evaluated application launch arguments, never the container placeholder's arguments.",
+							Description: "EffectiveArgs contains evaluated application launch arguments.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -10832,9 +10900,22 @@ func schema_microsoft_dcp_api_v2_ProjectProcessStatus(ref common.ReferenceCallba
 					},
 					"phase": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase summarizes Project preparation, debug activity and shutdown.",
+							Description: "Phase summarizes Project preparation, execution, debug activity and shutdown.",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"finishedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FinishedAt is the observed completion time of the directly launched application.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"exitCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExitCode is the directly launched application's exit code, when available.",
+							Type:        []string{"integer"},
+							Format:      "int32",
 						},
 					},
 					"runtimeLogs": {
@@ -10864,11 +10945,31 @@ func schema_microsoft_dcp_api_v2_ProjectProcessStatus(ref common.ReferenceCallba
 							},
 						},
 					},
+					"physicalProcessRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PhysicalProcessRef identifies the owned same-namespace PhysicalProcess in direct mode.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PID is the directly launched host process ID.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"identityTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IdentityTimestamp identifies the process instance together with PID. On Linux this represents elapsed time since boot, not a wall-clock start time.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.ProjectDebugStatus{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName()},
+			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.ProjectDebugStatus{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -10948,7 +11049,7 @@ func schema_microsoft_dcp_api_v2_ProjectProcessTemplate(ref common.ReferenceCall
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Ports declares named service-backed endpoints for the process. Endpoints are published while a ready debug session has requested launch.",
+							Description: "Ports declares named service-backed endpoints for the process. Endpoints are published while a direct application is running or a ready debug session has requested launch.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{

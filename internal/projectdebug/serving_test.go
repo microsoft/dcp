@@ -189,21 +189,28 @@ func TestProjectDebugServingDisconnectsSlowClient(t *testing.T) {
 	}
 }
 
-// Verifies that prerequisite waiting outlasts the adapter connection timeout and uses no adapter
-// process before readiness, then upgrades and forwards bytes once prerequisites become available.
+// Verifies that prerequisite waiting outlasts the adapter connection timeout and does not start
+// an adapter until the Project's start, lifecycle, and current-generation readiness permit it.
 func TestProjectDebugServingWaitsForPrerequisites(t *testing.T) {
 	for _, scenario := range []struct {
-		name   string
-		phase  apiv2.ProjectPhase
-		status metav1.ConditionStatus
-		reason apiv2.ConditionReason
-		active bool
+		name     string
+		phase    apiv2.ProjectPhase
+		status   metav1.ConditionStatus
+		reason   apiv2.ConditionReason
+		mode     apiv2.ProjectLaunchMode
+		active   bool
+		deferred bool
+		stale    bool
 	}{
 		{name: "missing-condition", phase: apiv2.ProjectPhaseReady},
 		{name: "paused", phase: apiv2.ProjectPhaseReady, status: metav1.ConditionFalse, reason: apiv2.ProjectReasonPaused},
 		{name: "wrong-phase", phase: apiv2.ProjectPhasePending, status: metav1.ConditionTrue, reason: apiv2.ProjectReasonPrepared},
 		{name: "wrong-reason", phase: apiv2.ProjectPhaseReady, status: metav1.ConditionTrue, reason: apiv2.ProjectReasonPreparing},
 		{name: "active-recovery", phase: apiv2.ProjectPhaseUnknown, status: metav1.ConditionFalse, reason: apiv2.ProjectReasonLookupFailed, active: true},
+		{name: "deferred-start", phase: apiv2.ProjectPhaseReady, status: metav1.ConditionTrue, reason: apiv2.ProjectReasonPrepared, deferred: true},
+		{name: "direct-prepared", phase: apiv2.ProjectPhaseReady, status: metav1.ConditionTrue, reason: apiv2.ProjectReasonPrepared, mode: apiv2.ProjectLaunchModeDirect},
+		{name: "direct-debug-active", phase: apiv2.ProjectPhaseActive, status: metav1.ConditionTrue, reason: apiv2.ProjectReasonDebugSessionsActive, mode: apiv2.ProjectLaunchModeDirect},
+		{name: "direct-stale-generation", phase: apiv2.ProjectPhaseActive, status: metav1.ConditionTrue, reason: apiv2.ProjectReasonApplicationRunning, mode: apiv2.ProjectLaunchModeDirect, stale: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, time.Minute)
@@ -214,12 +221,20 @@ func TestProjectDebugServingWaitsForPrerequisites(t *testing.T) {
 			require.NoError(t, apiClient.Delete(ctx, project))
 			project.ResourceVersion, project.UID = "", ""
 			project.Spec.DebugAdapter.ConnectionTimeout = &metav1.Duration{Duration: 100 * time.Millisecond}
+			project.Spec.LaunchMode = scenario.mode
+			if scenario.deferred {
+				start := false
+				project.Spec.Start = &start
+			}
 			project.Status = apiv2.ProjectProcessStatus{}
 			require.NoError(t, apiClient.Create(ctx, project))
 			project.GetProjectStatus().Phase = scenario.phase
 			if scenario.status != "" {
 				project.GetProjectStatus().Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: scenario.status,
-					Reason: string(scenario.reason), LastTransitionTime: metav1.Now()}}
+					Reason: string(scenario.reason), ObservedGeneration: project.Generation, LastTransitionTime: metav1.Now()}}
+				if scenario.stale {
+					project.GetProjectStatus().Conditions[0].ObservedGeneration++
+				}
 			}
 			require.NoError(t, apiClient.Status().Update(ctx, project))
 			connectCtx, cancelConnect := context.WithCancel(ctx)
@@ -229,8 +244,9 @@ func TestProjectDebugServingWaitsForPrerequisites(t *testing.T) {
 				err        error
 			}
 			connected := make(chan result, 1)
+			selected := project.DeepCopy()
 			go func() {
-				connection, connectErr := connectDebugServing(connectCtx, config, project)
+				connection, connectErr := connectDebugServing(connectCtx, config, selected)
 				connected <- result{connection, connectErr}
 			}()
 			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
@@ -253,15 +269,19 @@ func TestProjectDebugServingWaitsForPrerequisites(t *testing.T) {
 				t.Fatal("test timed out before prerequisite check")
 			}
 			require.Empty(t, executor.FindAll([]string{"test-adapter"}, "", nil))
-			require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
-			project.GetProjectStatus().Phase = apiv2.ProjectPhaseReady
-			project.GetProjectStatus().Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
-				Reason: string(apiv2.ProjectReasonPrepared), LastTransitionTime: metav1.Now()}}
-			if scenario.active {
-				project.GetProjectStatus().Phase = apiv2.ProjectPhaseActive
-				project.GetProjectStatus().Conditions[0].Reason = string(apiv2.ProjectReasonDebugSessionsActive)
+			if scenario.deferred {
+				require.NoError(t, apiClient.Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType, []byte(`{"spec":{"start":true}}`))))
 			}
-			require.NoError(t, apiClient.Status().Update(ctx, project))
+			require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
+			phase, reason := apiv2.ProjectPhaseReady, apiv2.ProjectReasonPrepared
+			if scenario.mode == apiv2.ProjectLaunchModeDirect {
+				phase, reason = apiv2.ProjectPhaseActive, apiv2.ProjectReasonApplicationRunning
+			} else if scenario.active {
+				phase, reason = apiv2.ProjectPhaseActive, apiv2.ProjectReasonDebugSessionsActive
+			}
+			require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
+				[]byte(fmt.Sprintf(`{"status":{"phase":%q,"conditions":[{"type":"Ready","status":"True","reason":%q,"observedGeneration":%d,"lastTransitionTime":%q}]}}`,
+					phase, reason, project.Generation, metav1.Now().Format(time.RFC3339))))))
 			select {
 			case established := <-connected:
 				require.NoError(t, established.err)
@@ -426,6 +446,118 @@ func TestProjectDebugServingParentStop(t *testing.T) {
 	executions := executor.FindAll([]string{"test-adapter"}, "", nil)
 	require.Len(t, executions, 1)
 	require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(process.NewHandle(executions[0].PID, executions[0].StartedAt))))
+}
+
+// Verifies that a direct application's exit cancels both a waiting debug request and an active
+// debug session, without starting an adapter for the waiting request.
+func TestProjectDebugServingDirectApplicationExit(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		name := "waiting"
+		if active {
+			name = "active"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, time.Minute)
+			defer cancel()
+			apiClient, config, executor := startDebugServingTest(t, ctx)
+			project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
+			require.NoError(t, apiClient.Delete(ctx, project))
+			project.ResourceVersion, project.UID = "", ""
+			project.Spec.LaunchMode = apiv2.ProjectLaunchModeDirect
+			project.Status = apiv2.ProjectProcessStatus{}
+			require.NoError(t, apiClient.Create(ctx, project))
+			project.Status.Phase = apiv2.ProjectPhasePending
+			condition := metav1.Condition{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
+				Reason: string(apiv2.ProjectReasonPreparing), ObservedGeneration: project.Generation, LastTransitionTime: metav1.Now()}
+			if active {
+				project.Status.Phase = apiv2.ProjectPhaseActive
+				condition.Status, condition.Reason = metav1.ConditionTrue, string(apiv2.ProjectReasonApplicationRunning)
+			}
+			project.Status.Conditions = []metav1.Condition{condition}
+			require.NoError(t, apiClient.Status().Update(ctx, project))
+
+			type result struct {
+				connection *websocket.Conn
+				err        error
+				status     int
+			}
+			connected := make(chan result, 1)
+			selected := project.DeepCopy()
+			tlsConfig, tlsErr := clientrest.TLSConfigFor(config)
+			require.NoError(t, tlsErr)
+			dialer := &websocket.Dialer{TLSClientConfig: tlsConfig, Subprotocols: []string{"dap"}}
+			location := strings.Replace(config.Host, "https://", "wss://", 1) +
+				"/apis/" + apiv2.GroupVersion.String() + "/namespaces/" + selected.Namespace + "/projectprocesses/" + selected.Name + "/debug"
+			headers := http.Header{"Authorization": []string{"Bearer " + config.BearerToken}}
+			go func() {
+				connection, response, connectErr := dialer.DialContext(ctx, location, headers)
+				status := 0
+				if response != nil {
+					status = response.StatusCode
+					if connectErr != nil {
+						_ = response.Body.Close()
+					}
+				}
+				connected <- result{connection: connection, err: connectErr, status: status}
+			}()
+			var connection *websocket.Conn
+			if active {
+				select {
+				case established := <-connected:
+					require.NoError(t, established.err)
+					connection = established.connection
+					defer connection.Close()
+					exchangeDebugBytes(t, ctx, connection)
+				case <-ctx.Done():
+					t.Fatal("direct application debug session did not start")
+				}
+			} else {
+				require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+					current := &apiv2.ProjectProcess{}
+					if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
+						return false, getErr
+					}
+					return current.Status.Debug != nil && len(current.Status.Debug.Sessions) == 1, nil
+				}))
+			}
+			require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
+				[]byte(fmt.Sprintf(`{"status":{"phase":"Exited","conditions":[{"type":"Ready","status":"False","reason":"Completed","observedGeneration":%d,"lastTransitionTime":%q}]}}`,
+					project.Generation, metav1.Now().Format(time.RFC3339))))))
+			if active {
+				_, _, readErr := connection.ReadMessage()
+				require.Error(t, readErr)
+			} else {
+				select {
+				case outcome := <-connected:
+					if outcome.connection != nil {
+						_ = outcome.connection.Close()
+					}
+					require.Error(t, outcome.err)
+					require.Equal(t, http.StatusConflict, outcome.status)
+				case <-ctx.Done():
+					t.Fatal("direct application exit did not cancel the waiting request")
+				}
+			}
+			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+				current := &apiv2.ProjectProcess{}
+				if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
+					return false, getErr
+				}
+				if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 1 {
+					return false, nil
+				}
+				phase := current.Status.Debug.Sessions[0].Phase
+				return phase == apiv2.ProjectDebugPhaseExited || phase == apiv2.ProjectDebugPhaseFailed, nil
+			}))
+			executions := executor.FindAll([]string{"test-adapter"}, "", nil)
+			if !active {
+				require.Empty(t, executions)
+				return
+			}
+			require.Len(t, executions, 1)
+			require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(process.NewHandle(executions[0].PID, executions[0].StartedAt))))
+		})
+	}
 }
 
 // Verifies that caller cancellation during prerequisite waiting leaves a terminal session observation
@@ -1106,10 +1238,6 @@ func TestProjectDebugServingWaitsForContainerTCPEndpoint(t *testing.T) {
 	apiClient, config, _ := startDebugServingTest(t, ctx,
 		func(context.Context, string) (containers.ExecContainers, error) { return containerExec, nil })
 	project := createDebugServingContainerProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen")
-	project.GetProjectStatus().Phase = apiv2.ProjectPhasePending
-	project.GetProjectStatus().Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
-		Reason: string(apiv2.ProjectReasonPreparing), LastTransitionTime: metav1.Now()}}
-	require.NoError(t, apiClient.Status().Update(ctx, project))
 	type result struct {
 		connection *websocket.Conn
 		err        error
@@ -1127,12 +1255,24 @@ func TestProjectDebugServingWaitsForContainerTCPEndpoint(t *testing.T) {
 		}
 		return current.GetProjectStatus().Debug != nil && len(current.GetProjectStatus().Debug.Sessions) == 1, nil
 	}))
+	timer := time.NewTimer(200 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case early := <-connected:
+		if early.connection != nil {
+			_ = early.connection.Close()
+		}
+		t.Fatalf("debug stream completed before TCP endpoint publication: %v", early.err)
+	case <-ctx.Done():
+		t.Fatal("test timed out before TCP endpoint publication")
+	}
 	containerExec.mu.Lock()
 	count := len(containerExec.options)
 	containerExec.mu.Unlock()
 	require.Zero(t, count, "endpoint preparation must precede adapter launch")
 	require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
-		[]byte(fmt.Sprintf(`{"status":{"debugAdapterPort":4711,"debugAdapterAddress":%q,"phase":"Ready","conditions":[{"type":"Ready","status":"True","reason":"Prepared","lastTransitionTime":%q}]}}`, listener.Addr().String(), metav1.Now().Format(time.RFC3339))))))
+		[]byte(fmt.Sprintf(`{"status":{"debugAdapterPort":4711,"debugAdapterAddress":%q}}`, listener.Addr().String())))))
 	select {
 	case ready := <-connected:
 		require.NoError(t, ready.err)

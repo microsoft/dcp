@@ -47,19 +47,22 @@ type projectContainerDataHandlerFunc = stateInitializerFunc[
 ]
 
 var projectContainerDataHandlers = map[projectState]projectContainerDataHandlerFunc{
-	projectStatePending:  handleProjectContainerPending,
-	projectStateCreating: handleProjectContainerCreating,
-	projectStateReady:    handleProjectContainerReady,
-	projectStateActive:   handleProjectContainerActive,
-	projectStatePaused:   handleProjectContainerReady,
-	projectStateStopping: handleProjectContainerStopping,
-	projectStateStopped:  handleProjectContainerStopped,
-	projectStateFailed:   handleProjectContainerFailed,
-	projectStateUnknown:  handleProjectContainerUnknown,
-	0:                    handleInvalidProjectContainerState,
+	projectStatePending:       handleProjectContainerPending,
+	projectStateCreating:      handleProjectContainerCreating,
+	projectStateAwaitingStart: handleProjectContainerCreating,
+	projectStateReady:         handleProjectContainerReady,
+	projectStateActive:        handleProjectContainerActive,
+	projectStateRunning:       handleProjectContainerRunning,
+	projectStateExited:        handleProjectContainerExited,
+	projectStatePaused:        handleProjectContainerReady,
+	projectStateStopping:      handleProjectContainerStopping,
+	projectStateStopped:       handleProjectContainerStopped,
+	projectStateFailed:        handleProjectContainerFailed,
+	projectStateUnknown:       handleProjectContainerUnknown,
+	0:                         handleInvalidProjectContainerState,
 }
 
-// ProjectContainerReconciler prepares a container context for AppHost-controlled debugging of user code.
+// ProjectContainerReconciler manages direct or adapter-controlled execution of user code in a container.
 type ProjectContainerReconciler struct {
 	*ReconcilerBase[apiv2.ProjectContainer, *apiv2.ProjectContainer]
 	projects             *ObjectStateMap[types.UID, projectContainerData, *projectContainerData, *apiv2.ProjectContainer]
@@ -358,7 +361,7 @@ func (r *ProjectContainerReconciler) createProjectPhysicalContainer(
 
 func handleProjectContainerCreating(
 	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
-	_ projectState, data *projectContainerData, log logr.Logger,
+	state projectState, data *projectContainerData, log logr.Logger,
 ) objectChange {
 	if resource.Spec.Stop && data.requestStop() {
 		return additionalReconciliationNeeded
@@ -368,9 +371,22 @@ func handleProjectContainerCreating(
 		log.Error(getErr, "Failed to observe Project container preparation")
 		return change | additionalReconciliationNeeded
 	}
+	if resource.Spec.ShouldStart() && !physical.Spec.ShouldStart() &&
+		physical.Status.Phase != apiv2.PhysicalContainerPhaseExited && physical.Status.Phase != apiv2.PhysicalContainerPhaseFailed {
+		patch := ctrl_client.MergeFromWithOptions(physical.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
+		start := true
+		physical.Spec.Start = &start
+		if startErr := reconciler.Patch(ctx, physical, patch); startErr != nil {
+			log.Error(startErr, "Failed to request Project container start")
+		}
+		return change | additionalReconciliationNeeded
+	}
 	data.updateLifecycleFromContainer(resource, physical)
 	if data.state != projectStateCreating {
-		return change | additionalReconciliationNeeded
+		if data.state != state {
+			return change | additionalReconciliationNeeded
+		}
+		return change
 	}
 	image, imageErr := reconciler.findProjectImage(ctx, resource, data)
 	if imageErr != nil {
@@ -392,6 +408,9 @@ func handleProjectContainerReady(
 	if !contextReady {
 		return change | additionalReconciliationNeeded
 	}
+	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
+		return change | reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
+	}
 	if projectDebugSessionsActive(&resource.Status.ProjectCommonStatus) {
 		data.state = projectStateActive
 		return change | additionalReconciliationNeeded
@@ -412,6 +431,9 @@ func handleProjectContainerActive(
 	if !contextReady {
 		return change | additionalReconciliationNeeded
 	}
+	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
+		return change | reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
+	}
 	if !projectDebugSessionsActive(&resource.Status.ProjectCommonStatus) {
 		data.state = projectStateReady
 		return change | additionalReconciliationNeeded
@@ -419,6 +441,46 @@ func handleProjectContainerActive(
 	data.message = "Project has active debug sessions."
 	data.state, data.reason = projectStateActive, ""
 	return change | reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
+}
+
+func handleProjectContainerRunning(
+	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
+	_ projectState, data *projectContainerData, log logr.Logger,
+) objectChange {
+	if resource.Spec.Stop && data.requestStop() {
+		return additionalReconciliationNeeded
+	}
+	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
+	physical, change, ready := reconciler.observePreparedProject(ctx, resource, data, log)
+	if !ready && data.state == projectStateRunning {
+		data.state, data.reason, data.message = projectStateUnknown, apiv2.ProjectReasonLookupFailed, "Waiting to observe the owned PhysicalContainer."
+	}
+	change |= reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
+	if !ready {
+		return change | additionalReconciliationNeeded
+	}
+	return change
+}
+
+func handleProjectContainerExited(
+	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
+	_ projectState, data *projectContainerData, log logr.Logger,
+) objectChange {
+	if resource.Spec.Stop && data.requestStop() {
+		return additionalReconciliationNeeded
+	}
+	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
+	physical, change, getErr := reconciler.observeProjectContainer(ctx, resource, data)
+	if getErr != nil {
+		log.Error(getErr, "Failed to observe exited Project container")
+		return change | reconciler.syncProjectEndpoints(ctx, resource, data, nil, log) | additionalReconciliationNeeded
+	}
+	data.updateLifecycleFromContainer(resource, physical)
+	change |= reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
+	if data.state != projectStateExited {
+		change |= additionalReconciliationNeeded
+	}
+	return change
 }
 
 // observePreparedProject returns the observed container context when the prepared container is usable.
@@ -431,7 +493,7 @@ func (r *ProjectContainerReconciler) observePreparedProject(
 		return nil, change, false
 	}
 	data.updateLifecycleFromContainer(resource, physical)
-	if data.state != projectStateReady && data.state != projectStateActive {
+	if data.state != projectStateReady && data.state != projectStateActive && data.state != projectStateRunning {
 		return nil, change, false
 	}
 	image, imageErr := r.findProjectImage(ctx, resource, data)
@@ -501,6 +563,9 @@ func handleProjectContainerUnknown(
 	physical, change, ready := reconciler.observePreparedProject(ctx, resource, data, log)
 	if !ready {
 		return change | additionalReconciliationNeeded
+	}
+	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
+		return change | reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
 	}
 	data.state, data.reason, data.message = projectStateReady, "", ""
 	if projectDebugSessionsActive(&resource.Status.ProjectCommonStatus) {
@@ -585,6 +650,10 @@ func (r *ProjectContainerReconciler) observeProjectContainer(
 	}
 	change |= setTimestamp(&resource.Status.CreatedAt, physical.Status.CreatedAt)
 	change |= setTimestamp(&resource.Status.StartedAt, physical.Status.StartedAt)
+	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
+		data.finishedAt = physical.Status.FinishedAt
+		data.exitCode = cloneInt32Pointer(physical.Status.ExitCode)
+	}
 	if !reflect.DeepEqual(resource.Status.PortMappings, physical.Status.PortMappings) {
 		resource.Status.PortMappings = slices.Clone(physical.Status.PortMappings)
 		change |= statusChanged
@@ -617,12 +686,23 @@ func (r *ProjectContainerReconciler) findProjectContainer(ctx context.Context, r
 		return nil, getErr
 	}
 	if observed == nil {
-		return nil, nil
+		physical := &apiv2.PhysicalContainer{}
+		name := types.NamespacedName{Namespace: resource.Namespace, Name: projectContainerPhysicalName(resource)}
+		lookupErr := r.NoCacheClient.Get(ctx, name, physical)
+		if apierrors.IsNotFound(lookupErr) {
+			return nil, nil
+		}
+		if lookupErr != nil {
+			return nil, fmt.Errorf("get Project container backing: %w", lookupErr)
+		}
+		observed = physical
+	} else {
+		data.unobservedChildren.observeCached(observed.(*apiv2.PhysicalContainer))
 	}
 	physical := observed.(*apiv2.PhysicalContainer)
-	data.unobservedChildren.observeCached(physical)
-	if (data.physicalUID != "" && physical.UID != data.physicalUID) || !hasFinalizer(physical, LogicalBackingFinalizer) {
-		identityErr := fmt.Errorf("physical container %q UID or logical hold changed", physical.NamespacedName())
+	if !metav1.IsControlledBy(physical, resource) || (data.physicalUID != "" && physical.UID != data.physicalUID) ||
+		!hasFinalizer(physical, LogicalBackingFinalizer) {
+		identityErr := fmt.Errorf("physical container %q owner, UID, or logical hold changed", physical.NamespacedName())
 		data.failMissing(identityErr.Error())
 		return nil, identityErr
 	}
@@ -642,12 +722,23 @@ func (r *ProjectContainerReconciler) findProjectImage(ctx context.Context, resou
 		return nil, getErr
 	}
 	if observed == nil {
-		return nil, nil
+		image := &apiv2.PhysicalContainerImage{}
+		name := types.NamespacedName{Namespace: resource.Namespace, Name: projectContainerPhysicalName(resource)}
+		lookupErr := r.NoCacheClient.Get(ctx, name, image)
+		if apierrors.IsNotFound(lookupErr) {
+			return nil, nil
+		}
+		if lookupErr != nil {
+			return nil, fmt.Errorf("get Project image backing: %w", lookupErr)
+		}
+		observed = image
+	} else {
+		data.unobservedChildren.observeCached(observed.(*apiv2.PhysicalContainerImage))
 	}
 	image := observed.(*apiv2.PhysicalContainerImage)
-	data.unobservedChildren.observeCached(image)
-	if (data.imageUID != "" && image.UID != data.imageUID) || !hasFinalizer(image, LogicalBackingFinalizer) {
-		identityErr := fmt.Errorf("physical image %q UID or logical hold changed", image.NamespacedName())
+	if !metav1.IsControlledBy(image, resource) || (data.imageUID != "" && image.UID != data.imageUID) ||
+		!hasFinalizer(image, LogicalBackingFinalizer) {
+		identityErr := fmt.Errorf("physical image %q owner, UID, or logical hold changed", image.NamespacedName())
 		data.failMissing(identityErr.Error())
 		return nil, identityErr
 	}
@@ -750,6 +841,12 @@ func (r *ProjectContainerReconciler) cleanupProjectBackings(
 		}
 		var cleanupErr error
 		for _, backing := range children {
+			if physical, isContainer := backing.(*apiv2.PhysicalContainer); isContainer &&
+				resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect &&
+				(data.physicalUID == "" || data.physicalUID == physical.UID) {
+				data.finishedAt = physical.Status.FinishedAt
+				data.exitCode = cloneInt32Pointer(physical.Status.ExitCode)
+			}
 			if backing.GetDeletionTimestamp().IsZero() {
 				uid := backing.GetUID()
 				deleteErr := r.Delete(ctx, backing, ctrl_client.Preconditions{UID: &uid})
@@ -841,9 +938,18 @@ func projectContainerSpec(resource *apiv2.ProjectContainer, data *projectContain
 			ExecutableFiles: slices.Clone(resource.Spec.DebugAdapter.ExecutableFiles),
 		})
 	}
-	return apiv2.PhysicalContainerSpec{Stop: resource.Spec.Stop, Container: &apiv2.PhysicalContainerConfig{
+	entrypoint, command := desired.Entrypoint, desired.Command
+	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeAdapter {
+		entrypoint, command = "tail", []string{"-f", "/dev/null"}
+	}
+	var start *bool
+	if resource.Spec.Start != nil {
+		value := *resource.Spec.Start
+		start = &value
+	}
+	return apiv2.PhysicalContainerSpec{Start: start, Stop: resource.Spec.Stop, Container: &apiv2.PhysicalContainerConfig{
 		ContainerName: projectContainerPhysicalName(resource), ImageRef: imageRef,
-		Entrypoint: "tail", Command: []string{"-f", "/dev/null"}, RunArgs: desired.RunArgs, Env: desired.Env,
+		Entrypoint: entrypoint, Command: command, RunArgs: desired.RunArgs, Env: desired.Env,
 		Ports: physicalPorts, VolumeMounts: desired.VolumeMounts,
 		CreateFiles: desired.CreateFiles, CopyFiles: copyFiles, Labels: labels,
 	}}

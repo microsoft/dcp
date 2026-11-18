@@ -40,6 +40,12 @@ const (
 	ProjectReasonPreparing ConditionReason = "Preparing"
 	// ProjectReasonPrepared indicates that the prepared context is available for debug sessions.
 	ProjectReasonPrepared ConditionReason = "Prepared"
+	// ProjectReasonAwaitingStart indicates that prepared execution is waiting for start.
+	ProjectReasonAwaitingStart ConditionReason = "AwaitingStart"
+	// ProjectReasonApplicationRunning indicates that a directly launched application is running.
+	ProjectReasonApplicationRunning ConditionReason = "ApplicationRunning"
+	// ProjectReasonCompleted indicates that a directly launched application has exited.
+	ProjectReasonCompleted ConditionReason = "Completed"
 	// ProjectReasonDebugSessionsActive indicates that the prepared context has active debug sessions.
 	ProjectReasonDebugSessionsActive ConditionReason = "DebugSessionsActive"
 	// ProjectReasonPaused indicates that the prepared container is paused.
@@ -396,6 +402,7 @@ const (
 	ProjectPhasePending  ProjectPhase = "Pending"
 	ProjectPhaseReady    ProjectPhase = "Ready"
 	ProjectPhaseActive   ProjectPhase = "Active"
+	ProjectPhaseExited   ProjectPhase = "Exited"
 	ProjectPhaseStopping ProjectPhase = "Stopping"
 	ProjectPhaseStopped  ProjectPhase = "Stopped"
 	ProjectPhaseUnknown  ProjectPhase = "Unknown"
@@ -407,7 +414,7 @@ const (
 type ProjectProcessTemplate struct {
 	LogicalProcessConfig `json:",inline"`
 	// Ports declares named service-backed endpoints for the process.
-	// Endpoints are published while a ready debug session has requested launch.
+	// Endpoints are published while a direct application is running or a ready debug session has requested launch.
 	// +listType=atomic
 	Ports []LogicalProcessPort `json:"ports,omitempty"`
 }
@@ -417,10 +424,21 @@ type ProjectProcessTemplate struct {
 type ProjectContainerTemplate struct {
 	LogicalContainerConfig `json:",inline"`
 	// Ports declares named service-backed endpoints for the container.
-	// Endpoints are published while a ready debug session has requested launch.
+	// Endpoints are published while a direct application is running or a ready debug session has requested launch.
 	// +listType=atomic
 	Ports []LogicalContainerPort `json:"ports,omitempty"`
 }
+
+// ProjectLaunchMode selects whether the application is launched by an adapter or directly by DCP.
+// +kubebuilder:validation:Enum=adapter;direct
+type ProjectLaunchMode string
+
+const (
+	// ProjectLaunchModeAdapter leaves application launch to the configured adapter through DAP.
+	ProjectLaunchModeAdapter ProjectLaunchMode = "adapter"
+	// ProjectLaunchModeDirect launches the application template directly for subsequent debug attachment.
+	ProjectLaunchModeDirect ProjectLaunchMode = "direct"
+)
 
 // ProjectCommonSpec contains source configuration and lifecycle requests shared by Project kinds.
 // +k8s:openapi-gen=true
@@ -428,14 +446,35 @@ type ProjectCommonSpec struct {
 	// RootDirectory is an absolute source directory on the DCP host. It is informational:
 	// it does not default working directories, resolve paths, or create container mounts.
 	RootDirectory string `json:"rootDirectory"`
+	// LaunchMode selects adapter-driven application launch or direct execution of the application template.
+	// Defaults to adapter. Direct execution does not require an adapter or a debug connection.
+	// +kubebuilder:default:=adapter
+	LaunchMode ProjectLaunchMode `json:"launchMode,omitempty"`
+	// Start permits initial execution after preparation. Defaults to true.
+	// Once true, it cannot be reset. Stop takes precedence over start.
+	// +kubebuilder:default:=true
+	Start *bool `json:"start,omitempty"`
 	// Stop requests termination or prevents launch. Once true, it cannot be reset.
 	Stop bool `json:"stop,omitempty"`
 }
 
-// ProjectCommonStatus describes launch inputs and debugging progress shared by Project kinds.
+// ShouldStart reports whether initial execution is permitted.
+func (spec *ProjectCommonSpec) ShouldStart() bool {
+	return spec.Start == nil || *spec.Start
+}
+
+// EffectiveLaunchMode returns the selected launch mode, defaulting to adapter-driven launch.
+func (spec *ProjectCommonSpec) EffectiveLaunchMode() ProjectLaunchMode {
+	if spec.LaunchMode == "" {
+		return ProjectLaunchModeAdapter
+	}
+	return spec.LaunchMode
+}
+
+// ProjectCommonStatus describes launch inputs, execution, and debugging progress shared by Project kinds.
 // +k8s:openapi-gen=true
 type ProjectCommonStatus struct {
-	// EffectiveArgs contains evaluated application launch arguments, never the container placeholder's arguments.
+	// EffectiveArgs contains evaluated application launch arguments.
 	// +listType=atomic
 	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
 	// EffectiveEnv contains the observed container environment, including image-provided values,
@@ -449,9 +488,13 @@ type ProjectCommonStatus struct {
 	Ports []LogicalPortStatus `json:"ports,omitempty"`
 	// Debug contains API-server-owned adapter/session observations and controller-owned target observations.
 	Debug *ProjectDebugStatus `json:"debug,omitempty"`
-	// Phase summarizes Project preparation, debug activity and shutdown.
-	// +kubebuilder:validation:Enum=Pending;Ready;Active;Stopping;Stopped;Unknown;Failed
+	// Phase summarizes Project preparation, execution, debug activity and shutdown.
+	// +kubebuilder:validation:Enum=Pending;Ready;Active;Exited;Stopping;Stopped;Unknown;Failed
 	Phase ProjectPhase `json:"phase,omitempty"`
+	// FinishedAt is the observed completion time of the directly launched application.
+	FinishedAt metav1.MicroTime `json:"finishedAt,omitempty"`
+	// ExitCode is the directly launched application's exit code, when available.
+	ExitCode *int32 `json:"exitCode,omitempty"`
 	// RuntimeLogs describes capture owned by the immediate physical execution.
 	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
 	// Conditions describe readiness and reconciliation progress.
@@ -500,17 +543,27 @@ func validateProject(resource ProjectObject, specPath *field.Path) field.ErrorLi
 	if !filepath.IsAbs(root) || strings.ContainsRune(root, '\x00') {
 		errorList = append(errorList, field.Invalid(specPath.Child("rootDirectory"), root, "rootDirectory must be an absolute host directory path"))
 	}
+	switch resource.GetProjectSpec().EffectiveLaunchMode() {
+	case ProjectLaunchModeAdapter, ProjectLaunchModeDirect:
+	default:
+		errorList = append(errorList, field.NotSupported(specPath.Child("launchMode"), resource.GetProjectSpec().LaunchMode,
+			[]ProjectLaunchMode{ProjectLaunchModeAdapter, ProjectLaunchModeDirect}))
+	}
 	return errorList
 }
 
-// validateProjectUpdate permits only a one-way stop request on copies of the old and new specs.
+// validateProjectUpdate permits one-way start and stop requests on copies of the old and new specs.
 func validateProjectUpdate[S any](oldSpec, newSpec S, commonSpec func(*S) *ProjectCommonSpec) field.ErrorList {
 	errorList := field.ErrorList{}
 	oldCommon, newCommon := commonSpec(&oldSpec), commonSpec(&newSpec)
 	if oldCommon.Stop && !newCommon.Stop {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "stop cannot be set to false once it has been set to true"))
 	}
+	if oldCommon.ShouldStart() && !newCommon.ShouldStart() {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "start"), "start cannot be set to false once it is true"))
+	}
 	oldCommon.Stop, newCommon.Stop = false, false
+	oldCommon.Start, newCommon.Start = nil, nil
 	if !reflect.DeepEqual(oldSpec, newSpec) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec"), "spec is immutable"))
 	}

@@ -185,6 +185,10 @@ func validateDebugProjectSnapshot(selected, current apiv2.ProjectObject) error {
 	if current.GetProjectStatus().Phase == apiv2.ProjectPhaseFailed {
 		return apierrors.NewConflict(resource, current.GetName(), fmt.Errorf("project execution context failed"))
 	}
+	if current.GetProjectSpec().EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect &&
+		current.GetProjectStatus().Phase == apiv2.ProjectPhaseExited {
+		return apierrors.NewConflict(resource, current.GetName(), fmt.Errorf("project application has exited"))
+	}
 	selectedContainer, selectedIsContainer := selected.(*apiv2.ProjectContainer)
 	currentContainer, currentIsContainer := current.(*apiv2.ProjectContainer)
 	if selectedIsContainer != currentIsContainer {
@@ -274,7 +278,9 @@ func (storage *projectDebugStorage) monitor(
 				return
 			}
 			if validationErr := validateDebugProjectSnapshot(selected, snapshot); validationErr != nil {
-				if apierrors.IsForbidden(validationErr) {
+				if apierrors.IsForbidden(validationErr) ||
+					(snapshot.GetProjectSpec().EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect &&
+						snapshot.GetProjectStatus().Phase == apiv2.ProjectPhaseExited) {
 					validationErr = errors.Join(dap.ErrShutdownRequested, validationErr)
 				}
 				cancel(validationErr)
@@ -314,12 +320,22 @@ func (storage *projectDebugStorage) monitor(
 			namespace = snapshot
 		}
 		isReady := false
-		if current != nil && namespace != nil && namespace.Status.Phase == apiv2.NamespacePhaseActive {
+		if current != nil && current.GetProjectSpec().ShouldStart() && namespace != nil && namespace.Status.Phase == apiv2.NamespacePhaseActive {
 			currentStatus := current.GetProjectStatus()
 			condition := apimeta.FindStatusCondition(currentStatus.Conditions, string(apiv2.ConditionReady))
 			isReady = condition != nil && condition.Status == metav1.ConditionTrue &&
-				((currentStatus.Phase == apiv2.ProjectPhaseReady && condition.Reason == string(apiv2.ProjectReasonPrepared)) ||
-					(currentStatus.Phase == apiv2.ProjectPhaseActive && condition.Reason == string(apiv2.ProjectReasonDebugSessionsActive)))
+				condition.ObservedGeneration == current.GetGeneration()
+			if isReady && current.GetProjectSpec().EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
+				isReady = currentStatus.Phase == apiv2.ProjectPhaseActive && condition.Reason == string(apiv2.ProjectReasonApplicationRunning)
+			} else if isReady {
+				isReady = (currentStatus.Phase == apiv2.ProjectPhaseReady && condition.Reason == string(apiv2.ProjectReasonPrepared)) ||
+					(currentStatus.Phase == apiv2.ProjectPhaseActive && condition.Reason == string(apiv2.ProjectReasonDebugSessionsActive))
+			}
+			if container, isContainer := current.(*apiv2.ProjectContainer); isContainer &&
+				container.Spec.DebugAdapter != nil && container.Spec.DebugAdapter.GetTCPPort() != 0 &&
+				container.Status.DebugAdapterAddress == "" {
+				isReady = false
+			}
 		}
 		if isReady && !prepared {
 			prepared = true
@@ -398,7 +414,12 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 	case prepared = <-ready:
 	case <-ctx.Done():
 		sessionErr = context.Cause(ctx)
-		responder.Error(sessionErr)
+		var statusErr *apierrors.StatusError
+		if errors.As(sessionErr, &statusErr) {
+			responder.Error(statusErr)
+		} else {
+			responder.Error(sessionErr)
+		}
 		return
 	}
 	project = prepared

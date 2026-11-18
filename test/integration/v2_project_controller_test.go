@@ -8,6 +8,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"io"
 	"maps"
 	"path/filepath"
 	"reflect"
@@ -24,9 +25,11 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/statestore"
 	internaltest "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/containertest"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -821,6 +824,326 @@ func TestV2ProjectProcessDebugAdapterAdmission(t *testing.T) {
 }
 
 const projectTestControllers = ProjectController | PhysicalProcessController | PhysicalContainerController | PhysicalContainerImageController
+
+// Verifies that a direct ProjectProcess waits for start, launches one owned PhysicalProcess,
+// publishes its service endpoint only while running, and preserves exit status and output.
+func TestV2ProjectProcessDirectExecution(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	namespace := createActiveV2Namespace(t, ctx, "v2-project-direct-process")
+	resource := serviceProjectProcess("project", namespace.Name, t.TempDir(),
+		[]string{`--port={{portForServing "http"}}`}, []commonapi.EnvVar{{Name: "PORT", Value: `{{portForServing "http"}}`}})
+	start := false
+	resource.Spec.Start = &start
+	resource.Spec.LaunchMode = apiv2.ProjectLaunchModeDirect
+	resource.Spec.DebugAdapter = &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{namespace.Name + "-adapter"}}
+	require.NoError(t, client.Create(ctx, resource))
+	prepared := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+	requireReadyCondition(t, prepared.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonAwaitingStart)
+	require.Len(t, prepared.Status.Ports, 1)
+	require.Empty(t, prepared.Status.PhysicalProcessRef)
+	require.Empty(t, testProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil))
+	var processes apiv2.PhysicalProcessList
+	require.NoError(t, client.List(ctx, &processes, ctrl_client.InNamespace(namespace.Name)))
+	require.Empty(t, processes.Items)
+	var endpoints apiv2.ServiceEndpointList
+	require.NoError(t, client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
+	require.Empty(t, endpoints.Items)
+
+	require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"start":true}}`))))
+	running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseActive)
+	requireReadyCondition(t, running.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonApplicationRunning)
+	require.NotNil(t, running.Status.PID)
+	require.False(t, running.Status.IdentityTimestamp.IsZero())
+	require.Equal(t, prepared.Status.EffectiveArgs, running.Status.EffectiveArgs)
+	require.Equal(t, prepared.Status.EffectiveEnv, running.Status.EffectiveEnv)
+	physical := &apiv2.PhysicalProcess{}
+	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalProcessRef}, physical))
+	require.True(t, metav1.IsControlledBy(physical, resource))
+	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, apiv2.GroupName+"/physicalprocess-reconciler")
+	require.Equal(t, running.Status.EffectiveArgs, physical.Spec.Process.Args)
+	require.ElementsMatch(t, running.Status.EffectiveEnv, physical.Spec.Process.Env)
+	require.Equal(t, apiv2.EnvironmentBehaviorDoNotInherit, physical.Spec.Process.AmbientEnvironment.Behavior)
+	require.Equal(t, physical.UID, running.Status.RuntimeLogs.UID)
+	executions := testProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil)
+	require.Len(t, executions, 1)
+	require.Equal(t, int64(executions[0].PID), *running.Status.PID)
+	require.Empty(t, testProcessExecutor.FindAll(resource.Spec.DebugAdapter.Args, "", nil))
+	endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(resource.UID) + "-http", Namespace: namespace.Name}}
+	published := waitObjectAssumesStateEx(t, ctx, client, endpoint.NamespacedName(), func(current *apiv2.ServiceEndpoint) (bool, error) {
+		return len(current.Spec.Addresses) != 0, nil
+	})
+	require.True(t, metav1.IsControlledBy(published, resource))
+	require.Equal(t, []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: prepared.Status.Ports[0].Port}}, published.Spec.Addresses)
+	_, writeErr := executions[0].Cmd.Stdout.Write([]byte("direct-process-output\n"))
+	require.NoError(t, writeErr)
+	testProcessExecutor.SimulateProcessExit(t, executions[0].PID, 7)
+	exited := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseExited)
+	requireReadyCondition(t, exited.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonCompleted)
+	require.NotNil(t, exited.Status.ExitCode)
+	require.Equal(t, int32(7), *exited.Status.ExitCode)
+	require.False(t, exited.Status.FinishedAt.IsZero())
+	require.Equal(t, running.Status.PID, exited.Status.PID)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, endpoint)
+	waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
+		return current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete, nil
+	})
+	output, outputErr := readV2ContainerLog(ctx, resource, apiv2.ResourceLogOptions{Follow: true})
+	require.NoError(t, outputErr)
+	require.Equal(t, "direct-process-output\n", output)
+	require.Len(t, testProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil), 1)
+	require.NoError(t, client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
+}
+
+// Verifies that a direct ProjectContainer creates without starting, starts the configured command once
+// requested, publishes endpoints while running, and preserves exit status and runtime output.
+func TestV2ProjectContainerDirectExecution(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	namespace := createActiveV2Namespace(t, ctx, "v2-project-direct-container")
+	resource := serviceProjectContainer("project", namespace.Name, t.TempDir(),
+		[]string{`--port={{portForServing "http"}}`}, []commonapi.EnvVar{{Name: "VALUE", Value: "literal"}})
+	start := false
+	resource.Spec.Start = &start
+	resource.Spec.LaunchMode = apiv2.ProjectLaunchModeDirect
+	resource.Spec.Container.Entrypoint = "application"
+	resource.Spec.DebugAdapter = &apiv2.ContainerDebugAdapterConfig{
+		DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}},
+	}
+	require.NoError(t, client.Create(ctx, resource))
+	prepared := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+	requireReadyCondition(t, prepared.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonAwaitingStart)
+	require.NotEmpty(t, prepared.Status.ContainerID)
+	require.True(t, prepared.Status.StartedAt.IsZero())
+	physical := &apiv2.PhysicalContainer{}
+	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: prepared.Status.PhysicalContainerRef}, physical))
+	require.True(t, metav1.IsControlledBy(physical, resource))
+	require.False(t, physical.Spec.ShouldStart())
+	require.Equal(t, "application", physical.Spec.Container.Entrypoint)
+	require.Equal(t, prepared.Status.EffectiveArgs, physical.Spec.Container.Command)
+	require.Len(t, physical.Spec.Container.CopyFiles, 1)
+	var endpoints apiv2.ServiceEndpointList
+	require.NoError(t, client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
+	require.Empty(t, endpoints.Items)
+
+	require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"start":true}}`))))
+	running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseActive)
+	requireReadyCondition(t, running.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonApplicationRunning)
+	require.Equal(t, prepared.Status.ContainerID, running.Status.ContainerID)
+	require.False(t, running.Status.StartedAt.IsZero())
+	require.NoError(t, client.Get(ctx, physical.NamespacedName(), physical))
+	require.True(t, physical.Spec.ShouldStart())
+	require.Equal(t, physical.UID, running.Status.RuntimeLogs.UID)
+	endpoint := &apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(resource.UID) + "-http", Namespace: namespace.Name}}
+	published := waitObjectAssumesStateEx(t, ctx, client, endpoint.NamespacedName(), func(current *apiv2.ServiceEndpoint) (bool, error) {
+		return len(current.Spec.Addresses) != 0, nil
+	})
+	require.True(t, metav1.IsControlledBy(published, resource))
+	require.Equal(t, prepared.Status.Ports[0].ServiceRef, published.Spec.ServiceRef)
+	require.NoError(t, containerOrchestrator.SimulateContainerLogging(running.Status.ContainerID, apiv1.LogStreamSourceStdout, []byte("direct-container-output\n")))
+	require.NoError(t, containerOrchestrator.SimulateContainerExit(ctx, running.Status.ContainerID, 9))
+	exited := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseExited)
+	requireReadyCondition(t, exited.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonCompleted)
+	require.NotNil(t, exited.Status.ExitCode)
+	require.Equal(t, int32(9), *exited.Status.ExitCode)
+	require.False(t, exited.Status.FinishedAt.IsZero())
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, endpoint)
+	output, outputErr := readV2ContainerLog(ctx, resource, apiv2.ResourceLogOptions{Follow: true})
+	require.NoError(t, outputErr)
+	require.Equal(t, "direct-container-output\n", output)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(physical.Spec.Container.ContainerName))
+	require.NoError(t, client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
+	waitContainerMissing(t, ctx, running.Status.ContainerID)
+}
+
+// Verifies that direct ProjectContainer execution waits for start, runs the configured command
+// on each available real runtime, and exposes its exit code and output.
+func TestV2ProjectContainerDirectExecutionWithRealOrchestrator(t *testing.T) {
+	t.Parallel()
+	testCtx, testCancel := testutil.GetTestContext(t, 3*time.Minute)
+	t.Cleanup(testCancel)
+	containertest.ForEachHealthyRuntime(t, testCtx, func(t *testing.T, runtimeCtx context.Context, runtime containertest.Runtime) {
+		ctx, cancel := context.WithCancel(runtimeCtx)
+		defer cancel()
+		tracker := containertest.NewResourceTracker(t, runtime)
+		server, environment, startupErr := StartAdvancedTestEnvironmentWithOptions(ctx,
+			projectTestControllers, containertest.UniqueName(t, "project-direct-environment"), t.TempDir(),
+			AdvancedTestEnvironmentOptions{ApiServerFlags: ctrl_testutil.ApiServerUseTrueContainerOrchestrator, ContainerOrchestrator: runtime.Orchestrator})
+		require.NoError(t, startupErr)
+		defer environment.ProcessExecutor.Dispose()
+		defer shutdownAdvancedTestEnvironment(t, ctx, cancel, server)
+
+		namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: containertest.UniqueName(t, "project-direct-namespace")}}
+		require.NoError(t, server.Client.Create(ctx, namespace))
+		start := false
+		resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+			Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{
+				RootDirectory: t.TempDir(), LaunchMode: apiv2.ProjectLaunchModeDirect, Start: &start,
+			}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+				Image: &apiv2.PhysicalContainerImageConfig{Image: "busybox:latest"}, Labels: tracker.Labels(),
+				Entrypoint: "sh", Command: []string{"-c", "printf 'direct-runtime-output\\n'; exit 23"},
+			}}}}
+		require.NoError(t, server.Client.Create(ctx, resource))
+		require.NoError(t, tracker.TrackContainer("project-"+string(resource.UID)))
+		prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+		requireReadyCondition(t, prepared.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonAwaitingStart)
+		inspected, inspectErr := runtime.Orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+			Containers: []string{prepared.Status.ContainerID},
+		})
+		require.NoError(t, inspectErr)
+		require.Len(t, inspected, 1)
+		require.Equal(t, containers.ContainerStatusCreated, inspected[0].Status)
+
+		require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"start":true}}`))))
+		exited := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseExited)
+		requireReadyCondition(t, exited.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonCompleted)
+		require.NotNil(t, exited.Status.ExitCode)
+		require.Equal(t, int32(23), *exited.Status.ExitCode)
+		stream, streamErr := server.RestClient.Get().
+			AbsPath("/apis", apiv2.GroupName, apiv2.Version, "namespaces", namespace.Name, "projectcontainers", resource.Name, apiv2.LogSubresourceName).
+			Param("source", "stdout").Stream(ctx)
+		require.NoError(t, streamErr)
+		output, readErr := io.ReadAll(stream)
+		require.NoError(t, stream.Close())
+		require.NoError(t, readErr)
+		require.Equal(t, "direct-runtime-output\n", string(output))
+		require.NoError(t, server.Client.Delete(ctx, resource))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+		require.NoError(t, server.Client.Delete(ctx, namespace))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, namespace)
+	})
+}
+
+// Verifies that direct Projects start by default and that stop cleans up their owned execution
+// without launching a replacement.
+func TestV2ProjectDirectDefaultStartAndStop(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"process", "container"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			namespace := createActiveV2Namespace(t, ctx, "v2-project-direct-default-"+kind)
+			if kind == "process" {
+				resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+					Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir(), LaunchMode: apiv2.ProjectLaunchModeDirect},
+						Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-command"}}}}
+				require.NoError(t, client.Create(ctx, resource))
+				running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseActive)
+				physical := &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalProcessRef, Namespace: namespace.Name}}
+				require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+				stopped := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
+				require.Equal(t, running.Status.PID, stopped.Status.PID)
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
+				require.Len(t, testProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil), 1)
+				require.NoError(t, client.Delete(ctx, resource))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+				return
+			}
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir(), LaunchMode: apiv2.ProjectLaunchModeDirect},
+					Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Entrypoint: "application",
+					}}}}
+			require.NoError(t, client.Create(ctx, resource))
+			running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseActive)
+			physical := &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalContainerRef, Namespace: namespace.Name}}
+			require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+			stopped := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
+			require.Equal(t, running.Status.ContainerID, stopped.Status.ContainerID)
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
+			waitContainerMissing(t, ctx, running.Status.ContainerID)
+			require.NoError(t, client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+		})
+	}
+}
+
+// Verifies that both Project kinds gate adapter preparation and that stop before start prevents
+// application launch in both adapter and direct modes.
+func TestV2ProjectStartGateAndEarlyStop(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"process", "container"} {
+		for _, mode := range []apiv2.ProjectLaunchMode{apiv2.ProjectLaunchModeAdapter, apiv2.ProjectLaunchModeDirect} {
+			for _, action := range []string{"start", "stop"} {
+				if mode == apiv2.ProjectLaunchModeDirect && action == "start" {
+					continue
+				}
+				t.Run(kind+"-"+string(mode)+"-"+action, func(t *testing.T) {
+					t.Parallel()
+					ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+					t.Cleanup(cancel)
+					namespace := createActiveV2Namespace(t, ctx, "v2-project-gate-"+kind+"-"+string(mode)+"-"+action)
+					start := false
+					common := apiv2.ProjectCommonSpec{RootDirectory: t.TempDir(), LaunchMode: mode, Start: &start}
+					patch := []byte(`{"spec":{"stop":true}}`)
+					expectedPhase := apiv2.ProjectPhaseStopped
+					if action == "start" {
+						patch = []byte(`{"spec":{"start":true}}`)
+						expectedPhase = apiv2.ProjectPhaseReady
+					}
+					if kind == "process" {
+						resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+							Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: common,
+								Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-command"}}}}
+						require.NoError(t, client.Create(ctx, resource))
+						prepared := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+						requireReadyCondition(t, prepared.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonAwaitingStart)
+						require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, patch)))
+						settled := waitProjectPhase(t, ctx, client, resource, expectedPhase)
+						if action == "start" {
+							settled = waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
+								ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+								return current.Spec.ShouldStart() && current.Status.Phase == apiv2.ProjectPhaseReady &&
+									ready != nil && ready.Status == metav1.ConditionTrue && ready.Reason == string(apiv2.ProjectReasonPrepared), nil
+							})
+						}
+						require.Empty(t, settled.Status.PhysicalProcessRef)
+						require.Empty(t, testProcessExecutor.FindAll([]string{resource.Spec.Process.ExecutablePath}, "", nil))
+						require.NoError(t, client.Delete(ctx, resource))
+						ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+						return
+					}
+					resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+						Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: common,
+							Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+								Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Entrypoint: "application",
+							}}}}
+					require.NoError(t, client.Create(ctx, resource))
+					prepared := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+					requireReadyCondition(t, prepared.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonAwaitingStart)
+					physical := &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}}
+					require.True(t, prepared.Status.StartedAt.IsZero())
+					require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, patch)))
+					settled := waitProjectPhase(t, ctx, client, resource, expectedPhase)
+					if action == "start" {
+						settled = waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
+							ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+							return current.Spec.ShouldStart() && current.Status.Phase == apiv2.ProjectPhaseReady &&
+								ready != nil && ready.Status == metav1.ConditionTrue && ready.Reason == string(apiv2.ProjectReasonPrepared), nil
+						})
+						require.False(t, settled.Status.StartedAt.IsZero())
+						require.NoError(t, client.Get(ctx, physical.NamespacedName(), physical))
+						require.Equal(t, "tail", physical.Spec.Container.Entrypoint)
+					} else {
+						require.True(t, settled.Status.StartedAt.IsZero())
+						ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
+						waitContainerMissing(t, ctx, prepared.Status.ContainerID)
+					}
+					require.NoError(t, client.Delete(ctx, resource))
+					ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+				})
+			}
+		}
+	}
+}
 
 // Verifies that ProjectProcess and ProjectContainer with the same namespaced name prepare independently
 // and deleting either kind leaves the other kind and its prepared execution context intact.

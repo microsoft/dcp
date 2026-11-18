@@ -31,17 +31,24 @@ type ProjectProcessSpec struct {
 	DebugAdapter *DebugAdapterConfig `json:"debugAdapter,omitempty"`
 }
 
-// ProjectProcessStatus describes prepared process launch inputs and debugging progress.
+// ProjectProcessStatus describes process execution and debugging progress.
 // +k8s:openapi-gen=true
 type ProjectProcessStatus struct {
 	ProjectCommonStatus `json:",inline"`
+	// PhysicalProcessRef identifies the owned same-namespace PhysicalProcess in direct mode.
+	PhysicalProcessRef string `json:"physicalProcessRef,omitempty"`
+	// PID is the directly launched host process ID.
+	PID *int64 `json:"pid,omitempty"`
+	// IdentityTimestamp identifies the process instance together with PID.
+	// On Linux this represents elapsed time since boot, not a wall-clock start time.
+	IdentityTimestamp metav1.MicroTime `json:"identityTimestamp,omitempty"`
 }
 
 func (status ProjectProcessStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
 	status.DeepCopyInto(&dest.(*ProjectProcess).Status)
 }
 
-// ProjectProcess runs user code as a host process prepared for adapter-controlled launch.
+// ProjectProcess runs user code directly or prepares it for adapter-controlled host execution.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +k8s:openapi-gen=true

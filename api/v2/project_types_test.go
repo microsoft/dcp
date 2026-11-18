@@ -24,6 +24,8 @@ func TestProjectProcessValidate(t *testing.T) {
 		valid bool
 	}{
 		{"process", ProjectProcessSpec{ProjectCommonSpec: ProjectCommonSpec{RootDirectory: root}, Process: process}, true},
+		{"direct", ProjectProcessSpec{ProjectCommonSpec: ProjectCommonSpec{RootDirectory: root, LaunchMode: ProjectLaunchModeDirect}, Process: process}, true},
+		{"invalid launch mode", ProjectProcessSpec{ProjectCommonSpec: ProjectCommonSpec{RootDirectory: root, LaunchMode: "invalid"}, Process: process}, false},
 		{"missing root", ProjectProcessSpec{Process: process}, false},
 		{"relative root", ProjectProcessSpec{ProjectCommonSpec: ProjectCommonSpec{RootDirectory: "source"}, Process: process}, false},
 		{"invalid root", ProjectProcessSpec{ProjectCommonSpec: ProjectCommonSpec{RootDirectory: root + "\x00"}, Process: process}, false},
@@ -48,6 +50,8 @@ func TestProjectContainerValidate(t *testing.T) {
 		valid bool
 	}{
 		{"image reference", ProjectContainerSpec{ProjectCommonSpec: common, Container: ProjectContainerTemplate{LogicalContainerConfig: LogicalContainerConfig{ImageRef: "image"}}}, true},
+		{"direct", ProjectContainerSpec{ProjectCommonSpec: ProjectCommonSpec{RootDirectory: root, LaunchMode: ProjectLaunchModeDirect}, Container: ProjectContainerTemplate{LogicalContainerConfig: LogicalContainerConfig{ImageRef: "image"}}}, true},
+		{"invalid launch mode", ProjectContainerSpec{ProjectCommonSpec: ProjectCommonSpec{RootDirectory: root, LaunchMode: "invalid"}, Container: ProjectContainerTemplate{LogicalContainerConfig: LogicalContainerConfig{ImageRef: "image"}}}, false},
 		{"inline image", ProjectContainerSpec{ProjectCommonSpec: common, Container: ProjectContainerTemplate{LogicalContainerConfig: LogicalContainerConfig{Image: &PhysicalContainerImageConfig{Image: "source"}}}}, true},
 		{"empty image", ProjectContainerSpec{ProjectCommonSpec: common}, false},
 		{"missing root", ProjectContainerSpec{Container: ProjectContainerTemplate{LogicalContainerConfig: LogicalContainerConfig{ImageRef: "image"}}}, false},
@@ -61,7 +65,7 @@ func TestProjectContainerValidate(t *testing.T) {
 }
 
 // Verifies that ProjectProcess and ProjectContainer freeze source and launch configuration,
-// permitting only a one-way stop request.
+// permitting only one-way start and stop requests.
 func TestProjectValidateUpdate(t *testing.T) {
 	process := &ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "test"},
 		Spec: ProjectProcessSpec{ProjectCommonSpec: ProjectCommonSpec{RootDirectory: t.TempDir()},
@@ -75,6 +79,7 @@ func TestProjectValidateUpdate(t *testing.T) {
 			changed.Spec.RootDirectory = filepath.Join(changed.Spec.RootDirectory, "other")
 		},
 		func(changed *ProjectProcess) { changed.Spec.Process.WorkingDirectory = "assets" },
+		func(changed *ProjectProcess) { changed.Spec.LaunchMode = ProjectLaunchModeDirect },
 		func(changed *ProjectProcess) {
 			changed.Spec.Process.Ports = []LogicalProcessPort{{LogicalServiceBinding: LogicalServiceBinding{Name: "http", ServiceRef: "service"}}}
 		},
@@ -94,6 +99,54 @@ func TestProjectValidateUpdate(t *testing.T) {
 	changedContainer := container.DeepCopy()
 	changedContainer.Spec.Container.ImageRef = "other"
 	require.NotEmpty(t, changedContainer.ValidateUpdate(context.Background(), container))
+	changedContainer = container.DeepCopy()
+	changedContainer.Spec.LaunchMode = ProjectLaunchModeDirect
+	require.NotEmpty(t, changedContainer.ValidateUpdate(context.Background(), container))
+}
+
+// Verifies that both Project kinds allow starting once, treat nil as true, and leave the input specs unchanged.
+func TestProjectValidateUpdateStartTransitions(t *testing.T) {
+	t.Parallel()
+	startFalse, startTrue := false, true
+	for _, testCase := range []struct {
+		name     string
+		oldStart *bool
+		newStart *bool
+		allowed  bool
+	}{
+		{name: "false to true", oldStart: &startFalse, newStart: &startTrue, allowed: true},
+		{name: "false to default", oldStart: &startFalse, allowed: true},
+		{name: "default to false", newStart: &startFalse},
+		{name: "true to false", oldStart: &startTrue, newStart: &startFalse},
+		{name: "true to default", oldStart: &startTrue, allowed: true},
+		{name: "default to true", newStart: &startTrue, allowed: true},
+		{name: "false unchanged", oldStart: &startFalse, newStart: &startFalse, allowed: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			oldProcess := &ProjectProcess{Spec: ProjectProcessSpec{ProjectCommonSpec: ProjectCommonSpec{Start: testCase.oldStart}}}
+			newProcess := oldProcess.DeepCopy()
+			newProcess.Spec.Start = testCase.newStart
+			oldContainer := &ProjectContainer{Spec: ProjectContainerSpec{ProjectCommonSpec: ProjectCommonSpec{Start: testCase.oldStart}}}
+			newContainer := oldContainer.DeepCopy()
+			newContainer.Spec.Start = testCase.newStart
+			oldProcessSnapshot, newProcessSnapshot := oldProcess.DeepCopy(), newProcess.DeepCopy()
+			oldContainerSnapshot, newContainerSnapshot := oldContainer.DeepCopy(), newContainer.DeepCopy()
+
+			processErrors := newProcess.ValidateUpdate(context.Background(), oldProcess)
+			containerErrors := newContainer.ValidateUpdate(context.Background(), oldContainer)
+			if testCase.allowed {
+				require.Empty(t, processErrors)
+				require.Empty(t, containerErrors)
+			} else {
+				require.ErrorContains(t, processErrors.ToAggregate(), "spec.start")
+				require.ErrorContains(t, containerErrors.ToAggregate(), "spec.start")
+			}
+			require.Equal(t, oldProcessSnapshot, oldProcess)
+			require.Equal(t, newProcessSnapshot, newProcess)
+			require.Equal(t, oldContainerSnapshot, oldContainer)
+			require.Equal(t, newContainerSnapshot, newContainer)
+		})
+	}
 }
 
 // Verifies that Project template ports use the shared service-binding validation and are deeply copied.

@@ -126,7 +126,8 @@ func snapshot(obj resource.Object) (resourceSnapshot, error) {
 	case *apiv2.ProjectProcess:
 		result.systemID = container.GetResourceId()
 		result.runtime = container.Status.RuntimeLogs
-		result.complete = container.Status.Phase == apiv2.ProjectPhaseStopped || container.Status.Phase == apiv2.ProjectPhaseFailed
+		result.complete = container.Status.Phase == apiv2.ProjectPhaseStopped || container.Status.Phase == apiv2.ProjectPhaseFailed ||
+			(container.Status.Phase == apiv2.ProjectPhaseExited && (result.runtime == nil || result.runtime.Complete))
 		if result.runtime == nil && result.complete {
 			result.runtime = &apiv2.LogSource{Complete: true}
 		}
@@ -134,7 +135,8 @@ func snapshot(obj resource.Object) (resourceSnapshot, error) {
 	case *apiv2.ProjectContainer:
 		result.systemID = container.GetResourceId()
 		result.runtime, result.startup = container.Status.RuntimeLogs, container.Status.StartupLogs
-		result.complete = container.Status.Phase == apiv2.ProjectPhaseStopped || container.Status.Phase == apiv2.ProjectPhaseFailed
+		result.complete = container.Status.Phase == apiv2.ProjectPhaseStopped || container.Status.Phase == apiv2.ProjectPhaseFailed ||
+			(container.Status.Phase == apiv2.ProjectPhaseExited && (result.runtime == nil || result.runtime.Complete))
 		if result.runtime == nil && result.complete {
 			result.runtime = &apiv2.LogSource{Complete: true}
 		}

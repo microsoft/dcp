@@ -30,7 +30,7 @@ type ProjectContainerSpec struct {
 	DebugAdapter *ContainerDebugAdapterConfig `json:"debugAdapter,omitempty"`
 }
 
-// ProjectContainerStatus describes the prepared container, launch inputs and debugging progress.
+// ProjectContainerStatus describes the container, launch inputs, execution and debugging progress.
 // +k8s:openapi-gen=true
 type ProjectContainerStatus struct {
 	ProjectCommonStatus `json:",inline"`
@@ -67,7 +67,7 @@ func (status ProjectContainerStatus) CopyTo(dest apiserver_resource.ObjectWithSt
 	status.DeepCopyInto(&dest.(*ProjectContainer).Status)
 }
 
-// ProjectContainer runs user code in a container prepared for adapter-controlled launch.
+// ProjectContainer runs user code directly or prepares it for adapter-controlled container execution.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +k8s:openapi-gen=true

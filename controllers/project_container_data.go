@@ -53,6 +53,15 @@ func (data *projectContainerData) updateLifecycleFromContainer(resource *apiv2.P
 	switch physical.Status.Phase {
 	case apiv2.PhysicalContainerPhaseRunning:
 		if condition != nil && condition.Status == metav1.ConditionTrue {
+			if !resource.Spec.ShouldStart() {
+				data.state, data.reason, data.message = projectStateAwaitingStart, "", ""
+				return
+			}
+			if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
+				data.prepared = true
+				data.state, data.reason, data.message = projectStateRunning, "", ""
+				return
+			}
 			if projectContainerAdapterPort(resource) != 0 && data.adapterAddress == "" {
 				data.state = projectStateUnknown
 				if !data.prepared {
@@ -75,7 +84,16 @@ func (data *projectContainerData) updateLifecycleFromContainer(resource *apiv2.P
 		data.prepared = true
 		data.state, data.reason, data.message = projectStatePaused, apiv2.ProjectReasonPaused, message
 		return
-	case apiv2.PhysicalContainerPhaseExited, apiv2.PhysicalContainerPhaseFailed:
+	case apiv2.PhysicalContainerPhaseExited:
+		if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect &&
+			(condition == nil || condition.Reason != string(apiv2.PhysicalContainerReasonRuntimeContainerMissing)) {
+			data.prepared = true
+			data.state, data.reason, data.message = projectStateExited, apiv2.ProjectReasonCompleted, message
+			return
+		}
+		data.failMissing(message)
+		return
+	case apiv2.PhysicalContainerPhaseFailed:
 		data.failMissing(message)
 		return
 	case apiv2.PhysicalContainerPhaseUnknown:
@@ -84,6 +102,10 @@ func (data *projectContainerData) updateLifecycleFromContainer(resource *apiv2.P
 			return
 		}
 	case apiv2.PhysicalContainerPhasePending, "":
+		if condition != nil && condition.Reason == string(apiv2.PhysicalContainerReasonAwaitingStart) && !resource.Spec.ShouldStart() {
+			data.state, data.reason, data.message = projectStateAwaitingStart, "", ""
+			return
+		}
 	default:
 		data.state, data.reason, data.message = projectStateFailed, apiv2.PhysicalResourceReasonOperationStateInvalid, fmt.Sprintf("Unrecognized physical container phase %q.", physical.Status.Phase)
 		return

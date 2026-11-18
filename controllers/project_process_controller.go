@@ -41,16 +41,21 @@ type projectProcessDataHandlerFunc = stateInitializerFunc[
 ]
 
 var projectProcessDataHandlers = map[projectState]projectProcessDataHandlerFunc{
-	projectStatePending:  handleProjectProcessPending,
-	projectStateReady:    handleProjectProcessReady,
-	projectStateActive:   handleProjectProcessReady,
-	projectStateStopping: handleProjectProcessStopping,
-	projectStateStopped:  handleProjectProcessTerminal,
-	projectStateFailed:   handleProjectProcessTerminal,
-	0:                    handleInvalidProjectProcessState,
+	projectStatePending:       handleProjectProcessPending,
+	projectStateAwaitingStart: handleProjectProcessAwaitingStart,
+	projectStateCreating:      handleProjectProcessPhysical,
+	projectStateReady:         handleProjectProcessReady,
+	projectStateActive:        handleProjectProcessReady,
+	projectStateRunning:       handleProjectProcessPhysical,
+	projectStateExited:        handleProjectProcessPhysical,
+	projectStateUnknown:       handleProjectProcessPhysical,
+	projectStateStopping:      handleProjectProcessStopping,
+	projectStateStopped:       handleProjectProcessTerminal,
+	projectStateFailed:        handleProjectProcessTerminal,
+	0:                         handleInvalidProjectProcessState,
 }
 
-// ProjectProcessReconciler prepares process launch inputs for AppHost-controlled debugging of user code.
+// ProjectProcessReconciler manages direct or adapter-controlled execution of user code.
 type ProjectProcessReconciler struct {
 	*ReconcilerBase[apiv2.ProjectProcess, *apiv2.ProjectProcess]
 	projects        *ObjectStateMap[types.UID, projectProcessData, *projectProcessData, *apiv2.ProjectProcess]
@@ -68,19 +73,22 @@ func NewProjectProcessReconciler(
 }
 
 func (r *ProjectProcessReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
-	indexErr := mgr.GetFieldIndexer().IndexField(r.LifetimeCtx, &apiv2.ServiceEndpoint{}, projectProcessOwnerUIDField, func(obj ctrl_client.Object) []string {
-		owner := metav1.GetControllerOf(obj)
-		if owner == nil || owner.Kind != "ProjectProcess" {
-			return nil
+	for _, backing := range []ctrl_client.Object{&apiv2.PhysicalProcess{}, &apiv2.ServiceEndpoint{}} {
+		indexErr := mgr.GetFieldIndexer().IndexField(r.LifetimeCtx, backing, projectProcessOwnerUIDField, func(obj ctrl_client.Object) []string {
+			owner := metav1.GetControllerOf(obj)
+			if owner == nil || owner.Kind != "ProjectProcess" {
+				return nil
+			}
+			return []string{string(owner.UID)}
+		})
+		if indexErr != nil {
+			return fmt.Errorf("index process project backing owner: %w", indexErr)
 		}
-		return []string{string(owner.UID)}
-	})
-	if indexErr != nil {
-		return fmt.Errorf("index process project endpoint owner: %w", indexErr)
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.ProjectProcess{}).
+		Owns(&apiv2.PhysicalProcess{}).
 		Owns(&apiv2.ServiceEndpoint{}, builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.mapNamespaceToReconcileRequests(&apiv2.ProjectProcessList{}))).
 		WatchesRawSource(r.GetReconciliationEventSource()).Named(name).Complete(r)
@@ -202,6 +210,173 @@ func (r *ProjectProcessReconciler) syncProjectEndpoints(
 		projectProcessOwnerUIDField, nil, log)
 }
 
+func projectProcessPhysicalName(resource *apiv2.ProjectProcess) string {
+	return "project-" + string(resource.UID)
+}
+
+func projectProcessPhysicalSpec(resource *apiv2.ProjectProcess, data *projectProcessData) apiv2.PhysicalProcessSpec {
+	config := resource.Spec.Process.LogicalProcessConfig
+	return apiv2.PhysicalProcessSpec{Process: &apiv2.PhysicalProcessConfig{
+		ExecutablePath: config.ExecutablePath, WorkingDirectory: config.WorkingDirectory,
+		Args: append([]string(nil), data.effectiveArgs...), Env: append([]commonapi.EnvVar(nil), data.effectiveEnv...),
+		AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
+	}}
+}
+
+func (r *ProjectProcessReconciler) findProjectProcess(
+	ctx context.Context, resource *apiv2.ProjectProcess, data *projectProcessData,
+) (*apiv2.PhysicalProcess, error) {
+	name := types.NamespacedName{Namespace: resource.Namespace, Name: projectProcessPhysicalName(resource)}
+	var children apiv2.PhysicalProcessList
+	listErr := r.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace),
+		ctrl_client.MatchingFields{projectProcessOwnerUIDField: string(resource.UID)})
+	if listErr != nil {
+		return nil, fmt.Errorf("list Project process backings: %w", listErr)
+	}
+	var physical *apiv2.PhysicalProcess
+	for index := range children.Items {
+		child := &children.Items[index]
+		if !metav1.IsControlledBy(child, resource) {
+			continue
+		}
+		if physical != nil || child.Name != name.Name {
+			identityErr := fmt.Errorf("ProjectProcess has unexpected or multiple PhysicalProcess backings")
+			data.failMissing(identityErr.Error())
+			return nil, identityErr
+		}
+		physical = child
+		data.unobservedChildren.observeCached(child)
+	}
+	if physical == nil {
+		physical = &apiv2.PhysicalProcess{}
+		getErr := r.NoCacheClient.Get(ctx, name, physical)
+		if apierrors.IsNotFound(getErr) {
+			if data.physicalUID != "" {
+				data.failMissing("The owned PhysicalProcess no longer exists.")
+				data.runtimeLogs = &apiv2.LogSource{Name: data.physicalName, UID: data.physicalUID, Complete: true}
+				return nil, getErr
+			}
+			return nil, nil
+		}
+		if getErr != nil {
+			return nil, fmt.Errorf("get Project process backing: %w", getErr)
+		}
+	}
+	if identityErr := validatePhysicalResourceIdentity(resource, physical, data.physicalUID); identityErr != nil {
+		data.failMissing(identityErr.Error())
+		return nil, identityErr
+	}
+	actual, expected := physical.Spec.DeepCopy(), projectProcessPhysicalSpec(resource, data)
+	actual.Stop, expected.Stop = false, false
+	if !data.inputsPrepared && actual.Process != nil {
+		expected.Process.Args = slices.Clone(actual.Process.Args)
+		expected.Process.Env = slices.Clone(actual.Process.Env)
+	}
+	if !reflect.DeepEqual(*actual, expected) {
+		specErr := fmt.Errorf("physical process %q has a different spec", physical.NamespacedName())
+		data.failMissing(specErr.Error())
+		return nil, specErr
+	}
+	data.physicalUID, data.physicalName = physical.UID, physical.Name
+	return physical, nil
+}
+
+func (r *ProjectProcessReconciler) createProjectProcess(
+	ctx context.Context, resource *apiv2.ProjectProcess, data *projectProcessData,
+) (*apiv2.PhysicalProcess, error) {
+	physical := &apiv2.PhysicalProcess{
+		ObjectMeta: metav1.ObjectMeta{Name: projectProcessPhysicalName(resource), Namespace: resource.Namespace},
+		Spec:       projectProcessPhysicalSpec(resource, data),
+	}
+	return createLogicalBacking(ctx, r.Client, r.NoCacheClient, resource, physical, physicalProcessFinalizer,
+		&data.physicalUID, &data.unobservedChildren, func(existing *apiv2.PhysicalProcess) error {
+			actual, expected := existing.Spec.DeepCopy(), physical.Spec.DeepCopy()
+			actual.Stop, expected.Stop = false, false
+			if !reflect.DeepEqual(actual, expected) {
+				return fmt.Errorf("physical process %q has a different spec", existing.NamespacedName())
+			}
+			return nil
+		})
+}
+
+func (data *projectProcessData) observePhysical(physical *apiv2.PhysicalProcess) {
+	data.physicalStatus = physical.Status.DeepCopy()
+	data.runtimeLogs = physical.GetLogSource()
+	data.finishedAt = physical.Status.FinishedAt
+	data.exitCode = cloneInt32Pointer(physical.Status.ExitCode)
+}
+
+func (data *projectProcessData) updateLifecycleFromProcess(physical *apiv2.PhysicalProcess) {
+	message := logicalBackingStatusMessage("PhysicalProcess", physical.Status.Conditions)
+	switch logicalProcessBackingState(physical) {
+	case logicalProcessStateRunning:
+		data.prepared = true
+		data.state, data.reason, data.message = projectStateRunning, "", ""
+	case logicalProcessStateExited:
+		data.prepared = true
+		data.state, data.reason, data.message = projectStateExited, apiv2.ProjectReasonCompleted, message
+	case logicalProcessStateMissing, logicalProcessStateRuntimeFailed:
+		data.failMissing(message)
+	case logicalProcessStateCreating, logicalProcessStateStopping, logicalProcessStateUnknown:
+		data.state, data.reason, data.message = projectStateCreating, apiv2.ProjectReasonPreparing, message
+		if data.prepared {
+			data.state, data.reason = projectStateUnknown, apiv2.ProjectReasonLookupFailed
+		}
+	default:
+		data.state, data.reason, data.message = projectStateFailed, apiv2.PhysicalResourceReasonOperationStateInvalid,
+			fmt.Sprintf("Unrecognized physical process phase %q.", physical.Status.Phase)
+	}
+}
+
+func (r *ProjectProcessReconciler) cleanupProjectProcesses(
+	ctx context.Context, resource *apiv2.ProjectProcess, data *projectProcessData, log logr.Logger,
+) (bool, error) {
+	var children apiv2.PhysicalProcessList
+	listErr := r.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace),
+		ctrl_client.MatchingFields{projectProcessOwnerUIDField: string(resource.UID)})
+	if listErr != nil {
+		log.Error(listErr, "Failed to list Project process backings")
+		return false, listErr
+	}
+	data.unobservedChildren.recordCreateAttempt(&apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: projectProcessPhysicalName(resource)}})
+	resolveErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, resource, data.unobservedChildren, &children.Items)
+	if resolveErr != nil {
+		log.Error(resolveErr, "Failed to resolve Project process backings")
+		return false, resolveErr
+	}
+	var cleanupErr error
+	found := false
+	for index := range children.Items {
+		physical := &children.Items[index]
+		if !metav1.IsControlledBy(physical, resource) {
+			continue
+		}
+		found = true
+		if physical.Name == projectProcessPhysicalName(resource) && (data.physicalUID == "" || data.physicalUID == physical.UID) {
+			data.physicalUID, data.physicalName = physical.UID, physical.Name
+			data.observePhysical(physical)
+		}
+		if physical.DeletionTimestamp.IsZero() {
+			uid := physical.UID
+			deleteErr := r.Delete(ctx, physical, ctrl_client.Preconditions{UID: &uid})
+			if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+				log.Error(deleteErr, "Failed to delete Project process backing")
+				cleanupErr = errors.Join(cleanupErr, deleteErr)
+			}
+			continue
+		}
+		if hasFinalizer(physical, physicalProcessFinalizer) {
+			continue
+		}
+		releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, physical)
+		if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
+			log.Error(releaseErr, "Failed to release Project process backing")
+			cleanupErr = errors.Join(cleanupErr, releaseErr)
+		}
+	}
+	return !found, cleanupErr
+}
+
 func handleProjectProcessPending(
 	ctx context.Context, reconciler *ProjectProcessReconciler, resource *apiv2.ProjectProcess,
 	_ projectState, data *projectProcessData, log logr.Logger,
@@ -210,6 +385,31 @@ func handleProjectProcessPending(
 		return additionalReconciliationNeeded
 	}
 	data.reason, data.message = "", ""
+	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
+		physical, lookupErr := reconciler.findProjectProcess(ctx, resource, data)
+		if lookupErr != nil {
+			log.Error(lookupErr, "Failed to discover Project process backing")
+			return additionalReconciliationNeeded
+		}
+		if physical != nil {
+			if !data.inputsPrepared {
+				if len(projectProcessPortRequests(resource)) != 0 {
+					data.state, data.reason, data.message = projectStateUnknown, apiv2.ProjectReasonLookupFailed,
+						"Cannot recover the prepared service port selections for the existing process."
+					return additionalReconciliationNeeded
+				}
+				if physical.Spec.Process == nil {
+					data.failMissing("The owned PhysicalProcess does not contain a process configuration.")
+					return noChange
+				}
+				data.effectiveArgs = slices.Clone(physical.Spec.Process.Args)
+				data.effectiveEnv = slices.Clone(physical.Spec.Process.Env)
+				data.inputsPrepared = true
+			}
+			data.state = projectStateCreating
+			return additionalReconciliationNeeded
+		}
+	}
 	if preparationErr := reconciler.prepareProjectValues(ctx, resource, data, log); preparationErr != nil {
 		if errors.Is(preparationErr, errLogicalValuePreparationFailed) {
 			data.state = projectStateFailed
@@ -217,8 +417,70 @@ func handleProjectProcessPending(
 		}
 		return additionalReconciliationNeeded
 	}
+	if !resource.Spec.ShouldStart() {
+		data.state = projectStateAwaitingStart
+		return additionalReconciliationNeeded
+	}
+	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
+		physical, createErr := reconciler.createProjectProcess(ctx, resource, data)
+		if createErr != nil {
+			log.Error(createErr, "Failed to create Project process backing")
+			if apierrors.IsAlreadyExists(createErr) {
+				data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonPreparationFailed, createErr.Error()
+				return noChange
+			}
+			return additionalReconciliationNeeded
+		}
+		data.physicalUID, data.physicalName = physical.UID, physical.Name
+		data.state = projectStateCreating
+		return additionalReconciliationNeeded
+	}
 	data.state, data.prepared = projectStateReady, true
 	return additionalReconciliationNeeded
+}
+
+func handleProjectProcessAwaitingStart(
+	_ context.Context, _ *ProjectProcessReconciler, resource *apiv2.ProjectProcess,
+	_ projectState, data *projectProcessData, _ logr.Logger,
+) objectChange {
+	if resource.Spec.Stop && data.requestStop() {
+		return additionalReconciliationNeeded
+	}
+	if resource.Spec.ShouldStart() {
+		data.state = projectStatePending
+		return additionalReconciliationNeeded
+	}
+	return noChange
+}
+
+func handleProjectProcessPhysical(
+	ctx context.Context, reconciler *ProjectProcessReconciler, resource *apiv2.ProjectProcess,
+	state projectState, data *projectProcessData, log logr.Logger,
+) objectChange {
+	if resource.Spec.Stop && data.requestStop() {
+		return additionalReconciliationNeeded
+	}
+	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
+	if !data.inputsPrepared {
+		if state == projectStateUnknown {
+			return reconciler.syncProjectEndpoints(ctx, resource, data, log)
+		}
+		data.state = projectStatePending
+		return additionalReconciliationNeeded
+	}
+	physical, lookupErr := reconciler.findProjectProcess(ctx, resource, data)
+	if lookupErr != nil || physical == nil {
+		if lookupErr != nil {
+			log.Error(lookupErr, "Failed to observe Project process backing")
+		}
+		if data.state != projectStateFailed {
+			data.state, data.reason, data.message = projectStateUnknown, apiv2.ProjectReasonLookupFailed, "Waiting to observe the owned PhysicalProcess."
+		}
+		return reconciler.syncProjectEndpoints(ctx, resource, data, log) | additionalReconciliationNeeded
+	}
+	data.observePhysical(physical)
+	data.updateLifecycleFromProcess(physical)
+	return reconciler.syncProjectEndpoints(ctx, resource, data, log)
 }
 
 // handleProjectProcessReady tracks debug session activity; a prepared process context has no backing to observe.
@@ -242,14 +504,16 @@ func handleProjectProcessStopping(
 	_ projectState, data *projectProcessData, log logr.Logger,
 ) objectChange {
 	data.reason, data.message = "", ""
-	if endpointChange := reconciler.syncProjectEndpoints(ctx, resource, data, log); endpointChange != noChange {
-		return endpointChange
-	}
+	change := reconciler.syncProjectEndpoints(ctx, resource, data, log)
 	if projectDebugSessionsActive(&resource.Status.ProjectCommonStatus) {
 		data.reason, data.message = apiv2.ProjectReasonStopping, "Waiting for debug sessions and adapter cleanup to finish."
-		return additionalReconciliationNeeded
+		return change | additionalReconciliationNeeded
 	}
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
+	cleaned, cleanupErr := reconciler.cleanupProjectProcesses(ctx, resource, data, log)
+	if cleanupErr != nil || !cleaned || change != noChange {
+		return change | additionalReconciliationNeeded
+	}
 	data.state = projectStateStopped
 	return noChange
 }
@@ -259,6 +523,14 @@ func handleProjectProcessTerminal(
 	_ projectState, data *projectProcessData, log logr.Logger,
 ) objectChange {
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
+	if data.physicalUID != "" && data.state == projectStateFailed {
+		lookupData := data.Clone()
+		if physical, lookupErr := reconciler.findProjectProcess(ctx, resource, lookupData); lookupErr == nil && physical != nil {
+			data.observePhysical(physical)
+		} else if lookupErr != nil {
+			log.Error(lookupErr, "Failed to observe failed Project process backing")
+		}
+	}
 	return reconciler.syncProjectEndpoints(ctx, resource, data, log)
 }
 
@@ -274,6 +546,7 @@ func (r *ProjectProcessReconciler) handleDeletionRequest(
 	delay = StandardDelay
 	if data == nil {
 		data = &projectProcessData{projectData: projectData{state: projectStatePending}}
+		data.unobservedChildren.recordCreateAttempt(&apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: projectProcessPhysicalName(resource)}})
 		for _, request := range projectProcessPortRequests(resource) {
 			data.unobservedChildren.recordCreateAttempt(&apiv2.ServiceEndpoint{ObjectMeta: metav1.ObjectMeta{Name: logicalPortResourceName(resource, request.binding.Name)}})
 		}
@@ -296,7 +569,8 @@ func (r *ProjectProcessReconciler) handleDeletionRequest(
 		return additionalReconciliationNeeded, delay
 	}
 	observeProjectProcesses(r.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
-	if !endpointsDeleted || endpointDeleteErr != nil {
+	cleaned, cleanupErr := r.cleanupProjectProcesses(ctx, resource, data, log)
+	if !cleaned || cleanupErr != nil || !endpointsDeleted || endpointDeleteErr != nil {
 		return additionalReconciliationNeeded, delay
 	}
 	return deleteFinalizer(resource, projectProcessFinalizer, log), delay
@@ -304,10 +578,18 @@ func (r *ProjectProcessReconciler) handleDeletionRequest(
 
 type projectProcessData struct {
 	projectData
+	physicalUID    types.UID
+	physicalName   string
+	physicalStatus *apiv2.PhysicalProcessStatus
+	runtimeLogs    *apiv2.LogSource
 }
 
 func (data *projectProcessData) Clone() *projectProcessData {
-	return &projectProcessData{projectData: data.cloneProjectData()}
+	cloned := *data
+	cloned.projectData = data.cloneProjectData()
+	cloned.physicalStatus = data.physicalStatus.DeepCopy()
+	cloned.runtimeLogs = data.runtimeLogs.DeepCopy()
+	return &cloned
 }
 
 func (data *projectProcessData) UpdateFrom(other *projectProcessData) bool {
@@ -323,5 +605,26 @@ func (data *projectProcessData) portData(resource *apiv2.ProjectProcess) []logic
 }
 
 func (data *projectProcessData) applyTo(resource *apiv2.ProjectProcess) (objectChange, AdditionalReconciliationDelay, bool) {
-	return data.applyCommonTo(resource, projectProcessPortRequests(resource), true)
+	physicalRef := ""
+	if data.physicalUID != "" {
+		physicalRef = data.physicalName
+	}
+	change := setValue(&resource.Status.PhysicalProcessRef, physicalRef)
+	if data.physicalStatus != nil {
+		if !reflect.DeepEqual(resource.Status.PID, data.physicalStatus.PID) {
+			resource.Status.PID = data.physicalStatus.DeepCopy().PID
+			change |= statusChanged
+		}
+		change |= setTimestamp(&resource.Status.IdentityTimestamp, data.physicalStatus.IdentityTimestamp)
+	}
+	source := data.runtimeLogs
+	if data.state == projectStateStopped && data.physicalUID != "" {
+		source = &apiv2.LogSource{Name: data.physicalName, UID: data.physicalUID, Complete: true}
+	}
+	if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {
+		resource.Status.RuntimeLogs = source.DeepCopy()
+		change |= statusChanged
+	}
+	commonChange, delay, valid := data.applyCommonTo(resource, projectProcessPortRequests(resource), true)
+	return change | commonChange, delay, valid
 }

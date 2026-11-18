@@ -32,8 +32,11 @@ type projectState int
 const (
 	projectStatePending projectState = iota + 1
 	projectStateCreating
+	projectStateAwaitingStart
 	projectStateReady
 	projectStateActive
+	projectStateRunning
+	projectStateExited
 	projectStatePaused
 	projectStateStopping
 	projectStateStopped
@@ -49,10 +52,16 @@ func (state projectState) String() string {
 		return "Pending"
 	case projectStateCreating:
 		return "Creating"
+	case projectStateAwaitingStart:
+		return "AwaitingStart"
 	case projectStateReady:
 		return "Ready"
 	case projectStateActive:
 		return "Active"
+	case projectStateRunning:
+		return "Running"
+	case projectStateExited:
+		return "Exited"
 	case projectStatePaused:
 		return "Paused"
 	case projectStateStopping:
@@ -77,6 +86,8 @@ type projectData struct {
 	unobservedChildren unobservedLogicalChildren
 	effectiveArgs      []string
 	effectiveEnv       []commonapi.EnvVar
+	finishedAt         metav1.MicroTime
+	exitCode           *int32
 	inputsPrepared     bool
 	// Records successful preparation independently of temporary observation failures.
 	prepared    bool
@@ -91,6 +102,7 @@ func (data *projectData) cloneProjectData() projectData {
 	cloned.unobservedChildren = maps.Clone(data.unobservedChildren)
 	cloned.effectiveArgs = slices.Clone(data.effectiveArgs)
 	cloned.effectiveEnv = slices.Clone(data.effectiveEnv)
+	cloned.exitCode = cloneInt32Pointer(data.exitCode)
 	return cloned
 }
 
@@ -103,7 +115,8 @@ func (data *projectData) failMissing(message string) {
 
 func (data *projectData) requestStop() bool {
 	switch data.state {
-	case projectStatePending, projectStateCreating, projectStateReady, projectStateActive, projectStatePaused, projectStateUnknown:
+	case projectStatePending, projectStateCreating, projectStateAwaitingStart, projectStateReady, projectStateActive,
+		projectStateRunning, projectStateExited, projectStatePaused, projectStateUnknown:
 		data.state, data.reason, data.message = projectStateStopping, apiv2.ProjectReasonStopping, ""
 		return true
 	default:
@@ -134,6 +147,8 @@ func (data *projectData) applyCommonTo(
 		status.EffectiveEnv = slices.Clone(data.effectiveEnv)
 		change |= statusChanged
 	}
+	change |= setTimestamp(&status.FinishedAt, data.finishedAt)
+	change |= setExitCode(&status.ExitCode, data.exitCode)
 	projectionChange, delay, valid := projectProjections.applyWithReason(
 		data.state, data.reason, data.message, &status.Phase, &status.Conditions, resource.GetGeneration())
 	if data.processPoll && projectionChange&additionalReconciliationNeeded == 0 {
@@ -152,11 +167,21 @@ var projectProjections = physicalResourceProjectionTable[projectState, apiv2.Pro
 		projectStateCreating: {
 			phase: apiv2.ProjectPhasePending, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonPreparing,
 		},
+		projectStateAwaitingStart: {
+			phase: apiv2.ProjectPhaseReady, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonAwaitingStart,
+			message: "Project execution is waiting for start to become true.",
+		},
 		projectStateReady: {
 			phase: apiv2.ProjectPhaseReady, conditionStatus: metav1.ConditionTrue, conditionReason: apiv2.ProjectReasonPrepared,
 		},
 		projectStateActive: {
 			phase: apiv2.ProjectPhaseActive, conditionStatus: metav1.ConditionTrue, conditionReason: apiv2.ProjectReasonDebugSessionsActive,
+		},
+		projectStateRunning: {
+			phase: apiv2.ProjectPhaseActive, conditionStatus: metav1.ConditionTrue, conditionReason: apiv2.ProjectReasonApplicationRunning,
+		},
+		projectStateExited: {
+			phase: apiv2.ProjectPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonCompleted,
 		},
 		projectStatePaused: {
 			phase: apiv2.ProjectPhaseReady, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.ProjectReasonPaused,
@@ -278,8 +303,7 @@ func projectDebugSessionsActive(status *apiv2.ProjectCommonStatus) bool {
 	return false
 }
 
-// syncProjectEndpoints publishes service endpoints only while the Project is active and a launched debug session is ready,
-// and withdraws them otherwise.
+// syncProjectEndpoints publishes endpoints while a direct application is running or an adapter-launched session is ready.
 func syncProjectEndpoints[Resource apiv2.ProjectObject](
 	ctx context.Context, apiClient ctrl_client.Client, reader ctrl_client.Reader, resource Resource, data *projectData,
 	ports logicalPortDataSource[Resource], requests []logicalPortRequest, ownerUIDField string,
@@ -288,7 +312,8 @@ func syncProjectEndpoints[Resource apiv2.ProjectObject](
 	if len(requests) == 0 {
 		return noChange
 	}
-	publish := data.state == projectStateActive && data.inputsPrepared && projectLaunchedSessionReady(resource.GetProjectStatus())
+	publish := resource.GetProjectSpec().ShouldStart() && data.inputsPrepared &&
+		(data.state == projectStateRunning || (data.state == projectStateActive && projectLaunchedSessionReady(resource.GetProjectStatus())))
 	addressesReady, endpointErr := syncLogicalEndpoints(ctx, apiClient, reader, resource, ports, ownerUIDField,
 		&data.unobservedChildren, publish, mappings...)
 	if endpointErr != nil {
