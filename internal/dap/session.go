@@ -26,6 +26,7 @@ type SessionState struct {
 	StreamsConnected         bool
 	InitializeRequested      bool
 	LaunchRequested          bool
+	LaunchSucceeded          bool
 	AttachRequested          bool
 	AdapterInitialized       bool
 	ProcessReported          bool
@@ -100,6 +101,9 @@ func (tracker *sessionTracker) message(direction Direction, message Message) err
 			var success bool
 			if decodeErr := json.Unmarshal(message["success"], &success); decodeErr != nil {
 				return fmt.Errorf("decode DAP response success: %w", decodeErr)
+			}
+			if success && command == "launch" {
+				state.LaunchSucceeded = true
 			}
 			if !success {
 				var diagnostic string

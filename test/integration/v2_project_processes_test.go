@@ -68,7 +68,7 @@ func releaseProjectInspection(t *testing.T, ctx context.Context, client ctrl_cli
 	t.Helper()
 	require.NoError(t, retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if getErr := client.Get(ctx, project.NamespacedName(), project); getErr != nil {
-			return getErr
+			return ctrl_client.IgnoreNotFound(getErr)
 		}
 		project.Finalizers = slices.DeleteFunc(project.Finalizers, func(finalizer string) bool { return finalizer == "test/inspect-target-cleanup" })
 		return client.Update(ctx, project)
@@ -83,9 +83,7 @@ func TestV2ProjectObservesTargetsWithoutCleanupOwnership(t *testing.T) {
 		t.Run(ending, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
-			server, _, startupErr := StartTestEnvironment(t, ctx, ProjectController, t.Name(), t.TempDir())
-			require.NoError(t, startupErr)
-			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-targets-"+ending)
+			namespace := createV2ExecNamespace(t, ctx, client, "v2-project-targets-"+ending)
 			tool, toolErr := internaltest.GetTestToolPath("delay")
 			require.NoError(t, toolErr)
 			owner := process.NewOSExecutor(logr.Discard())
@@ -100,9 +98,9 @@ func TestV2ProjectObservesTargetsWithoutCleanupOwnership(t *testing.T) {
 					Process:      &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}},
 					DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}},
 				}}
-			require.NoError(t, server.Client.Create(ctx, project))
-			waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
-			connection, connectErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
+			require.NoError(t, client.Create(ctx, project))
+			waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
+			connection, connectErr := connectProjectDebug(t, ctx, clientConfig, project)
 			require.NoError(t, connectErr)
 			defer connection.Close()
 			for index, method := range methods {
@@ -113,7 +111,7 @@ func TestV2ProjectObservesTargetsWithoutCleanupOwnership(t *testing.T) {
 				readProjectDebugMessage(t, connection)
 			}
 			reportProjectTarget(t, connection, handles[0].Pid)
-			observed := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			observed := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 				if current.Status.Debug == nil || len(current.Status.Debug.Sessions) != 1 ||
 					len(current.Status.Debug.Sessions[0].Processes) != len(handles) {
 					return false, nil
@@ -129,31 +127,31 @@ func TestV2ProjectObservesTargetsWithoutCleanupOwnership(t *testing.T) {
 			require.True(t, observed.Status.Debug.Sessions[0].Processes[2].Attached)
 			require.True(t, observed.Status.Debug.Sessions[0].Processes[3].Attached)
 			require.NoError(t, connection.Close())
-			idle := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
+			idle := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
 			require.Len(t, idle.Status.Debug.Sessions[0].Processes, len(handles))
 
 			// Independently observed target exit must not depend on adapter or session lifetime.
 			require.NoError(t, owner.StopProcess(ctx, handles[0]))
-			waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 				observation := current.Status.Debug.Sessions[0].Processes[0].Observation
 				return current.Status.Phase == apiv2.ProjectPhaseReady &&
 					observation.Phase == apiv2.ProjectDebugProcessExited && !observation.FinishedAt.IsZero(), nil
 			})
 			switch ending {
 			case "stop":
-				require.NoError(t, server.Client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-				stopped := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseStopped)
+				require.NoError(t, client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+				stopped := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseStopped)
 				for _, target := range stopped.Status.Debug.Sessions[0].Processes[1:] {
 					require.Equal(t, apiv2.ProjectDebugProcessRunning, target.Observation.Phase)
 				}
-				require.NoError(t, server.Client.Delete(ctx, project))
-				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
+				require.NoError(t, client.Delete(ctx, project))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, project)
 			case "delete":
-				require.NoError(t, server.Client.Delete(ctx, project))
-				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
+				require.NoError(t, client.Delete(ctx, project))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, project)
 			case "namespace":
-				require.NoError(t, server.Client.Delete(ctx, namespace))
-				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, namespace)
+				require.NoError(t, client.Delete(ctx, namespace))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
 			}
 			for _, handle := range handles[1:] {
 				require.NoError(t, owner.CheckProcessRunning(handle), "reported targets must survive Project cleanup")

@@ -32,9 +32,7 @@ func TestV2ProjectCleansAdapterWithoutStoppingReportedTarget(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	server, _, startupErr := StartTestEnvironment(t, ctx, ProjectController, t.Name(), t.TempDir())
-	require.NoError(t, startupErr)
-	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-shutdown-order")
+	namespace := createV2ExecNamespace(t, ctx, client, "v2-project-shutdown-order")
 	tool, toolErr := internaltest.GetTestToolPath("delay")
 	require.NoError(t, toolErr)
 	ownerExecutor := process.NewOSExecutor(logr.Discard())
@@ -44,13 +42,13 @@ func TestV2ProjectCleansAdapterWithoutStoppingReportedTarget(t *testing.T) {
 		Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(),
 			Process:      &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "adapter-started"}},
 			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}}}}
-	require.NoError(t, server.Client.Create(ctx, project))
-	waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
-	connection, connectionErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
+	require.NoError(t, client.Create(ctx, project))
+	waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
+	connection, connectionErr := connectProjectDebug(t, ctx, clientConfig, project)
 	require.NoError(t, connectionErr)
 	defer connection.Close()
 	reportProjectTarget(t, connection, target.Pid)
-	running := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+	running := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 		return current.Status.Debug != nil && len(current.Status.Debug.Executions) == 1 &&
 			current.Status.Debug.Executions[0].PID != nil && len(current.Status.Debug.Sessions) == 1 &&
 			len(current.Status.Debug.Sessions[0].Processes) == 1, nil
@@ -79,11 +77,11 @@ func TestV2ProjectCleansAdapterWithoutStoppingReportedTarget(t *testing.T) {
 		}
 	})
 	t.Cleanup(resume)
-	require.NoError(t, server.Client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-	stopped := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseStopped)
+	require.NoError(t, client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	stopped := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseStopped)
 	require.True(t, process.IsProcessGoneErr(ownerExecutor.CheckProcessRunning(adapter)))
 	require.NoError(t, ownerExecutor.CheckProcessRunning(target))
 	require.Equal(t, apiv2.ProjectDebugProcessRunning, stopped.Status.Debug.Sessions[0].Processes[0].Observation.Phase)
-	require.NoError(t, server.Client.Delete(ctx, project))
-	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
+	require.NoError(t, client.Delete(ctx, project))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, project)
 }

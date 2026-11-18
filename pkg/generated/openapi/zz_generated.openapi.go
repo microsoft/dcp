@@ -9812,6 +9812,13 @@ func schema_microsoft_dcp_api_v2_ProjectDebugSessionProgress(ref common.Referenc
 							Format:      "",
 						},
 					},
+					"launchSucceeded": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LaunchSucceeded records the adapter's successful launch response; adapters may omit initialized for launch.noDebug.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"attachRequested": {
 						SchemaProps: spec.SchemaProps{
 							Description: "AttachRequested records a client attach request, not successful target attachment.",

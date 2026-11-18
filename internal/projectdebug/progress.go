@@ -46,7 +46,7 @@ func applyProjectDebugSessionProgress(session *apiv2.ProjectDebugSessionStatus, 
 	}
 	progress := session.Progress
 	ready := progress.Phase == apiv2.ProjectDebugConnectionConnected &&
-		progress.InitializeRequested && progress.AdapterInitialized
+		progress.InitializeRequested && (progress.AdapterInitialized || progress.LaunchSucceeded)
 	reason, message := "DAPInitializationPending", "Both streams are connected; waiting for DAP initialization."
 	switch progress.Phase {
 	case apiv2.ProjectDebugConnectionTerminating:
@@ -54,8 +54,10 @@ func applyProjectDebugSessionProgress(session *apiv2.ProjectDebugSessionStatus, 
 	case apiv2.ProjectDebugConnectionDisconnected:
 		reason, message = "StreamDisconnected", "A debug stream has disconnected."
 	default:
-		if ready {
+		if ready && progress.AdapterInitialized {
 			reason, message = "DAPInitialized", "Client initialization and adapter initialized event have been observed."
+		} else if ready {
+			reason, message = "LaunchSucceeded", "Client initialization and a successful adapter launch response have been observed."
 		}
 	}
 	session.Conditions = debugConditions(reason, message, ready, generation)
@@ -78,7 +80,7 @@ func (runtime *projectDebugRuntime) publishProgress(project *apiv2.Project, sess
 	}
 	progress := &apiv2.ProjectDebugSessionProgress{
 		Phase: phase, StreamsConnected: state.StreamsConnected, InitializeRequested: state.InitializeRequested,
-		LaunchRequested: state.LaunchRequested, AttachRequested: state.AttachRequested, AdapterInitialized: state.AdapterInitialized,
+		LaunchRequested: state.LaunchRequested, LaunchSucceeded: state.LaunchSucceeded, AttachRequested: state.AttachRequested, AdapterInitialized: state.AdapterInitialized,
 		ProcessReported: state.ProcessReported, ClientTerminating: state.ClientTerminating, AdapterTerminating: state.AdapterTerminating,
 		ResourceTerminating: state.ResourceTerminating, DebuggeeExited: state.DebuggeeExited, DebuggeeExitCode: state.DebuggeeExitCode,
 		ClientDisconnected: state.ClientDisconnected, AdapterDisconnected: state.AdapterDisconnected,

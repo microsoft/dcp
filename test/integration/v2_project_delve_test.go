@@ -208,9 +208,7 @@ func TestV2ProjectDelveEndToEnd(t *testing.T) {
 			delve := strings.TrimSpace(string(resolvedPath.Bytes()))
 			require.True(t, filepath.IsAbs(delve), "go tool must resolve an absolute Delve binary path")
 
-			server, _, startupErr := StartTestEnvironment(t, ctx, ProjectController, t.Name(), t.TempDir())
-			require.NoError(t, startupErr)
-			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-delve-"+ending)
+			namespace := createV2ExecNamespace(t, ctx, client, "v2-project-delve-"+ending)
 			project := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 				Spec: apiv2.ProjectSpec{RootDirectory: filepath.Dir(source),
 					Process: &apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{
@@ -220,9 +218,9 @@ func TestV2ProjectDelveEndToEnd(t *testing.T) {
 						Args: []string{delve, "dap", "--client-addr=127.0.0.1:{{port}}"}, Mode: apiv2.DebugAdapterModeTCPCallback,
 					},
 				}}
-			require.NoError(t, server.Client.Create(ctx, project))
-			waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
-			connection, connectErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
+			require.NoError(t, client.Create(ctx, project))
+			waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
+			connection, connectErr := connectProjectDebug(t, ctx, clientConfig, project)
 			require.NoError(t, connectErr)
 			defer connection.Close()
 			connection.SetReadLimit(9 * 1024 * 1024)
@@ -289,7 +287,7 @@ func TestV2ProjectDelveEndToEnd(t *testing.T) {
 			}
 			require.True(t, foundResult, "the computed local must be inspectable")
 
-			observed := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			observed := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 				return len(current.Status.Debug.Executions) == 1 && len(current.Status.Debug.Sessions[0].Processes) == 1 &&
 					current.Status.Debug.Sessions[0].Processes[0].Observation.Phase == apiv2.ProjectDebugProcessRunning, nil
 			})
@@ -330,10 +328,10 @@ func TestV2ProjectDelveEndToEnd(t *testing.T) {
 				}
 				require.Contains(t, output.String(), "Result: 55")
 				dapClient.response(t, dapClient.request(t, "disconnect", map[string]bool{"terminateDebuggee": true}), nil)
-				waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
+				waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
 			}
-			require.NoError(t, server.Client.Delete(ctx, project))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
+			require.NoError(t, client.Delete(ctx, project))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, project)
 			observedExits := handles[:1]
 			if ending == "continue" {
 				observedExits = handles

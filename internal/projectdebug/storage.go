@@ -243,9 +243,13 @@ func (storage *projectDebugStorage) monitor(
 				return
 			}
 			snapshot, valid := event.Object.(*apiv2.Project)
-			if !valid || snapshot.Name != selected.Name || snapshot.Namespace != selected.Namespace {
+			if !valid || snapshot.Name != selected.Name {
 				cancel(fmt.Errorf("invalid Project watch snapshot"))
 				return
+			}
+			// Tilt filters live watch events by name but not by namespace.
+			if snapshot.Namespace != selected.Namespace {
+				continue
 			}
 			if event.Type == watch.Deleted {
 				cancel(errors.Join(dap.ErrShutdownRequested, fmt.Errorf("project was deleted")))

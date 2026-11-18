@@ -76,3 +76,32 @@ func TestProjectDebugSessionProgressOwnership(t *testing.T) {
 	_, wrongUIDErr := writer.updateProgress(ctx, project.NamespacedName(), "wrong-uid", session.ID, progress)
 	require.True(t, apierrors.IsConflict(wrongUIDErr))
 }
+
+// Verifies that applyProjectDebugSessionProgress makes a session ready from either the adapter
+// initialized event or a successful launch response, and not from a launch request alone.
+func TestProjectDebugSessionReadyFromInitializedOrLaunchSuccess(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		name     string
+		progress apiv2.ProjectDebugSessionProgress
+		ready    metav1.ConditionStatus
+		reason   string
+	}{
+		{"launch-requested", apiv2.ProjectDebugSessionProgress{InitializeRequested: true, LaunchRequested: true},
+			metav1.ConditionFalse, "DAPInitializationPending"},
+		{"launch-succeeded", apiv2.ProjectDebugSessionProgress{InitializeRequested: true, LaunchRequested: true, LaunchSucceeded: true},
+			metav1.ConditionTrue, "LaunchSucceeded"},
+		{"adapter-initialized", apiv2.ProjectDebugSessionProgress{InitializeRequested: true, AdapterInitialized: true, LaunchSucceeded: true},
+			metav1.ConditionTrue, "DAPInitialized"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			progress := testCase.progress
+			progress.Phase = apiv2.ProjectDebugConnectionConnected
+			session := &apiv2.ProjectDebugSessionStatus{ID: "session", Phase: apiv2.ProjectDebugPhaseRunning, Progress: &progress}
+			applyProjectDebugSessionProgress(session, 1)
+			require.Equal(t, testCase.ready, session.Conditions[0].Status)
+			require.Equal(t, testCase.reason, session.Conditions[0].Reason)
+		})
+	}
+}

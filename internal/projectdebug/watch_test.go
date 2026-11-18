@@ -58,10 +58,10 @@ func (storage *debugWatchStorage) Watch(ctx context.Context, options *metaintern
 }
 
 // Verifies that debug monitoring establishes both watches before its one-time identity read,
-// consumes readiness and shutdown snapshots without rereads, and observes independent namespace changes.
+// consumes readiness and shutdown snapshots without rereads, and ignores unrelated Projects.
 func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"project-stop", "namespace-stop", "deleted-during-subscription", "project-watch-closed", "namespace-watch-closed"} {
+	for _, scenario := range []string{"project-stop", "namespace-stop", "deleted-during-subscription", "project-watch-closed", "namespace-watch-closed", "other-namespace"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, 0)
@@ -95,12 +95,22 @@ func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 			require.NoError(t, apiClient.Get(ctx, ctrlclient.ObjectKey{Name: project.Namespace}, namespace))
 			namespace.Status.Phase = ""
 			require.NoError(t, apiClient.Status().Update(ctx, namespace))
+			var other *apiv2.Project
+			if scenario == "other-namespace" {
+				otherNamespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "other"}}
+				require.NoError(t, apiClient.Create(ctx, otherNamespace))
+				other = project.DeepCopy()
+				other.ObjectMeta = metav1.ObjectMeta{Name: project.Name, Namespace: otherNamespace.Name}
+			}
 			projects.initialRead = func() error {
 				if projects.watches.Load() != 1 || namespaces.watches.Load() != 1 {
 					return errors.New("initial read overtook watch registration")
 				}
 				if scenario == "deleted-during-subscription" {
 					return apiClient.Delete(ctx, project)
+				}
+				if other != nil {
+					return apiClient.Create(ctx, other)
 				}
 				return nil
 			}
@@ -136,7 +146,12 @@ func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 				t.Fatalf("watch readiness failed: %v", context.Cause(lifetime))
 			}
 			switch scenario {
-			case "project-stop":
+			case "project-stop", "other-namespace":
+				if other != nil {
+					require.NoError(t, apiClient.Patch(ctx, other, ctrlclient.RawPatch(
+						types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+					require.NoError(t, apiClient.Delete(ctx, other))
+				}
 				require.NoError(t, apiClient.Patch(ctx, project, ctrlclient.RawPatch(
 					types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 			case "namespace-stop":
@@ -149,7 +164,7 @@ func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 			}
 			select {
 			case <-done:
-				if scenario == "project-stop" || scenario == "namespace-stop" {
+				if scenario == "project-stop" || scenario == "namespace-stop" || scenario == "other-namespace" {
 					require.ErrorIs(t, context.Cause(lifetime), dap.ErrShutdownRequested)
 				} else {
 					require.ErrorContains(t, context.Cause(lifetime), "watch closed")

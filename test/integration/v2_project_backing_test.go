@@ -8,6 +8,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -64,18 +65,15 @@ func TestV2ProjectBackingInterferencePreservesRuntimeLogs(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
-			server, _, startupErr := StartTestEnvironment(t, ctx, projectTestControllers, t.Name(), t.TempDir())
-			require.NoError(t, startupErr)
-			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-logs-"+scenario)
+			namespace := createV2ExecNamespace(t, ctx, client, "v2-project-logs-"+scenario)
 			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
 					LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 				}}}
-			require.NoError(t, server.Client.Create(ctx, resource))
-			prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
-			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
-			require.NoError(t, orchestrator.SimulateContainerLogging(prepared.Status.ContainerID, apiv1.LogStreamSourceStdout, []byte("before-unknown\n")))
-			follow, followErr := server.RestClient.Get().
+			require.NoError(t, client.Create(ctx, resource))
+			prepared := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+			require.NoError(t, containerOrchestrator.SimulateContainerLogging(prepared.Status.ContainerID, apiv1.LogStreamSourceStdout, []byte("before-unknown\n")))
+			follow, followErr := restClient.Get().
 				AbsPath("/apis", apiv2.GroupName, apiv2.Version, "namespaces", namespace.Name, "projects", resource.Name, "log").
 				Param("follow", "true").Stream(ctx)
 			require.NoError(t, followErr)
@@ -85,28 +83,29 @@ func TestV2ProjectBackingInterferencePreservesRuntimeLogs(t *testing.T) {
 			require.NoError(t, firstErr)
 			require.Equal(t, "before-unknown\n", string(first))
 			physical := &apiv2.PhysicalContainer{}
-			require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
+			require.NoError(t, client.Get(ctx, types.NamespacedName{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
 			var duplicate *apiv2.PhysicalContainer
 			if scenario == "ambiguous" {
 				duplicate = physical.DeepCopy()
 				duplicate.ObjectMeta = metav1.ObjectMeta{Name: "duplicate", Namespace: namespace.Name,
 					OwnerReferences: physical.OwnerReferences, Finalizers: physical.Finalizers}
-				require.NoError(t, server.Client.Create(ctx, duplicate))
+				require.NoError(t, client.Create(ctx, duplicate))
+				cleanupProjectBacking(t, duplicate)
 			} else {
-				removeProjectBackingHold(t, ctx, server.Client, physical)
+				removeProjectBackingHold(t, ctx, client, physical)
 			}
-			unknown := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
+			unknown := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
 			requireReadyCondition(t, unknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
-			require.NoError(t, server.Client.Get(ctx, physical.NamespacedName(), physical))
+			require.NoError(t, client.Get(ctx, physical.NamespacedName(), physical))
 			require.Equal(t, physical.GetLogSource(), unknown.Status.RuntimeLogs)
 			require.True(t, unknown.Status.RuntimeLogs.Available)
 			require.False(t, unknown.Status.RuntimeLogs.Complete)
-			require.NoError(t, orchestrator.SimulateContainerLogging(prepared.Status.ContainerID, apiv1.LogStreamSourceStdout, []byte("after-unknown\n")))
+			require.NoError(t, containerOrchestrator.SimulateContainerLogging(prepared.Status.ContainerID, apiv1.LogStreamSourceStdout, []byte("after-unknown\n")))
 			next := make([]byte, len("after-unknown\n"))
 			_, nextErr := io.ReadFull(follow, next)
 			require.NoError(t, nextErr)
 			require.Equal(t, "after-unknown\n", string(next))
-			late, lateErr := server.RestClient.Get().
+			late, lateErr := restClient.Get().
 				AbsPath("/apis", apiv2.GroupName, apiv2.Version, "namespaces", namespace.Name, "projects", resource.Name, "log").
 				Stream(ctx)
 			require.NoError(t, lateErr)
@@ -115,11 +114,11 @@ func TestV2ProjectBackingInterferencePreservesRuntimeLogs(t *testing.T) {
 			require.NoError(t, readErr)
 			require.Equal(t, "before-unknown\nafter-unknown\n", string(output))
 			if duplicate != nil {
-				require.NoError(t, server.Client.Delete(ctx, duplicate))
-				removeProjectBackingHold(t, ctx, server.Client, duplicate)
-				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, duplicate)
-				require.NoError(t, orchestrator.SimulateContainerStatus(ctx, prepared.Status.ContainerID, containers.ContainerStatusDead))
-				completed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				require.NoError(t, client.Delete(ctx, duplicate))
+				removeProjectBackingHold(t, ctx, client, duplicate)
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, duplicate)
+				require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, prepared.Status.ContainerID, containers.ContainerStatusDead))
+				completed := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 					return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Status.RuntimeLogs != nil &&
 						current.Status.RuntimeLogs.Available && current.Status.RuntimeLogs.Complete, nil
 				})
@@ -130,8 +129,8 @@ func TestV2ProjectBackingInterferencePreservesRuntimeLogs(t *testing.T) {
 				require.NoError(t, drainErr)
 				require.Empty(t, remaining)
 			}
-			require.NoError(t, server.Client.Delete(ctx, resource))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+			require.NoError(t, client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
 		})
 	}
 }
@@ -209,33 +208,31 @@ func TestV2ProjectFailureSurvivesBackingChanges(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
-			server, _, startupErr := StartTestEnvironment(t, ctx, projectTestControllers, t.Name(), t.TempDir())
-			require.NoError(t, startupErr)
-			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-failed-"+scenario)
+			namespace := createV2ExecNamespace(t, ctx, client, "v2-project-failed-"+scenario)
 			resource := &apiv2.Project{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 				Spec: apiv2.ProjectSpec{RootDirectory: t.TempDir(), Container: &apiv2.ProjectContainerTemplate{
 					LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
 				}}}
-			require.NoError(t, server.Client.Create(ctx, resource))
-			prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
-			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
-			require.NoError(t, orchestrator.SimulateContainerStatus(ctx, prepared.Status.ContainerID, containers.ContainerStatusDead))
-			failed := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseFailed)
+			require.NoError(t, client.Create(ctx, resource))
+			prepared := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+			require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, prepared.Status.ContainerID, containers.ContainerStatusDead))
+			failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
 			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
 			physical := &apiv2.PhysicalContainer{}
-			require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
+			require.NoError(t, client.Get(ctx, types.NamespacedName{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
 			replacement := physical.DeepCopy()
 			replacement.ObjectMeta = metav1.ObjectMeta{Name: physical.Name, Namespace: namespace.Name,
 				OwnerReferences: physical.OwnerReferences, Finalizers: physical.Finalizers}
-			require.NoError(t, server.Client.Delete(ctx, physical))
-			removeProjectBackingHold(t, ctx, server.Client, physical)
-			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
+			require.NoError(t, client.Delete(ctx, physical))
+			removeProjectBackingHold(t, ctx, client, physical)
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
 			if scenario == "replaced" {
-				require.NoError(t, server.Client.Create(ctx, replacement))
+				require.NoError(t, client.Create(ctx, replacement))
+				cleanupProjectBacking(t, replacement)
 				require.NotEqual(t, physical.UID, replacement.UID)
 			}
-			require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-			observed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+			require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+			observed := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 				if scenario == "missing" && (current.Status.RuntimeLogs == nil ||
 					!current.Status.RuntimeLogs.Complete || current.Status.RuntimeLogs.Available) {
 					return false, nil
@@ -252,10 +249,10 @@ func TestV2ProjectFailureSurvivesBackingChanges(t *testing.T) {
 				require.True(t, observed.Status.RuntimeLogs.Complete)
 				require.False(t, observed.Status.RuntimeLogs.Available)
 			}
-			require.NoError(t, server.Client.Delete(ctx, resource))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+			require.NoError(t, client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
 			var backings apiv2.PhysicalContainerList
-			require.NoError(t, server.Client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
+			require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
 			require.Empty(t, backings.Items)
 		})
 	}
@@ -1110,6 +1107,29 @@ func TestV2ProjectMissingBackingCompletesFollowerThroughConflict(t *testing.T) {
 	remaining, drainErr := io.ReadAll(follow)
 	require.NoError(t, drainErr)
 	require.Empty(t, remaining)
+}
+
+func cleanupProjectBacking(t *testing.T, backing ctrl_client.Object) {
+	t.Helper()
+	key := ctrl_client.ObjectKeyFromObject(backing)
+	uid := backing.GetUID()
+	t.Cleanup(func() {
+		ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+		defer cancel()
+		current := backing.DeepCopyObject().(ctrl_client.Object)
+		require.NoError(t, retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			if getErr := client.Get(ctx, key, current); getErr != nil {
+				return ctrl_client.IgnoreNotFound(getErr)
+			}
+			if current.GetUID() != uid {
+				return fmt.Errorf("project backing %s was replaced before cleanup", key)
+			}
+			if deleteErr := client.Delete(ctx, current); deleteErr != nil {
+				return ctrl_client.IgnoreNotFound(deleteErr)
+			}
+			return ctrl_client.IgnoreNotFound(controllers.ReleaseLogicalBackingFinalizer(ctx, client, current))
+		}))
+	})
 }
 
 func removeProjectBackingHold(t *testing.T, ctx context.Context, apiClient ctrl_client.Client, backing ctrl_client.Object) {

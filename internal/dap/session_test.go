@@ -92,8 +92,8 @@ func TestBridgePublishesSessionObservations(t *testing.T) {
 	}
 }
 
-// Verifies that sessionTracker latches independently ordered DAP milestones without request history,
-// preserves debuggee exit separately, and does not reopen a terminating or disconnected stream.
+// Verifies that sessionTracker latches independently ordered DAP milestones, including only a successful
+// launch response, without request history, preserves debuggee exit separately, and does not reopen a terminating or disconnected stream.
 func TestSessionTracksMonotonicObservations(t *testing.T) {
 	t.Parallel()
 	var snapshots []SessionState
@@ -106,6 +106,13 @@ func TestSessionTracksMonotonicObservations(t *testing.T) {
 		return nil
 	}))
 	require.NoError(t, tracker.message(ClientToAdapter, testRequest(1, "launch")))
+	rejected := testResponse(1, 1, "launch")
+	rejected["success"], rejected["message"] = json.RawMessage("false"), json.RawMessage(`"bad program"`)
+	require.NoError(t, tracker.message(AdapterToClient, rejected))
+	require.False(t, tracker.state.LaunchSucceeded)
+	require.Equal(t, "Adapter rejected launch: bad program", tracker.state.Message)
+	require.NoError(t, tracker.message(AdapterToClient, testResponse(2, 1, "launch")))
+	require.True(t, tracker.state.LaunchSucceeded)
 	require.NoError(t, tracker.message(AdapterToClient, Message{
 		"type": json.RawMessage(`"event"`), "event": json.RawMessage(`"initialized"`),
 	}))

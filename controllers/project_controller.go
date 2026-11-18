@@ -564,7 +564,7 @@ func (r *ProjectReconciler) syncProjectEndpoints(
 	return noChange
 }
 
-// projectLaunchedSessionReady reports whether a connected session has completed DAP initialization and requested launch.
+// projectLaunchedSessionReady reports whether a connected session is ready and has requested launch.
 func projectLaunchedSessionReady(resource *apiv2.Project) bool {
 	if resource.Status.Debug == nil {
 		return false

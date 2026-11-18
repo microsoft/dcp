@@ -531,9 +531,7 @@ func TestV2ProjectServicePortsAndEvaluatedValues(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
-			server, _, startupErr := StartTestEnvironment(t, ctx, projectTestControllers|LogicalServiceController, t.Name(), t.TempDir())
-			require.NoError(t, startupErr)
-			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-services-"+kind)
+			namespace := createV2ExecNamespace(t, ctx, client, "v2-project-services-"+kind)
 			arguments := []string{`--listen={{addressForServing "http"}}:{{portForServing "http"}}`,
 				`--consumer={{addressFor "project-management"}}:{{portFor "project-management"}}`}
 			environment := []commonapi.EnvVar{
@@ -541,13 +539,13 @@ func TestV2ProjectServicePortsAndEvaluatedValues(t *testing.T) {
 				{Name: "FRONT", Value: `{{addressFor "project-management"}}:{{portFor "project-management"}}`},
 			}
 			resource := serviceProject("project", namespace.Name, t.TempDir(), kind, arguments, environment)
-			require.NoError(t, server.Client.Create(ctx, resource))
-			running := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+			require.NoError(t, client.Create(ctx, resource))
+			running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
 			require.Len(t, running.Status.Ports, 1)
 			port := running.Status.Ports[0]
 			require.Positive(t, port.Port)
 			require.Equal(t, "project-management", port.ServiceRef)
-			service := waitObjectAssumesStateEx(t, ctx, server.Client, types.NamespacedName{Namespace: namespace.Name, Name: port.ServiceRef},
+			service := waitObjectAssumesStateEx(t, ctx, client, types.NamespacedName{Namespace: namespace.Name, Name: port.ServiceRef},
 				func(current *apiv2.LogicalService) (bool, error) {
 					return len(current.Status.EffectiveAddresses) != 0, nil
 				})
@@ -558,17 +556,17 @@ func TestV2ProjectServicePortsAndEvaluatedValues(t *testing.T) {
 			require.Equal(t, expectedArgs, running.Status.EffectiveArgs)
 			require.ElementsMatch(t, expectedEnv, running.Status.EffectiveEnv)
 			var endpoints apiv2.ServiceEndpointList
-			require.NoError(t, server.Client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
+			require.NoError(t, client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
 			require.Empty(t, endpoints.Items)
 			if kind == "process" {
 				var physicals apiv2.PhysicalProcessList
-				require.NoError(t, server.Client.List(ctx, &physicals, ctrl_client.InNamespace(namespace.Name)))
+				require.NoError(t, client.List(ctx, &physicals, ctrl_client.InNamespace(namespace.Name)))
 				require.Empty(t, physicals.Items)
 				require.Equal(t, arguments, running.Spec.Process.Args)
 				require.Equal(t, environment, running.Spec.Process.Env)
 			} else {
 				physical := &apiv2.PhysicalContainer{}
-				require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef}, physical))
+				require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef}, physical))
 				require.Equal(t, []string{"-f", "/dev/null"}, physical.Spec.Container.Command)
 				require.Equal(t, expectedEnv, physical.Spec.Container.Env)
 				require.Equal(t, int32(8080), physical.Spec.Container.Ports[0].ContainerPort)
@@ -576,22 +574,22 @@ func TestV2ProjectServicePortsAndEvaluatedValues(t *testing.T) {
 				require.Equal(t, arguments, running.Spec.Container.Command)
 				require.Equal(t, environment, running.Spec.Container.Env)
 			}
-			require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-			waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseStopped)
-			require.NoError(t, server.Client.Delete(ctx, resource))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+			require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+			waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseStopped)
+			require.NoError(t, client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
 			retained := &apiv2.LogicalService{}
-			require.NoError(t, server.Client.Get(ctx, service.NamespacedName(), retained))
+			require.NoError(t, client.Get(ctx, service.NamespacedName(), retained))
 			require.Equal(t, service.UID, retained.UID)
 			replacement := serviceProject("project", namespace.Name, t.TempDir(), kind, arguments, environment)
-			require.NoError(t, server.Client.Create(ctx, replacement))
-			replacementRunning := waitProjectPhase(t, ctx, server.Client, replacement, apiv2.ProjectPhaseReady)
+			require.NoError(t, client.Create(ctx, replacement))
+			replacementRunning := waitProjectPhase(t, ctx, client, replacement, apiv2.ProjectPhaseReady)
 			require.NotEqual(t, resource.UID, replacement.UID)
 			require.Equal(t, service.Name, replacementRunning.Status.Ports[0].ServiceRef)
-			require.NoError(t, server.Client.Get(ctx, service.NamespacedName(), retained))
+			require.NoError(t, client.Get(ctx, service.NamespacedName(), retained))
 			require.Equal(t, service.UID, retained.UID)
-			require.NoError(t, server.Client.Delete(ctx, replacement))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, replacement)
+			require.NoError(t, client.Delete(ctx, replacement))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, replacement)
 		})
 	}
 }
@@ -606,9 +604,7 @@ func TestV2ProjectTemplatePreparationFailures(t *testing.T) {
 				t.Parallel()
 				ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 				t.Cleanup(cancel)
-				server, _, startupErr := StartTestEnvironment(t, ctx, projectTestControllers|LogicalServiceController, t.Name(), t.TempDir())
-				require.NoError(t, startupErr)
-				namespace := createV2ExecNamespace(t, ctx, server.Client, fmt.Sprintf("v2-project-template-%s-%t", kind, malformed))
+				namespace := createV2ExecNamespace(t, ctx, client, fmt.Sprintf("v2-project-template-%s-%t", kind, malformed))
 				arguments := []string{`{{portFor "absent"}}`}
 				if malformed {
 					arguments = []string{"{{"}
@@ -619,32 +615,32 @@ func TestV2ProjectTemplatePreparationFailures(t *testing.T) {
 				} else {
 					resource.Spec.Container.Ports = nil
 				}
-				require.NoError(t, server.Client.Create(ctx, resource))
+				require.NoError(t, client.Create(ctx, resource))
 				expected := apiv2.ProjectPhasePending
 				expectedReason := apiv2.ProjectReasonPreparing
 				if malformed {
 					expected = apiv2.ProjectPhaseFailed
 					expectedReason = apiv2.ProjectReasonPreparationFailed
 				}
-				waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+				waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 					return current.Status.Phase == expected && len(current.Status.Conditions) != 0 &&
 						current.Status.Conditions[0].Reason == string(expectedReason) &&
 						current.Status.Conditions[0].Message != "", nil
 				})
 				if malformed {
-					require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-					waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
+					require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+					waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.Project) (bool, error) {
 						return current.Status.Phase == apiv2.ProjectPhaseFailed && current.Spec.Stop &&
 							current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
 					})
 				} else {
 					service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "absent", Namespace: namespace.Name},
 						Spec: apiv2.LogicalServiceSpec{Address: "127.0.0.1"}}
-					require.NoError(t, server.Client.Create(ctx, service))
-					waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
+					require.NoError(t, client.Create(ctx, service))
+					waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
 				}
-				require.NoError(t, server.Client.Delete(ctx, resource))
-				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+				require.NoError(t, client.Delete(ctx, resource))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
 			})
 		}
 	}
@@ -758,9 +754,7 @@ func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
-			server, _, startupErr := StartTestEnvironment(t, ctx, projectTestControllers, t.Name(), t.TempDir())
-			require.NoError(t, startupErr)
-			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-adapter-directory-"+scenario)
+			namespace := createV2ExecNamespace(t, ctx, client, "v2-project-adapter-directory-"+scenario)
 			source := t.TempDir()
 			require.NoError(t, usvc_io.WriteFile(filepath.Join(source, "dependency.dll"), []byte("dependency"), 0644))
 			require.NoError(t, usvc_io.WriteFile(filepath.Join(source, "adapter"), []byte("binary"), 0644))
@@ -782,12 +776,12 @@ func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 			} else if scenario == "missing-executable" {
 				project.Spec.DebugAdapter.ExecutableFiles = []string{"missing"}
 			}
-			require.NoError(t, server.Client.Create(ctx, project))
+			require.NoError(t, client.Create(ctx, project))
 			expectedPhase := apiv2.ProjectPhaseReady
 			if scenario == "missing" || scenario == "missing-executable" {
 				expectedPhase = apiv2.ProjectPhaseFailed
 			}
-			observed := waitProjectPhase(t, ctx, server.Client, project, expectedPhase)
+			observed := waitProjectPhase(t, ctx, client, project, expectedPhase)
 			require.Nil(t, observed.Status.Debug)
 			if scenario == "missing" || scenario == "missing-executable" {
 				requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
@@ -798,7 +792,7 @@ func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 				}
 			} else {
 				physical := &apiv2.PhysicalContainer{}
-				require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKey{Namespace: project.Namespace, Name: observed.Status.PhysicalContainerRef}, physical))
+				require.NoError(t, client.Get(ctx, ctrl_client.ObjectKey{Namespace: project.Namespace, Name: observed.Status.PhysicalContainerRef}, physical))
 				require.Empty(t, physical.Spec.Container.CreateFiles)
 				require.Len(t, physical.Spec.Container.CopyFiles, 1)
 				require.Equal(t, source, physical.Spec.Container.CopyFiles[0].Directory)
@@ -807,8 +801,8 @@ func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 				require.Empty(t, physical.Spec.Container.CopyFiles[0].Source)
 				require.False(t, physical.Spec.Container.CopyFiles[0].DeleteAfterCopy)
 				require.DirExists(t, source)
-				orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
-				copied, copiedErr := orchestrator.GetCreatedFiles(observed.Status.ContainerID)
+
+				copied, copiedErr := containerOrchestrator.GetCreatedFiles(observed.Status.ContainerID)
 				require.NoError(t, copiedErr)
 				require.Len(t, copied, 1)
 				reader := tar.NewReader(bytes.NewReader(copied[0].Tar.Bytes()))
@@ -836,8 +830,8 @@ func TestV2ProjectContainerAdapterDirectoryPreparation(t *testing.T) {
 					require.True(t, foundExecutable)
 				}
 			}
-			require.NoError(t, server.Client.Delete(ctx, project))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
+			require.NoError(t, client.Delete(ctx, project))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, project)
 		})
 	}
 }

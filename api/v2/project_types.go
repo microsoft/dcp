@@ -313,6 +313,8 @@ type ProjectDebugSessionProgress struct {
 	InitializeRequested bool `json:"initializeRequested,omitempty"`
 	// LaunchRequested records a client launch request, not successful target startup.
 	LaunchRequested bool `json:"launchRequested,omitempty"`
+	// LaunchSucceeded records the adapter's successful launch response; adapters may omit initialized for launch.noDebug.
+	LaunchSucceeded bool `json:"launchSucceeded,omitempty"`
 	// AttachRequested records a client attach request, not successful target attachment.
 	AttachRequested bool `json:"attachRequested,omitempty"`
 	// AdapterInitialized records the adapter's initialized event.

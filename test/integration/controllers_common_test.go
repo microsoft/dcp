@@ -59,6 +59,7 @@ var (
 	ideRunner                        *ctrl_testutil.TestIdeRunner
 	client                           ctrl_client.Client
 	restClient                       *clientgorest.RESTClient
+	clientConfig                     *clientgorest.Config
 	containerOrchestrator            *ctrl_testutil.TestContainerOrchestrator
 	testStateStore                   *statestore.Store
 	testResourceLeaseOwner           process.ProcessHandle
@@ -136,6 +137,7 @@ func TestMain(m *testing.M) {
 	log := teInfo.Log
 	client = serverInfo.Client
 	restClient = serverInfo.RestClient
+	clientConfig = serverInfo.ClientConfig
 	containerOrchestrator = serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	testProcessExecutor = teInfo.TestProcessExecutor
 	testProcessExecutableRunner = teInfo.TestProcessExecutableRunner
