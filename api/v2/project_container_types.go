@@ -8,6 +8,8 @@ package v2
 import (
 	"context"
 	"fmt"
+	"path"
+	"strings"
 
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -28,6 +30,21 @@ type ProjectContainerSpec struct {
 	Container ProjectContainerTemplate `json:"container"`
 	// DebugAdapter declares the required adapter; configuration alone does not launch it.
 	DebugAdapter *ContainerDebugAdapterConfig `json:"debugAdapter"`
+	// Source declares where the Project source lives inside the container and optionally binds it from rootDirectory.
+	// When omitted, the source location is unknown to DCP and {{sourceDirectory}} cannot be used.
+	Source *ProjectContainerSource `json:"source,omitempty"`
+}
+
+// ProjectContainerSource locates the Project source inside the container, provided by the image or bound from the host.
+// +k8s:openapi-gen=true
+type ProjectContainerSource struct {
+	// ContainerDirectory is the absolute container path holding the source.
+	ContainerDirectory string `json:"containerDirectory"`
+	// Bind mounts rootDirectory at containerDirectory. When false, the image is expected to provide the source.
+	// A bind mount hides anything the image placed at that path, including installed dependencies or build output.
+	Bind bool `json:"bind,omitempty"`
+	// ReadOnly makes the bind mount read-only. It requires bind.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // ProjectContainerStatus describes the container, launch inputs, execution and debugging progress.
@@ -121,6 +138,22 @@ func (resource *ProjectContainer) GetDebugAdapter() *DebugAdapterConfig {
 	return &resource.Spec.DebugAdapter.DebugAdapterConfig
 }
 
+// GetDebugAdapterArgs resolves directory references against the installed adapter directory and source.containerDirectory.
+func (resource *ProjectContainer) GetDebugAdapterArgs() []string {
+	if resource.Spec.DebugAdapter == nil {
+		return nil
+	}
+	return expandDebugAdapterArgs(resource.Spec.DebugAdapter.Args, resource.Spec.DebugAdapter.GetContainerDirectory(), resource.GetSourceDirectory())
+}
+
+// GetSourceDirectory returns source.containerDirectory, or empty when the container declares no source.
+func (resource *ProjectContainer) GetSourceDirectory() string {
+	if resource.Spec.Source == nil {
+		return ""
+	}
+	return resource.Spec.Source.ContainerDirectory
+}
+
 func (resource *ProjectContainer) GetObjectMeta() *metav1.ObjectMeta { return &resource.ObjectMeta }
 func (resource *ProjectContainer) GetStatus() apiserver_resource.StatusSubResource {
 	return resource.Status
@@ -148,7 +181,57 @@ func (resource *ProjectContainer) Validate(context.Context) field.ErrorList {
 	} else {
 		errorList = append(errorList, resource.Spec.DebugAdapter.validate(specPath.Child("debugAdapter"))...)
 	}
+	errorList = append(errorList, resource.validateSource(specPath)...)
 	return errorList
+}
+
+// validateSource checks the source location and, for bind mounts, rejects declared mounts or the adapter installation
+// overlapping it, so DCP never decides which one shadows the other.
+func (resource *ProjectContainer) validateSource(specPath *field.Path) field.ErrorList {
+	var errorList field.ErrorList
+	source := resource.Spec.Source
+	if source == nil {
+		if resource.Spec.DebugAdapter != nil {
+			for index, argument := range resource.Spec.DebugAdapter.Args {
+				if strings.Contains(argument, "{{sourceDirectory}}") {
+					errorList = append(errorList, field.Invalid(specPath.Child("debugAdapter", "args").Index(index), argument,
+						"{{sourceDirectory}} requires spec.source"))
+				}
+			}
+		}
+		return errorList
+	}
+	sourcePath := specPath.Child("source")
+	if !path.IsAbs(source.ContainerDirectory) || strings.ContainsRune(source.ContainerDirectory, '\x00') {
+		return append(errorList, field.Invalid(sourcePath.Child("containerDirectory"), source.ContainerDirectory,
+			"containerDirectory must be an absolute container path"))
+	}
+	if source.ReadOnly && !source.Bind {
+		errorList = append(errorList, field.Forbidden(sourcePath.Child("readOnly"), "readOnly requires bind"))
+	}
+	if !source.Bind {
+		return errorList
+	}
+	for index, mount := range resource.Spec.Container.VolumeMounts {
+		if containerPathsOverlap(source.ContainerDirectory, mount.Target) {
+			errorList = append(errorList, field.Invalid(specPath.Child("container", "volumeMounts").Index(index).Child("target"), mount.Target,
+				"volume mount target overlaps the bound source directory"))
+		}
+	}
+	if resource.Spec.DebugAdapter != nil && containerPathsOverlap(source.ContainerDirectory, resource.Spec.DebugAdapter.GetContainerDirectory()) {
+		errorList = append(errorList, field.Invalid(sourcePath.Child("containerDirectory"), source.ContainerDirectory,
+			"the bound source directory overlaps the debug adapter installation directory"))
+	}
+	return errorList
+}
+
+// containerPathsOverlap reports whether two absolute container paths are equal or one contains the other.
+func containerPathsOverlap(first, second string) bool {
+	first, second = path.Clean(first), path.Clean(second)
+	if first == second || first == "/" || second == "/" {
+		return true
+	}
+	return strings.HasPrefix(second, first+"/") || strings.HasPrefix(first, second+"/")
 }
 
 func (resource *ProjectContainer) ValidateUpdate(_ context.Context, old runtime.Object) field.ErrorList {

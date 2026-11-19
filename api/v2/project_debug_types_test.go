@@ -17,17 +17,21 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
-// Verifies that adapter-directory substitution selects the host directory or container installation
-// directory, preserves unrelated placeholders, and supports interpreter-based command vectors.
+// Verifies that GetDebugAdapterArgs resolves {{adapterDirectory}} to the host directory or container installation
+// directory and {{sourceDirectory}} to rootDirectory or source.containerDirectory, preserving unrelated placeholders.
 func TestDebugAdapterDirectoryArguments(t *testing.T) {
 	t.Parallel()
-	directory := t.TempDir()
-	config := DebugAdapterConfig{Directory: directory, Args: []string{"node", "{{adapterDirectory}}/out/adapter.js", "--port={{port}}"}}
-	require.Equal(t, []string{"node", directory + "/out/adapter.js", "--port={{port}}"}, config.GetArgs())
-	containerConfig := ContainerDebugAdapterConfig{DebugAdapterConfig: config}
-	require.Equal(t, []string{"node", "/opt/dcp/debug-adapter/out/adapter.js", "--port={{port}}"}, containerConfig.GetArgs())
-	containerConfig.ContainerDirectory = "/custom"
-	require.Equal(t, []string{"node", "/custom/out/adapter.js", "--port={{port}}"}, containerConfig.GetArgs())
+	directory, root := t.TempDir(), t.TempDir()
+	config := DebugAdapterConfig{Directory: directory,
+		Args: []string{"node", "{{adapterDirectory}}/out/adapter.js", "--port={{port}}", "--cwd={{sourceDirectory}}"}}
+	process := &ProjectProcess{Spec: ProjectProcessSpec{ProjectCommonSpec: ProjectCommonSpec{RootDirectory: root}, DebugAdapter: &config}}
+	require.Equal(t, []string{"node", directory + "/out/adapter.js", "--port={{port}}", "--cwd=" + root}, process.GetDebugAdapterArgs())
+	require.Equal(t, root, process.GetSourceDirectory())
+	container := &ProjectContainer{Spec: ProjectContainerSpec{ProjectCommonSpec: ProjectCommonSpec{RootDirectory: root},
+		DebugAdapter: &ContainerDebugAdapterConfig{DebugAdapterConfig: config}, Source: &ProjectContainerSource{ContainerDirectory: "/app"}}}
+	require.Equal(t, []string{"node", "/opt/dcp/debug-adapter/out/adapter.js", "--port={{port}}", "--cwd=/app"}, container.GetDebugAdapterArgs())
+	container.Spec.DebugAdapter.ContainerDirectory = "/custom"
+	require.Equal(t, []string{"node", "/custom/out/adapter.js", "--port={{port}}", "--cwd=/app"}, container.GetDebugAdapterArgs())
 	require.Equal(t, "{{adapterDirectory}}/out/adapter.js", config.Args[1])
 }
 

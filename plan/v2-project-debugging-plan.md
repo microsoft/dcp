@@ -5,7 +5,7 @@ This document tracks decisions and bounded tasks for extending Project with debu
 ## Current baseline
 
 - [x] Project is split into `ProjectProcess` and `ProjectContainer` kinds, each requiring its own launch configuration and exposing its own `debug` subresource. "Process Projects" and "container Projects" below refer to these kinds.
-- [x] Source root is configured independently of execution working directory. It does not implicitly change paths or add source mounts.
+- [x] Source root is configured independently of execution working directory and does not implicitly change paths. Container Projects locate their source with `source` and bind it only on request (D65).
 - [x] Preparation includes lifecycle projection, stop, deletion, namespace cleanup, owned startup/context logs, and ambiguous container-create recovery.
 - [x] Align initial execution with the existing V2 logical lifecycle patterns.
 - [x] Direct application launch uses an owned PhysicalProcess or PhysicalContainer without requiring a debug connection; adapter-driven launch remains the default.
@@ -225,6 +225,7 @@ This substantiates independent container preparation plus per-session adapter ex
 | D62 | Only two launch modes: `adapter` and `direct`. In adapter mode the client primes the adapter-initiated launch, including any `noDebug` request; DCP does not distinguish debugging from no-debug launches. | Adapter-mode container Projects create their PhysicalContainer with the adapter command as entrypoint and `start: false` once the Project starts, regardless of stdio or TCP transport. The first debug session starts the container attached to that adapter; later stdio sessions exec additional adapters, TCP sessions share the primary provider, and the container exits with its primary adapter. Direct-mode containers run the application as primary process and every adapter session execs beside it. Attached start uses `container start --attach` on every runtime; WSLC relays stdin according to the container's creation flags (`--interactive` from `openStdin`), since its start-time `--interactive` is not implemented. |
 | D63 | `debugAdapter` is required on both Project kinds. | An adapter-mode Project has no other way to launch, and direct-mode Projects use it for later attachment. |
 | D64 | In direct mode, reject a `launch` request that precedes the session's first `attach`, because the application is already running. | The bridge answers it with a failed DAP response naming `attach`, does not forward it, records the rejection in session progress, and keeps the session open. Requests after an `attach` and all adapter-mode requests are forwarded unchanged. |
+| D65 | Container Projects may declare `source.containerDirectory`, the source location inside the container, and optionally `source.bind` it from `rootDirectory` (read-only on request). | The image is expected to provide the source otherwise, for example through an inline image build; image layers are not used because mounts shadow them. `{{sourceDirectory}}` in adapter args and `status.sourceDirectory` resolve to `rootDirectory` for processes and `containerDirectory` for containers, giving adapter configuration one reference for both. Admission rejects `{{sourceDirectory}}` without `source`, `readOnly` without `bind`, and bound sources overlapping declared mount targets or the adapter installation. A bind hides image content at that path; DCP does not compensate. |
 
 ### Shared API-owned runtime state
 
@@ -623,7 +624,6 @@ The initial non-terminal contracts in O1-O7, O12 and O13 are implemented as desc
 | O10 | Define terminal/log stream ownership, stdout/stderr behavior under PTY, endpoint projection, reconnect and final drain for adapter and target separately. | T2, T3, T7, T8 |
 | O11 | Determine container target identity and DCP-owned terminal target realization without treating adapter-reported targets as cleanup-owned under D55. | T7 |
 | O14 | Specify terminal launch requests and realization outcomes, validation, admission/cancellation races, physical target identity and terminal status. Preserve individual results without reinstating the aggregate Project result superseded by D37. | T7 |
-| O17 | Decide whether automatic source mounts are needed and, if so, their paths, precedence, access and portability semantics. `rootDirectory` alone does not create a mount. | Source mount follow-up |
 | O18 | Assess container TCP-callback reachability and listener ownership before adding that transport; host TCP-callback and container TCP-connect are distinct existing paths. | Container TCP-callback follow-up |
 
 ## Task tracker

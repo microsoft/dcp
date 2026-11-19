@@ -476,6 +476,11 @@ func (in ProjectContainerList) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ProjectContainerSource) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ProjectContainerSource"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ProjectContainerSpec) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.ProjectContainerSpec"
 }

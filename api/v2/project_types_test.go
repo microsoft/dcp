@@ -188,3 +188,48 @@ func TestProjectTemplatePorts(t *testing.T) {
 	require.NotEmpty(t, clonedContainer.ValidateUpdate(context.Background(), container))
 	require.Equal(t, "front", container.Spec.Container.Ports[0].Service.Name)
 }
+
+// Verifies that ProjectContainer requires an absolute source containerDirectory, restricts readOnly to binds,
+// rejects bound sources overlapping declared mounts or the adapter installation, and requires source for {{sourceDirectory}}.
+func TestProjectContainerSourceValidate(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, testCase := range []struct {
+		name    string
+		source  *ProjectContainerSource
+		mounts  []VolumeMount
+		args    []string
+		invalid string
+	}{
+		{name: "image-provided", source: &ProjectContainerSource{ContainerDirectory: "/app"}},
+		{name: "bind", source: &ProjectContainerSource{ContainerDirectory: "/app", Bind: true, ReadOnly: true}},
+		{name: "relative", source: &ProjectContainerSource{ContainerDirectory: "app"}, invalid: "spec.source.containerDirectory"},
+		{name: "read-only-without-bind", source: &ProjectContainerSource{ContainerDirectory: "/app", ReadOnly: true}, invalid: "spec.source.readOnly"},
+		{name: "bind-overlaps-mount", source: &ProjectContainerSource{ContainerDirectory: "/app", Bind: true},
+			mounts: []VolumeMount{{Type: NamedVolumeMount, VolumeRef: "data", Target: "/app/data"}}, invalid: "spec.container.volumeMounts[0].target"},
+		{name: "unbound-allows-mount", source: &ProjectContainerSource{ContainerDirectory: "/app"},
+			mounts: []VolumeMount{{Type: NamedVolumeMount, VolumeRef: "data", Target: "/app/data"}}},
+		{name: "bind-overlaps-adapter", source: &ProjectContainerSource{ContainerDirectory: "/opt/dcp", Bind: true}, invalid: "spec.source.containerDirectory"},
+		{name: "source-reference-without-source", args: []string{"adapter", "{{sourceDirectory}}"}, invalid: "spec.debugAdapter.args[1]"},
+		{name: "source-reference", source: &ProjectContainerSource{ContainerDirectory: "/app"}, args: []string{"adapter", "{{sourceDirectory}}"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			args := testCase.args
+			if args == nil {
+				args = []string{"adapter"}
+			}
+			resource := &ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "test"}, Spec: ProjectContainerSpec{
+				ProjectCommonSpec: ProjectCommonSpec{RootDirectory: root},
+				Container:         ProjectContainerTemplate{LogicalContainerConfig: LogicalContainerConfig{ImageRef: "image", VolumeMounts: testCase.mounts}},
+				DebugAdapter:      &ContainerDebugAdapterConfig{DebugAdapterConfig: DebugAdapterConfig{Directory: root, Args: args}},
+				Source:            testCase.source,
+			}}
+			errorList := resource.Validate(context.Background())
+			if testCase.invalid == "" {
+				require.Empty(t, errorList)
+			} else {
+				require.ErrorContains(t, errorList.ToAggregate(), testCase.invalid)
+			}
+		})
+	}
+}

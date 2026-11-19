@@ -86,7 +86,8 @@ type DebugAdapterConfig struct {
 	Directory string `json:"directory"`
 	// Args contains the executable name or path followed by its arguments.
 	// TCP modes replace {{port}} with the selected listening port.
-	// {{adapterDirectory}} expands to the adapter directory in the execution context.
+	// {{adapterDirectory}} expands to the adapter directory in the execution context, and {{sourceDirectory}}
+	// to the Project source directory there: rootDirectory for processes, source.containerDirectory for containers.
 	// +listType=atomic
 	Args []string `json:"args"`
 	// Mode selects the adapter DAP transport. Defaults to stdio.
@@ -125,11 +126,6 @@ type DebugAdapterTCPConfig struct {
 	Port int32 `json:"port,omitempty"`
 }
 
-// GetArgs resolves adapter-directory references to Directory without interpreting other argument contents.
-func (config DebugAdapterConfig) GetArgs() []string {
-	return expandAdapterDirectory(config.Args, config.Directory)
-}
-
 // EffectiveMode returns the declared transport, defaulting to stdio when omitted.
 func (config DebugAdapterConfig) EffectiveMode() DebugAdapterMode {
 	if config.Mode == "" {
@@ -165,15 +161,16 @@ func (config ContainerDebugAdapterConfig) GetContainerDirectory() string {
 	return DefaultContainerDebugAdapterDirectory
 }
 
-// GetArgs resolves adapter-directory references to the container installation directory.
-func (config ContainerDebugAdapterConfig) GetArgs() []string {
-	return expandAdapterDirectory(config.Args, config.GetContainerDirectory())
-}
-
-func expandAdapterDirectory(args []string, directory string) []string {
+// expandDebugAdapterArgs resolves adapter- and source-directory references without interpreting other argument contents.
+// An empty sourceDirectory leaves {{sourceDirectory}} unexpanded; admission rejects it where no source directory is declared.
+func expandDebugAdapterArgs(args []string, adapterDirectory, sourceDirectory string) []string {
 	arguments := make([]string, len(args))
 	for index, argument := range args {
-		arguments[index] = strings.ReplaceAll(argument, "{{adapterDirectory}}", directory)
+		argument = strings.ReplaceAll(argument, "{{adapterDirectory}}", adapterDirectory)
+		if sourceDirectory != "" {
+			argument = strings.ReplaceAll(argument, "{{sourceDirectory}}", sourceDirectory)
+		}
+		arguments[index] = argument
 	}
 	return arguments
 }
@@ -443,8 +440,8 @@ const (
 // ProjectCommonSpec contains source configuration and lifecycle requests shared by Project kinds.
 // +k8s:openapi-gen=true
 type ProjectCommonSpec struct {
-	// RootDirectory is an absolute source directory on the DCP host. It is informational:
-	// it does not default working directories, resolve paths, or create container mounts.
+	// RootDirectory is an absolute source directory on the DCP host. It does not default working directories or
+	// resolve paths; a ProjectContainer mounts it only when source.bind is set.
 	RootDirectory string `json:"rootDirectory"`
 	// LaunchMode selects adapter-driven application launch or direct execution of the application template.
 	// Defaults to adapter. Direct execution does not require an adapter or a debug connection.
@@ -508,6 +505,9 @@ type ProjectCommonStatus struct {
 	ExitCode *int32 `json:"exitCode,omitempty"`
 	// RuntimeLogs describes capture owned by the immediate physical execution.
 	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
+	// SourceDirectory is the Project source directory in the execution context: rootDirectory for processes,
+	// source.containerDirectory for containers, and absent when a container declares no source.
+	SourceDirectory string `json:"sourceDirectory,omitempty"`
 	// Conditions describe readiness and reconciliation progress.
 	// +listType=map
 	// +listMapKey=type
@@ -528,6 +528,10 @@ type ProjectObject interface {
 	GetProjectStatus() *ProjectCommonStatus
 	// GetDebugAdapter returns the execution-independent adapter configuration, or nil when none is declared.
 	GetDebugAdapter() *DebugAdapterConfig
+	// GetDebugAdapterArgs returns the adapter arguments with directory references resolved for the execution context.
+	GetDebugAdapterArgs() []string
+	// GetSourceDirectory returns the source directory in the execution context, or empty when none is declared.
+	GetSourceDirectory() string
 }
 
 // ProjectLogResource registers Project output and system log storage.

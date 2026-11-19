@@ -96,6 +96,19 @@ func (resource *ProjectProcess) GetDebugAdapter() *DebugAdapterConfig {
 	return resource.Spec.DebugAdapter
 }
 
+// GetDebugAdapterArgs resolves directory references against the host adapter directory and rootDirectory.
+func (resource *ProjectProcess) GetDebugAdapterArgs() []string {
+	if resource.Spec.DebugAdapter == nil {
+		return nil
+	}
+	return expandDebugAdapterArgs(resource.Spec.DebugAdapter.Args, resource.Spec.DebugAdapter.Directory, resource.Spec.RootDirectory)
+}
+
+// GetSourceDirectory returns rootDirectory, where a host process sees its source.
+func (resource *ProjectProcess) GetSourceDirectory() string {
+	return resource.Spec.RootDirectory
+}
+
 func (resource *ProjectProcess) GetObjectMeta() *metav1.ObjectMeta { return &resource.ObjectMeta }
 func (resource *ProjectProcess) GetStatus() apiserver_resource.StatusSubResource {
 	return resource.Status

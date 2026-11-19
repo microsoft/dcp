@@ -276,7 +276,7 @@ func (runtime *projectDebugRuntime) launch(
 	if !directoryInfo.IsDir() {
 		return fail(fmt.Errorf("adapter directory %q is not a directory", project.GetDebugAdapter().Directory))
 	}
-	args := project.GetDebugAdapter().GetArgs()
+	args := project.GetDebugAdapterArgs()
 	if mode != apiv2.DebugAdapterModeStdio {
 		port, portErr := networking.GetFreePort(commonapi.PortProtocolTCP, "127.0.0.1", runtime.log)
 		if portErr != nil {
@@ -449,7 +449,7 @@ func (runtime *projectDebugRuntime) launchContainer(
 	}
 	diagnostic := adapterDiagnosticWriter{log: runtime.log.WithValues(
 		logger.RESOURCE_LOG_STREAM_ID, project.GetResourceId(), "Project", project.NamespacedName(), "Execution", execution.status.ID)}
-	args := project.Spec.DebugAdapter.GetArgs()
+	args := project.GetDebugAdapterArgs()
 	adapterPort := project.Spec.DebugAdapter.GetTCPPort()
 	if adapterPort != 0 {
 		for index := range args {

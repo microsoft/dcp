@@ -83,9 +83,11 @@ func (data *projectContainerData) updateLifecycleFromContainer(resource *apiv2.P
 			return
 		}
 	case apiv2.PhysicalContainerPhasePending, "":
-		// The debug runtime starts an adapter-mode container when the first debug session is requested.
+		// The debug runtime starts an adapter-mode container when the first debug session is requested. CreatedAt is
+		// observed by the same inspection as the container environment, which the Ready Project publishes.
 		if condition != nil && condition.Reason == string(apiv2.PhysicalContainerReasonAwaitingStart) &&
-			resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeAdapter && physical.Status.ContainerID != "" {
+			resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeAdapter && physical.Status.ContainerID != "" &&
+			!physical.Status.CreatedAt.IsZero() {
 			data.markAdapterReady()
 			return
 		}

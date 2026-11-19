@@ -170,6 +170,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.ProjectCommonStatus{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ProjectCommonStatus(ref),
 		v2.ProjectContainer{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v2_ProjectContainer(ref),
 		v2.ProjectContainerList{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_ProjectContainerList(ref),
+		v2.ProjectContainerSource{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_ProjectContainerSource(ref),
 		v2.ProjectContainerSpec{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v2_ProjectContainerSpec(ref),
 		v2.ProjectContainerStatus{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_ProjectContainerStatus(ref),
 		v2.ProjectContainerTemplate{}.OpenAPIModelName():                schema_microsoft_dcp_api_v2_ProjectContainerTemplate(ref),
@@ -4544,7 +4545,7 @@ func schema_microsoft_dcp_api_v2_ContainerDebugAdapterConfig(ref common.Referenc
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Args contains the executable name or path followed by its arguments. TCP modes replace {{port}} with the selected listening port. {{adapterDirectory}} expands to the adapter directory in the execution context.",
+							Description: "Args contains the executable name or path followed by its arguments. TCP modes replace {{port}} with the selected listening port. {{adapterDirectory}} expands to the adapter directory in the execution context, and {{sourceDirectory}} to the Project source directory there: rootDirectory for processes, source.containerDirectory for containers.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -4959,7 +4960,7 @@ func schema_microsoft_dcp_api_v2_DebugAdapterConfig(ref common.ReferenceCallback
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Args contains the executable name or path followed by its arguments. TCP modes replace {{port}} with the selected listening port. {{adapterDirectory}} expands to the adapter directory in the execution context.",
+							Description: "Args contains the executable name or path followed by its arguments. TCP modes replace {{port}} with the selected listening port. {{adapterDirectory}} expands to the adapter directory in the execution context, and {{sourceDirectory}} to the Project source directory there: rootDirectory for processes, source.containerDirectory for containers.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -9463,7 +9464,7 @@ func schema_microsoft_dcp_api_v2_ProjectCommonSpec(ref common.ReferenceCallback)
 				Properties: map[string]spec.Schema{
 					"rootDirectory": {
 						SchemaProps: spec.SchemaProps{
-							Description: "RootDirectory is an absolute source directory on the DCP host. It is informational: it does not default working directories, resolve paths, or create container mounts.",
+							Description: "RootDirectory is an absolute source directory on the DCP host. It does not default working directories or resolve paths; a ProjectContainer mounts it only when source.bind is set.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -9597,6 +9598,13 @@ func schema_microsoft_dcp_api_v2_ProjectCommonStatus(ref common.ReferenceCallbac
 							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
 						},
 					},
+					"sourceDirectory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SourceDirectory is the Project source directory in the execution context: rootDirectory for processes, source.containerDirectory for containers, and absent when a container declares no source.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"conditions": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -9721,6 +9729,42 @@ func schema_microsoft_dcp_api_v2_ProjectContainerList(ref common.ReferenceCallba
 	}
 }
 
+func schema_microsoft_dcp_api_v2_ProjectContainerSource(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ProjectContainerSource locates the Project source inside the container, provided by the image or bound from the host.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"containerDirectory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerDirectory is the absolute container path holding the source.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"bind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Bind mounts rootDirectory at containerDirectory. When false, the image is expected to provide the source. A bind mount hides anything the image placed at that path, including installed dependencies or build output.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"readOnly": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ReadOnly makes the bind mount read-only. It requires bind.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"containerDirectory"},
+			},
+		},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_ProjectContainerSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -9730,7 +9774,7 @@ func schema_microsoft_dcp_api_v2_ProjectContainerSpec(ref common.ReferenceCallba
 				Properties: map[string]spec.Schema{
 					"rootDirectory": {
 						SchemaProps: spec.SchemaProps{
-							Description: "RootDirectory is an absolute source directory on the DCP host. It is informational: it does not default working directories, resolve paths, or create container mounts.",
+							Description: "RootDirectory is an absolute source directory on the DCP host. It does not default working directories or resolve paths; a ProjectContainer mounts it only when source.bind is set.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -9770,12 +9814,18 @@ func schema_microsoft_dcp_api_v2_ProjectContainerSpec(ref common.ReferenceCallba
 							Ref:         ref(v2.ContainerDebugAdapterConfig{}.OpenAPIModelName()),
 						},
 					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Source declares where the Project source lives inside the container and optionally binds it from rootDirectory. When omitted, the source location is unknown to DCP and {{sourceDirectory}} cannot be used.",
+							Ref:         ref(v2.ProjectContainerSource{}.OpenAPIModelName()),
+						},
+					},
 				},
 				Required: []string{"rootDirectory", "container", "debugAdapter"},
 			},
 		},
 		Dependencies: []string{
-			v2.ContainerDebugAdapterConfig{}.OpenAPIModelName(), v2.ProjectContainerTemplate{}.OpenAPIModelName()},
+			v2.ContainerDebugAdapterConfig{}.OpenAPIModelName(), v2.ProjectContainerSource{}.OpenAPIModelName(), v2.ProjectContainerTemplate{}.OpenAPIModelName()},
 	}
 }
 
@@ -9877,6 +9927,13 @@ func schema_microsoft_dcp_api_v2_ProjectContainerStatus(ref common.ReferenceCall
 						SchemaProps: spec.SchemaProps{
 							Description: "RuntimeLogs describes capture owned by the immediate physical execution.",
 							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
+						},
+					},
+					"sourceDirectory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SourceDirectory is the Project source directory in the execution context: rootDirectory for processes, source.containerDirectory for containers, and absent when a container declares no source.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"conditions": {
@@ -10782,7 +10839,7 @@ func schema_microsoft_dcp_api_v2_ProjectProcessSpec(ref common.ReferenceCallback
 				Properties: map[string]spec.Schema{
 					"rootDirectory": {
 						SchemaProps: spec.SchemaProps{
-							Description: "RootDirectory is an absolute source directory on the DCP host. It is informational: it does not default working directories, resolve paths, or create container mounts.",
+							Description: "RootDirectory is an absolute source directory on the DCP host. It does not default working directories or resolve paths; a ProjectContainer mounts it only when source.bind is set.",
 							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
@@ -10929,6 +10986,13 @@ func schema_microsoft_dcp_api_v2_ProjectProcessStatus(ref common.ReferenceCallba
 						SchemaProps: spec.SchemaProps{
 							Description: "RuntimeLogs describes capture owned by the immediate physical execution.",
 							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
+						},
+					},
+					"sourceDirectory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SourceDirectory is the Project source directory in the execution context: rootDirectory for processes, source.containerDirectory for containers, and absent when a container declares no source.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"conditions": {

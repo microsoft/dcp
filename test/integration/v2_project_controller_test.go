@@ -697,10 +697,12 @@ func TestV2ProjectProcessDebugAdapterConfigurationDoesNotLaunch(t *testing.T) {
 			},
 			func(changed *apiv2.ProjectProcess) { changed.Spec.DebugAdapter = nil },
 		} {
-			require.NoError(t, client.Get(ctx, resource.NamespacedName(), running))
-			changed := running.DeepCopy()
-			change(changed)
-			require.True(t, apierrors.IsInvalid(client.Update(ctx, changed)))
+			// Controller writes can race the read; only a validation failure is the outcome under test.
+			updateErr := retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.ProjectProcess) error {
+				change(current)
+				return client.Update(updateCtx, current)
+			})
+			require.True(t, apierrors.IsInvalid(updateErr), "%v", updateErr)
 		}
 		for _, patch := range []string{
 			`{"spec":{"debugAdapter":{"args":["other-adapter"]}}}`,
@@ -762,10 +764,12 @@ func TestV2ProjectContainerDebugAdapterConfigurationDoesNotLaunch(t *testing.T) 
 			},
 			func(changed *apiv2.ProjectContainer) { changed.Spec.DebugAdapter = nil },
 		} {
-			require.NoError(t, client.Get(ctx, resource.NamespacedName(), running))
-			changed := running.DeepCopy()
-			change(changed)
-			require.True(t, apierrors.IsInvalid(client.Update(ctx, changed)))
+			// Controller writes can race the read; only a validation failure is the outcome under test.
+			updateErr := retryOnConflict(ctx, resource.NamespacedName(), func(updateCtx context.Context, current *apiv2.ProjectContainer) error {
+				change(current)
+				return client.Update(updateCtx, current)
+			})
+			require.True(t, apierrors.IsInvalid(updateErr), "%v", updateErr)
 		}
 		for _, patch := range []string{
 			`{"spec":{"debugAdapter":{"args":["other-adapter"]}}}`,
@@ -1241,4 +1245,60 @@ func TestV2ProjectKindsWithSameNameReconcileIndependently(t *testing.T) {
 	require.Empty(t, testProcessExecutor.FindAll([]string{replacement.Spec.Process.ExecutablePath}, "", nil))
 	require.NoError(t, client.Delete(ctx, replacement))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, replacement)
+}
+
+// Verifies that ProjectContainer appends a bind mount for a bound source after declared mounts, leaves image-provided
+// source unmounted, expands {{sourceDirectory}} in the adapter entrypoint, and that both Project kinds publish
+// their source directory in status.
+func TestV2ProjectSourceDirectory(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"bind", "image"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			t.Cleanup(cancel)
+			namespace := createActiveV2Namespace(t, ctx, "v2-project-source-"+scenario)
+			root := t.TempDir()
+			declared := apiv2.VolumeMount{Type: apiv2.BindMount, Source: t.TempDir(), Target: "/assets", ReadOnly: true}
+			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: root},
+					Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+						Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, VolumeMounts: []apiv2.VolumeMount{declared},
+					}},
+					DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{
+						Directory: t.TempDir(), Args: []string{"adapter", "--source={{sourceDirectory}}"}}},
+					Source: &apiv2.ProjectContainerSource{ContainerDirectory: "/app", Bind: scenario == "bind", ReadOnly: scenario == "bind"},
+				}}
+			require.NoError(t, client.Create(ctx, resource))
+			prepared := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+			require.Equal(t, "/app", prepared.Status.SourceDirectory)
+			physical := &apiv2.PhysicalContainer{}
+			require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: prepared.Status.PhysicalContainerRef}, physical))
+			require.Equal(t, "adapter", physical.Spec.Container.Entrypoint)
+			require.Equal(t, []string{"--source=/app"}, physical.Spec.Container.Command)
+			expectedMounts := []apiv2.VolumeMount{declared}
+			if scenario == "bind" {
+				expectedMounts = append(expectedMounts, apiv2.VolumeMount{Type: apiv2.BindMount, Source: root, Target: "/app", ReadOnly: true})
+			}
+			require.Equal(t, expectedMounts, physical.Spec.Container.VolumeMounts)
+			require.NoError(t, client.Delete(ctx, resource))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+		})
+	}
+	t.Run("process", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+		t.Cleanup(cancel)
+		namespace := createActiveV2Namespace(t, ctx, "v2-project-source-process")
+		root := t.TempDir()
+		resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+			Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: root},
+				Process:      apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: namespace.Name + "-command"}},
+				DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}
+		require.NoError(t, client.Create(ctx, resource))
+		prepared := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseReady)
+		require.Equal(t, root, prepared.Status.SourceDirectory)
+		require.NoError(t, client.Delete(ctx, resource))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+	})
 }

@@ -951,7 +951,7 @@ func projectContainerSpec(resource *apiv2.ProjectContainer, data *projectContain
 	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeAdapter {
 		// The adapter is the container's primary process; the debug runtime starts the container attached to it.
 		adapter := resource.Spec.DebugAdapter
-		args := adapter.GetArgs()
+		args := resource.GetDebugAdapterArgs()
 		if port := adapter.GetTCPPort(); port != 0 {
 			for index := range args {
 				args[index] = strings.ReplaceAll(args[index], "{{port}}", strconv.Itoa(int(port)))
@@ -962,10 +962,16 @@ func projectContainerSpec(resource *apiv2.ProjectContainer, data *projectContain
 		openStdin = adapter.EffectiveMode() == apiv2.DebugAdapterModeStdio
 		start = new(bool)
 	}
+	volumeMounts := desired.VolumeMounts
+	if source := resource.Spec.Source; source != nil && source.Bind {
+		volumeMounts = append(slices.Clone(volumeMounts), apiv2.VolumeMount{
+			Type: apiv2.BindMount, Source: resource.Spec.RootDirectory, Target: source.ContainerDirectory, ReadOnly: source.ReadOnly,
+		})
+	}
 	return apiv2.PhysicalContainerSpec{Start: start, Stop: resource.Spec.Stop, Container: &apiv2.PhysicalContainerConfig{
 		ContainerName: projectContainerPhysicalName(resource), ImageRef: imageRef,
 		Entrypoint: entrypoint, Command: command, RunArgs: desired.RunArgs, Env: env,
-		Ports: physicalPorts, VolumeMounts: desired.VolumeMounts,
+		Ports: physicalPorts, VolumeMounts: volumeMounts,
 		CreateFiles: desired.CreateFiles, CopyFiles: copyFiles, Labels: labels, OpenStdin: openStdin,
 	}}
 }

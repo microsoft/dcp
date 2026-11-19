@@ -149,6 +149,7 @@ func (data *projectData) applyCommonTo(
 	}
 	change |= setTimestamp(&status.FinishedAt, data.finishedAt)
 	change |= setExitCode(&status.ExitCode, data.exitCode)
+	change |= setValue(&status.SourceDirectory, resource.GetSourceDirectory())
 	projectionChange, delay, valid := projectProjections.applyWithReason(
 		data.state, data.reason, data.message, &status.Phase, &status.Conditions, resource.GetGeneration())
 	if data.processPoll && projectionChange&additionalReconciliationNeeded == 0 {

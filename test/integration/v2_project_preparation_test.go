@@ -445,8 +445,8 @@ func TestV2ProjectContainerTerminalServicePreparation(t *testing.T) {
 
 }
 
-// Verifies that container TCP adapter ports are declared before creation with runtime-assigned
-// loopback bindings, published through ProjectContainer and rejected on TCP application-port conflicts.
+// Verifies that container TCP adapter ports are declared before creation, publish their runtime-assigned loopback
+// binding through ProjectContainer once the adapter container starts, and are rejected on TCP application-port conflicts.
 func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"default", "zero", "explicit", "tcp-conflict", "udp-coexist"} {
@@ -488,6 +488,11 @@ func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 			} else {
 				prepared := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
 				require.Equal(t, expectedPort, prepared.Status.DebugAdapterPort)
+				// Runtimes assign host bindings at start, which the first debug session performs.
+				startProjectContainerAdapter(t, ctx, client, containerOrchestrator, prepared)
+				prepared = waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
+					return current.Status.DebugAdapterAddress != "", nil
+				})
 				host, port, addressErr := net.SplitHostPort(prepared.Status.DebugAdapterAddress)
 				require.NoError(t, addressErr)
 				require.Equal(t, "127.0.0.1", host)
