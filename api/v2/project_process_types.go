@@ -27,8 +27,8 @@ type ProjectProcessSpec struct {
 	ProjectCommonSpec `json:",inline"`
 	// Process describes how to run the code as a host process.
 	Process ProjectProcessTemplate `json:"process"`
-	// DebugAdapter declares an adapter; configuration alone does not launch it.
-	DebugAdapter *DebugAdapterConfig `json:"debugAdapter,omitempty"`
+	// DebugAdapter declares the required adapter; configuration alone does not launch it.
+	DebugAdapter *DebugAdapterConfig `json:"debugAdapter"`
 }
 
 // ProjectProcessStatus describes process execution and debugging progress.
@@ -121,7 +121,9 @@ func (resource *ProjectProcess) Validate(context.Context) field.ErrorList {
 	}
 	errorList = append(errorList, validateLogicalProcessPorts(resource.Spec.Process.Ports, resource.Namespace, resource.Name, specPath.Child("process", "ports"))...)
 	errorList = append(errorList, resource.Spec.Process.AmbientEnvironment.validate(specPath.Child("process", "ambientEnvironment"))...)
-	if resource.Spec.DebugAdapter != nil {
+	if resource.Spec.DebugAdapter == nil {
+		errorList = append(errorList, field.Required(specPath.Child("debugAdapter"), "debugAdapter must be set"))
+	} else {
 		errorList = append(errorList, resource.Spec.DebugAdapter.validate(specPath.Child("debugAdapter"))...)
 	}
 	return errorList

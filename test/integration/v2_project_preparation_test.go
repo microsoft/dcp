@@ -43,7 +43,7 @@ func TestV2ProjectContainerPreparesImageBeforeNetworks(t *testing.T) {
 	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "v2-project-image-before-network"},
 		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "v2-project-image-before-network-image"},
 			Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "missing-network"}}},
-		}}}
+		}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}}
 	require.NoError(t, client.Create(ctx, resource))
 	pending := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhasePending)
 	require.Empty(t, pending.Status.ImageRef)
@@ -86,7 +86,7 @@ func TestV2ProjectContainerStopPreservesPreparedImageLifecycle(t *testing.T) {
 			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir(), Stop: !prepare}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: source},
 					Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "missing-network"}}},
-				}}}
+				}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}}
 			require.NoError(t, client.Create(ctx, resource))
 			if prepare {
 				waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
@@ -164,7 +164,7 @@ func TestV2ProjectContainerRejectedCreatePreservesPreparationState(t *testing.T)
 	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
 			LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}},
-		}}}
+		}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}}
 	require.NoError(t, server.Client.Create(ctx, resource))
 	select {
 	case <-rejectedCreate.entered:
@@ -216,7 +216,7 @@ func TestV2ProjectContainerResolvesNetworksAfterRejectedCreate(t *testing.T) {
 	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace},
 		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace + "-image"},
 			Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: network.Name}}},
-		}}}
+		}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}}
 	require.NoError(t, apiClient.Create(ctx, resource))
 	select {
 	case <-rejectedCreate.entered:
@@ -285,7 +285,7 @@ func TestV2ProjectContainerImageLogFailurePreservesExecutionState(t *testing.T) 
 			orchestrator, simulated := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 			require.True(t, simulated)
 			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace},
-				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace + "-image"}}}}}
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace + "-image"}}}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}}
 			if phase == apiv2.ProjectPhaseFailed {
 				orchestrator.FailNextPullImage(resource.Spec.Container.Image.Image, errors.New("injected terminal image failure"))
 				noRetries := int32(0)
@@ -316,7 +316,7 @@ func TestV2ProjectContainerOwnedImageDeletionPreservesLateStartupLogs(t *testing
 	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
 			Networks: []apiv2.LogicalContainerNetworkConnectionConfig{{NetworkRef: "missing"}}},
-		}}}
+		}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}}
 	require.NoError(t, client.Create(ctx, resource))
 	prepared := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		return current.Status.StartupLogs != nil && current.Status.StartupLogs.Complete, nil
@@ -351,7 +351,7 @@ func TestV2ProjectProcessTerminalServicePreparation(t *testing.T) {
 			namespace := createActiveV2Namespace(t, ctx, "v2-project-terminal-service-"+kind+"-"+source)
 			service, releaseService := createTerminatingPreparationService(t, ctx, namespace.Name)
 			resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}}}
+				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}
 			arguments := []string{`{{portFor "dependency"}}`}
 			binding := apiv2.LogicalServiceBinding{Name: "application", ServiceRef: service.Name}
 			if source == "port" {
@@ -405,7 +405,7 @@ func TestV2ProjectContainerTerminalServicePreparation(t *testing.T) {
 			namespace := createActiveV2Namespace(t, ctx, "v2-project-terminal-service-"+kind+"-"+source)
 			service, releaseService := createTerminatingPreparationService(t, ctx, namespace.Name)
 			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
-				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}}}
+				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}}
 			arguments := []string{`{{portFor "dependency"}}`}
 			binding := apiv2.LogicalServiceBinding{Name: "application", ServiceRef: service.Name}
 			if source == "port" {
@@ -449,20 +449,12 @@ func TestV2ProjectContainerTerminalServicePreparation(t *testing.T) {
 // loopback bindings, published through ProjectContainer and rejected on TCP application-port conflicts.
 func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"default", "zero", "explicit", "tcp-conflict", "udp-coexist", "pending-binding"} {
+	for _, scenario := range []string{"default", "zero", "explicit", "tcp-conflict", "udp-coexist"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
-			var mappingClient *projectAdapterMappingClient
-			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers|LogicalServiceController, t.Name(), t.TempDir(),
-				TestEnvironmentOptions{DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-					mappingClient = &projectAdapterMappingClient{Client: client}
-					mappingClient.hide.Store(scenario == "pending-binding")
-					return mappingClient
-				}})
-			require.NoError(t, startupErr)
-			namespace := createV2ExecNamespace(t, ctx, server.Client, "project-tcp-port-"+scenario)
+			namespace := createV2ExecNamespace(t, ctx, client, "project-tcp-port-"+scenario)
 			project := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
 					Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"},
@@ -487,26 +479,14 @@ func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 						Name: "application", LogicalServiceSpec: apiv2.LogicalServiceSpec{Protocol: protocol},
 					}}}}
 			}
-			require.NoError(t, server.Client.Create(ctx, project))
-			if scenario == "pending-binding" {
-				pending := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
-					return current.Status.ContainerID != "" && len(current.Status.Conditions) != 0 &&
-						current.Status.Conditions[0].Reason == string(apiv2.ProjectReasonPreparing) &&
-						strings.Contains(current.Status.Conditions[0].Message, "adapter port binding"), nil
-				})
-				require.Equal(t, apiv2.ProjectPhasePending, pending.Status.Phase)
-				require.Empty(t, pending.Status.DebugAdapterAddress)
-				mappingClient.hide.Store(false)
-				require.NoError(t, server.Client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType,
-					[]byte(`{"metadata":{"annotations":{"binding-visible":"true"}}}`))))
-			}
+			require.NoError(t, client.Create(ctx, project))
 			if scenario == "tcp-conflict" {
-				failed := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseFailed)
+				failed := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseFailed)
 				requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
 				require.Contains(t, failed.Status.Conditions[0].Message, "adapter port conflicts")
 				require.Empty(t, failed.Status.PhysicalContainerRef)
 			} else {
-				prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
+				prepared := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
 				require.Equal(t, expectedPort, prepared.Status.DebugAdapterPort)
 				host, port, addressErr := net.SplitHostPort(prepared.Status.DebugAdapterAddress)
 				require.NoError(t, addressErr)
@@ -515,7 +495,7 @@ func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 				require.NoError(t, portErr)
 				require.Positive(t, hostPort)
 				physical := &apiv2.PhysicalContainer{}
-				require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
+				require.NoError(t, client.Get(ctx, types.NamespacedName{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}, physical))
 				listener := physical.Spec.Container.Ports[len(physical.Spec.Container.Ports)-1]
 				require.Equal(t, expectedPort, listener.ContainerPort)
 				require.Zero(t, listener.HostPort)
@@ -523,31 +503,14 @@ func TestV2ProjectContainerAdapterTCPPreparation(t *testing.T) {
 				require.Equal(t, commonapi.PortProtocolTCP, listener.Protocol)
 				require.Nil(t, prepared.Status.Debug, "container preparation must not launch an adapter")
 			}
-			require.NoError(t, server.Client.Delete(ctx, project))
-			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
+			require.NoError(t, client.Delete(ctx, project))
+			ctrl_testutil.WaitObjectDeleted(t, ctx, client, project)
 		})
 	}
 }
 
-type projectAdapterMappingClient struct {
-	ctrl_client.Client
-	hide atomic.Bool
-}
-
-func (client *projectAdapterMappingClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
-	if listErr := client.Client.List(ctx, list, options...); listErr != nil {
-		return listErr
-	}
-	if physicals, valid := list.(*apiv2.PhysicalContainerList); valid && client.hide.Load() {
-		for index := range physicals.Items {
-			physicals.Items[index].Status.PortMappings = nil
-		}
-	}
-	return nil
-}
-
 func serviceProjectProcess(name, namespace, root string, arguments []string, environment []commonapi.EnvVar) *apiv2.ProjectProcess {
-	resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: root}}}
+	resource := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: root}, DebugAdapter: &apiv2.DebugAdapterConfig{Directory: root, Args: []string{"adapter"}}}}
 	binding := apiv2.LogicalServiceBinding{Name: "http", Service: &apiv2.LogicalServiceTemplate{
 		Name: "management", LogicalServiceSpec: apiv2.LogicalServiceSpec{Address: "127.0.0.1", Protocol: commonapi.PortProtocolUDP},
 	}}
@@ -562,7 +525,7 @@ func serviceProjectProcess(name, namespace, root string, arguments []string, env
 }
 
 func serviceProjectContainer(name, namespace, root string, arguments []string, environment []commonapi.EnvVar) *apiv2.ProjectContainer {
-	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: root}}}
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}, Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: root}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: root, Args: []string{"adapter"}}}}}
 	binding := apiv2.LogicalServiceBinding{Name: "http", Service: &apiv2.LogicalServiceTemplate{
 		Name: "management", LogicalServiceSpec: apiv2.LogicalServiceSpec{Address: "127.0.0.1", Protocol: commonapi.PortProtocolUDP},
 	}}
@@ -681,7 +644,8 @@ func TestV2ProjectContainerServicePortsAndEvaluatedValues(t *testing.T) {
 
 		physical := &apiv2.PhysicalContainer{}
 		require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalContainerRef}, physical))
-		require.Equal(t, []string{"-f", "/dev/null"}, physical.Spec.Container.Command)
+		require.Equal(t, "adapter", physical.Spec.Container.Entrypoint)
+		require.Empty(t, physical.Spec.Container.Command)
 		require.Equal(t, expectedEnv, physical.Spec.Container.Env)
 		require.Equal(t, int32(8080), physical.Spec.Container.Ports[0].ContainerPort)
 		require.Equal(t, commonapi.PortProtocolUDP, physical.Spec.Container.Ports[0].Protocol)
@@ -892,7 +856,7 @@ func TestV2ProjectContainerPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 			physical := &apiv2.PhysicalContainer{}
 			require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(backing), physical))
 			require.Equal(t, []string{"43210"}, running.Status.EffectiveArgs)
-			require.Equal(t, []string{"-f", "/dev/null"}, physical.Spec.Container.Command)
+			require.Equal(t, "adapter", physical.Spec.Container.Entrypoint)
 			simulated := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 			require.Equal(t, 1, simulated.CreateContainerCallCount(physical.Spec.Container.ContainerName))
 

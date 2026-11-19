@@ -86,6 +86,11 @@ func (in LogSource) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogStreams) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogStreams"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in LogicalContainer) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.LogicalContainer"
 }

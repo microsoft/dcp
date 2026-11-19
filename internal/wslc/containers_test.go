@@ -34,11 +34,25 @@ func TestCopyFilesArchive(t *testing.T) {
 // keeps stderr separate and retains its existing completion, cancellation and startup-failure behavior.
 func TestExecContainerStreams(t *testing.T) {
 	t.Parallel()
-	commandstreams.VerifyCommandStreams(t, []string{"wslc", "container", "exec"},
+	commandstreams.VerifyCommandStreams(t, []string{"wslc", "container", "exec"}, true, []string{"pinned-id", "adapter", "--flag"},
 		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
 			orchestrator := NewWslcCliOrchestrator(testr.New(t), executor)
 			return orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
 				Container: "pinned-id", Command: "adapter", Args: []string{"--flag"}, StdInStream: stdin,
+				StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
+			})
+		})
+}
+
+// Verifies that WSLC attached start relies on the container's creation flags rather than a start-time --interactive
+// option, forwards caller-owned stdin, keeps stderr separate, and reports completion, cancellation and startup failure.
+func TestStartAttachedContainerStreams(t *testing.T) {
+	t.Parallel()
+	commandstreams.VerifyCommandStreams(t, []string{"wslc", "container", "start", "--attach"}, false, []string{"pinned-id"},
+		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
+			orchestrator := NewWslcCliOrchestrator(testr.New(t), executor)
+			return orchestrator.StartAttachedContainer(ctx, containers.StartAttachedContainerOptions{
+				Container: "pinned-id", StdInStream: stdin,
 				StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
 			})
 		})

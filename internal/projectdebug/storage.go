@@ -331,11 +331,6 @@ func (storage *projectDebugStorage) monitor(
 				isReady = (currentStatus.Phase == apiv2.ProjectPhaseReady && condition.Reason == string(apiv2.ProjectReasonPrepared)) ||
 					(currentStatus.Phase == apiv2.ProjectPhaseActive && condition.Reason == string(apiv2.ProjectReasonDebugSessionsActive))
 			}
-			if container, isContainer := current.(*apiv2.ProjectContainer); isContainer &&
-				container.Spec.DebugAdapter != nil && container.Spec.DebugAdapter.GetTCPPort() != 0 &&
-				container.Status.DebugAdapterAddress == "" {
-				isReady = false
-			}
 		}
 		if isReady && !prepared {
 			prepared = true

@@ -219,7 +219,7 @@ func TestProjectDebugCompletionDoesNotWaitForForwarding(t *testing.T) {
 						startWait()
 						return exits, nil
 					}}
-					debugRuntime.findContainerRuntime = func(context.Context, string) (containers.ExecContainers, error) {
+					debugRuntime.findContainerRuntime = func(context.Context, string) (containerAdapterRuntime, error) {
 						return containerExec, nil
 					}
 				}

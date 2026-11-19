@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -49,7 +50,7 @@ type projectContainerDataHandlerFunc = stateInitializerFunc[
 var projectContainerDataHandlers = map[projectState]projectContainerDataHandlerFunc{
 	projectStatePending:       handleProjectContainerPending,
 	projectStateCreating:      handleProjectContainerCreating,
-	projectStateAwaitingStart: handleProjectContainerCreating,
+	projectStateAwaitingStart: handleProjectContainerAwaitingStart,
 	projectStateReady:         handleProjectContainerReady,
 	projectStateActive:        handleProjectContainerActive,
 	projectStateRunning:       handleProjectContainerRunning,
@@ -271,6 +272,10 @@ func handleProjectContainerPending(
 			}
 			return additionalReconciliationNeeded
 		}
+		if !resource.Spec.ShouldStart() {
+			data.state = projectStateAwaitingStart
+			return additionalReconciliationNeeded
+		}
 		image, imageErr := reconciler.ensureProjectPhysicalContainerImage(ctx, resource, data)
 		if imageErr != nil {
 			log.Error(imageErr, "Failed to prepare Project image")
@@ -315,6 +320,20 @@ func handleProjectContainerPending(
 	data.physicalUID, data.physicalName = backing.UID, backing.Name
 	data.state = projectStateCreating
 	return change | additionalReconciliationNeeded
+}
+
+func handleProjectContainerAwaitingStart(
+	_ context.Context, _ *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
+	_ projectState, data *projectContainerData, _ logr.Logger,
+) objectChange {
+	if resource.Spec.Stop && data.requestStop() {
+		return additionalReconciliationNeeded
+	}
+	if resource.Spec.ShouldStart() {
+		data.state = projectStatePending
+		return additionalReconciliationNeeded
+	}
+	return noChange
 }
 
 func (r *ProjectContainerReconciler) ensureProjectPhysicalContainerImage(ctx context.Context, resource *apiv2.ProjectContainer, data *projectContainerData) (*apiv2.PhysicalContainerImage, error) {
@@ -369,16 +388,6 @@ func handleProjectContainerCreating(
 	physical, change, getErr := reconciler.observeProjectContainer(ctx, resource, data)
 	if getErr != nil {
 		log.Error(getErr, "Failed to observe Project container preparation")
-		return change | additionalReconciliationNeeded
-	}
-	if resource.Spec.ShouldStart() && !physical.Spec.ShouldStart() &&
-		physical.Status.Phase != apiv2.PhysicalContainerPhaseExited && physical.Status.Phase != apiv2.PhysicalContainerPhaseFailed {
-		patch := ctrl_client.MergeFromWithOptions(physical.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
-		start := true
-		physical.Spec.Start = &start
-		if startErr := reconciler.Patch(ctx, physical, patch); startErr != nil {
-			log.Error(startErr, "Failed to request Project container start")
-		}
 		return change | additionalReconciliationNeeded
 	}
 	data.updateLifecycleFromContainer(resource, physical)
@@ -650,10 +659,8 @@ func (r *ProjectContainerReconciler) observeProjectContainer(
 	}
 	change |= setTimestamp(&resource.Status.CreatedAt, physical.Status.CreatedAt)
 	change |= setTimestamp(&resource.Status.StartedAt, physical.Status.StartedAt)
-	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
-		data.finishedAt = physical.Status.FinishedAt
-		data.exitCode = cloneInt32Pointer(physical.Status.ExitCode)
-	}
+	data.finishedAt = physical.Status.FinishedAt
+	data.exitCode = cloneInt32Pointer(physical.Status.ExitCode)
 	if !reflect.DeepEqual(resource.Status.PortMappings, physical.Status.PortMappings) {
 		resource.Status.PortMappings = slices.Clone(physical.Status.PortMappings)
 		change |= statusChanged
@@ -938,20 +945,28 @@ func projectContainerSpec(resource *apiv2.ProjectContainer, data *projectContain
 			ExecutableFiles: slices.Clone(resource.Spec.DebugAdapter.ExecutableFiles),
 		})
 	}
-	entrypoint, command := desired.Entrypoint, desired.Command
-	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeAdapter {
-		entrypoint, command = "tail", []string{"-f", "/dev/null"}
-	}
+	entrypoint, command, env := desired.Entrypoint, desired.Command, desired.Env
 	var start *bool
-	if resource.Spec.Start != nil {
-		value := *resource.Spec.Start
-		start = &value
+	openStdin := false
+	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeAdapter {
+		// The adapter is the container's primary process; the debug runtime starts the container attached to it.
+		adapter := resource.Spec.DebugAdapter
+		args := adapter.GetArgs()
+		if port := adapter.GetTCPPort(); port != 0 {
+			for index := range args {
+				args[index] = strings.ReplaceAll(args[index], "{{port}}", strconv.Itoa(int(port)))
+			}
+		}
+		entrypoint, command = args[0], args[1:]
+		env = append(slices.Clone(env), adapter.Env...)
+		openStdin = adapter.EffectiveMode() == apiv2.DebugAdapterModeStdio
+		start = new(bool)
 	}
 	return apiv2.PhysicalContainerSpec{Start: start, Stop: resource.Spec.Stop, Container: &apiv2.PhysicalContainerConfig{
 		ContainerName: projectContainerPhysicalName(resource), ImageRef: imageRef,
-		Entrypoint: entrypoint, Command: command, RunArgs: desired.RunArgs, Env: desired.Env,
+		Entrypoint: entrypoint, Command: command, RunArgs: desired.RunArgs, Env: env,
 		Ports: physicalPorts, VolumeMounts: desired.VolumeMounts,
-		CreateFiles: desired.CreateFiles, CopyFiles: copyFiles, Labels: labels,
+		CreateFiles: desired.CreateFiles, CopyFiles: copyFiles, Labels: labels, OpenStdin: openStdin,
 	}}
 }
 

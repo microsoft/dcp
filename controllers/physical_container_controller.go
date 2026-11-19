@@ -1131,6 +1131,7 @@ func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreate(
 		Networks:     networks,
 		Env:          containerConfig.Env,
 		Labels:       physicalContainerCreationLabels(containerSnapshot, log),
+		OpenStdin:    containerConfig.OpenStdin,
 	}
 	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
 		r.createPhysicalContainer(operationCtx, containerSnapshot, stateKey, dataSnapshot, createOptions, log)

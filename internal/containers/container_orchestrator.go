@@ -396,6 +396,9 @@ type CreateContainerOptions struct {
 	// AttachTerminal allocates a TTY and keeps standard input open for later attach operations.
 	AttachTerminal bool
 
+	// OpenStdin keeps standard input open without a TTY so a client starting the container can attach to it.
+	OpenStdin bool
+
 	// Networks to connect to _at creation time_, with optional per-network aliases.
 	// If not set, the container will be connected to the default network.
 	Networks []CreateContainerNetworkOptions
@@ -450,9 +453,24 @@ type StartContainersOptions struct {
 	StreamCommandOptions
 }
 
+// StartAttachedContainerOptions identifies a created container and the streams attached while it runs.
+type StartAttachedContainerOptions struct {
+	// The container to start (by name or ID)
+	Container string
+
+	// StdInStream is forwarded to the container's standard input; the container must have been created with OpenStdin.
+	StdInStream io.Reader
+
+	StreamCommandOptions
+}
+
 type StartContainers interface {
 	// Start one or more stopped containers. Returns list of started containers.
 	StartContainers(ctx context.Context, options StartContainersOptions) ([]string, error)
+
+	// StartAttachedContainer starts a created container without a TTY and keeps its standard streams attached.
+	// The returned channel reports the container exit code, or UnknownExitCode if the attachment ends without one.
+	StartAttachedContainer(ctx context.Context, options StartAttachedContainerOptions) (<-chan int32, error)
 }
 
 // RunContainer command types

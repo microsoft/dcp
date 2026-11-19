@@ -53,31 +53,12 @@ func (data *projectContainerData) updateLifecycleFromContainer(resource *apiv2.P
 	switch physical.Status.Phase {
 	case apiv2.PhysicalContainerPhaseRunning:
 		if condition != nil && condition.Status == metav1.ConditionTrue {
-			if !resource.Spec.ShouldStart() {
-				data.state, data.reason, data.message = projectStateAwaitingStart, "", ""
-				return
-			}
 			if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
 				data.prepared = true
 				data.state, data.reason, data.message = projectStateRunning, "", ""
 				return
 			}
-			if projectContainerAdapterPort(resource) != 0 && data.adapterAddress == "" {
-				data.state = projectStateUnknown
-				if !data.prepared {
-					data.state = projectStateCreating
-				}
-				data.reason, data.message = apiv2.ProjectReasonLookupFailed, "Waiting for the container adapter port binding."
-				if !data.prepared {
-					data.reason = apiv2.ProjectReasonPreparing
-				}
-				return
-			}
-			data.prepared = true
-			if data.state != projectStateActive {
-				data.state = projectStateReady
-			}
-			data.reason, data.message = "", ""
+			data.markAdapterReady()
 			return
 		}
 	case apiv2.PhysicalContainerPhasePaused:
@@ -85,8 +66,8 @@ func (data *projectContainerData) updateLifecycleFromContainer(resource *apiv2.P
 		data.state, data.reason, data.message = projectStatePaused, apiv2.ProjectReasonPaused, message
 		return
 	case apiv2.PhysicalContainerPhaseExited:
-		if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect &&
-			(condition == nil || condition.Reason != string(apiv2.PhysicalContainerReasonRuntimeContainerMissing)) {
+		// An adapter-mode container exits with its primary adapter, which ends the Project run.
+		if condition == nil || condition.Reason != string(apiv2.PhysicalContainerReasonRuntimeContainerMissing) {
 			data.prepared = true
 			data.state, data.reason, data.message = projectStateExited, apiv2.ProjectReasonCompleted, message
 			return
@@ -102,8 +83,10 @@ func (data *projectContainerData) updateLifecycleFromContainer(resource *apiv2.P
 			return
 		}
 	case apiv2.PhysicalContainerPhasePending, "":
-		if condition != nil && condition.Reason == string(apiv2.PhysicalContainerReasonAwaitingStart) && !resource.Spec.ShouldStart() {
-			data.state, data.reason, data.message = projectStateAwaitingStart, "", ""
+		// The debug runtime starts an adapter-mode container when the first debug session is requested.
+		if condition != nil && condition.Reason == string(apiv2.PhysicalContainerReasonAwaitingStart) &&
+			resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeAdapter && physical.Status.ContainerID != "" {
+			data.markAdapterReady()
 			return
 		}
 	default:
@@ -114,6 +97,14 @@ func (data *projectContainerData) updateLifecycleFromContainer(resource *apiv2.P
 	if !data.prepared {
 		data.state, data.reason = projectStateCreating, apiv2.ProjectReasonPreparing
 	}
+}
+
+func (data *projectContainerData) markAdapterReady() {
+	data.prepared = true
+	if data.state != projectStateActive {
+		data.state = projectStateReady
+	}
+	data.reason, data.message = "", ""
 }
 
 func (data *projectContainerData) applyTo(resource *apiv2.ProjectContainer) (objectChange, AdditionalReconciliationDelay, bool) {

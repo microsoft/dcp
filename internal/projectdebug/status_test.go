@@ -92,7 +92,7 @@ func TestProjectDebugStatusIsolatesWriterOwnership(t *testing.T) {
 	defer cancel()
 	apiClient, writer := startProjectDebugStatusServer(t, ctx)
 	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug-status"},
-		Spec:   apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}},
+		Spec:   apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}, DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}},
 		Status: apiv2.ProjectProcessStatus{ProjectCommonStatus: apiv2.ProjectCommonStatus{Debug: &apiv2.ProjectDebugStatus{Sessions: []apiv2.ProjectDebugSessionStatus{{ID: "forged"}}}}}}
 	require.NoError(t, apiClient.Create(ctx, project))
 	require.Nil(t, project.GetProjectStatus().Debug)
@@ -183,7 +183,7 @@ func TestProjectDebugStatusPublishesWatchEvents(t *testing.T) {
 	defer cancel()
 	apiClient, writer := startProjectDebugStatusServer(t, ctx)
 	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug-watch"},
-		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}, DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}
 	require.NoError(t, apiClient.Create(ctx, project))
 	watcher, watchErr := apiClient.Watch(ctx, &apiv2.ProjectProcessList{}, ctrlclient.InNamespace(project.Namespace))
 	require.NoError(t, watchErr)
@@ -214,7 +214,7 @@ func TestProjectDebugStatusConcurrentUpdates(t *testing.T) {
 	defer cancel()
 	apiClient, writer := startProjectDebugStatusServer(t, ctx)
 	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug-concurrent"},
-		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}, DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}
 	require.NoError(t, apiClient.Create(ctx, project))
 	const sessions = 12
 	outcomes := make(chan error, sessions+1)
@@ -259,7 +259,7 @@ func TestProjectDebugStatusDeletionAndReplacement(t *testing.T) {
 	defer cancel()
 	apiClient, writer := startProjectDebugStatusServer(t, ctx)
 	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "debug-delete", Finalizers: []string{"test/retain"}},
-		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}, DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}
 	require.NoError(t, apiClient.Create(ctx, project))
 	oldUID := project.UID
 	session := &apiv2.ProjectDebugSessionStatus{ID: "existing", Phase: apiv2.ProjectDebugPhaseRunning}

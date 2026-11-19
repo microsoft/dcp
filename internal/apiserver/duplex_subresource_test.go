@@ -156,7 +156,7 @@ func TestDuplexSubresourceWebSocketTransport(t *testing.T) {
 		<-stopped
 	})
 	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: "duplex"},
-		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}}}
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"}}, DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}
 	clientConfig := clientrest.CopyConfig(config.GenericConfig.LoopbackClientConfig)
 	apiClient, clientErr := ctrlclient.New(clientConfig, ctrlclient.Options{Scheme: dcpclient.NewScheme()})
 	require.NoError(t, clientErr)

@@ -240,6 +240,9 @@ type PhysicalContainerConfig struct {
 	// +listType=map
 	// +listMapKey=key
 	Labels []commonapi.Label `json:"labels,omitempty"`
+
+	// OpenStdin keeps standard input open without allocating a terminal, so the client that starts the container can attach to it.
+	OpenStdin bool `json:"openStdin,omitempty"`
 }
 
 // ShouldStart reports whether the controller should start the created container.

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -612,10 +613,9 @@ func TestProjectDebugServingCancelsPendingSession(t *testing.T) {
 	require.Empty(t, executor.FindAll([]string{"test-adapter"}, "", nil))
 }
 
-// Verifies that unconfigured Projects, stopping Projects,
-// and non-upgrade requests fail explicitly without creating adapter executions.
+// Verifies that stopping Projects and non-upgrade requests fail explicitly without creating adapter executions.
 func TestProjectDebugServingAdmission(t *testing.T) {
-	for _, scenario := range []string{"unconfigured", "stopping", "not-websocket"} {
+	for _, scenario := range []string{"stopping", "not-websocket"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, time.Minute)
 			defer cancel()
@@ -624,10 +624,7 @@ func TestProjectDebugServingAdmission(t *testing.T) {
 			require.NoError(t, apiClient.Delete(ctx, project))
 			project.ResourceVersion, project.UID = "", ""
 			project.Status = apiv2.ProjectProcessStatus{}
-			switch scenario {
-			case "unconfigured":
-				project.Spec.DebugAdapter = nil
-			case "stopping":
+			if scenario == "stopping" {
 				project.GetProjectSpec().Stop = true
 			}
 			require.NoError(t, apiClient.Create(ctx, project))
@@ -801,7 +798,7 @@ func (executor *adapterServingExecutor) CheckProcessRunning(handle process.Proce
 	return executor.TestProcessExecutor.CheckProcessRunning(handle)
 }
 
-func startDebugServingTest(t *testing.T, ctx context.Context, containerRuntime ...func(context.Context, string) (containers.ExecContainers, error)) (ctrlclient.WithWatch, *clientrest.Config, *adapterServingExecutor) {
+func startDebugServingTest(t *testing.T, ctx context.Context, containerRuntime ...func(context.Context, string) (containerAdapterRuntime, error)) (ctrlclient.WithWatch, *clientrest.Config, *adapterServingExecutor) {
 	t.Helper()
 	// Exit callbacks must remain deliverable while the server is performing shutdown cleanup.
 	executor := &adapterServingExecutor{TestProcessExecutor: internaltest.NewTestProcessExecutor(context.WithoutCancel(ctx)), stops: make(map[process.Pid_t]func())}
@@ -1225,69 +1222,119 @@ func TestProjectDebugServingLaunchFailure(t *testing.T) {
 	}))
 }
 
-// Verifies that an outstanding upgrade waits for Project to publish its TCP binding without
-// consuming setup timeout or mistaking initial endpoint publication for a replacement.
-func TestProjectDebugServingWaitsForContainerTCPEndpoint(t *testing.T) {
+// Verifies that ProjectDebugStorage refuses a TCP container adapter when the container is already running without a
+// claimed primary adapter, because only the attached primary start can bring up the shared TCP provider.
+func TestProjectDebugServingRejectsUnclaimedRunningTCPContainer(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, time.Minute)
 	defer cancel()
 	listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, listenErr)
 	defer listener.Close()
-	completion := make(chan int32, 1)
-	containerExec := &containerAdapterExecutor{tcpListener: listener, tcpComplete: completion}
+	containerExec := &containerAdapterExecutor{tcpListener: listener, tcpComplete: make(chan int32, 1)}
 	apiClient, config, _ := startDebugServingTest(t, ctx,
-		func(context.Context, string) (containers.ExecContainers, error) { return containerExec, nil })
+		func(context.Context, string) (containerAdapterRuntime, error) { return containerExec, nil })
 	project := createDebugServingContainerProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen")
-	type result struct {
-		connection *websocket.Conn
-		err        error
+	connection, connectErr := connectDebugServing(ctx, config, project)
+	if connection != nil {
+		_ = connection.Close()
 	}
-	connected := make(chan result, 1)
-	selected := project.DeepCopy()
-	go func() {
-		connection, connectErr := connectDebugServing(ctx, config, selected)
-		connected <- result{connection, connectErr}
-	}()
-	require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-		current := &apiv2.ProjectContainer{}
-		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
-			return false, getErr
-		}
-		return current.GetProjectStatus().Debug != nil && len(current.GetProjectStatus().Debug.Sessions) == 1, nil
-	}))
-	timer := time.NewTimer(200 * time.Millisecond)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-	case early := <-connected:
-		if early.connection != nil {
-			_ = early.connection.Close()
-		}
-		t.Fatalf("debug stream completed before TCP endpoint publication: %v", early.err)
-	case <-ctx.Done():
-		t.Fatal("test timed out before TCP endpoint publication")
-	}
+	require.ErrorContains(t, connectErr, `container status is "running"`)
+	require.Empty(t, containerExec.attachedStarts())
 	containerExec.mu.Lock()
-	count := len(containerExec.options)
+	defer containerExec.mu.Unlock()
+	require.Empty(t, containerExec.options, "a TCP adapter must not be exec'd into a running container")
+}
+
+// Verifies that ProjectDebugStorage starts a created container attached to its first stdio adapter session as the
+// primary process, and runs later concurrent stdio sessions as additional adapters exec'd into the running container.
+func TestProjectDebugServingContainerStdioPrimary(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, time.Minute)
+	defer cancel()
+	containerExec := &containerAdapterExecutor{created: true}
+	apiClient, config, _ := startDebugServingTest(t, ctx,
+		func(context.Context, string) (containerAdapterRuntime, error) { return containerExec, nil })
+	project := createDebugServingContainerProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
+	primary, primaryErr := connectDebugServing(ctx, config, project)
+	require.NoError(t, primaryErr)
+	defer primary.Close()
+	exchangeDebugBytes(t, ctx, primary)
+	starts := containerExec.attachedStarts()
+	require.Len(t, starts, 1)
+	require.Equal(t, "container-id", starts[0].Container)
+	require.NotNil(t, starts[0].StdInStream)
+	secondary, secondaryErr := connectDebugServing(ctx, config, project)
+	require.NoError(t, secondaryErr)
+	defer secondary.Close()
+	exchangeDebugBytes(t, ctx, secondary)
+	require.Len(t, containerExec.attachedStarts(), 1, "a running container is never started again")
+	containerExec.mu.Lock()
+	invocations := slices.Clone(containerExec.options)
 	containerExec.mu.Unlock()
-	require.Zero(t, count, "endpoint preparation must precede adapter launch")
-	require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
-		[]byte(fmt.Sprintf(`{"status":{"debugAdapterPort":4711,"debugAdapterAddress":%q}}`, listener.Addr().String())))))
-	select {
-	case ready := <-connected:
-		require.NoError(t, ready.err)
-		require.NotNil(t, ready.connection)
-		defer ready.connection.Close()
-		exchangeDebugBytes(t, ctx, ready.connection)
-		completion <- 0
-	case <-ctx.Done():
-		t.Fatal("Project endpoint publication did not unblock adapter setup")
+	require.Len(t, invocations, 1)
+	require.Equal(t, "container-id", invocations[0].Container)
+	require.Equal(t, "test-adapter", invocations[0].Command)
+	require.NotNil(t, invocations[0].StdInStream)
+	closeDebugServing(t, secondary)
+	closeDebugServing(t, primary)
+}
+
+// Verifies that ProjectDebugStorage execs direct-mode container adapters beside the running application, substituting
+// the in-container TCP port and connecting through its published mapping, without ever starting the container itself.
+func TestProjectDebugServingDirectContainerAdaptersExec(t *testing.T) {
+	for _, mode := range []apiv2.DebugAdapterMode{apiv2.DebugAdapterModeStdio, apiv2.DebugAdapterModeTCPConnect} {
+		t.Run(string(mode), func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, time.Minute)
+			defer cancel()
+			containerExec := &containerAdapterExecutor{}
+			if mode == apiv2.DebugAdapterModeTCPConnect {
+				listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+				require.NoError(t, listenErr)
+				defer listener.Close()
+				containerExec.tcpListener, containerExec.tcpComplete = listener, make(chan int32, 1)
+			}
+			apiClient, config, _ := startDebugServingTest(t, ctx,
+				func(context.Context, string) (containerAdapterRuntime, error) { return containerExec, nil })
+			project := createDebugServingContainerProject(t, ctx, apiClient, mode, "listen")
+			require.NoError(t, apiClient.Delete(ctx, project))
+			project.ResourceVersion, project.UID = "", ""
+			project.Spec.LaunchMode = apiv2.ProjectLaunchModeDirect
+			project.Status = apiv2.ProjectContainerStatus{}
+			require.NoError(t, apiClient.Create(ctx, project))
+			project.Status.Phase = apiv2.ProjectPhaseActive
+			project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
+				Reason: string(apiv2.ProjectReasonApplicationRunning), ObservedGeneration: project.Generation, LastTransitionTime: metav1.Now()}}
+			project.Status.ContainerID, project.Status.ContainerRuntime = "container-id", "test-runtime"
+			require.NoError(t, apiClient.Status().Update(ctx, project))
+
+			connection, connectErr := connectDebugServing(ctx, config, project)
+			require.NoError(t, connectErr)
+			defer connection.Close()
+			exchangeDebugBytes(t, ctx, connection)
+			require.Empty(t, containerExec.attachedStarts(), "a direct-mode container already runs its application")
+			containerExec.mu.Lock()
+			invocations := slices.Clone(containerExec.options)
+			containerExec.mu.Unlock()
+			require.Len(t, invocations, 1)
+			require.Equal(t, "container-id", invocations[0].Container)
+			require.Equal(t, "test-adapter", invocations[0].Command)
+			if mode == apiv2.DebugAdapterModeTCPConnect {
+				require.Equal(t, []string{"listen", strconv.Itoa(int(apiv2.DefaultContainerDebugAdapterPort))}, invocations[0].Args)
+				require.Nil(t, invocations[0].StdInStream)
+			} else {
+				require.NotNil(t, invocations[0].StdInStream)
+			}
+			closeDebugServing(t, connection)
+		})
 	}
 }
 
 type containerAdapterExecutor struct {
-	mu           sync.Mutex
-	options      []containers.ExecContainerOptions
+	mu       sync.Mutex
+	options  []containers.ExecContainerOptions
+	attached []containers.StartAttachedContainerOptions
+	// created reports each container as created, so the first session starts it attached to its primary adapter.
+	created      bool
+	statuses     map[string]containers.ContainerStatus
 	fail         bool
 	noCompletion bool
 	tcpListener  net.Listener
@@ -1295,10 +1342,11 @@ type containerAdapterExecutor struct {
 	run          func(context.Context, containers.ExecContainerOptions) (<-chan int32, error)
 }
 
-// Verifies that container TCP streams share one provider, keep sibling connections independent, use the prepared endpoint,
-// retain an idle adapter for reuse, abandon it for a superseded endpoint, report setup failures, and permit restart after confirmed exit.
+// Verifies that container TCP streams share one provider started as the container's attached primary adapter, keep sibling
+// connections independent, connect through the published port mapping, retain an idle adapter for reuse, abandon it for a
+// replaced container, report setup failures, and refuse a relaunch after the one-shot primary has exited.
 func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
-	for _, scenario := range []string{"shared", "confirmed-exit", "failed-connect", "changed-endpoint"} {
+	for _, scenario := range []string{"shared", "confirmed-exit", "failed-connect", "replaced-container"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, time.Minute)
 			defer cancel()
@@ -1306,12 +1354,10 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 			require.NoError(t, listenErr)
 			defer listener.Close()
 			completion := make(chan int32, 1)
-			containerExec := &containerAdapterExecutor{tcpListener: listener, tcpComplete: completion}
+			containerExec := &containerAdapterExecutor{tcpListener: listener, tcpComplete: completion, created: true}
 			apiClient, config, hostExecutor := startDebugServingTest(t, ctx,
-				func(context.Context, string) (containers.ExecContainers, error) { return containerExec, nil })
+				func(context.Context, string) (containerAdapterRuntime, error) { return containerExec, nil })
 			project := createDebugServingContainerProject(t, ctx, apiClient, apiv2.DebugAdapterModeTCPConnect, "listen")
-			require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
-				[]byte(fmt.Sprintf(`{"status":{"debugAdapterPort":4711,"debugAdapterAddress":%q}}`, listener.Addr().String())))))
 			if scenario == "failed-connect" {
 				completion <- process.UnknownExitCode
 				require.NoError(t, listener.Close())
@@ -1366,32 +1412,22 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 				}
 				return true, nil
 			}))
+			starts := containerExec.attachedStarts()
+			require.Len(t, starts, 1)
+			require.Equal(t, "container-id", starts[0].Container)
+			require.Nil(t, starts[0].StdInStream)
 			containerExec.mu.Lock()
-			invocations := append([]containers.ExecContainerOptions(nil), containerExec.options...)
+			require.Empty(t, containerExec.options, "the TCP provider is the container's primary process, not an exec")
 			containerExec.mu.Unlock()
-			require.Len(t, invocations, 1)
-			require.Equal(t, "container-id", invocations[0].Container)
-			require.Equal(t, []string{"listen", "4711"}, invocations[0].Args)
-			require.Nil(t, invocations[0].StdInStream)
 			require.Empty(t, hostExecutor.FindAll([]string{"test-adapter"}, "", nil))
 			require.Len(t, project.GetProjectStatus().Debug.Executions, 1)
 			if scenario == "confirmed-exit" {
-				restartedListener, restartErr := net.Listen("tcp", listener.Addr().String())
-				require.NoError(t, restartErr)
-				defer restartedListener.Close()
-				nextCompletion := make(chan int32, 1)
-				containerExec.mu.Lock()
-				containerExec.tcpListener, containerExec.tcpComplete = restartedListener, nextCompletion
-				containerExec.mu.Unlock()
 				restarted, reconnectErr := connectDebugServing(ctx, config, project)
-				require.NoError(t, reconnectErr)
-				defer restarted.Close()
-				exchangeDebugBytes(t, ctx, restarted)
-				containerExec.mu.Lock()
-				restartedCount := len(containerExec.options)
-				containerExec.mu.Unlock()
-				require.Equal(t, 2, restartedCount, "confirmed provider exit permits a new launch")
-				nextCompletion <- 0
+				if restarted != nil {
+					_ = restarted.Close()
+				}
+				require.ErrorContains(t, reconnectErr, `container status is "exited"`)
+				require.Len(t, containerExec.attachedStarts(), 1, "an exited one-shot primary container is not restarted")
 			} else if scenario == "failed-connect" {
 				require.Equal(t, apiv2.ProjectDebugPhaseFailed, project.GetProjectStatus().Debug.Executions[0].Phase)
 			} else {
@@ -1399,8 +1435,8 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 					"final release must not cancel an attached container adapter execution")
 				retainedID := project.GetProjectStatus().Debug.Executions[0].ID
 				nextCompletion := make(chan int32, 1)
-				expectedInvocations := 1
-				if scenario == "changed-endpoint" {
+				expectedStarts := 1
+				if scenario == "replaced-container" {
 					movedListener, moveErr := net.Listen("tcp", "127.0.0.1:0")
 					require.NoError(t, moveErr)
 					defer movedListener.Close()
@@ -1408,17 +1444,18 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 					containerExec.tcpListener, containerExec.tcpComplete = movedListener, nextCompletion
 					containerExec.mu.Unlock()
 					require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
-						[]byte(fmt.Sprintf(`{"status":{"debugAdapterAddress":%q}}`, movedListener.Addr().String())))))
-					expectedInvocations = 2
+						[]byte(`{"status":{"containerID":"replacement"}}`))))
+					expectedStarts = 2
 				}
 				reused, reuseErr := connectDebugServing(ctx, config, project)
 				require.NoError(t, reuseErr)
 				defer reused.Close()
 				exchangeDebugBytes(t, ctx, reused)
-				containerExec.mu.Lock()
-				reusedCount := len(containerExec.options)
-				containerExec.mu.Unlock()
-				require.Equal(t, expectedInvocations, reusedCount)
+				starts = containerExec.attachedStarts()
+				require.Len(t, starts, expectedStarts)
+				if scenario == "replaced-container" {
+					require.Equal(t, "replacement", starts[1].Container)
+				}
 				require.NoError(t, apiClient.Get(ctx, project.NamespacedName(), project))
 				if scenario == "shared" {
 					require.Len(t, project.GetProjectStatus().Debug.Executions, 1, "an idle container adapter is reused by a later session")
@@ -1438,7 +1475,7 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 						}
 						return false, nil
 					}))
-					require.Len(t, project.GetProjectStatus().Debug.Executions, 2, "a superseded endpoint launches a new adapter")
+					require.Len(t, project.GetProjectStatus().Debug.Executions, 2, "a replaced container launches a new adapter")
 					nextCompletion <- 0
 				}
 			}
@@ -1446,9 +1483,81 @@ func TestProjectDebugServingContainerTCPProvider(t *testing.T) {
 	}
 }
 
+func (executor *containerAdapterExecutor) InspectContainers(_ context.Context, options containers.InspectContainersOptions) ([]containers.InspectedContainer, error) {
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	inspected := make([]containers.InspectedContainer, 0, len(options.Containers))
+	for _, id := range options.Containers {
+		status, found := executor.statuses[id]
+		if !found {
+			status = containers.ContainerStatusRunning
+			if executor.created {
+				status = containers.ContainerStatusCreated
+			}
+		}
+		container := containers.InspectedContainer{Id: id, Status: status}
+		if executor.tcpListener != nil && status == containers.ContainerStatusRunning {
+			host, port, splitErr := net.SplitHostPort(executor.tcpListener.Addr().String())
+			if splitErr != nil {
+				return nil, splitErr
+			}
+			container.Ports = containers.InspectedContainerPortMapping{
+				fmt.Sprintf("%d/tcp", apiv2.DefaultContainerDebugAdapterPort): {{HostIp: host, HostPort: port}},
+			}
+		}
+		inspected = append(inspected, container)
+	}
+	return inspected, nil
+}
+
+func (executor *containerAdapterExecutor) StartContainers(context.Context, containers.StartContainersOptions) ([]string, error) {
+	return nil, errors.ErrUnsupported
+}
+
+func (executor *containerAdapterExecutor) StartAttachedContainer(ctx context.Context, options containers.StartAttachedContainerOptions) (<-chan int32, error) {
+	executor.mu.Lock()
+	executor.attached = append(executor.attached, options)
+	if executor.statuses == nil {
+		executor.statuses = make(map[string]containers.ContainerStatus)
+	}
+	executor.statuses[options.Container] = containers.ContainerStatusRunning
+	executor.mu.Unlock()
+	exits, startErr := executor.serve(ctx, containers.ExecContainerOptions{
+		Container: options.Container, StdInStream: options.StdInStream, StreamCommandOptions: options.StreamCommandOptions,
+	})
+	if startErr != nil || exits == nil {
+		return exits, startErr
+	}
+	containerExits := make(chan int32, 1)
+	go func() {
+		defer close(containerExits)
+		code, open := <-exits
+		executor.mu.Lock()
+		executor.statuses[options.Container] = containers.ContainerStatusExited
+		executor.mu.Unlock()
+		if open {
+			containerExits <- code
+		}
+	}()
+	return containerExits, nil
+}
+
+func (executor *containerAdapterExecutor) attachedStarts() []containers.StartAttachedContainerOptions {
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+	return slices.Clone(executor.attached)
+}
+
 func (executor *containerAdapterExecutor) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
 	executor.mu.Lock()
 	executor.options = append(executor.options, options)
+	executor.mu.Unlock()
+	return executor.serve(ctx, options)
+}
+
+// serve runs the fake adapter behind an exec'd command or an attached container start.
+func (executor *containerAdapterExecutor) serve(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
+	executor.mu.Lock()
 	listener, complete := executor.tcpListener, executor.tcpComplete
 	executor.mu.Unlock()
 	if executor.fail {
@@ -1521,7 +1630,7 @@ func TestProjectDebugServingContainerAdapters(t *testing.T) {
 			containerExec := &containerAdapterExecutor{fail: scenario == "start-failure", noCompletion: scenario == "no-completion"}
 			var apiClient ctrlclient.WithWatch
 			var project apiv2.ProjectObject
-			lookup := func(lookupCtx context.Context, name string) (containers.ExecContainers, error) {
+			lookup := func(lookupCtx context.Context, name string) (containerAdapterRuntime, error) {
 				if name != "test-runtime" {
 					return nil, fmt.Errorf("wrong selected runtime %q", name)
 				}

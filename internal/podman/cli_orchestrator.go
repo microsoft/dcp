@@ -547,6 +547,8 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 	if options.AttachTerminal {
 		// Attach a TTY (-t) and keep STDIN open (-i) if a terminal is requested
 		args = append(args, "-it")
+	} else if options.OpenStdin {
+		args = append(args, "--interactive")
 	}
 
 	args = append(args, options.RunArgs...)
@@ -760,6 +762,42 @@ func (pco *PodmanCliOrchestrator) StartContainers(ctx context.Context, options c
 	}
 
 	return started, err
+}
+
+func (pco *PodmanCliOrchestrator) StartAttachedContainer(ctx context.Context, options containers.StartAttachedContainerOptions) (<-chan int32, error) {
+	if options.Container == "" {
+		return nil, fmt.Errorf("must specify a container")
+	}
+	args := []string{"container", "start", "--attach"}
+	if options.StdInStream != nil {
+		args = append(args, "--interactive")
+	}
+	args = append(args, options.Container)
+
+	cmd := makePodmanCommand(args...)
+	cmd.Stdin = options.StdInStream
+	cmd.Stdout = options.StdOutStream
+	cmd.Stderr = options.StdErrStream
+	cmd.WaitDelay = 2 * time.Second
+
+	exitCh := make(chan int32, 1)
+	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
+		if err != nil && !errors.Is(err, context.Canceled) {
+			pco.log.Error(err, "Unexpected error during attached container start command", "Command", cmd.String())
+		}
+		exitCh <- exitCode
+		close(exitCh)
+	}
+
+	pco.log.V(1).Info("Running Podman command", "Command", cmd.String())
+	_, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
+	if err != nil {
+		close(exitCh)
+		return nil, errors.Join(err, fmt.Errorf("failed to start Podman command '%s'", "StartAttachedContainer"))
+	}
+	startWaitForProcessExit()
+
+	return exitCh, nil
 }
 
 func (pco *PodmanCliOrchestrator) StopContainers(ctx context.Context, options containers.StopContainersOptions) ([]string, error) {

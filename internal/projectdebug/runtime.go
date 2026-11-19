@@ -47,7 +47,25 @@ type projectDebugRuntime struct {
 	cleanups             chan struct{}
 	mu                   sync.Mutex
 	providers            map[types.UID]*projectDebugProvider
-	findContainerRuntime func(context.Context, string) (containers.ExecContainers, error)
+	primaries            map[string]*containerAdapterPrimary
+	findContainerRuntime func(context.Context, string) (containerAdapterRuntime, error)
+}
+
+// containerAdapterRuntime starts a prepared container attached to its primary adapter or execs additional adapters.
+type containerAdapterRuntime interface {
+	containers.ExecContainers
+	containers.StartContainers
+	containers.InspectContainers
+}
+
+// containerAdapterPrimary claims the attached start of a created container; running closes once the start settles.
+type containerAdapterPrimary struct {
+	running chan struct{}
+	once    sync.Once
+}
+
+func (primary *containerAdapterPrimary) settle() {
+	primary.once.Do(func() { close(primary.running) })
 }
 
 type projectDebugProvider struct {
@@ -74,8 +92,10 @@ type projectDebugExecution struct {
 	statusMu    sync.Mutex
 	status      apiv2.ProjectDebugExecutionStatus
 	containerID string
-	stopOnce    sync.Once
-	stopErr     error
+	// primary reports whether the adapter is the container's primary process rather than an exec'd command.
+	primary  bool
+	stopOnce sync.Once
+	stopErr  error
 }
 
 type projectDebugTransport struct {
@@ -109,7 +129,8 @@ func newProjectDebugRuntime(ctx context.Context, executor process.Executor, writ
 	return &projectDebugRuntime{
 		ctx: ctx, executor: executor, writer: writer, log: log,
 		launches: make(chan struct{}, 8), cleanups: make(chan struct{}, 8), providers: make(map[types.UID]*projectDebugProvider),
-		findContainerRuntime: func(lookupCtx context.Context, name string) (containers.ExecContainers, error) {
+		primaries: make(map[string]*containerAdapterPrimary),
+		findContainerRuntime: func(lookupCtx context.Context, name string) (containerAdapterRuntime, error) {
 			return container_runtimes.FindContainerRuntime(lookupCtx, name, log, executor)
 		},
 	}
@@ -392,6 +413,10 @@ func (runtime *projectDebugRuntime) launchContainer(
 			launchErr = errors.Join(launchErr, stdout.Close())
 		}
 		if started {
+			if execution.primary {
+				// A failed setup has no session that could end the primary adapter, so release the attachment immediately.
+				execution.cancel()
+			}
 			launchErr = errors.Join(launchErr, execution.stop())
 		} else {
 			execution.cancel()
@@ -416,7 +441,7 @@ func (runtime *projectDebugRuntime) launchContainer(
 		return fail(fmt.Errorf("resolve prepared container runtime: %w", runtimeErr))
 	}
 	if orchestrator == nil {
-		return fail(fmt.Errorf("selected container runtime returned no exec implementation"))
+		return fail(fmt.Errorf("selected container runtime returned no container adapter implementation"))
 	}
 	var environment []containers.EnvVar
 	for _, entry := range project.Spec.DebugAdapter.Env {
@@ -425,6 +450,12 @@ func (runtime *projectDebugRuntime) launchContainer(
 	diagnostic := adapterDiagnosticWriter{log: runtime.log.WithValues(
 		logger.RESOURCE_LOG_STREAM_ID, project.GetResourceId(), "Project", project.NamespacedName(), "Execution", execution.status.ID)}
 	args := project.Spec.DebugAdapter.GetArgs()
+	adapterPort := project.Spec.DebugAdapter.GetTCPPort()
+	if adapterPort != 0 {
+		for index := range args {
+			args[index] = strings.ReplaceAll(args[index], "{{port}}", strconv.Itoa(int(adapterPort)))
+		}
+	}
 	options := containers.ExecContainerOptions{
 		Container: execution.containerID, Env: environment,
 		StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: usvc_io.NopWriteCloser(diagnostic), StdErrStream: usvc_io.NopWriteCloser(diagnostic)},
@@ -447,35 +478,86 @@ func (runtime *projectDebugRuntime) launchContainer(
 			}
 			return closeErrors
 		}}
-	} else {
-		if project.Status.DebugAdapterPort <= 0 || project.Status.DebugAdapterAddress == "" {
-			return fail(fmt.Errorf("container adapter TCP endpoint is not prepared"))
-		}
-		execution.address = project.Status.DebugAdapterAddress
-		for index := range args {
-			args[index] = strings.ReplaceAll(args[index], "{{port}}", strconv.Itoa(int(project.Status.DebugAdapterPort)))
-		}
 	}
 	options.Command, options.Args = args[0], args[1:]
 	if setupErr := setupCtx.Err(); setupErr != nil {
 		return fail(setupErr)
 	}
-	exits, execErr := orchestrator.ExecContainer(executionCtx, options)
-	if execErr != nil {
-		return fail(execErr)
+	// In direct mode the application is the container's primary process, so every adapter is exec'd beside it.
+	direct := project.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect
+	var primary *containerAdapterPrimary
+	owned := false
+	if !direct {
+		primary, owned = runtime.claimContainerPrimary(execution.containerID)
+		if !owned {
+			select {
+			case <-primary.running:
+			case <-setupCtx.Done():
+				return fail(setupCtx.Err())
+			}
+		}
+	}
+	inspected, inspectErr := inspectAdapterContainer(setupCtx, orchestrator, execution.containerID)
+	if inspectErr != nil {
+		if owned {
+			runtime.releaseContainerPrimary(execution.containerID, primary)
+		}
+		return fail(inspectErr)
+	}
+	var exits <-chan int32
+	var startErr error
+	switch {
+	case direct && inspected.Status == containers.ContainerStatusRunning:
+		if adapterPort != 0 {
+			address, addressErr := containerAdapterAddress(inspected, adapterPort)
+			if addressErr != nil {
+				return fail(addressErr)
+			}
+			execution.address = address
+		}
+		exits, startErr = orchestrator.ExecContainer(executionCtx, options)
+	case owned && inspected.Status == containers.ContainerStatusCreated:
+		execution.primary = true
+		exits, startErr = orchestrator.StartAttachedContainer(executionCtx, containers.StartAttachedContainerOptions{
+			Container: execution.containerID, StdInStream: options.StdInStream, StreamCommandOptions: options.StreamCommandOptions,
+		})
+		if startErr != nil {
+			runtime.releaseContainerPrimary(execution.containerID, primary)
+		}
+	case inspected.Status == containers.ContainerStatusRunning && project.GetDebugAdapter().EffectiveMode() == apiv2.DebugAdapterModeStdio:
+		// A running container already has a primary adapter, so additional stdio sessions exec their own adapter.
+		if owned {
+			runtime.releaseContainerPrimary(execution.containerID, primary)
+		}
+		exits, startErr = orchestrator.ExecContainer(executionCtx, options)
+	default:
+		if owned {
+			runtime.releaseContainerPrimary(execution.containerID, primary)
+		}
+		return fail(fmt.Errorf("container adapter cannot be launched while the container status is %q", inspected.Status))
+	}
+	if startErr != nil {
+		return fail(startErr)
 	}
 	started = true
 	if exits == nil {
 		close(execution.done)
 		return fail(fmt.Errorf("container adapter execution returned no completion channel"))
 	}
+	runningReason, runningMessage := "AdapterExecRunning", "The container adapter's attached execution was started."
+	if execution.primary {
+		runningReason, runningMessage = "AdapterContainerStarted", "The container was started with the adapter as its attached primary process."
+	}
 	execution.statusMu.Lock()
 	execution.status.Phase = apiv2.ProjectDebugPhaseRunning
-	execution.status.Conditions = debugConditions("AdapterExecRunning", "The container adapter's attached execution was started.", true, project.GetGeneration())
+	execution.status.Conditions = debugConditions(runningReason, runningMessage, true, project.GetGeneration())
 	_, publishErr := runtime.writer.update(setupCtx, project.NamespacedName(), project.GetUID(), execution.status.DeepCopy(), nil)
 	execution.statusMu.Unlock()
 	go func() {
 		defer execution.cancel()
+		if execution.primary {
+			defer runtime.releaseContainerPrimary(execution.containerID, primary)
+		}
 		var code int32
 		var open bool
 		select {
@@ -513,6 +595,13 @@ func (runtime *projectDebugRuntime) launchContainer(
 	if publishErr != nil {
 		return fail(publishErr)
 	}
+	if execution.primary {
+		runningErr := runtime.awaitPrimaryContainerAdapter(setupCtx, orchestrator, project, execution)
+		primary.settle()
+		if runningErr != nil {
+			return fail(runningErr)
+		}
+	}
 	if setupErr := setupCtx.Err(); setupErr != nil {
 		return fail(setupErr)
 	}
@@ -530,9 +619,16 @@ func (runtime *projectDebugRuntime) launchContainer(
 }
 
 func (execution *projectDebugExecution) stopContainer() error {
-	execution.cancel()
 	cleanupCtx, cancel := process.WithDetachedStopTimeout(execution.runtime.ctx)
 	defer cancel()
+	if execution.primary {
+		// Ending the attachment cannot stop a primary adapter, so give it a chance to exit after its session ends.
+		select {
+		case <-execution.done:
+		case <-cleanupCtx.Done():
+		}
+	}
+	execution.cancel()
 	select {
 	case <-execution.done:
 	case <-cleanupCtx.Done():
@@ -546,6 +642,79 @@ func (execution *projectDebugExecution) stopContainer() error {
 	execution.status.Phase, execution.status.FinishedAt = apiv2.ProjectDebugPhaseFailed, metav1.MicroTime{}
 	execution.status.Conditions = debugConditions("ContainerAdapterCleanupUnconfirmed", stopErr.Error(), false, execution.generation)
 	return errors.Join(stopErr, execution.runtime.publish(execution.projectName, execution.projectUID, execution.status.DeepCopy(), nil))
+}
+
+// claimContainerPrimary returns the primary claim for a container and whether the caller now owns it.
+func (runtime *projectDebugRuntime) claimContainerPrimary(containerID string) (*containerAdapterPrimary, bool) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if primary, found := runtime.primaries[containerID]; found {
+		return primary, false
+	}
+	primary := &containerAdapterPrimary{running: make(chan struct{})}
+	runtime.primaries[containerID] = primary
+	return primary, true
+}
+
+func (runtime *projectDebugRuntime) releaseContainerPrimary(containerID string, primary *containerAdapterPrimary) {
+	runtime.mu.Lock()
+	if runtime.primaries[containerID] == primary {
+		delete(runtime.primaries, containerID)
+	}
+	runtime.mu.Unlock()
+	primary.settle()
+}
+
+func inspectAdapterContainer(ctx context.Context, orchestrator containerAdapterRuntime, containerID string) (*containers.InspectedContainer, error) {
+	inspected, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+	if inspectErr != nil {
+		return nil, fmt.Errorf("inspect adapter container: %w", inspectErr)
+	}
+	if len(inspected) != 1 {
+		return nil, fmt.Errorf("inspect adapter container: expected one container, got %d", len(inspected))
+	}
+	return &inspected[0], nil
+}
+
+// awaitPrimaryContainerAdapter waits for the started container to run and, for TCP adapters, resolves the published adapter address.
+func (runtime *projectDebugRuntime) awaitPrimaryContainerAdapter(
+	ctx context.Context, orchestrator containerAdapterRuntime, project *apiv2.ProjectContainer, execution *projectDebugExecution,
+) error {
+	port := project.Spec.DebugAdapter.GetTCPPort()
+	return resiliency.RetryExponential(ctx, func() error {
+		select {
+		case <-execution.done:
+			return resiliency.Permanent(fmt.Errorf("container adapter exited before the container was observed running"))
+		default:
+		}
+		inspected, inspectErr := inspectAdapterContainer(ctx, orchestrator, execution.containerID)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if inspected.Status != containers.ContainerStatusRunning {
+			return fmt.Errorf("container status is %q", inspected.Status)
+		}
+		if port == 0 {
+			return nil
+		}
+		address, addressErr := containerAdapterAddress(inspected, port)
+		if addressErr != nil {
+			return addressErr
+		}
+		execution.address = address
+		return nil
+	})
+}
+
+// containerAdapterAddress resolves the loopback host binding published for the in-container adapter port.
+func containerAdapterAddress(inspected *containers.InspectedContainer, port int32) (string, error) {
+	portKey := fmt.Sprintf("%d/%s", port, strings.ToLower(string(commonapi.PortProtocolTCP)))
+	for _, binding := range inspected.Ports[portKey] {
+		if binding.HostIp == "127.0.0.1" && binding.HostPort != "" && binding.HostPort != "0" {
+			return net.JoinHostPort(binding.HostIp, binding.HostPort), nil
+		}
+	}
+	return "", fmt.Errorf("container adapter port %s is not published", portKey)
 }
 
 func (execution *projectDebugExecution) connect(ctx context.Context) (io.ReadWriteCloser, error) {
@@ -721,13 +890,13 @@ func (runtime *projectDebugRuntime) acquire(
 		}
 		return execution, transport, execution.stop, nil
 	}
-	containerID, adapterAddress := preparedContainerAdapterEndpoint(project)
+	containerID := preparedContainerID(project)
 	for {
 		runtime.mu.Lock()
 		provider := runtime.providers[project.GetUID()]
 		if provider != nil && provider.refs == 0 && (provider.fenced && provider.execution.containerID != "" || !provider.stopping && provider.retained()) &&
-			(provider.execution.containerID != containerID || provider.execution.address != adapterAddress) {
-			// A retained adapter belongs to a superseded container endpoint, so it cannot collide with a new launch.
+			provider.execution.containerID != containerID {
+			// A retained adapter belongs to a superseded container, so it cannot collide with a new launch.
 			runtime.forget(project.GetUID(), provider)
 			provider.execution.cancel()
 			provider = nil
@@ -766,9 +935,8 @@ func (runtime *projectDebugRuntime) acquire(
 		if provider.err != nil {
 			return nil, nil, nil, errors.Join(provider.err, release())
 		}
-		if provider.execution.containerID != "" &&
-			(provider.execution.containerID != containerID || provider.execution.address != adapterAddress) {
-			return nil, nil, nil, errors.Join(fmt.Errorf("prepared container adapter endpoint changed"), release())
+		if provider.execution.containerID != "" && provider.execution.containerID != containerID {
+			return nil, nil, nil, errors.Join(fmt.Errorf("prepared container changed"), release())
 		}
 		runtime.mu.Lock()
 		initial := provider.initial
@@ -903,10 +1071,10 @@ func debugAdapterEnvironment(config *apiv2.DebugAdapterConfig) []string {
 	return environment
 }
 
-// preparedContainerAdapterEndpoint returns the selected container and adapter address, which are empty for host targets.
-func preparedContainerAdapterEndpoint(project apiv2.ProjectObject) (string, string) {
+// preparedContainerID returns the selected container, which is empty for host targets.
+func preparedContainerID(project apiv2.ProjectObject) string {
 	if container, isContainer := project.(*apiv2.ProjectContainer); isContainer {
-		return container.Status.ContainerID, container.Status.DebugAdapterAddress
+		return container.Status.ContainerID
 	}
-	return "", ""
+	return ""
 }

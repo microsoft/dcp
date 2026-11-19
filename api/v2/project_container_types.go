@@ -26,8 +26,8 @@ type ProjectContainerSpec struct {
 	ProjectCommonSpec `json:",inline"`
 	// Container describes how to run the code as a container.
 	Container ProjectContainerTemplate `json:"container"`
-	// DebugAdapter declares an adapter; configuration alone does not launch it.
-	DebugAdapter *ContainerDebugAdapterConfig `json:"debugAdapter,omitempty"`
+	// DebugAdapter declares the required adapter; configuration alone does not launch it.
+	DebugAdapter *ContainerDebugAdapterConfig `json:"debugAdapter"`
 }
 
 // ProjectContainerStatus describes the container, launch inputs, execution and debugging progress.
@@ -143,7 +143,9 @@ func (resource *ProjectContainer) Validate(context.Context) field.ErrorList {
 	errorList := validateProject(resource, specPath)
 	errorList = append(errorList, resource.Spec.Container.Validate(resource.Namespace, specPath.Child("container"))...)
 	errorList = append(errorList, validateLogicalContainerPorts(resource.Spec.Container.Ports, resource.Namespace, resource.Name, specPath.Child("container", "ports"))...)
-	if resource.Spec.DebugAdapter != nil {
+	if resource.Spec.DebugAdapter == nil {
+		errorList = append(errorList, field.Required(specPath.Child("debugAdapter"), "debugAdapter must be set"))
+	} else {
 		errorList = append(errorList, resource.Spec.DebugAdapter.validate(specPath.Child("debugAdapter"))...)
 	}
 	return errorList

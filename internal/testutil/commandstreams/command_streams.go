@@ -97,8 +97,8 @@ func (executor *commandStreamExecutor) StartProcess(
 }
 
 // VerifyCommandStreams checks a command-launch boundary using the shared delay tool instead of the real CLI.
-// Run must append pinned-id, adapter and --flag to prefix and use --interactive only when stdin is supplied.
-func VerifyCommandStreams(t *testing.T, prefix []string,
+// Run must append suffix to prefix; when stdinFlag is true it must insert --interactive between them only when stdin is supplied.
+func VerifyCommandStreams(t *testing.T, prefix []string, stdinFlag bool, suffix []string,
 	run func(context.Context, process.Executor, io.Reader, io.WriteCloser, io.WriteCloser) (<-chan int32, error),
 ) {
 	t.Helper()
@@ -153,10 +153,10 @@ func VerifyCommandStreams(t *testing.T, prefix []string,
 				require.Same(t, source, executor.stdin)
 			}
 			expected := slices.Clone(prefix)
-			if source != nil {
+			if stdinFlag && source != nil {
 				expected = append(expected, "--interactive")
 			}
-			expected = append(expected, "pinned-id", "adapter", "--flag")
+			expected = append(expected, suffix...)
 			require.Equal(t, prefix[0], strings.TrimSuffix(filepath.Base(executor.command[0]), ".exe"))
 			require.Equal(t, expected[1:], executor.command[1:])
 			if ending == "launch-failure" {

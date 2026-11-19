@@ -34,7 +34,7 @@ func TestProjectDebugProcessFieldOwnership(t *testing.T) {
 	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "process-ownership"},
 		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{
 			LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"},
-		}}}
+		}, DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}
 	require.NoError(t, apiClient.Create(ctx, project))
 	session := &apiv2.ProjectDebugSessionStatus{ID: "session", Phase: apiv2.ProjectDebugPhaseRunning}
 	_, sessionErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, session)
@@ -91,7 +91,7 @@ func TestProjectDebugRegistrationFailurePreservesTargets(t *testing.T) {
 			project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "registration-failure"},
 				Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{
 					LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"},
-				}}}
+				}, DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}
 			require.NoError(t, apiClient.Create(ctx, project))
 			session := &apiv2.ProjectDebugSessionStatus{ID: "session", Phase: apiv2.ProjectDebugPhaseRunning}
 			_, sessionErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, session)

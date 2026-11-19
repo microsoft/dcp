@@ -26,7 +26,7 @@ func TestProjectDebugSessionProgressOwnership(t *testing.T) {
 	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "progress-ownership"},
 		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{
 			LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "unused"},
-		}}}
+		}, DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}
 	require.NoError(t, apiClient.Create(ctx, project))
 	session := &apiv2.ProjectDebugSessionStatus{ID: "first", Phase: apiv2.ProjectDebugPhaseRunning}
 	_, registerErr := writer.update(ctx, project.NamespacedName(), project.UID, nil, session)

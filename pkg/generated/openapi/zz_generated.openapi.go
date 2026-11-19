@@ -7620,6 +7620,13 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref common.ReferenceCal
 							},
 						},
 					},
+					"openStdin": {
+						SchemaProps: spec.SchemaProps{
+							Description: "OpenStdin keeps standard input open without allocating a terminal, so the client that starts the container can attach to it.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},
@@ -9759,12 +9766,12 @@ func schema_microsoft_dcp_api_v2_ProjectContainerSpec(ref common.ReferenceCallba
 					},
 					"debugAdapter": {
 						SchemaProps: spec.SchemaProps{
-							Description: "DebugAdapter declares an adapter; configuration alone does not launch it.",
+							Description: "DebugAdapter declares the required adapter; configuration alone does not launch it.",
 							Ref:         ref(v2.ContainerDebugAdapterConfig{}.OpenAPIModelName()),
 						},
 					},
 				},
-				Required: []string{"rootDirectory", "container"},
+				Required: []string{"rootDirectory", "container", "debugAdapter"},
 			},
 		},
 		Dependencies: []string{
@@ -10811,12 +10818,12 @@ func schema_microsoft_dcp_api_v2_ProjectProcessSpec(ref common.ReferenceCallback
 					},
 					"debugAdapter": {
 						SchemaProps: spec.SchemaProps{
-							Description: "DebugAdapter declares an adapter; configuration alone does not launch it.",
+							Description: "DebugAdapter declares the required adapter; configuration alone does not launch it.",
 							Ref:         ref(v2.DebugAdapterConfig{}.OpenAPIModelName()),
 						},
 					},
 				},
-				Required: []string{"rootDirectory", "process"},
+				Required: []string{"rootDirectory", "process", "debugAdapter"},
 			},
 		},
 		Dependencies: []string{

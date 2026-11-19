@@ -41,6 +41,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -84,6 +85,7 @@ const (
 	operationPostRemoveVolume
 	operationInspectVolume
 	operationExecContainer
+	operationStartAttachedContainer
 )
 
 type testContainerOperationKey struct {
@@ -715,6 +717,9 @@ type testContainer struct {
 
 	// Tracks attached terminal processes.
 	terminalProcesses []*termpty.PseudoTerminalProcess
+
+	// Tracks attached starts, which end when the container stops.
+	attachedStarts []*containerExec
 }
 
 type testImage struct {
@@ -2179,6 +2184,83 @@ func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, conta
 	return container.ID, &startEvent, nil
 }
 
+func (to *TestContainerOrchestrator) StartAttachedContainer(ctx context.Context, options containers.StartAttachedContainerOptions) (<-chan int32, error) {
+	if operationErr := to.recordOperation(ctx, operationStartAttachedContainer, options.Container); operationErr != nil {
+		return nil, operationErr
+	}
+	to.mutex.Lock()
+	var events []containers.EventMessage
+	defer func() {
+		to.mutex.Unlock()
+		to.notifyContainerEvents(events)
+	}()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
+
+	var foundContainer *testContainer
+	for _, container := range to.containers {
+		if container.matches(options.Container) {
+			foundContainer = container
+		}
+	}
+	if foundContainer == nil {
+		return nil, containers.ErrNotFound
+	}
+
+	_, startEvent, startErr := to.doStartContainer(ctx, foundContainer, containers.StreamCommandOptions{})
+	if startErr != nil {
+		return nil, startErr
+	}
+	if startEvent != nil {
+		events = append(events, *startEvent)
+	}
+
+	exitCodeChan := make(chan int32, 1)
+	execution := &containerExec{
+		options:  containers.ExecContainerOptions{Container: foundContainer.ID, StdInStream: options.StdInStream},
+		stdout:   options.StdOutStream,
+		stderr:   options.StdErrStream,
+		exitChan: exitCodeChan,
+	}
+	foundContainer.attachedStarts = append(foundContainer.attachedStarts, execution)
+	execution.stopCancellation = context.AfterFunc(ctx, func() {
+		to.mutex.Lock()
+		defer to.mutex.Unlock()
+		if !execution.exited {
+			execution.finish(process.UnknownExitCode)
+		}
+	})
+	return exitCodeChan, nil
+}
+
+// AttachedContainerStreams returns the standard input and output attached by the container's attached start.
+func (to *TestContainerOrchestrator) AttachedContainerStreams(name string) (io.Reader, io.Writer, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+	for _, container := range to.containers {
+		if container.matches(name) && len(container.attachedStarts) != 0 {
+			execution := container.attachedStarts[len(container.attachedStarts)-1]
+			return execution.options.StdInStream, execution.stdout, nil
+		}
+	}
+	return nil, nil, containers.ErrNotFound
+}
+
+// StartAttachedContainerCallCount reports attached start attempts for the container.
+func (to *TestContainerOrchestrator) StartAttachedContainerCallCount(name string) int {
+	return to.operationCallCount(operationStartAttachedContainer, name)
+}
+
+// FailNextStartAttachedContainer injects an attached start failure for the container.
+func (to *TestContainerOrchestrator) FailNextStartAttachedContainer(name string, startErr error) {
+	to.queueOperationError(operationStartAttachedContainer, name, startErr)
+}
+
 func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options containers.RunContainerOptions) (string, error) {
 	to.mutex.Lock()
 	var events []containers.EventMessage
@@ -2418,6 +2500,13 @@ func (to *TestContainerOrchestrator) finishContainerExecutions(container *testCo
 	for key, execution := range to.execs {
 		if strings.HasPrefix(key, container.ID+":") && !execution.exited {
 			execution.finish(execExitCode)
+		}
+	}
+	attachedStarts := container.attachedStarts
+	container.attachedStarts = nil
+	for _, execution := range attachedStarts {
+		if !execution.exited {
+			execution.finish(attachExitCode)
 		}
 	}
 	if len(container.terminalProcesses) == 0 {

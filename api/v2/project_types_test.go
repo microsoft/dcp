@@ -14,7 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Verifies that ProjectProcess requires an absolute source root and a valid process template.
+// Verifies that ProjectProcess requires an absolute source root, a valid process template and a debug adapter.
 func TestProjectProcessValidate(t *testing.T) {
 	root := t.TempDir()
 	process := ProjectProcessTemplate{LogicalProcessConfig: LogicalProcessConfig{ExecutablePath: "program"}}
@@ -34,12 +34,16 @@ func TestProjectProcessValidate(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			resource := &ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "test"}, Spec: testCase.spec}
+			resource.Spec.DebugAdapter = &DebugAdapterConfig{Directory: root, Args: []string{"adapter"}}
 			require.Equal(t, testCase.valid, len(resource.Validate(context.Background())) == 0)
 		})
 	}
+	missingAdapter := &ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "test"},
+		Spec: ProjectProcessSpec{ProjectCommonSpec: ProjectCommonSpec{RootDirectory: root}, Process: process}}
+	require.ErrorContains(t, missingAdapter.Validate(context.Background()).ToAggregate(), "spec.debugAdapter")
 }
 
-// Verifies that ProjectContainer requires an absolute source root and a valid container template,
+// Verifies that ProjectContainer requires an absolute source root, a valid container template and a debug adapter,
 // including validation of container dependency namespaces.
 func TestProjectContainerValidate(t *testing.T) {
 	root := t.TempDir()
@@ -59,9 +63,13 @@ func TestProjectContainerValidate(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			resource := &ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "test"}, Spec: testCase.spec}
+			resource.Spec.DebugAdapter = &ContainerDebugAdapterConfig{DebugAdapterConfig: DebugAdapterConfig{Directory: root, Args: []string{"adapter"}}}
 			require.Equal(t, testCase.valid, len(resource.Validate(context.Background())) == 0)
 		})
 	}
+	missingAdapter := &ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "test"},
+		Spec: ProjectContainerSpec{ProjectCommonSpec: common, Container: ProjectContainerTemplate{LogicalContainerConfig: LogicalContainerConfig{ImageRef: "image"}}}}
+	require.ErrorContains(t, missingAdapter.Validate(context.Background()).ToAggregate(), "spec.debugAdapter")
 }
 
 // Verifies that ProjectProcess and ProjectContainer freeze source and launch configuration,
@@ -157,7 +165,8 @@ func TestProjectTemplatePorts(t *testing.T) {
 
 	process := &ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "test"},
 		Spec: ProjectProcessSpec{ProjectCommonSpec: common, Process: ProjectProcessTemplate{
-			LogicalProcessConfig: LogicalProcessConfig{ExecutablePath: "program"}, Ports: []LogicalProcessPort{{LogicalServiceBinding: binding}}}}}
+			LogicalProcessConfig: LogicalProcessConfig{ExecutablePath: "program"}, Ports: []LogicalProcessPort{{LogicalServiceBinding: binding}}},
+			DebugAdapter: &DebugAdapterConfig{Directory: common.RootDirectory, Args: []string{"adapter"}}}}
 	require.Empty(t, process.Validate(context.Background()))
 	clonedProcess := process.DeepCopy()
 	clonedProcess.Spec.Process.Ports[0].Service.Name = "changed"
@@ -168,7 +177,8 @@ func TestProjectTemplatePorts(t *testing.T) {
 
 	container := &ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: "test"},
 		Spec: ProjectContainerSpec{ProjectCommonSpec: common, Container: ProjectContainerTemplate{
-			LogicalContainerConfig: LogicalContainerConfig{ImageRef: "image"}, Ports: []LogicalContainerPort{{LogicalServiceBinding: binding, ContainerPort: 8080}}}}}
+			LogicalContainerConfig: LogicalContainerConfig{ImageRef: "image"}, Ports: []LogicalContainerPort{{LogicalServiceBinding: binding, ContainerPort: 8080}}},
+			DebugAdapter: &ContainerDebugAdapterConfig{DebugAdapterConfig: DebugAdapterConfig{Directory: common.RootDirectory, Args: []string{"adapter"}}}}}
 	require.Empty(t, container.Validate(context.Background()))
 	clonedContainer := container.DeepCopy()
 	clonedContainer.Spec.Container.Ports[0].Service.Name = "changed"

@@ -113,6 +113,8 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 
 	if options.AttachTerminal {
 		args = append(args, "--interactive", "--tty")
+	} else if options.OpenStdin {
+		args = append(args, "--interactive")
 	}
 
 	args = append(args, options.RunArgs...)
@@ -632,6 +634,46 @@ func runSequentially(
 		operationErrors,
 		incompleteError(objectKind, len(successes), len(references)),
 	)
+}
+
+// StartAttachedContainer starts a created container with `container start --attach`. WSLC relays standard input
+// according to the container's creation flags, so containers needing input must be created with OpenStdin.
+func (wco *WslcCliOrchestrator) StartAttachedContainer(ctx context.Context, options containers.StartAttachedContainerOptions) (<-chan int32, error) {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return nil, contextErr
+	}
+	if options.Container == "" {
+		return nil, fmt.Errorf("must specify a container")
+	}
+
+	cmd := makeWslcCommand("container", "start", "--attach", options.Container)
+	cmd.Stdin = options.StdInStream
+	cmd.Stdout = usvc_io.NopWriteCloser(options.StdOutStream)
+	cmd.Stderr = usvc_io.NopWriteCloser(options.StdErrStream)
+	cmd.WaitDelay = 2 * time.Second
+	exitCodes := make(chan int32, 1)
+	exitHandler := process.ProcessExitHandlerFunc(func(_ process.Pid_t, exitCode int32, exitErr error) {
+		if exitErr != nil && !errors.Is(exitErr, context.Canceled) && !errors.Is(exitErr, context.DeadlineExceeded) {
+			wco.log.Error(exitErr, "WSLC attached container start command failed", "Container", options.Container)
+		}
+		exitCodes <- exitCode
+		close(exitCodes)
+	})
+	wco.log.V(1).Info("Running WSLC command", "Command", cmd.String())
+	_, startWaitForExit, startErr := wco.executor.StartProcess(
+		ctx,
+		cmd,
+		exitHandler,
+		process.CreationFlagEnsureKillOnDispose,
+		nil,
+	)
+	if startErr != nil {
+		close(exitCodes)
+		return nil, fmt.Errorf("starting WSLC attached container start: %w", startErr)
+	}
+	startWaitForExit()
+
+	return exitCodes, nil
 }
 
 func (wco *WslcCliOrchestrator) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {

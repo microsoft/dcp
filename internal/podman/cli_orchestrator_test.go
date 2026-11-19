@@ -45,11 +45,25 @@ func TestCopyFilesArchive(t *testing.T) {
 // keeps stderr separate and retains its existing completion, cancellation and startup-failure behavior.
 func TestExecContainerStreams(t *testing.T) {
 	t.Parallel()
-	commandstreams.VerifyCommandStreams(t, []string{"podman", "exec"},
+	commandstreams.VerifyCommandStreams(t, []string{"podman", "exec"}, true, []string{"pinned-id", "adapter", "--flag"},
 		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
 			orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
 			return orchestrator.ExecContainer(ctx, containers.ExecContainerOptions{
 				Container: "pinned-id", Command: "adapter", Args: []string{"--flag"}, StdInStream: stdin,
+				StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
+			})
+		})
+}
+
+// Verifies that Podman attached start forwards caller-owned stdin with --interactive only when supplied, keeps stderr
+// separate, and reports completion, cancellation and startup failure like other attached commands.
+func TestStartAttachedContainerStreams(t *testing.T) {
+	t.Parallel()
+	commandstreams.VerifyCommandStreams(t, []string{"podman", "container", "start", "--attach"}, true, []string{"pinned-id"},
+		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
+			orchestrator := NewPodmanCliOrchestrator(testr.New(t), executor)
+			return orchestrator.StartAttachedContainer(ctx, containers.StartAttachedContainerOptions{
+				Container: "pinned-id", StdInStream: stdin,
 				StreamCommandOptions: containers.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
 			})
 		})
