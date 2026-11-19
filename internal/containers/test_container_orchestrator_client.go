@@ -184,7 +184,7 @@ func (c *TestContainerOrchestratorClient) copyStream(
 		}
 
 		n, readErr := source.Read(buf)
-		if readErr != nil {
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			requestLog.Error(readErr, "Could not read from log stream source")
 			return totalWritten, readErr
 		}
@@ -221,6 +221,12 @@ func (c *TestContainerOrchestratorClient) copyStream(
 				"DesiredBytes", len(content),
 			)
 			return totalWritten, errInvalidWrite
+		}
+		if readErr != nil {
+			requestLog.V(1).Info("Done copying log stream",
+				"TotalBytesWritten", totalWritten,
+			)
+			return totalWritten, nil
 		}
 	}
 }

@@ -166,6 +166,13 @@ func (bw *BufferWriter) AddTarget(t io.Writer) error {
 		}
 	}
 
+	// A target added after Close receives the complete output and is closed like the targets present at Close.
+	if bw.closed {
+		if closer, isCloser := t.(io.Closer); isCloser {
+			replayErrors = errors.Join(replayErrors, closer.Close())
+		}
+	}
+
 	return replayErrors
 }
 

@@ -44,13 +44,15 @@ type resourceSnapshot struct {
 }
 
 type logSession struct {
-	source      string
-	capture     apiv2.LogSource
-	cancel      context.CancelFunc
-	done        chan struct{}
-	writer      *usvc_io.FollowWriter
-	finishing   bool
-	destination io.Writer
+	source  string
+	capture apiv2.LogSource
+	cancel  context.CancelFunc
+	done    chan struct{}
+	writer  *usvc_io.FollowWriter
+	// Closed when the runtime capture backing the session has written all output; nil for file-backed sources.
+	captureClosed <-chan struct{}
+	finishing     bool
+	destination   io.Writer
 }
 
 type resourceLogStreamer struct {
@@ -192,6 +194,7 @@ func (streamer *resourceLogStreamer) StreamLogs(
 
 	path := logger.GetResourceLogPath(state.systemID)
 	releaseCapture := func() {}
+	var captureClosed <-chan struct{}
 	if !system {
 		path = capture.StdoutFile
 		if opts.Source == string(apiv2.LogStreamSourceStderr) || opts.Source == string(apiv2.LogStreamSourceStartupStderr) {
@@ -204,18 +207,18 @@ func (streamer *resourceLogStreamer) StreamLogs(
 			return logstream.ResourceStreamStatusDone, nil, nil
 		}
 		if capture.ContainerID != "" {
-			capturePath, release, captureErr := streamer.runtimeLogPath(sessionCtx, obj.GetObjectMeta().Namespace, *capture, opts)
+			capturePath, closed, release, captureErr := streamer.runtimeLogPath(sessionCtx, obj.GetObjectMeta().Namespace, *capture, opts)
 			if captureErr != nil {
 				streamer.finishSession(state.ownerUID, sessionID, session)
 				return logstream.ResourceStreamStatusDone, nil, captureErr
 			}
-			path, releaseCapture = capturePath, release
+			path, captureClosed, releaseCapture = capturePath, closed, release
 		}
 	}
 	go func() {
 		defer streamer.finishSession(state.ownerUID, sessionID, session)
 		defer releaseCapture()
-		openErr := streamer.followFile(sessionCtx, path, dest, opts, session)
+		openErr := streamer.followFile(sessionCtx, path, captureClosed, dest, opts, session)
 		if openErr != nil && sessionCtx.Err() == nil {
 			log.Error(openErr, "Failed to stream resource logs")
 			if pipe, ok := dest.(interface{ CloseWithError(error) error }); ok {
@@ -238,11 +241,12 @@ func (streamer *resourceLogStreamer) finishSession(uid types.UID, id uint64, ses
 }
 
 func (streamer *resourceLogStreamer) runtimeLogPath(
-	ctx context.Context, namespace string, capture apiv2.LogSource, opts *apiv2.ResourceLogOptions) (string, func(), error) {
+	ctx context.Context, namespace string, capture apiv2.LogSource, opts *apiv2.ResourceLogOptions,
+) (string, <-chan struct{}, func(), error) {
 	streamer.captureLock.Lock()
 	defer streamer.captureLock.Unlock()
 	if contextErr := ctx.Err(); contextErr != nil {
-		return "", nil, contextErr
+		return "", nil, nil, contextErr
 	}
 	hostCtx := contextdata.GetHostLifetimeContext(ctx)
 	if streamer.captures == nil {
@@ -253,7 +257,7 @@ func (streamer *resourceLogStreamer) runtimeLogPath(
 		if source == nil {
 			runtimeSource, runtimeErr := runtimes.FindAvailableContainerRuntime(ctx, streamer.log, contextdata.GetProcessExecutor(ctx))
 			if runtimeErr != nil {
-				return "", nil, runtimeErr
+				return "", nil, nil, runtimeErr
 			}
 			source = runtimeSource
 		}
@@ -264,7 +268,7 @@ func (streamer *resourceLogStreamer) runtimeLogPath(
 		captureCtx, cancelCapture, types.NamespacedName{Namespace: namespace, Name: capture.Name}, capture.UID)
 	if acquireErr != nil {
 		cancelCapture()
-		return "", nil, acquireErr
+		return "", nil, nil, acquireErr
 	}
 	if !created {
 		cancelCapture()
@@ -274,22 +278,25 @@ func (streamer *resourceLogStreamer) runtimeLogPath(
 		if captureErr != nil {
 			stdoutErr, stderrErr := stdout.Close(), stderr.Close()
 			disposeErr := descriptor.Dispose(ctx, 0)
-			return "", nil, errors.Join(captureErr, stdoutErr, stderrErr, disposeErr)
+			return "", nil, nil, errors.Join(captureErr, stdoutErr, stderrErr, disposeErr)
 		}
+	}
+	stdoutClosed, stderrClosed, closedErr := descriptor.CaptureClosed()
+	if closedErr != nil {
+		return "", nil, nil, closedErr
 	}
 	stdoutPath, stderrPath, startErr := descriptor.LogConsumerStarting()
 	if startErr != nil {
-		return "", nil, startErr
+		return "", nil, nil, startErr
 	}
-	path := stdoutPath
 	if opts.Source == string(apiv2.LogStreamSourceStderr) {
-		path = stderrPath
+		return stderrPath, stderrClosed, descriptor.LogConsumerStopped, nil
 	}
-	return path, descriptor.LogConsumerStopped, nil
+	return stdoutPath, stdoutClosed, descriptor.LogConsumerStopped, nil
 }
 
 func (streamer *resourceLogStreamer) followFile(
-	ctx context.Context, path string, dest io.Writer, opts *apiv2.ResourceLogOptions, session *logSession,
+	ctx context.Context, path string, captureClosed <-chan struct{}, dest io.Writer, opts *apiv2.ResourceLogOptions, session *logSession,
 ) error {
 	file, openErr := resiliency.RetryGet(ctx, backoff.NewConstantBackOff(200*time.Millisecond), func() (*os.File, error) {
 		opened, fileErr := usvc_io.OpenFileReadOnly(path)
@@ -324,9 +331,10 @@ func (streamer *resourceLogStreamer) followFile(
 		usvc_io.WithNoDataStopRetries(3), usvc_io.WithCloseSourceOnCancel())
 	streamer.lock.Lock()
 	session.writer = writer
+	session.captureClosed = captureClosed
 	if session.finishing {
-		if opts.Follow && session.capture.ContainerID != "" {
-			logs.DelayStopFollowing([]*usvc_io.FollowWriter{writer})
+		if session.capture.Complete && captureClosed != nil {
+			stopFollowingWhenCaptured(writer, captureClosed)
 		} else {
 			writer.StopFollow()
 		}
@@ -348,6 +356,8 @@ func (streamer *resourceLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcher
 		return
 	}
 	var streamsToStop []*usvc_io.FollowWriter
+	var capturedWriters []*usvc_io.FollowWriter
+	var capturesClosed []<-chan struct{}
 	streamer.lock.Lock()
 	for ownerUID, sessions := range streamer.sessions {
 		for _, session := range sessions {
@@ -369,7 +379,10 @@ func (streamer *resourceLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcher
 				continue
 			}
 			session.finishing = true
-			if session.writer != nil {
+			if session.writer != nil && session.captureClosed != nil {
+				capturedWriters = append(capturedWriters, session.writer)
+				capturesClosed = append(capturesClosed, session.captureClosed)
+			} else if session.writer != nil {
 				streamsToStop = append(streamsToStop, session.writer)
 			} else if evt.Type == watch.Deleted {
 				session.cancel()
@@ -379,6 +392,9 @@ func (streamer *resourceLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcher
 	streamer.lock.Unlock()
 	if len(streamsToStop) > 0 {
 		logs.DelayStopFollowing(streamsToStop)
+	}
+	for i, writer := range capturedWriters {
+		stopFollowingWhenCaptured(writer, capturesClosed[i])
 	}
 	if evt.Type == watch.Deleted && state.Runtime != nil && state.Runtime.UID != "" {
 		streamer.captureLock.Lock()
@@ -420,4 +436,19 @@ func (streamer *resourceLogStreamer) Dispose() error {
 		<-session.done
 	}
 	return disposeErrors
+}
+
+// Stops following once a completed runtime capture has written all output, signalled by its capture file closing.
+// The follow cancellation delay bounds the wait in case a runtime keeps the capture open after the container exits.
+func stopFollowingWhenCaptured(writer *usvc_io.FollowWriter, captureClosed <-chan struct{}) {
+	go func() {
+		timer := time.NewTimer(logs.FollowStreamCancellationDelay)
+		defer timer.Stop()
+		select {
+		case <-captureClosed:
+		case <-timer.C:
+		case <-writer.Done():
+		}
+		writer.StopFollow()
+	}()
 }

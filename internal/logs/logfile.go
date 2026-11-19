@@ -6,22 +6,27 @@
 package logs
 
 import (
+	"sync"
 	"sync/atomic"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
 type logfile struct {
-	inner  usvc_io.WriteSyncerCloser
-	closed *atomic.Bool
-	id     string
+	inner      usvc_io.WriteSyncerCloser
+	closed     *atomic.Bool
+	closedCh   chan struct{}
+	closedOnce *sync.Once
+	id         string
 }
 
 func newLogFile(inner usvc_io.WriteSyncerCloser, id string) *logfile {
 	return &logfile{
-		inner:  inner,
-		closed: &atomic.Bool{},
-		id:     id,
+		inner:      inner,
+		closed:     &atomic.Bool{},
+		closedCh:   make(chan struct{}),
+		closedOnce: &sync.Once{},
+		id:         id,
 	}
 }
 
@@ -32,11 +37,16 @@ func (f *logfile) Write(p []byte) (int, error) {
 func (f *logfile) Close() error {
 	err := f.inner.Close()
 	f.closed.Store(true)
+	f.closedOnce.Do(func() { close(f.closedCh) })
 	return err
 }
 
 func (f *logfile) IsClosed() bool {
 	return f.closed.Load()
+}
+
+func (f *logfile) Closed() <-chan struct{} {
+	return f.closedCh
 }
 
 func (f *logfile) Id() string {

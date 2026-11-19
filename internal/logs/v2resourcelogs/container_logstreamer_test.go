@@ -312,6 +312,36 @@ func TestCompletedContainerCaptureAllowsGracefulDrain(t *testing.T) {
 	}
 }
 
+// Verifies that a one-shot read of a completed container capture returns all output written before the capture
+// closes, including output arriving after a gap, and completes once the capture closes.
+func TestCompletedContainerCaptureOneShotReadWaitsForCaptureClose(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, time.Minute)
+	defer cancel()
+	ctx = context.WithValue(ctx, contextdata.HostLifetimeContextKey, ctx)
+	streamer := &resourceLogStreamer{
+		sessions: make(map[types.UID]map[uint64]*logSession), source: &delayedLogSource{delay: logs.FollowStreamCancellationDelay / 10},
+		captures: logs.NewLogDescriptorSet(ctx, t.TempDir(), logr.Discard()), log: logr.Discard(),
+	}
+	defer func() { require.NoError(t, streamer.Dispose()) }()
+	physical := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "physical", Namespace: "namespace", UID: "one-shot-uid"},
+		Status:     apiv2.PhysicalContainerStatus{ContainerID: "runtime-id", Phase: apiv2.PhysicalContainerPhaseExited},
+	}
+	var output bytes.Buffer
+	start := time.Now()
+	status, done, streamErr := streamer.StreamLogs(ctx, &output, physical, &apiv2.ResourceLogOptions{}, logr.Discard())
+	require.NoError(t, streamErr)
+	require.Equal(t, logstream.ResourceStreamStatusStreaming, status)
+	select {
+	case <-done:
+	case <-ctx.Done():
+		require.FailNow(t, "one-shot container log stream did not finish")
+	}
+	require.Equal(t, "delayed-first\ndelayed-second\n", output.String())
+	require.Less(t, time.Since(start), logs.FollowStreamCancellationDelay)
+}
+
 // Verifies that disposing a streamer unblocks an active response write and joins its client
 // session even when the HTTP consumer is not reading.
 func TestContainerLogDisposeUnblocksResponseWriter(t *testing.T) {
