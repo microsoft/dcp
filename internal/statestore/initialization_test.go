@@ -94,7 +94,7 @@ func requireSQLiteBusyTimeout(t *testing.T, ctx context.Context, store *Store, e
 	t.Helper()
 
 	var milliseconds int64
-	require.NoError(t, store.db.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&milliseconds))
+	require.NoError(t, store.db.Load().QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&milliseconds))
 	require.Equal(t, expected.Milliseconds(), milliseconds)
 }
 
@@ -432,8 +432,8 @@ func TestOpenRetriesSQLiteContentionUntilReleased(t *testing.T) {
 			requireSchemaMinorVersion(t, ctx, pending.store, currentSchemaMinorVersion)
 			requireSQLiteBusyTimeout(t, ctx, pending.store, busyTimeout)
 
-			pending.store.db.SetMaxIdleConns(0)
-			pending.store.db.SetMaxIdleConns(1)
+			pending.store.db.Load().SetMaxIdleConns(0)
+			pending.store.db.Load().SetMaxIdleConns(1)
 			requireSQLiteBusyTimeout(t, ctx, pending.store, busyTimeout)
 		})
 	}
@@ -592,7 +592,7 @@ func TestOpenHoldsInitializationLockThroughoutSchemaRecovery(t *testing.T) {
 	runSynctestWithTestContext(t, stateStoreTestTimeout, func(test *testing.T, ctx context.Context) {
 		storePath := initializationTestPath(test)
 		seedStore := openTestStore(test, ctx, storePath)
-		_, dirtyErr := seedStore.db.ExecContext(ctx, "UPDATE schema_minor_migrations_v1 SET dirty = 1")
+		_, dirtyErr := seedStore.db.Load().ExecContext(ctx, "UPDATE schema_minor_migrations_v1 SET dirty = 1")
 		require.NoError(test, dirtyErr)
 		require.NoError(test, seedStore.Close())
 		recoveryObserved := make(chan struct{}, 1)
@@ -712,8 +712,8 @@ func TestOpenPreservesNormalOperationBusyTimeout(t *testing.T) {
 				require.NoError(t, store.Close())
 			})
 			requireSQLiteBusyTimeout(t, ctx, store, testCase.expected)
-			store.db.SetMaxIdleConns(0)
-			store.db.SetMaxIdleConns(1)
+			store.db.Load().SetMaxIdleConns(0)
+			store.db.Load().SetMaxIdleConns(1)
 			requireSQLiteBusyTimeout(t, ctx, store, testCase.expected)
 		})
 	}
@@ -759,9 +759,9 @@ func TestIsSQLiteBusyRecognizesExtendedSnapshotError(t *testing.T) {
 	defer cancel()
 	storePath := initializationTestPath(t)
 	store := openTestStore(t, ctx, storePath)
-	_, createErr := store.db.ExecContext(ctx, "CREATE TABLE snapshot_contention (value INTEGER)")
+	_, createErr := store.db.Load().ExecContext(ctx, "CREATE TABLE snapshot_contention (value INTEGER)")
 	require.NoError(t, createErr)
-	conn, connErr := store.db.Conn(ctx)
+	conn, connErr := store.db.Load().Conn(ctx)
 	require.NoError(t, connErr)
 	t.Cleanup(func() {
 		_, rollbackErr := conn.ExecContext(context.Background(), "ROLLBACK")

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -450,7 +451,7 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-			defer cancel()
+			t.Cleanup(cancel)
 			observe := make(chan struct{})
 			var observeOnce sync.Once
 			allowObservation := func() { observeOnce.Do(func() { close(observe) }) }
@@ -468,8 +469,8 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 					},
 				})
 			require.NoError(t, startErr)
-			namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "creating-image"}}
-			require.NoError(t, server.Client.Create(ctx, namespace))
+			// An inactive namespace also reports Pending/Starting, which must not satisfy the wait below.
+			namespace := createV2ExecNamespace(t, ctx, server.Client, "creating-image")
 			logical := &apiv2.LogicalContainer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "logical", Namespace: namespace.Name,
@@ -525,8 +526,10 @@ func TestV2LogicalContainerPendingAcquiresOwnedImage(t *testing.T) {
 			var expectedReason apiv2.ConditionReason = apiv2.LogicalContainerReasonStarting
 			waiting := waitObjectAssumesStateEx(t, ctx, server.Client, logical.NamespacedName(), func(current *apiv2.LogicalContainer) (bool, error) {
 				ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+				// The retry case must be observed at the rejected container declaration, not an earlier preparation step.
+				retrying := testCase.existingContainer || (ready != nil && strings.Contains(ready.Message, "injected physical container creation failure"))
 				return current.Status.Phase == apiv2.LogicalContainerPhaseRunning ||
-					(current.Status.Phase == expectedPhase && ready != nil && ready.Reason == string(expectedReason)), nil
+					(current.Status.Phase == expectedPhase && ready != nil && ready.Reason == string(expectedReason) && retrying), nil
 			})
 			require.Equal(t, expectedPhase, waiting.Status.Phase)
 			requireReadyCondition(t, waiting.Status.Conditions, metav1.ConditionFalse, expectedReason)

@@ -286,13 +286,16 @@ func (r *PhysicalContainerImageReconciler) discardPhysicalContainerImageData(
 		}
 	}
 
-	if data.operationInProgress() && data.operation != nil {
+	inProgress := data.operationInProgress()
+	if inProgress && data.operation != nil {
 		log.V(1).Info("Cancelling in-flight PhysicalContainerImage operation", "State", data.state)
 		data.operation.cancel()
 	}
 
 	r.imageData.DeleteByNamespacedName(name)
-	if data.startupStdout != nil {
+	// An in-flight pull or build may still be writing startup output; it releases the captures when its result
+	// can no longer be stored.
+	if !inProgress && data.startupStdout != nil {
 		enqueueCaptureFileCleanup(r.outputCleanupQueue,
 			r.Log.WithValues("PhysicalContainerImage", name), data.startupStdout, data.startupStderr)
 	}
@@ -1199,6 +1202,12 @@ func (r *PhysicalContainerImageReconciler) queuePhysicalContainerImageDataResult
 	})
 	if queued {
 		r.ScheduleReconciliation(image.NamespacedName())
+		return
+	}
+	// The image state was discarded while this operation ran; captures are per image UID, so no live state shares them.
+	if result.startupStdout != nil {
+		enqueueCaptureFileCleanup(r.outputCleanupQueue,
+			r.Log.WithValues("PhysicalContainerImage", image.NamespacedName()), result.startupStdout, result.startupStderr)
 	}
 }
 

@@ -799,8 +799,14 @@ func TestV2PhysicalContainerControllerCreatesContainerWithNetworks(t *testing.T)
 	require.Equal(t, networkName, inspectedContainers[0].Networks[0].Name)
 	require.ElementsMatch(t, []string{"api", "service"}, inspectedContainers[0].Networks[0].Aliases)
 
+	// Connection objects are declared by the reconciliation after Running is first published.
 	connections := apiv2.PhysicalContainerNetworkConnectionList{}
-	require.NoError(t, client.List(ctx, &connections, ctrl_client.InNamespace(namespace.Name)))
+	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+		if listErr := client.List(pollCtx, &connections, ctrl_client.InNamespace(namespace.Name)); listErr != nil {
+			return false, listErr
+		}
+		return len(connections.Items) != 0, nil
+	}))
 	require.Len(t, connections.Items, 1)
 	require.Equal(t, container.Name, connections.Items[0].Spec.ContainerRef)
 	require.Equal(t, network.Name, connections.Items[0].Spec.NetworkRef)
