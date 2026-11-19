@@ -210,9 +210,9 @@ func validateDebugProjectSnapshot(selected, current apiv2.ProjectObject) error {
 	if current.GetProjectStatus().Phase == apiv2.ProjectPhaseFailed {
 		return apierrors.NewConflict(resource, current.GetName(), fmt.Errorf("project execution context failed"))
 	}
-	if current.GetProjectSpec().EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect &&
-		current.GetProjectStatus().Phase == apiv2.ProjectPhaseExited {
-		return apierrors.NewConflict(resource, current.GetName(), fmt.Errorf("project application has exited"))
+	// A direct application or an adapter-mode container's primary adapter has exited; the run cannot be resumed.
+	if current.GetProjectStatus().Phase == apiv2.ProjectPhaseExited {
+		return apierrors.NewConflict(resource, current.GetName(), fmt.Errorf("project run has exited"))
 	}
 	selectedContainer, selectedIsContainer := selected.(*apiv2.ProjectContainer)
 	currentContainer, currentIsContainer := current.(*apiv2.ProjectContainer)
@@ -303,9 +303,7 @@ func (storage *projectDebugStorage) monitor(
 				return
 			}
 			if validationErr := validateDebugProjectSnapshot(selected, snapshot); validationErr != nil {
-				if apierrors.IsForbidden(validationErr) ||
-					(snapshot.GetProjectSpec().EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect &&
-						snapshot.GetProjectStatus().Phase == apiv2.ProjectPhaseExited) {
+				if apierrors.IsForbidden(validationErr) || snapshot.GetProjectStatus().Phase == apiv2.ProjectPhaseExited {
 					validationErr = errors.Join(dap.ErrShutdownRequested, validationErr)
 				}
 				cancel(validationErr)

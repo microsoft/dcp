@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"reflect"
 	"testing"
 	"time"
@@ -143,8 +144,8 @@ func readProjectDebugMessage(t *testing.T, connection *websocket.Conn) dap.Messa
 	return message
 }
 
-// Verifies through each enabled real runtime that container stdio adapter sessions use the
-// prepared context without host PIDs and retain that context across connections until ProjectContainer deletion.
+// Verifies through each enabled real runtime that the first container stdio adapter session starts the prepared
+// container with the adapter as its primary process, without host PIDs, and that the adapter's exit ends the run.
 func TestV2ProjectContainerAdapterWithRealOrchestrator(t *testing.T) {
 	t.Parallel()
 	testCtx, testCancel := testutil.GetTestContext(t, 3*time.Minute)
@@ -175,31 +176,29 @@ func TestV2ProjectContainerAdapterWithRealOrchestrator(t *testing.T) {
 		prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
 		require.NoError(t, tracker.TrackContainer(prepared.Status.ContainerName))
 		require.Equal(t, runtime.Orchestrator.Name(), prepared.Status.ContainerRuntime)
-		for range 2 {
-			connection, connectErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
-			require.NoError(t, connectErr)
-			sendProjectProtocolRequest(t, connection, `{"seq":41,"type":"request","command":"initialize","arguments":{"extension":"unchanged"}}`)
-			echo := readProjectDebugMessage(t, connection)
-			require.JSONEq(t, `"initialize"`, string(echo["command"]))
-			require.JSONEq(t, `{"extension":"unchanged"}`, string(echo["arguments"]))
-			require.NoError(t, connection.Close())
-			ready := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
-				if current.Status.Phase != apiv2.ProjectPhaseReady {
-					return false, nil
-				}
-				for _, session := range current.Status.Debug.Sessions {
-					if session.Phase == apiv2.ProjectDebugPhasePending || session.Phase == apiv2.ProjectDebugPhaseRunning {
-						return false, nil
-					}
-				}
-				return true, nil
-			})
-			require.Equal(t, prepared.Status.ContainerID, ready.Status.ContainerID)
-			for _, execution := range ready.Status.Debug.Executions {
-				require.Nil(t, execution.PID)
-			}
-			require.Equal(t, prepared.Status.ContainerRuntime, ready.Status.ContainerRuntime)
+		require.True(t, prepared.Status.StartedAt.IsZero(), "the adapter container waits for its first debug session")
+		connection, connectErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
+		require.NoError(t, connectErr)
+		sendProjectProtocolRequest(t, connection, `{"seq":41,"type":"request","command":"initialize","arguments":{"extension":"unchanged"}}`)
+		echo := readProjectDebugMessage(t, connection)
+		require.JSONEq(t, `"initialize"`, string(echo["command"]))
+		require.JSONEq(t, `{"extension":"unchanged"}`, string(echo["arguments"]))
+		require.NoError(t, connection.Close())
+		// The adapter is the container's primary process, so its exit at end of input ends the Project run.
+		exited := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
+			return current.Status.Phase == apiv2.ProjectPhaseExited && current.Status.Debug != nil && len(current.Status.Debug.Executions) == 1 &&
+				current.Status.Debug.Executions[0].Phase != apiv2.ProjectDebugPhaseRunning, nil
+		})
+		require.Equal(t, prepared.Status.ContainerID, exited.Status.ContainerID)
+		require.False(t, exited.Status.StartedAt.IsZero())
+		require.NotNil(t, exited.Status.ExitCode)
+		require.Zero(t, *exited.Status.ExitCode)
+		require.Nil(t, exited.Status.Debug.Executions[0].PID)
+		refused, refusedErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
+		if refused != nil {
+			_ = refused.Close()
 		}
+		require.Error(t, refusedErr, "an exited adapter container does not accept further sessions")
 		require.NoError(t, server.Client.Delete(ctx, project))
 		ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
 		require.NoError(t, server.Client.Delete(ctx, namespace))
@@ -242,7 +241,7 @@ func TestV2ProjectContainerTCPAdapterWithRealOrchestrator(t *testing.T) {
 		prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
 		require.NoError(t, tracker.TrackContainer(prepared.Status.ContainerName))
 		require.Equal(t, apiv2.DefaultContainerDebugAdapterPort, prepared.Status.DebugAdapterPort)
-		require.NotEmpty(t, prepared.Status.DebugAdapterAddress)
+		require.Empty(t, prepared.Status.DebugAdapterAddress, "runtimes assign the host binding when the first session starts the container")
 
 		var connections []*websocket.Conn
 		for index := range 2 {
@@ -270,6 +269,9 @@ func TestV2ProjectContainerTCPAdapterWithRealOrchestrator(t *testing.T) {
 			return true, nil
 		})
 		require.Len(t, shared.Status.Debug.Executions, 1, "overlapping TCP-connect sessions must share one adapter provider")
+		started := waitObjectAssumesStateEx(t, ctx, server.Client, project.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
+			return current.Status.DebugAdapterAddress != "", nil
+		})
 		execution := shared.Status.Debug.Executions[0]
 		require.Equal(t, apiv2.ProjectDebugPhaseRunning, execution.Phase)
 		require.Nil(t, execution.PID)
@@ -292,7 +294,7 @@ func TestV2ProjectContainerTCPAdapterWithRealOrchestrator(t *testing.T) {
 			return true, nil
 		})
 		require.Equal(t, prepared.Status.ContainerID, released.Status.ContainerID)
-		require.Equal(t, prepared.Status.DebugAdapterAddress, released.Status.DebugAdapterAddress)
+		require.Equal(t, started.Status.DebugAdapterAddress, released.Status.DebugAdapterAddress)
 		require.Equal(t, execution.ID, released.Status.Debug.Executions[0].ID)
 		require.Equal(t, apiv2.ProjectDebugPhaseRunning, released.Status.Debug.Executions[0].Phase,
 			"final release must leave the in-container adapter running")
@@ -314,6 +316,74 @@ func TestV2ProjectContainerTCPAdapterWithRealOrchestrator(t *testing.T) {
 		}
 		require.NoError(t, reused.Close())
 
+		require.NoError(t, server.Client.Delete(ctx, project))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
+		require.NoError(t, server.Client.Delete(ctx, namespace))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, namespace)
+	})
+}
+
+// Verifies through each enabled real runtime that an adapter-mode ProjectContainer publishes service endpoints once a
+// ready session requests launch, and withdraws them when its container is paused while that session is still connected.
+func TestV2ProjectContainerAdapterEndpointsWithdrawWhenPausedWithRealOrchestrator(t *testing.T) {
+	t.Parallel()
+	testCtx, testCancel := testutil.GetTestContext(t, 3*time.Minute)
+	t.Cleanup(testCancel)
+	containertest.ForEachHealthyRuntime(t, testCtx, func(t *testing.T, runtimeCtx context.Context, runtime containertest.Runtime) {
+		ctx, cancel := context.WithCancel(runtimeCtx)
+		defer cancel()
+		tracker := containertest.NewResourceTracker(t, runtime)
+		server, environment, startupErr := StartAdvancedTestEnvironmentWithOptions(ctx,
+			projectTestControllers|LogicalServiceController, containertest.UniqueName(t, "project-pause-environment"), t.TempDir(),
+			AdvancedTestEnvironmentOptions{ApiServerFlags: ctrl_testutil.ApiServerUseTrueContainerOrchestrator, ContainerOrchestrator: runtime.Orchestrator})
+		require.NoError(t, startupErr)
+		defer environment.ProcessExecutor.Dispose()
+		defer shutdownAdvancedTestEnvironment(t, ctx, cancel, server)
+		namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: containertest.UniqueName(t, "project-pause-namespace")}}
+		require.NoError(t, server.Client.Create(ctx, namespace))
+		project := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+			Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Container: apiv2.ProjectContainerTemplate{
+				LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: "busybox:latest"}, Labels: tracker.Labels()},
+				Ports: []apiv2.LogicalContainerPort{{ContainerPort: 8080, LogicalServiceBinding: apiv2.LogicalServiceBinding{
+					Name: "http", Service: &apiv2.LogicalServiceTemplate{Name: "http"},
+				}}},
+			},
+				// cat echoes client messages, so the client can supply the adapter's initialized event itself.
+				DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"cat"}}},
+			}}
+		require.NoError(t, server.Client.Create(ctx, project))
+		prepared := waitProjectPhase(t, ctx, server.Client, project, apiv2.ProjectPhaseReady)
+		require.NoError(t, tracker.TrackContainer(prepared.Status.ContainerName))
+		connection, connectErr := connectProjectDebug(t, ctx, server.ClientConfig, project)
+		require.NoError(t, connectErr)
+		defer connection.Close()
+		if deadline, exists := ctx.Deadline(); exists {
+			require.NoError(t, connection.SetReadDeadline(deadline))
+		}
+		for _, message := range []string{
+			`{"seq":1,"type":"request","command":"initialize","arguments":{}}`,
+			`{"seq":2,"type":"event","event":"initialized"}`,
+			`{"seq":3,"type":"request","command":"launch","arguments":{"noDebug":true}}`,
+		} {
+			sendProjectProtocolRequest(t, connection, message)
+			readProjectDebugMessage(t, connection)
+		}
+		var endpoints apiv2.ServiceEndpointList
+		require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+			listErr := server.Client.List(pollCtx, &endpoints, ctrl_client.InNamespace(namespace.Name))
+			return listErr == nil && len(endpoints.Items) == 1 && len(endpoints.Items[0].Spec.Addresses) != 0, nil
+		}))
+
+		pauseOutput, pauseErr := exec.CommandContext(ctx, runtime.Name, "pause", prepared.Status.ContainerID).CombinedOutput()
+		require.NoError(t, pauseErr, string(pauseOutput))
+		t.Cleanup(func() { _ = exec.Command(runtime.Name, "unpause", prepared.Status.ContainerID).Run() })
+		require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+			listErr := server.Client.List(pollCtx, &endpoints, ctrl_client.InNamespace(namespace.Name))
+			return listErr == nil && len(endpoints.Items) == 0, nil
+		}), "a paused adapter container must not keep its endpoints published")
+
+		unpauseOutput, unpauseErr := exec.CommandContext(ctx, runtime.Name, "unpause", prepared.Status.ContainerID).CombinedOutput()
+		require.NoError(t, unpauseErr, string(unpauseOutput))
 		require.NoError(t, server.Client.Delete(ctx, project))
 		ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, project)
 		require.NoError(t, server.Client.Delete(ctx, namespace))

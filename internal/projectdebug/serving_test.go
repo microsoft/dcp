@@ -1338,6 +1338,31 @@ func TestProjectDebugServingDirectModeRejectsLaunch(t *testing.T) {
 	closeDebugServing(t, connection)
 }
 
+// Verifies that ProjectDebugStorage refuses a debug request for an adapter-mode ProjectContainer whose primary adapter
+// has exited the container, instead of waiting for readiness that cannot return, and starts no adapter.
+func TestProjectDebugServingRefusesExitedAdapterContainer(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, time.Minute)
+	defer cancel()
+	containerExec := &containerAdapterExecutor{created: true}
+	apiClient, config, _ := startDebugServingTest(t, ctx,
+		func(context.Context, string) (containerAdapterRuntime, error) { return containerExec, nil })
+	project := createDebugServingContainerProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
+	project.Status.Phase = apiv2.ProjectPhaseExited
+	project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
+		Reason: string(apiv2.ProjectReasonCompleted), ObservedGeneration: project.Generation, LastTransitionTime: metav1.Now()}}
+	require.NoError(t, apiClient.Status().Update(ctx, project))
+
+	connection, connectErr := connectDebugServing(ctx, config, project)
+	if connection != nil {
+		_ = connection.Close()
+	}
+	require.ErrorContains(t, connectErr, "project run has exited")
+	require.Empty(t, containerExec.attachedStarts())
+	containerExec.mu.Lock()
+	defer containerExec.mu.Unlock()
+	require.Empty(t, containerExec.options)
+}
+
 // Verifies that ProjectDebugStorage execs direct-mode container adapters beside the running application, substituting
 // the in-container TCP port and connecting through its published mapping, without ever starting the container itself.
 func TestProjectDebugServingDirectContainerAdaptersExec(t *testing.T) {

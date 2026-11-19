@@ -415,7 +415,8 @@ func handleProjectContainerReady(
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
 	physical, change, contextReady := reconciler.observePreparedProject(ctx, resource, data, log)
 	if !contextReady {
-		return change | additionalReconciliationNeeded
+		// A paused, indeterminate or lost context withdraws endpoints published for a ready session.
+		return change | reconciler.syncProjectEndpoints(ctx, resource, data, nil, log) | additionalReconciliationNeeded
 	}
 	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
 		return change | reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
@@ -438,7 +439,8 @@ func handleProjectContainerActive(
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
 	physical, change, contextReady := reconciler.observePreparedProject(ctx, resource, data, log)
 	if !contextReady {
-		return change | additionalReconciliationNeeded
+		// A paused, indeterminate or lost context withdraws endpoints published for a ready session.
+		return change | reconciler.syncProjectEndpoints(ctx, resource, data, nil, log) | additionalReconciliationNeeded
 	}
 	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
 		return change | reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
@@ -571,7 +573,7 @@ func handleProjectContainerUnknown(
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
 	physical, change, ready := reconciler.observePreparedProject(ctx, resource, data, log)
 	if !ready {
-		return change | additionalReconciliationNeeded
+		return change | reconciler.syncProjectEndpoints(ctx, resource, data, nil, log) | additionalReconciliationNeeded
 	}
 	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
 		return change | reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
