@@ -50,11 +50,11 @@ type backingStatusConflicts struct {
 	logicalFinalizerConflict     atomic.Bool
 }
 
-// Verifies that logical deletion completes from dependency, creation-retry, replacement-retry,
-// and ownership-conflict waits without creating new runtime work or retaining the startup lease.
-func TestV2LogicalContainerDeletesWhileWaitingForDependenciesOrRetries(t *testing.T) {
+// Verifies that logical deletion completes from dependency and ownership-conflict waits
+// without creating new runtime work or retaining the startup lease.
+func TestV2LogicalContainerDeletesWhileWaitingForDependencies(t *testing.T) {
 	t.Parallel()
-	for _, dependency := range []string{"image", "volume", "create", "partial-create", "replacement", "tracked"} {
+	for _, dependency := range []string{"image", "volume", "tracked"} {
 		t.Run(dependency, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -71,41 +71,26 @@ func TestV2LogicalContainerDeletesWhileWaitingForDependenciesOrRetries(t *testin
 			switch dependency {
 			case "volume":
 				config.VolumeMounts = []apiv2.VolumeMount{{Type: apiv2.NamedVolumeMount, VolumeRef: "missing", Target: "/data"}}
-			case "create":
-				containerOrchestrator.FailNextCreateContainer(runtimeName, containers.ErrRuntimeNotHealthy)
-				reason = apiv2.PhysicalContainerReasonCreateFailed
-			case "partial-create":
-				containerOrchestrator.FailNextCreateContainerAfterCreation(runtimeName, containers.ErrRuntimeNotHealthy)
-				reason = apiv2.PhysicalContainerReasonCreateFailed
-			case "replacement", "tracked":
-				key := "previous"
-				if dependency == "tracked" {
-					key = "desired"
-				}
+			case "tracked":
 				var runErr error
 				existingID, runErr = containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
 					CreateContainerOptions: containers.CreateContainerOptions{
 						Name: runtimeName, Image: namespace.Name + "-image",
 						Labels: map[string]string{
-							"com.microsoft.developer.usvc-dev.lifecycle-key": key,
+							"com.microsoft.developer.usvc-dev.lifecycle-key": "desired",
 							"com.microsoft.developer.usvc-dev.build":         "test",
 						},
 					},
 				})
 				require.NoError(t, runErr)
 				removeRuntimeContainerOnCleanup(t, existingID)
-				if dependency == "replacement" {
-					containerOrchestrator.FailNextRemoveContainer(runtimeName, containers.ErrRuntimeNotHealthy)
-					reason = apiv2.PhysicalContainerReasonExistingContainerReplacementFailed
-				} else {
-					owner := &apiv2.PhysicalContainer{
-						ObjectMeta: metav1.ObjectMeta{Name: "runtime-owner", Namespace: namespace.Name},
-						Spec:       apiv2.PhysicalContainerSpec{ContainerID: existingID},
-					}
-					require.NoError(t, client.Create(ctx, owner))
-					waitPhysicalContainerPhase(t, ctx, owner.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
-					reason = apiv2.PhysicalContainerReasonRuntimeContainerAlreadyTracked
+				owner := &apiv2.PhysicalContainer{
+					ObjectMeta: metav1.ObjectMeta{Name: "runtime-owner", Namespace: namespace.Name},
+					Spec:       apiv2.PhysicalContainerSpec{ContainerID: existingID},
 				}
+				require.NoError(t, client.Create(ctx, owner))
+				waitPhysicalContainerPhase(t, ctx, owner.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+				reason = apiv2.PhysicalContainerReasonRuntimeContainerAlreadyTracked
 			}
 			logical := &apiv2.LogicalContainer{
 				ObjectMeta: metav1.ObjectMeta{Name: "logical", Namespace: namespace.Name},
@@ -128,9 +113,6 @@ func TestV2LogicalContainerDeletesWhileWaitingForDependenciesOrRetries(t *testin
 			if existingID != "" {
 				_, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{existingID}})
 				require.NoError(t, inspectErr)
-			}
-			if dependency == "partial-create" {
-				waitContainerMissing(t, ctx, runtimeName)
 			}
 			waitResourceLeaseReleased(t, ctx, logical)
 		})
