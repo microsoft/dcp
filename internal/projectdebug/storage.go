@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -155,6 +156,30 @@ func debugProjectAdmission(project apiv2.ProjectObject) error {
 		return apierrors.NewForbidden(resource, project.GetName(), dap.ErrShutdownRequested)
 	}
 	return nil
+}
+
+// debugRequestAdmission rejects launch requests on a direct-mode Project until the session has attached, because its
+// application is already running. Other Projects admit every request.
+func debugRequestAdmission(project apiv2.ProjectObject) func(dap.Message) error {
+	if project.GetProjectSpec().EffectiveLaunchMode() != apiv2.ProjectLaunchModeDirect {
+		return nil
+	}
+	attached := false
+	return func(request dap.Message) error {
+		var command string
+		if decodeErr := json.Unmarshal(request["command"], &command); decodeErr != nil {
+			return fmt.Errorf("decode DAP request command: %w", decodeErr)
+		}
+		switch command {
+		case "attach":
+			attached = true
+		case "launch":
+			if !attached {
+				return fmt.Errorf("the Project application was launched directly; use attach instead of launch")
+			}
+		}
+		return nil
+	}
 }
 
 func validateDebugUpgrade(request *http.Request, resource schema.GroupResource) error {
@@ -476,7 +501,7 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 			return storage.runtime.observeProcessMessage(project, session.ID, message)
 		}, func(state dap.SessionState) error {
 			return storage.runtime.publishProgress(project, session.ID, state)
-		})
+		}, debugRequestAdmission(project))
 	if ctx.Err() != nil && !errors.Is(context.Cause(ctx), dap.ErrShutdownRequested) {
 		sessionErr = errors.Join(sessionErr, context.Cause(ctx))
 	}

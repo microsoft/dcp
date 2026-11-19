@@ -54,6 +54,13 @@ func newMessageWriter(transport Transport) *messageWriter {
 	return &messageWriter{transport: transport, requests: make(map[int64]requestIdentity)}
 }
 
+// discardsRequests reports whether a forwarded disconnect has stopped request forwarding.
+func (writer *messageWriter) discardsRequests() bool {
+	writer.writeMu.Lock()
+	defer writer.writeMu.Unlock()
+	return writer.shutdown
+}
+
 func (writer *messageWriter) send(message Message, local bool) error {
 	writer.writeMu.Lock()
 	defer writer.writeMu.Unlock()
@@ -193,6 +200,7 @@ type bridgeSession struct {
 	toAdapter, toClient    *messageWriter
 	tracker                *sessionTracker
 	observe                func(Direction, Message) error
+	admit                  func(Message) error
 	results                chan bridgeResult
 	workers                sync.WaitGroup
 	disconnectAcknowledged atomic.Bool
@@ -211,13 +219,15 @@ type bridgeSession struct {
 // Observe runs before forwarding, after response correlation, and must be bounded and leave messages unchanged.
 // Private shutdown replies and uncorrelated responses are not observed.
 // ObserveState receives serialized snapshots only when connection state or DAP milestones change.
+// Admit, when set, runs for each client request before forwarding; a non-nil error is returned to the client as a
+// failed response carrying the error message, the request is not forwarded, and the session continues.
 func Bridge(ctx context.Context, client, adapter Transport, exited, readDone <-chan struct{}, grace time.Duration,
-	observe func(Direction, Message) error, observeState func(SessionState) error,
+	observe func(Direction, Message) error, observeState func(SessionState) error, admit func(Message) error,
 ) (bridgeErr error) {
 	session := &bridgeSession{
 		client: client, adapter: adapter,
 		toAdapter: newMessageWriter(adapter), toClient: newMessageWriter(client),
-		tracker: &sessionTracker{publish: observeState}, observe: observe,
+		tracker: &sessionTracker{publish: observeState}, observe: observe, admit: admit,
 		results: make(chan bridgeResult, 2), drainExpired: make(chan struct{}),
 	}
 	defer func() {
@@ -259,6 +269,14 @@ func (session *bridgeSession) forwardClientToAdapter() bridgeResult {
 		if !forward {
 			continue
 		}
+		if session.admit != nil && message.text("type") == "request" && !session.toAdapter.discardsRequests() {
+			if rejection := session.admit(message); rejection != nil {
+				if rejectErr := session.rejectClientRequest(message, rejection); rejectErr != nil {
+					return *rejectErr
+				}
+				continue
+			}
+		}
 		if message.text("type") != "response" || matched {
 			if progressErr := session.tracker.message(ClientToAdapter, message); progressErr != nil {
 				return bridgeResult{endpoint: bridgeClient, progressErr: progressErr}
@@ -273,6 +291,35 @@ func (session *bridgeSession) forwardClientToAdapter() bridgeResult {
 			return bridgeResult{endpoint: bridgeAdapter, err: writeErr, progressErr: session.tracker.disconnect(false, writeErr.Error())}
 		}
 	}
+}
+
+// rejectClientRequest records a request refused by admission and answers it with a failed response,
+// returning a result only when the session can no longer continue.
+func (session *bridgeSession) rejectClientRequest(request Message, rejection error) *bridgeResult {
+	command := request.text("command")
+	if progressErr := session.tracker.message(ClientToAdapter, request); progressErr != nil {
+		return &bridgeResult{endpoint: bridgeClient, progressErr: progressErr}
+	}
+	if progressErr := session.tracker.update(func(state *SessionState) error {
+		state.Message = fmt.Sprintf("Rejected %s: %s", command, rejection.Error())
+		return nil
+	}); progressErr != nil {
+		return &bridgeResult{endpoint: bridgeClient, progressErr: progressErr}
+	}
+	encodedCommand, commandErr := json.Marshal(command)
+	encodedMessage, messageErr := json.Marshal(rejection.Error())
+	if encodeErr := errors.Join(commandErr, messageErr); encodeErr != nil {
+		return &bridgeResult{endpoint: bridgeClient, err: fmt.Errorf("encode DAP rejection response: %w", encodeErr)}
+	}
+	response := Message{
+		"type": json.RawMessage(`"response"`), "command": encodedCommand,
+		"success": json.RawMessage("false"), "message": encodedMessage,
+	}
+	response.setNumber("request_seq", request.number("seq"))
+	if writeErr := session.toClient.send(response, false); writeErr != nil {
+		return &bridgeResult{endpoint: bridgeClient, err: writeErr, progressErr: session.tracker.disconnect(true, writeErr.Error())}
+	}
+	return nil
 }
 
 func (session *bridgeSession) forwardAdapterToClient() bridgeResult {

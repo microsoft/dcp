@@ -8,6 +8,7 @@ package dap
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -42,7 +43,7 @@ func TestBridgePublishesSessionObservations(t *testing.T) {
 			func(state SessionState) error {
 				snapshots = append(snapshots, state)
 				return nil
-			})
+			}, nil)
 	}()
 	require.NoError(t, client.WriteMessage(testRequest(1, "initialize")))
 	initialize, readErr := adapter.ReadMessage()
@@ -151,4 +152,69 @@ func TestSessionTracksMonotonicObservations(t *testing.T) {
 	require.NoError(t, tracker.disconnect(false, "bridge closed adapter"))
 	require.True(t, tracker.state.AdapterDisconnected)
 	require.True(t, snapshots[len(snapshots)-1].StreamsConnected)
+}
+
+// Verifies that Bridge answers a request refused by admission with a failed response correlated to the client's
+// sequence, never forwards it, records the rejection in session state, and keeps forwarding later requests.
+func TestBridgeAdmissionRejectsRequestWithoutForwarding(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, 0)
+	defer cancel()
+	clientPeer, clientBridge := net.Pipe()
+	adapterPeer, adapterBridge := net.Pipe()
+	for _, connection := range []net.Conn{clientPeer, clientBridge, adapterPeer, adapterBridge} {
+		defer connection.Close()
+		if deadline, present := ctx.Deadline(); present {
+			require.NoError(t, connection.SetDeadline(deadline))
+		}
+	}
+	client := &testTransport{Conn: clientPeer, reader: bufio.NewReader(clientPeer)}
+	adapter := &testTransport{Conn: adapterPeer, reader: bufio.NewReader(adapterPeer)}
+	var snapshots []SessionState
+	done := make(chan error, 1)
+	go func() {
+		done <- Bridge(ctx,
+			&testTransport{Conn: clientBridge, reader: bufio.NewReader(clientBridge)},
+			&testTransport{Conn: adapterBridge, reader: bufio.NewReader(adapterBridge)}, nil, nil, time.Second, nil,
+			func(state SessionState) error {
+				snapshots = append(snapshots, state)
+				return nil
+			}, func(request Message) error {
+				if request.text("command") == "launch" {
+					return errors.New("launch is not permitted")
+				}
+				return nil
+			})
+	}()
+	require.NoError(t, client.WriteMessage(testRequest(71, "launch")))
+	rejected, rejectedErr := client.ReadMessage()
+	require.NoError(t, rejectedErr)
+	require.Equal(t, "response", rejected.text("type"))
+	require.Equal(t, "launch", rejected.text("command"))
+	require.EqualValues(t, 71, rejected.number("request_seq"))
+	require.JSONEq(t, "false", string(rejected["success"]))
+	require.Equal(t, "launch is not permitted", rejected.text("message"))
+
+	require.NoError(t, client.WriteMessage(testRequest(72, "attach")))
+	forwarded, forwardedErr := adapter.ReadMessage()
+	require.NoError(t, forwardedErr)
+	require.Equal(t, "attach", forwarded.text("command"), "the rejected launch must not reach the adapter")
+	require.NoError(t, adapter.WriteMessage(testResponse(1, forwarded.number("seq"), "attach")))
+	attached, attachedErr := client.ReadMessage()
+	require.NoError(t, attachedErr)
+	require.EqualValues(t, 72, attached.number("request_seq"))
+	require.NoError(t, adapter.Close())
+	require.NoError(t, <-done)
+
+	require.NotEmpty(t, snapshots)
+	var rejection SessionState
+	for _, snapshot := range snapshots {
+		if snapshot.Message != "" {
+			rejection = snapshot
+			break
+		}
+	}
+	require.True(t, rejection.LaunchRequested)
+	require.Equal(t, "Rejected launch: launch is not permitted", rejection.Message)
+	require.True(t, snapshots[len(snapshots)-1].AttachRequested)
 }

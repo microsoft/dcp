@@ -1278,6 +1278,66 @@ func TestProjectDebugServingContainerStdioPrimary(t *testing.T) {
 	closeDebugServing(t, primary)
 }
 
+// Verifies that ProjectDebugStorage answers a direct-mode Project's launch request with a DAP error without forwarding it,
+// keeps the session open for a following attach, and records the rejection in the session's progress.
+func TestProjectDebugServingDirectModeRejectsLaunch(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, time.Minute)
+	defer cancel()
+	apiClient, config, _ := startDebugServingTest(t, ctx)
+	project := createDebugServingProject(t, ctx, apiClient, apiv2.DebugAdapterModeStdio, "stdio")
+	require.NoError(t, apiClient.Delete(ctx, project))
+	project.ResourceVersion, project.UID = "", ""
+	project.Spec.LaunchMode = apiv2.ProjectLaunchModeDirect
+	project.Status = apiv2.ProjectProcessStatus{}
+	require.NoError(t, apiClient.Create(ctx, project))
+	project.Status.Phase = apiv2.ProjectPhaseActive
+	project.Status.Conditions = []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue,
+		Reason: string(apiv2.ProjectReasonApplicationRunning), ObservedGeneration: project.Generation, LastTransitionTime: metav1.Now()}}
+	require.NoError(t, apiClient.Status().Update(ctx, project))
+
+	connection, connectErr := connectDebugServing(ctx, config, project)
+	require.NoError(t, connectErr)
+	defer connection.Close()
+	deadline, hasDeadline := ctx.Deadline()
+	require.True(t, hasDeadline)
+	require.NoError(t, connection.SetReadDeadline(deadline))
+	stream := &debugWebSocketStream{connection: connection}
+	reader := bufio.NewReader(stream)
+	request := func(sequence int, command string) dap.Message {
+		return dap.Message{"seq": json.RawMessage(strconv.Itoa(sequence)), "type": json.RawMessage(`"request"`),
+			"command": json.RawMessage(`"` + command + `"`), "arguments": json.RawMessage(`{}`)}
+	}
+	require.NoError(t, dap.WriteMessage(stream, request(7, "launch")))
+	rejected, rejectedErr := dap.ReadMessage(reader)
+	require.NoError(t, rejectedErr)
+	require.JSONEq(t, `"response"`, string(rejected["type"]))
+	require.JSONEq(t, `"launch"`, string(rejected["command"]))
+	require.JSONEq(t, `7`, string(rejected["request_seq"]))
+	require.JSONEq(t, `false`, string(rejected["success"]))
+	require.Contains(t, string(rejected["message"]), "use attach instead of launch")
+
+	// The test adapter echoes requests, so receiving the attach request proves the rejected launch was never forwarded.
+	require.NoError(t, dap.WriteMessage(stream, request(8, "attach")))
+	echoed, echoedErr := dap.ReadMessage(reader)
+	require.NoError(t, echoedErr)
+	require.JSONEq(t, `"request"`, string(echoed["type"]))
+	require.JSONEq(t, `"attach"`, string(echoed["command"]))
+
+	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
+		current := &apiv2.ProjectProcess{}
+		if getErr := apiClient.Get(pollCtx, project.NamespacedName(), current); getErr != nil {
+			return false, getErr
+		}
+		debug := current.GetProjectStatus().Debug
+		if debug == nil || len(debug.Sessions) != 1 || debug.Sessions[0].Progress == nil {
+			return false, nil
+		}
+		progress := debug.Sessions[0].Progress
+		return progress.AttachRequested && progress.LaunchRequested && !progress.LaunchSucceeded, nil
+	}))
+	closeDebugServing(t, connection)
+}
+
 // Verifies that ProjectDebugStorage execs direct-mode container adapters beside the running application, substituting
 // the in-container TCP port and connecting through its published mapping, without ever starting the container itself.
 func TestProjectDebugServingDirectContainerAdaptersExec(t *testing.T) {
