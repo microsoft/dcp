@@ -84,9 +84,6 @@ type ApiServerInfo struct {
 	// Path to the kubeconfig file used to connect to the API server.
 	kubeconfigPath string
 
-	// The execution context and the execution context cancel function for the API server process.
-	dcpCtx context.Context
-
 	// Lock allowing safe access from multiple goroutines.
 	lock *sync.Mutex
 }
@@ -129,6 +126,11 @@ func StartApiServerWithOptions(
 		ApiServerDisposalComplete: concurrency.NewAutoResetEvent(false),
 	}
 
+	// Detach the API server process and test container orchestrator from testRunCtx cancellation so
+	// controller managers can finish graceful shutdown draining before Dispose stops the API server.
+	detachedCtx := context.WithoutCancel(testRunCtx)
+	pe := process.NewOSExecutor(log)
+
 	cleanup := func() {
 		info.lock.Lock()
 		defer info.lock.Unlock()
@@ -157,10 +159,22 @@ func StartApiServerWithOptions(
 				if shutdownRequestErr != nil {
 					log.Error(shutdownRequestErr, "Failed to request API server shutdown")
 				} else {
-					<-info.ApiServerExited.Wait()
+					gracefulExitTimer := time.NewTimer(10 * time.Second)
+					select {
+					case <-info.ApiServerExited.Wait():
+					case <-gracefulExitTimer.C:
+						log.Error(context.DeadlineExceeded, "Timed out waiting for API server process exit after shutdown request; forcing termination")
+					}
+					gracefulExitTimer.Stop()
 				}
 			}
 		}
+
+		// Still dispose pe even after the REST shutdown step above: startup may have failed
+		// after pe.StartProcess but before info.RestClient was initialized, the REST shutdown
+		// request or graceful-exit wait may have failed, and pe may also own container-runtime
+		// CLI subprocesses or executor OS handles that must be released.
+		pe.Dispose()
 
 		logger.ReleaseResourceLogsInFolder(sessionFolder)
 
@@ -172,6 +186,8 @@ func StartApiServerWithOptions(
 			log.Error(sessionFolderRemoveErr, "Failed to remove the session folder of the API server instance")
 		}
 	}
+
+	info.Dispose = cleanup
 
 	dcpPath, dcpPathErr := getDcpExecutablePath()
 	if dcpPathErr != nil {
@@ -186,13 +202,6 @@ func StartApiServerWithOptions(
 	}
 	info.kubeconfigPath = filepath.Join(testutil.TestTempDir(), fmt.Sprintf("kubeconfig-test-%s", suffix))
 
-	var dcpCtxCancel context.CancelFunc
-	info.dcpCtx, dcpCtxCancel = context.WithCancel(testRunCtx)
-	info.Dispose = func() {
-		cleanup()
-		dcpCtxCancel()
-	}
-
 	dcpArgs := []string{
 		"start-apiserver",
 		"--server-only",
@@ -202,8 +211,6 @@ func StartApiServerWithOptions(
 	if options.Port != 0 {
 		dcpArgs = append(dcpArgs, "--"+kubeconfig.PortFlagName, strconv.Itoa(int(options.Port)))
 	}
-
-	pe := process.NewOSExecutor(log)
 
 	// From here on we need to do cleanup if something goes wrong.
 
@@ -221,7 +228,7 @@ func StartApiServerWithOptions(
 		co.EnsureBackgroundStatusUpdates(testRunCtx)
 	} else {
 		tco, tcoErr := NewTestContainerOrchestrator(
-			info.dcpCtx,
+			detachedCtx,
 			log.WithName("TestContainerOrchestrator"),
 			TcoOptionEnableSocketListener,
 		)
@@ -266,7 +273,8 @@ func StartApiServerWithOptions(
 		info.ApiServerExited.SetAndFreeze()
 	})
 
-	apiServerHandle, startWaitForProcessExit, dcpStartErr := pe.StartProcess(testRunCtx, cmd, apiserverExitHandler, process.CreationFlagsNone, nil)
+	// Dispose stops the process if graceful shutdown is not possible or does not complete in time.
+	apiServerHandle, startWaitForProcessExit, dcpStartErr := pe.StartProcess(detachedCtx, cmd, apiserverExitHandler, process.CreationFlagEnsureKillOnDispose, nil)
 	if dcpStartErr != nil {
 		info.ApiServerExited.SetAndFreeze()
 		cleanup()
@@ -278,7 +286,7 @@ func StartApiServerWithOptions(
 	// Using generous timeout because AzDO pipeline machines can be very slow at times.
 	const configCreationTimeout = 70 * time.Second
 	const clientCreationTimeout = 20 * time.Second
-	configCreationCtx, configCreationCancel := context.WithTimeout(info.dcpCtx, configCreationTimeout)
+	configCreationCtx, configCreationCancel := context.WithTimeout(testRunCtx, configCreationTimeout)
 	defer configCreationCancel()
 
 	clientConfig, clientConfigErr := dcpclient.NewConfigFromKubeconfigFile(configCreationCtx, info.kubeconfigPath)
@@ -289,7 +297,7 @@ func StartApiServerWithOptions(
 
 	info.ClientConfig = clientConfig
 
-	clientCreationCtx, clientCreationCancel := context.WithTimeout(info.dcpCtx, clientCreationTimeout)
+	clientCreationCtx, clientCreationCancel := context.WithTimeout(testRunCtx, clientCreationTimeout)
 	defer clientCreationCancel()
 	client, clientErr := dcpclient.NewClientFromConfig(clientCreationCtx, info.ClientConfig)
 	if clientErr != nil {

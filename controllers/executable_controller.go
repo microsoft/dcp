@@ -1145,7 +1145,7 @@ func (r *ExecutableReconciler) disableEndpointsAndHealthProbes(
 		}
 	}
 
-	removeEndpointsForWorkload(ctx, r, exe, log)
+	_ = removeEndpointsForWorkload(ctx, r, exe, log)
 }
 
 func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr.Logger) {

@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	stdruntime "runtime"
 	"sync"
 	"time"
 
@@ -27,7 +28,6 @@ import (
 	"github.com/microsoft/dcp/internal/contextdata"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
-	"github.com/microsoft/dcp/pkg/container"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/syncmap"
 )
@@ -152,13 +152,10 @@ type LogStorage[O Options] struct {
 	newResponse  func(registry_rest.ResourceStreamer) runtime.Object
 	responseKind schema.GroupVersionKind
 
-	// Schedules resources with pending lifecycle events.
-	logStreamerResourceQueue       *resiliency.WorkQueue
+	// Schedules lifecycle events in order per resource UID while bounding total worker concurrency.
+	logStreamerResourceQueue       *resiliency.PartitionedWorkQueue[types.UID]
 	logStreamerResourceQueueCancel context.CancelFunc
 	lifetimeCtx                    context.Context
-
-	// An entry remains while its resource is queued or processing an event, even when its FIFO is empty.
-	pendingResourceEvents map[types.UID]*container.RingBuffer[ResourceWatcherEvent]
 
 	// Shares the latest processed state and processing lock between lifecycle callbacks and log requests.
 	resourceStates *syncmap.Map[types.UID, *resourceLogState]
@@ -195,12 +192,15 @@ func NewLogStorage[O Options](
 	logStreamerResourceQueueCtx, logStreamerResourceQueueCancel := context.WithCancel(context.Background())
 
 	return &LogStorage[O]{
-		parentKindStorage:              parentKindStorage,
-		logStreamer:                    logStreamer,
-		logStreamerResourceQueue:       resiliency.NewWorkQueue(logStreamerResourceQueueCtx, resiliency.DefaultConcurrency),
+		parentKindStorage: parentKindStorage,
+		logStreamer:       logStreamer,
+		logStreamerResourceQueue: resiliency.NewPartitionedWorkQueue[types.UID](
+			logStreamerResourceQueueCtx,
+			1,
+			uint(stdruntime.NumCPU()),
+		),
 		logStreamerResourceQueueCancel: logStreamerResourceQueueCancel,
 		lifetimeCtx:                    logStreamerResourceQueueCtx,
-		pendingResourceEvents:          make(map[types.UID]*container.RingBuffer[ResourceWatcherEvent]),
 		resourceStates:                 &syncmap.Map[types.UID, *resourceLogState]{},
 		resourceWatchers:               &syncmap.Map[types.UID, *syncmap.Map[*resourceWatcher, bool]]{},
 		mutex:                          &sync.Mutex{},
@@ -382,50 +382,33 @@ func (ls *LogStorage[O]) resourceEventHandler(evt watch.Event, log logr.Logger) 
 	}()
 
 	uid := apiObj.GetObjectMeta().GetUID()
-	pending, scheduled := ls.pendingResourceEvents[uid]
-	if !scheduled {
-		pending = container.NewRingBuffer[ResourceWatcherEvent]()
-		ls.pendingResourceEvents[uid] = pending
-	}
-	pending.Push(rwevt)
-	if !scheduled {
-		ls.scheduleResourceEvent(uid, log)
-	}
-}
-
-// scheduleResourceEvent requires ls.mutex to be held.
-func (ls *LogStorage[O]) scheduleResourceEvent(uid types.UID, log logr.Logger) {
-	scheduleErr := ls.logStreamerResourceQueue.Enqueue(func(ctx context.Context) {
-		ls.processResourceEvent(ctx, uid, log)
+	scheduleErr := ls.logStreamerResourceQueue.Enqueue(uid, func(ctx context.Context) {
+		ls.processResourceEvent(ctx, uid, rwevt, log)
 	})
 	if scheduleErr != nil {
-		delete(ls.pendingResourceEvents, uid)
 		log.Error(scheduleErr, "Failed to schedule log resource event", "UID", uid)
 	}
 }
 
-func (ls *LogStorage[O]) processResourceEvent(ctx context.Context, uid types.UID, log logr.Logger) {
+func (ls *LogStorage[O]) processResourceEvent(
+	ctx context.Context,
+	uid types.UID,
+	event ResourceWatcherEvent,
+	log logr.Logger,
+) {
 	ls.mutex.Lock()
-	if ls.disposed {
-		ls.mutex.Unlock()
-		return
-	}
-	pending := ls.pendingResourceEvents[uid]
-	event, found := pending.Pop()
-	if !found {
-		delete(ls.pendingResourceEvents, uid)
-		ls.mutex.Unlock()
-		log.Error(fmt.Errorf("resource event queue is empty"), "Failed to dispatch log resource event", "UID", uid)
-		return
-	}
+	disposed := ls.disposed
 	ls.mutex.Unlock()
+	if disposed || ctx.Err() != nil {
+		return
+	}
 
 	state, _ := ls.resourceStates.LoadOrStoreNew(uid, func() *resourceLogState {
 		return &resourceLogState{}
 	})
 	state.processing.Lock()
+	defer state.processing.Unlock()
 	if ctx.Err() != nil {
-		state.processing.Unlock()
 		return
 	}
 	state.latest = event
@@ -435,18 +418,6 @@ func (ls *LogStorage[O]) processResourceEvent(ctx context.Context, uid types.UID
 			rw.Notify()
 			return true
 		})
-	}
-	state.processing.Unlock()
-
-	ls.mutex.Lock()
-	defer ls.mutex.Unlock()
-	if ls.disposed {
-		return
-	}
-	if pending.Empty() {
-		delete(ls.pendingResourceEvents, uid)
-	} else {
-		ls.scheduleResourceEvent(uid, log)
 	}
 }
 
@@ -499,7 +470,6 @@ func (ls *LogStorage[O]) Destroy() {
 	watcher := ls.watcher
 	ls.watcher = nil
 	ls.logStreamerResourceQueueCancel()
-	clear(ls.pendingResourceEvents)
 	ls.mutex.Unlock()
 
 	// Logs do not have independent storage/lifecycle, they will be deleted when the parent is deleted,
