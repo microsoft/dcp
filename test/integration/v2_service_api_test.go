@@ -57,7 +57,7 @@ func TestV2ServiceEndpointAPIValidatesUpdates(t *testing.T) {
 		Spec: apiv2.ServiceEndpointSpec{ServiceRef: service.Name, Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 5000}}}}
 	require.NoError(t, apiClient.Create(ctx, endpoint))
 	waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+		return logicalServiceReady(current), nil
 	})
 	for _, testCase := range []struct {
 		name  string
@@ -119,7 +119,7 @@ func TestV2ServiceEndpointAPIValidatesUpdates(t *testing.T) {
 	endpoint.Spec.Addresses = []apiv2.ServiceAddress{{Address: "[::1]", Port: 5001}, {Address: "127.0.0.1", Port: 5002}}
 	endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
 	waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalServicePhaseReady &&
+		return logicalServiceReady(current) &&
 			len(current.Status.EffectiveAddresses) == 2 && current.Status.EffectiveAddresses[0].Port == 5001, nil
 	})
 	require.NoError(t, apiClient.Patch(ctx, endpoint, ctrl_client.RawPatch(types.MergePatchType,
@@ -127,7 +127,7 @@ func TestV2ServiceEndpointAPIValidatesUpdates(t *testing.T) {
 	endpoint.Spec.Addresses = []apiv2.ServiceAddress{{Address: "localhost", Port: 65535}}
 	endpoint = recreateServiceEndpoint(t, ctx, apiClient, endpoint)
 	waitObjectAssumesStateEx(t, ctx, apiClient, service.NamespacedName(), func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalServicePhaseReady && len(current.Status.EffectiveAddresses) == 1 &&
+		return logicalServiceReady(current) && len(current.Status.EffectiveAddresses) == 1 &&
 			current.Status.EffectiveAddresses[0] == (apiv2.ServiceAddress{Address: "localhost", Port: 65535}), nil
 	})
 
@@ -212,13 +212,13 @@ func TestV2ServiceAPIStorageAndNamespaceCleanup(t *testing.T) {
 	require.NoError(t, apiClient.Get(ctx, endpoint.NamespacedName(), storedEndpoint))
 	require.Equal(t, int32(5002), storedEndpoint.Spec.Addresses[1].Port)
 
-	proxyless.Status = apiv2.LogicalServiceStatus{Phase: apiv2.LogicalServicePhaseReady, EffectiveAddresses: addresses}
+	proxyless.Status = apiv2.LogicalServiceStatus{Phase: apiv2.LogicalServicePhaseRunning, EffectiveAddresses: addresses}
 	require.NoError(t, apiClient.Status().Update(ctx, proxyless))
 	storedService := &apiv2.LogicalService{}
 	require.NoError(t, apiClient.Get(ctx, proxyless.NamespacedName(), storedService))
 	require.Equal(t, apiv2.ServiceAddressAllocationModeProxyless, storedService.Spec.AddressAllocationMode)
 	require.Equal(t, addresses, storedService.Status.EffectiveAddresses)
-	require.Equal(t, apiv2.LogicalServicePhaseReady, storedService.Status.Phase)
+	require.Equal(t, apiv2.LogicalServicePhaseRunning, storedService.Status.Phase)
 	storedService.Status.EffectiveAddresses = nil
 	storedService.Annotations = map[string]string{"test": "status-isolation"}
 	require.NoError(t, apiClient.Update(ctx, storedService))
@@ -334,7 +334,7 @@ func TestV2LogicalProcessPersistentModeRequiresFixedPorts(t *testing.T) {
 			{name: "no-ports"},
 		} {
 			t.Run(keyKind+"/"+testCase.name, func(t *testing.T) {
-				spec := apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent,
+				spec := apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: "persistent-port-validation",
 					Process: &apiv2.LogicalProcessConfig{ExecutablePath: "persistent-port-validation"}}
 				if keyKind == "explicit" {
 					spec.LifecycleKey = "caller-key"

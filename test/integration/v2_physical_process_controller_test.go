@@ -53,6 +53,8 @@ func TestV2PhysicalProcessControllerChecksExpectedIdentity(t *testing.T) {
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle))
 }
 
+// Verifies that PhysicalProcess launches with the supplied arguments and working directory,
+// preserves ordinary environment values, and excludes internal-prefixed variables.
 func TestV2PhysicalProcessControllerLaunchesProcess(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -68,7 +70,11 @@ func TestV2PhysicalProcessControllerLaunchesProcess(t *testing.T) {
 				Args:               []string{"one", "two"},
 				WorkingDirectory:   "/tmp",
 				AmbientEnvironment: apiv2.AmbientEnvironment{Behavior: apiv2.EnvironmentBehaviorDoNotInherit},
-				Env:                []commonapi.EnvVar{{Name: "TEST_VALUE", Value: "expected"}},
+				Env: []commonapi.EnvVar{
+					{Name: "TEST_VALUE", Value: "expected"},
+					{Name: "DCP_PHYSICAL_PROCESS_INTERNAL", Value: "not for child"},
+					{Name: "DEBUG_SESSION_PHYSICAL_PROCESS_INTERNAL", Value: "not for child"},
+				},
 			},
 		},
 	}
@@ -109,6 +115,8 @@ func TestV2PhysicalProcessControllerObservesAndPreservesExistingProcess(t *testi
 	require.NoError(t, testProcessExecutor.CheckProcessRunning(handle), "adopted process must survive deletion of the PhysicalProcess")
 }
 
+// Verifies that PhysicalProcess reports an adopted process's polled exit without an exit code,
+// and its LogicalProcess owner reports Exited/Completed.
 func TestV2PhysicalProcessControllerReportsAdoptedProcessExit(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -117,14 +125,17 @@ func TestV2PhysicalProcessControllerReportsAdoptedProcessExit(t *testing.T) {
 	namespace := createActiveV2Namespace(t, ctx, "v2-pproc-adopted-exit")
 	handle := seedAdoptablePhysicalProcess(t, ctx, "v2-pproc-adopted-exit-command")
 	pid := int64(handle.Pid)
-	physicalProcess := &apiv2.PhysicalProcess{
+	logicalProcess := &apiv2.LogicalProcess{
 		ObjectMeta: metav1.ObjectMeta{Name: "adopted-process", Namespace: namespace.Name},
-		Spec:       apiv2.PhysicalProcessSpec{PID: &pid},
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModeExisting,
+			PID: &pid, IdentityTimestamp: metav1.NewMicroTime(handle.IdentityTime)},
 	}
-	require.NoError(t, client.Create(ctx, physicalProcess))
-	runningProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
+	require.NoError(t, client.Create(ctx, logicalProcess))
+	runningLogical := waitLogicalProcessPhase(t, ctx, logicalProcess.NamespacedName(), apiv2.LogicalProcessPhaseRunning)
+	physicalName := types.NamespacedName{Namespace: namespace.Name, Name: runningLogical.Status.PhysicalProcessRef}
+	runningProcess := waitPhysicalProcessPhase(t, ctx, physicalName, apiv2.PhysicalProcessPhaseRunning)
 
-	testProcessExecutor.SimulateProcessExit(t, handle.Pid, 0)
+	testProcessExecutor.SimulateProcessExit(t, handle.Pid, 17)
 	require.NoError(t, retryOnConflict[apiv2.PhysicalProcess](ctx, runningProcess.NamespacedName(), func(ctx context.Context, current *apiv2.PhysicalProcess) error {
 		if current.Annotations == nil {
 			current.Annotations = map[string]string{}
@@ -133,8 +144,15 @@ func TestV2PhysicalProcessControllerReportsAdoptedProcessExit(t *testing.T) {
 		return client.Update(ctx, current)
 	}))
 
-	exitedProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseExited)
-	requireReadyCondition(t, exitedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessMissing)
+	exitedProcess := waitPhysicalProcessPhase(t, ctx, physicalName, apiv2.PhysicalProcessPhaseExited)
+	requireReadyCondition(t, exitedProcess.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalProcessReasonRuntimeProcessExited)
+	require.Nil(t, exitedProcess.Status.ExitCode)
+	require.False(t, exitedProcess.Status.FinishedAt.IsZero())
+	completed := waitLogicalProcessPhase(t, ctx, logicalProcess.NamespacedName(), apiv2.LogicalProcessPhaseExited)
+	requireReadyCondition(t, completed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalProcessReasonCompleted)
+	require.Nil(t, completed.Status.ExitCode)
+	require.Equal(t, pid, *completed.Status.PID)
+	require.Equal(t, exitedProcess.Status.FinishedAt, completed.Status.FinishedAt)
 }
 
 func TestV2PhysicalProcessControllerReportsMissingExistingProcess(t *testing.T) {

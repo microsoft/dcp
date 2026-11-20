@@ -19,14 +19,21 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/dcptun"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
-// Verifies that PrepareClientProxyImageBuild creates stable content identity and a usable archive.
+// Verifies that PrepareClientProxyImageBuild creates stable content identity and archives only the Dockerfile and binary.
 func TestPrepareClientProxyImageBuild(t *testing.T) {
 	t.Parallel()
 
 	dcppaths.EnableTestPathProbing()
 	buildContextDir := t.TempDir()
+	require.NoError(t, usvc_io.WriteFile(
+		filepath.Join(buildContextDir, "tunnel-control-security.json"),
+		[]byte("test-only-certificate-and-token"),
+		osutil.PermissionOnlyOwnerReadWrite,
+	))
 
 	plan, prepareErr := dcptun.PrepareClientProxyImageBuild(context.Background(), buildContextDir)
 	require.NoError(t, prepareErr)
@@ -71,11 +78,12 @@ func TestPrepareClientProxyImageBuild(t *testing.T) {
 		entries[header.Name] = contents
 	}
 
+	require.Len(t, entries, 2, "Shared image inputs must not include runtime credentials")
 	require.Contains(t, string(entries["Dockerfile"]), "FROM "+dcptun.DefaultBaseImage)
 	require.NotEmpty(t, entries[dcptun.ClientBinaryName])
 }
 
-// Verifies that PrepareClientProxyImageBuild honors cancellation before reading build inputs.
+// Verifies that PrepareClientProxyImageBuild stops before preparing an archive when its context is canceled.
 func TestPrepareClientProxyImageBuildHonorsCancellation(t *testing.T) {
 	t.Parallel()
 

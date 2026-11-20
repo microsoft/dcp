@@ -82,6 +82,12 @@ func MonitorPid(
 	return monitorCtx, monitorCtxCancel, nil
 }
 
+// Starts monitoring the process specified by the monitor flags (--monitor, --monitor-identity-time, and --monitor-interval).
+// Returns the same results as MonitorPid. An absent or unknown (-1) --monitor value is reported as an invalid process handle.
+func MonitorPidFromFlags(ctx context.Context, logger logr.Logger) (context.Context, context.CancelFunc, error) {
+	return MonitorPid(ctx, process.NewHandle(monitorPid, monitorProcessStartTime), monitorInterval, logger)
+}
+
 // Returns a context (derived from the passed parent context) that will be cancelled when
 // the process specified by the monitor flags (--monitor and --monitor-identity-time) exits .
 // If the flags are not present at startup, the returned context is just a regular cancellable context
@@ -96,6 +102,6 @@ func GetMonitorContextFromFlags(ctx context.Context, logger logr.Logger) (contex
 	}
 
 	// Ignore errors as they're logged by MonitorPid and we always return a valid context
-	monitorCtx, monitorCtxCancel, _ := MonitorPid(ctx, process.NewHandle(monitorPid, monitorProcessStartTime), monitorInterval, logger)
+	monitorCtx, monitorCtxCancel, _ := MonitorPidFromFlags(ctx, logger)
 	return monitorCtx, monitorCtxCancel
 }

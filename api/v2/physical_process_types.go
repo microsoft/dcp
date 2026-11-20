@@ -61,7 +61,8 @@ const (
 	// PhysicalProcessReasonRuntimeProcessExited indicates that the operating system process has exited.
 	PhysicalProcessReasonRuntimeProcessExited ConditionReason = "RuntimeProcessExited"
 
-	// PhysicalProcessReasonRuntimeProcessMissing indicates that the operating system process was not found.
+	// PhysicalProcessReasonRuntimeProcessMissing indicates that the referenced process was absent
+	// or failed its identity check before tracking began.
 	PhysicalProcessReasonRuntimeProcessMissing ConditionReason = "RuntimeProcessMissing"
 
 	// PhysicalProcessReasonRuntimeProcessInspectFailed indicates that process state could not be inspected.
@@ -141,6 +142,7 @@ type PhysicalProcessConfig struct {
 	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 
 	// Env contains process environment variables. These values override inherited variables with the same name.
+	// DCP_ and DEBUG_SESSION-prefixed variables are excluded from both inherited and explicit environments.
 	// +listType=map
 	// +listMapKey=name
 	Env []commonapi.EnvVar `json:"env,omitempty"`

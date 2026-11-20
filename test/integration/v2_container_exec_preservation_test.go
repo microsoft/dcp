@@ -62,7 +62,7 @@ func TestV2ContainerExecCapturesHonorPreservation(t *testing.T) {
 						Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: physical.Spec.Execution}}
 					require.NoError(t, server.Client.Create(ctx, owner))
 					running := waitObjectAssumesStateEx(t, ctx, server.Client, owner.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-						return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
+						return current.Status.Phase == apiv2.LogicalContainerExecPhaseRunning, nil
 					})
 					require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: target.Namespace, Name: running.Status.PhysicalExecRef}, physical))
 				} else {

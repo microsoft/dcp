@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
@@ -235,16 +236,17 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 	t.Cleanup(executor.Dispose)
 	runner := NewProcessExecutableRunner(executor)
 	changeHandler := newRecordingRunChangeHandler()
+	readyPath := filepath.Join(t.TempDir(), "ready")
 	exe := &apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "wait-delay",
-			UID:  "wait-delay",
+			UID:  types.UID(fmt.Sprintf("wait-delay-%s", uuid.NewUUID())),
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: delayPath,
 		},
 		Status: apiv1.ExecutableStatus{
-			EffectiveArgs: []string{"--delay=60s", "--child-spec=1", "--hold-pipe", "--report-ready"},
+			EffectiveArgs: []string{"--delay=60s", "--child-spec=1", "--hold-pipe", "--report-ready", "--ready-file=" + readyPath},
 			EffectiveEnv:  effectiveEnv,
 		},
 	}
@@ -297,7 +299,11 @@ func TestProcessExecutableRunnerBoundsInheritedOutputPipeWait(t *testing.T) {
 						return false, childErr
 					}
 				}
-				return strings.Contains(string(output), fmt.Sprintf("Ready: %d\n", rootPID)), nil
+				_, statErr := os.Stat(readyPath)
+				if errors.Is(statErr, os.ErrNotExist) {
+					return false, nil
+				}
+				return statErr == nil, statErr
 			}
 		}
 		return false, nil

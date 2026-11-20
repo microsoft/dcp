@@ -41,6 +41,11 @@ type logicalServiceData struct {
 	attempts              uint32
 	startupFailureMessage string
 	selectedUID           types.UID
+	selectedName          string
+	selectedAddresses     []apiv2.ServiceAddress
+	started               bool
+	failureReason         apiv2.ConditionReason
+	failureMessage        string
 }
 
 // LogicalServiceReconciler owns proxy listeners and projects listener or endpoint-selected addresses.
@@ -119,27 +124,40 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		found = false
 	}
 	if !found {
+		ready, namespaceReason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, service.Namespace)
+		if !ready {
+			phase, reason := apiv2.LogicalServicePhasePending, apiv2.LogicalServiceReasonStarting
+			message := namespaceReadinessMessage(service.Namespace, namespaceReason)
+			delay := StandardDelay
+			if namespaceErr != nil {
+				log.Error(namespaceErr, "Failed to check service namespace")
+				message, delay = namespaceErr.Error(), LongDelay
+			}
+			change := setValue(&service.Status.Phase, phase)
+			change |= setCondition(&service.Status.Conditions, apiv2.ConditionReady, service.Generation,
+				metav1.ConditionFalse, reason, message)
+			return r.SaveChangesWithDelay(ctx, service, patch, change, delay, nil, log)
+		}
 		data = &logicalServiceData{uid: service.UID}
+		if service.Spec.AddressAllocationMode == apiv2.ServiceAddressAllocationModeProxyless {
+			data.selectedName = service.Status.ProxylessEndpointRef
+			data.selectedAddresses = slices.Clone(service.Status.EffectiveAddresses)
+		}
 		r.services.Store(service.NamespacedName(), data)
 	}
 	status := apiv2.LogicalServiceStatus{Phase: apiv2.LogicalServicePhasePending, Conditions: slices.Clone(service.Status.Conditions)}
-	ready, reason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, service.Namespace)
-	message := namespaceReadinessMessage(service.Namespace, reason)
+	reason, message := apiv2.LogicalServiceReasonStarting, ""
 	requeue := false
+	available := false
 	switch {
 	case len(data.proxies) == 0 && data.attempts >= MaxServiceStartAttempts:
 		status.Phase = apiv2.LogicalServicePhaseFailed
-		reason, message = apiv2.LogicalServiceReasonProxyConfigurationFailed, data.startupFailureMessage
+		reason, message = apiv2.LogicalServiceReasonFailedToStart, data.startupFailureMessage
 	case len(data.proxies) > 0 && !slices.ContainsFunc(data.proxies, func(listener proxyInstanceData) bool {
 		return listener.proxy.State() == proxy.ProxyStateRunning
 	}):
 		status.Phase = apiv2.LogicalServicePhaseFailed
-		reason, message = apiv2.LogicalServiceReasonProxyListenerUnavailable, "Service listeners have stopped; recreate the service to allocate new listeners."
-	case !ready:
-		if namespaceErr != nil {
-			log.Error(namespaceErr, "Failed to check service namespace")
-			message, requeue = namespaceErr.Error(), true
-		}
+		reason, message = apiv2.LogicalServiceReasonMissing, "Service listeners have stopped; recreate the service to allocate new listeners."
 	default:
 		var endpoints apiv2.ServiceEndpointList
 		listErr := r.List(ctx, &endpoints, ctrl_client.InNamespace(service.Namespace), ctrl_client.MatchingFields{
@@ -147,7 +165,16 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		})
 		if listErr != nil {
 			log.Error(listErr, "Failed to list service endpoints")
-			reason, message, requeue = apiv2.LogicalServiceReasonEndpointLookupFailed, listErr.Error(), true
+			message, requeue = listErr.Error(), true
+			if service.Spec.AddressAllocationMode == apiv2.ServiceAddressAllocationModeProxyless {
+				status.EffectiveAddresses = slices.Clone(data.selectedAddresses)
+				status.ProxylessEndpointRef = data.selectedName
+			} else {
+				status.EffectiveAddresses = logicalServiceProxyAddresses(data.proxies)
+			}
+			if len(status.EffectiveAddresses) > 0 {
+				status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonAllocated
+			}
 			break
 		}
 		endpoints.Items = slices.DeleteFunc(endpoints.Items, func(endpoint apiv2.ServiceEndpoint) bool { return !endpoint.DeletionTimestamp.IsZero() })
@@ -167,53 +194,60 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 			}
 			if selected >= 0 {
 				endpoint := &endpoints.Items[selected]
-				data.selectedUID = endpoint.UID
-				status.EffectiveAddresses = slices.Clone(endpoint.Spec.Addresses)
-				status.ProxylessEndpointRef, status.Phase = endpoint.Name, apiv2.LogicalServicePhaseReady
-				reason, message = apiv2.LogicalServiceReasonEndpointSelected, "The selected endpoint's addresses are available."
+				data.selectedUID, data.selectedName = endpoint.UID, endpoint.Name
+				data.selectedAddresses = slices.Clone(endpoint.Spec.Addresses)
+				status.EffectiveAddresses = slices.Clone(data.selectedAddresses)
+				status.ProxylessEndpointRef, status.Phase = data.selectedName, apiv2.LogicalServicePhaseRunning
+				reason, message = apiv2.LogicalServiceReasonReady, "The selected endpoint's addresses are available."
+				data.started, available = true, true
 			} else {
-				data.selectedUID = ""
-				reason, message = apiv2.LogicalServiceReasonWaitingForEndpoints, "The service has no available endpoints."
+				data.selectedUID, data.selectedName, data.selectedAddresses = "", "", nil
+				reason, message = apiv2.LogicalServiceReasonStarting, "The service has no available endpoints."
 			}
 			break
 		}
 		proxyErr := r.configureProxies(service, data, endpoints.Items, log)
-		for _, listener := range data.proxies {
-			if listener.proxy.State() == proxy.ProxyStateRunning {
-				status.EffectiveAddresses = append(status.EffectiveAddresses, apiv2.ServiceAddress{
-					Address: listener.proxy.EffectiveAddress(), Port: listener.proxy.EffectivePort(),
-				})
-			}
+		status.EffectiveAddresses = logicalServiceProxyAddresses(data.proxies)
+		if len(status.EffectiveAddresses) > 0 {
+			data.started = true
 		}
 		if proxyErr != nil {
 			log.Error(proxyErr, "Failed to configure logical service listeners")
 			if len(data.proxies) == 0 {
 				data.startupFailureMessage = proxyErr.Error()
 			}
-			reason, message, requeue = apiv2.LogicalServiceReasonProxyConfigurationFailed, proxyErr.Error(), true
-			if len(data.proxies) > 0 {
-				status.Phase = apiv2.LogicalServicePhaseUnknown
+			reason, message, requeue = apiv2.LogicalServiceReasonStarting, proxyErr.Error(), true
+			if data.started {
+				status.Phase, reason = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonAllocated
 			}
 			if len(status.EffectiveAddresses) == 0 && (len(data.proxies) > 0 || data.attempts >= MaxServiceStartAttempts) {
 				status.Phase, requeue = apiv2.LogicalServicePhaseFailed, false
+				reason = apiv2.LogicalServiceReasonFailedToStart
+				if data.started {
+					reason = apiv2.LogicalServiceReasonMissing
+				}
 			}
 			break
 		}
 		if len(status.EffectiveAddresses) < len(data.proxies) {
-			status.Phase = apiv2.LogicalServicePhaseUnknown
-			if len(status.EffectiveAddresses) == 0 {
-				status.Phase = apiv2.LogicalServicePhaseFailed
-			}
-			reason, message = apiv2.LogicalServiceReasonProxyListenerUnavailable, "Service listeners have stopped; recreate the service to allocate new listeners."
+			status.Phase = apiv2.LogicalServicePhaseFailed
+			reason, message = apiv2.LogicalServiceReasonMissing, "Service listeners have stopped; recreate the service to allocate new listeners."
 			break
 		}
-		reason, message = apiv2.LogicalServiceReasonWaitingForEndpoints, "Listeners are allocated; the service has no available endpoints."
+		data.started = true
+		status.Phase, reason, message = apiv2.LogicalServicePhaseRunning, apiv2.LogicalServiceReasonAllocated,
+			"Listeners are running; the service has no available endpoints."
 		if len(endpoints.Items) > 0 {
-			status.Phase, reason, message = apiv2.LogicalServicePhaseReady, apiv2.LogicalServiceReasonReady, "Listeners and endpoints are available."
+			available, reason, message = true, apiv2.LogicalServiceReasonReady, "Listeners and endpoints are available."
 		}
 	}
+	if data.failureReason != "" {
+		status.Phase, reason, message = apiv2.LogicalServicePhaseFailed, data.failureReason, data.failureMessage
+	} else if status.Phase == apiv2.LogicalServicePhaseFailed {
+		data.failureReason, data.failureMessage = reason, message
+	}
 	conditionStatus := metav1.ConditionFalse
-	if status.Phase == apiv2.LogicalServicePhaseReady {
+	if available {
 		conditionStatus = metav1.ConditionTrue
 	}
 	setCondition(&status.Conditions, apiv2.ConditionReady, service.Generation, conditionStatus, reason, message)
@@ -230,6 +264,18 @@ func (r *LogicalServiceReconciler) Reconcile(ctx context.Context, request ctrl.R
 		delay = LongDelay
 	}
 	return r.SaveChangesWithDelay(ctx, service, patch, change, delay, nil, log)
+}
+
+func logicalServiceProxyAddresses(listeners []proxyInstanceData) []apiv2.ServiceAddress {
+	var addresses []apiv2.ServiceAddress
+	for _, listener := range listeners {
+		if listener.proxy.State() == proxy.ProxyStateRunning {
+			addresses = append(addresses, apiv2.ServiceAddress{
+				Address: listener.proxy.EffectiveAddress(), Port: listener.proxy.EffectivePort(),
+			})
+		}
+	}
+	return addresses
 }
 
 func (r *LogicalServiceReconciler) configureProxies(

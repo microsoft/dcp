@@ -52,44 +52,30 @@ const (
 type LogicalProcessPhase string
 
 const (
-	// LogicalProcessReasonPreparingLifecycle indicates that process lifecycle inputs are being prepared.
-	LogicalProcessReasonPreparingLifecycle ConditionReason = "PreparingLifecycle"
+	// LogicalProcessReasonStarting qualifies Pending while prerequisites and startup are in progress.
+	LogicalProcessReasonStarting ConditionReason = "Starting"
 	// LogicalProcessReasonRunning indicates that the backing process is running.
-	LogicalProcessReasonRunning ConditionReason = "ProcessRunning"
-	// LogicalProcessReasonExited indicates that the backing process has exited.
-	LogicalProcessReasonExited ConditionReason = "ProcessExited"
+	LogicalProcessReasonRunning ConditionReason = "Running"
+	// LogicalProcessReasonCompleted indicates that the backing process exited on its own.
+	LogicalProcessReasonCompleted ConditionReason = "Completed"
 	// LogicalProcessReasonStopping indicates that process termination has been requested.
-	LogicalProcessReasonStopping ConditionReason = "ProcessStopping"
-	// LogicalProcessReasonPhysicalProcessPreparationPending indicates that the physical process declaration is not prepared.
-	LogicalProcessReasonPhysicalProcessPreparationPending ConditionReason = "PhysicalProcessPreparationPending"
-	// LogicalProcessReasonPhysicalProcessPreparationFailed indicates that physical process preparation failed.
-	LogicalProcessReasonPhysicalProcessPreparationFailed ConditionReason = "PhysicalProcessPreparationFailed"
-	// LogicalProcessReasonPhysicalProcessDeletionFailed indicates that physical process cleanup failed.
-	LogicalProcessReasonPhysicalProcessDeletionFailed ConditionReason = "PhysicalProcessDeletionFailed"
-	// LogicalProcessReasonPhysicalProcessLookupFailed indicates that the physical process could not be read.
-	LogicalProcessReasonPhysicalProcessLookupFailed ConditionReason = "PhysicalProcessLookupFailed"
-	// LogicalProcessReasonPhysicalProcessNotReady indicates that the physical process has not become ready.
-	LogicalProcessReasonPhysicalProcessNotReady ConditionReason = "PhysicalProcessNotReady"
-	// LogicalProcessReasonPhysicalProcessFailed indicates that the physical process failed.
-	LogicalProcessReasonPhysicalProcessFailed ConditionReason = "PhysicalProcessFailed"
-	// LogicalProcessReasonPhysicalProcessStateUnknown indicates that the physical process state is unknown.
-	LogicalProcessReasonPhysicalProcessStateUnknown ConditionReason = "PhysicalProcessStateUnknown"
-	// LogicalProcessReasonPhysicalProcessMissing indicates that a previously observed physical process is absent.
-	LogicalProcessReasonPhysicalProcessMissing ConditionReason = "PhysicalProcessMissing"
-	// LogicalProcessReasonPhysicalProcessChanged indicates that the physical process identity, owner, or hold changed.
-	LogicalProcessReasonPhysicalProcessChanged ConditionReason = "PhysicalProcessChanged"
-	// LogicalProcessReasonPhysicalProcessTerminating indicates that the physical process is being deleted.
-	LogicalProcessReasonPhysicalProcessTerminating ConditionReason = "PhysicalProcessTerminating"
-	// LogicalProcessReasonDeletingPhysicalProcess indicates that owned physical processes are being removed.
-	LogicalProcessReasonDeletingPhysicalProcess ConditionReason = "DeletingPhysicalProcess"
+	LogicalProcessReasonStopping ConditionReason = "Stopping"
+	// LogicalProcessReasonStopped indicates that DCP terminated the process.
+	LogicalProcessReasonStopped ConditionReason = "Stopped"
+	// LogicalProcessReasonFailedToStart indicates that startup could not complete.
+	LogicalProcessReasonFailedToStart ConditionReason = "FailedToStart"
+	// LogicalProcessReasonMissing indicates that a previously running backing is unavailable or no longer owned.
+	LogicalProcessReasonMissing ConditionReason = "Missing"
+	// LogicalProcessReasonLookupFailed indicates that current state cannot be confirmed.
+	LogicalProcessReasonLookupFailed ConditionReason = "LookupFailed"
 )
 
 const (
 	// LogicalProcessPhasePending indicates that the process is waiting for prerequisites or launch.
 	LogicalProcessPhasePending LogicalProcessPhase = "Pending"
-	// LogicalProcessPhaseRunning indicates that the process is running.
+	// LogicalProcessPhaseRunning indicates that startup succeeded, including while stopping.
 	LogicalProcessPhaseRunning LogicalProcessPhase = "Running"
-	// LogicalProcessPhaseExited indicates that the process has exited or the referenced identity is missing.
+	// LogicalProcessPhaseExited indicates that process completion or requested termination was observed.
 	LogicalProcessPhaseExited LogicalProcessPhase = "Exited"
 	// LogicalProcessPhaseUnknown indicates that process state cannot be determined.
 	LogicalProcessPhaseUnknown LogicalProcessPhase = "Unknown"
@@ -100,6 +86,9 @@ const (
 // LogicalProcessSpec describes process lifecycle policy and desired configuration.
 // +k8s:openapi-gen=true
 type LogicalProcessSpec struct {
+	// ProcessName is the opaque, host-scoped identity used to store and reuse a persistent process.
+	// Required in persistent mode; independent of the resource namespace, resource name, and executable path.
+	ProcessName string `json:"processName,omitempty"`
 	// Mode controls creation, reuse, and retention. Defaults to session.
 	// +kubebuilder:default:=session
 	Mode LogicalProcessMode `json:"mode,omitempty"`
@@ -136,6 +125,7 @@ type LogicalProcessConfig struct {
 	// AmbientEnvironment controls inheritance from the controller process environment.
 	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 	// Env contains environment variables that override inherited values.
+	// DCP_ and DEBUG_SESSION-prefixed variables are excluded from both inherited and explicit environments.
 	// +listType=map
 	// +listMapKey=name
 	Env []commonapi.EnvVar `json:"env,omitempty"`
@@ -193,6 +183,14 @@ func (spec *LogicalProcessSpec) GetLifecycleKey() (string, bool, error) {
 // LogicalProcessStatus describes the observed process and its backing PhysicalProcess.
 // +k8s:openapi-gen=true
 type LogicalProcessStatus struct {
+	// EffectiveArgs contains evaluated process launch arguments.
+	// +listType=atomic
+	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
+	// EffectiveEnv contains prepared launch values, including permitted process environment inheritance.
+	// Internal DCP_ and DEBUG_SESSION-prefixed variables are excluded from both launch and status.
+	// +listType=map
+	// +listMapKey=name
+	EffectiveEnv []commonapi.EnvVar `json:"effectiveEnv,omitempty"`
 	// Ports describes service selection and the listening address/port for each logical port.
 	// +listType=map
 	// +listMapKey=name
@@ -268,9 +266,9 @@ func (*LogicalProcessLogResource) GetStorageProvider(
 	return newLogStorageProvider(obj, parentProvider)
 }
 
-// GetLeaseKey identifies the persistent process by its logical namespace and name.
+// GetLeaseKey identifies the persistent process by its opaque processName.
 func (resource *LogicalProcess) GetLeaseKey() string {
-	return LogicalProcessResourceKeyPrefix + resource.NamespacedName().String()
+	return LogicalProcessResourceKeyPrefix + resource.Spec.ProcessName
 }
 
 func (resource *LogicalProcess) GetObjectMeta() *metav1.ObjectMeta {
@@ -306,6 +304,12 @@ func (resource *LogicalProcess) Validate(ctx context.Context) field.ErrorList {
 	}
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(resource.Annotations, field.NewPath("metadata", "annotations"))...)
 	mode := resource.Spec.EffectiveMode()
+	if mode == LogicalProcessModePersistent && resource.Spec.ProcessName == "" {
+		errorList = append(errorList, field.Required(specPath.Child("processName"), "processName must be set in persistent mode"))
+	}
+	if resource.Spec.ProcessName != strings.TrimSpace(resource.Spec.ProcessName) {
+		errorList = append(errorList, field.Invalid(specPath.Child("processName"), resource.Spec.ProcessName, "processName must not have leading or trailing whitespace"))
+	}
 	switch mode {
 	case LogicalProcessModeSession, LogicalProcessModePersistent:
 		if resource.Spec.Process == nil {

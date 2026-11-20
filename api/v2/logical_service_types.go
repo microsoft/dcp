@@ -22,31 +22,31 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
-// LogicalServicePhase summarizes the availability of a logical service.
+// LogicalServicePhase summarizes the lifecycle of a logical service.
 type LogicalServicePhase string
 
 const (
-	// LogicalServiceReasonEndpointLookupFailed indicates that service endpoints could not be listed.
-	LogicalServiceReasonEndpointLookupFailed ConditionReason = "EndpointLookupFailed"
-	// LogicalServiceReasonEndpointSelected indicates that a proxyless endpoint has been selected.
-	LogicalServiceReasonEndpointSelected ConditionReason = "EndpointSelected"
-	// LogicalServiceReasonWaitingForEndpoints indicates that the service has no available endpoints.
-	LogicalServiceReasonWaitingForEndpoints ConditionReason = "WaitingForEndpoints"
-	// LogicalServiceReasonProxyConfigurationFailed indicates that listener startup or route configuration failed.
-	LogicalServiceReasonProxyConfigurationFailed ConditionReason = "ProxyConfigurationFailed"
-	// LogicalServiceReasonProxyListenerUnavailable indicates that service listeners have stopped.
-	LogicalServiceReasonProxyListenerUnavailable ConditionReason = "ProxyListenerUnavailable"
-	// LogicalServiceReasonReady indicates that listeners and endpoints are available.
-	LogicalServiceReasonReady ConditionReason = "ServiceReady"
+	// LogicalServiceReasonStarting qualifies Pending while a serving address and port are unavailable.
+	LogicalServiceReasonStarting ConditionReason = "Starting"
+	// LogicalServiceReasonAllocated indicates that a serving address and port are known, without guaranteeing service readiness.
+	LogicalServiceReasonAllocated ConditionReason = "Allocated"
+	// LogicalServiceReasonReady indicates that the service is up and has backing endpoints.
+	LogicalServiceReasonReady ConditionReason = "Ready"
+	// LogicalServiceReasonFailedToStart indicates that listener startup could not complete.
+	LogicalServiceReasonFailedToStart ConditionReason = "FailedToStart"
+	// LogicalServiceReasonMissing indicates that allocated listeners are no longer available.
+	LogicalServiceReasonMissing ConditionReason = "Missing"
+	// LogicalServiceReasonLookupFailed indicates that current availability cannot be confirmed.
+	LogicalServiceReasonLookupFailed ConditionReason = "LookupFailed"
 )
 
 const (
-	// LogicalServicePhasePending indicates that the service is waiting for allocation or endpoints.
+	// LogicalServicePhasePending indicates that listeners or proxyless endpoint selection are pending.
 	LogicalServicePhasePending LogicalServicePhase = "Pending"
 
-	// LogicalServicePhaseReady indicates that the service has usable addresses and an endpoint.
-	// It does not indicate that network reachability has been probed.
-	LogicalServicePhaseReady LogicalServicePhase = "Ready"
+	// LogicalServicePhaseRunning indicates that a serving address and port are allocated.
+	// The Ready condition uses Allocated until the service is up with backing endpoints, then Ready, without probing reachability.
+	LogicalServicePhaseRunning LogicalServicePhase = "Running"
 
 	// LogicalServicePhaseUnknown indicates that service availability cannot be determined.
 	LogicalServicePhaseUnknown LogicalServicePhase = "Unknown"
@@ -158,11 +158,12 @@ func (config *LogicalServiceSpec) Validate(configPath *field.Path) field.ErrorLi
 // LogicalServiceStatus describes observed service availability and all of its effective addresses.
 // +k8s:openapi-gen=true
 type LogicalServiceStatus struct {
-	// Phase summarizes service availability without implying a network reachability probe.
-	// +kubebuilder:validation:Enum=Pending;Ready;Unknown;Failed
+	// Phase summarizes serving-address allocation and service lifecycle.
+	// +kubebuilder:validation:Enum=Pending;Running;Unknown;Failed
 	Phase LogicalServicePhase `json:"phase,omitempty"`
 
-	// EffectiveAddresses contains the usable addresses and their individual ports.
+	// EffectiveAddresses contains the allocated serving addresses and their individual ports.
+	// Allocation does not guarantee service or backend readiness.
 	// +listType=atomic
 	EffectiveAddresses []ServiceAddress `json:"effectiveAddresses,omitempty"`
 

@@ -7,6 +7,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -20,7 +21,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	stdproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -58,16 +58,22 @@ func installLogicalTunnelServer(t *testing.T, ctx context.Context, environment *
 				}
 				return arguments[index+1]
 			}
-			security := dcptun.TunnelProxySecurityConfig{
-				CACertBase64: value("--ca-cert"), ServerCertBase64: value("--server-cert"), ServerKeyBase64: value("--server-key"),
+			securityJSON, readErr := os.ReadFile(value("--control-security-file"))
+			if readErr != nil {
+				t.Error(readErr)
+				return 1
 			}
-			tlsConfig, tlsErr := security.GetTlsConfig()
-			if tlsErr != nil {
-				t.Error(tlsErr)
+			var security dcptun.TunnelControlSecurityConfig
+			if decodeErr := json.Unmarshal(securityJSON, &security); decodeErr != nil {
+				t.Error(decodeErr)
+				return 1
+			}
+			server, serverErr := dcptun.NewControlServer(security, &dcptunproto.UnimplementedTunnelControlServer{})
+			if serverErr != nil {
+				t.Error(serverErr)
 				return 1
 			}
 			listener := dcptun.NewDialBackListener(ctx, value("--control-callback"), environment.Log)
-			server := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
 			done := make(chan error, 1)
 			go func() { done <- server.Serve(listener) }()
 			select {
@@ -158,13 +164,38 @@ func TestV2LogicalContainerTunnelProxyLifecycle(t *testing.T) {
 	require.Equal(t, environment.SessionFolder, filepath.Dir(image.Spec.Image.Build.ContextArchive.Source))
 	require.Equal(t, proxy.Spec.Aliases, container.Spec.Container.Networks[0].Aliases)
 	require.Contains(t, hostProcess.Spec.Process.Args, "--control-callback")
+	require.Len(t, container.Spec.Container.CreateFiles, 1)
+	require.Len(t, container.Spec.Container.CreateFiles[0].Entries, 1)
+	clientSecurityPath := container.Spec.Container.CreateFiles[0].Entries[0].Source
+	clientSecurityJSON, clientReadErr := os.ReadFile(clientSecurityPath)
+	require.NoError(t, clientReadErr)
+	var clientSecurity dcptun.TunnelControlSecurityConfig
+	require.NoError(t, json.Unmarshal(clientSecurityJSON, &clientSecurity))
+	require.NoError(t, clientSecurity.ValidateServer())
+	require.Empty(t, clientSecurity.PeerCACertBase64)
+	require.Empty(t, clientSecurity.OutgoingToken)
+	serverSecurityIndex := slices.Index(hostProcess.Spec.Process.Args, "--control-security-file")
+	require.GreaterOrEqual(t, serverSecurityIndex, 0)
+	require.Greater(t, len(hostProcess.Spec.Process.Args), serverSecurityIndex+1)
+	serverSecurityPath := hostProcess.Spec.Process.Args[serverSecurityIndex+1]
+	serverSecurityJSON, serverReadErr := os.ReadFile(serverSecurityPath)
+	require.NoError(t, serverReadErr)
+	var serverSecurity dcptun.TunnelControlSecurityConfig
+	require.NoError(t, json.Unmarshal(serverSecurityJSON, &serverSecurity))
+	require.NoError(t, serverSecurity.ValidateServer())
+	require.NoError(t, serverSecurity.ValidateClient())
+	require.NotEqual(t, clientSecurity.ServerKeyBase64, serverSecurity.ServerKeyBase64)
+	require.NotContains(t, strings.Join(container.Spec.Container.Command, " "), clientSecurity.ServerKeyBase64)
+	require.NotContains(t, strings.Join(hostProcess.Spec.Process.Args, " "), serverSecurity.ServerKeyBase64)
+	require.NotContains(t, strings.Join(hostProcess.Spec.Process.Args, " "), serverSecurity.OutgoingToken)
 	endpointName := types.NamespacedName{Namespace: proxy.Namespace, Name: "logical-" + string(proxy.UID) + "-http"}
 	endpoint := waitObjectAssumesStateEx(t, ctx, server.Client, endpointName, func(current *apiv2.ServiceEndpoint) (bool, error) {
 		return len(current.Spec.Addresses) > 0, nil
 	})
 	require.True(t, metav1.IsControlledBy(endpoint, proxy))
 	clientService := waitObjectAssumesStateEx(t, ctx, server.Client, types.NamespacedName{Namespace: proxy.Namespace, Name: "client"}, func(current *apiv2.LogicalService) (bool, error) {
-		return current.Status.Phase == apiv2.LogicalServicePhaseReady, nil
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.LogicalServicePhaseRunning && ready != nil && ready.Status == metav1.ConditionTrue, nil
 	})
 	require.Equal(t, endpoint.Spec.Addresses, clientService.Status.EffectiveAddresses)
 	require.NoError(t, retryOnConflictEx(ctx, server.Client, proxy.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainerTunnelProxy) error {
@@ -191,6 +222,10 @@ func TestV2LogicalContainerTunnelProxyLifecycle(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, image)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, hostProcess)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, endpoint)
+	require.NoFileExists(t, clientSecurityPath)
+	require.NoFileExists(t, serverSecurityPath)
+	require.NoDirExists(t, filepath.Dir(clientSecurityPath))
+	require.NoDirExists(t, filepath.Dir(serverSecurityPath))
 	require.NoError(t, server.Client.Get(ctx, clientService.NamespacedName(), &apiv2.LogicalService{}))
 }
 

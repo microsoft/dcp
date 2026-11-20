@@ -46,11 +46,11 @@ func TestV2ContainerExecRejectsConfirmedMissingRuntime(t *testing.T) {
 			Execution: apiv2.ContainerExecConfig{Command: "missing-runtime-physical"}}}
 	require.NoError(t, client.Create(ctx, logical))
 	require.NoError(t, client.Create(ctx, physical))
-	failedLogical := waitV2LogicalExecPhase(t, ctx, logical, apiv2.ContainerExecPhaseFailed)
+	failedLogical := waitV2LogicalExecPhase(t, ctx, logical, apiv2.LogicalContainerExecPhaseFailed)
 	failedPhysical := waitObjectAssumesState(t, ctx, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
 		return current.Status.Phase == apiv2.ContainerExecPhaseFailed, nil
 	})
-	requireReadyCondition(t, failedLogical.Status.Conditions, metav1.ConditionFalse, apiv2.ContainerExecReasonContainerUnavailable)
+	requireReadyCondition(t, failedLogical.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonFailedToStart)
 	requireReadyCondition(t, failedPhysical.Status.Conditions, metav1.ConditionFalse, apiv2.ContainerExecReasonContainerUnavailable)
 	require.Zero(t, containerOrchestrator.ExecContainerCallCount(logical.Spec.Execution.Command))
 	require.Zero(t, containerOrchestrator.ExecContainerCallCount(physical.Spec.Execution.Command))
@@ -121,7 +121,7 @@ func TestV2ContainerExecWaitsForTransientUnknownTarget(t *testing.T) {
 	require.NoError(t, client.Create(ctx, logical))
 	require.NoError(t, client.Create(ctx, physical))
 	waitObjectAssumesState(t, ctx, logical.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return len(current.Status.Conditions) != 0 && current.Status.Conditions[0].Reason == string(apiv2.ContainerExecReasonContainerNotReady), nil
+		return len(current.Status.Conditions) != 0 && current.Status.Conditions[0].Reason == string(apiv2.LogicalContainerExecReasonStarting), nil
 	})
 	waitObjectAssumesState(t, ctx, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
 		return len(current.Status.Conditions) != 0 && current.Status.Conditions[0].Reason == string(apiv2.ContainerExecReasonContainerNotReady), nil
@@ -129,7 +129,7 @@ func TestV2ContainerExecWaitsForTransientUnknownTarget(t *testing.T) {
 	require.Zero(t, containerOrchestrator.ExecContainerCallCount(logical.Spec.Execution.Command))
 	require.Zero(t, containerOrchestrator.ExecContainerCallCount(physical.Spec.Execution.Command))
 	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, target.Status.ContainerID, containers.ContainerStatusRunning))
-	waitV2LogicalExecPhase(t, ctx, logical, apiv2.ContainerExecPhaseRunning)
+	waitV2LogicalExecPhase(t, ctx, logical, apiv2.LogicalContainerExecPhaseRunning)
 	waitObjectAssumesState(t, ctx, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
 		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
 	})

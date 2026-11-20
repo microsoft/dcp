@@ -1425,7 +1425,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref common.Re
 				Properties: map[string]spec.Schema{
 					"state": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Overall state of the tunnel proxy pair.",
+							Description: "Lifecycle phase of the tunnel proxy pair.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -4080,7 +4080,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 					},
 					"tunnelId": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Internal tunnel ID assigned by the proxy pair.",
+							Description: "Internal tunnel ID assigned by the current proxy pair; zero until the tunnel is prepared on that pair.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},
@@ -4095,7 +4095,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 					},
 					"errorMessage": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Human-readable explanation for why the tunnel preparation failed (if it did).",
+							Description: "Human-readable explanation for the current tunnel failure, if any.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -4107,7 +4107,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Addresses on the container network that client proxy is listening on for this tunnel. May be empty if the tunnel is not ready.",
+							Description: "Addresses on the container network that client proxy is listening on for this tunnel. Retained while a prepared tunnel is suspended; empty until the tunnel is prepared on the current proxy pair.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -4121,7 +4121,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 					},
 					"clientProxyPort": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Port on the container network that client proxy is listening on for this tunnel. May be zero if the tunnel is not ready.",
+							Description: "Port on the container network that client proxy is listening on for this tunnel. Retained while a prepared tunnel is suspended and while a replacement proxy pair starts and rebinds it; zero before the tunnel is first prepared.",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},
@@ -5001,6 +5001,25 @@ func schema_microsoft_dcp_api_v2_LogicalContainerConfig(ref common.ReferenceCall
 							},
 						},
 					},
+					"runArgs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "RunArgs contains additional container runtime arguments passed before the image name. Arguments are passed literally and in order, without shell parsing or template expansion.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
 					"env": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -5235,12 +5254,12 @@ func schema_microsoft_dcp_api_v2_LogicalContainerExecStatus(ref common.Reference
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "LogicalContainerExecStatus projects the immediate physical execution.",
+				Description: "LogicalContainerExecStatus describes logical lifecycle and the immediate physical execution.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"phase": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase summarizes the execution lifecycle.",
+							Description: "Phase summarizes execution lifecycle independently of physical launch progress.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -5253,7 +5272,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerExecStatus(ref common.Reference
 					},
 					"finishedAt": {
 						SchemaProps: spec.SchemaProps{
-							Description: "FinishedAt is when attached execution completion or a terminal startup failure was observed.",
+							Description: "FinishedAt is when completion or terminal startup failure was observed.",
 							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
@@ -5274,7 +5293,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerExecStatus(ref common.Reference
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Conditions describe prerequisite readiness and execution progress.",
+							Description: "Conditions describe readiness; messages carry prerequisite and runtime details.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -5883,6 +5902,65 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 				Description: "LogicalContainerStatus describes the observed logical container and its physical dependencies.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"effectiveCommand": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveCommand contains the container command reported by runtime inspection, separately from its entrypoint.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEntrypoint": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEntrypoint contains the container entrypoint reported by runtime inspection.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEnv": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEnv contains environment variables reported by runtime inspection, including image and environment-file values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
 					"ports": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -6033,7 +6111,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 			},
 		},
 		Dependencies: []string{
-			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -6577,7 +6655,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessConfig(ref common.ReferenceCallba
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Env contains environment variables that override inherited values.",
+							Description: "Env contains environment variables that override inherited values. DCP_ and DEBUG_SESSION-prefixed variables are excluded from both inherited and explicit environments.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -6704,6 +6782,13 @@ func schema_microsoft_dcp_api_v2_LogicalProcessSpec(ref common.ReferenceCallback
 				Description: "LogicalProcessSpec describes process lifecycle policy and desired configuration.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"processName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ProcessName is the opaque, host-scoped identity used to store and reuse a persistent process. Required in persistent mode; independent of the resource namespace, resource name, and executable path.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"mode": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Mode controls creation, reuse, and retention. Defaults to session.",
@@ -6790,6 +6875,46 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 				Description: "LogicalProcessStatus describes the observed process and its backing PhysicalProcess.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"effectiveArgs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveArgs contains evaluated process launch arguments.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEnv": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEnv contains prepared launch values, including permitted process environment inheritance. Internal DCP_ and DEBUG_SESSION-prefixed variables are excluded from both launch and status.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
 					"ports": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -6889,7 +7014,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 			},
 		},
 		Dependencies: []string{
-			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.LogSource{}.OpenAPIModelName(), v2.LogicalPortStatus{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -7075,7 +7200,7 @@ func schema_microsoft_dcp_api_v2_LogicalServiceStatus(ref common.ReferenceCallba
 				Properties: map[string]spec.Schema{
 					"phase": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Phase summarizes service availability without implying a network reachability probe.",
+							Description: "Phase summarizes serving-address allocation and service lifecycle.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -7087,7 +7212,7 @@ func schema_microsoft_dcp_api_v2_LogicalServiceStatus(ref common.ReferenceCallba
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "EffectiveAddresses contains the usable addresses and their individual ports.",
+							Description: "EffectiveAddresses contains the allocated serving addresses and their individual ports. Allocation does not guarantee service or backend readiness.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -7426,6 +7551,25 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref common.ReferenceCal
 						},
 						SchemaProps: spec.SchemaProps{
 							Description: "Command is the command arguments passed to the container entrypoint.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"runArgs": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "RunArgs contains additional container runtime arguments passed before the image name. Arguments are passed literally and in order, without shell parsing or template expansion.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -8650,6 +8794,65 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerStatus(ref common.ReferenceCal
 				Description: "PhysicalContainerStatus describes the observed runtime container.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"effectiveCommand": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveCommand contains the container command reported by runtime inspection, separately from its entrypoint.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEntrypoint": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEntrypoint contains the container entrypoint reported by runtime inspection.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"effectiveEnv": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "EffectiveEnv contains environment variables reported by runtime inspection, including image and environment-file values.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
 					"phase": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Phase summarizes the runtime container lifecycle.",
@@ -8753,7 +8956,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerStatus(ref common.ReferenceCal
 			},
 		},
 		Dependencies: []string{
-			v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -9106,7 +9309,7 @@ func schema_microsoft_dcp_api_v2_PhysicalProcessConfig(ref common.ReferenceCallb
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Env contains process environment variables. These values override inherited variables with the same name.",
+							Description: "Env contains process environment variables. These values override inherited variables with the same name. DCP_ and DEBUG_SESSION-prefixed variables are excluded from both inherited and explicit environments.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{

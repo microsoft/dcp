@@ -444,8 +444,10 @@ func StartAdvancedTestEnvironmentWithOptions(
 	// Starts the controller manager and all the associated controllers
 	managerDone.Clear()
 	go func() {
-		_ = mgr.Start(ctx)
-		managerDone.Set()
+		defer managerDone.Set()
+		if managerRunErr := controllers.StartControllerManager(ctx, mgr); managerRunErr != nil {
+			log.Error(managerRunErr, "Controller manager failed")
+		}
 	}()
 
 	teInfo := &AdvancedTestEnvironmentInfo{

@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -29,6 +30,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -74,8 +76,9 @@ type LogicalContainerTunnelProxyReconcilerConfig struct {
 
 type LogicalContainerTunnelProxyReconciler struct {
 	*ReconcilerBase[apiv2.LogicalContainerTunnelProxy, *apiv2.LogicalContainerTunnelProxy]
-	config  LogicalContainerTunnelProxyReconcilerConfig
-	proxies *ObjectStateMap[types.UID, logicalTunnelProxyData, *logicalTunnelProxyData, *apiv2.LogicalContainerTunnelProxy]
+	config        LogicalContainerTunnelProxyReconcilerConfig
+	proxies       *ObjectStateMap[types.UID, logicalTunnelProxyData, *logicalTunnelProxyData, *apiv2.LogicalContainerTunnelProxy]
+	securityFiles *usvc_io.FileRegistry
 }
 
 func NewLogicalContainerTunnelProxyReconciler(
@@ -94,10 +97,21 @@ func NewLogicalContainerTunnelProxyReconciler(
 	return &LogicalContainerTunnelProxyReconciler{
 		ReconcilerBase: NewReconcilerBase[apiv2.LogicalContainerTunnelProxy](client, reader, log, ctx),
 		config:         config, proxies: NewObjectStateMap[types.UID, logicalTunnelProxyData, *logicalTunnelProxyData, *apiv2.LogicalContainerTunnelProxy](),
+		securityFiles: usvc_io.NewFileRegistry(config.BuildContextDir),
 	}
 }
 
 func (r *LogicalContainerTunnelProxyReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
+	if shutdownErr := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		<-ctx.Done()
+		if cleanupErr := r.securityFiles.Cleanup(); cleanupErr != nil {
+			r.Log.Error(cleanupErr, "Failed to remove logical tunnel control security files during shutdown")
+			return cleanupErr
+		}
+		return nil
+	})); shutdownErr != nil {
+		return fmt.Errorf("add logical tunnel security cleanup: %w", shutdownErr)
+	}
 	for _, child := range []ctrl_client.Object{&apiv2.PhysicalContainer{}, &apiv2.PhysicalContainerImage{}, &apiv2.PhysicalProcess{}, &apiv2.ServiceEndpoint{}} {
 		indexErr := mgr.GetFieldIndexer().IndexField(r.LifetimeCtx, child, logicalTunnelProxyOwnerUIDField, func(object ctrl_client.Object) []string {
 			owner := metav1.GetControllerOf(object)
@@ -258,6 +272,11 @@ func (r *LogicalContainerTunnelProxyReconciler) discardLogicalTunnelProxyData(na
 	if cleanupErr := removeLogicalTunnelProxyBuildContext(data); cleanupErr != nil {
 		return cleanupErr
 	}
+	for _, path := range []string{data.clientSecurityFile, data.serverSecurityFile} {
+		if removeErr := r.securityFiles.Remove(path); removeErr != nil {
+			return removeErr
+		}
+	}
 	r.proxies.DeleteByNamespacedName(name)
 	logger.ReleaseResourceLog((&apiv2.LogicalContainerTunnelProxy{ObjectMeta: metav1.ObjectMeta{UID: uid}}).GetResourceId())
 	return nil
@@ -413,22 +432,35 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalContainer(
 			data.message = fmt.Sprintf("LogicalContainerNetwork %q has not published its backing physical network reference.", networkName)
 			return nil, change
 		}
-		if !data.security.HasCompleteCertificateData() {
+		if data.security == nil {
 			security, securityErr := dcptun.NewTunnelProxySecurityConfig()
 			if securityErr != nil {
 				log.Error(securityErr, "Failed to prepare tunnel security configuration")
 				data.fail(apiv2.LogicalContainerTunnelProxyReasonFailedToStart, securityErr.Error())
 				return nil, change | additionalReconciliationNeeded
 			}
-			data.security = security
+			data.security = &security
+		}
+		if data.clientSecurityFile == "" {
+			path, securityFileErr := r.createLogicalTunnelProxySecurityFile(ctx, data.security.ClientProxyConfig())
+			if securityFileErr != nil {
+				log.Error(securityFileErr, "Failed to prepare client tunnel security file")
+				return nil, change | additionalReconciliationNeeded
+			}
+			data.clientSecurityFile = path
 		}
 		desiredContainer := &apiv2.PhysicalContainer{
 			ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(proxy.UID), Namespace: proxy.Namespace},
 			Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
 				ImageRef: imageRef, ContainerName: "tunnel-" + string(proxy.UID), Entrypoint: dcptun.ClientProxyBinaryPath,
-				Command: append([]string{"client", "--client-control-address", networking.IPv4AllInterfaceAddress,
+				Command: []string{"client", "--client-control-address", networking.IPv4AllInterfaceAddress,
 					"--client-control-port", strconv.Itoa(dcptun.DefaultContainerProxyControlPort),
-					"--client-data-address", networking.IPv4AllInterfaceAddress, "--client-data-port", strconv.Itoa(dcptun.DefaultContainerProxyDataPort)}, tunnelProxySecurityArgs(data.security)...),
+					"--client-data-address", networking.IPv4AllInterfaceAddress, "--client-data-port", strconv.Itoa(dcptun.DefaultContainerProxyDataPort),
+					"--control-security-file", clientProxySecurityFilePath},
+				CreateFiles: []apiv2.CreateFileSystem{{
+					Destination: clientProxySecurityDirectory,
+					Entries:     []apiv2.FileSystemEntry{{Name: clientProxySecurityFileName, Mode: 0o600, Source: data.clientSecurityFile}},
+				}},
 				Ports:    []apiv2.ContainerPort{{ContainerPort: dcptun.DefaultContainerProxyControlPort}, {ContainerPort: dcptun.DefaultContainerProxyDataPort}},
 				Networks: []apiv2.ContainerNetworkConnectionConfig{{NetworkRef: network.Status.PhysicalNetworkRef, Aliases: slices.Clone(proxy.Spec.Aliases)}},
 			}},
@@ -477,13 +509,25 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalProcess(
 		data.message = "Waiting for client proxy container port mappings."
 		return nil, additionalReconciliationNeeded
 	}
+	if data.security == nil {
+		data.fail(apiv2.LogicalContainerTunnelProxyReasonFailedToStart, "Tunnel control security configuration is unavailable.")
+		return nil, additionalReconciliationNeeded
+	}
 	if data.control == nil {
-		connection, connectionErr := dcptun.NewReverseControlConnection(r.LifetimeCtx, data.security, func() { r.ScheduleReconciliation(proxy.NamespacedName()) }, log)
+		connection, connectionErr := dcptun.NewReverseControlConnection(r.LifetimeCtx, data.security.ControllerConfig(), func() { r.ScheduleReconciliation(proxy.NamespacedName()) }, log)
 		if connectionErr != nil {
 			log.Error(connectionErr, "Failed to open reverse tunnel control listener")
 			return nil, additionalReconciliationNeeded
 		}
 		data.control = connection
+	}
+	if data.serverSecurityFile == "" {
+		path, securityFileErr := r.createLogicalTunnelProxySecurityFile(ctx, data.security.ServerProxyConfig())
+		if securityFileErr != nil {
+			log.Error(securityFileErr, "Failed to prepare server tunnel security file")
+			return nil, additionalReconciliationNeeded
+		}
+		data.serverSecurityFile = path
 	}
 	executablePath, pathErr := dcppaths.GetDcpExePath()
 	if pathErr != nil {
@@ -495,9 +539,10 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalProcess(
 		ObjectMeta: metav1.ObjectMeta{Name: "logical-" + string(proxy.UID), Namespace: proxy.Namespace},
 		Spec: apiv2.PhysicalProcessSpec{Process: &apiv2.PhysicalProcessConfig{
 			ExecutablePath: executablePath,
-			Args: append([]string{"tunnel-server", "--control-callback", data.control.Address(),
+			Args: []string{"tunnel-server", "--control-callback", data.control.Address(),
 				networking.IPv4LocalhostDefaultAddress, strconv.Itoa(int(controlPort)),
-				networking.IPv4LocalhostDefaultAddress, strconv.Itoa(int(dataPort))}, tunnelProxySecurityArgs(data.security)...),
+				networking.IPv4LocalhostDefaultAddress, strconv.Itoa(int(dataPort)),
+				"--control-security-file", data.serverSecurityFile},
 			Env: []commonapi.EnvVar{{Name: logger.DCP_LOG_SESSION_ID, Value: logger.SessionId()}},
 		}},
 	}
@@ -518,8 +563,14 @@ func (r *LogicalContainerTunnelProxyReconciler) ensurePhysicalProcess(
 	return createdProcess, applyLogicalTunnelProxyProcessStatus(proxy, createdProcess)
 }
 
-func tunnelProxySecurityArgs(security dcptun.TunnelProxySecurityConfig) []string {
-	return []string{"--ca-cert", security.CACertBase64, "--server-cert", security.ServerCertBase64, "--server-key", security.ServerKeyBase64}
+func (r *LogicalContainerTunnelProxyReconciler) createLogicalTunnelProxySecurityFile(
+	ctx context.Context, security dcptun.TunnelControlSecurityConfig,
+) (string, error) {
+	contents, marshalErr := json.Marshal(security)
+	if marshalErr != nil {
+		return "", fmt.Errorf("encode logical tunnel control security: %w", marshalErr)
+	}
+	return r.securityFiles.Create(ctx, "logical-tunnel-control-", clientProxySecurityFileName, contents)
 }
 
 func (r *LogicalContainerTunnelProxyReconciler) findPhysicalContainer(
@@ -553,18 +604,6 @@ func (r *LogicalContainerTunnelProxyReconciler) findPhysicalContainer(
 			return nil, identityErr
 		}
 		data.containerUID = owned.UID
-		if !data.security.HasCompleteCertificateData() && owned.Spec.Container != nil {
-			for index := 0; index+1 < len(owned.Spec.Container.Command); index++ {
-				switch owned.Spec.Container.Command[index] {
-				case "--ca-cert":
-					data.security.CACertBase64 = owned.Spec.Container.Command[index+1]
-				case "--server-cert":
-					data.security.ServerCertBase64 = owned.Spec.Container.Command[index+1]
-				case "--server-key":
-					data.security.ServerKeyBase64 = owned.Spec.Container.Command[index+1]
-				}
-			}
-		}
 	}
 	return owned, nil
 }
@@ -1009,12 +1048,10 @@ func (r *LogicalContainerTunnelProxyReconciler) manageLogicalTunnels(
 						record.status.State, record.status.ErrorMessage = apiv2.LogicalContainerTunnelStateFailed, "Maximum tunnel preparation attempts reached."
 					} else {
 						operationCtx, cancel := context.WithTimeout(ctx, tunnelOperationTimeout)
-						request := &dcptunproto.TunnelReq{ServerAddress: stdproto.String(server.Address), ServerPort: stdproto.Int32(server.Port), ClientProxyPort: stdproto.Int32(server.Port)}
+						request := &dcptunproto.TunnelReq{ServerAddress: stdproto.String(server.Address), ServerPort: stdproto.Int32(server.Port),
+							ClientProxyPort: stdproto.Int32(server.Port), AllowClientProxyPortFallback: stdproto.Bool(true),
+							TunnelName: stdproto.String(tunnel.Name)}
 						prepared, prepareErr := client.PrepareTunnel(operationCtx, request)
-						if prepareErr != nil {
-							request.ClientProxyPort = nil
-							prepared, prepareErr = client.PrepareTunnel(operationCtx, request)
-						}
 						cancel()
 						if prepareErr != nil {
 							log.Error(prepareErr, "Failed to prepare tunnel", "Tunnel", tunnel.Name)

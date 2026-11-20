@@ -141,6 +141,7 @@ func setupImageBuildContextArchive(
 	}
 
 	now := time.Now()
+	// The shared image must contain no per-generation credentials or other files from the build directory.
 	tarWriter := usvc_io.NewTarWriterTo(archiveFile)
 	if writeDockerfileErr := tarWriter.WriteFile(
 		[]byte(dockerfileContent),

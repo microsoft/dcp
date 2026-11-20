@@ -259,7 +259,7 @@ func TestLogicalProcessPortValidationByMode(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 			for _, lifecycleKey := range []string{"", "explicit"} {
-				spec := LogicalProcessSpec{Mode: testCase.mode, LifecycleKey: lifecycleKey, Ports: []LogicalProcessPort{{
+				spec := LogicalProcessSpec{Mode: testCase.mode, ProcessName: "process", LifecycleKey: lifecycleKey, Ports: []LogicalProcessPort{{
 					LogicalServiceBinding: LogicalServiceBinding{Name: "http", ServiceRef: "service"}, Port: testCase.port,
 				}}}
 				if testCase.mode == LogicalProcessModeExisting {

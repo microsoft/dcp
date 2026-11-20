@@ -468,6 +468,7 @@ func convertInspectedContainer(
 		}
 	}
 
+	inspectedContainer.Entrypoint, inspectedContainer.Command = rawContainer.Config.Entrypoint, rawContainer.Config.Cmd
 	inspectedContainer.Args = append(inspectedContainer.Args, rawContainer.Config.Entrypoint...)
 	inspectedContainer.Args = append(inspectedContainer.Args, rawContainer.Config.Cmd...)
 

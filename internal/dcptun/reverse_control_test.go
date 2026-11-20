@@ -15,8 +15,6 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/microsoft/dcp/internal/dcptun/proto"
@@ -40,7 +38,7 @@ func TestReverseControlConnection(t *testing.T) {
 	security, securityErr := NewTunnelProxySecurityConfig()
 	require.NoError(t, securityErr)
 	changed := make(chan struct{}, 1)
-	connection, connectionErr := NewReverseControlConnection(ctx, security, func() {
+	connection, connectionErr := NewReverseControlConnection(ctx, security.ControllerConfig(), func() {
 		select {
 		case changed <- struct{}{}:
 		default:
@@ -54,12 +52,10 @@ func TestReverseControlConnection(t *testing.T) {
 	require.NoError(t, writeErr)
 	require.NoError(t, impostor.Close())
 	require.False(t, connection.Ready())
-	tlsConfig, tlsErr := security.GetTlsConfig()
-	require.NoError(t, tlsErr)
 	listener := NewDialBackListener(ctx, connection.Address(), logr.Discard())
-	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
+	server, serverErr := NewControlServer(security.ServerProxyConfig(), &reverseControlTestServer{})
+	require.NoError(t, serverErr)
 	defer server.Stop()
-	proto.RegisterTunnelControlServer(server, &reverseControlTestServer{})
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(listener) }()
 	defer func() {
@@ -122,18 +118,16 @@ func TestDialBackListenerCancellation(t *testing.T) {
 	}
 }
 
-// Verifies that tunnel status serialization omits the private key without mutating live TLS configuration.
+// Verifies that tunnel status serialization contains connection details but no control credentials.
 func TestTunnelProxyStatusOmitsPrivateKey(t *testing.T) {
 	t.Parallel()
-	config := TunnelProxyConfig{TunnelProxySecurityConfig: TunnelProxySecurityConfig{
-		CACertBase64: "ca", ServerCertBase64: "cert", ServerKeyBase64: "secret-key",
-	}, ServerControlPort: 1234}
-	encoded, encodeErr := config.MarshalStatus()
+	config := TunnelProxyConfig{ServerControlPort: 1234}
+	encoded, encodeErr := json.Marshal(config)
 	require.NoError(t, encodeErr)
-	require.NotContains(t, string(encoded), "secret-key")
 	require.NotContains(t, string(encoded), "server_key_base64")
+	require.NotContains(t, string(encoded), "outgoing_token")
+	require.NotContains(t, string(encoded), "incoming_token_hash_base64")
 	var decoded TunnelProxyConfig
 	require.NoError(t, json.Unmarshal(encoded, &decoded))
 	require.Equal(t, int32(1234), decoded.ServerControlPort)
-	require.Equal(t, "secret-key", config.ServerKeyBase64)
 }

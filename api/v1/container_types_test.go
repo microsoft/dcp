@@ -175,7 +175,7 @@ func TestLogicalContainerSpecLifecycleKeyIsStable(t *testing.T) {
 	key, computed, keyErr := spec.GetLifecycleKey([]apiv2.ContainerPort{{ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP}})
 	require.NoError(t, keyErr)
 	require.True(t, computed)
-	require.Equal(t, "c1329e9a97574da35f3e76fbc91b23f8", key, "V2 lifecycle-key encoding changed; existing persistent containers would be replaced")
+	require.Equal(t, "ca2ad18b96284b86f02c8491a08f2c05", key, "V2 lifecycle-key encoding changed; existing persistent containers would be replaced")
 }
 
 // Verifies that V1 and V2 persistent kinds and log subresource types can share standard API-server registration.

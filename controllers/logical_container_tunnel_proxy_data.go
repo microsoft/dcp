@@ -49,7 +49,9 @@ type logicalTunnelProxyData struct {
 	processUID           types.UID
 	imageBuildPlan       *dcptun.ClientProxyImageBuildPlan
 	unobservedChildren   unobservedLogicalChildren
-	security             dcptun.TunnelProxySecurityConfig
+	security             *dcptun.TunnelProxySecurityConfig
+	clientSecurityFile   string
+	serverSecurityFile   string
 	control              *dcptun.ReverseControlConnection
 	tunnels              map[string]logicalTunnelRecord
 	configurationVersion int32

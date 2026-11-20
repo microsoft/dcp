@@ -189,7 +189,7 @@ func TestV2LogicalContainerExecRecoversLostPhysicalCreateResponse(t *testing.T) 
 	})
 	releaseCreate()
 	exited := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseExited, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseExited, nil
 	})
 	require.True(t, lostCreate.responseLost.Load())
 	require.Equal(t, physical.Name, exited.Status.PhysicalExecRef)

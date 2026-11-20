@@ -1513,6 +1513,7 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 		}
 	}
 
+	ic.Entrypoint, ic.Command = pci.Config.Entrypoint, pci.Config.Cmd
 	ic.Args = append(ic.Args, pci.Config.Entrypoint...)
 	ic.Args = append(ic.Args, pci.Config.Cmd...)
 

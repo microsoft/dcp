@@ -56,7 +56,11 @@ type TestEnvironmentInfo struct {
 
 type TestEnvironmentOptions struct {
 	DecoratePhysicalProcessExecutor func(process.Executor) process.Executor
+	ConfigureTunnelProxy            func(*controllers.ContainerNetworkTunnelProxyReconcilerConfig)
+	DecorateTunnelProxyClient       func(ctrl_client.Client) ctrl_client.Client
+	DecorateTunnelProxyAPIReader    func(ctrl_client.Reader) ctrl_client.Reader
 	DecorateAPIClient               func(ctrl_client.Client) ctrl_client.Client
+	DecorateLogger                  func(logr.Logger) logr.Logger
 	WorkloadID                      commonapi.WorkloadID
 	DecorateContainerOrchestrator   func(containers.ContainerOrchestrator, *statestore.Store) containers.ContainerOrchestrator
 	DecorateAPIReader               func(ctrl_client.Reader) ctrl_client.Reader
@@ -136,8 +140,12 @@ func StartTestEnvironmentWithOptions(
 		return nil, nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)
 	}
 
-	log := testutil.NewLogWithResourceSinkForTesting(instanceTag, sessionFolder)
-	ctrl.SetLogger(log)
+	baseLog := testutil.NewLogWithResourceSinkForTesting(instanceTag, sessionFolder)
+	ctrl.SetLogger(baseLog)
+	log := baseLog
+	if options.DecorateLogger != nil {
+		log = options.DecorateLogger(log)
+	}
 
 	startedServerInfo, serverStartErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, log, sessionFolder)
 	serverInfo = startedServerInfo
@@ -196,6 +204,8 @@ func StartTestEnvironmentWithOptions(
 		// This avoids a bunch of shutdown errors from the manager.
 		<-managerDone.Wait()
 
+		// Test resources are released before the API server disposal completes, so a completed
+		// shutdown guarantees that they are released, but never while the manager is still running.
 		tpeCloseErr := pex.Close()
 		if tpeCloseErr != nil {
 			log.Error(tpeCloseErr, "Failed to close the test process executor")
@@ -538,16 +548,35 @@ func StartTestEnvironmentWithOptions(
 	}
 
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
+		tunnelProxyClient := mgr.GetClient()
+		if options.DecorateTunnelProxyClient != nil {
+			tunnelProxyClient = options.DecorateTunnelProxyClient(tunnelProxyClient)
+			if tunnelProxyClient == nil {
+				return nil, nil, fmt.Errorf("tunnel proxy API client decorator returned nil")
+			}
+		}
 		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
 			ProcessExecutor:              pex,
 			BuildContextDir:              sessionFolder,
 			MakeTunnelControlClient:      func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tunnelControlClient },
 			MaxTunnelPreparationAttempts: 2,
+			// Keeps the shutdown drain well within the time shutdownTestEnvironment waits for test environment shutdown.
+			WorkQueueDrainTimeout: 5 * time.Second,
+		}
+		if options.ConfigureTunnelProxy != nil {
+			options.ConfigureTunnelProxy(&tprOpts)
+		}
+		tunnelProxyAPIReader := mgr.GetAPIReader()
+		if options.DecorateTunnelProxyAPIReader != nil {
+			tunnelProxyAPIReader = options.DecorateTunnelProxyAPIReader(tunnelProxyAPIReader)
+			if tunnelProxyAPIReader == nil {
+				return nil, nil, fmt.Errorf("tunnel proxy API reader decorator returned nil")
+			}
 		}
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(
 			ctx,
-			mgr.GetClient(),
-			mgr.GetAPIReader(),
+			tunnelProxyClient,
+			tunnelProxyAPIReader,
 			tprOpts,
 			log.WithName("TunnelProxyReconciler"),
 		)
@@ -576,8 +605,10 @@ func StartTestEnvironmentWithOptions(
 	// Starts the controller manager and all the associated controllers
 	managerDone.Clear()
 	go func() {
-		_ = mgr.Start(ctx)
-		managerDone.Set()
+		defer managerDone.Set()
+		if managerRunErr := controllers.StartControllerManager(ctx, mgr); managerRunErr != nil {
+			log.Error(managerRunErr, "Controller manager failed")
+		}
 	}()
 
 	testEnvironmentInfo = &TestEnvironmentInfo{

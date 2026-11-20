@@ -74,10 +74,11 @@ const (
 	specChanged                    objectChange = 0x4
 	additionalReconciliationNeeded objectChange = 0x8
 
-	conflictRequeueDelay              = 100 * time.Millisecond
-	reconciliationDebounceDelay       = 500 * time.Millisecond
-	reconciliationMaxDelay            = 5 * time.Second
-	resourceLeaseRevalidationInterval = 30 * time.Second
+	conflictRequeueDelay                  = 100 * time.Millisecond
+	reconciliationDebounceDelay           = 500 * time.Millisecond
+	reconciliationMaxDelay                = 5 * time.Second
+	resourceLeaseRevalidationInterval     = 30 * time.Second
+	defaultManagerGracefulShutdownTimeout = 45 * time.Second
 
 	PersistentLabel              = "com.microsoft.developer.usvc-dev.persistent"
 	CreatorProcessIdLabel        = "com.microsoft.developer.usvc-dev.creatorProcessId"
@@ -337,14 +338,18 @@ func GetShortId(id string) string {
 type ControllerContextOption string
 
 func NewControllerManagerOptions(lifetimeCtx context.Context, scheme *apiruntime.Scheme, log logr.Logger) ctrl.Options {
+	gracefulShutdownTimeout := defaultManagerGracefulShutdownTimeout
 	return ctrl.Options{
-		Scheme:         scheme,
-		LeaderElection: false,
+		Scheme:                  scheme,
+		LeaderElection:          false,
+		GracefulShutdownTimeout: &gracefulShutdownTimeout,
 		Metrics: metricsserver.Options{
 			BindAddress: "0",
 		},
-		Logger:      log.WithName("ControllerManager"),
-		BaseContext: func() context.Context { return lifetimeCtx },
+		Logger: log.WithName("ControllerManager"),
+		// Runnable cancellation belongs to the manager; inheriting parent cancellation
+		// here would bypass StartControllerManager's cache-startup barrier.
+		BaseContext: func() context.Context { return context.WithoutCancel(lifetimeCtx) },
 		Controller: ctrl_config.Controller{
 			MaxConcurrentReconciles: MaxConcurrentReconciles,
 		},

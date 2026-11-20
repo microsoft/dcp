@@ -61,7 +61,9 @@ func (observer *containerExecReconcileObserver) Get(ctx context.Context, key ctr
 
 type containerExecStatusConflictClient struct {
 	ctrl_client.Client
-	conflicted atomic.Bool
+	conflicted        atomic.Bool
+	replace           atomic.Bool
+	observeExecutions func(*apiv2.PhysicalContainerExecList)
 }
 
 func (apiClient *containerExecStatusConflictClient) Status() ctrl_client.SubResourceWriter {
@@ -75,13 +77,34 @@ type containerExecStatusConflictWriter struct {
 
 func (writer *containerExecStatusConflictWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
 	if execution, logical := obj.(*apiv2.LogicalContainerExec); logical &&
-		execution.Status.Phase == apiv2.ContainerExecPhaseFailed && execution.Status.RuntimeLogs != nil &&
+		execution.Status.Phase == apiv2.LogicalContainerExecPhaseFailed && execution.Status.RuntimeLogs != nil &&
 		execution.Status.RuntimeLogs.Complete && !execution.Status.RuntimeLogs.Available &&
 		writer.client.conflicted.CompareAndSwap(false, true) {
 		return apierrors.NewConflict(schema.GroupResource{Group: apiv2.GroupName, Resource: "logicalcontainerexecs"},
 			execution.Name, errors.New("injected status conflict"))
 	}
 	return writer.SubResourceWriter.Patch(ctx, obj, patch, options...)
+}
+
+func (apiClient *containerExecStatusConflictClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+	listErr := apiClient.Client.List(ctx, list, options...)
+	if physicals, executions := list.(*apiv2.PhysicalContainerExecList); executions && listErr == nil && apiClient.replace.Load() {
+		apiClient.observeExecutions(physicals)
+	}
+	return listErr
+}
+
+type containerExecReplacementReader struct {
+	ctrl_client.Reader
+	client *containerExecStatusConflictClient
+}
+
+func (reader *containerExecReplacementReader) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
+	getErr := reader.Reader.Get(ctx, key, obj, options...)
+	if physical, execution := obj.(*apiv2.PhysicalContainerExec); execution && getErr == nil && reader.client.replace.Load() {
+		physical.UID += "-replacement"
+	}
+	return getErr
 }
 
 type containerExecLaunchReader struct {
@@ -115,36 +138,108 @@ func waitContainerExecSignal(t *testing.T, ctx context.Context, signal <-chan st
 	}
 }
 
-// Verifies that LogicalContainerExec repeats terminal source invalidation after forced backing loss and a status conflict,
-// preserving completion and the original physical identity without retaining deleted capture paths.
+// Verifies that LogicalContainerExec repeats terminal source invalidation through status conflicts after backing
+// loss or UID replacement in either lookup path, preserving the original identity without deleted capture paths.
 func TestV2ContainerExecMissingBackingProjectionSurvivesStatusConflict(t *testing.T) {
 	t.Parallel()
+	t.Run("missing", func(t *testing.T) {
+		t.Parallel()
+		var conflictClient *containerExecStatusConflictClient
+		ctx, apiClient, running := startLogicalContainerExecWithLogs(t, TestEnvironmentOptions{
+			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+				conflictClient = &containerExecStatusConflictClient{Client: apiClient}
+				return conflictClient
+			},
+		})
+		physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalExecRef, Namespace: running.Namespace}}
+		forceRemoveLogicalContainerExecBacking(t, ctx, apiClient, physical)
+		ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, physical)
+		requireMissingContainerExecLogs(t, ctx, apiClient, running, conflictClient)
+		deleteLogicalContainerExecAndBacking(t, ctx, apiClient, running)
+	})
+	t.Run("cached-replacement", func(t *testing.T) {
+		t.Parallel()
+		var conflictClient *containerExecStatusConflictClient
+		ctx, apiClient, running := startLogicalContainerExecWithLogs(t, TestEnvironmentOptions{
+			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+				conflictClient = &containerExecStatusConflictClient{Client: apiClient,
+					observeExecutions: func(physicals *apiv2.PhysicalContainerExecList) {
+						for i := range physicals.Items {
+							physicals.Items[i].UID += "-replacement"
+						}
+					}}
+				return conflictClient
+			},
+		})
+		conflictClient.replace.Store(true)
+		t.Cleanup(func() { conflictClient.replace.Store(false) })
+		require.NoError(t, apiClient.Patch(ctx, running,
+			ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"exec-test":"changed-uid"}}}`))))
+		requireMissingContainerExecLogs(t, ctx, apiClient, running, conflictClient)
+		conflictClient.replace.Store(false)
+		deleteLogicalContainerExecAndBacking(t, ctx, apiClient, running)
+	})
+	t.Run("uncached-replacement", func(t *testing.T) {
+		t.Parallel()
+		var conflictClient *containerExecStatusConflictClient
+		ctx, apiClient, running := startLogicalContainerExecWithLogs(t, TestEnvironmentOptions{
+			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
+				conflictClient = &containerExecStatusConflictClient{Client: apiClient,
+					observeExecutions: func(physicals *apiv2.PhysicalContainerExecList) { physicals.Items = nil }}
+				return conflictClient
+			},
+			DecorateAPIReader: func(reader ctrl_client.Reader) ctrl_client.Reader {
+				return &containerExecReplacementReader{Reader: reader, client: conflictClient}
+			},
+		})
+		conflictClient.replace.Store(true)
+		t.Cleanup(func() { conflictClient.replace.Store(false) })
+		require.NoError(t, apiClient.Patch(ctx, running,
+			ctrl_client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"exec-test":"changed-uid"}}}`))))
+		requireMissingContainerExecLogs(t, ctx, apiClient, running, conflictClient)
+		conflictClient.replace.Store(false)
+		deleteLogicalContainerExecAndBacking(t, ctx, apiClient, running)
+	})
+}
+
+func startLogicalContainerExecWithLogs(t *testing.T, options TestEnvironmentOptions) (context.Context, ctrl_client.Client, *apiv2.LogicalContainerExec) {
+	t.Helper()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	var conflictClient *containerExecStatusConflictClient
-	serverInfo, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, containerExecTestControllers, t.Name(), t.TempDir(),
-		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-			conflictClient = &containerExecStatusConflictClient{Client: apiClient}
-			return conflictClient
-		}})
+	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, containerExecTestControllers, t.Name(), t.TempDir(), options)
 	require.NoError(t, startupErr)
-	apiClient := serverInfo.Client
-	target := createV2ExecTarget(t, ctx, apiClient, "v2-exec-status-conflict")
+	target := createV2ExecTarget(t, ctx, server.Client, "v2-exec-backing-loss")
 	resource := &apiv2.LogicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: "execution", Namespace: target.Namespace},
-		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: "v2-exec-status-conflict-command"}}}
-	require.NoError(t, apiClient.Create(ctx, resource))
-	running := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
+		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: "v2-exec-backing-loss-command"}}}
+	require.NoError(t, server.Client.Create(ctx, resource))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseRunning, nil
 	})
-	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalExecRef, Namespace: target.Namespace}}
-	forceRemoveLogicalContainerExecBacking(t, ctx, apiClient, physical)
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerExec](t, ctx, apiClient, physical)
-	failed := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseFailed, nil
+	require.NotNil(t, running.Status.RuntimeLogs)
+	require.True(t, running.Status.RuntimeLogs.Available)
+	require.False(t, running.Status.RuntimeLogs.Complete)
+	return ctx, server.Client, running
+}
+
+func requireMissingContainerExecLogs(
+	t *testing.T, ctx context.Context, apiClient ctrl_client.Client, running *apiv2.LogicalContainerExec, conflictClient *containerExecStatusConflictClient,
+) {
+	t.Helper()
+	failed := waitObjectAssumesStateEx(t, ctx, apiClient, running.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseFailed &&
+			current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete && !current.Status.RuntimeLogs.Available, nil
 	})
-	require.True(t, conflictClient.conflicted.Load())
-	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonPhysicalExecutionChanged)
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonMissing)
 	require.Equal(t, &apiv2.LogSource{Name: running.Status.PhysicalExecRef, UID: running.Status.RuntimeLogs.UID, Complete: true}, failed.Status.RuntimeLogs)
+	require.True(t, conflictClient.conflicted.Load())
+}
+
+func deleteLogicalContainerExecAndBacking(t *testing.T, ctx context.Context, apiClient ctrl_client.Client, resource *apiv2.LogicalContainerExec) {
+	t.Helper()
+	require.NoError(t, apiClient.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, resource)
+	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: resource.Status.PhysicalExecRef, Namespace: resource.Namespace}}
+	ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, physical)
 }
 
 // Verifies that PhysicalContainerExec waits when its target is paused during uncached preflight,
@@ -189,8 +284,8 @@ func TestV2PhysicalContainerExecRetriesReadinessLossBeforeLaunch(t *testing.T) {
 	require.NoError(t, orchestrator.SimulateContainerExecExit(ctx, target.Status.ContainerID, resource.Spec.Execution.Command, 0))
 }
 
-// Verifies that logical-only stdout followers finish after physical backing cleanup,
-// and late followers retain captured output while the logical hold keeps the backing addressable.
+// Verifies that logical-only stdout followers finish with the reported execution outcome after
+// physical backing cleanup, and late followers retain output while the logical hold keeps the backing addressable.
 func TestV2ContainerExecLogicalOnlyFollowerCompletesOnBackingCleanup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -203,7 +298,7 @@ func TestV2ContainerExecLogicalOnlyFollowerCompletesOnBackingCleanup(t *testing.
 		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: "v2-exec-logical-only-follow-command"}}}
 	require.NoError(t, apiClient.Create(ctx, resource))
 	running := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseRunning, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseRunning, nil
 	})
 	orchestrator, isSimulated := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	require.True(t, isSimulated)
@@ -222,12 +317,15 @@ func TestV2ContainerExecLogicalOnlyFollowerCompletesOnBackingCleanup(t *testing.
 	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalExecRef, Namespace: resource.Namespace}}
 	require.NoError(t, apiClient.Delete(ctx, physical))
 	exited := waitObjectAssumesStateEx(t, ctx, apiClient, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
-		return current.Status.Phase == apiv2.ContainerExecPhaseExited, nil
+		return current.Status.Phase == apiv2.LogicalContainerExecPhaseExited &&
+			current.Status.RuntimeLogs != nil && current.Status.RuntimeLogs.Complete, nil
 	})
+	requireReadyCondition(t, exited.Status.Conditions, metav1.ConditionFalse, apiv2.LogicalContainerExecReasonCompleted)
 	require.True(t, exited.Status.RuntimeLogs.Complete)
-	require.NoError(t, apiClient.Get(ctx, physical.NamespacedName(), physical))
+	physical = waitObjectAssumesStateEx(t, ctx, apiClient, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
+		return !slices.Contains(current.Finalizers, apiv2.GroupName+"/physicalcontainerexec-reconciler"), nil
+	})
 	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
-	require.NotContains(t, physical.Finalizers, apiv2.GroupName+"/physicalcontainerexec-reconciler")
 	remaining, completionErr := io.ReadAll(follow)
 	require.NoError(t, completionErr)
 	require.Empty(t, remaining)
@@ -248,11 +346,7 @@ func forceRemoveLogicalContainerExecBacking(
 	t *testing.T, ctx context.Context, apiClient ctrl_client.Client, physical *apiv2.PhysicalContainerExec,
 ) {
 	t.Helper()
-	require.NoError(t, apiClient.Delete(ctx, physical))
-	waitObjectAssumesStateEx(t, ctx, apiClient, physical.NamespacedName(), func(current *apiv2.PhysicalContainerExec) (bool, error) {
-		return !slices.Contains(current.Finalizers, apiv2.GroupName+"/physicalcontainerexec-reconciler"), nil
-	})
-	// Deliberately violate the logical hold to exercise terminal backing-loss handling.
+	// Violate the logical hold before graceful deletion can report an orderly runtime exit.
 	require.NoError(t, retryOnConflictEx(ctx, apiClient, physical.NamespacedName(), func(updateCtx context.Context, current *apiv2.PhysicalContainerExec) error {
 		patch := ctrl_client.MergeFromWithOptions(current.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 		current.Finalizers = slices.DeleteFunc(current.Finalizers, func(finalizer string) bool {
@@ -260,4 +354,5 @@ func forceRemoveLogicalContainerExecBacking(
 		})
 		return apiClient.Patch(updateCtx, current, patch)
 	}))
+	require.NoError(t, apiClient.Delete(ctx, physical))
 }

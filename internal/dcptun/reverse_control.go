@@ -16,7 +16,6 @@ import (
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
-	"google.golang.org/grpc/credentials"
 )
 
 // DialBackListener serves gRPC over outbound TCP connections, reconnecting after each connection closes.
@@ -118,11 +117,11 @@ type ReverseControlConnection struct {
 // NewReverseControlConnection binds an ephemeral port before the server process is declared.
 // changed is called when authenticated gRPC readiness changes or the accept loop fails.
 func NewReverseControlConnection(
-	ctx context.Context, security TunnelProxySecurityConfig, changed func(), log logr.Logger,
+	ctx context.Context, security TunnelControlSecurityConfig, changed func(), log logr.Logger,
 ) (*ReverseControlConnection, error) {
-	pool, poolErr := security.GetClientPool()
-	if poolErr != nil {
-		return nil, poolErr
+	dialOptions, dialOptionsErr := security.ClientDialOptions()
+	if dialOptionsErr != nil {
+		return nil, dialOptionsErr
 	}
 	lifetime, cancel := context.WithCancel(ctx)
 	listener, listenErr := (&net.ListenConfig{}).Listen(lifetime, "tcp", "127.0.0.1:0")
@@ -131,8 +130,7 @@ func NewReverseControlConnection(
 		return nil, listenErr
 	}
 	incoming := make(chan net.Conn)
-	connection, connectionErr := grpc.NewClient("passthrough:///127.0.0.1",
-		grpc.WithTransportCredentials(credentials.NewClientTLSFromCert(pool, "127.0.0.1")),
+	dialOptions = append(dialOptions,
 		grpc.WithContextDialer(func(dialCtx context.Context, _ string) (net.Conn, error) {
 			select {
 			case accepted, open := <-incoming:
@@ -146,6 +144,7 @@ func NewReverseControlConnection(
 				return nil, net.ErrClosed
 			}
 		}))
+	connection, connectionErr := grpc.NewClient("passthrough:///127.0.0.1", dialOptions...)
 	if connectionErr != nil {
 		cancel()
 		_ = listener.Close()

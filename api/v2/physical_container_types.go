@@ -193,6 +193,11 @@ type PhysicalContainerConfig struct {
 	// +listType=atomic
 	Command []string `json:"command,omitempty"`
 
+	// RunArgs contains additional container runtime arguments passed before the image name.
+	// Arguments are passed literally and in order, without shell parsing or template expansion.
+	// +listType=atomic
+	RunArgs []string `json:"runArgs,omitempty"`
+
 	// Env contains environment variables to set in the container.
 	// +listType=map
 	// +listMapKey=name
@@ -241,6 +246,19 @@ type PhysicalContainerPortMapping struct {
 // PhysicalContainerStatus describes the observed runtime container.
 // +k8s:openapi-gen=true
 type PhysicalContainerStatus struct {
+	// EffectiveCommand contains the container command reported by runtime inspection, separately from its entrypoint.
+	// +listType=atomic
+	EffectiveCommand []string `json:"effectiveCommand,omitempty"`
+
+	// EffectiveEntrypoint contains the container entrypoint reported by runtime inspection.
+	// +listType=atomic
+	EffectiveEntrypoint []string `json:"effectiveEntrypoint,omitempty"`
+
+	// EffectiveEnv contains environment variables reported by runtime inspection, including image and environment-file values.
+	// +listType=map
+	// +listMapKey=name
+	EffectiveEnv []commonapi.EnvVar `json:"effectiveEnv,omitempty"`
+
 	// Phase summarizes the runtime container lifecycle.
 	// +kubebuilder:validation:Enum=Pending;Running;Paused;Exited;Unknown;Failed
 	// +optional

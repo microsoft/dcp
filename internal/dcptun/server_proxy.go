@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -36,12 +37,37 @@ type stopStreamFn context.CancelFunc
 // The result of the tunnel stream connection creator.
 type streamConnectionResult struct {
 	streamRef         *proto.StreamRef // The new stream reference (the one we are creation connections for).
-	serverConn        net.Conn         // The connection to the server endpoint (if successful).
-	clientDataConn    net.Conn         // The connection to the client proxy data endpoint (if successful).
-	tunnelNotFoundErr error            // The error indicating that the referenced tunnel (part of stream reference) was not found.
-	serverDialErr     error            // The error that occurred while dialing the server endpoint.
-	clientDataDialErr error            // The error that occurred while dialing the client proxy data endpoint.
-	streamLog         logr.Logger      // The logger to be used for the stream.
+	tunnelSpec        *proto.TunnelSpec
+	serverConn        net.Conn    // The connection to the server endpoint (if successful).
+	clientDataConn    net.Conn    // The connection to the client proxy data endpoint (if successful).
+	tunnelNotFoundErr error       // The error indicating that the referenced tunnel (part of stream reference) was not found.
+	serverDialErr     error       // The error that occurred while dialing the server endpoint.
+	clientDataDialErr error       // The error that occurred while dialing the client proxy data endpoint.
+	streamLog         logr.Logger // The logger to be used for the stream.
+	stopCleanup       func() bool // Transfers pending sockets out of the control attempt's lifetime.
+}
+
+func (res streamConnectionResult) close() {
+	if res.stopCleanup != nil {
+		res.stopCleanup()
+	}
+	if res.serverConn != nil {
+		_ = res.serverConn.Close()
+	}
+	if res.clientDataConn != nil {
+		_ = res.clientDataConn.Close()
+	}
+}
+
+// ServerProxyConfig controls recovery of the connection used to establish new streams
+// and per-tunnel stream-establishment concurrency.
+type ServerProxyConfig struct {
+	// Defaults to resiliency.DefaultRetryTimeout.
+	ReconnectTimeout time.Duration
+
+	// Bounds simultaneous stream-creation dials per tunnel so one slow backend cannot
+	// block new streams on other tunnels. Defaults to defaultMaxConcurrentStreamCreationsPerTunnel.
+	MaxConcurrentStreamCreationsPerTunnel uint8
 }
 
 // The server-side proxy of the DCP reverse network tunnel.
@@ -68,15 +94,22 @@ type ServerProxy struct {
 	// Data about tunnels managed by this proxy, indexed by tunnel ID.
 	tunnels map[TunnelID]*tunnelData[stopStreamFn]
 
+	// Maps active logical tunnel names to their assigned tunnel IDs; only references tunnels present in the tunnels map.
+	tunnelsByName map[string]TunnelID
+
+	// Serializes PrepareTunnel and name-based DeleteTunnel for the same logical tunnel name.
+	nameLeases *concurrency.LeaseMap[string]
+
 	// Mutex to protect access to internal proxy state (primarily the tunnels map).
 	lock *sync.Mutex
 
 	// A OneTimeJob representing disposal of the server-side proxy.
 	dispose *concurrency.OneTimeJob[struct{}]
 
-	// Asynchronous worker that creates new stream connections
-	// (the server connection and the client data connection to the client proxy).
-	streamConnectionCreator *resiliency.AsyncWorker[*proto.StreamRef, streamConnectionResult]
+	reconnectTimeout                      time.Duration
+	maxConcurrentStreamCreationsPerTunnel uint8
+	failure                               *concurrency.ValuePromise[error]
+	ready                                 *concurrency.ValuePromise[struct{}]
 }
 
 func NewServerProxy(
@@ -85,20 +118,35 @@ func NewServerProxy(
 	clientDataEndpointAddress string,
 	clientDataEndpointPort int32,
 	requestShutdown func(),
+	config ServerProxyConfig,
 	log logr.Logger,
 ) *ServerProxy {
-	sp := &ServerProxy{
-		lifetimeCtx:               ctx,
-		clientProxy:               clientProxy,
-		clientDataEndpointAddress: clientDataEndpointAddress,
-		clientDataEndpointPort:    clientDataEndpointPort,
-		requestShutdown:           requestShutdown,
-		log:                       log,
-		tunnels:                   make(map[TunnelID]*tunnelData[stopStreamFn]),
-		lock:                      &sync.Mutex{},
-		dispose:                   concurrency.NewOneTimeJob[struct{}](),
+	if config.ReconnectTimeout < 0 {
+		panic("ServerProxyConfig.ReconnectTimeout must not be negative")
 	}
-	sp.streamConnectionCreator = resiliency.NewAsyncWorker(ctx, sp.createStreamConnections, resiliency.DefaultConcurrency)
+	if config.ReconnectTimeout == 0 {
+		config.ReconnectTimeout = resiliency.DefaultRetryTimeout
+	}
+	if config.MaxConcurrentStreamCreationsPerTunnel == 0 {
+		config.MaxConcurrentStreamCreationsPerTunnel = defaultMaxConcurrentStreamCreationsPerTunnel
+	}
+	sp := &ServerProxy{
+		lifetimeCtx:                           ctx,
+		clientProxy:                           clientProxy,
+		clientDataEndpointAddress:             clientDataEndpointAddress,
+		clientDataEndpointPort:                clientDataEndpointPort,
+		requestShutdown:                       requestShutdown,
+		log:                                   log,
+		tunnels:                               make(map[TunnelID]*tunnelData[stopStreamFn]),
+		tunnelsByName:                         make(map[string]TunnelID),
+		nameLeases:                            concurrency.NewLeaseMap[string](),
+		lock:                                  &sync.Mutex{},
+		dispose:                               concurrency.NewOneTimeJob[struct{}](),
+		reconnectTimeout:                      config.ReconnectTimeout,
+		maxConcurrentStreamCreationsPerTunnel: config.MaxConcurrentStreamCreationsPerTunnel,
+		failure:                               concurrency.NewValuePromise[error](),
+		ready:                                 concurrency.NewValuePromise[struct{}](),
+	}
 
 	go sp.streamsCreationWorker()
 	context.AfterFunc(ctx, sp.disposeOnce)
@@ -117,6 +165,12 @@ func (sp *ServerProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 		return nil, validationErr
 	}
 
+	nameLease, nameLeaseErr := sp.nameLeases.Acquire(ctx, tr.GetTunnelName())
+	if nameLeaseErr != nil {
+		return nil, status.FromContextError(nameLeaseErr).Err()
+	}
+	defer nameLease.Release()
+
 	ts, prepareErr := sp.clientProxy.PrepareTunnel(ctx, tr, grpc.WaitForReady(true))
 	if prepareErr != nil {
 		sp.log.Error(prepareErr, "Failed to prepare tunnel with client proxy", "TunnelReq", tr.String())
@@ -125,6 +179,9 @@ func (sp *ServerProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 
 	sp.lock.Lock()
 	defer sp.lock.Unlock()
+	if sp.dispose.IsDone() || (sp.lifetimeCtx != nil && sp.lifetimeCtx.Err() != nil) {
+		return nil, status.Error(codes.FailedPrecondition, errMsgProxyDisposed)
+	}
 
 	tid := TunnelID(ts.GetTunnelRef().GetTunnelId())
 	if tid == invalidTunnelID {
@@ -132,58 +189,228 @@ func (sp *ServerProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 	}
 
 	existing, hasTd := sp.tunnels[tid]
-	if hasTd && !existing.spec.Same(ts) {
-		return nil, status.Errorf(codes.AlreadyExists, "tunnel with ID %d already exists with different configuration", tid) // Should never happen
-	}
-
-	if !hasTd {
-		sp.tunnels[tid] = newTunnelData[stopStreamFn](ts)
+	if hasTd {
+		if existing.deleted.Load() {
+			return nil, status.Errorf(codes.Aborted, "tunnel with ID %d was concurrently deleted", tid)
+		}
+		if !existing.spec.Same(ts) {
+			return nil, status.Errorf(codes.AlreadyExists, "tunnel with ID %d already exists with different configuration", tid) // Should never happen
+		}
+	} else {
+		td := newTunnelData[stopStreamFn](ts)
+		td.tunnelName = tr.GetTunnelName()
+		sp.tunnels[tid] = td
+		if sp.tunnelsByName == nil {
+			sp.tunnelsByName = make(map[string]TunnelID)
+		}
+		sp.tunnelsByName[tr.GetTunnelName()] = tid
 	}
 
 	sp.log.V(1).Info("Tunnel prepared", "TunnelSpec", ts.LogString())
 
-	return ts, nil
+	controllerSpec := stdproto.CloneOf(ts)
+	controllerSpec.DataConnectionToken = nil
+	return controllerSpec, nil
 }
 
-// Gracefully deletes the tunnel identified by tunnel ID.
+// Gracefully deletes the tunnel identified by tunnel ID, or by tunnel name when tunnel_id is zero.
 // Existing streams will be preserved, but no new streams will be allowed.
 func (sp *ServerProxy) DeleteTunnel(ctx context.Context, tr *proto.TunnelRef) (*emptypb.Empty, error) {
-	tid := TunnelID(tr.GetTunnelId())
-	if tid == invalidTunnelID {
-		return nil, status.Error(codes.InvalidArgument, "bad request: no tunnel ID specified")
+	if tr == nil || (tr.GetTunnelId() == uint32(invalidTunnelID) && tr.GetTunnelName() == "") {
+		return nil, status.Error(codes.InvalidArgument, "bad request: tunnel ID or tunnel name must be specified")
 	}
 
+	if tunnelName := tr.GetTunnelName(); tunnelName != "" {
+		nameLease, nameLeaseErr := sp.nameLeases.Acquire(ctx, tunnelName)
+		if nameLeaseErr != nil {
+			return nil, status.FromContextError(nameLeaseErr).Err()
+		}
+		defer nameLease.Release()
+	}
+
+	sp.lock.Lock()
+	tid := TunnelID(tr.GetTunnelId())
+	if tid == invalidTunnelID && sp.tunnelsByName != nil {
+		tid = sp.tunnelsByName[tr.GetTunnelName()]
+	}
+	var td *tunnelData[stopStreamFn]
+	var found bool
+	if tid != invalidTunnelID {
+		td, found = sp.tunnels[tid]
+	}
+	sp.lock.Unlock()
+	var deletedSpec *proto.TunnelSpec
+	alreadyDeleted := false
+	if found {
+		lockErr := td.operationLock.Lock(ctx)
+		if lockErr != nil {
+			return nil, status.FromContextError(lockErr).Err()
+		}
+		defer td.operationLock.Unlock()
+
+		sp.lock.Lock()
+		current, currentFound := sp.tunnels[tid]
+		found = currentFound && current == td
+		if found {
+			// Retire the server side before contacting the client proxy, which may be unreachable until its
+			// control connection recovers. The tunnel stays retired even if the client deletion fails.
+			deletedSpec = td.spec
+			alreadyDeleted = td.deleted.Load()
+			td.accepting.Store(false)
+			td.deleted.Store(true)
+		}
+		sp.lock.Unlock()
+	}
+
+	if found {
+		sp.log.V(1).Info("Deleting tunnel..", "tunnel_spec", deletedSpec.LogString())
+	} else {
+		sp.log.V(1).Info("Deleting tunnel missing from server-side bookkeeping", "TunnelID", tid, "TunnelName", tr.GetTunnelName())
+	}
+
+	// Always call the client proxy to facilitate retries, including after the
+	// server-side entry has drained its last established stream or when server-side
+	// bookkeeping never observed the PrepareTunnel response.
+	clientRef := tr
+	if tr.GetTunnelId() == uint32(invalidTunnelID) && tid != invalidTunnelID {
+		clientRef = &proto.TunnelRef{
+			TunnelId:   stdproto.Uint32(uint32(tid)),
+			TunnelName: stdproto.String(tr.GetTunnelName()),
+		}
+	}
+	_, clientDeleteErr := sp.clientProxy.DeleteTunnel(ctx, clientRef, grpc.WaitForReady(true))
+
+	// Delete the tunnel from the server-side proxy even if the client proxy deletion fails.
+	if tid != invalidTunnelID {
+		sp.lock.Lock()
+		td, found = sp.tunnels[tid]
+		if !found {
+			sp.lock.Unlock()
+			sp.log.V(1).Info("Tunnel already deleted", "tunnel_id", tid)
+		} else {
+			if deletedSpec == nil {
+				// The server first learned about the tunnel while the client deletion was in progress.
+				deletedSpec = td.spec
+				alreadyDeleted = td.deleted.Load()
+			}
+			td.accepting.Store(false)
+			td.deleted.Store(true)
+			if clientDeleteErr == nil {
+				sp.unmapTunnelNameLocked(tid, td)
+				if len(td.streams) == 0 {
+					delete(sp.tunnels, tid)
+				}
+			}
+			sp.lock.Unlock()
+			if alreadyDeleted {
+				sp.log.V(1).Info("Tunnel already deleted", "tunnel_id", tid)
+			} else {
+				sp.log.V(1).Info("Tunnel deleted", "tunnel_spec", deletedSpec.LogString())
+			}
+		}
+	}
+
+	if clientDeleteErr != nil {
+		sp.log.Error(clientDeleteErr, "Failed to delete tunnel with client proxy", "TunnelID", tid, "TunnelName", tr.GetTunnelName())
+		return nil, status.Errorf(codes.Internal, "failed to delete tunnel with client proxy: %s", clientDeleteErr.Error())
+	}
+	return &emptypb.Empty{}, nil
+}
+
+// UpdateTunnel changes an existing tunnel without replacing its client-facing listener or ID.
+func (sp *ServerProxy) UpdateTunnel(ctx context.Context, update *proto.TunnelUpdate) (*emptypb.Empty, error) {
+	validationErr := ensureValidTunnelUpdate(update)
+	if validationErr != nil {
+		return nil, validationErr
+	}
+	if sp.dispose.IsDone() {
+		return nil, status.Error(codes.FailedPrecondition, errMsgProxyDisposed)
+	}
+
+	tid := TunnelID(update.GetTunnelRef().GetTunnelId())
 	sp.lock.Lock()
 	td, found := sp.tunnels[tid]
 	sp.lock.Unlock()
 	if !found {
 		return nil, status.Errorf(codes.NotFound, "tunnel with ID %d does not exist", tid)
 	}
+	lockErr := td.operationLock.Lock(ctx)
+	if lockErr != nil {
+		return nil, status.FromContextError(lockErr).Err()
+	}
+	defer td.operationLock.Unlock()
 
-	sp.log.V(1).Info("Deleting tunnel..", "tunnel_spec", td.spec.LogString())
-
-	// Always call the client proxy to facilitate retries.
-	_, clientDeleteErr := sp.clientProxy.DeleteTunnel(ctx, tr)
-
-	// Delete the tunnel from the server-side proxy even if the client proxy deletion fails.
 	sp.lock.Lock()
-	td, found = sp.tunnels[tid]
-	if !found || td.deleted.Load() {
+	current, currentFound := sp.tunnels[tid]
+	if !currentFound || current != td || td.deleted.Load() {
 		sp.lock.Unlock()
-		// We found it above so the tunnel ID was valid. It is possible that it was deleted concurrently.
-		sp.log.V(1).Info("Tunnel already deleted", "tunnel_id", tid)
-	} else {
-		td.deleted.Store(true)
-		sp.lock.Unlock()
-		sp.log.V(1).Info("Tunnel deleted", "tunnel_spec", td.spec.LogString())
+		return nil, status.Errorf(codes.NotFound, "tunnel with ID %d does not exist", tid)
 	}
 
-	if clientDeleteErr != nil {
-		sp.log.Error(clientDeleteErr, "Failed to delete tunnel with client proxy", "tunnel_spec", td.spec.LogString())
-		return nil, status.Errorf(codes.Internal, "failed to delete tunnel with client proxy: %s", clientDeleteErr.Error())
+	if update.GetAcceptNewStreams() {
+		// Fail closed while changing the backend. The client may still be accepting
+		// from an earlier Ready state, so suspend both sides before enabling either
+		// side with the replacement target.
+		td.accepting.Store(false)
+		sp.lock.Unlock()
+		suspendUpdate := &proto.TunnelUpdate{
+			TunnelRef:        stdproto.CloneOf(update.GetTunnelRef()),
+			AcceptNewStreams: stdproto.Bool(false),
+		}
+		_, clientSuspendErr := sp.clientProxy.UpdateTunnel(ctx, suspendUpdate, grpc.WaitForReady(true))
+		if clientSuspendErr != nil {
+			sp.log.Error(clientSuspendErr, "Failed to suspend tunnel with client proxy before updating its backend", "TunnelID", tid)
+			return nil, status.Errorf(codes.Internal, "failed to suspend tunnel with client proxy before updating its backend: %s", clientSuspendErr.Error())
+		}
+
+		sp.lock.Lock()
+		td, found = sp.tunnels[tid]
+		if !found || td.deleted.Load() {
+			sp.lock.Unlock()
+			return nil, status.Errorf(codes.NotFound, "tunnel with ID %d does not exist", tid)
+		}
+		updatedSpec := stdproto.CloneOf(td.spec)
+		updatedSpec.ServerAddress = stdproto.String(update.GetServerAddress())
+		updatedSpec.ServerPort = stdproto.Int32(update.GetServerPort())
+		td.spec = updatedSpec
+		td.accepting.Store(true)
 	} else {
-		return &emptypb.Empty{}, nil
+		// Disable the server side first. If forwarding fails, any connection still
+		// accepted by the client side is rejected here instead of reaching a stale backend.
+		td.accepting.Store(false)
 	}
+	sp.lock.Unlock()
+
+	_, clientUpdateErr := sp.clientProxy.UpdateTunnel(ctx, update, grpc.WaitForReady(true))
+	if clientUpdateErr != nil {
+		if update.GetAcceptNewStreams() {
+			// A unary error is ambiguous: the client may have applied the resume
+			// before its response was lost. Keep the server side suspended so any
+			// accepted client connection still fails closed until an idempotent retry.
+			sp.lock.Lock()
+			current = sp.tunnels[tid]
+			if current == td && !td.deleted.Load() {
+				td.accepting.Store(false)
+			}
+			sp.lock.Unlock()
+		}
+		sp.log.Error(
+			clientUpdateErr,
+			"Failed to update tunnel with client proxy",
+			"TunnelID", tid,
+			"AcceptNewStreams", update.GetAcceptNewStreams(),
+		)
+		return nil, status.Errorf(codes.Internal, "failed to update tunnel with client proxy: %s", clientUpdateErr.Error())
+	}
+
+	sp.log.V(1).Info(
+		"Tunnel updated",
+		"TunnelID", tid,
+		"AcceptNewStreams", update.GetAcceptNewStreams(),
+		"ServerAddress", update.GetServerAddress(),
+		"ServerPort", update.GetServerPort(),
+	)
+	return &emptypb.Empty{}, nil
 }
 
 // Shuts down both sides of the tunneling proxy. Existing streams will be aborted.
@@ -211,75 +438,244 @@ func (sp *ServerProxy) Done() <-chan struct{} {
 	return sp.dispose.Done()
 }
 
+// Ready is closed after the first authenticated control stream becomes ready.
+func (sp *ServerProxy) Ready() <-chan struct{} {
+	return sp.ready.Wait()
+}
+
+// Err reports a failure requiring the controller to recreate the proxy pair.
+func (sp *ServerProxy) Err() error {
+	if sp.failure.IsSet() {
+		return sp.failure.Get()
+	}
+	return nil
+}
+
 // Calls into the client proxy to establish bi-directional stream of messages
 // that facilitate creation of new tunnel streams.
 // Once the stream creation flow is established, the server proxy will listen for "StreamRef" messages
 // from the client proxy (indicating the need for a new tunnel stream),
 // and reply with "NewStreamResult" messages indicating stream creation success or failure.
 func (sp *ServerProxy) streamsCreationWorker() {
-	newStreamsConn, newStreamsConnErr := sp.clientProxy.NewStreamsConnection(sp.lifetimeCtx, grpc.WaitForReady(true))
-	if newStreamsConnErr != nil {
-		sp.log.Error(newStreamsConnErr, "Failed to establsh new streams connection with client proxy")
-		sp.disposeOnce()
-		return
-	}
-
-	// Stream completion worker goroutine.
-	go func() {
-		defer func() { _ = newStreamsConn.CloseSend() }()
-		streamConnResults := sp.streamConnectionCreator.Results()
-
-		for {
-			select {
-
-			case <-sp.lifetimeCtx.Done():
-				sp.log.V(1).Info("Lifetime context is done; stopping streams completion worker")
-				return
-
-			case <-sp.dispose.Done():
-				sp.log.V(1).Info("Server proxy is disposed; stopping streams completion worker")
-				return
-
-			case res, isOpen := <-streamConnResults:
-				if !isOpen {
-					sp.log.V(1).Info("Stream connection results channel is closed; stopping streams completion worker")
-					return
-				}
-
-				sp.completeStream(res, newStreamsConn)
-			}
-
-		}
-	}()
-
-	b := grpcutil.StreamRetryBackoff()
-
+	retryPolicy := resiliency.NewExponentialBackoff()
+	// The establishment watchdog also bounds blocking gRPC calls. Backoff alone
+	// only limits time between attempts, not WaitForReady or Header.
+	retryPolicy.MaxElapsedTime = 0
+	deadline := time.Now().Add(sp.reconnectTimeout)
 	for {
 		if sp.lifetimeCtx.Err() != nil || sp.dispose.IsDone() {
-			sp.log.Info("Server proxy lifetime context is done or proxy is disposed; stopping streams creation worker")
 			return
 		}
-
-		sr, recvErr := newStreamsConn.Recv()
-		if grpcutil.IsStreamDoneErr(recvErr) {
-			sp.log.Info("New streams connection is done, exiting...")
+		ready, connectionErr := sp.runStreamsConnection(deadline)
+		if sp.lifetimeCtx.Err() != nil || sp.dispose.IsDone() {
+			return
+		}
+		if ready {
+			deadline = time.Now().Add(sp.reconnectTimeout)
+			retryPolicy.Reset()
+		}
+		expired := !time.Now().Before(deadline)
+		if expired {
+			connectionErr = errors.Join(context.DeadlineExceeded, connectionErr)
+		}
+		if expired || !retryableControlConnectionError(connectionErr) {
+			failure := fmt.Errorf("tunnel control stream recovery failed: %w", connectionErr)
+			sp.failure.Set(failure)
+			sp.log.Error(failure, "Stopping server proxy so the controller can recreate the proxy pair")
 			sp.disposeOnce()
 			return
 		}
-
-		if recvErr != nil {
-			sp.log.Error(recvErr, "Failed to receive stream reference from client proxy")
-			time.Sleep(b.NextBackOff())
-			continue
+		code := status.Code(connectionErr)
+		if errors.Is(connectionErr, context.Canceled) {
+			code = codes.Canceled
+		} else if errors.Is(connectionErr, context.DeadlineExceeded) {
+			code = codes.DeadlineExceeded
 		}
-
-		b.Reset()
-		// Only fails if the lifetime context is done, and we do not want to start new stream in that case.
-		_ = sp.streamConnectionCreator.Enqueue(sr)
+		sp.log.Info("Tunnel control stream interrupted; reconnecting",
+			"Error", connectionErr, "Code", code.String())
+		delay := min(retryPolicy.NextBackOff(), time.Until(deadline))
+		select {
+		case <-sp.lifetimeCtx.Done():
+			return
+		case <-sp.dispose.Done():
+			return
+		case <-time.After(delay):
+		}
 	}
 }
 
-func (sp *ServerProxy) createStreamConnections(_ context.Context, sr *proto.StreamRef) streamConnectionResult {
+func retryableControlConnectionError(err error) bool {
+	switch status.Code(err) {
+	case codes.InvalidArgument, codes.Unauthenticated, codes.PermissionDenied, codes.Unimplemented, codes.FailedPrecondition:
+		return false
+	default:
+		return true
+	}
+}
+
+func (sp *ServerProxy) runStreamsConnection(deadline time.Time) (bool, error) {
+	attemptCtx, cancelAttempt := context.WithCancelCause(sp.lifetimeCtx)
+	defer cancelAttempt(context.Canceled)
+
+	newStreamsConn, establishErr := sp.establishStreamsConnection(attemptCtx, cancelAttempt, deadline)
+	if establishErr != nil {
+		return false, establishErr
+	}
+
+	// A control attempt owns its preparation work. Cancellation closes only
+	// pending sockets; completeStream transfers established sockets to the
+	// proxy lifetime so a subsequent control reconnect cannot abort them.
+	// PartitionedWorkQueue bounds concurrent backend dials independently per tunnel so an
+	// unreachable backend on one tunnel cannot starve healthy tunnels.
+	results := make(chan streamConnectionResult, 16)
+	streamQueues := resiliency.NewPartitionedWorkQueue[TunnelID](
+		attemptCtx,
+		sp.maxConcurrentStreamCreationsPerTunnel,
+		resiliency.UnboundedConcurrency,
+	)
+	senderDone := make(chan struct{})
+	go func() {
+		defer close(senderDone)
+		sp.sendStreamResults(attemptCtx, cancelAttempt, results, newStreamsConn)
+	}()
+	defer func() {
+		cancelAttempt(context.Canceled)
+		<-senderDone
+		// gRPC forbids CloseSend concurrently with Send.
+		_ = newStreamsConn.CloseSend()
+	}()
+
+	for {
+		streamRef, recvErr := newStreamsConn.Recv()
+		if recvErr != nil {
+			if attemptCtx.Err() != nil {
+				return true, context.Cause(attemptCtx)
+			}
+			return true, recvErr
+		}
+		if dispatchErr := sp.dispatchStreamRequest(attemptCtx, streamRef, streamQueues, results); dispatchErr != nil {
+			return true, dispatchErr
+		}
+	}
+}
+
+func (sp *ServerProxy) establishStreamsConnection(
+	attemptCtx context.Context,
+	cancelAttempt context.CancelCauseFunc,
+	deadline time.Time,
+) (grpc.BidiStreamingClient[proto.NewStreamResult, proto.StreamRef], error) {
+	if !time.Now().Before(deadline) {
+		return nil, context.DeadlineExceeded
+	}
+	establishmentWatchdog := time.AfterFunc(time.Until(deadline), func() {
+		cancelAttempt(context.DeadlineExceeded)
+	})
+	defer establishmentWatchdog.Stop()
+
+	newStreamsConn, connectErr := sp.clientProxy.NewStreamsConnection(attemptCtx, grpc.WaitForReady(true))
+	if connectErr != nil {
+		if attemptCtx.Err() != nil {
+			return nil, context.Cause(attemptCtx)
+		}
+		return nil, connectErr
+	}
+	// Headers acknowledge that the client owns this RPC, even when no new data
+	// streams are requested. Never attach an establishment deadline to the
+	// healthy long-lived RPC: https://grpc.io/docs/guides/deadlines/.
+	headers, headerErr := newStreamsConn.Header()
+	if headerErr != nil {
+		if attemptCtx.Err() != nil {
+			return nil, context.Cause(attemptCtx)
+		}
+		return nil, headerErr
+	}
+	if headers == nil {
+		_, recvErr := newStreamsConn.Recv()
+		if attemptCtx.Err() != nil {
+			return nil, context.Cause(attemptCtx)
+		}
+		if recvErr == nil {
+			return nil, status.Error(codes.DataLoss, "tunnel control stream ended before readiness without reporting a status")
+		}
+		return nil, recvErr
+	}
+	if !establishmentWatchdog.Stop() {
+		return nil, context.DeadlineExceeded
+	}
+	if attemptCtx.Err() != nil {
+		return nil, context.Cause(attemptCtx)
+	}
+	if values := headers.Get(controlStreamReadyHeader); len(values) != 1 || values[0] != "true" {
+		return nil, status.Error(codes.FailedPrecondition, "client did not acknowledge ownership of the tunnel control stream")
+	}
+	sp.log.V(1).Info("Tunnel control stream is ready")
+	sp.ready.Set(struct{}{})
+	return newStreamsConn, nil
+}
+
+func (sp *ServerProxy) sendStreamResults(
+	attemptCtx context.Context,
+	cancelAttempt context.CancelCauseFunc,
+	results <-chan streamConnectionResult,
+	newStreamsConn grpc.BidiStreamingClient[proto.NewStreamResult, proto.StreamRef],
+) {
+	for {
+		select {
+		case <-attemptCtx.Done():
+			return
+		case result, open := <-results:
+			if !open {
+				cancelAttempt(errors.New("stream-creation results channel closed unexpectedly"))
+				return
+			}
+			if attemptCtx.Err() != nil {
+				result.close()
+				return
+			}
+			if completeErr := sp.completeStream(result, newStreamsConn); completeErr != nil {
+				cancelAttempt(completeErr)
+				return
+			}
+		}
+	}
+}
+
+func (sp *ServerProxy) dispatchStreamRequest(
+	attemptCtx context.Context,
+	streamRef *proto.StreamRef,
+	streamQueues *resiliency.PartitionedWorkQueue[TunnelID],
+	results chan<- streamConnectionResult,
+) error {
+	tid := TunnelID(streamRef.GetTunnelId())
+	sp.lock.Lock()
+	td, found := sp.tunnels[tid]
+	activeTunnel := found && !td.deleted.Load()
+	sp.lock.Unlock()
+	if !activeTunnel {
+		tunnelNotFoundErr := fmt.Errorf("tunnel with ID %d does not exist", tid)
+		sp.log.V(1).Error(tunnelNotFoundErr, "Ignoring tunnel reference from client proxy")
+		select {
+		case results <- streamConnectionResult{
+			streamRef:         streamRef,
+			tunnelNotFoundErr: tunnelNotFoundErr,
+		}:
+			return nil
+		case <-attemptCtx.Done():
+			return context.Cause(attemptCtx)
+		}
+	}
+
+	return streamQueues.Enqueue(tid, func(ctx context.Context) {
+		result := sp.createStreamConnections(ctx, streamRef)
+		select {
+		case results <- result:
+		case <-ctx.Done():
+			result.close()
+		}
+	})
+}
+
+func (sp *ServerProxy) createStreamConnections(ctx context.Context, sr *proto.StreamRef) streamConnectionResult {
 	res := streamConnectionResult{
 		streamRef: sr,
 	}
@@ -288,27 +684,38 @@ func (sp *ServerProxy) createStreamConnections(_ context.Context, sr *proto.Stre
 
 	sp.lock.Lock()
 	td, found := sp.tunnels[tid]
+	var tunnelSpec *proto.TunnelSpec
+	if found {
+		tunnelSpec = td.spec
+	}
 	sp.lock.Unlock()
-	if !found {
+	if !found || td.deleted.Load() {
 		tunnelNotFoundErr := fmt.Errorf("tunnel with ID %d does not exist", tid)
 		sp.log.V(1).Error(tunnelNotFoundErr, "Ignoring tunnel reference from client proxy")
 		res.tunnelNotFoundErr = tunnelNotFoundErr
 		return res
 	}
+	if !td.accepting.Load() {
+		tunnelSuspendedErr := fmt.Errorf("tunnel with ID %d is not accepting new streams", tid)
+		res.streamLog = sp.log.WithValues("TunnelID", tid, "StreamID", streamID)
+		res.serverDialErr = tunnelSuspendedErr
+		return res
+	}
+	res.tunnelSpec = tunnelSpec
 
 	res.streamLog = sp.log.WithValues(
 		"TunnelID", tid, "StreamID", streamID,
-		"ServerAddress", td.spec.GetServerAddress(),
-		"ServerPort", td.spec.GetServerPort(),
+		"ServerAddress", tunnelSpec.GetServerAddress(),
+		"ServerPort", tunnelSpec.GetServerPort(),
 		"ClientDataEndpointAddress", sp.clientDataEndpointAddress,
 		"ClientDataEndpointPort", sp.clientDataEndpointPort,
 	)
 
 	var d net.Dialer
-	streamCreationCtx, streamCreationCtxCancel := context.WithTimeout(sp.lifetimeCtx, 1*time.Minute)
+	streamCreationCtx, streamCreationCtxCancel := context.WithTimeout(ctx, 1*time.Minute)
 	defer streamCreationCtxCancel()
 
-	ap := networking.AddressAndPort(td.spec.GetServerAddress(), td.spec.GetServerPort())
+	ap := networking.AddressAndPort(tunnelSpec.GetServerAddress(), tunnelSpec.GetServerPort())
 	serverConn, serverDialErr := resiliency.RetryGetExponential(streamCreationCtx, func() (net.Conn, error) {
 		serverDialCtx, serverDialCtxCancel := context.WithTimeout(streamCreationCtx, proxy.DefaultConnectionTimeout)
 		defer serverDialCtxCancel()
@@ -342,29 +749,72 @@ func (sp *ServerProxy) createStreamConnections(_ context.Context, sr *proto.Stre
 
 	res.serverConn = serverConn
 	res.clientDataConn = clientDataConn
+	res.stopCleanup = context.AfterFunc(ctx, func() {
+		_ = serverConn.Close()
+		_ = clientDataConn.Close()
+	})
 	return res
 }
 
 func (sp *ServerProxy) completeStream(
 	connRes streamConnectionResult,
 	newStreamsConn grpc.BidiStreamingClient[proto.NewStreamResult, proto.StreamRef],
-) {
+) error {
 	if connRes.tunnelNotFoundErr != nil {
-		sp.reportConnectionError(connRes.streamRef, proto.StreamErr_STREAM_ERR_NONEXISTENT_TUNNEL, connRes.tunnelNotFoundErr, newStreamsConn)
-		return
+		return sp.reportConnectionError(connRes.streamRef, proto.StreamErr_STREAM_ERR_NONEXISTENT_TUNNEL, connRes.tunnelNotFoundErr, newStreamsConn)
 	}
 	if connRes.serverDialErr != nil {
-		sp.reportConnectionError(connRes.streamRef, proto.StreamErr_STREAM_ERR_SERVER_UNAVAILABLE, connRes.serverDialErr, newStreamsConn)
-		return
+		return sp.reportConnectionError(connRes.streamRef, proto.StreamErr_STREAM_ERR_SERVER_UNAVAILABLE, connRes.serverDialErr, newStreamsConn)
 	}
 	if connRes.clientDataDialErr != nil {
-		sp.reportConnectionError(connRes.streamRef, proto.StreamErr_STREAM_ERR_DATA_CONNECTION_FAILED, connRes.clientDataDialErr, newStreamsConn)
-		return
+		return sp.reportConnectionError(connRes.streamRef, proto.StreamErr_STREAM_ERR_DATA_CONNECTION_FAILED, connRes.clientDataDialErr, newStreamsConn)
 	}
 
-	// All connections are established successfully, so we can send the result to the client proxy.
-
+	tid := TunnelID(connRes.streamRef.GetTunnelId())
+	streamID := connRes.streamRef.GetStreamId()
 	streamLog := connRes.streamLog
+	streamCtx, streamCtxCancel := context.WithCancel(sp.lifetimeCtx)
+	stopStream := func() {
+		streamCtxCancel()
+		_ = connRes.clientDataConn.Close()
+		_ = connRes.serverConn.Close()
+	}
+
+	tunnelSpec, registrationErr := sp.registerTunnelStream(
+		tid,
+		StreamID(streamID),
+		connRes.tunnelSpec,
+		stopStream,
+	)
+	if registrationErr != nil {
+		streamCtxCancel()
+		connRes.close()
+		return sp.reportConnectionError(connRes.streamRef, proto.StreamErr_STREAM_ERR_SERVER_UNAVAILABLE, registrationErr, newStreamsConn)
+	}
+
+	removeRegisteredStream := func() {
+		sp.lock.Lock()
+		current, currentFound := sp.tunnels[tid]
+		if currentFound {
+			delete(current.streams, StreamID(streamID))
+			if len(current.streams) == 0 && current.deleted.Load() {
+				delete(sp.tunnels, tid)
+				// Name-based deletion retries forward the name to the client proxy once the entry is gone.
+				sp.unmapTunnelNameLocked(tid, current)
+			}
+		}
+		sp.lock.Unlock()
+		stopStream()
+	}
+
+	if !connRes.stopCleanup() {
+		removeRegisteredStream()
+		return context.Canceled
+	}
+
+	// Registration is linearized before success is reported. Suspension preserves
+	// registered streams, so a successful response always has an owner that will
+	// either start the stream or clean it up if the send fails.
 	res := &proto.NewStreamResult{
 		StreamRef: connRes.streamRef,
 	}
@@ -375,57 +825,52 @@ func (sp *ServerProxy) completeStream(
 		} else {
 			streamLog.V(1).Info("New streams connection is closing; stream will not be established")
 		}
-		_ = connRes.serverConn.Close()
-		_ = connRes.clientDataConn.Close()
-		return
+		removeRegisteredStream()
+		return resErr
 	}
-
-	tid := TunnelID(connRes.streamRef.GetTunnelId())
-	streamID := connRes.streamRef.GetStreamId()
-
-	streamCtx, streamCtxCancel := context.WithCancel(sp.lifetimeCtx)
-	stopStream := func() {
-		streamCtxCancel()
-		_ = connRes.clientDataConn.Close()
-		_ = connRes.serverConn.Close()
-	}
-
-	sp.lock.Lock()
-	td, found := sp.tunnels[tid]
-	if !found {
-		sp.lock.Unlock()
-		streamLog.Info("Tunnel deleted while establishing a new stream")
-		stopStream()
-		return
-	}
-	td.streams[StreamID(streamID)] = stopStream
-	sp.lock.Unlock()
 
 	connRes.streamLog.V(1).Info("New tunnel stream started")
 
 	go func() {
 		defer func() {
-			stopStream()
-
-			sp.lock.Lock()
-			if td, found = sp.tunnels[tid]; found {
-				delete(td.streams, StreamID(streamID))
-
-				if len(td.streams) == 0 && td.deleted.Load() {
-					streamLog.V(1).Info("Forgetting deleted tunnel with no connections..")
-					delete(sp.tunnels, tid)
-				}
-			}
-
-			sp.lock.Unlock()
+			removeRegisteredStream()
 		}()
 
 		var buf bytes.Buffer
 		_ = binary.Write(&buf, binary.BigEndian, tid)
 		_ = binary.Write(&buf, binary.BigEndian, streamID)
-		_, _ = buf.Write(td.spec.GetDataConnectionToken())
+		_, _ = buf.Write(tunnelSpec.GetDataConnectionToken())
 		sp.runTunnelStream(streamCtx, buf.Bytes(), connRes.serverConn, connRes.clientDataConn, streamLog)
 	}()
+	return nil
+}
+
+// Removes the name mapping of a tunnel if it still refers to the tunnel. Assumes sp.lock is held.
+func (sp *ServerProxy) unmapTunnelNameLocked(tid TunnelID, td *tunnelData[stopStreamFn]) {
+	if td.tunnelName != "" && sp.tunnelsByName[td.tunnelName] == tid {
+		delete(sp.tunnelsByName, td.tunnelName)
+	}
+}
+
+func (sp *ServerProxy) registerTunnelStream(
+	tunnelID TunnelID,
+	streamID StreamID,
+	expectedSpec *proto.TunnelSpec,
+	stopStream stopStreamFn,
+) (*proto.TunnelSpec, error) {
+	sp.lock.Lock()
+	defer sp.lock.Unlock()
+
+	tunnel, found := sp.tunnels[tunnelID]
+	if !found || tunnel.deleted.Load() || !tunnel.accepting.Load() {
+		return nil, fmt.Errorf("tunnel with ID %d is not accepting new streams", tunnelID)
+	}
+	if tunnel.spec != expectedSpec {
+		return nil, fmt.Errorf("tunnel with ID %d changed its server endpoint while the stream was being established", tunnelID)
+	}
+
+	tunnel.streams[streamID] = stopStream
+	return tunnel.spec, nil
 }
 
 func (sp *ServerProxy) reportConnectionError(
@@ -433,7 +878,7 @@ func (sp *ServerProxy) reportConnectionError(
 	code proto.StreamErr,
 	err error,
 	stream grpc.BidiStreamingClient[proto.NewStreamResult, proto.StreamRef],
-) {
+) error {
 	res := &proto.NewStreamResult{
 		StreamRef: sr,
 		Failure: &proto.StreamFailure{
@@ -451,6 +896,7 @@ func (sp *ServerProxy) reportConnectionError(
 			"Error", err.Error(),
 		)
 	}
+	return responseErr
 }
 
 func (sp *ServerProxy) runTunnelStream(
@@ -490,6 +936,7 @@ func (sp *ServerProxy) shutDownAllTunnels() {
 	sp.lock.Lock()
 	tunnels := sp.tunnels
 	sp.tunnels = make(map[TunnelID]*tunnelData[stopStreamFn])
+	sp.tunnelsByName = make(map[string]TunnelID)
 	sp.lock.Unlock()
 
 	for tid, td := range tunnels {
