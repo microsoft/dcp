@@ -264,7 +264,7 @@ func TestLogStorageDeletionWaitsForConcurrentRequests(t *testing.T) {
 	defer storage.Destroy()
 	storage.logStreamerResourceQueueCancel()
 	queueCtx, cancelQueue := context.WithCancel(ctx)
-	storage.logStreamerResourceQueue = resiliency.NewWorkQueue(queueCtx, 2)
+	storage.logStreamerResourceQueue = resiliency.NewPartitionedWorkQueue[types.UID](queueCtx, 1, 2)
 	storage.logStreamerResourceQueueCancel = cancelQueue
 	storage.lifetimeCtx = queueCtx
 	response, getErr := storage.Get(ctx, parent.object.Name, &storageOptions{LogOptions: LogOptions{Follow: true}})
@@ -387,7 +387,8 @@ func (consumer *orderedStorageConsumer) OnResourceUpdated(event ResourceWatcherE
 }
 
 // Verifies that LogStorage delivers each resource's events in FIFO order without blocking
-// other resources, yields between events, and releases idle event queues for subsequent reuse.
+// other resources, yields between events, and keeps delivering events for a resource after its
+// earlier events were processed.
 func TestLogStorageProcessesResourceEventsInOrder(t *testing.T) {
 	t.Parallel()
 	for _, workerCount := range []uint8{1, 2} {
@@ -408,7 +409,7 @@ func TestLogStorageProcessesResourceEventsInOrder(t *testing.T) {
 			defer storage.Destroy()
 			storage.logStreamerResourceQueueCancel()
 			queueCtx, cancelQueue := context.WithCancel(ctx)
-			storage.logStreamerResourceQueue = resiliency.NewWorkQueue(queueCtx, workerCount)
+			storage.logStreamerResourceQueue = resiliency.NewPartitionedWorkQueue[types.UID](queueCtx, 1, uint(workerCount))
 			storage.logStreamerResourceQueueCancel = cancelQueue
 			storage.lifetimeCtx = queueCtx
 
@@ -455,11 +456,6 @@ func TestLogStorageProcessesResourceEventsInOrder(t *testing.T) {
 			for _, event := range expected[1:4] {
 				expectEvent(event)
 			}
-			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
-				storage.mutex.Lock()
-				defer storage.mutex.Unlock()
-				return len(storage.pendingResourceEvents) == 0, nil
-			}))
 			nextEvent := resourceEvent("replacement-uid", "6", watch.Modified)
 			storage.resourceEventHandler(watch.Event{Type: nextEvent.Type, Object: nextEvent.Object}, logr.Discard())
 			expectEvent(nextEvent)
@@ -500,11 +496,12 @@ func TestLogStorageDestroyDiscardsPendingResourceEvents(t *testing.T) {
 	}
 	storage.resourceEventHandler(watch.Event{Type: watch.Deleted, Object: deleted}, logr.Discard())
 	storage.Destroy()
-	storage.mutex.Lock()
-	pendingCount := len(storage.pendingResourceEvents)
-	storage.mutex.Unlock()
-	require.Zero(t, pendingCount)
-	storage.processResourceEvent(ctx, original.UID, logr.Discard())
+	storage.processResourceEvent(
+		ctx,
+		original.UID,
+		ResourceWatcherEvent{Type: watch.Deleted, Object: deleted},
+		logr.Discard(),
+	)
 	storage.resourceEventHandler(watch.Event{Type: watch.Modified, Object: deleted}, logr.Discard())
 	consumer.releaseFirst <- struct{}{}
 	select {
@@ -514,6 +511,7 @@ func TestLogStorageDestroyDiscardsPendingResourceEvents(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("running resource callback did not finish")
 	}
+	require.Empty(t, consumer.events)
 }
 
 // Verifies that LogStorage stops the request-specific watcher once streaming starts

@@ -7,20 +7,30 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/stretchr/testify/require"
+	stdproto "google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 // Verifies that proxy data clones share startup ownership, only one owner can acquire it,
-// and an earlier owner's idempotent release cannot unlock a later owner.
+// CancelActive cancels the active attempt without unlocking the lease, and an earlier owner's
+// idempotent release cannot unlock or cancel a later owner.
 func TestStartupLeaseIsSharedAcrossProxyDataClones(t *testing.T) {
 	t.Parallel()
 
@@ -29,16 +39,24 @@ func TestStartupLeaseIsSharedAcrossProxyDataClones(t *testing.T) {
 	data := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting, "test")
 	clone := data.Clone()
 
-	releaseFirst, firstAcquired := data.startup.TryAcquire(testCtx)
+	firstAttemptCtx, releaseFirst, firstAcquired := data.startup.TryAcquire(testCtx)
 	require.True(t, firstAcquired)
-	_, cloneAcquired := clone.startup.TryAcquire(testCtx)
+	require.NoError(t, firstAttemptCtx.Err())
+	_, _, cloneAcquired := clone.startup.TryAcquire(testCtx)
 	require.False(t, cloneAcquired)
 
+	clone.startup.CancelActive()
+	require.ErrorIs(t, firstAttemptCtx.Err(), context.Canceled, "CancelActive must cancel the active startup attempt")
+	_, _, acquiredBeforeRelease := clone.startup.TryAcquire(testCtx)
+	require.False(t, acquiredBeforeRelease, "CancelActive must not unlock the startup lease before the owner releases it")
+
 	releaseFirst()
-	releaseSecond, secondAcquired := clone.startup.TryAcquire(testCtx)
+	secondAttemptCtx, releaseSecond, secondAcquired := clone.startup.TryAcquire(testCtx)
 	require.True(t, secondAcquired)
+	require.NoError(t, secondAttemptCtx.Err())
 	releaseFirst()
-	_, thirdAcquired := data.startup.TryAcquire(testCtx)
+	require.NoError(t, secondAttemptCtx.Err(), "Late release from a previous owner must not cancel the new owner")
+	_, _, thirdAcquired := data.startup.TryAcquire(testCtx)
 	require.False(t, thirdAcquired)
 	releaseSecond()
 }
@@ -53,20 +71,24 @@ func TestStartupLeaseReleasesWhenLifetimeEnds(t *testing.T) {
 	ownerCtx, ownerCancel := context.WithCancel(testCtx)
 	data := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting, "test")
 
-	releaseFirst, firstAcquired := data.startup.TryAcquire(ownerCtx)
+	firstAttemptCtx, releaseFirst, firstAcquired := data.startup.TryAcquire(ownerCtx)
 	require.True(t, firstAcquired)
 	ownerCancel()
+	require.ErrorIs(t, firstAttemptCtx.Err(), context.Canceled)
 
+	var secondAttemptCtx context.Context
 	var releaseSecond func()
 	acquireErr := wait.PollUntilContextCancel(testCtx, time.Millisecond, true, func(context.Context) (bool, error) {
 		var acquired bool
-		releaseSecond, acquired = data.startup.TryAcquire(testCtx)
+		secondAttemptCtx, releaseSecond, acquired = data.startup.TryAcquire(testCtx)
 		return acquired, nil
 	})
 	require.NoError(t, acquireErr)
+	require.NoError(t, secondAttemptCtx.Err())
 
 	releaseFirst()
-	_, thirdAcquired := data.startup.TryAcquire(testCtx)
+	require.NoError(t, secondAttemptCtx.Err())
+	_, _, thirdAcquired := data.startup.TryAcquire(testCtx)
 	require.False(t, thirdAcquired)
 	releaseSecond()
 }
@@ -88,6 +110,231 @@ func TestContainerNetworkTunnelProxyDataRejectsDifferentResourceUID(t *testing.T
 	require.False(t, current.UpdateFrom(replacement))
 	require.Equal(t, types.UID("current"), current.resourceUID)
 	require.Equal(t, apiv1.ContainerNetworkTunnelProxyStateStarting, current.State)
+}
+
+// Verifies that proxy recovery state is cloned independently, merges without physical identity
+// or control readiness keep the recorded values, released local resources are cleared by merges,
+// and an old pair's completion cannot overwrite a replacement under the same resource UID.
+func TestContainerNetworkTunnelProxyDataRecoveryGeneration(t *testing.T) {
+	t.Parallel()
+	current := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateRunning, "same-resource")
+	current.pairGeneration = 2
+	current.clientPhysicalUID = "current-container"
+	current.recovery.backoff = backoff.NewConstantBackOff(time.Second)
+	current.recovery.neverReadyGenerations = 2
+	current.publishedPorts["service"] = 45001
+	current.tunnelExtra["service"] = tunnelExtraData{
+		clientServiceName: "client-service",
+		pendingPreparationRequest: &dcptunproto.TunnelReq{
+			TunnelName:      stdproto.String("service"),
+			ServerAddress:   stdproto.String("127.0.0.1"),
+			ServerPort:      stdproto.Int32(45002),
+			ClientProxyPort: stdproto.Int32(45001),
+		},
+		serverAddress:        "127.0.0.1",
+		serverPort:           45002,
+		acceptingNewStreams:  true,
+		acceptanceStateKnown: true,
+	}
+	clone := current.Clone()
+	require.Same(t, current.recovery.backoff, clone.recovery.backoff)
+	require.Equal(t, uint32(2), clone.recovery.neverReadyGenerations)
+	require.Equal(t, current.tunnelExtra["service"], clone.tunnelExtra["service"])
+	cloneExtra := clone.tunnelExtra["service"]
+	cloneExtra.pendingPreparationRequest.ServerPort = stdproto.Int32(45003)
+	clone.tunnelExtra["service"] = cloneExtra
+	require.Equal(t, int32(45002), current.tunnelExtra["service"].pendingPreparationRequest.GetServerPort())
+	clone.publishedPorts["service"] = 45002
+	require.Equal(t, int32(45001), current.publishedPorts["service"])
+	clone.State = apiv1.ContainerNetworkTunnelProxyStateRecoveryWait
+	clone.recovery.retryAfter = time.Now().Add(time.Second)
+	clone.recovery.neverReadyGenerations = 3
+	require.True(t, current.recovery.retryAfter.IsZero())
+	require.True(t, current.UpdateFrom(clone))
+	require.Equal(t, apiv1.ContainerNetworkTunnelProxyStateRecoveryWait, current.State)
+	require.Equal(t, clone.recovery.retryAfter, current.recovery.retryAfter)
+	require.Equal(t, uint32(3), current.recovery.neverReadyGenerations)
+	require.Equal(t, int32(45002), current.publishedPorts["service"])
+	require.Equal(t, clone.tunnelExtra["service"], current.tunnelExtra["service"])
+	clone.publishedPorts["service"] = 45003
+	require.Equal(t, int32(45002), current.publishedPorts["service"])
+
+	delete(clone.tunnelExtra, "service")
+	require.True(t, current.UpdateFrom(clone))
+	require.NotContains(t, current.tunnelExtra, "service")
+
+	missingIdentity := current.Clone()
+	missingIdentity.clientPhysicalUID = ""
+	missingIdentity.Message = "state update without physical identity"
+	require.True(t, current.UpdateFrom(missingIdentity))
+	require.Equal(t, types.UID("current-container"), current.clientPhysicalUID)
+
+	readyAt := time.Now()
+	ready := current.Clone()
+	ready.controlReadyAt = readyAt
+	require.True(t, current.UpdateFrom(ready))
+	missingReadiness := current.Clone()
+	missingReadiness.controlReadyAt = time.Time{}
+	missingReadiness.Message = "state update without control readiness"
+	require.True(t, current.UpdateFrom(missingReadiness))
+	require.Equal(t, readyAt, current.controlReadyAt)
+
+	withSecurityFile := current.Clone()
+	withSecurityFile.clientSecurityFile = "/tmp/dcp/tunnel-control-security.json"
+	require.True(t, current.UpdateFrom(withSecurityFile))
+	require.Equal(t, "/tmp/dcp/tunnel-control-security.json", current.clientSecurityFile)
+	clearedSecurityFile := current.Clone()
+	clearedSecurityFile.clientSecurityFile = ""
+	require.True(t, current.UpdateFrom(clearedSecurityFile))
+	require.Empty(t, current.clientSecurityFile, "UpdateFrom must clear clientSecurityFile after credential removal")
+
+	outputDir := t.TempDir()
+	stdoutFile, stdoutErr := usvc_io.CreateNewFile(filepath.Join(outputDir, "server.out"), osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, stdoutErr)
+	defer func() { _ = stdoutFile.Close() }()
+	stderrFile, stderrErr := usvc_io.CreateNewFile(filepath.Join(outputDir, "server.err"), osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, stderrErr)
+	defer func() { _ = stderrFile.Close() }()
+	withServerOutput := current.Clone()
+	withServerOutput.serverStdout = stdoutFile
+	withServerOutput.serverStderr = stderrFile
+	require.True(t, current.UpdateFrom(withServerOutput))
+	require.Same(t, stdoutFile, current.serverStdout)
+	require.Same(t, stderrFile, current.serverStderr)
+	closedServerOutput := current.Clone()
+	require.NoError(t, closeServerProxyLocalFiles(closedServerOutput))
+	require.True(t, current.UpdateFrom(closedServerOutput))
+	require.Nil(t, current.serverStdout, "UpdateFrom must clear server stdout after its handle is closed")
+	require.Nil(t, current.serverStderr, "UpdateFrom must clear server stderr after its handle is closed")
+
+	stale := current.Clone()
+	stale.pairGeneration = 1
+	stale.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+	stale.clientPhysicalUID = "old-container"
+	require.False(t, current.UpdateFrom(stale))
+	require.Equal(t, apiv1.ContainerNetworkTunnelProxyStateRecoveryWait, current.State)
+	require.Equal(t, types.UID("current-container"), current.clientPhysicalUID)
+}
+
+// Verifies that containerNetworkTunnelProxyData publishes every lifecycle state
+// unchanged, preserves it through API serialization, and avoids redundant updates.
+func TestContainerNetworkTunnelProxyDataPublishesLifecycleState(t *testing.T) {
+	t.Parallel()
+	for _, state := range []apiv1.ContainerNetworkTunnelProxyState{
+		apiv1.ContainerNetworkTunnelProxyStateEmpty,
+		apiv1.ContainerNetworkTunnelProxyStatePending,
+		apiv1.ContainerNetworkTunnelProxyStateBuildingImage,
+		apiv1.ContainerNetworkTunnelProxyStateStarting,
+		apiv1.ContainerNetworkTunnelProxyStateStarted,
+		apiv1.ContainerNetworkTunnelProxyStateRunning,
+		apiv1.ContainerNetworkTunnelProxyStateRecoveryPending,
+		apiv1.ContainerNetworkTunnelProxyStateRecoveryCleanup,
+		apiv1.ContainerNetworkTunnelProxyStateRecoveryWait,
+		apiv1.ContainerNetworkTunnelProxyStateFailed,
+		apiv1.ContainerNetworkTunnelProxyStateDeletePending,
+		apiv1.ContainerNetworkTunnelProxyStateDeleting,
+		apiv1.ContainerNetworkTunnelProxyStateDeleted,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			t.Parallel()
+			data := newContainerNetworkTunnelProxyData(state, "proxy")
+			require.Equal(t, state, data.Clone().State)
+			resource := &apiv1.ContainerNetworkTunnelProxy{
+				Status: apiv1.ContainerNetworkTunnelProxyStatus{State: apiv1.ContainerNetworkTunnelProxyStateEmpty},
+			}
+			if state == apiv1.ContainerNetworkTunnelProxyStateEmpty {
+				resource.Status.State = apiv1.ContainerNetworkTunnelProxyStatePending
+			}
+			require.Equal(t, statusChanged, data.applyTo(resource))
+			require.Equal(t, state, resource.Status.State)
+			require.Equal(t, state, data.State)
+			require.Equal(t, noChange, data.applyTo(resource))
+			encoded, encodeErr := json.Marshal(resource)
+			require.NoError(t, encodeErr)
+			fromAPI := &apiv1.ContainerNetworkTunnelProxy{}
+			require.NoError(t, json.Unmarshal(encoded, fromAPI))
+			require.Equal(t, state, fromAPI.Status.State)
+			require.Equal(t, noChange, data.applyTo(fromAPI))
+		})
+	}
+}
+
+// Verifies that containerNetworkTunnelProxyData.attemptProxyRecovery initiates recovery
+// for operational-pair and replacement-startup failures, keeps initial startup
+// failures terminal, and preserves the failure message.
+func TestContainerNetworkTunnelProxyDataAttemptsProxyRecovery(t *testing.T) {
+	t.Parallel()
+	for _, testCase := range []struct {
+		state      apiv1.ContainerNetworkTunnelProxyState
+		generation uint64
+		expected   apiv1.ContainerNetworkTunnelProxyState
+	}{
+		{apiv1.ContainerNetworkTunnelProxyStatePending, 0, apiv1.ContainerNetworkTunnelProxyStateFailed},
+		{apiv1.ContainerNetworkTunnelProxyStateBuildingImage, 0, apiv1.ContainerNetworkTunnelProxyStateFailed},
+		{apiv1.ContainerNetworkTunnelProxyStateStarting, 0, apiv1.ContainerNetworkTunnelProxyStateFailed},
+		{apiv1.ContainerNetworkTunnelProxyStateStarted, 0, apiv1.ContainerNetworkTunnelProxyStateFailed},
+		{apiv1.ContainerNetworkTunnelProxyStateRunning, 0, apiv1.ContainerNetworkTunnelProxyStateRecoveryPending},
+		{apiv1.ContainerNetworkTunnelProxyStateBuildingImage, 1, apiv1.ContainerNetworkTunnelProxyStateRecoveryPending},
+		{apiv1.ContainerNetworkTunnelProxyStateStarting, 1, apiv1.ContainerNetworkTunnelProxyStateRecoveryPending},
+		{apiv1.ContainerNetworkTunnelProxyStateRunning, 1, apiv1.ContainerNetworkTunnelProxyStateRecoveryPending},
+		{apiv1.ContainerNetworkTunnelProxyStateBuildingImage, 2, apiv1.ContainerNetworkTunnelProxyStateRecoveryPending},
+		{apiv1.ContainerNetworkTunnelProxyStateStarting, 2, apiv1.ContainerNetworkTunnelProxyStateRecoveryPending},
+	} {
+		t.Run(fmt.Sprintf("%s/Generation%d", testCase.state, testCase.generation), func(t *testing.T) {
+			t.Parallel()
+			data := newContainerNetworkTunnelProxyData(testCase.state, "proxy")
+			data.pairGeneration = testCase.generation
+			data.attemptProxyRecovery("tunnel proxy operation failed")
+			require.Equal(t, testCase.expected, data.State)
+			require.Equal(t, "tunnel proxy operation failed", data.Message)
+			clone := data.Clone()
+			require.Equal(t, testCase.expected, clone.State)
+			require.Equal(t, testCase.generation, clone.pairGeneration)
+		})
+	}
+}
+
+// Verifies that publishing a replacement server identity also clears the old
+// startup timestamp, rather than pairing a new PID with an old process identity.
+func TestContainerNetworkTunnelProxyDataReplacesServerIdentity(t *testing.T) {
+	t.Parallel()
+	oldPID := int64(123)
+	resource := apiv1.ContainerNetworkTunnelProxy{
+		Status: apiv1.ContainerNetworkTunnelProxyStatus{
+			ServerProxyProcessID:        &oldPID,
+			ServerProxyStartupTimestamp: metav1.NewMicroTime(time.Now().Add(-time.Hour)),
+		},
+	}
+	data := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateStarting, "proxy")
+	data.applyTo(&resource)
+	require.Nil(t, resource.Status.ServerProxyProcessID)
+	require.True(t, resource.Status.ServerProxyStartupTimestamp.IsZero())
+
+	newPID := int64(456)
+	data.ServerProxyProcessID = &newPID
+	data.ServerProxyStartupTimestamp = metav1.NewMicroTime(time.Now())
+	data.applyTo(&resource)
+	require.Equal(t, newPID, *resource.Status.ServerProxyProcessID)
+	require.Equal(t, data.ServerProxyStartupTimestamp, resource.Status.ServerProxyStartupTimestamp)
+}
+
+// Verifies that proxy status stays unchanged after API timestamp rounding while
+// in-memory process identity retains its sub-microsecond precision.
+func TestContainerNetworkTunnelProxyDataTimestampSerialization(t *testing.T) {
+	t.Parallel()
+	pid := int64(123)
+	identityTime := time.Unix(1_700_000_000, 123_456_789).UTC()
+	data := newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateRunning, "proxy")
+	data.ServerProxyProcessID = &pid
+	data.ServerProxyStartupTimestamp = metav1.NewMicroTime(identityTime)
+	resource := &apiv1.ContainerNetworkTunnelProxy{}
+	data.applyTo(resource)
+	encoded, encodeErr := json.Marshal(resource)
+	require.NoError(t, encodeErr)
+	fromAPI := &apiv1.ContainerNetworkTunnelProxy{}
+	require.NoError(t, json.Unmarshal(encoded, fromAPI))
+	require.Equal(t, noChange, data.applyTo(fromAPI), "Serialization precision must not cause a status-update loop")
+	require.True(t, data.hasServerProxy(process.NewHandle(process.Pid_t(pid), identityTime)))
 }
 
 func requireSortedByName(t *testing.T, statuses []apiv1.TunnelStatus) {

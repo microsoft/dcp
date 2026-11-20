@@ -10,6 +10,7 @@ import (
 	"crypto/elliptic"
 	cryptorand "crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -348,6 +349,61 @@ func TestValidateCertificate_PrefersIPv6OverLocalhost(t *testing.T) {
 	addr, addrErr := ValidateCertificate(cert)
 	assert.NoError(t, addrErr)
 	assert.Equal(t, networking.IPv6LocalhostDefaultAddress, addr)
+}
+
+// Verifies that GenerateECDSAServerCertificate creates a valid P-384 CA and leaf server certificate
+// pair that loads into crypto/tls, passes ValidateCertificate, is limited to server authentication,
+// and rejects a nil IP address.
+func TestGenerateECDSAServerCertificate(t *testing.T) {
+	t.Parallel()
+
+	_, nilIPErr := GenerateECDSAServerCertificate(nil)
+	require.Error(t, nilIPErr)
+
+	certData, genErr := GenerateECDSAServerCertificate(net.IPv4(127, 0, 0, 1))
+	require.NoError(t, genErr)
+
+	keyPair, keyPairErr := tls.X509KeyPair(certData.CertChainPEM, certData.ServerKeyPEM)
+	require.NoError(t, keyPairErr)
+	require.Len(t, keyPair.Certificate, 1)
+
+	leafKey, isECDSA := keyPair.PrivateKey.(*ecdsa.PrivateKey)
+	require.True(t, isECDSA)
+	require.Equal(t, elliptic.P384(), leafKey.Curve)
+
+	leafCert, parseErr := x509.ParseCertificate(keyPair.Certificate[0])
+	require.NoError(t, parseErr)
+	require.Equal(t, x509.ECDSAWithSHA384, leafCert.SignatureAlgorithm)
+	require.Equal(t, x509.KeyUsageDigitalSignature, leafCert.KeyUsage)
+
+	serverAddr, validateErr := ValidateCertificate(leafCert)
+	require.NoError(t, validateErr)
+	require.Equal(t, networking.IPv4LocalhostDefaultAddress, serverAddr)
+
+	require.Equal(t, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, leafCert.ExtKeyUsage)
+
+	caBlock, _ := pem.Decode(certData.CACertPEM)
+	require.NotNil(t, caBlock)
+	caCert, caParseErr := x509.ParseCertificate(caBlock.Bytes)
+	require.NoError(t, caParseErr)
+	caKey, caIsECDSA := caCert.PublicKey.(*ecdsa.PublicKey)
+	require.True(t, caIsECDSA)
+	require.Equal(t, elliptic.P384(), caKey.Curve)
+	require.Equal(t, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, caCert.ExtKeyUsage)
+
+	caPool := x509.NewCertPool()
+	caPool.AddCert(caCert)
+	_, verifyErr := leafCert.Verify(x509.VerifyOptions{
+		DNSName:   networking.IPv4LocalhostDefaultAddress,
+		Roots:     caPool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	require.NoError(t, verifyErr)
+	_, clientAuthVerifyErr := leafCert.Verify(x509.VerifyOptions{
+		Roots:     caPool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	})
+	require.Error(t, clientAuthVerifyErr, "Tunnel control certificates must not be usable for client authentication")
 }
 
 // --- Test helpers ---
