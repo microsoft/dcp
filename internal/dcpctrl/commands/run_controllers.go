@@ -116,6 +116,13 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		ctrlCtx, ctrlCtxCancel := cmds.GetMonitorContextFromFlags(cmd.Context(), log)
 		defer ctrlCtxCancel()
 
+		// The monitored owner removes session files (kubeconfig, state store) when it exits,
+		// so they must not be accessed if the owner is already gone.
+		if ctrlCtx.Err() != nil {
+			log.Info("Controller lifetime ended before startup (monitored process may have already exited); controllers will not be started")
+			return nil
+		}
+
 		_, err = kubeconfig.RequireKubeconfigFlagValue(cmd.Flags())
 		if err != nil {
 			return fmt.Errorf("cannot set up connection to the API server without kubeconfig file: %w", err)
