@@ -94,3 +94,58 @@ func TestWorkQueueStopsProcessingAfterContextCancelled(t *testing.T) {
 	err := wq.Enqueue(func(_ context.Context) {})
 	require.Error(t, err, "should not be able to enqueue work after the context is cancelled")
 }
+
+// Verifies that a single-worker WorkQueue executes queued work items in submission (FIFO) order.
+func TestWorkQueuePreservesOrder(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 10*time.Second)
+	defer cancel()
+
+	wq := resiliency.NewWorkQueue(ctx, 1)
+
+	releaseFirst := make(chan struct{})
+	firstStarted := make(chan struct{})
+	const itemCount = 12
+	var completedOrder []int
+	var orderLock sync.Mutex
+	allDone := make(chan struct{})
+
+	for i := range itemCount {
+		itemIndex := i
+		require.NoError(t, wq.Enqueue(func(context.Context) {
+			if itemIndex == 0 {
+				close(firstStarted)
+				<-releaseFirst
+			}
+			orderLock.Lock()
+			completedOrder = append(completedOrder, itemIndex)
+			done := len(completedOrder) == itemCount
+			orderLock.Unlock()
+			if done {
+				close(allDone)
+			}
+		}))
+	}
+
+	select {
+	case <-firstStarted:
+	case <-ctx.Done():
+		t.Fatal("First work item did not start")
+	}
+
+	close(releaseFirst)
+	select {
+	case <-allDone:
+	case <-ctx.Done():
+		t.Fatal("Queued work items did not finish")
+	}
+
+	expected := make([]int, itemCount)
+	for i := range itemCount {
+		expected[i] = i
+	}
+	orderLock.Lock()
+	require.Equal(t, expected, completedOrder)
+	orderLock.Unlock()
+}

@@ -2159,7 +2159,7 @@ func (r *ContainerReconciler) disableEndpointsAndHealthProbes(
 		}
 	}
 
-	removeEndpointsForWorkload(ctx, r, ctr, log)
+	_ = removeEndpointsForWorkload(ctx, r, ctr, log)
 }
 
 func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
