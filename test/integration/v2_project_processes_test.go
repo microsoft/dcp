@@ -126,14 +126,14 @@ func TestV2ProjectProcessObservesTargetsWithoutCleanupOwnership(t *testing.T) {
 			require.True(t, observed.Status.Debug.Sessions[0].Processes[2].Attached)
 			require.True(t, observed.Status.Debug.Sessions[0].Processes[3].Attached)
 			require.NoError(t, connection.Close())
-			idle := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
-			require.Len(t, idle.Status.Debug.Sessions[0].Processes, len(handles))
+			exited := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseExited)
+			require.Len(t, exited.Status.Debug.Sessions[0].Processes, len(handles))
 
 			// Independently observed target exit must not depend on adapter or session lifetime.
 			require.NoError(t, owner.StopProcess(ctx, handles[0]))
 			waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 				observation := current.Status.Debug.Sessions[0].Processes[0].Observation
-				return current.Status.Phase == apiv2.ProjectPhaseReady &&
+				return current.Status.Phase == apiv2.ProjectPhaseExited &&
 					observation.Phase == apiv2.ProjectDebugProcessExited && !observation.FinishedAt.IsZero(), nil
 			})
 			switch ending {

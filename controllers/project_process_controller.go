@@ -47,7 +47,7 @@ var projectProcessDataHandlers = map[projectState]projectProcessDataHandlerFunc{
 	projectStateReady:         handleProjectProcessReady,
 	projectStateActive:        handleProjectProcessReady,
 	projectStateRunning:       handleProjectProcessPhysical,
-	projectStateExited:        handleProjectProcessPhysical,
+	projectStateExited:        handleProjectProcessExited,
 	projectStateUnknown:       handleProjectProcessPhysical,
 	projectStateStopping:      handleProjectProcessStopping,
 	projectStateStopped:       handleProjectProcessTerminal,
@@ -492,10 +492,46 @@ func handleProjectProcessReady(
 		return additionalReconciliationNeeded
 	}
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
+	if mainSession := projectProcessMainSession(&resource.Status.ProjectCommonStatus); mainSession != nil &&
+		(mainSession.Phase == apiv2.ProjectDebugPhaseExited || mainSession.Phase == apiv2.ProjectDebugPhaseFailed) {
+		data.state, data.reason, data.message = projectStateExited, apiv2.ProjectReasonCompleted, "The main debug session has ended."
+		data.finishedAt = mainSession.FinishedAt
+		return reconciler.syncProjectEndpoints(ctx, resource, data, log)
+	}
 	data.state, data.reason, data.message = projectStateReady, "", ""
 	if projectDebugSessionsActive(&resource.Status.ProjectCommonStatus) {
 		data.state, data.message = projectStateActive, "Project has active debug sessions."
 	}
+	return reconciler.syncProjectEndpoints(ctx, resource, data, log)
+}
+
+// projectProcessMainSession returns the earliest-created debug session that connected its adapter transport.
+// Its end ends an adapter-mode run, like the primary adapter of a container Project; sessions that fail setup do not start a run.
+func projectProcessMainSession(status *apiv2.ProjectCommonStatus) *apiv2.ProjectDebugSessionStatus {
+	if status.Debug == nil {
+		return nil
+	}
+	for sessionIndex := range status.Debug.Sessions {
+		session := &status.Debug.Sessions[sessionIndex]
+		if session.Progress != nil && session.Progress.StreamsConnected {
+			return session
+		}
+	}
+	return nil
+}
+
+// handleProjectProcessExited observes the exited backing in direct mode; an adapter-mode run has no backing after it ends.
+func handleProjectProcessExited(
+	ctx context.Context, reconciler *ProjectProcessReconciler, resource *apiv2.ProjectProcess,
+	state projectState, data *projectProcessData, log logr.Logger,
+) objectChange {
+	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
+		return handleProjectProcessPhysical(ctx, reconciler, resource, state, data, log)
+	}
+	if resource.Spec.Stop && data.requestStop() {
+		return additionalReconciliationNeeded
+	}
+	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
 	return reconciler.syncProjectEndpoints(ctx, resource, data, log)
 }
 

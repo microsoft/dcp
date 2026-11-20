@@ -199,7 +199,17 @@ func validateDebugUpgrade(request *http.Request, resource schema.GroupResource) 
 	return nil
 }
 
-func validateDebugProjectSnapshot(selected, current apiv2.ProjectObject) error {
+// exitedRunRetainsSessions reports whether established sessions continue after the run ends. ProjectProcess sessions
+// own independent host adapters that end naturally or when the Project is stopped or deleted; containers end every
+// session with their primary process.
+func exitedRunRetainsSessions(project apiv2.ProjectObject) bool {
+	_, isProcess := project.(*apiv2.ProjectProcess)
+	return isProcess && project.GetProjectStatus().Phase == apiv2.ProjectPhaseExited
+}
+
+// validateDebugProjectSnapshot rejects a Project that cannot serve the session; an exited run admits only established
+// sessions that it retains.
+func validateDebugProjectSnapshot(selected, current apiv2.ProjectObject, established bool) error {
 	resource := current.GetGroupVersionResource().GroupResource()
 	if current.GetUID() != selected.GetUID() {
 		return apierrors.NewConflict(resource, current.GetName(), fmt.Errorf("project identity changed"))
@@ -210,8 +220,8 @@ func validateDebugProjectSnapshot(selected, current apiv2.ProjectObject) error {
 	if current.GetProjectStatus().Phase == apiv2.ProjectPhaseFailed {
 		return apierrors.NewConflict(resource, current.GetName(), fmt.Errorf("project execution context failed"))
 	}
-	// A direct application or an adapter-mode container's primary adapter has exited; the run cannot be resumed.
-	if current.GetProjectStatus().Phase == apiv2.ProjectPhaseExited {
+	// The run has ended and cannot be resumed.
+	if current.GetProjectStatus().Phase == apiv2.ProjectPhaseExited && !(established && exitedRunRetainsSessions(current)) {
 		return apierrors.NewConflict(resource, current.GetName(), fmt.Errorf("project run has exited"))
 	}
 	selectedContainer, selectedIsContainer := selected.(*apiv2.ProjectContainer)
@@ -302,7 +312,7 @@ func (storage *projectDebugStorage) monitor(
 				cancel(errors.Join(dap.ErrShutdownRequested, fmt.Errorf("project was deleted")))
 				return
 			}
-			if validationErr := validateDebugProjectSnapshot(selected, snapshot); validationErr != nil {
+			if validationErr := validateDebugProjectSnapshot(selected, snapshot, prepared); validationErr != nil {
 				if apierrors.IsForbidden(validationErr) || snapshot.GetProjectStatus().Phase == apiv2.ProjectPhaseExited {
 					validationErr = errors.Join(dap.ErrShutdownRequested, validationErr)
 				}
@@ -359,7 +369,7 @@ func (storage *projectDebugStorage) monitor(
 			prepared = true
 			selected = current.DeepCopyObject().(apiv2.ProjectObject)
 			ready <- selected
-		} else if prepared && !isReady {
+		} else if prepared && !isReady && !exitedRunRetainsSessions(current) {
 			cancel(fmt.Errorf("project debug prerequisites are no longer available"))
 			return
 		}

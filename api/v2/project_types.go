@@ -44,7 +44,9 @@ const (
 	ProjectReasonAwaitingStart ConditionReason = "AwaitingStart"
 	// ProjectReasonApplicationRunning indicates that a directly launched application is running.
 	ProjectReasonApplicationRunning ConditionReason = "ApplicationRunning"
-	// ProjectReasonCompleted indicates that a directly launched application has exited.
+	// ProjectReasonCompleted indicates that the run has ended: the directly launched application or the
+	// container's primary adapter exited, or the main debug session of an adapter-mode ProjectProcess ended.
+	// Runs are one-shot; recreate the Project to run again.
 	ProjectReasonCompleted ConditionReason = "Completed"
 	// ProjectReasonDebugSessionsActive indicates that the prepared context has active debug sessions.
 	ProjectReasonDebugSessionsActive ConditionReason = "DebugSessionsActive"

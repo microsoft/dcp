@@ -116,7 +116,9 @@ func TestV2ProjectProcessDebugTransportLifecycle(t *testing.T) {
 				require.Equal(t, running.Status.EffectiveArgs, completed.Status.EffectiveArgs)
 				require.NotNil(t, completed.Status.Debug.Executions[0].ExitCode)
 				require.Zero(t, *completed.Status.Debug.Executions[0].ExitCode)
-				waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
+				exited := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseExited)
+				require.Equal(t, completed.Status.Debug.Sessions[0].FinishedAt, exited.Status.FinishedAt)
+				require.Nil(t, exited.Status.ExitCode)
 			default:
 				require.NoError(t, connection.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")))
 				require.NoError(t, connection.Close())
@@ -126,7 +128,7 @@ func TestV2ProjectProcessDebugTransportLifecycle(t *testing.T) {
 				})
 				require.Equal(t, running.Status.EffectiveArgs, completed.Status.EffectiveArgs)
 				require.True(t, reflect.DeepEqual(running.Status.EffectiveEnv, completed.Status.EffectiveEnv))
-				waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
+				waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseExited)
 			}
 			require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(context.Context) (bool, error) {
 				return process.IsProcessGoneErr(executor.CheckProcessRunning(handle)), nil
@@ -521,7 +523,7 @@ func TestV2ProjectProcessProtocolProgress(t *testing.T) {
 			}
 			switch ending {
 			case "disconnect":
-				waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
+				waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseExited)
 			case "stop":
 				waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseStopped)
 			case "delete":
@@ -567,7 +569,7 @@ func TestV2ProjectProcessDebugSessionsAcrossNamespaces(t *testing.T) {
 	first, firstConnection := startSession(firstNamespace.Name)
 	second, secondConnection := startSession(secondNamespace.Name)
 	require.NoError(t, secondConnection.Close())
-	waitProjectPhase(t, ctx, client, second, apiv2.ProjectPhaseReady)
+	waitProjectPhase(t, ctx, client, second, apiv2.ProjectPhaseExited)
 
 	sendProjectProtocolRequest(t, firstConnection, `{"seq":3,"type":"request","command":"reportProcess","arguments":{"name":"target"}}`)
 	event := readProjectDebugMessage(t, firstConnection)
@@ -582,7 +584,7 @@ func TestV2ProjectProcessDebugSessionsAcrossNamespaces(t *testing.T) {
 
 // Verifies that the ProjectProcess controller publishes service endpoints only after a ready debug session
 // requests launch, including a noDebug launch whose adapter omits initialized, and withdraws them when
-// that session disconnects or the ProjectProcess is deleted.
+// that session disconnects, ending the run, or the ProjectProcess is deleted.
 func TestV2ProjectProcessEndpointsFollowLaunchedSession(t *testing.T) {
 	t.Parallel()
 	for _, ending := range []string{"disconnect", "delete", "uninitialized-launch"} {
@@ -641,7 +643,7 @@ func TestV2ProjectProcessEndpointsFollowLaunchedSession(t *testing.T) {
 				return listErr == nil && len(endpoints.Items) == 0, nil
 			}))
 			if ending != "delete" {
-				waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
+				waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseExited)
 				require.NoError(t, client.Delete(ctx, project))
 			}
 			ctrl_testutil.WaitObjectDeleted(t, ctx, client, project)
@@ -649,13 +651,14 @@ func TestV2ProjectProcessEndpointsFollowLaunchedSession(t *testing.T) {
 	}
 }
 
-// Verifies that the ProjectProcess controller keeps service endpoints published while any launched debug session
-// remains ready, and withdraws them only after the last ready launched session ends.
-func TestV2ProjectProcessEndpointsFollowLastReadySession(t *testing.T) {
+// Verifies that the ProjectProcess controller keeps service endpoints published when a secondary launched session ends,
+// and that the end of the main (first connected) session ends the run, withdrawing endpoints and refusing new sessions
+// while remaining sessions continue until the Project is stopped.
+func TestV2ProjectProcessMainSessionEndsRun(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	namespace := createV2ExecNamespace(t, ctx, client, "v2-project-endpoints-last-session")
+	namespace := createV2ExecNamespace(t, ctx, client, "v2-project-main-session")
 	tool, toolErr := internaltest.GetTestToolPath("delay")
 	require.NoError(t, toolErr)
 	project := serviceProjectProcess("project", namespace.Name, t.TempDir(), nil, nil)
@@ -678,7 +681,7 @@ func TestV2ProjectProcessEndpointsFollowLastReadySession(t *testing.T) {
 		}
 		return running, ready
 	}
-	connections := make([]*websocket.Conn, 2)
+	connections := make([]*websocket.Conn, 3)
 	for index := range connections {
 		connection, connectErr := connectProjectDebug(t, ctx, clientConfig, project)
 		require.NoError(t, connectErr)
@@ -688,11 +691,12 @@ func TestV2ProjectProcessEndpointsFollowLastReadySession(t *testing.T) {
 		readProjectDebugMessage(t, connection)
 		sendProjectProtocolRequest(t, connection, `{"seq":2,"type":"request","command":"launch","arguments":{"noDebug":true}}`)
 		readProjectDebugMessage(t, connection)
+		// Waiting for each session to connect before opening the next makes the first connection the main session.
+		waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
+			_, ready := readySessions(current)
+			return ready == index+1, nil
+		})
 	}
-	waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
-		_, ready := readySessions(current)
-		return ready == 2, nil
-	})
 	var endpoints apiv2.ServiceEndpointList
 	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
 		listErr := client.List(pollCtx, &endpoints, ctrl_client.InNamespace(namespace.Name))
@@ -700,21 +704,37 @@ func TestV2ProjectProcessEndpointsFollowLastReadySession(t *testing.T) {
 	}))
 	publishedUID := endpoints.Items[0].UID
 
-	require.NoError(t, connections[0].Close())
-	waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
+	require.NoError(t, connections[2].Close())
+	secondaryEnded := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
 		running, ready := readySessions(current)
-		return running == 1 && ready == 1, nil
+		return running == 2 && ready == 2, nil
 	})
+	require.Equal(t, apiv2.ProjectPhaseActive, secondaryEnded.Status.Phase)
 	require.NoError(t, client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
-	require.Len(t, endpoints.Items, 1, "endpoints must remain while another launched session is ready")
+	require.Len(t, endpoints.Items, 1, "endpoints must remain while the run continues")
 	require.Equal(t, publishedUID, endpoints.Items[0].UID)
 
-	require.NoError(t, connections[1].Close())
+	require.NoError(t, connections[0].Close())
+	waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
+		running, _ := readySessions(current)
+		return current.Status.Phase == apiv2.ProjectPhaseExited && running == 1, nil
+	})
 	require.NoError(t, wait.PollUntilContextCancel(ctx, 10*time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
 		listErr := client.List(pollCtx, &endpoints, ctrl_client.InNamespace(namespace.Name))
 		return listErr == nil && len(endpoints.Items) == 0, nil
 	}))
-	waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
+	_, reconnectErr := connectProjectDebug(t, ctx, clientConfig, project)
+	require.Error(t, reconnectErr, "an exited Project must not accept new sessions")
+	sendProjectProtocolRequest(t, connections[1], `{"seq":3,"type":"request","command":"reportProcess","arguments":{"name":"retained"}}`)
+	event := readProjectDebugMessage(t, connections[1])
+	require.JSONEq(t, `"process"`, string(event["event"]), "remaining sessions must continue after the run ends")
+	readProjectDebugMessage(t, connections[1])
+
+	require.NoError(t, client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	event = readProjectDebugMessage(t, connections[1])
+	require.JSONEq(t, `"terminated"`, string(event["event"]), "stop must shut down remaining sessions")
+	stopped := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseStopped)
+	require.True(t, stopped.Status.Debug.Sessions[1].Progress.ResourceTerminating)
 	require.NoError(t, client.Delete(ctx, project))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, project)
 }

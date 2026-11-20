@@ -449,8 +449,8 @@ func TestProjectDebugServingParentStop(t *testing.T) {
 	require.True(t, process.IsProcessGoneErr(executor.CheckProcessRunning(process.NewHandle(executions[0].PID, executions[0].StartedAt))))
 }
 
-// Verifies that a direct application's exit cancels both a waiting debug request and an active
-// debug session, without starting an adapter for the waiting request.
+// Verifies that a direct application's exit refuses a waiting debug request without starting an adapter,
+// while an established session continues until the Project is stopped.
 func TestProjectDebugServingDirectApplicationExit(t *testing.T) {
 	for _, active := range []bool{false, true} {
 		name := "waiting"
@@ -525,6 +525,9 @@ func TestProjectDebugServingDirectApplicationExit(t *testing.T) {
 				[]byte(fmt.Sprintf(`{"status":{"phase":"Exited","conditions":[{"type":"Ready","status":"False","reason":"Completed","observedGeneration":%d,"lastTransitionTime":%q}]}}`,
 					project.Generation, metav1.Now().Format(time.RFC3339))))))
 			if active {
+				// The established session outlives the application and ends only when the Project is stopped.
+				exchangeDebugBytes(t, ctx, connection)
+				require.NoError(t, apiClient.Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 				_, _, readErr := connection.ReadMessage()
 				require.Error(t, readErr)
 			} else {
