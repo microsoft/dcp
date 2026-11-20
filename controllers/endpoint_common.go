@@ -7,13 +7,17 @@ package controllers
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -28,6 +32,25 @@ var workloadEndpointCache *syncmap.Map[ServiceWorkloadEndpointKey, []apiv1.Endpo
 type ServiceWorkloadEndpointKey struct {
 	commonapi.NamespacedNameWithKind
 	ServiceName string
+}
+
+// serviceWorkloadEndpointKey resolves GVK from scheme when owner was loaded via an uncached
+// reader that leaves TypeMeta empty, ensuring consistent cache keys across cached and uncached reconciliations.
+func serviceWorkloadEndpointKey(
+	scheme *runtime.Scheme,
+	owner commonapi.DcpModelObject,
+	serviceName string,
+) ServiceWorkloadEndpointKey {
+	nnk := commonapi.GetNamespacedNameWithKind(owner)
+	if nnk.Kind.Empty() && scheme != nil {
+		if gvk, gvkErr := apiutil.GVKForObject(owner, scheme); gvkErr == nil {
+			nnk.Kind = gvk
+		}
+	}
+	return ServiceWorkloadEndpointKey{
+		NamespacedNameWithKind: nnk,
+		ServiceName:            serviceName,
+	}
 }
 
 type EndpointOwner[EndpointCreationContext any] interface {
@@ -97,10 +120,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 
 	for _, serviceProducer := range serviceProducers {
 		// Check if we have already created an Endpoint for this workload.
-		sweKey := ServiceWorkloadEndpointKey{
-			NamespacedNameWithKind: commonapi.GetNamespacedNameWithKind(owner),
-			ServiceName:            serviceProducer.ServiceName,
-		}
+		sweKey := serviceWorkloadEndpointKey(r.Scheme(), owner, serviceProducer.ServiceName)
 		existingEndpoints := slices.Select(childEndpoints, func(e *apiv1.Endpoint) bool {
 			return e.Spec.ServiceName == serviceProducer.ServiceName && e.Spec.ServiceNamespace == serviceProducer.ServiceNamespace
 		})
@@ -166,6 +186,13 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 		}
 
 		if len(newEndpoints) == 0 {
+			// The cache takes precedence over the (possibly lagging) informer list, so store the validated result whenever
+			// this pass used the cache or deleted invalid Endpoints. Otherwise a deleted Endpoint would stay cached and, once it
+			// became valid again (e.g. same address and port), would count as existing and suppress its recreation indefinitely.
+			// If neither happened, the informer list is authoritative and no cache entry is needed.
+			if usingCache || len(invalidEndpoints) > 0 {
+				workloadEndpointCache.Store(sweKey, toEndpointValues(existingEndpoints))
+			}
 			svcLog.V(1).Info("Endpoint(s) already exist for this workload and Service combination")
 			continue
 		}
@@ -201,28 +228,42 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 }
 
 // Removes all Endpoint objects associated with the given workload object (owner parameter).
-func removeEndpointsForWorkload(ctx context.Context, r ctrl_client.Client, owner commonapi.DcpModelObject, log logr.Logger) {
+func removeEndpointsForWorkload(ctx context.Context, r ctrl_client.Client, owner commonapi.DcpModelObject, log logr.Logger) error {
 	var childEndpoints apiv1.EndpointList
-	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{commonapi.WorkloadOwnerKey: string(owner.GetUID())}); err != nil {
-		log.Error(err, "Failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())
+	listErr := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{commonapi.WorkloadOwnerKey: string(owner.GetUID())})
+	if listErr != nil {
+		log.Error(listErr, "Failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())
+		return fmt.Errorf("list child Endpoints for %q: %w", owner.NamespacedName().String(), listErr)
 	}
 
+	touchedServices := make(map[string]struct{})
+	failedServices := make(map[string]struct{})
+	var removalErr error
+
 	for _, endpoint := range childEndpoints.Items {
-		err := r.Delete(ctx, &endpoint, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground))
-		if err != nil && !apierrors.IsNotFound(err) {
-			log.Error(err, "Could not delete Endpoint object",
+		touchedServices[endpoint.Spec.ServiceName] = struct{}{}
+		deleteErr := r.Delete(ctx, &endpoint, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground))
+		if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+			log.Error(deleteErr, "Could not delete Endpoint object",
 				"Endpoint", endpoint.NamespacedName().String(),
 				"Workload", owner.NamespacedName().String(),
 			)
+			failedServices[endpoint.Spec.ServiceName] = struct{}{}
+			removalErr = errors.Join(
+				removalErr,
+				fmt.Errorf("delete Endpoint %q: %w", endpoint.NamespacedName().String(), deleteErr),
+			)
 		}
-
-		sweKey := ServiceWorkloadEndpointKey{
-			NamespacedNameWithKind: commonapi.GetNamespacedNameWithKind(owner),
-			ServiceName:            endpoint.Spec.ServiceName,
-		}
-
-		workloadEndpointCache.Delete(sweKey)
 	}
+
+	for serviceName := range touchedServices {
+		if _, failed := failedServices[serviceName]; !failed {
+			sweKey := serviceWorkloadEndpointKey(r.Scheme(), owner, serviceName)
+			workloadEndpointCache.Delete(sweKey)
+		}
+	}
+
+	return removalErr
 }
 
 func toEndpointPointers(evs []apiv1.Endpoint) []*apiv1.Endpoint {

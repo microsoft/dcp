@@ -119,6 +119,7 @@ type TestContainerOrchestrator struct {
 	socketFilePath           string
 	mutex                    *sync.Mutex
 	lifetimeCtx              context.Context
+	cancelLifetime           context.CancelFunc
 	log                      logr.Logger
 }
 
@@ -196,6 +197,7 @@ func NewTestContainerOrchestrator(
 	opts TestContainerOrchestratorOption,
 ) (*TestContainerOrchestrator, error) {
 	now := time.Now()
+	orchestratorCtx, cancelLifetime := context.WithCancel(lifetimeCtx)
 
 	to := &TestContainerOrchestrator{
 		runtimeHealthy: true,
@@ -231,16 +233,20 @@ func NewTestContainerOrchestrator(
 		operationErrors:          map[testContainerOperationKey][]error{},
 		operationResultOmissions: map[testContainerOperationKey]bool{},
 		mutex:                    &sync.Mutex{},
-		lifetimeCtx:              lifetimeCtx,
+		lifetimeCtx:              orchestratorCtx,
+		cancelLifetime:           cancelLifetime,
 		log:                      log,
 	}
 
-	to.containerEventsWatcher = pubsub.NewSubscriptionSet(to.doWatchContainers, lifetimeCtx)
-	to.networkEventsWatcher = pubsub.NewSubscriptionSet(to.doWatchNetworks, lifetimeCtx)
+	to.containerEventsWatcher = pubsub.NewSubscriptionSet(to.doWatchContainers, orchestratorCtx)
+	to.networkEventsWatcher = pubsub.NewSubscriptionSet(to.doWatchNetworks, orchestratorCtx)
 
 	var err error
 	if opts&TcoOptionEnableSocketListener != 0 {
 		err = setupSocketListener(to)
+		if err != nil {
+			cancelLifetime()
+		}
 	}
 
 	return to, err
@@ -573,6 +579,10 @@ func (to *TestContainerOrchestrator) handleContainerRemoveRequest(resp http.Resp
 func (to *TestContainerOrchestrator) Close() error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
+
+	if to.cancelLifetime != nil {
+		to.cancelLifetime()
+	}
 
 	var allCloseErrors error = nil
 

@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	tunnelProxyDiscardedStartupResultCounter  metric.Int64Counter
+	tunnelProxyAbandonedStartupResultCounter  metric.Int64Counter
 	tunnelProxyProcessStopFailureCounter      metric.Int64Counter
 	tunnelProxyDeleteSubmissionFailureCounter metric.Int64Counter
 	tunnelProxyCleanupUnconfirmedCounter      metric.Int64Counter
@@ -21,10 +21,10 @@ var (
 func init() {
 	meter := telemetry.GetTelemetrySystem().MeterProvider.Meter("container-network-tunnel-proxy-controller")
 
-	tunnelProxyDiscardedStartupResultCounter = telemetry.NewInt64Counter(
+	tunnelProxyAbandonedStartupResultCounter = telemetry.NewInt64Counter(
 		meter,
 		"discardedStartupResults",
-		"Number of tunnel proxy startup results discarded because their owning resource state changed",
+		"Number of tunnel proxy startup results abandoned because their owning resource state changed",
 	)
 	tunnelProxyProcessStopFailureCounter = telemetry.NewInt64Counter(
 		meter,
