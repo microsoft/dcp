@@ -26,27 +26,51 @@ import (
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
+// ContainerNetworkTunnelProxyState describes the lifecycle phase of a tunnel proxy pair.
+// See ContainerNetworkTunnelProxyReconciler in controllers/container_network_tunnel_proxy_controller.go
+// for detailed state-transition rules.
 type ContainerNetworkTunnelProxyState string
 
 const (
-	// The same as ContainerNetworkTunnelProxyStatePending.
-	// May be encountered when ContainerNetworkTunnelProxy status has not been initialized yet.
+	// The proxy pair has not been initialized; equivalent to Pending.
 	ContainerNetworkTunnelProxyStateEmpty ContainerNetworkTunnelProxyState = ""
 
-	// Initial state - proxy pair is being created.
+	// The proxy pair will not begin the startup sequence until the referenced container network is ready for use.
 	ContainerNetworkTunnelProxyStatePending ContainerNetworkTunnelProxyState = "Pending"
 
-	// Building the client proxy container image.
+	// The client proxy image and container are being prepared.
 	ContainerNetworkTunnelProxyStateBuildingImage ContainerNetworkTunnelProxyState = "BuildingImage"
 
-	// Starting the proxy pair.
+	// The proxy pair is starting and is not yet ready for tunnel traffic.
 	ContainerNetworkTunnelProxyStateStarting ContainerNetworkTunnelProxyState = "Starting"
 
-	// Proxy pair is ready with all tunnels operational.
+	// The initial proxy pair has established its control connection; it becomes Running after
+	// the controller verifies the client proxy container and starts preparing tunnels.
+	ContainerNetworkTunnelProxyStateStarted ContainerNetworkTunnelProxyState = "Started"
+
+	// The proxy pair is operational and can serve ready tunnels.
 	ContainerNetworkTunnelProxyStateRunning ContainerNetworkTunnelProxyState = "Running"
 
-	// Proxy pair encountered an unrecoverable error, either during startup, or during execution.
+	// The proxy pair has failed and is awaiting recovery.
+	ContainerNetworkTunnelProxyStateRecoveryPending ContainerNetworkTunnelProxyState = "RecoveryPending"
+
+	// The failed proxy pair is being removed before replacement.
+	ContainerNetworkTunnelProxyStateRecoveryCleanup ContainerNetworkTunnelProxyState = "RecoveryCleanup"
+
+	// The failed proxy pair has been removed; replacement startup is waiting for the restart backoff delay to expire.
+	ContainerNetworkTunnelProxyStateRecoveryWait ContainerNetworkTunnelProxyState = "RecoveryWait"
+
+	// The proxy pair has encountered an unrecoverable failure and will not be restarted.
 	ContainerNetworkTunnelProxyStateFailed ContainerNetworkTunnelProxyState = "Failed"
+
+	// Object deletion has been requested and proxy-pair removal is pending.
+	ContainerNetworkTunnelProxyStateDeletePending ContainerNetworkTunnelProxyState = "DeletePending"
+
+	// The proxy pair is being removed for object deletion.
+	ContainerNetworkTunnelProxyStateDeleting ContainerNetworkTunnelProxyState = "Deleting"
+
+	// The proxy pair has been removed for object deletion.
+	ContainerNetworkTunnelProxyStateDeleted ContainerNetworkTunnelProxyState = "Deleted"
 )
 
 type TunnelState string
@@ -56,13 +80,18 @@ const (
 	TunnelStateReady TunnelState = "Ready"
 
 	// Tunnel preparation failed, see ErrorMessage for details.
+	// The current proxy pair does not retry the tunnel; a replacement proxy pair prepares it again.
 	TunnelStateFailed TunnelState = "Failed"
 
 	// Initial state -- no attempt to prepare the tunnel have been made yet.
 	TunnelStateEmpty TunnelState = ""
 
-	// Tunnel is being prepared, or is waiting for required services to become ready.
+	// Tunnel is being prepared, waiting for required services or a replacement proxy pair,
+	// or suspended while retaining its published listener.
 	TunnelStateNotReady TunnelState = "NotReady"
+
+	// Tunnel deletion has been requested and is being retried. Existing streams may remain active.
+	TunnelStateDeleting TunnelState = "Deleting"
 )
 
 // TunnelConfiguration defines a single tunnel enabled by a ContainerNetworkTunnelProxy.
@@ -96,22 +125,23 @@ type TunnelStatus struct {
 	// Name of the tunnel (matches TunnelConfiguration.Name).
 	Name string `json:"name"`
 
-	// Internal tunnel ID assigned by the proxy pair.
+	// Internal tunnel ID assigned by the current proxy pair; zero until the tunnel is prepared on that pair.
 	TunnelID uint32 `json:"tunnelId,omitempty"`
 
 	// Current state of the tunnel.
 	State TunnelState `json:"state"`
 
-	// Human-readable explanation for why the tunnel preparation failed (if it did).
+	// Human-readable explanation for the current tunnel failure, if any.
 	ErrorMessage string `json:"errorMessage,omitempty"`
 
 	// Addresses on the container network that client proxy is listening on for this tunnel.
-	// May be empty if the tunnel is not ready.
+	// Retained while a prepared tunnel is suspended; empty until the tunnel is prepared on the current proxy pair.
 	// +listType=set
 	ClientProxyAddresses []string `json:"clientProxyAddresses,omitempty"`
 
 	// Port on the container network that client proxy is listening on for this tunnel.
-	// May be zero if the tunnel is not ready.
+	// Retained while a prepared tunnel is suspended and while a replacement proxy pair starts and rebinds it;
+	// zero before the tunnel is first prepared.
 	ClientProxyPort int32 `json:"clientProxyPort,omitempty"`
 
 	// The timestamp for the status (last update).
@@ -167,7 +197,7 @@ type ContainerNetworkTunnelProxySpec struct {
 // ContainerNetworkTunnelProxyStatus defines the current state of a ContainerNetworkTunnelProxy.
 // +k8s:openapi-gen=true
 type ContainerNetworkTunnelProxyStatus struct {
-	// Overall state of the tunnel proxy pair.
+	// Lifecycle phase of the tunnel proxy pair.
 	// +kubebuilder:default:="Pending"
 	State ContainerNetworkTunnelProxyState `json:"state,omitempty"`
 

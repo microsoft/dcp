@@ -13,9 +13,15 @@ service TunnelControl {
   // to client connections and ready to tunnel traffic.
   rpc PrepareTunnel(TunnelReq) returns (TunnelSpec);
 
-  // Gracefully deletes the tunnel identified by tunnel ID. 
+  // Gracefully deletes the tunnel identified by tunnel ID, or by tunnel name when tunnel_id is zero.
   // Existing streams will be preserved, but no new streams will be allowed.
   rpc DeleteTunnel(TunnelRef) returns (google.protobuf.Empty);
+
+  // Updates an existing tunnel without changing its client-facing listener or ID.
+  // When accept_new_streams is false, the client listener remains bound but rejects
+  // new connections. When it is true, the server address and port identify the
+  // current backend used for new streams.
+  rpc UpdateTunnel(TunnelUpdate) returns (google.protobuf.Empty);
 
   // Shuts down both sides of the tunneling proxy. Existing streams will be aborted.
   rpc Shutdown(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -28,6 +34,11 @@ service TunnelControl {
   // That is, the new connection message exchange consist of the StreamRef message 
   // (representing a request to start a new stream) is sent by the client-side proxy,
   // and the NewStreamResult reply from the server-side proxy FOLLOWS.
+  // The client-side proxy sends the response header "dcp-tunnel-stream-ready: true"
+  // only after acquiring exclusive ownership of the stream-request queue.
+  // A send/receive error ends this RPC attempt, not the proxy pair. The server-side
+  // proxy reconnects with a fresh RPC; prepared tunnels and established data streams
+  // survive. Incomplete handshakes may fail and are not replayed on the replacement RPC.
   rpc NewStreamsConnection(stream NewStreamResult) returns (stream StreamRef);
 
   // Consider adding "list tunnels" request so that clients can discover existing tunnels.
@@ -49,7 +60,26 @@ message TunnelReq {
 
   // The port that the client network proxy will use;
   // This is optional and defaults to 0 (random port).
+  // See allow_client_proxy_port_fallback for using it as a preference.
   int32 client_proxy_port = 5;
+
+  // Client proxy ports that random allocation must not select, and that a request
+  // with allow_client_proxy_port_fallback must not use as its preferred port.
+  // This is used to preserve ports previously published by tunnels whose listeners
+  // are being recovered. The field is ignored when the request asks for an exact,
+  // non-zero client_proxy_port.
+  repeated int32 excluded_client_proxy_ports = 6;
+
+  // When true, a non-zero client_proxy_port is a preference rather than a requirement:
+  // if that port is excluded or cannot be bound, the client network proxy listens on
+  // a random port that is not excluded instead. The field does not affect port selection
+  // when client_proxy_port is zero. Requests that differ only in this field are different
+  // requests: they never resolve to each other's tunnels.
+  bool allow_client_proxy_port_fallback = 7;
+
+  // Required caller-assigned tunnel name that uniquely identifies this logical tunnel
+  // within the proxy pair for idempotent preparation.
+  string tunnel_name = 8;
 }
 
 // Describes a tunnel that allows clients connected to "client network" 
@@ -83,6 +113,28 @@ message TunnelSpec {
 message TunnelRef {
   // The ID of the tunnel.
   uint32 tunnel_id = 1;
+
+  // Optional caller-assigned tunnel name used by DeleteTunnel when the caller
+  // has not observed the assigned tunnel_id (for example after a lost PrepareTunnel response).
+  string tunnel_name = 2;
+}
+
+// Describes the desired mutable state of an existing tunnel.
+message TunnelUpdate {
+  // The tunnel to update.
+  TunnelRef tunnel_ref = 1;
+
+  // The current address of the server used for new streams. Required when
+  // accept_new_streams is true.
+  string server_address = 2;
+
+  // The current port of the server used for new streams. Required when
+  // accept_new_streams is true.
+  int32 server_port = 3;
+
+  // Whether the tunnel may accept and establish new streams. Existing streams
+  // are preserved when this is false.
+  bool accept_new_streams = 4;
 }
 
 // Carries the result of an attempt to establish a tunnel stream.

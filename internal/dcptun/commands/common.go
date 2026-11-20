@@ -6,39 +6,76 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/microsoft/dcp/internal/dcptun"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
 const (
 	gracefulShutdownTimeout = 5 * time.Second
 
-	securityFlagsUsage = "[--ca-cert cert] [--server-cert cert] [--server-key key]"
+	securityFlagsUsage = "(--control-security-file path | --control-security-stdin)"
 )
 
 var (
-	tunnelConfig = dcptun.TunnelProxyConfig{}
+	tunnelConfig         = dcptun.TunnelProxyConfig{}
+	controlSecurityFile  string
+	controlSecurityStdin bool
 )
 
 func addSecurityFlags(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&tunnelConfig.CACertBase64, "ca-cert", "", "Base64-encoded CA certificate for securing the control connection. If not provided, an insecure connection will be used (NOT RECOMMENDED!).")
-	cmd.Flags().StringVar(&tunnelConfig.ServerCertBase64, "server-cert", "", "Base64-encoded server certificate for securing the control connection. Required if --ca-cert is provided.")
-	cmd.Flags().StringVar(&tunnelConfig.ServerKeyBase64, "server-key", "", "Base64-encoded server private key for securing the control connection. Required if --ca-cert is provided.")
+	cmd.Flags().StringVar(&controlSecurityFile, "control-security-file", "", "Path to the control security configuration file.")
+	cmd.Flags().BoolVar(&controlSecurityStdin, "control-security-stdin", false, "Read the control security configuration from standard input.")
 }
 
-func validateSecurityFlagValues() error {
-	// Must provide either all or none of the certificate parameters
-	if tunnelConfig.HasCompleteCertificateData() {
-		return nil
+// loadControlSecurityConfig loads TunnelControlSecurityConfig from either --control-security-file or stdin
+// and validates the server-proxy or client-proxy credentials required to run the proxy.
+// Missing, conflicting, or invalid configuration must not permit unauthenticated startup.
+func loadControlSecurityConfig(cmd *cobra.Command, requireClientCredentials bool) (*dcptun.TunnelControlSecurityConfig, error) {
+	if controlSecurityFile != "" && controlSecurityStdin {
+		return nil, fmt.Errorf("--control-security-file and --control-security-stdin cannot be used together")
+	}
+	if controlSecurityFile == "" && !controlSecurityStdin {
+		return nil, fmt.Errorf("control authentication is required; provide --control-security-file or --control-security-stdin")
 	}
 
-	if tunnelConfig.CACertBase64 == "" && tunnelConfig.ServerCertBase64 == "" && tunnelConfig.ServerKeyBase64 == "" {
-		return nil
+	var reader io.Reader
+	var closeReader func() error
+	if controlSecurityStdin {
+		reader = cmd.InOrStdin()
+	} else {
+		securityFile, openErr := usvc_io.OpenFileReadOnly(controlSecurityFile)
+		if openErr != nil {
+			return nil, fmt.Errorf("open control security configuration: %w", openErr)
+		}
+		reader = securityFile
+		closeReader = securityFile.Close
+	}
+	if closeReader != nil {
+		defer func() { _ = closeReader() }()
 	}
 
-	return fmt.Errorf("all certificate parameters (--ca-cert, --server-cert, --server-key) must be provided together, or none at all")
+	configBytes, readErr := io.ReadAll(io.LimitReader(reader, 1024*1024))
+	if readErr != nil {
+		return nil, fmt.Errorf("read control security configuration: %w", readErr)
+	}
+	var securityConfig dcptun.TunnelControlSecurityConfig
+	if unmarshalErr := json.Unmarshal(configBytes, &securityConfig); unmarshalErr != nil {
+		return nil, fmt.Errorf("decode control security configuration: %w", unmarshalErr)
+	}
+	if validateServerErr := securityConfig.ValidateServer(); validateServerErr != nil {
+		return nil, fmt.Errorf("validate control server security configuration: %w", validateServerErr)
+	}
+	if requireClientCredentials {
+		if validateClientErr := securityConfig.ValidateClient(); validateClientErr != nil {
+			return nil, fmt.Errorf("validate control client security configuration: %w", validateClientErr)
+		}
+	}
+	return &securityConfig, nil
 }

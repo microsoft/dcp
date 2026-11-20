@@ -15,12 +15,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 
 	cmdutil "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/internal/dcptun"
-	"github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/networking"
 )
 
@@ -48,6 +45,11 @@ func runClientProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 	return func(cmd *cobra.Command, args []string) error {
 		log = log.WithName("client")
 
+		securityConfig, securityConfigErr := loadControlSecurityConfig(cmd, false)
+		if securityConfigErr != nil {
+			log.Error(securityConfigErr, "Control security configuration is invalid")
+			return securityConfigErr
+		}
 		configErr := ensureClientConfig()
 		if configErr != nil {
 			log.Error(configErr, "Invocation parameters are invalid")
@@ -92,24 +94,18 @@ func runClientProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			return marshalErr
 		}
 
-		clientProxy := dcptun.NewClientProxy(clientProxyCtx, dataListener, cancelClientProxyCtx, log)
+		clientProxy := dcptun.NewClientProxy(clientProxyCtx, dataListener, cancelClientProxyCtx, dcptun.ClientProxyConfig{}, log)
 
-		var grpcServerOpts []grpc.ServerOption
-		if tunnelConfig.HasCompleteCertificateData() {
-			tlsConfig, tlsConfigErr := tunnelConfig.GetTlsConfig()
-			if tlsConfigErr != nil {
-				log.Error(tlsConfigErr, "Failed to create TLS configuration")
-				return tlsConfigErr
-			}
-
-			grpcServerOpts = append(grpcServerOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
-			log.V(1).Info("Using secure gRPC server for control endpoint")
-		} else {
-			log.V(1).Info("Using insecure gRPC server for control endpoint")
+		controlEndpointServer, serverOptsErr := dcptun.NewControlServer(
+			*securityConfig,
+			clientProxy,
+			dcptun.ClientKeepaliveServerOptions()...,
+		)
+		if serverOptsErr != nil {
+			log.Error(serverOptsErr, "Failed to configure authenticated gRPC server")
+			return serverOptsErr
 		}
-
-		controlEndpointServer := grpc.NewServer(grpcServerOpts...)
-		proto.RegisterTunnelControlServer(controlEndpointServer, clientProxy)
+		defer controlEndpointServer.Stop()
 
 		grpcServerErrChan := make(chan error, 1)
 		go func() {
@@ -163,5 +159,5 @@ func ensureClientConfig() error {
 		return fmt.Errorf("client proxy data port must be a valid port number (1-65535), not %d", tunnelConfig.ClientDataPort)
 	}
 
-	return validateSecurityFlagValues()
+	return nil
 }

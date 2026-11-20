@@ -9,10 +9,12 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"time"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -39,6 +41,20 @@ func RemoveWithRetry(ctx context.Context, path string) error {
 			return removeErr
 		}
 	})
+}
+
+// RemoveOutputFiles removes captured output with bounded retries unless log preservation is enabled.
+func RemoveOutputFiles(ctx context.Context, paths ...string) error {
+	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+		return nil
+	}
+	var removeErr error
+	for _, path := range slices.Compact(slices.Clone(paths)) {
+		if path != "" {
+			removeErr = errors.Join(removeErr, RemoveWithRetry(ctx, path))
+		}
+	}
+	return removeErr
 }
 
 func ToTimestampReaderOptions(opts *apiv1.LogOptions) usvc_io.TimestampAwareReaderOptions {

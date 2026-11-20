@@ -1391,7 +1391,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref common.Re
 				Properties: map[string]spec.Schema{
 					"state": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Overall state of the tunnel proxy pair.",
+							Description: "Lifecycle phase of the tunnel proxy pair.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -4046,7 +4046,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 					},
 					"tunnelId": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Internal tunnel ID assigned by the proxy pair.",
+							Description: "Internal tunnel ID assigned by the current proxy pair; zero until the tunnel is prepared on that pair.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},
@@ -4061,7 +4061,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 					},
 					"errorMessage": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Human-readable explanation for why the tunnel preparation failed (if it did).",
+							Description: "Human-readable explanation for the current tunnel failure, if any.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -4073,7 +4073,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Addresses on the container network that client proxy is listening on for this tunnel. May be empty if the tunnel is not ready.",
+							Description: "Addresses on the container network that client proxy is listening on for this tunnel. Retained while a prepared tunnel is suspended; empty until the tunnel is prepared on the current proxy pair.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -4087,7 +4087,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 					},
 					"clientProxyPort": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Port on the container network that client proxy is listening on for this tunnel. May be zero if the tunnel is not ready.",
+							Description: "Port on the container network that client proxy is listening on for this tunnel. Retained while a prepared tunnel is suspended and while a replacement proxy pair starts and rebinds it; zero before the tunnel is first prepared.",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},
