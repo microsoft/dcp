@@ -108,7 +108,7 @@ func DcpRun(
 	builtInControllerServiceName := ""
 	if !serverOnly {
 		// Always run the built-in controllers
-		controllerService, controllerServiceErr := newRunControllersService(cwd, invocationFlags, log)
+		controllerService, controllerServiceErr := newRunControllersService(cwd, invocationFlags, notifySrc != nil, log)
 		if controllerServiceErr != nil {
 			return fmt.Errorf("could not start built-in controllers: %w", controllerServiceErr)
 		}
@@ -160,6 +160,13 @@ func DcpRun(
 
 	shutdownErrors, lifecycleMsgs := host.RunAsync(hostCtx)
 	shutdownHost := func() error {
+		if notifySrc != nil {
+			// Controller hosts otherwise exit only after this process exits, which is too late
+			// for them to release session files before the session folder is removed.
+			if notifyErr := notifySrc.NotifySubscribers(&notifications.ShutdownRequestedNotification{}); notifyErr != nil {
+				log.Error(notifyErr, "Failed to request shutdown of hosted services")
+			}
+		}
 		cancelHostCtx()
 		var allErrors error
 
@@ -253,7 +260,9 @@ func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (not
 	return ns, nil
 }
 
-func newRunControllersService(appRootDir string, invocationFlags []string, log logr.Logger) (*hosting.CommandService, error) {
+// Creates the hosted service for the built-in controllers. If canRequestShutdown is true, the controllers are asked
+// to shut down via a notification, and the service waits for the controller process to exit when it is stopped.
+func newRunControllersService(appRootDir string, invocationFlags []string, canRequestShutdown bool, log logr.Logger) (*hosting.CommandService, error) {
 	monitorPid := os.Getpid()
 
 	allArgs := []string{"run-controllers"}
@@ -287,5 +296,8 @@ func newRunControllersService(appRootDir string, invocationFlags []string, log l
 	process.ForkFromParent(cmd)
 
 	hostingOpts := hosting.CommandServiceRunOptionShowStderr | hosting.CommandServiceRunOptionDontTerminate
+	if canRequestShutdown {
+		hostingOpts |= hosting.CommandServiceRunOptionWaitForExit
+	}
 	return hosting.NewCommandService("DCP controller host", cmd, process.NewOSExecutor(log), hostingOpts, log), nil
 }

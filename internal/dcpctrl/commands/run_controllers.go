@@ -143,7 +143,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return workloadIDErr
 		}
 
-		trySetupNotificationHandler(ctrlCtx, log)
+		trySetupNotificationHandler(ctrlCtx, ctrlCtxCancel, log)
 
 		mgr, err := getManager(ctrlCtx, log.V(1))
 		if err != nil {
@@ -489,7 +489,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 	}
 }
 
-func trySetupNotificationHandler(notifyCtx context.Context, log logr.Logger) {
+func trySetupNotificationHandler(notifyCtx context.Context, shutdown context.CancelFunc, log logr.Logger) {
 	notifySocketPath := notifications.GetNotificationSocketPath()
 	if notifySocketPath == "" {
 		return
@@ -498,15 +498,19 @@ func trySetupNotificationHandler(notifyCtx context.Context, log logr.Logger) {
 	log.V(1).Info("Setting up notification receiver", "SocketPath", notifySocketPath)
 
 	_, nrErr := notifications.NewNotificationSubscription(notifyCtx, notifySocketPath, log.WithName("NotificationReceiver"), func(n notifications.Notification) {
-		handleNotification(notifyCtx, n, log)
+		handleNotification(notifyCtx, shutdown, n, log)
 	})
 	if nrErr != nil {
 		log.Error(nrErr, "Failed to create cleanup notification receiver")
 	}
 }
 
-func handleNotification(ctx context.Context, note notifications.Notification, log logr.Logger) {
+func handleNotification(ctx context.Context, shutdown context.CancelFunc, note notifications.Notification, log logr.Logger) {
 	switch note.Kind() {
+
+	case notifications.NotificationKindShutdownRequested:
+		log.V(1).Info("Received shutdown request, shutting down...")
+		shutdown()
 
 	case notifications.NotificationKindCleanupStarted:
 		log.V(1).Info("Received cleanup notification, suppressing TCP stream completion errors...")
