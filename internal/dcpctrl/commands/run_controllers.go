@@ -451,7 +451,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 
 		logicalTunnelProxyCtrl := controllers.NewLogicalContainerTunnelProxyReconciler(
 			ctrlCtx, mgr.GetClient(), mgr.GetAPIReader(), log.WithName("LogicalContainerTunnelProxyReconciler"),
-			controllers.LogicalContainerTunnelProxyReconcilerConfig{},
+			controllers.LogicalContainerTunnelProxyReconcilerConfig{ProcessExecutor: processExecutor},
 		)
 		if logicalTunnelSetupErr := logicalTunnelProxyCtrl.SetupWithManager(mgr, defaultControllerName); logicalTunnelSetupErr != nil {
 			return fmt.Errorf("set up LogicalContainerTunnelProxy controller: %w", logicalTunnelSetupErr)

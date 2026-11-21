@@ -2787,7 +2787,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 
 	// Wait until the first JSON line is printed to stdout indicating server control address/port
 
-	tc, tcErr := r.readServerProxyConfigOrExit(startupCtx, run, stdoutFile.Name())
+	tc, tcErr := readServerProxyConfigOrExit(startupCtx, run, stdoutFile.Name(), r.config.ServerConfigReadTimeout)
 	if tcErr != nil {
 		startupInterrupted := startupCtx.Err() != nil || commonapi.ResourceCreationProhibited.Load()
 		if !startupInterrupted {
@@ -2809,7 +2809,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		return run, false
 	}
 
-	readyErr := r.waitServerProxyReadyOrExit(startupCtx, run, stdoutFile.Name())
+	readyErr := waitServerProxyReadyOrExit(startupCtx, run, stdoutFile.Name(), r.config.ControlStartupTimeout)
 	if readyErr != nil {
 		startupFailure := readyErr
 		startupInterrupted := startupCtx.Err() != nil || commonapi.ResourceCreationProhibited.Load()
@@ -2855,9 +2855,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	return run, true
 }
 
-// Waits until the server proxy reports its first control stream, its process exits, or ControlStartupTimeout elapses.
-func (r *ContainerNetworkTunnelProxyReconciler) waitServerProxyReadyOrExit(ctx context.Context, run *serverProxyRun, stdoutPath string) error {
-	readyCtx, readyCancel := context.WithTimeout(ctx, r.config.ControlStartupTimeout)
+// Waits until the server proxy reports its first control stream, its process exits, or the timeout elapses.
+func waitServerProxyReadyOrExit(ctx context.Context, run *serverProxyRun, stdoutPath string, timeout time.Duration) error {
+	readyCtx, readyCancel := context.WithTimeout(ctx, timeout)
 	exitWatcherDone := make(chan struct{})
 	go func() {
 		defer close(exitWatcherDone)
@@ -2881,12 +2881,14 @@ func (r *ContainerNetworkTunnelProxyReconciler) waitServerProxyReadyOrExit(ctx c
 
 var errMalformedServerProxyConfig = errors.New("malformed server proxy configuration")
 
-func (r *ContainerNetworkTunnelProxyReconciler) readServerProxyConfigOrExit(
+// Reads the server proxy's initial configuration line until the process exits or the timeout elapses.
+func readServerProxyConfigOrExit(
 	ctx context.Context,
 	run *serverProxyRun,
 	path string,
+	timeout time.Duration,
 ) (dcptun.TunnelProxyConfig, error) {
-	configCtx, configCtxCancel := context.WithTimeout(ctx, r.config.ServerConfigReadTimeout)
+	configCtx, configCtxCancel := context.WithTimeout(ctx, timeout)
 	exitWatcherDone := make(chan struct{})
 	go func() {
 		defer close(exitWatcherDone)

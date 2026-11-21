@@ -6,12 +6,15 @@
 package controllers
 
 import (
+	"context"
 	"maps"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
 	"time"
 
+	"google.golang.org/grpc"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -32,10 +35,40 @@ const (
 )
 
 type logicalTunnelRecord struct {
-	status     apiv2.LogicalContainerTunnelStatus
+	status apiv2.LogicalContainerTunnelStatus
+	// server is the backend of the latest preparation that may still exist in the runtime; zero when none can.
 	server     apiv2.ServiceAddress
 	attempts   uint32
 	retryAfter time.Time
+}
+
+// logicalTunnelServerOperation is an in-flight launch or stop of the host tunnel server.
+type logicalTunnelServerOperation struct {
+	// cancel requests early completion of a launch; stops are bounded by their own timeout.
+	cancel context.CancelFunc
+}
+
+// logicalTunnelServer tracks the host tunnel-server process the controller launches directly.
+type logicalTunnelServer struct {
+	// run identifies the launched process and records its exit; nil when no process may be running.
+	run *serverProxyRun
+	// operation is the in-flight launch or stop; nil when no server work is running.
+	operation *logicalTunnelServerOperation
+	// connection is the authenticated control client, available once the server reports control readiness.
+	connection *grpc.ClientConn
+	// stdout and stderr capture server output until the process has stopped.
+	stdout, stderr *os.File
+	// exited records that the process is gone.
+	exited   bool
+	exitCode *int32
+	// stopRetryAfter delays the next stop attempt after a failed one.
+	stopRetryAfter time.Time
+}
+
+func (server logicalTunnelServer) equal(other logicalTunnelServer) bool {
+	return server.run == other.run && server.operation == other.operation && server.connection == other.connection &&
+		server.stdout == other.stdout && server.stderr == other.stderr && server.exited == other.exited &&
+		reflect.DeepEqual(server.exitCode, other.exitCode) && server.stopRetryAfter.Equal(other.stopRetryAfter)
 }
 
 type logicalTunnelProxyData struct {
@@ -46,13 +79,11 @@ type logicalTunnelProxyData struct {
 	started              bool
 	containerUID         types.UID
 	imageUID             types.UID
-	processUID           types.UID
 	imageBuildPlan       *dcptun.ClientProxyImageBuildPlan
 	unobservedChildren   unobservedLogicalChildren
 	security             *dcptun.TunnelProxySecurityConfig
 	clientSecurityFile   string
-	serverSecurityFile   string
-	control              *dcptun.ReverseControlConnection
+	server               logicalTunnelServer
 	tunnels              map[string]logicalTunnelRecord
 	configurationVersion int32
 }
@@ -81,8 +112,9 @@ func (data *logicalTunnelProxyData) UpdateFrom(other *logicalTunnelProxyData) bo
 		return false
 	}
 	left, right := *data, *other
-	left.control, right.control = nil, nil
-	if data.control == other.control && reflect.DeepEqual(left, right) {
+	// Server handles are shared with background operations, so they are compared by identity only.
+	left.server, right.server = logicalTunnelServer{}, logicalTunnelServer{}
+	if data.server.equal(other.server) && reflect.DeepEqual(left, right) {
 		return false
 	}
 	*data = *other.Clone()
@@ -125,18 +157,6 @@ func applyLogicalTunnelProxyImageStatus(proxy *apiv2.LogicalContainerTunnelProxy
 	return change
 }
 
-func applyLogicalTunnelProxyProcessStatus(proxy *apiv2.LogicalContainerTunnelProxy, server *apiv2.PhysicalProcess) objectChange {
-	if server == nil {
-		return noChange
-	}
-	change := setValue(&proxy.Status.PhysicalProcessRef, server.Name)
-	if !reflect.DeepEqual(proxy.Status.PID, server.Status.PID) {
-		proxy.Status.PID = server.Status.DeepCopy().PID
-		change |= statusChanged
-	}
-	return change
-}
-
 func (data *logicalTunnelProxyData) applyTo(proxy *apiv2.LogicalContainerTunnelProxy) (objectChange, AdditionalReconciliationDelay, bool) {
 	var statuses []apiv2.LogicalContainerTunnelStatus
 	for _, record := range data.tunnels {
@@ -151,6 +171,13 @@ func (data *logicalTunnelProxyData) applyTo(proxy *apiv2.LogicalContainerTunnelP
 		change |= statusChanged
 	}
 	change |= setValue(&proxy.Status.TunnelConfigurationVersion, data.configurationVersion)
+	if data.server.run != nil {
+		pid := int64(data.server.run.handle.Pid)
+		if proxy.Status.PID == nil || *proxy.Status.PID != pid {
+			proxy.Status.PID = &pid
+			change |= statusChanged
+		}
+	}
 	if data.state == logicalTunnelProxyRunning && data.reason == apiv2.LogicalContainerTunnelProxyReasonPaused {
 		change |= setValue(&proxy.Status.Phase, apiv2.LogicalContainerTunnelProxyPhaseRunning)
 		change |= setCondition(&proxy.Status.Conditions, apiv2.ConditionReady, proxy.Generation,
@@ -166,9 +193,9 @@ var logicalTunnelProxyProjections = physicalResourceProjectionTable[logicalTunne
 	invalidPhase: apiv2.LogicalContainerTunnelProxyPhaseUnknown,
 	projections: map[logicalTunnelProxyState]physicalResourceProjection[apiv2.LogicalContainerTunnelProxyPhase]{
 		logicalTunnelProxyPending: {phase: apiv2.LogicalContainerTunnelProxyPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.LogicalContainerTunnelProxyReasonStarting, message: "Preparing the tunnel proxy image, container, and server process."},
+			conditionReason: apiv2.LogicalContainerTunnelProxyReasonStarting, message: "Preparing the tunnel proxy image, container, and host server."},
 		logicalTunnelProxyStarting: {phase: apiv2.LogicalContainerTunnelProxyPhasePending, conditionStatus: metav1.ConditionFalse,
-			conditionReason: apiv2.LogicalContainerTunnelProxyReasonStarting, message: "Waiting for the host tunnel server and authenticated control connection."},
+			conditionReason: apiv2.LogicalContainerTunnelProxyReasonStarting, message: "Waiting for the host tunnel server to report control readiness."},
 		logicalTunnelProxyRunning:  {phase: apiv2.LogicalContainerTunnelProxyPhaseRunning, conditionStatus: metav1.ConditionTrue, conditionReason: apiv2.LogicalContainerTunnelProxyReasonRunning},
 		logicalTunnelProxyStopping: {phase: apiv2.LogicalContainerTunnelProxyPhaseRunning, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerTunnelProxyReasonStopping},
 		logicalTunnelProxyExited:   {phase: apiv2.LogicalContainerTunnelProxyPhaseExited, conditionStatus: metav1.ConditionFalse, conditionReason: apiv2.LogicalContainerTunnelProxyReasonCompleted},

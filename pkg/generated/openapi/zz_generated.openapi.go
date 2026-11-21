@@ -6344,13 +6344,6 @@ func schema_microsoft_dcp_api_v2_LogicalContainerTunnelProxyStatus(ref common.Re
 							Format:      "",
 						},
 					},
-					"physicalProcessRef": {
-						SchemaProps: spec.SchemaProps{
-							Description: "PhysicalProcessRef identifies the same-namespace server PhysicalProcess.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
 					"containerID": {
 						SchemaProps: spec.SchemaProps{
 							Description: "ContainerID identifies the observed client runtime container.",

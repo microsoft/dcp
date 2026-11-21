@@ -114,7 +114,6 @@ var NamespaceResources = []*CleanupResource{
 	{
 		GVR: (&apiv2.PhysicalProcess{}).GetGroupVersionResource(),
 		CleanUpAfter: []schema.GroupVersionResource{
-			(&apiv2.LogicalContainerTunnelProxy{}).GetGroupVersionResource(),
 			(&apiv2.LogicalProcess{}).GetGroupVersionResource(),
 		},
 	},

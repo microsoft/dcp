@@ -123,8 +123,6 @@ type LogicalContainerTunnelProxyStatus struct {
 	PhysicalContainerRef string `json:"physicalContainerRef,omitempty"`
 	// PhysicalImageRef identifies the same-namespace client PhysicalContainerImage.
 	PhysicalImageRef string `json:"physicalImageRef,omitempty"`
-	// PhysicalProcessRef identifies the same-namespace server PhysicalProcess.
-	PhysicalProcessRef string `json:"physicalProcessRef,omitempty"`
 	// ContainerID identifies the observed client runtime container.
 	ContainerID string `json:"containerID,omitempty"`
 	// Image is the observed client image reference.

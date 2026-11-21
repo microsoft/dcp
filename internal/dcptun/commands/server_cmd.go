@@ -40,9 +40,6 @@ func NewRunServerCommand(log logr.Logger) *cobra.Command {
 
 	runServerCmd.Flags().StringVar(&tunnelConfig.ServerControlAddress, "server-control-address", "localhost", "The address the server-side tunnel proxy should listen on for its control endpoint. Defaults to localhost.")
 	runServerCmd.Flags().Int32Var(&tunnelConfig.ServerControlPort, "server-control-port", 0, "The port the server-side tunnel proxy should listen on for its control endpoint. If not specified, a random port will be used.")
-	runServerCmd.Flags().String("control-callback", "", "Controller loopback address:port to dial instead of listening for control connections.")
-	runServerCmd.MarkFlagsMutuallyExclusive("control-callback", "server-control-address")
-	runServerCmd.MarkFlagsMutuallyExclusive("control-callback", "server-control-port")
 	addSecurityFlags(runServerCmd)
 
 	cmdutil.AddMonitorFlags(runServerCmd)
@@ -90,26 +87,8 @@ func runServerProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 		}
 		defer clientProxyConn.Close()
 
-		callback, callbackErr := cmd.Flags().GetString("control-callback")
-		if callbackErr != nil {
-			return callbackErr
-		}
-		var ctrlListener net.Listener
-		var ctrlListenerErr error
-		if callback != "" {
-			host, port, splitErr := net.SplitHostPort(callback)
-			if splitErr != nil {
-				return fmt.Errorf("invalid control callback: %w", splitErr)
-			}
-			ip := net.ParseIP(host)
-			callbackPort, parseErr := strconv.Atoi(port)
-			if ip == nil || !ip.IsLoopback() || parseErr != nil || !networking.IsValidPort(callbackPort) {
-				return fmt.Errorf("control callback must use a loopback IP and valid port")
-			}
-			ctrlListener = dcptun.NewDialBackListener(serverProxyCtx, callback, log)
-		} else {
-			ctrlListener, ctrlListenerErr = (&net.ListenConfig{}).Listen(serverProxyCtx, "tcp", networking.AddressAndPort(tunnelConfig.ServerControlAddress, tunnelConfig.ServerControlPort))
-		}
+		lc := net.ListenConfig{}
+		ctrlListener, ctrlListenerErr := lc.Listen(serverProxyCtx, "tcp", networking.AddressAndPort(tunnelConfig.ServerControlAddress, tunnelConfig.ServerControlPort))
 		if ctrlListenerErr != nil {
 			log.Error(ctrlListenerErr, "Failed to create TCP listener for server-side tunnel proxy",
 				"Address", tunnelConfig.ServerControlAddress,
@@ -119,11 +98,9 @@ func runServerProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 		}
 		defer func() { _ = ctrlListener.Close() }()
 
-		if callback == "" {
-			ctrlListenerAddr := ctrlListener.Addr().(*net.TCPAddr)
-			tunnelConfig.ServerControlAddress = ctrlListenerAddr.IP.String()
-			tunnelConfig.ServerControlPort = int32(ctrlListenerAddr.Port)
-		}
+		ctrlListenerAddr := ctrlListener.Addr().(*net.TCPAddr)
+		tunnelConfig.ServerControlAddress = ctrlListenerAddr.IP.String()
+		tunnelConfig.ServerControlPort = int32(ctrlListenerAddr.Port)
 
 		configJson, marshalErr := json.Marshal(tunnelConfig)
 		if marshalErr != nil {

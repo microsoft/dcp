@@ -57,6 +57,7 @@ type TestEnvironmentInfo struct {
 type TestEnvironmentOptions struct {
 	DecoratePhysicalProcessExecutor func(process.Executor) process.Executor
 	ConfigureTunnelProxy            func(*controllers.ContainerNetworkTunnelProxyReconcilerConfig)
+	ConfigureLogicalTunnelProxy     func(*controllers.LogicalContainerTunnelProxyReconcilerConfig)
 	DecorateTunnelProxyClient       func(ctrl_client.Client) ctrl_client.Client
 	DecorateTunnelProxyAPIReader    func(ctrl_client.Reader) ctrl_client.Reader
 	DecorateAPIClient               func(ctrl_client.Client) ctrl_client.Client
@@ -132,7 +133,7 @@ func StartTestEnvironmentWithOptions(
 		inclCtrl |= PhysicalContainerImageController | PhysicalContainerController | PhysicalContainerNetworkController
 	}
 	if inclCtrl&LogicalContainerTunnelProxyController != 0 {
-		inclCtrl |= PhysicalContainerImageController | PhysicalContainerController | PhysicalProcessController | PhysicalContainerNetworkController | LogicalContainerNetworkController
+		inclCtrl |= PhysicalContainerImageController | PhysicalContainerController | PhysicalContainerNetworkController | LogicalContainerNetworkController
 	}
 
 	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
@@ -586,13 +587,15 @@ func StartTestEnvironmentWithOptions(
 	}
 
 	if inclCtrl&LogicalContainerTunnelProxyController != 0 {
+		logicalTunnelConfig := controllers.LogicalContainerTunnelProxyReconcilerConfig{
+			ProcessExecutor: pex, BuildContextDir: sessionFolder, MaxTunnelPreparationAttempts: 2,
+			MakeTunnelControlClient: func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tunnelControlClient },
+		}
+		if options.ConfigureLogicalTunnelProxy != nil {
+			options.ConfigureLogicalTunnelProxy(&logicalTunnelConfig)
+		}
 		logicalTunnelR := controllers.NewLogicalContainerTunnelProxyReconciler(
-			ctx, mgr.GetClient(), controllerAPIReader, log.WithName("LogicalContainerTunnelProxyReconciler"),
-			controllers.LogicalContainerTunnelProxyReconcilerConfig{
-				BuildContextDir: sessionFolder, MaxTunnelPreparationAttempts: 2,
-				MakeTunnelControlClient: func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tunnelControlClient },
-			},
-		)
+			ctx, mgr.GetClient(), controllerAPIReader, log.WithName("LogicalContainerTunnelProxyReconciler"), logicalTunnelConfig)
 		if setupErr := logicalTunnelR.SetupWithManager(mgr, instanceTag+"-LogicalContainerTunnelProxyReconciler"); setupErr != nil {
 			return nil, nil, fmt.Errorf("initialize LogicalContainerTunnelProxy reconciler: %w", setupErr)
 		}

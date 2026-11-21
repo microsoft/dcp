@@ -62,7 +62,7 @@ func TestNamespaceResourcesCleanLogicalResourcesBeforePhysicalDependencies(t *te
 
 	require.Len(t, namespaceResourcesByGVR, 14)
 	tunnelProxyGVR := (&apiv2.LogicalContainerTunnelProxy{}).GetGroupVersionResource()
-	for _, dependent := range []schema.GroupVersionResource{physicalContainerGVR, physicalProcessGVR, logicalNetworkGVR, serviceEndpointGVR} {
+	for _, dependent := range []schema.GroupVersionResource{physicalContainerGVR, logicalNetworkGVR, serviceEndpointGVR} {
 		require.Contains(t, namespaceResourcesByGVR[dependent].CleanUpAfter, tunnelProxyGVR)
 	}
 	require.Contains(t, namespaceResourcesByGVR, containerGVR)
