@@ -55,7 +55,7 @@ func CreateTestSessionDir() (string, error) {
 	dirName := fmt.Sprintf("dcp-test-%s", suffix)
 	sessionDir := filepath.Join(testRoot, dirName)
 
-	if err := os.MkdirAll(sessionDir, osutil.PermissionOnlyOwnerReadWriteTraverse); err != nil {
+	if err := usvc_io.EnsureRestrictedDirectory(sessionDir, osutil.PermissionOnlyOwnerReadWriteTraverse); err != nil {
 		return "", fmt.Errorf("failed to create session directory: %w", err)
 	}
 

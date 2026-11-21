@@ -166,7 +166,7 @@ func TestTCPClientCanSendDataBeforeEndpointsExist(t *testing.T) {
 	}
 
 	// Configure the proxy with valid endpoint
-	port, err := networking.GetFreePort(commonapi.PortProtocolTCP, networking.IPv4LocalhostDefaultAddress, log)
+	port, err := networking.GetFreePort(ctx, commonapi.PortProtocolTCP, networking.IPv4LocalhostDefaultAddress, log)
 	require.NoError(t, err)
 	config := ProxyConfig{
 		Endpoints: []Endpoint{
@@ -989,7 +989,7 @@ func TestTCPProxyContinuousStream(t *testing.T) {
 
 	t.Parallel()
 
-	serverPort, portErr := networking.GetFreePort(commonapi.PortProtocolTCP, networking.IPv4LocalhostDefaultAddress, log)
+	serverPort, portErr := networking.GetFreePort(context.Background(), commonapi.PortProtocolTCP, networking.IPv4LocalhostDefaultAddress, log)
 	require.NoError(t, portErr, "Failed to get free port for server")
 
 	// Set up a proxy

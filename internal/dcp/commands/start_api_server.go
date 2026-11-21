@@ -8,6 +8,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strings"
@@ -19,12 +20,16 @@ import (
 	cmds "github.com/microsoft/dcp/internal/commands"
 	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcp/bootstrap"
+	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/perftrace"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/telemetry"
 	"github.com/microsoft/dcp/internal/telemetry/startupspans"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -107,6 +112,22 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			}
 		}
 
+		stateStore, stateStoreErr := statestore.Open(apiServerCtx, statestore.Options{Log: log})
+		if stateStoreErr != nil {
+			return fmt.Errorf("failed to initialize state store: %w", stateStoreErr)
+		}
+		defer func() {
+			networking.ConfigureStateStorePortAllocator(nil, process.ProcessHandle{})
+			if closeErr := stateStore.Close(); closeErr != nil {
+				log.Error(closeErr, "Failed to close state store")
+			}
+		}()
+		portOwner, portOwnerErr := statestore.CurrentResourceLeaseOwner()
+		if portOwnerErr != nil {
+			return fmt.Errorf("failed to initialize port reservation owner identity: %w", portOwnerErr)
+		}
+		networking.ConfigureStateStorePortAllocator(stateStore, portOwner)
+
 		kconfig, err := telemetry.CallWithTelemetry(telemetry.StartupTracer(), startupspans.SpanEnsureKubeconfig, startupCtx,
 			func(ctx context.Context) (*kubeconfig.Kubeconfig, error) {
 				return kubeconfig.EnsureKubeconfigData(ctx, cmd.Flags(), log)
@@ -114,6 +135,29 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 		)
 		if err != nil {
 			return err
+		}
+
+		requestedPort, portFlagErr := cmd.Flags().GetInt32(kubeconfig.PortFlagName)
+		if portFlagErr != nil {
+			return fmt.Errorf("could not read API server port flag: %w", portFlagErr)
+		}
+		// Automatic selection already claimed its port; reserving it again could mix fallback backends.
+		if requestedPort != 0 {
+			address, listenerPort, _, _, listenerDataErr := kconfig.GetData()
+			if listenerDataErr != nil {
+				return fmt.Errorf("could not get API server listener binding: %w", listenerDataErr)
+			}
+			ip, validIP := netip.AddrFromSlice(address)
+			if !validIP {
+				return fmt.Errorf("invalid API server listener IP address: %s", address)
+			}
+			reservations := &networking.PortReservationSet{}
+			if reserveErr := reservations.Reserve(apiServerCtx, ports.Binding{
+				Protocol: string(commonapi.PortProtocolTCP), IP: ip, Port: int32(listenerPort),
+			}, log); reserveErr != nil {
+				return fmt.Errorf("could not reserve API server listener port: %w", reserveErr)
+			}
+			defer func() { reservations.Release(context.WithoutCancel(apiServerCtx), log) }()
 		}
 
 		var allExtensions []bootstrap.DcpExtension

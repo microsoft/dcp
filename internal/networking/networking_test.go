@@ -6,14 +6,24 @@
 package networking
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/testutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -52,8 +62,8 @@ func TestGetFreePort(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			port1, err1 := GetFreePort(tc.protocol, Localhost, log)
-			port2, err2 := GetFreePort(tc.protocol, Localhost, log)
+			port1, err1 := GetFreePort(context.Background(), tc.protocol, Localhost, log)
+			port2, err2 := GetFreePort(context.Background(), tc.protocol, Localhost, log)
 
 			require.NoError(t, err1, "error1: %v", err1)
 			require.NoError(t, err2, "error2: %v", err2)
@@ -77,7 +87,7 @@ func TestCanGetFreePortForAllLocalIPs(t *testing.T) {
 
 			for _, ip := range ips {
 				address := IpToString(ip)
-				_, err = GetFreePort(tc.protocol, address, log)
+				_, err = GetFreePort(context.Background(), tc.protocol, address, log)
 				require.NoError(t, err, "Could not get free port for address %s", address)
 			}
 		})
@@ -104,10 +114,10 @@ func TestCheckPortAvailable(t *testing.T) {
 				go func(ip net.IP) {
 					defer wg.Done()
 					address := IpToString(ip)
-					port, err := GetFreePort(tc.protocol, address, log)
+					port, err := GetFreePort(context.Background(), tc.protocol, address, log)
 					require.NoError(t, err, "Could not get free port for address %s", address)
 
-					err = CheckPortAvailable(tc.protocol, address, port, log)
+					err = CheckPortAvailable(context.Background(), tc.protocol, address, port, log)
 					require.NoError(t, err, "Port %d on address %s is not available", port, address)
 
 					// Occupy the port
@@ -126,13 +136,13 @@ func TestCheckPortAvailable(t *testing.T) {
 						require.NoError(t, err, "Could not listen on TCP address %s", ap)
 					}
 
-					err = CheckPortAvailable(tc.protocol, address, port, log)
+					err = CheckPortAvailable(context.Background(), tc.protocol, address, port, log)
 					require.Error(t, err, "Port %d on address %s is available", port, address)
 
 					err = listener.Close()
 					require.NoError(t, err, "Could not close listener on port %d on address %s", port, address)
 
-					err = CheckPortAvailable(tc.protocol, address, port, log)
+					err = CheckPortAvailable(context.Background(), tc.protocol, address, port, log)
 					require.NoError(t, err, "Port %d on address %s is not available", port, address)
 				}(ip)
 			}
@@ -140,6 +150,225 @@ func TestCheckPortAvailable(t *testing.T) {
 			wg.Wait()
 		})
 	}
+}
+
+func TestConfiguredPortAllocationRangesSubtractsEphemeralOverlap(t *testing.T) {
+	ephemeralStart, ephemeralEnd, _ := GetEphemeralPortRange()
+	if ephemeralStart <= 1 {
+		t.Skip("ephemeral range starts too low to create a partially overlapping test range")
+	}
+
+	t.Setenv(DCP_PORT_ALLOCATION_RANGE, fmt.Sprintf("%d-%d", ephemeralStart-1, ephemeralStart+1))
+	portRangeOverlapReported = false
+
+	ranges, err := configuredPortAllocationRanges(false, log)
+
+	require.NoError(t, err)
+	for _, candidateRange := range ranges.ranges {
+		require.True(t, candidateRange.End < ephemeralStart || candidateRange.Start > ephemeralEnd)
+	}
+}
+
+func TestIndexedPortRangesNormalizeOverlappingRanges(t *testing.T) {
+	t.Parallel()
+
+	ranges := newIndexedPortRanges([]portRange{
+		{Start: 26020, End: 26022},
+		{Start: 26010, End: 26015},
+		{Start: 26014, End: 26018},
+		{Start: 26030, End: 26030},
+		{Start: 26019, End: 26025},
+	})
+
+	require.Equal(t, 17, ranges.Len())
+	require.Equal(t, []portRange{
+		{Start: 26010, End: 26025},
+		{Start: 26030, End: 26030},
+	}, ranges.ranges)
+
+	candidates := []int32{}
+	for index := 0; index < ranges.Len(); index++ {
+		candidate, ok := ranges.PortAt(index)
+		require.True(t, ok)
+		candidates = append(candidates, candidate)
+	}
+
+	require.Equal(t, []int32{
+		26010, 26011, 26012, 26013, 26014, 26015, 26016, 26017, 26018,
+		26019, 26020, 26021, 26022, 26023, 26024, 26025, 26030,
+	}, candidates)
+
+	_, beforeRangeOk := ranges.PortAt(-1)
+	_, afterRangeOk := ranges.PortAt(ranges.Len())
+	require.False(t, beforeRangeOk)
+	require.False(t, afterRangeOk)
+}
+
+// Verifies that stateStorePortAllocationScan visits every port in disjoint ranges without repeats.
+func TestPortAllocationCandidatesCoverRange(t *testing.T) {
+	t.Parallel()
+
+	ranges := newIndexedPortRanges([]portRange{
+		{Start: 26010, End: 26011},
+		{Start: 26020, End: 26022},
+	})
+
+	candidateIterator := newStateStorePortAllocationScan(ranges)
+	candidates := []int32{}
+	for {
+		candidate, ok := candidateIterator.Next()
+		if !ok {
+			break
+		}
+		candidates = append(candidates, candidate)
+	}
+
+	require.Len(t, candidates, 5)
+	require.ElementsMatch(t, []int32{26010, 26011, 26020, 26021, 26022}, candidates)
+}
+
+// Verifies that stateStorePortAllocationScan visits overlapping configured ranges only once.
+func TestPortAllocationCandidatesCoverOverlappingRangesOnce(t *testing.T) {
+	t.Parallel()
+
+	ranges := newIndexedPortRanges([]portRange{
+		{Start: 26010, End: 26015},
+		{Start: 26013, End: 26017},
+		{Start: 26020, End: 26021},
+	})
+
+	candidateIterator := newStateStorePortAllocationScan(ranges)
+	candidates := []int32{}
+	for {
+		candidate, ok := candidateIterator.Next()
+		if !ok {
+			break
+		}
+		candidates = append(candidates, candidate)
+	}
+
+	require.Len(t, candidates, 10)
+	require.ElementsMatch(t, []int32{26010, 26011, 26012, 26013, 26014, 26015, 26016, 26017, 26020, 26021}, candidates)
+}
+
+// Verifies that stateStorePortAllocationCandidateStep produces exhaustive walks for all tested range sizes.
+func TestPortAllocationCandidateStepCoversEveryIndex(t *testing.T) {
+	t.Parallel()
+
+	for total := 2; total <= 100; total++ {
+		step := stateStorePortAllocationCandidateStep(total)
+		seen := map[int]struct{}{}
+		for next := 0; next < total; next++ {
+			seen[(next*step)%total] = struct{}{}
+		}
+
+		require.Len(t, seen, total)
+	}
+}
+
+// Verifies that stateStorePortAllocationScan advances incrementally after success, wraps the range,
+// and resumes its independent random walk after a failed candidate without repeating attempts.
+func TestPortAllocationHybridScan(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name        string
+		offset      int
+		step        int
+		expected    []int32
+		unavailable map[int32]bool
+	}{
+		{
+			name: "incremental success and wraparound", offset: 2, step: 3,
+			expected: []int32{10002, 10003, 10004, 10000, 10001},
+		},
+		{
+			name: "random jump after initial failure", offset: 0, step: 2,
+			expected:    []int32{10000, 10002, 10003, 10004, 10001},
+			unavailable: map[int32]bool{10000: true},
+		},
+		{
+			name: "random cursor survives incremental allocations", offset: 0, step: 3,
+			expected:    []int32{10000, 10001, 10002, 10003, 10004},
+			unavailable: map[int32]bool{10002: true, 10004: true},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			scan := newStateStorePortAllocationScan(newIndexedPortRanges([]portRange{{Start: 10000, End: 10004}}))
+			scan.randomWalkCursor = testCase.offset
+			scan.randomWalkStep = testCase.step
+			for _, expected := range testCase.expected {
+				candidate, found := scan.Next()
+				require.True(t, found)
+				require.Equal(t, expected, candidate)
+				if testCase.unavailable[candidate] {
+					scan.excludedPorts[candidate] = struct{}{}
+				} else {
+					scan.RecordAllocation(candidate)
+					clear(scan.attemptedPorts)
+				}
+			}
+			_, hasCandidate := scan.Next()
+			require.False(t, hasCandidate)
+		})
+	}
+}
+
+func TestNormalizePortAllocationAddressUsesIPForLocalhost(t *testing.T) {
+	t.Parallel()
+
+	address, err := NormalizePortAllocationAddress(Localhost)
+
+	require.NoError(t, err)
+	require.NotEqual(t, Localhost, address)
+	_, parseErr := netip.ParseAddr(ToStandaloneAddress(address))
+	require.NoError(t, parseErr)
+}
+
+func TestNormalizePortAllocationAddressCanonicalizesIPs(t *testing.T) {
+	t.Parallel()
+
+	ipv4MappedAddress, ipv4MappedErr := NormalizePortAllocationAddress("[::ffff:127.0.0.1]")
+	require.NoError(t, ipv4MappedErr)
+	require.Equal(t, IPv4LocalhostDefaultAddress, ipv4MappedAddress)
+
+	ipv6Address, ipv6Err := NormalizePortAllocationAddress("[0:0:0:0:0:0:0:1]")
+	require.NoError(t, ipv6Err)
+	require.Equal(t, IPv6LocalhostDefaultAddress, ipv6Address)
+}
+
+func TestGetFreePortWithStateStoreUsesConfiguredRange(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 10*time.Second)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	require.NoError(t, usvc_io.EnsureRestrictedDirectory(filepath.Dir(storePath), osutil.PermissionOnlyOwnerReadWriteTraverse))
+	store, openErr := statestore.Open(ctx, statestore.Options{
+		Path:        storePath,
+		BusyTimeout: 500 * time.Millisecond,
+	})
+	require.NoError(t, openErr)
+	defer func() {
+		require.NoError(t, store.Close())
+	}()
+
+	owner, ownerErr := process.This()
+	require.NoError(t, ownerErr)
+	ConfigureStateStorePortAllocator(store, owner)
+	defer ConfigureStateStorePortAllocator(nil, process.ProcessHandle{})
+	t.Setenv(DCP_PORT_ALLOCATOR, portAllocatorModeStateStore)
+	t.Setenv(DCP_PORT_ALLOCATION_RANGE, "26010-26020")
+
+	port1, port1Err := GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+	port2, port2Err := GetFreePort(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+
+	require.NoError(t, port1Err)
+	require.NoError(t, port2Err)
+	require.NotEqual(t, port1, port2)
+	require.GreaterOrEqual(t, port1, int32(26010))
+	require.LessOrEqual(t, port1, int32(26020))
+	require.GreaterOrEqual(t, port2, int32(26010))
+	require.LessOrEqual(t, port2, int32(26020))
 }
 
 // Verifies that IpToString brackets native IPv6 addresses without depending on host network

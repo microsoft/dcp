@@ -24,6 +24,7 @@ import (
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/templating"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/ports"
 )
 
 var (
@@ -39,13 +40,15 @@ type logicalPortRequest struct {
 
 type logicalPortData struct {
 	templating.ServingPort
-	serviceRef string
-	protocol   commonapi.PortProtocol
+	serviceRef   string
+	protocol     commonapi.PortProtocol
+	reservations *networking.PortReservationSet
 }
 
 type logicalPortSelection struct {
 	allocatedPort int32
 	protocol      commonapi.PortProtocol
+	reservations  *networking.PortReservationSet
 }
 
 func logicalPortForSelection(owner ctrl_client.Object, request logicalPortRequest, selection logicalPortSelection) logicalPortData {
@@ -62,13 +65,13 @@ func logicalPortForSelection(owner ctrl_client.Object, request logicalPortReques
 		port = selection.allocatedPort
 	}
 	return logicalPortData{ServingPort: templating.ServingPort{Name: request.binding.Name, Address: address, Port: port},
-		serviceRef: serviceRef, protocol: selection.protocol}
+		serviceRef: serviceRef, protocol: selection.protocol, reservations: selection.reservations}
 }
 
 func logicalPortSelections(ports []logicalPortData, requests []logicalPortRequest) []logicalPortSelection {
 	var selected []logicalPortSelection
 	for portIndex, port := range ports {
-		selection := logicalPortSelection{protocol: port.protocol}
+		selection := logicalPortSelection{protocol: port.protocol, reservations: port.reservations}
 		if requests[portIndex].port == 0 {
 			selection.allocatedPort = port.Port
 		}
@@ -106,8 +109,14 @@ func logicalPortResourceName(owner ctrl_client.Object, name string) string {
 func prepareLogicalPorts(
 	ctx context.Context, apiClient ctrl_client.Client, reader ctrl_client.Reader, owner commonapi.DcpModelObject,
 	requested []logicalPortRequest, log logr.Logger,
-) ([]logicalPortData, error) {
-	prepared := make([]logicalPortData, 0, len(requested))
+) (prepared []logicalPortData, preparationErr error) {
+	reservations := &networking.PortReservationSet{}
+	defer func() {
+		if preparationErr != nil {
+			reservations.Release(ctx, log)
+		}
+	}()
+	prepared = make([]logicalPortData, 0, len(requested))
 	for _, request := range requested {
 		port := logicalPortForSelection(owner, request, logicalPortSelection{})
 		service := &apiv2.LogicalService{}
@@ -143,16 +152,31 @@ func prepareLogicalPorts(
 			return prepared, fmt.Errorf("%w: service %q configuration does not match the template", errLogicalServiceDependencyFailed, serviceName)
 		}
 		port.protocol = service.Spec.EffectiveProtocol()
+		port.reservations = reservations
 		if port.Port == 0 {
-			allocatedPort, allocationErr := networking.GetFreePort(port.protocol, port.Address, log)
+			allocatedPort, allocationErr := reservations.GetFreePort(ctx, port.protocol, port.Address, log)
 			if allocationErr != nil {
 				return prepared, fmt.Errorf("allocate logical port %q: %w", port.Name, allocationErr)
 			}
 			port.Port = allocatedPort
+		} else if _, processPort := owner.(*apiv2.LogicalProcess); processPort {
+			ip, ipErr := portReservationIP(port.Address)
+			if ipErr != nil {
+				return prepared, ipErr
+			}
+			if reserveErr := reservations.Reserve(ctx, ports.Binding{Protocol: string(port.protocol), IP: ip, Port: port.Port}, log); reserveErr != nil {
+				return prepared, fmt.Errorf("reserve logical port %q: %w", port.Name, reserveErr)
+			}
 		}
 		prepared = append(prepared, port)
 	}
 	return prepared, nil
+}
+
+func releaseLogicalPortReservations(ctx context.Context, selections []logicalPortSelection, log logr.Logger) {
+	for _, selection := range selections {
+		selection.reservations.Release(ctx, log)
+	}
 }
 
 func servingPorts(ports []logicalPortData) []templating.ServingPort {
