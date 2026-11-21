@@ -215,11 +215,7 @@ func (wco *WslcCliOrchestrator) PullImage(ctx context.Context, options container
 		return "", errors.Join(runErr, normalizeCliErrors(errBuf, imageNotFoundMatch))
 	}
 
-	imageID, inspectErr := containers.InspectPulledImage(ctx, wco, imageReference)
-	if inspectErr != nil {
-		return "", fmt.Errorf("inspect pulled image %q: %w", imageReference, inspectErr)
-	}
-	return imageID, nil
+	return imageReference, nil
 }
 
 func (wco *WslcCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {

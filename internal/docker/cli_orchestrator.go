@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -523,11 +524,7 @@ func (dco *DockerCliOrchestrator) PullImage(ctx context.Context, options contain
 		return "", errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch))
 	}
 
-	imageID, inspectErr := containers.InspectPulledImage(ctx, dco, imageReference)
-	if inspectErr != nil {
-		return "", fmt.Errorf("inspect pulled image %q: %w", imageReference, inspectErr)
-	}
-	return imageID, nil
+	return imageReference, nil
 }
 
 func (dco *DockerCliOrchestrator) RemoveImages(ctx context.Context, options containers.RemoveImagesOptions) ([]string, error) {
@@ -657,6 +654,8 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 	if options.AttachTerminal {
 		// Attach a TTY (-t) and keep STDIN open (-i) if a terminal is requested
 		args = append(args, "-it")
+	} else if options.OpenStdin {
+		args = append(args, "--interactive")
 	}
 
 	args = append(args, options.RunArgs...)
@@ -726,6 +725,9 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 
 func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
 	args := []string{"exec"}
+	if options.StdInStream != nil {
+		args = append(args, "--interactive")
+	}
 
 	if options.WorkingDirectory != "" {
 		args = append(args, "--workdir", options.WorkingDirectory)
@@ -748,6 +750,7 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 
 	cmd := makeDockerCommand(args...)
 
+	cmd.Stdin = options.StdInStream
 	cmd.Stdout = options.StdOutStream
 	cmd.Stderr = options.StdErrStream
 	cmd.WaitDelay = 2 * time.Second
@@ -871,6 +874,42 @@ func (dco *DockerCliOrchestrator) StartContainers(ctx context.Context, options c
 	return started, err
 }
 
+func (dco *DockerCliOrchestrator) StartAttachedContainer(ctx context.Context, options containers.StartAttachedContainerOptions) (<-chan int32, error) {
+	if options.Container == "" {
+		return nil, fmt.Errorf("must specify a container")
+	}
+	args := []string{"container", "start", "--attach"}
+	if options.StdInStream != nil {
+		args = append(args, "--interactive")
+	}
+	args = append(args, options.Container)
+
+	cmd := makeDockerCommand(args...)
+	cmd.Stdin = options.StdInStream
+	cmd.Stdout = options.StdOutStream
+	cmd.Stderr = options.StdErrStream
+	cmd.WaitDelay = 2 * time.Second
+
+	exitCh := make(chan int32, 1)
+	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
+		if err != nil && !errors.Is(err, context.Canceled) {
+			dco.log.Error(err, "Unexpected error during attached container start command", "Command", cmd.String())
+		}
+		exitCh <- exitCode
+		close(exitCh)
+	}
+
+	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
+	_, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
+	if err != nil {
+		close(exitCh)
+		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", "StartAttachedContainer"))
+	}
+	startWaitForProcessExit()
+
+	return exitCh, nil
+}
+
 func (dco *DockerCliOrchestrator) StopContainers(ctx context.Context, options containers.StopContainersOptions) ([]string, error) {
 	if len(options.Containers) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
@@ -928,13 +967,6 @@ func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, options 
 }
 
 func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
-	args := []string{"container", "cp"}
-
-	// Read the tar file to copy from standard input
-	args = append(args, "-a=false", "-")
-
-	args = append(args, options.Container+":/")
-
 	buffer, archiveErr := containers.CreateFilesArchive(ctx, dco.log, options)
 	if archiveErr != nil {
 		return archiveErr
@@ -944,9 +976,16 @@ func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options conta
 		return nil
 	}
 
-	cmd := makeDockerCommand(args...)
-	cmd.Stdin = buffer
-	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "CopyFile", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	return dco.CopyFiles(ctx, containers.CopyFilesOptions{Container: options.Container, Destination: "/", Archive: buffer})
+}
+
+func (dco *DockerCliOrchestrator) CopyFiles(ctx context.Context, options containers.CopyFilesOptions) error {
+	if options.Container == "" || !path.IsAbs(options.Destination) || options.Archive == nil {
+		return fmt.Errorf("container, absolute destination, and archive are required")
+	}
+	cmd := makeDockerCommand("container", "cp", "-a=false", "-", options.Container+":"+options.Destination)
+	cmd.Stdin = options.Archive
+	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "CopyFile", cmd, nil, nil, containers.CopyFilesTimeout)
 	if err != nil {
 		return errors.Join(err, normalizeCliErrors(errBuf))
 	}

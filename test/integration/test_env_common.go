@@ -9,11 +9,21 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/statestore"
 )
 
 type IncludedController uint32
+
+var testReconciliationTiming = controllers.ReconciliationTiming{
+	StandardDelay:    200 * time.Millisecond,
+	RetryDelay:       200 * time.Millisecond,
+	MonitoringDelay:  time.Second,
+	DebounceDelay:    20 * time.Millisecond,
+	MaxDebounceDelay: 200 * time.Millisecond,
+}
 
 const (
 	ExecutableController IncludedController = 1 << iota
@@ -36,6 +46,7 @@ const (
 	PhysicalContainerExecController
 	LogicalContainerExecController
 	LogicalServiceController
+	ProjectController
 	NoControllers  IncludedController = 0
 	AllControllers IncludedController = ^NoControllers
 )

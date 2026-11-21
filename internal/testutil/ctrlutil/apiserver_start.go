@@ -36,6 +36,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/apiserver"
 	"github.com/microsoft/dcp/internal/containers"
+	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/containers/runtimes"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/dcppaths"
@@ -234,6 +235,9 @@ func StartApiServerWithOptions(
 		}
 		info.ContainerOrchestrator = tco
 		dcpArgs = append(dcpArgs, "--test-container-orchestrator-socket", tco.GetSocketFilePath())
+	}
+	if (options.Flags & ApiServerUseTrueContainerOrchestrator) != 0 {
+		dcpArgs = append(dcpArgs, container_flags.GetRuntimeFlag(), info.ContainerOrchestrator.Name())
 	}
 
 	// Do not use exec.CommandContext() because on Unix-like OSes it will kill the process DEAD

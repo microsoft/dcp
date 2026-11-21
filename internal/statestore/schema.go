@@ -219,7 +219,7 @@ func (s *Store) recoverDirtySchemaVersion(
 	}
 
 	var applied bool
-	probeRow := s.db.QueryRowContext(ctx, probes[probeIndex].appliedQuery)
+	probeRow := s.db.Load().QueryRowContext(ctx, probes[probeIndex].appliedQuery)
 	if scanErr := probeRow.Scan(&applied); scanErr != nil {
 		return 0, fmt.Errorf("could not determine whether dirty schema version %d was applied: %w", version, scanErr)
 	}
@@ -246,7 +246,7 @@ func (s *Store) recoverDirtySchemaVersion(
 
 // validateStoredSchemaMajorVersion recovers a dirty major version and rejects versions with no supported migration path.
 func (s *Store) validateStoredSchemaMajorVersion(ctx context.Context) error {
-	version, found, dirty, readErr := readSchemaMajorVersion(ctx, s.db)
+	version, found, dirty, readErr := readSchemaMajorVersion(ctx, s.db.Load())
 	if readErr != nil {
 		return readErr
 	}
@@ -271,7 +271,7 @@ func (s *Store) validateStoredSchemaMajorVersion(ctx context.Context) error {
 
 // importSchemaVersion2 transfers the already-applied workload migration into major 1's minor stream.
 func (s *Store) importSchemaVersion2(ctx context.Context, busyTimeout time.Duration) error {
-	version, found, dirty, readErr := readSchemaMajorVersion(ctx, s.db)
+	version, found, dirty, readErr := readSchemaMajorVersion(ctx, s.db.Load())
 	if readErr != nil {
 		return readErr
 	}
@@ -284,7 +284,7 @@ func (s *Store) importSchemaVersion2(ctx context.Context, busyTimeout time.Durat
 
 	minorVersion, minorFound, _, minorVersionErr := readSchemaVersion(
 		ctx,
-		s.db,
+		s.db.Load(),
 		schemaMajorVersion1Migration.minorTableName,
 	)
 	if minorVersionErr != nil {
@@ -311,7 +311,7 @@ func (s *Store) importSchemaVersion2(ctx context.Context, busyTimeout time.Durat
 		`UPDATE %s SET version = ? WHERE version = ? AND dirty = 0`,
 		quoteSQLiteIdentifier(schemaMajorMigrationTableName),
 	)
-	updateResult, updateErr := s.db.ExecContext(
+	updateResult, updateErr := s.db.Load().ExecContext(
 		ctx,
 		updateQuery,
 		legacySchemaVersion2MajorVersion,
@@ -336,7 +336,7 @@ func quoteSQLiteIdentifier(identifier string) string {
 
 // runSchemaMigrations applies each major's compatible stream before advancing to the next major.
 func (s *Store) runSchemaMigrations(ctx context.Context, busyTimeout time.Duration) error {
-	version, found, dirty, readErr := readSchemaMajorVersion(ctx, s.db)
+	version, found, dirty, readErr := readSchemaMajorVersion(ctx, s.db.Load())
 	if readErr != nil {
 		return readErr
 	}
@@ -398,7 +398,7 @@ func (s *Store) runSchemaMinorMigrations(
 	busyTimeout time.Duration,
 	migration schemaMajorMigration,
 ) error {
-	databaseVersion, found, dirty, versionErr := readSchemaVersion(ctx, s.db, migration.minorTableName)
+	databaseVersion, found, dirty, versionErr := readSchemaVersion(ctx, s.db.Load(), migration.minorTableName)
 	if versionErr != nil {
 		return fmt.Errorf("could not read schema major %d minor version: %w", migration.version, versionErr)
 	}

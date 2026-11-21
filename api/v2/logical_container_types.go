@@ -393,6 +393,20 @@ func (c *LogicalContainer) GetLogSource() *LogSource {
 	return c.Status.RuntimeLogs
 }
 
+// GetLogStreams treats startup as complete when no inline image acquisition is owned or the container has started or finished.
+func (c *LogicalContainer) GetLogStreams() LogStreams {
+	streams := LogStreams{
+		OutputSupported: true, StartupSupported: true,
+		Runtime: c.Status.RuntimeLogs, Startup: c.Status.StartupLogs,
+		Complete: c.Status.Phase == LogicalContainerPhaseExited || c.Status.Phase == LogicalContainerPhaseFailed,
+	}
+	if streams.Startup == nil && (c.Spec.Container == nil || c.Spec.Container.Image == nil ||
+		!c.Status.StartedAt.IsZero() || streams.Complete) {
+		streams.Startup = &LogSource{Complete: true}
+	}
+	return streams
+}
+
 func (*LogicalContainer) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{&LogicalContainerLogResource{}}
 }
@@ -557,6 +571,7 @@ func init() {
 }
 
 var _ apiserver_resource.Object = (*LogicalContainer)(nil)
+var _ LogStreamingResource = (*LogicalContainer)(nil)
 var _ apiserver_resource.ObjectWithGenericSubResource = (*LogicalContainer)(nil)
 var _ apiserver_resource.GenericSubResource = (*LogicalContainerLogResource)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*LogicalContainer)(nil)

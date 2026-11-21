@@ -7,17 +7,22 @@ package io
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"sync"
 )
 
+// ErrBufferFull indicates that a buffered pipe exceeded its unread-data limit.
+var ErrBufferFull = errors.New("buffered pipe capacity exceeded")
+
 type bufferedPipe struct {
-	lock    *sync.Mutex
-	cond    *sync.Cond
-	data    *bytes.Buffer
-	maxSize uint // 0 means unlimited
-	rerr    error
-	werr    error
+	lock           *sync.Mutex
+	cond           *sync.Cond
+	data           *bytes.Buffer
+	maxSize        uint // 0 means unlimited
+	failOnOverflow bool
+	rerr           error
+	werr           error
 }
 
 type BufferedPipeReader struct {
@@ -83,6 +88,15 @@ func (bpw *BufferedPipeWriter) Write(p []byte) (int, error) {
 
 	if bpw.werr != nil {
 		return 0, bpw.werr
+	}
+	if bpw.rerr != nil {
+		return 0, io.ErrClosedPipe
+	}
+	if bpw.failOnOverflow && uint(len(p)) > bpw.maxSize-uint(bpw.data.Len()) {
+		bpw.rerr, bpw.werr = ErrBufferFull, ErrBufferFull
+		bpw.data = new(bytes.Buffer)
+		bpw.cond.Broadcast()
+		return 0, ErrBufferFull
 	}
 
 	// If no max size is set, write all data at once
@@ -181,6 +195,18 @@ func NewBufferedPipeWithMaxSize(maxSize uint) (io.ReadCloser, io.WriteCloser) {
 		bufferedPipe: &p,
 	}
 	return &reader, &writer
+}
+
+// NewBufferedPipeWithOverflowLimit buffers up to maxSize unread bytes without blocking writes.
+// A write exceeding the limit fails both ends with ErrBufferFull and discards pending data.
+// A zero limit permits no unread bytes.
+func NewBufferedPipeWithOverflowLimit(maxSize uint) (io.ReadCloser, io.WriteCloser) {
+	p := bufferedPipe{
+		data: new(bytes.Buffer), lock: new(sync.Mutex),
+		maxSize: maxSize, failOnOverflow: true,
+	}
+	p.cond = sync.NewCond(p.lock)
+	return &BufferedPipeReader{bufferedPipe: &p}, &BufferedPipeWriter{bufferedPipe: &p}
 }
 
 var _ io.ReadCloser = (*BufferedPipeReader)(nil)

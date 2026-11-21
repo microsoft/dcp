@@ -148,6 +148,10 @@ type Executor interface {
 	// Checks that the process identified by the given ProcessHandle is running.
 	CheckProcessRunning(handle ProcessHandle) error
 
+	// WaitForProcessExit observes completion of the captured identity without taking stop ownership.
+	// Cancellation ends observation, not the process. Success does not imply an available exit code.
+	WaitForProcessExit(ctx context.Context, handle ProcessHandle) error
+
 	// Resolves a process ID into a handle for a currently running process.
 	// The returned handle always carries a nonzero identity time on success.
 	// If the process does not exist, the returned error satisfies IsProcessGoneErr().

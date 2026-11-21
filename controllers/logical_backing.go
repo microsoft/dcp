@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -15,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -24,6 +26,62 @@ import (
 type logicalChildIdentity struct {
 	resource schema.GroupVersionResource
 	name     string
+}
+
+var errLogicalNetworkFailed = errors.New("logical network failed")
+
+// resolveLogicalContainerNetworks translates logical network declarations to their published physical references.
+func resolveLogicalContainerNetworks(
+	ctx context.Context, reader ctrl_client.Reader, namespace string, networks []apiv2.LogicalContainerNetworkConnectionConfig,
+) (bool, []apiv2.ContainerNetworkConnectionConfig, string, error) {
+	var resolved []apiv2.ContainerNetworkConnectionConfig
+	var pendingMessage string
+	var resolutionErr error
+	for _, requested := range networks {
+		network := &apiv2.LogicalContainerNetwork{}
+		networkName := commonapi.AsNamespacedName(requested.NetworkRef, namespace)
+		getErr := reader.Get(ctx, networkName, network)
+		if apierrors.IsNotFound(getErr) {
+			if pendingMessage == "" {
+				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q does not exist.", networkName)
+			}
+			continue
+		}
+		if getErr != nil {
+			resolutionErr = errors.Join(resolutionErr, fmt.Errorf("get LogicalContainerNetwork %q: %w", networkName, getErr))
+			continue
+		}
+		if network.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed {
+			message := fmt.Sprintf("LogicalContainerNetwork %q failed.", networkName)
+			if failure := apimeta.FindStatusCondition(network.Status.Conditions, string(apiv2.ConditionReady)); failure != nil {
+				message = fmt.Sprintf("LogicalContainerNetwork %q reports %s: %s", networkName, failure.Reason, failure.Message)
+			}
+			resolutionErr = errors.Join(resolutionErr, fmt.Errorf("%w: %s", errLogicalNetworkFailed, message))
+			continue
+		}
+		if !network.DeletionTimestamp.IsZero() {
+			if pendingMessage == "" {
+				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q is terminating.", networkName)
+			}
+			continue
+		}
+		if network.Status.PhysicalNetworkRef == "" {
+			if pendingMessage == "" {
+				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q has not published its backing physical network reference.", networkName)
+			}
+			continue
+		}
+		resolved = append(resolved, apiv2.ContainerNetworkConnectionConfig{
+			NetworkRef: network.Status.PhysicalNetworkRef, Aliases: slices.Clone(requested.Aliases),
+		})
+	}
+	if resolutionErr != nil {
+		return false, nil, "", resolutionErr
+	}
+	if pendingMessage != "" {
+		return false, nil, pendingMessage, nil
+	}
+	return true, resolved, "", nil
 }
 
 func logicalBackingStatusMessage(kind string, conditions []metav1.Condition) string {
@@ -87,6 +145,41 @@ func resolveUnobservedLogicalChildren[T commonapi.ObjectStruct, PT commonapi.POb
 
 // LogicalBackingFinalizer retains an owned physical API object until its logical owner observes cleanup.
 const LogicalBackingFinalizer = "usvc-dev.developer.microsoft.com/logical-backing"
+
+// createLogicalBacking declares an owned physical resource and validates AlreadyExists collisions.
+// validateExisting checks immutable inputs where an earlier committed declaration is not authoritative.
+func createLogicalBacking[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
+	ctx context.Context, client ctrl_client.Client, reader ctrl_client.Reader, owner ctrl_client.Object,
+	child PT, physicalFinalizer string, expectedUID *types.UID, pending *unobservedLogicalChildren,
+	validateExisting func(PT) error,
+) (PT, error) {
+	InitializeLogicalBackingFinalizers(child, physicalFinalizer)
+	if ownerErr := ctrl.SetControllerReference(owner, child, client.Scheme()); ownerErr != nil {
+		return nil, fmt.Errorf("set physical resource owner: %w", ownerErr)
+	}
+	pending.recordCreateAttempt(child)
+	createErr := client.Create(ctx, child)
+	if child.GetUID() != "" {
+		*expectedUID = child.GetUID()
+	}
+	if createErr == nil || !apierrors.IsAlreadyExists(createErr) {
+		return child, createErr
+	}
+	existing := PT(new(T))
+	if lookupErr := reader.Get(ctx, ctrl_client.ObjectKeyFromObject(child), existing); lookupErr != nil {
+		return child, fmt.Errorf("get existing physical resource: %w", lookupErr)
+	}
+	if identityErr := validatePhysicalResourceIdentity(owner, existing, *expectedUID); identityErr != nil {
+		return nil, fmt.Errorf("%v: %w", identityErr, createErr)
+	}
+	if validateExisting != nil {
+		if validationErr := validateExisting(existing); validationErr != nil {
+			return nil, fmt.Errorf("%v: %w", validationErr, createErr)
+		}
+	}
+	*expectedUID = existing.GetUID()
+	return existing, nil
+}
 
 func validatePhysicalResourceIdentity(owner, physical ctrl_client.Object, expectedUID types.UID) error {
 	if !metav1.IsControlledBy(physical, owner) || (expectedUID != "" && physical.GetUID() != expectedUID) ||

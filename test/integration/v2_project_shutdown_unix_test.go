@@ -1,0 +1,86 @@
+//go:build !windows
+
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+package integration_test
+
+import (
+	"errors"
+	"sync"
+	"syscall"
+	"testing"
+
+	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+
+	apiv2 "github.com/microsoft/dcp/api/v2"
+	internaltest "github.com/microsoft/dcp/internal/testutil"
+	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/testutil"
+)
+
+// Verifies that ProjectProcess stops a suspended adapter after bounded DAP shutdown without stopping
+// an independently launched target reported by that adapter.
+func TestV2ProjectProcessCleansAdapterWithoutStoppingReportedTarget(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	namespace := createV2ExecNamespace(t, ctx, client, "v2-project-shutdown-order")
+	tool, toolErr := internaltest.GetTestToolPath("delay")
+	require.NoError(t, toolErr)
+	ownerExecutor := process.NewOSExecutor(logr.Discard())
+	t.Cleanup(ownerExecutor.Dispose)
+	target := startProjectTarget(t, ctx, ownerExecutor, tool)
+	project := &apiv2.ProjectProcess{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectProcessSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, Process: apiv2.ProjectProcessTemplate{LogicalProcessConfig: apiv2.LogicalProcessConfig{ExecutablePath: "adapter-started"}},
+			DebugAdapter: &apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{tool, "--dap-stdio"}}}}
+	require.NoError(t, client.Create(ctx, project))
+	waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
+	connection, connectionErr := connectProjectDebug(t, ctx, clientConfig, project)
+	require.NoError(t, connectionErr)
+	defer connection.Close()
+	reportProjectTarget(t, connection, target.Pid)
+	running := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
+		return current.Status.Debug != nil && len(current.Status.Debug.Executions) == 1 &&
+			current.Status.Debug.Executions[0].PID != nil && len(current.Status.Debug.Sessions) == 1 &&
+			len(current.Status.Debug.Sessions[0].Processes) == 1, nil
+	})
+	entry := running.Status.Debug.Executions[0]
+	pid, pidErr := process.Int64_ToPidT(*entry.PID)
+	require.NoError(t, pidErr)
+	adapter := process.NewHandle(pid, entry.IdentityTimestamp.Time)
+	proc, procErr := adapter.OsProcess()
+	require.NoError(t, procErr)
+	require.NoError(t, proc.Signal(syscall.SIGSTOP))
+	require.NoError(t, proc.Release())
+	resume := sync.OnceFunc(func() {
+		if process.IsProcessGoneErr(ownerExecutor.CheckProcessRunning(adapter)) {
+			return
+		}
+		resumable, resumeErr := adapter.OsProcess()
+		if process.IsProcessGoneErr(resumeErr) {
+			return
+		}
+		require.NoError(t, resumeErr)
+		if resumeErr == nil {
+			signalErr := resumable.Signal(syscall.SIGCONT)
+			require.True(t, signalErr == nil || errors.Is(signalErr, syscall.ESRCH), "could not resume adapter: %v", signalErr)
+			require.NoError(t, resumable.Release())
+		}
+	})
+	t.Cleanup(resume)
+	require.NoError(t, client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
+	stopped := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseStopped)
+	require.True(t, process.IsProcessGoneErr(ownerExecutor.CheckProcessRunning(adapter)))
+	require.NoError(t, ownerExecutor.CheckProcessRunning(target))
+	require.Equal(t, apiv2.ProjectDebugProcessRunning, stopped.Status.Debug.Sessions[0].Processes[0].Observation.Phase)
+	require.NoError(t, client.Delete(ctx, project))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, project)
+}

@@ -10,8 +10,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +23,7 @@ import (
 	ct "github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/commandstreams"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
@@ -36,6 +37,44 @@ const (
 	actionPoll      = 200 * time.Millisecond
 	pollImmediately = true // Don't wait before polling for the first time
 )
+
+// Verifies that Docker copies caller-owned tar streams to the selected container destination
+// and surfaces command launch failures.
+func TestCopyFilesArchive(t *testing.T) {
+	t.Parallel()
+	commandstreams.VerifyTarCopy(t, []string{"docker"}, func(ctx context.Context, executor process.Executor, archive io.Reader) error {
+		orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
+		return orchestrator.CopyFiles(ctx, ct.CopyFilesOptions{Container: "pinned-id", Destination: "/workspace", Archive: archive})
+	})
+}
+
+// Verifies that Docker exec forwards caller-owned stdin without a TTY, preserves raw duplex IO,
+// keeps stderr separate and retains its existing completion, cancellation and startup-failure behavior.
+func TestExecContainerStreams(t *testing.T) {
+	t.Parallel()
+	commandstreams.VerifyCommandStreams(t, []string{"docker", "exec"}, true, []string{"pinned-id", "adapter", "--flag"},
+		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
+			orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
+			return orchestrator.ExecContainer(ctx, ct.ExecContainerOptions{
+				Container: "pinned-id", Command: "adapter", Args: []string{"--flag"}, StdInStream: stdin,
+				StreamCommandOptions: ct.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
+			})
+		})
+}
+
+// Verifies that Docker attached start forwards caller-owned stdin with --interactive only when supplied, keeps stderr
+// separate, and reports completion, cancellation and startup failure like other attached commands.
+func TestStartAttachedContainerStreams(t *testing.T) {
+	t.Parallel()
+	commandstreams.VerifyCommandStreams(t, []string{"docker", "container", "start", "--attach"}, true, []string{"pinned-id"},
+		func(ctx context.Context, executor process.Executor, stdin io.Reader, stdout, stderr io.WriteCloser) (<-chan int32, error) {
+			orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
+			return orchestrator.StartAttachedContainer(ctx, ct.StartAttachedContainerOptions{
+				Container: "pinned-id", StdInStream: stdin,
+				StreamCommandOptions: ct.StreamCommandOptions{StdOutStream: stdout, StdErrStream: stderr},
+			})
+		})
+}
 
 func TestExpectStringsSingleLine(t *testing.T) {
 	b := bytes.Buffer{}
@@ -712,9 +751,8 @@ func TestBuildImageUsesIIDFile(t *testing.T) {
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 
-// Verifies that PullImage captures human-readable output and retries transient identity inspection
-// failures without repeating the successful pull.
-func TestPullImageStreamsOutputAndRetriesInspection(t *testing.T) {
+// Verifies that PullImage captures human-readable output and returns the pulled reference without inspection.
+func TestPullImageStreamsOutputWithoutInspection(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
@@ -737,20 +775,6 @@ func TestPullImageStreamsOutputAndRetriesInspection(t *testing.T) {
 		},
 	})
 	inspectCommand := []string{"docker", "image", "inspect", "--format", "{{json .}}", "example.test/test/image:latest"}
-	var inspectionAttempts atomic.Int32
-	executor.InstallAutoExecution(internal_testutil.AutoExecution{
-		Condition: internal_testutil.ProcessSearchCriteria{Command: inspectCommand},
-		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
-			if inspectionAttempts.Add(1) <= 2 {
-				_, stderrErr := execution.Cmd.Stderr.Write([]byte("Error: No such image: example.test/test/image:latest\n"))
-				require.NoError(t, stderrErr)
-				return 1
-			}
-			_, writeErr := execution.Cmd.Stdout.Write([]byte("{\"Id\":\"sha256:image-id\"}\n"))
-			require.NoError(t, writeErr)
-			return 0
-		},
-	})
 	var output bytes.Buffer
 	orchestrator := NewDockerCliOrchestrator(testr.New(t), executor)
 	imageID, pullErr := orchestrator.PullImage(ctx, ct.PullImageOptions{
@@ -759,9 +783,9 @@ func TestPullImageStreamsOutputAndRetriesInspection(t *testing.T) {
 	})
 
 	require.NoError(t, pullErr)
-	require.Equal(t, "sha256:image-id", imageID)
+	require.Equal(t, "example.test/test/image:latest", imageID)
 	require.Equal(t, "layer: Pull complete\n", output.String())
-	require.Len(t, executor.FindAll(inspectCommand, "", nil), 3)
+	require.Empty(t, executor.FindAll(inspectCommand, "", nil))
 	require.Len(t, executor.FindAll(expectedCommand, "", nil), 1)
 }
 

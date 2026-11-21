@@ -732,6 +732,8 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 	}
 }
 
+// Verifies that the Executable controller records the configured workload ID in the persistent process record
+// of a started persistent Executable.
 func TestPersistentExecutableRecordsWorkloadID(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -763,8 +765,17 @@ func TestPersistentExecutableRecordsWorkloadID(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	record, getErr := teInfo.StateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
-	require.NoError(t, getErr)
+	// The controller records the persistent process after observing a successful start, which may follow the process start.
+	var record *statestore.PersistentProcessRecord
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(pollCtx context.Context) (bool, error) {
+		var getErr error
+		record, getErr = teInfo.StateStore.GetPersistentProcess(pollCtx, exe.GetLeaseKey())
+		if errors.Is(getErr, statestore.ErrPersistentProcessNotFound) {
+			return false, nil
+		}
+		return getErr == nil, getErr
+	})
+	require.NoError(t, err)
 	require.Equal(t, commonapi.WorkloadID("workload-a"), record.WorkloadID)
 }
 

@@ -37,26 +37,22 @@ import (
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
-type logSourceProvider interface {
-	GetLogSource() *apiv2.LogSource
-}
-
 type resourceSnapshot struct {
+	apiv2.LogStreams
 	ownerUID types.UID
 	systemID string
-	runtime  *apiv2.LogSource
-	startup  *apiv2.LogSource
-	complete bool
 }
 
 type logSession struct {
-	source      string
-	capture     apiv2.LogSource
-	cancel      context.CancelFunc
-	done        chan struct{}
-	writer      *usvc_io.FollowWriter
-	finishing   bool
-	destination io.Writer
+	source  string
+	capture apiv2.LogSource
+	cancel  context.CancelFunc
+	done    chan struct{}
+	writer  *usvc_io.FollowWriter
+	// Closed when the runtime capture backing the session has written all output; nil for file-backed sources.
+	captureClosed <-chan struct{}
+	finishing     bool
+	destination   io.Writer
 }
 
 type resourceLogStreamer struct {
@@ -79,62 +75,23 @@ func NewLogStreamer(log logr.Logger) *resourceLogStreamer {
 }
 
 func snapshot(obj resource.Object) (resourceSnapshot, error) {
-	switch network := obj.(type) {
-	case *apiv2.PhysicalContainerNetwork:
-		return resourceSnapshot{ownerUID: network.UID, systemID: network.GetResourceId()}, nil
-	case *apiv2.LogicalContainerNetwork:
-		return resourceSnapshot{ownerUID: network.UID, systemID: network.GetResourceId()}, nil
-	}
-	provider, supported := obj.(logSourceProvider)
+	streaming, supported := obj.(apiv2.LogStreamingResource)
 	if !supported {
 		return resourceSnapshot{}, fmt.Errorf("unsupported log resource %T", obj)
 	}
-	result := resourceSnapshot{ownerUID: obj.GetObjectMeta().UID, runtime: provider.GetLogSource()}
-	switch container := obj.(type) {
-	case *apiv2.PhysicalContainer:
-		result.systemID = container.GetResourceId()
-		result.complete = result.runtime.Complete
-	case *apiv2.LogicalContainer:
-		result.startup = container.Status.StartupLogs
-		result.systemID = container.GetResourceId()
-		result.complete = container.Status.Phase == apiv2.LogicalContainerPhaseExited || container.Status.Phase == apiv2.LogicalContainerPhaseFailed
-		if result.startup == nil && (container.Spec.Container == nil || container.Spec.Container.Image == nil ||
-			!container.Status.StartedAt.IsZero() || result.complete) {
-			result.startup = &apiv2.LogSource{Complete: true}
-		}
-	case *apiv2.PhysicalContainerImage:
-		result.systemID = container.GetResourceId()
-		result.complete = result.runtime.Complete
-	case *apiv2.PhysicalProcess:
-		result.systemID = container.GetResourceId()
-		result.runtime = container.GetLogSource()
-		result.complete = result.runtime.Complete
-	case *apiv2.LogicalProcess:
-		result.systemID = container.GetResourceId()
-		result.runtime = container.Status.RuntimeLogs
-		result.complete = container.Status.Phase == apiv2.LogicalProcessPhaseExited ||
-			container.Status.Phase == apiv2.LogicalProcessPhaseFailed
-	case *apiv2.PhysicalContainerExec:
-		result.systemID = container.GetResourceId()
-		result.runtime = container.GetLogSource()
-		result.complete = result.runtime.Complete
-	case *apiv2.LogicalContainerExec:
-		result.systemID = container.GetResourceId()
-		result.runtime = container.Status.RuntimeLogs
-		result.complete = container.Status.Phase == apiv2.LogicalContainerExecPhaseExited ||
-			container.Status.Phase == apiv2.LogicalContainerExecPhaseFailed
-	default:
-		return resourceSnapshot{}, fmt.Errorf("unsupported log resource %T", obj)
-	}
-	return result, nil
+	return resourceSnapshot{
+		LogStreams: streaming.GetLogStreams(),
+		ownerUID:   streaming.GetObjectMeta().UID,
+		systemID:   streaming.GetResourceId(),
+	}, nil
 }
 
 func (state resourceSnapshot) logSource(source string) *apiv2.LogSource {
 	switch source {
 	case string(apiv2.LogStreamSourceStartupStdout), string(apiv2.LogStreamSourceStartupStderr):
-		return state.startup
+		return state.Startup
 	default:
-		return state.runtime
+		return state.Runtime
 	}
 }
 
@@ -146,27 +103,15 @@ func (streamer *resourceLogStreamer) Preflight(obj resource.Object, opts *apiv2.
 	if snapshotErr != nil {
 		return apierrors.NewInternalError(snapshotErr)
 	}
-	switch obj.(type) {
-	case *apiv2.PhysicalContainerNetwork, *apiv2.LogicalContainerNetwork:
-		if opts.Source != string(apiv2.LogStreamSourceSystem) {
-			return apierrors.NewBadRequest("network log source must be system")
+	switch opts.Source {
+	case string(apiv2.LogStreamSourceSystem):
+	case string(apiv2.LogStreamSourceStartupStdout), string(apiv2.LogStreamSourceStartupStderr):
+		if !state.StartupSupported {
+			return apierrors.NewBadRequest(fmt.Sprintf("%s does not support startup log sources", obj.GetGroupVersionResource().Resource))
 		}
-	}
-	startup := opts.Source == string(apiv2.LogStreamSourceStartupStdout) || opts.Source == string(apiv2.LogStreamSourceStartupStderr)
-	if _, physical := obj.(*apiv2.PhysicalContainer); physical && startup {
-		return apierrors.NewBadRequest("physical container log sources are stdout, stderr, and system")
-	}
-	if _, image := obj.(*apiv2.PhysicalContainerImage); image && startup {
-		return apierrors.NewBadRequest("image log sources are stdout, stderr, and system")
-	}
-	switch obj.(type) {
-	case *apiv2.LogicalProcess, *apiv2.PhysicalProcess:
-		if startup {
-			return apierrors.NewBadRequest("process log sources are stdout, stderr, and system")
-		}
-	case *apiv2.LogicalContainerExec, *apiv2.PhysicalContainerExec:
-		if startup {
-			return apierrors.NewBadRequest("execution log sources are stdout, stderr, and system")
+	default:
+		if !state.OutputSupported {
+			return apierrors.NewBadRequest(fmt.Sprintf("%s supports only the system log source", obj.GetGroupVersionResource().Resource))
 		}
 	}
 	capture := state.logSource(opts.Source)
@@ -219,7 +164,7 @@ func (streamer *resourceLogStreamer) StreamLogs(
 	system := opts.Source == string(apiv2.LogStreamSourceSystem)
 	capture := state.logSource(opts.Source)
 	if !system && (capture == nil || !capture.Available) {
-		if state.complete || (capture != nil && capture.Complete) {
+		if state.Complete || (capture != nil && capture.Complete) {
 			return logstream.ResourceStreamStatusDone, nil, nil
 		}
 		return logstream.ResourceStreamStatusNotReady, nil, nil
@@ -249,6 +194,7 @@ func (streamer *resourceLogStreamer) StreamLogs(
 
 	path := logger.GetResourceLogPath(state.systemID)
 	releaseCapture := func() {}
+	var captureClosed <-chan struct{}
 	if !system {
 		path = capture.StdoutFile
 		if opts.Source == string(apiv2.LogStreamSourceStderr) || opts.Source == string(apiv2.LogStreamSourceStartupStderr) {
@@ -261,18 +207,18 @@ func (streamer *resourceLogStreamer) StreamLogs(
 			return logstream.ResourceStreamStatusDone, nil, nil
 		}
 		if capture.ContainerID != "" {
-			capturePath, release, captureErr := streamer.runtimeLogPath(sessionCtx, obj.GetObjectMeta().Namespace, *capture, opts)
+			capturePath, closed, release, captureErr := streamer.runtimeLogPath(sessionCtx, obj.GetObjectMeta().Namespace, *capture, opts)
 			if captureErr != nil {
 				streamer.finishSession(state.ownerUID, sessionID, session)
 				return logstream.ResourceStreamStatusDone, nil, captureErr
 			}
-			path, releaseCapture = capturePath, release
+			path, captureClosed, releaseCapture = capturePath, closed, release
 		}
 	}
 	go func() {
 		defer streamer.finishSession(state.ownerUID, sessionID, session)
 		defer releaseCapture()
-		openErr := streamer.followFile(sessionCtx, path, dest, opts, session)
+		openErr := streamer.followFile(sessionCtx, path, captureClosed, dest, opts, session)
 		if openErr != nil && sessionCtx.Err() == nil {
 			log.Error(openErr, "Failed to stream resource logs")
 			if pipe, ok := dest.(interface{ CloseWithError(error) error }); ok {
@@ -295,11 +241,12 @@ func (streamer *resourceLogStreamer) finishSession(uid types.UID, id uint64, ses
 }
 
 func (streamer *resourceLogStreamer) runtimeLogPath(
-	ctx context.Context, namespace string, capture apiv2.LogSource, opts *apiv2.ResourceLogOptions) (string, func(), error) {
+	ctx context.Context, namespace string, capture apiv2.LogSource, opts *apiv2.ResourceLogOptions,
+) (string, <-chan struct{}, func(), error) {
 	streamer.captureLock.Lock()
 	defer streamer.captureLock.Unlock()
 	if contextErr := ctx.Err(); contextErr != nil {
-		return "", nil, contextErr
+		return "", nil, nil, contextErr
 	}
 	hostCtx := contextdata.GetHostLifetimeContext(ctx)
 	if streamer.captures == nil {
@@ -310,7 +257,7 @@ func (streamer *resourceLogStreamer) runtimeLogPath(
 		if source == nil {
 			runtimeSource, runtimeErr := runtimes.FindAvailableContainerRuntime(ctx, streamer.log, contextdata.GetProcessExecutor(ctx))
 			if runtimeErr != nil {
-				return "", nil, runtimeErr
+				return "", nil, nil, runtimeErr
 			}
 			source = runtimeSource
 		}
@@ -321,7 +268,7 @@ func (streamer *resourceLogStreamer) runtimeLogPath(
 		captureCtx, cancelCapture, types.NamespacedName{Namespace: namespace, Name: capture.Name}, capture.UID)
 	if acquireErr != nil {
 		cancelCapture()
-		return "", nil, acquireErr
+		return "", nil, nil, acquireErr
 	}
 	if !created {
 		cancelCapture()
@@ -331,22 +278,25 @@ func (streamer *resourceLogStreamer) runtimeLogPath(
 		if captureErr != nil {
 			stdoutErr, stderrErr := stdout.Close(), stderr.Close()
 			disposeErr := descriptor.Dispose(ctx, 0)
-			return "", nil, errors.Join(captureErr, stdoutErr, stderrErr, disposeErr)
+			return "", nil, nil, errors.Join(captureErr, stdoutErr, stderrErr, disposeErr)
 		}
+	}
+	stdoutClosed, stderrClosed, closedErr := descriptor.CaptureClosed()
+	if closedErr != nil {
+		return "", nil, nil, closedErr
 	}
 	stdoutPath, stderrPath, startErr := descriptor.LogConsumerStarting()
 	if startErr != nil {
-		return "", nil, startErr
+		return "", nil, nil, startErr
 	}
-	path := stdoutPath
 	if opts.Source == string(apiv2.LogStreamSourceStderr) {
-		path = stderrPath
+		return stderrPath, stderrClosed, descriptor.LogConsumerStopped, nil
 	}
-	return path, descriptor.LogConsumerStopped, nil
+	return stdoutPath, stdoutClosed, descriptor.LogConsumerStopped, nil
 }
 
 func (streamer *resourceLogStreamer) followFile(
-	ctx context.Context, path string, dest io.Writer, opts *apiv2.ResourceLogOptions, session *logSession,
+	ctx context.Context, path string, captureClosed <-chan struct{}, dest io.Writer, opts *apiv2.ResourceLogOptions, session *logSession,
 ) error {
 	file, openErr := resiliency.RetryGet(ctx, backoff.NewConstantBackOff(200*time.Millisecond), func() (*os.File, error) {
 		opened, fileErr := usvc_io.OpenFileReadOnly(path)
@@ -381,8 +331,13 @@ func (streamer *resourceLogStreamer) followFile(
 		usvc_io.WithNoDataStopRetries(3), usvc_io.WithCloseSourceOnCancel())
 	streamer.lock.Lock()
 	session.writer = writer
+	session.captureClosed = captureClosed
 	if session.finishing {
-		writer.StopFollow()
+		if session.capture.Complete && captureClosed != nil {
+			stopFollowingWhenCaptured(writer, captureClosed)
+		} else {
+			writer.StopFollow()
+		}
 	}
 	streamer.lock.Unlock()
 	<-writer.Done()
@@ -400,32 +355,38 @@ func (streamer *resourceLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcher
 		streamer.log.Error(snapshotErr, "Failed to process log resource update")
 		return
 	}
-	_, physical := evt.Object.(*apiv2.PhysicalContainer)
-	_, image := evt.Object.(*apiv2.PhysicalContainerImage)
-	_, process := evt.Object.(*apiv2.PhysicalProcess)
-	_, execution := evt.Object.(*apiv2.PhysicalContainerExec)
 	var streamsToStop []*usvc_io.FollowWriter
+	var capturedWriters []*usvc_io.FollowWriter
+	var capturesClosed []<-chan struct{}
 	streamer.lock.Lock()
 	for ownerUID, sessions := range streamer.sessions {
 		for _, session := range sessions {
 			system := session.source == string(apiv2.LogStreamSourceSystem)
-			sourceUpdated := !system && (physical || image || process || execution) && session.capture.UID == state.ownerUID
+			// A capture UID equals the UID of the resource that owns the capture, so this event may complete sessions of consumers projecting it.
+			sourceUpdated := !system && session.capture.UID == state.ownerUID
 			if ownerUID != state.ownerUID && !sourceUpdated {
 				continue
 			}
 			capture := state.logSource(session.source)
 			if sourceUpdated {
-				capture = state.runtime
+				capture = state.Runtime
 			}
 			if evt.Type != watch.Deleted &&
 				(system || capture == nil || capture.UID != session.capture.UID || !capture.Complete) {
 				continue
 			}
+			// A session whose follower is not yet installed applies capture-close draining when it installs one.
+			if evt.Type != watch.Deleted {
+				session.capture.Complete = true
+			}
 			if session.finishing {
 				continue
 			}
 			session.finishing = true
-			if session.writer != nil {
+			if session.writer != nil && session.captureClosed != nil {
+				capturedWriters = append(capturedWriters, session.writer)
+				capturesClosed = append(capturesClosed, session.captureClosed)
+			} else if session.writer != nil {
 				streamsToStop = append(streamsToStop, session.writer)
 			} else if evt.Type == watch.Deleted {
 				session.cancel()
@@ -436,10 +397,13 @@ func (streamer *resourceLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcher
 	if len(streamsToStop) > 0 {
 		logs.DelayStopFollowing(streamsToStop)
 	}
-	if evt.Type == watch.Deleted && state.runtime != nil && state.runtime.UID != "" {
+	for i, writer := range capturedWriters {
+		stopFollowingWhenCaptured(writer, capturesClosed[i])
+	}
+	if evt.Type == watch.Deleted && state.Runtime != nil && state.Runtime.UID != "" {
 		streamer.captureLock.Lock()
 		if streamer.captures != nil {
-			streamer.captures.ReleaseForResource(state.runtime.UID)
+			streamer.captures.ReleaseForResource(state.Runtime.UID)
 		}
 		streamer.captureLock.Unlock()
 	}
@@ -476,4 +440,19 @@ func (streamer *resourceLogStreamer) Dispose() error {
 		<-session.done
 	}
 	return disposeErrors
+}
+
+// Stops following once a completed runtime capture has written all output, signalled by its capture file closing.
+// The follow cancellation delay bounds the wait in case a runtime keeps the capture open after the container exits.
+func stopFollowingWhenCaptured(writer *usvc_io.FollowWriter, captureClosed <-chan struct{}) {
+	go func() {
+		timer := time.NewTimer(logs.FollowStreamCancellationDelay)
+		defer timer.Stop()
+		select {
+		case <-captureClosed:
+		case <-timer.C:
+		case <-writer.Done():
+		}
+		writer.StopFollow()
+	}()
 }

@@ -217,7 +217,7 @@ func handlePhysicalContainerExecTarget(
 			log.Error(getErr, "Failed to get execution target")
 			data.reason, data.message = apiv2.ContainerExecReasonContainerLookupFailed, getErr.Error()
 			data.state = physicalContainerExecStateTargetRetry
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			data.retryAfter = time.Now().Add(reconciler.ReconciliationDelay(LongDelay))
 		}
 		return noChange
 	}
@@ -371,7 +371,7 @@ func (r *PhysicalContainerExecReconciler) scheduleExecution(
 		data.session = nil
 		data.workInProgress = false
 		data.state = physicalContainerExecStateLaunchRetry
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		data.reason, data.message = apiv2.ContainerExecReasonLaunchQueueFailed, enqueueErr.Error()
 		log.Error(enqueueErr, "Failed to queue attached execution launch")
 		return noChange
@@ -483,7 +483,7 @@ func (r *PhysicalContainerExecReconciler) retryExecution(
 	data.workInProgress = false
 	data.state = state
 	data.reason, data.message = reason, failure.Error()
-	data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+	data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 	r.queueExecutionResult(resource, data)
 }
 

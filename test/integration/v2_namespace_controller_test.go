@@ -316,9 +316,14 @@ func waitPhysicalContainerImagePhase(
 
 func waitContainerMissing(t *testing.T, ctx context.Context, containerID string) {
 	t.Helper()
+	waitContainerMissingEx(t, ctx, containerOrchestrator, containerID)
+}
+
+func waitContainerMissingEx(t *testing.T, ctx context.Context, orchestrator containers.ContainerOrchestrator, containerID string) {
+	t.Helper()
 
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
-		_, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		_, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
 			Containers: []string{containerID},
 		})
 		if inspectErr == nil {

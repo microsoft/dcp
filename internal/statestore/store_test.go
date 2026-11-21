@@ -154,7 +154,7 @@ func requireSchemaMigrationVersion(
 	t.Helper()
 
 	query := fmt.Sprintf(`SELECT version, dirty FROM %s LIMIT 1`, quoteSQLiteIdentifier(tableName))
-	row := store.db.QueryRowContext(ctx, query)
+	row := store.db.Load().QueryRowContext(ctx, query)
 	var version int
 	var dirty bool
 	require.NoError(t, row.Scan(&version, &dirty))
@@ -343,7 +343,7 @@ func testResourceLeaseOwner(t *testing.T, identityOffset time.Duration) (process
 func setResourceLeaseUpdatedAt(t *testing.T, ctx context.Context, store *Store, resourceKey string, updatedAt time.Time) {
 	t.Helper()
 
-	_, updateErr := store.db.ExecContext(
+	_, updateErr := store.db.Load().ExecContext(
 		ctx,
 		`UPDATE resource_locks SET updated_at_unix_nano = ? WHERE resource_key = ?`,
 		unixNano(updatedAt),
@@ -433,7 +433,7 @@ func TestOpenImportsSchemaVersion2(t *testing.T) {
 
 	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
 	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
-	row := store.db.QueryRowContext(
+	row := store.db.Load().QueryRowContext(
 		ctx,
 		`SELECT workload_id FROM persistent_processes WHERE resource_key = ?`,
 		"executable/existing",
@@ -456,7 +456,7 @@ func TestOpenIgnoresUnknownSchemaMinorMigrations(t *testing.T) {
 		`UPDATE %s SET version = ?`,
 		quoteSQLiteIdentifier(schemaMajorVersion1Migration.minorTableName),
 	)
-	_, updateErr := store.db.ExecContext(ctx, updateQuery, 999)
+	_, updateErr := store.db.Load().ExecContext(ctx, updateQuery, 999)
 	require.NoError(t, updateErr)
 
 	reopenedStore := openTestStore(t, ctx, storePath)
@@ -477,7 +477,7 @@ func TestOpenAcceptsDirtyNewerSchemaMinorVersion(t *testing.T) {
 		`UPDATE %s SET version = ?, dirty = 1`,
 		quoteSQLiteIdentifier(schemaMajorVersion1Migration.minorTableName),
 	)
-	_, updateErr := store.db.ExecContext(ctx, updateQuery, 999)
+	_, updateErr := store.db.Load().ExecContext(ctx, updateQuery, 999)
 	require.NoError(t, updateErr)
 
 	reopenedStore := openTestStore(t, ctx, storePath)
@@ -486,7 +486,7 @@ func TestOpenAcceptsDirtyNewerSchemaMinorVersion(t *testing.T) {
 	// whether it was applied. Everything this binary needs is present either way.
 	version, found, dirty, readErr := readSchemaVersion(
 		ctx,
-		reopenedStore.db,
+		reopenedStore.db.Load(),
 		schemaMajorVersion1Migration.minorTableName,
 	)
 	require.NoError(t, readErr)
@@ -507,14 +507,14 @@ func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationApplied(t *testing.T) {
 		`UPDATE %s SET dirty = 1`,
 		quoteSQLiteIdentifier(schemaMajorVersion1Migration.minorTableName),
 	)
-	_, updateErr := store.db.ExecContext(ctx, updateQuery)
+	_, updateErr := store.db.Load().ExecContext(ctx, updateQuery)
 	require.NoError(t, updateErr)
 
 	reopenedStore := openTestStore(t, ctx, storePath)
 
 	requireSchemaMajorVersion(t, ctx, reopenedStore, currentSchemaMajorVersion)
 	requireSchemaMinorVersion(t, ctx, reopenedStore, currentSchemaMinorVersion)
-	requireWorkloadIDColumn(t, ctx, reopenedStore.db, true)
+	requireWorkloadIDColumn(t, ctx, reopenedStore.db.Load(), true)
 }
 
 func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T) {
@@ -527,24 +527,24 @@ func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T
 	store := openTestStore(t, ctx, storePath)
 	// Undo the latest minor migration's schema changes to simulate a migration that never committed,
 	// leaving only the dirty marker behind.
-	_, revertErr := store.db.ExecContext(ctx, `ALTER TABLE persistent_volumes DROP COLUMN ownership_token`)
+	_, revertErr := store.db.Load().ExecContext(ctx, `ALTER TABLE persistent_volumes DROP COLUMN ownership_token`)
 	require.NoError(t, revertErr)
 	updateQuery := fmt.Sprintf(
 		`UPDATE %s SET dirty = 1`,
 		quoteSQLiteIdentifier(schemaMajorVersion1Migration.minorTableName),
 	)
-	_, updateErr := store.db.ExecContext(ctx, updateQuery)
+	_, updateErr := store.db.Load().ExecContext(ctx, updateQuery)
 	require.NoError(t, updateErr)
-	requirePersistentVolumesTable(t, ctx, store.db, true)
-	requireVolumeOwnershipColumn(t, ctx, store.db, false)
+	requirePersistentVolumesTable(t, ctx, store.db.Load(), true)
+	requireVolumeOwnershipColumn(t, ctx, store.db.Load(), false)
 
 	reopenedStore := openTestStore(t, ctx, storePath)
 
 	requireSchemaMajorVersion(t, ctx, reopenedStore, currentSchemaMajorVersion)
 	requireSchemaMinorVersion(t, ctx, reopenedStore, currentSchemaMinorVersion)
-	requireWorkloadIDColumn(t, ctx, reopenedStore.db, true)
-	requirePersistentVolumesTable(t, ctx, reopenedStore.db, true)
-	requireVolumeOwnershipColumn(t, ctx, reopenedStore.db, true)
+	requireWorkloadIDColumn(t, ctx, reopenedStore.db.Load(), true)
+	requirePersistentVolumesTable(t, ctx, reopenedStore.db.Load(), true)
+	requireVolumeOwnershipColumn(t, ctx, reopenedStore.db.Load(), true)
 }
 
 func TestOpenRecoversDirtyInitialSchemaMajorVersion(t *testing.T) {
@@ -568,7 +568,7 @@ func TestOpenRecoversDirtyInitialSchemaMajorVersion(t *testing.T) {
 
 	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
 	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
-	requireWorkloadIDColumn(t, ctx, store.db, true)
+	requireWorkloadIDColumn(t, ctx, store.db.Load(), true)
 }
 
 func TestOpenRejectsDirtyUnknownSchemaMajorVersion(t *testing.T) {
@@ -678,8 +678,8 @@ func TestOpenRecoversDirtySchemaVersion2WhenMigrationApplied(t *testing.T) {
 
 	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
 	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
-	requireWorkloadIDColumn(t, ctx, store.db, true)
-	row := store.db.QueryRowContext(
+	requireWorkloadIDColumn(t, ctx, store.db.Load(), true)
+	row := store.db.Load().QueryRowContext(
 		ctx,
 		`SELECT workload_id FROM persistent_processes WHERE resource_key = ?`,
 		"executable/existing",
@@ -712,7 +712,7 @@ func TestOpenRecoversDirtySchemaVersion2WhenMigrationNotApplied(t *testing.T) {
 
 	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
 	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
-	requireWorkloadIDColumn(t, ctx, store.db, true)
+	requireWorkloadIDColumn(t, ctx, store.db.Load(), true)
 }
 
 // TestOpenRecoversSchemaDirtiedByOlderDcp covers how a dirty marker is produced in practice: a store
@@ -752,7 +752,7 @@ func TestOpenRecoversSchemaDirtiedByOlderDcp(t *testing.T) {
 
 	requireSchemaMajorVersion(t, ctx, recovered, currentSchemaMajorVersion)
 	requireSchemaMinorVersion(t, ctx, recovered, currentSchemaMinorVersion)
-	requireWorkloadIDColumn(t, ctx, recovered.db, true)
+	requireWorkloadIDColumn(t, ctx, recovered.db.Load(), true)
 }
 
 func TestOpenWithExplicitPathRejectsPermissiveExistingParentDirectory(t *testing.T) {
@@ -836,7 +836,7 @@ func TestOpenConfiguresWALAutoCheckpoint(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
 	store := openTestStore(t, ctx, storePath)
 
-	row := store.db.QueryRowContext(ctx, "PRAGMA wal_autocheckpoint")
+	row := store.db.Load().QueryRowContext(ctx, "PRAGMA wal_autocheckpoint")
 	var autoCheckpointPages int
 	require.NoError(t, row.Scan(&autoCheckpointPages))
 	require.Equal(t, defaultWALAutoCheckpointPages, autoCheckpointPages)
@@ -1266,7 +1266,7 @@ func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
 	require.NoError(t, activeAcquireErr)
 	_, staleAcquireErr := store1.AcquireResourceLease(ctx, testLeasableResource("container/stale"), staleOwner, time.Minute)
 	require.NoError(t, staleAcquireErr)
-	_, invalidOwnerInsertErr := store1.db.ExecContext(
+	_, invalidOwnerInsertErr := store1.db.Load().ExecContext(
 		ctx,
 		`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time, updated_at_unix_nano)
 		 VALUES(?, ?, ?, ?)`,
@@ -1674,7 +1674,9 @@ func newUnmigratedTestStore(t *testing.T, ctx context.Context, path string) *Sto
 	t.Cleanup(func() {
 		require.NoError(t, db.Close())
 	})
-	return &Store{db: db, path: path, log: logr.Discard()}
+	store := &Store{path: path, log: logr.Discard()}
+	store.db.Store(db)
+	return store
 }
 
 // migrateStreamTo advances a single migration stream to the requested version.
@@ -1707,7 +1709,7 @@ func evaluateAppliedProbe(t *testing.T, ctx context.Context, store *Store, probe
 	t.Helper()
 
 	var applied bool
-	require.NoError(t, store.db.QueryRowContext(ctx, probe.appliedQuery).Scan(&applied))
+	require.NoError(t, store.db.Load().QueryRowContext(ctx, probe.appliedQuery).Scan(&applied))
 	return applied
 }
 
@@ -1902,4 +1904,36 @@ func TestMigrationsAreTransactional(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, walkErr)
+}
+
+// Verifies that Store.Close may run concurrently with store operations, after which operations report
+// ErrStoreNotInitialized instead of using the closed database.
+func TestCloseConcurrentWithOperations(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	store := openTestStore(t, ctx, filepath.Join(t.TempDir(), "state.sqlite3"))
+	operationsDone := make(chan error, 4)
+	for range cap(operationsDone) {
+		go func() {
+			for {
+				operationErr := store.DeleteInactiveResourceLeases(ctx)
+				if errors.Is(operationErr, ErrStoreNotInitialized) {
+					operationsDone <- nil
+					return
+				}
+				if ctx.Err() != nil {
+					operationsDone <- ctx.Err()
+					return
+				}
+			}
+		}()
+	}
+	require.NoError(t, store.Close())
+	for range cap(operationsDone) {
+		require.NoError(t, <-operationsDone)
+	}
+	require.ErrorIs(t, store.DeleteInactiveResourceLeases(ctx), ErrStoreNotInitialized)
 }

@@ -21,14 +21,14 @@ func TestPullAndInspectImageMethods(t *testing.T) {
 	t.Parallel()
 
 	forEachHealthyRuntime(t, func(t *testing.T, ctx context.Context, runtime containertest.Runtime) {
-		imageID, pullErr := runtime.Orchestrator.PullImage(ctx, containers.PullImageOptions{
+		imageReference, pullErr := runtime.Orchestrator.PullImage(ctx, containers.PullImageOptions{
 			Image: pullImageReference,
 		})
 		require.NoError(t, pullErr)
-		require.NotEmpty(t, imageID)
+		require.NotEmpty(t, imageReference)
 
 		byName, inspectNameErr := runtime.Orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
-			Images: []string{pullImageReference},
+			Images: []string{imageReference},
 		})
 		require.NoError(t, inspectNameErr)
 		require.Len(t, byName, 1)
@@ -36,7 +36,7 @@ func TestPullAndInspectImageMethods(t *testing.T) {
 		require.Contains(t, byName[0].Tags, pullImageReference)
 
 		byID, inspectIDErr := runtime.Orchestrator.InspectImages(ctx, containers.InspectImagesOptions{
-			Images: []string{imageID},
+			Images: []string{byName[0].Id},
 		})
 		require.NoError(t, inspectIDErr)
 		require.Len(t, byID, 1)

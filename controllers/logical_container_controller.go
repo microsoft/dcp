@@ -46,7 +46,6 @@ const (
 
 var (
 	errMultipleLogicalContainerBackings = errors.New("multiple owned physical resources")
-	errLogicalNetworkFailed             = errors.New("logical network failed")
 	logicalContainerFinalizer           = fmt.Sprintf("%s/logicalcontainer-reconciler", apiv2.GroupVersion.Group)
 	logicalContainerDataHandlers        = map[logicalContainerState]logicalContainerDataHandlerFunc{
 		logicalContainerStatePending:            handleLogicalContainerPending,
@@ -519,7 +518,7 @@ func handleLogicalContainerPending(
 	}
 	if physical == nil {
 		if spec.Container != nil {
-			networksResolved, physicalNetworks, networkMessage, resolveErr := reconciler.resolveLogicalContainerNetworks(ctx, container)
+			networksResolved, physicalNetworks, networkMessage, resolveErr := resolveLogicalContainerNetworks(ctx, reconciler.Client, container.Namespace, container.Spec.Container.Networks)
 			if resolveErr != nil {
 
 				log.Error(resolveErr, "Failed to resolve logical container networks")
@@ -599,59 +598,6 @@ func physicalContainerConfigFromLogicalSpec(spec *apiv2.LogicalContainerSpec, po
 		Ports: ports, VolumeMounts: source.VolumeMounts, CreateFiles: source.CreateFiles, Labels: source.Labels,
 	}
 	return config.DeepCopy()
-}
-
-func (r *LogicalContainerReconciler) resolveLogicalContainerNetworks(
-	ctx context.Context, container *apiv2.LogicalContainer,
-) (bool, []apiv2.ContainerNetworkConnectionConfig, string, error) {
-	var resolved []apiv2.ContainerNetworkConnectionConfig
-	var pendingMessage string
-	var resolutionErr error
-	for _, requested := range container.Spec.Container.Networks {
-		network := &apiv2.LogicalContainerNetwork{}
-		networkName := commonapi.AsNamespacedName(requested.NetworkRef, container.Namespace)
-		getErr := r.Get(ctx, networkName, network)
-		if apierrors.IsNotFound(getErr) {
-			if pendingMessage == "" {
-				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q does not exist.", networkName)
-			}
-			continue
-		}
-		if getErr != nil {
-			resolutionErr = errors.Join(resolutionErr, fmt.Errorf("get LogicalContainerNetwork %q: %w", networkName, getErr))
-			continue
-		}
-		if network.Status.Phase == apiv2.LogicalContainerNetworkPhaseFailed {
-			message := fmt.Sprintf("LogicalContainerNetwork %q failed.", networkName)
-			if failure := apimeta.FindStatusCondition(network.Status.Conditions, string(apiv2.ConditionReady)); failure != nil {
-				message = fmt.Sprintf("LogicalContainerNetwork %q reports %s: %s", networkName, failure.Reason, failure.Message)
-			}
-			resolutionErr = errors.Join(resolutionErr, fmt.Errorf("%w: %s", errLogicalNetworkFailed, message))
-			continue
-		}
-		if !network.DeletionTimestamp.IsZero() {
-			if pendingMessage == "" {
-				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q is terminating.", networkName)
-			}
-			continue
-		}
-		if network.Status.PhysicalNetworkRef == "" {
-			if pendingMessage == "" {
-				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q has not published its backing physical network reference.", networkName)
-			}
-			continue
-		}
-		resolved = append(resolved, apiv2.ContainerNetworkConnectionConfig{
-			NetworkRef: network.Status.PhysicalNetworkRef, Aliases: std_slices.Clone(requested.Aliases),
-		})
-	}
-	if resolutionErr != nil {
-		return false, nil, "", resolutionErr
-	}
-	if pendingMessage != "" {
-		return false, nil, pendingMessage, nil
-	}
-	return true, resolved, "", nil
 }
 
 // createPhysicalContainerImage declares an owned image and validates AlreadyExists collisions.

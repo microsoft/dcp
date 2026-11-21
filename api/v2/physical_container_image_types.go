@@ -210,6 +210,10 @@ func (pci *PhysicalContainerImage) GetLogSource() *LogSource {
 	}
 }
 
+func (pci *PhysicalContainerImage) GetLogStreams() LogStreams {
+	return capturedLogStreams(pci.GetLogSource())
+}
+
 func (*PhysicalContainerImage) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{&PhysicalContainerImageLogResource{}}
 }
@@ -457,6 +461,7 @@ func init() {
 
 // Ensure types support interfaces expected by our API server.
 var _ apiserver_resource.Object = (*PhysicalContainerImage)(nil)
+var _ LogStreamingResource = (*PhysicalContainerImage)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalContainerImage)(nil)
 var _ apiserver_resource.StatusSubResource = (*PhysicalContainerImageStatus)(nil)
 var _ apiserver_resource.ObjectList = (*PhysicalContainerImageList)(nil)

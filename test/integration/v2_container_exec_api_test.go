@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	ctrl_controller "sigs.k8s.io/controller-runtime/pkg/controller"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -117,7 +118,10 @@ type containerExecLaunchReader struct {
 }
 
 func (reader *containerExecLaunchReader) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
-	if _, physical := obj.(*apiv2.PhysicalContainer); physical && reader.enabled.Load() && key == reader.target {
+	// Only the execution's queued preflight is gated; reconciliation re-reads, such as the target's own
+	// post-conflict Get, carry a reconcile ID and must proceed so the target can publish its status.
+	if _, physical := obj.(*apiv2.PhysicalContainer); physical && reader.enabled.Load() && key == reader.target &&
+		ctrl_controller.ReconcileIDFromContext(ctx) == "" {
 		reader.once.Do(func() {
 			close(reader.entered)
 			select {

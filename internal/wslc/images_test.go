@@ -6,7 +6,6 @@
 package wslc
 
 import (
-	"sync/atomic"
 	"testing"
 
 	"github.com/go-logr/logr/testr"
@@ -17,9 +16,8 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-// Verifies that PullImage retries missing post-pull identity inspection without repeating
-// the successful WSLC pull command.
-func TestPullImageRetriesIdentityInspection(t *testing.T) {
+// Verifies that PullImage returns the pulled reference without issuing an inspection command.
+func TestPullImageReturnsReferenceWithoutInspection(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 0)
 	defer cancel()
@@ -35,26 +33,10 @@ func TestPullImageRetriesIdentityInspection(t *testing.T) {
 		},
 	})
 	inspectCommand := []string{"wslc", "image", "inspect", "--format", "json", "example.test/image:latest"}
-	var inspectionAttempts atomic.Int32
-	executor.InstallAutoExecution(internal_testutil.AutoExecution{
-		Condition: internal_testutil.ProcessSearchCriteria{Command: inspectCommand},
-		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
-			if inspectionAttempts.Add(1) <= 2 {
-				_, stdoutErr := execution.Cmd.Stdout.Write([]byte("[]\n"))
-				require.NoError(t, stdoutErr)
-				_, stderrErr := execution.Cmd.Stderr.Write([]byte("WSLC_E_IMAGE_NOT_FOUND (0x80040601)\n"))
-				require.NoError(t, stderrErr)
-				return 1
-			}
-			_, writeErr := execution.Cmd.Stdout.Write([]byte("[{\"Id\":\"sha256:image-id\"}]\n"))
-			require.NoError(t, writeErr)
-			return 0
-		},
-	})
 	orchestrator := NewWslcCliOrchestrator(testr.New(t), executor)
 	imageID, pullErr := orchestrator.PullImage(ctx, containers.PullImageOptions{Image: "example.test/image:latest"})
 	require.NoError(t, pullErr)
-	require.Equal(t, "sha256:image-id", imageID)
+	require.Equal(t, "example.test/image:latest", imageID)
 	require.Len(t, executor.FindAll(pullCommand, "", nil), 1)
-	require.Len(t, executor.FindAll(inspectCommand, "", nil), 3)
+	require.Empty(t, executor.FindAll(inspectCommand, "", nil))
 }

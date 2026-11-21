@@ -73,6 +73,9 @@ type TimeoutOption struct {
 	Timeout time.Duration
 }
 
+// CopyFilesTimeout bounds streamed archive transfers while honoring earlier caller cancellation.
+const CopyFilesTimeout = 10 * time.Minute
+
 // CLICommandRunner abstracts the ability to create and run container runtime CLI commands.
 // Both Docker and Podman orchestrators implement this interface, allowing shared logic
 // (such as image layer application) to invoke runtime-specific CLI commands.
@@ -393,6 +396,9 @@ type CreateContainerOptions struct {
 	// AttachTerminal allocates a TTY and keeps standard input open for later attach operations.
 	AttachTerminal bool
 
+	// OpenStdin keeps standard input open without a TTY so a client starting the container can attach to it.
+	OpenStdin bool
+
 	// Networks to connect to _at creation time_, with optional per-network aliases.
 	// If not set, the container will be connected to the default network.
 	Networks []CreateContainerNetworkOptions
@@ -447,9 +453,24 @@ type StartContainersOptions struct {
 	StreamCommandOptions
 }
 
+// StartAttachedContainerOptions identifies a created container and the streams attached while it runs.
+type StartAttachedContainerOptions struct {
+	// The container to start (by name or ID)
+	Container string
+
+	// StdInStream is forwarded to the container's standard input; the container must have been created with OpenStdin.
+	StdInStream io.Reader
+
+	StreamCommandOptions
+}
+
 type StartContainers interface {
 	// Start one or more stopped containers. Returns list of started containers.
 	StartContainers(ctx context.Context, options StartContainersOptions) ([]string, error)
+
+	// StartAttachedContainer starts a created container without a TTY and keeps its standard streams attached.
+	// The returned channel reports the container exit code, or UnknownExitCode if the attachment ends without one.
+	StartAttachedContainer(ctx context.Context, options StartAttachedContainerOptions) (<-chan int32, error)
 }
 
 // RunContainer command types
@@ -484,12 +505,17 @@ type ExecContainerOptions struct {
 	// The arguments to pass to the command
 	Args []string
 
+	// StdInStream supplies input and enables interactive exec without allocating a terminal.
+	// The caller owns the stream. Use an OS pipe for long-lived input to avoid waiting for a blocked reader on command exit.
+	StdInStream io.Reader
+
 	StreamCommandOptions
 }
 
 type ExecContainers interface {
-	// Executes a command in a running container. Returns a channel that will emit the final exit code of running the command.
+	// Executes a command in a running container. Returns a channel that emits the attached runtime command's exit code.
 	// Successful launch starts the attached runtime command, not necessarily the in-container process.
+	// A known exit code can reflect a CLI/runtime/transport failure rather than in-container process termination.
 	// Cancellation requests attached-session shutdown and does not guarantee host cleanup or in-container process termination.
 	// The completion channel emits once when the executor reports completion, then closes.
 	// Output drain is bounded; cleanup can remain unconfirmed and remaining output may be lost.
@@ -600,6 +626,18 @@ type CreateFiles interface {
 	CreateFiles(ctx context.Context, options CreateFilesOptions) error
 }
 
+// CopyFilesOptions supplies a tar archive to extract beneath an absolute container destination.
+// The caller owns Archive and keeps it open until CopyFiles returns.
+type CopyFilesOptions struct {
+	Container   string
+	Destination string
+	Archive     io.Reader
+}
+
+type CopyFiles interface {
+	CopyFiles(ctx context.Context, options CopyFilesOptions) error
+}
+
 // ApplyImageLayers command types
 
 type ApplyImageLayersOptions struct {
@@ -678,6 +716,7 @@ type ContainerOrchestrator interface {
 	ExecContainers
 	AttachContainer
 	CreateFiles
+	CopyFiles
 	ApplyImageLayers
 
 	// Subscribes to events about container state changes

@@ -268,7 +268,7 @@ func (r *PhysicalContainerVolumeReconciler) createPhysicalContainerVolume(
 		log.Error(inspectErr, "Failed to inspect runtime volume before creation", "VolumeName", volumeConfig.VolumeName)
 		data.state = physicalContainerVolumeStateCreateRetry
 		data.failureMessage = fmt.Sprintf("Failed to inspect runtime volume before creation: %v", inspectErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 		r.queuePhysicalContainerVolumeDataResult(volume, stateKey, data)
 		return
 	}
@@ -277,7 +277,7 @@ func (r *PhysicalContainerVolumeReconciler) createPhysicalContainerVolume(
 		Name:   volumeConfig.VolumeName,
 		Labels: physicalContainerVolumeCreationLabels(volume, log),
 	})
-	applyPhysicalContainerVolumeCreateResult(volume, data, createErr, log)
+	applyPhysicalContainerVolumeCreateResult(volume, data, createErr, r.ReconciliationDelay(LongDelay), log)
 	r.queuePhysicalContainerVolumeDataResult(volume, stateKey, data)
 }
 
@@ -285,6 +285,7 @@ func applyPhysicalContainerVolumeCreateResult(
 	volume *apiv2.PhysicalContainerVolume,
 	data *physicalContainerVolumeData,
 	createErr error,
+	retryDelay time.Duration,
 	log logr.Logger,
 ) {
 	volumeConfig := &volume.Spec
@@ -292,7 +293,7 @@ func applyPhysicalContainerVolumeCreateResult(
 		log.Error(createErr, "Runtime volume create returned an error; reconciliation will verify the outcome", "VolumeName", volumeConfig.VolumeName)
 		data.state = physicalContainerVolumeStateCreateRetry
 		data.failureMessage = fmt.Sprintf("Runtime volume create returned an error: %v", createErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(retryDelay)
 		return
 	}
 	data.state, data.volumeID, data.failureMessage, data.retryAfter = physicalContainerVolumeStateCreated, volumeConfig.VolumeName, "", time.Time{}
@@ -402,7 +403,7 @@ func handlePhysicalContainerVolumeRecoverableCreateFailed(
 	if !errors.Is(inspectErr, containers.ErrNotFound) {
 		log.Error(inspectErr, "Failed to verify runtime volume creation outcome", "VolumeName", volumeConfig.VolumeName)
 		data.failureMessage = fmt.Sprintf("Failed to verify whether runtime volume creation succeeded: %v", inspectErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(reconciler.ReconciliationDelay(LongDelay))
 		return additionalReconciliationNeeded
 	}
 
@@ -657,7 +658,7 @@ func (r *PhysicalContainerVolumeReconciler) schedulePhysicalContainerVolumeRemov
 	data.state = physicalContainerVolumeStateRemoveRetry
 	data.workInProgress = false
 	data.failureMessage = fmt.Sprintf("Failed to queue runtime volume removal: %v", enqueueErr)
-	data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+	data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 	currentData.UpdateFrom(data)
 	return additionalReconciliationNeeded
 }
@@ -698,7 +699,7 @@ func (r *PhysicalContainerVolumeReconciler) removePhysicalContainerVolume(
 
 		data.state = physicalContainerVolumeStateRemoveRetry
 		data.failureMessage = fmt.Sprintf("Failed to remove runtime volume: %v", removeErr)
-		data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		data.retryAfter = time.Now().Add(r.ReconciliationDelay(LongDelay))
 	} else {
 
 		data.state = physicalContainerVolumeStateRemoved

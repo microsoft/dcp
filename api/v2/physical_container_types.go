@@ -87,6 +87,10 @@ const (
 	// PhysicalContainerReasonStarted indicates that runtime container start completed.
 	PhysicalContainerReasonStarted ConditionReason = "Started"
 
+	// PhysicalContainerReasonAwaitingStart indicates that the container is fully prepared and waiting to be started
+	// because start is false.
+	PhysicalContainerReasonAwaitingStart ConditionReason = "AwaitingStart"
+
 	// PhysicalContainerReasonStopRequested indicates that stop completed without creating or starting the container.
 	PhysicalContainerReasonStopRequested ConditionReason = "StopRequested"
 
@@ -157,6 +161,13 @@ type PhysicalContainerSpec struct {
 	// Container describes a runtime container to create. Exactly one of containerID or container must be set.
 	Container *PhysicalContainerConfig `json:"container,omitempty"`
 
+	// Start requests that the controller start a created container after file preparation. Defaults to true.
+	// When false, the prepared container remains created for another component to start; a runtime start
+	// is then observed like any other lifecycle change. It may be changed from false to true, but not back to false.
+	// False is forbidden when containerID is set; referenced containers are not started by the controller.
+	// +kubebuilder:default:=true
+	Start *bool `json:"start,omitempty"`
+
 	// Stop requests that the tracked runtime container be stopped or prevents creation if it has not begun.
 	// Once true, it cannot be reset.
 	Stop bool `json:"stop,omitempty"`
@@ -220,11 +231,23 @@ type PhysicalContainerConfig struct {
 	// +listType=atomic
 	CreateFiles []CreateFileSystem `json:"createFiles,omitempty"`
 
+	// CopyFiles contains tar archives to copy after CreateFiles and before container startup.
+	// +listType=atomic
+	CopyFiles []ContainerCopyFileContext `json:"copyFiles,omitempty"`
+
 	// Labels contains labels to apply to a newly-created runtime container.
 	// DCP harvesting and physical resource UID labels are reserved and set by the controller.
 	// +listType=map
 	// +listMapKey=key
 	Labels []commonapi.Label `json:"labels,omitempty"`
+
+	// OpenStdin keeps standard input open without allocating a terminal, so the client that starts the container can attach to it.
+	OpenStdin bool `json:"openStdin,omitempty"`
+}
+
+// ShouldStart reports whether the controller should start the created container.
+func (spec *PhysicalContainerSpec) ShouldStart() bool {
+	return spec.Start == nil || *spec.Start
 }
 
 // PhysicalContainerPortMapping describes the observed host binding for one runtime container port.
@@ -344,6 +367,10 @@ func (pc *PhysicalContainer) GetLogSource() *LogSource {
 	}
 }
 
+func (pc *PhysicalContainer) GetLogStreams() LogStreams {
+	return capturedLogStreams(pc.GetLogSource())
+}
+
 func (*PhysicalContainer) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{&PhysicalContainerLogResource{}}
 }
@@ -412,6 +439,9 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 		return errorList
 	}
 	if pc.Spec.Container == nil {
+		if !pc.Spec.ShouldStart() {
+			errorList = append(errorList, field.Forbidden(specPath.Child("start"), "start cannot be false when containerID is set"))
+		}
 		return errorList
 	}
 
@@ -440,6 +470,7 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 	errorList = append(errorList, validateLabels(container.Labels, containerPath.Child("labels"))...)
 
 	errorList = append(errorList, validateCreateFiles(container.CreateFiles, containerPath.Child("createFiles"))...)
+	errorList = append(errorList, validateCopyFiles(container.CopyFiles, containerPath.Child("copyFiles"))...)
 
 	return errorList
 }
@@ -452,10 +483,16 @@ func (pc *PhysicalContainer) ValidateUpdate(ctx context.Context, old runtime.Obj
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "stop cannot be set to false once it has been set to true"))
 	}
 
+	if oldPhysicalContainer.Spec.ShouldStart() && !pc.Spec.ShouldStart() {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "start"), "start cannot be set to false once it is true"))
+	}
+
 	oldSpec := oldPhysicalContainer.Spec
 	newSpec := pc.Spec
 	oldSpec.Stop = false
 	newSpec.Stop = false
+	oldSpec.Start = nil
+	newSpec.Start = nil
 	if !reflect.DeepEqual(oldSpec, newSpec) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec"), "spec is immutable"))
 	}
@@ -494,6 +531,7 @@ func init() {
 
 // Ensure types support interfaces expected by our API server.
 var _ apiserver_resource.Object = (*PhysicalContainer)(nil)
+var _ LogStreamingResource = (*PhysicalContainer)(nil)
 var _ apiserver_resource.ObjectWithGenericSubResource = (*PhysicalContainer)(nil)
 var _ apiserver_resource.GenericSubResource = (*PhysicalContainerLogResource)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalContainer)(nil)
