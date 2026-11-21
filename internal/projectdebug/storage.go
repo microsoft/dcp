@@ -19,6 +19,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	"github.com/gorilla/websocket"
@@ -241,8 +242,10 @@ func validateDebugProjectSnapshot(selected, current apiv2.ProjectObject, establi
 }
 
 // monitor watches the parent for prerequisite changes and cancellation for the entire debug request.
+// established reports whether the client stream has been upgraded; only established sessions may outlive the run.
 func (storage *projectDebugStorage) monitor(
-	ctx context.Context, selected apiv2.ProjectObject, ready chan<- apiv2.ProjectObject, cancel context.CancelCauseFunc,
+	ctx context.Context, selected apiv2.ProjectObject, ready chan<- apiv2.ProjectObject, established *atomic.Bool,
+	cancel context.CancelCauseFunc,
 ) {
 	namespaceSource, supportsWatch := storage.namespaces.(rest.Watcher)
 	if !supportsWatch {
@@ -312,7 +315,7 @@ func (storage *projectDebugStorage) monitor(
 				cancel(errors.Join(dap.ErrShutdownRequested, fmt.Errorf("project was deleted")))
 				return
 			}
-			if validationErr := validateDebugProjectSnapshot(selected, snapshot, prepared); validationErr != nil {
+			if validationErr := validateDebugProjectSnapshot(selected, snapshot, established.Load()); validationErr != nil {
 				if apierrors.IsForbidden(validationErr) || snapshot.GetProjectStatus().Phase == apiv2.ProjectPhaseExited {
 					validationErr = errors.Join(dap.ErrShutdownRequested, validationErr)
 				}
@@ -369,7 +372,7 @@ func (storage *projectDebugStorage) monitor(
 			prepared = true
 			selected = current.DeepCopyObject().(apiv2.ProjectObject)
 			ready <- selected
-		} else if prepared && !isReady && !exitedRunRetainsSessions(current) {
+		} else if prepared && !isReady && !(established.Load() && exitedRunRetainsSessions(current)) {
 			cancel(fmt.Errorf("project debug prerequisites are no longer available"))
 			return
 		}
@@ -431,10 +434,11 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 		}
 	}()
 	ready := make(chan apiv2.ProjectObject, 1)
+	var established atomic.Bool
 	monitorDone := make(chan struct{})
 	go func() {
 		defer close(monitorDone)
-		storage.monitor(ctx, project, ready, cancel)
+		storage.monitor(ctx, project, ready, &established, cancel)
 	}()
 	defer func() { cancel(nil); <-monitorDone }()
 	var prepared apiv2.ProjectObject
@@ -491,6 +495,7 @@ func (storage *projectDebugStorage) serve(writer http.ResponseWriter, request *h
 		return
 	}
 	defer connection.Close()
+	established.Store(true)
 	connection.SetReadLimit(9 * 1024 * 1024)
 	session.Phase = apiv2.ProjectDebugPhaseRunning
 	session.Conditions = debugConditions("DAPInitializationPending", "Both streams are connected; waiting for DAP initialization.", false, project.GetGeneration())

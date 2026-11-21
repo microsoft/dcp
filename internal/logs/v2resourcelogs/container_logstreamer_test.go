@@ -342,6 +342,81 @@ func TestCompletedContainerCaptureOneShotReadWaitsForCaptureClose(t *testing.T) 
 	require.Less(t, time.Since(start), logs.FollowStreamCancellationDelay)
 }
 
+// gatedLogSource holds capture startup until released, then writes delayed output like delayedLogSource.
+type gatedLogSource struct {
+	delayedLogSource
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (source *gatedLogSource) CaptureContainerLogs(
+	ctx context.Context, container string, stdout, stderr usvc_io.WriteSyncerCloser, options containers.StreamContainerLogsOptions,
+) error {
+	close(source.entered)
+	select {
+	case <-source.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return source.delayedLogSource.CaptureContainerLogs(ctx, container, stdout, stderr, options)
+}
+
+// Verifies that a one-shot read whose container completes before its follower is installed still waits
+// for the capture to close instead of stopping at the first end of file.
+func TestContainerCompletionBeforeFollowerSetupWaitsForCaptureClose(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, time.Minute)
+	defer cancel()
+	ctx = context.WithValue(ctx, contextdata.HostLifetimeContextKey, ctx)
+	source := &gatedLogSource{
+		delayedLogSource: delayedLogSource{delay: logs.FollowStreamCancellationDelay / 10},
+		entered:          make(chan struct{}), release: make(chan struct{}),
+	}
+	streamer := &resourceLogStreamer{
+		sessions: make(map[types.UID]map[uint64]*logSession), source: source,
+		captures: logs.NewLogDescriptorSet(ctx, t.TempDir(), logr.Discard()), log: logr.Discard(),
+	}
+	defer func() { require.NoError(t, streamer.Dispose()) }()
+	physical := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "physical", Namespace: "namespace", UID: "setup-completion-uid"},
+		Status: apiv2.PhysicalContainerStatus{
+			ContainerID: "runtime-id", StartedAt: metav1.NowMicro(), Phase: apiv2.PhysicalContainerPhaseRunning,
+		},
+	}
+	type streamResult struct {
+		done <-chan struct{}
+		err  error
+	}
+	var output bytes.Buffer
+	started := make(chan streamResult, 1)
+	go func() {
+		_, done, streamErr := streamer.StreamLogs(ctx, &output, physical, &apiv2.ResourceLogOptions{}, logr.Discard())
+		started <- streamResult{done: done, err: streamErr}
+	}()
+	select {
+	case <-source.entered:
+	case <-ctx.Done():
+		require.FailNow(t, "capture did not start")
+	}
+	exited := physical.DeepCopy()
+	exited.Status.Phase = apiv2.PhysicalContainerPhaseExited
+	streamer.OnResourceUpdated(apiv2.ResourceWatcherEvent{Type: watch.Modified, Object: exited}, logr.Discard())
+	close(source.release)
+	var result streamResult
+	select {
+	case result = <-started:
+	case <-ctx.Done():
+		require.FailNow(t, "log stream did not start")
+	}
+	require.NoError(t, result.err)
+	select {
+	case <-result.done:
+	case <-ctx.Done():
+		require.FailNow(t, "log stream did not finish")
+	}
+	require.Equal(t, "delayed-first\ndelayed-second\n", output.String())
+}
+
 // Verifies that disposing a streamer unblocks an active response write and joins its client
 // session even when the HTTP consumer is not reading.
 func TestContainerLogDisposeUnblocksResponseWriter(t *testing.T) {

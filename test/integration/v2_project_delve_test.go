@@ -327,7 +327,8 @@ func TestV2ProjectProcessDelveEndToEnd(t *testing.T) {
 				}
 				require.Contains(t, output.String(), "Result: 55")
 				dapClient.response(t, dapClient.request(t, "disconnect", map[string]bool{"terminateDebuggee": true}), nil)
-				waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseReady)
+				// The main session's end completes the one-shot run.
+				waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseExited)
 			}
 			require.NoError(t, client.Delete(ctx, project))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, client, project)

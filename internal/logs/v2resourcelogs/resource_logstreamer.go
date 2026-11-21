@@ -375,6 +375,10 @@ func (streamer *resourceLogStreamer) OnResourceUpdated(evt apiv2.ResourceWatcher
 				(system || capture == nil || capture.UID != session.capture.UID || !capture.Complete) {
 				continue
 			}
+			// A session whose follower is not yet installed applies capture-close draining when it installs one.
+			if evt.Type != watch.Deleted {
+				session.capture.Complete = true
+			}
 			if session.finishing {
 				continue
 			}

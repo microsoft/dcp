@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
@@ -58,10 +59,12 @@ func (storage *debugWatchStorage) Watch(ctx context.Context, options *metaintern
 }
 
 // Verifies that debug monitoring establishes both watches before its one-time identity read,
-// consumes readiness and shutdown snapshots without rereads, and ignores unrelated Projects.
+// consumes readiness and shutdown snapshots without rereads, and ignores unrelated Projects. An exited ProjectProcess
+// cancels a request whose client stream is not yet established and retains an established session until stop.
 func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"project-stop", "namespace-stop", "deleted-during-subscription", "project-watch-closed", "namespace-watch-closed", "other-namespace"} {
+	for _, scenario := range []string{"project-stop", "namespace-stop", "deleted-during-subscription", "project-watch-closed",
+		"namespace-watch-closed", "other-namespace", "exited-pending", "exited-established"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, 0)
@@ -120,11 +123,12 @@ func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 			lifetime, cancelMonitor := context.WithCancelCause(ctx)
 			defer cancelMonitor(nil)
 			ready := make(chan apiv2.ProjectObject, 1)
+			var established atomic.Bool
 			done := make(chan struct{})
 			selected := project.DeepCopy()
 			go func() {
 				defer close(done)
-				storage.monitor(lifetime, selected, ready, cancelMonitor)
+				storage.monitor(lifetime, selected, ready, &established, cancelMonitor)
 			}()
 			t.Cleanup(func() { cancelMonitor(nil); <-done })
 			if scenario == "deleted-during-subscription" {
@@ -148,7 +152,20 @@ func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 			case <-lifetime.Done():
 				t.Fatalf("watch readiness failed: %v", context.Cause(lifetime))
 			}
+			exitProject := func() {
+				require.NoError(t, apiClient.Status().Patch(ctx, project, ctrlclient.RawPatch(types.MergePatchType,
+					[]byte(fmt.Sprintf(`{"status":{"phase":"Exited","conditions":[{"type":"Ready","status":"False","reason":"Completed","lastTransitionTime":%q}]}}`,
+						metav1.Now().Format(time.RFC3339))))))
+			}
 			switch scenario {
+			case "exited-pending":
+				exitProject()
+			case "exited-established":
+				established.Store(true)
+				exitProject()
+				// Watch events arrive in order, so a cause from stop rather than exit shows the exit kept the session.
+				require.NoError(t, apiClient.Patch(ctx, project, ctrlclient.RawPatch(
+					types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 			case "project-stop", "other-namespace":
 				if other != nil {
 					require.NoError(t, apiClient.Patch(ctx, other, ctrlclient.RawPatch(
@@ -167,9 +184,15 @@ func TestProjectDebugMonitorUsesWatchSnapshots(t *testing.T) {
 			}
 			select {
 			case <-done:
-				if scenario == "project-stop" || scenario == "namespace-stop" || scenario == "other-namespace" {
+				switch scenario {
+				case "exited-pending":
+					require.ErrorContains(t, context.Cause(lifetime), "project run has exited")
+				case "exited-established":
 					require.ErrorIs(t, context.Cause(lifetime), dap.ErrShutdownRequested)
-				} else {
+					require.NotContains(t, context.Cause(lifetime).Error(), "project run has exited")
+				case "project-stop", "namespace-stop", "other-namespace":
+					require.ErrorIs(t, context.Cause(lifetime), dap.ErrShutdownRequested)
+				default:
 					require.ErrorContains(t, context.Cause(lifetime), "watch closed")
 				}
 			case <-ctx.Done():
