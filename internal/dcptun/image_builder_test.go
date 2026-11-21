@@ -23,7 +23,7 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
-// Verifies that PrepareClientProxyImageBuild archives only the Dockerfile and binary, excluding nearby credentials.
+// Verifies that PrepareClientProxyImageBuild creates stable content identity and archives only the Dockerfile and binary.
 func TestPrepareClientProxyImageBuild(t *testing.T) {
 	t.Parallel()
 
@@ -93,4 +93,29 @@ func TestPrepareClientProxyImageBuildHonorsCancellation(t *testing.T) {
 
 	_, prepareErr := dcptun.PrepareClientProxyImageBuild(ctx, t.TempDir())
 	require.ErrorIs(t, prepareErr, context.Canceled)
+}
+
+// Verifies that PrepareClientProxyImageBuild isolates image tags and build digests for a base-image override.
+func TestPrepareClientProxyImageBuildBaseImage(t *testing.T) {
+	t.Parallel()
+	dcppaths.EnableTestPathProbing()
+	directory := t.TempDir()
+	defaultPlan, defaultErr := dcptun.PrepareClientProxyImageBuild(t.Context(), directory)
+	require.NoError(t, defaultErr)
+	customPlan, customErr := dcptun.PrepareClientProxyImageBuild(t.Context(), directory, "example.com/base:custom")
+	require.NoError(t, customErr)
+	require.Equal(t, directory, filepath.Dir(defaultPlan.BuildContextArchive.Source))
+	require.Equal(t, directory, filepath.Dir(customPlan.BuildContextArchive.Source))
+	require.NotEqual(t, defaultPlan.Image, customPlan.Image)
+	require.NotEqual(t, defaultPlan.BuildContextDigest, customPlan.BuildContextDigest)
+	archive, archiveErr := containers.OpenBuildContextArchive(t.Context(), customPlan.BuildContextArchive)
+	require.NoError(t, archiveErr)
+	defer archive.Close()
+	reader := tar.NewReader(archive)
+	header, headerErr := reader.Next()
+	require.NoError(t, headerErr)
+	require.Equal(t, "Dockerfile", header.Name)
+	dockerfile, readErr := io.ReadAll(reader)
+	require.NoError(t, readErr)
+	require.Contains(t, string(dockerfile), "FROM example.com/base:custom")
 }

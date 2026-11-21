@@ -161,6 +161,41 @@ func (in LogicalContainerStatus) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalContainerTunnel) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalContainerTunnel"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalContainerTunnelProxy) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalContainerTunnelProxy"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalContainerTunnelProxyList) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalContainerTunnelProxyList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalContainerTunnelProxyLogResource) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalContainerTunnelProxyLogResource"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalContainerTunnelProxySpec) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalContainerTunnelProxySpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalContainerTunnelProxyStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalContainerTunnelProxyStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in LogicalContainerTunnelStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.LogicalContainerTunnelStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in LogicalPortStatus) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.LogicalPortStatus"
 }

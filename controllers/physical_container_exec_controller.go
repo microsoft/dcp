@@ -129,16 +129,7 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 	}
 	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resource.GetResourceId())
-	if owner := metav1.GetControllerOf(&resource); owner != nil &&
-		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainerExec" {
-		logical := &apiv2.LogicalContainerExec{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}
-		forwarded, forwardErr := logger.WithAdditionalResourceStream(log, logical.GetResourceId())
-		if forwardErr != nil {
-			log.Error(forwardErr, "Failed to attach logical execution diagnostics")
-		} else {
-			log = forwarded
-		}
-	}
+	log = withOwnerResourceLog(log, &resource, r.Scheme())
 	stateKey, previous := r.executions.BorrowByNamespacedName(req.NamespacedName)
 	if previous != nil && stateKey != resource.UID {
 		r.discardExecution(req.NamespacedName)

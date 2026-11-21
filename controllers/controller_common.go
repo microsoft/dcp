@@ -21,6 +21,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	apivalidation "k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -31,6 +32,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -38,6 +40,32 @@ import (
 )
 
 type objectChange int
+
+func withOwnerResourceLog(log logr.Logger, child ctrl_client.Object, scheme *apiruntime.Scheme) logr.Logger {
+	owner := metav1.GetControllerOf(child)
+	if owner == nil || owner.UID == "" {
+		return log
+	}
+	object, creationErr := scheme.New(schema.FromAPIVersionAndKind(owner.APIVersion, owner.Kind))
+	if creationErr != nil {
+		log.Error(creationErr, "Failed to resolve controller owner type for system diagnostics")
+		return log
+	}
+	resource, supportsLogs := object.(interface {
+		metav1.Object
+		GetResourceId() string
+	})
+	if !supportsLogs {
+		return log
+	}
+	resource.SetUID(owner.UID)
+	forwarded, forwardErr := logger.WithAdditionalResourceStream(log, resource.GetResourceId())
+	if forwardErr != nil {
+		log.Error(forwardErr, "Failed to attach logical owner system log stream")
+		return log
+	}
+	return forwarded
+}
 
 const (
 	noChange                       objectChange = 0

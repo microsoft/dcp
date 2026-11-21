@@ -72,11 +72,15 @@ var ShutdownResources = []*CleanupResource{
 // NamespaceResources are namespace-scoped V2 resource kinds that are deleted when a V2 Namespace is deleted.
 var NamespaceResources = []*CleanupResource{
 	{
+		GVR: (&apiv2.LogicalContainerTunnelProxy{}).GetGroupVersionResource(),
+	},
+	{
 		GVR: (&apiv2.LogicalService{}).GetGroupVersionResource(),
 	},
 	{
 		GVR: (&apiv2.ServiceEndpoint{}).GetGroupVersionResource(),
 		CleanUpAfter: []schema.GroupVersionResource{
+			(&apiv2.LogicalContainerTunnelProxy{}).GetGroupVersionResource(),
 			(&apiv2.LogicalProcess{}).GetGroupVersionResource(),
 			(&apiv2.LogicalContainer{}).GetGroupVersionResource(),
 		},
@@ -103,6 +107,7 @@ var NamespaceResources = []*CleanupResource{
 	{
 		GVR: (&apiv2.LogicalContainerNetwork{}).GetGroupVersionResource(),
 		CleanUpAfter: []schema.GroupVersionResource{
+			(&apiv2.LogicalContainerTunnelProxy{}).GetGroupVersionResource(),
 			(&apiv2.PhysicalContainer{}).GetGroupVersionResource(),
 		},
 	},
@@ -118,6 +123,7 @@ var NamespaceResources = []*CleanupResource{
 	{
 		GVR: (&apiv2.PhysicalContainer{}).GetGroupVersionResource(),
 		CleanUpAfter: []schema.GroupVersionResource{
+			(&apiv2.LogicalContainerTunnelProxy{}).GetGroupVersionResource(),
 			(&apiv2.PhysicalContainerExec{}).GetGroupVersionResource(),
 			(&apiv2.LogicalContainer{}).GetGroupVersionResource(),
 			(&apiv2.PhysicalContainerNetworkConnection{}).GetGroupVersionResource(),

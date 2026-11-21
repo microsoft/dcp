@@ -137,16 +137,7 @@ func (r *PhysicalProcessReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, physicalProcess.GetResourceId())
-	if owner := metav1.GetControllerOf(&physicalProcess); owner != nil &&
-		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalProcess" && owner.UID != "" {
-		logicalOwner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}
-		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, logicalOwner.GetResourceId())
-		if forwardErr != nil {
-			log.Error(forwardErr, "Failed to attach logical process system log stream")
-		} else {
-			log = forwardedLog
-		}
-	}
+	log = withOwnerResourceLog(log, &physicalProcess, r.Scheme())
 
 	r.processData.RunDeferredOps(req.NamespacedName, &physicalProcess)
 	_, data := r.processData.BorrowByNamespacedName(physicalProcess.NamespacedName())

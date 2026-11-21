@@ -17,6 +17,36 @@ import (
 
 const validArchiveSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
+// Verifies that PhysicalContainerImage accepts immutable archive ownership only for file-backed builds.
+func TestPhysicalContainerImageArchiveOwnership(t *testing.T) {
+	image := &PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "image", Namespace: "application"},
+		Spec: PhysicalContainerImageSpec{RemoveBuildContextArchive: true, Image: &PhysicalContainerImageConfig{
+			Build: &ContainerBuildContext{ContextArchive: &ContainerBuildContextArchive{Source: "context.tar", SHA256: validArchiveSHA256}},
+		}},
+	}
+	require.Empty(t, image.Validate(t.Context()))
+	for _, scenario := range []string{"reference", "source", "directory", "raw"} {
+		t.Run(scenario, func(t *testing.T) {
+			invalid := image.DeepCopy()
+			switch scenario {
+			case "reference":
+				invalid.Spec.ImageID, invalid.Spec.Image = "existing-image", nil
+			case "source":
+				invalid.Spec.Image.Image, invalid.Spec.Image.Build = "source-image", nil
+			case "directory":
+				invalid.Spec.Image.Build.Context, invalid.Spec.Image.Build.ContextArchive = "/build-context", nil
+			case "raw":
+				invalid.Spec.Image.Build.ContextArchive = &ContainerBuildContextArchive{RawContents: "dGFy"}
+			}
+			require.ErrorContains(t, invalid.Validate(t.Context()).ToAggregate(), "spec.removeBuildContextArchive")
+		})
+	}
+	changed := image.DeepCopy()
+	changed.Spec.RemoveBuildContextArchive = false
+	require.NotEmpty(t, changed.ValidateUpdate(t.Context(), image))
+}
+
 func TestPhysicalContainerImageValidate(t *testing.T) {
 	testCases := []struct {
 		name          string

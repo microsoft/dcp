@@ -34,6 +34,7 @@ var (
 		&Namespace{},
 		&LogicalContainer{},
 		&LogicalContainerNetwork{},
+		&LogicalContainerTunnelProxy{},
 		&LogicalProcess{},
 		&LogicalContainerExec{},
 		&LogicalService{},

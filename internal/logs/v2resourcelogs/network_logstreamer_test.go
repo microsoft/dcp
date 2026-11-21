@@ -20,9 +20,9 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 )
 
-// Verifies that network log preflight accepts system diagnostics in pending and failed states
+// Verifies that network and tunnel proxy log preflight accepts system diagnostics in pending and failed states
 // while rejecting output and startup sources before any capture is initialized.
-func TestNetworkLogPreflightSupportsOnlySystem(t *testing.T) {
+func TestNetworkAndTunnelProxyLogPreflightSupportsOnlySystem(t *testing.T) {
 	streamer := NewLogStreamer(logr.Discard())
 	defer func() { require.NoError(t, streamer.Dispose()) }()
 	for _, obj := range []resource.Object{
@@ -33,6 +33,10 @@ func TestNetworkLogPreflightSupportsOnlySystem(t *testing.T) {
 		&apiv2.PhysicalContainerNetwork{
 			ObjectMeta: metav1.ObjectMeta{Name: "physical", Namespace: "namespace", UID: "physical-uid"},
 			Status:     apiv2.PhysicalContainerNetworkStatus{Phase: apiv2.PhysicalContainerNetworkPhaseFailed},
+		},
+		&apiv2.LogicalContainerTunnelProxy{
+			ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "namespace", UID: "proxy-uid"},
+			Status:     apiv2.LogicalContainerTunnelProxyStatus{Phase: apiv2.LogicalContainerTunnelProxyPhasePending},
 		},
 	} {
 		require.NoError(t, streamer.Preflight(obj, &apiv2.ResourceLogOptions{Source: "system", Follow: true}))

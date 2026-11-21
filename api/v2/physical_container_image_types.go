@@ -99,6 +99,11 @@ type PhysicalContainerImageSpec struct {
 
 	// Image describes a runtime image to pull or build. Exactly one of imageID or image must be set.
 	Image *PhysicalContainerImageConfig `json:"image,omitempty"`
+
+	// RemoveBuildContextArchive transfers ownership of image.build.contextArchive.source to this resource.
+	// The file is removed after acquisition completes or fails terminally, or after in-flight work
+	// settles during deletion. Defaults to false; an owned archive must not be shared with other resources.
+	RemoveBuildContextArchive bool `json:"removeBuildContextArchive,omitempty"`
 }
 
 // PhysicalContainerImageConfig describes a runtime image to pull or build.
@@ -264,6 +269,11 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 	}
 
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(pci.Annotations, field.NewPath("metadata", "annotations"))...)
+	if pci.Spec.RemoveBuildContextArchive && (pci.Spec.Image == nil || pci.Spec.Image.Build == nil ||
+		pci.Spec.Image.Build.ContextArchive == nil || pci.Spec.Image.Build.ContextArchive.Source == "") {
+		errorList = append(errorList, field.Forbidden(specPath.Child("removeBuildContextArchive"),
+			"requires a file-based image build context archive"))
+	}
 
 	if pci.Spec.ImageID == "" && pci.Spec.Image == nil {
 		errorList = append(errorList, field.Required(specPath, "exactly one of imageID or image must be set"))

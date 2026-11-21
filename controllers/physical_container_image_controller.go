@@ -214,16 +214,7 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 	}
 	getSucceededCounter.Add(ctx, 1)
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, image.GetResourceId())
-	if owner := metav1.GetControllerOf(&image); owner != nil &&
-		owner.APIVersion == apiv2.GroupVersion.String() && owner.Kind == "LogicalContainer" && owner.UID != "" {
-		logicalOwner := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{UID: owner.UID}}
-		forwardedLog, forwardErr := logger.WithAdditionalResourceStream(log, logicalOwner.GetResourceId())
-		if forwardErr != nil {
-			log.Error(forwardErr, "Failed to attach logical container system log stream")
-		} else {
-			log = forwardedLog
-		}
-	}
+	log = withOwnerResourceLog(log, &image, r.Scheme())
 
 	r.imageData.RunDeferredOps(req.NamespacedName, &image)
 	_, data := r.imageData.BorrowByNamespacedName(image.NamespacedName())
@@ -250,10 +241,15 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 		}
 		change |= setValue(&image.Status.LogsComplete, true)
 		if change&statusChanged == 0 {
-			change = deleteFinalizer(&image, physicalContainerImageFinalizer, log)
-			if !hasFinalizer(&image, LogicalBackingFinalizer) {
-				r.discardPhysicalContainerImageData(image.NamespacedName(), data, log)
-				defer logger.ReleaseResourceLog(image.GetResourceId())
+			if cleanupErr := removePhysicalContainerImageBuildContext(&image); cleanupErr != nil {
+				log.Error(cleanupErr, "Failed to remove owned image build context archive")
+				change |= additionalReconciliationNeeded
+			} else {
+				change = deleteFinalizer(&image, physicalContainerImageFinalizer, log)
+				if !hasFinalizer(&image, LogicalBackingFinalizer) {
+					r.discardPhysicalContainerImageData(image.NamespacedName(), data, log)
+					defer logger.ReleaseResourceLog(image.GetResourceId())
+				}
 			}
 		}
 		if change != noChange {
@@ -328,11 +324,28 @@ func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(
 		log.Error(fmt.Errorf("invalid physical container image state %v", data.state),
 			"PhysicalContainerImage reached invalid reconciliation state")
 	}
-	if data.logsComplete() && data.startupStdout != nil {
-		data.startupStdout.CloseAndLog(logs.CaptureFileCloseDefault, log)
-		data.startupStderr.CloseAndLog(logs.CaptureFileCloseDefault, log)
+	if data.logsComplete() {
+		if data.startupStdout != nil {
+			data.startupStdout.CloseAndLog(logs.CaptureFileCloseDefault, log)
+			data.startupStderr.CloseAndLog(logs.CaptureFileCloseDefault, log)
+		}
+		if cleanupErr := removePhysicalContainerImageBuildContext(image); cleanupErr != nil {
+			log.Error(cleanupErr, "Failed to remove owned image build context archive")
+			change |= additionalReconciliationNeeded
+		}
 	}
 	return change | dataChange, delay
+}
+
+func removePhysicalContainerImageBuildContext(image *apiv2.PhysicalContainerImage) error {
+	if !image.Spec.RemoveBuildContextArchive {
+		return nil
+	}
+	source := image.Spec.Image.Build.ContextArchive.Source
+	if removeErr := os.Remove(source); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return fmt.Errorf("remove owned image build context archive %q: %w", source, removeErr)
+	}
+	return nil
 }
 
 func handlePhysicalContainerImageResolve(

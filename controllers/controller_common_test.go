@@ -9,7 +9,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -28,11 +30,50 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+// Verifies that owner diagnostic forwarding uses registered resource behavior for every log-capable V2 kind.
+func TestOwnerResourceLogUsesRegisteredType(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	directory := t.TempDir()
+	log := testutil.NewLogWithResourceSinkForTesting(t.Name(), directory)
+	for _, prototype := range apiv2.PersistentTypes {
+		owner, supportsLogs := prototype.New().(interface {
+			ctrl_client.Object
+			GetResourceId() string
+		})
+		if !supportsLogs {
+			continue
+		}
+		kinds, _, kindsErr := scheme.ObjectKinds(owner)
+		require.NoError(t, kindsErr)
+		require.Len(t, kinds, 1)
+		owner.SetUID(types.UID("owner-" + strings.ToLower(kinds[0].Kind)))
+		controller := true
+		child := &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{
+			UID: types.UID("child-" + strings.ToLower(kinds[0].Kind)),
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: kinds[0].GroupVersion().String(), Kind: kinds[0].Kind,
+				Name: "owner", UID: owner.GetUID(), Controller: &controller}},
+		}}
+		scoped := log.WithValues(logger.RESOURCE_LOG_STREAM_ID, child.GetResourceId())
+		withOwnerResourceLog(scoped, child, scheme).Error(errors.New("test diagnostic"), "Forwarded owner diagnostic")
+		logger.ReleaseResourceLog(owner.GetResourceId())
+		logger.ReleaseResourceLog(child.GetResourceId())
+		file, openErr := usvc_io.OpenFileReadOnly(filepath.Join(directory, "resource-"+owner.GetResourceId()+".log"))
+		require.NoError(t, openErr)
+		contents, readErr := io.ReadAll(file)
+		require.NoError(t, file.Close())
+		require.NoError(t, readErr)
+		require.Contains(t, string(contents), "Forwarded owner diagnostic")
+	}
+}
 
 // Verifies that prepareLogicalPorts allocates a fresh available dynamic port after a failed
 // preparation attempt even if its earlier choice becomes busy, while preserving explicit ports.
