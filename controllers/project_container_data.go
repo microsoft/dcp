@@ -44,10 +44,6 @@ func (data *projectContainerData) portData(resource *apiv2.ProjectContainer) []l
 }
 
 func (data *projectContainerData) updateLifecycleFromContainer(resource *apiv2.ProjectContainer, physical *apiv2.PhysicalContainer) {
-	if !physical.DeletionTimestamp.IsZero() {
-		data.failMissing("The backing PhysicalContainer is being deleted.")
-		return
-	}
 	condition := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
 	message := logicalBackingStatusMessage("PhysicalContainer", physical.Status.Conditions)
 	switch physical.Status.Phase {

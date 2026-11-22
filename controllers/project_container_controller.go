@@ -543,6 +543,9 @@ func handleProjectContainerFailed(
 		change |= observationChange
 		if getErr != nil {
 			log.Error(getErr, "Failed to observe failed Project container")
+		} else {
+			// Completion observed after failure is reported; the lookup copy keeps the failure diagnosis intact.
+			data.finishedAt, data.exitCode = lookupData.finishedAt, lookupData.exitCode
 		}
 	}
 	imageLookupData := *data
@@ -752,11 +755,6 @@ func (r *ProjectContainerReconciler) findProjectImage(ctx context.Context, resou
 		return nil, identityErr
 	}
 	data.imageUID, data.imageName = image.UID, image.Name
-	if !image.DeletionTimestamp.IsZero() && data.state != projectStateFailed && data.state != projectStateStopped {
-		deletionErr := fmt.Errorf("the owned PhysicalContainerImage %q is being deleted", image.NamespacedName())
-		data.failMissing(deletionErr.Error())
-		return nil, deletionErr
-	}
 	return image, nil
 }
 

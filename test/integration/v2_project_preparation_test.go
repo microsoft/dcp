@@ -307,7 +307,8 @@ func TestV2ProjectContainerImageLogFailurePreservesExecutionState(t *testing.T) 
 }
 
 // Verifies that an owned image's logical hold preserves startup capture for late ProjectContainer followers
-// after physical image cleanup, and ProjectContainer deletion releases the hold without recreating the image.
+// after physical image cleanup without failing the Project, and ProjectContainer deletion releases the hold
+// without recreating the image.
 func TestV2ProjectContainerOwnedImageDeletionPreservesLateStartupLogs(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -327,11 +328,14 @@ func TestV2ProjectContainerOwnedImageDeletionPreservesLateStartupLogs(t *testing
 		return !current.DeletionTimestamp.IsZero() &&
 			!slices.Contains(current.Finalizers, apiv2.GroupName+"/physicalcontainerimage-reconciler"), nil
 	})
-	failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
-	require.Equal(t, prepared.Status.StartupLogs.UID, failed.Status.StartupLogs.UID)
 	output, outputErr := readV2ContainerLog(ctx, resource, apiv2.ResourceLogOptions{Source: "startup_stdout", Follow: true})
 	require.NoError(t, outputErr)
 	require.Contains(t, output, "Pulling image "+namespace.Name+"-image")
+	// Like LogicalContainer, a deletion request on a held owned image does not fail the Project.
+	current := &apiv2.ProjectContainer{}
+	require.NoError(t, client.Get(ctx, resource.NamespacedName(), current))
+	require.Equal(t, apiv2.ProjectPhasePending, current.Status.Phase)
+	require.Equal(t, prepared.Status.StartupLogs.UID, current.Status.StartupLogs.UID)
 	require.NoError(t, client.Delete(ctx, resource))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, image)

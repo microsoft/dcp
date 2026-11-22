@@ -1027,12 +1027,9 @@ func TestV2ProjectContainerDirectExecutionWithRealOrchestrator(t *testing.T) {
 		require.NoError(t, tracker.TrackContainer("project-"+string(resource.UID)))
 		prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
 		requireReadyCondition(t, prepared.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonAwaitingStart)
-		inspected, inspectErr := runtime.Orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
-			Containers: []string{prepared.Status.ContainerID},
-		})
-		require.NoError(t, inspectErr)
-		require.Len(t, inspected, 1)
-		require.Equal(t, containers.ContainerStatusCreated, inspected[0].Status)
+		// An unstarted Project creates no backing.
+		require.Empty(t, prepared.Status.ContainerID)
+		require.Empty(t, prepared.Status.PhysicalContainerRef)
 
 		require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"start":true}}`))))
 		exited := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseExited)

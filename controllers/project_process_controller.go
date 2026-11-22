@@ -262,7 +262,10 @@ func (r *ProjectProcessReconciler) findProjectProcess(
 			return nil, fmt.Errorf("get Project process backing: %w", getErr)
 		}
 	}
-	if identityErr := validatePhysicalResourceIdentity(resource, physical, data.physicalUID); identityErr != nil {
+	// A held backing that is being deleted is still ours; its controller reports the teardown through its lifecycle.
+	if !metav1.IsControlledBy(physical, resource) || (data.physicalUID != "" && physical.UID != data.physicalUID) ||
+		!hasFinalizer(physical, LogicalBackingFinalizer) {
+		identityErr := fmt.Errorf("physical process %q has a different owner, UID, or logical hold", physical.NamespacedName())
 		data.failMissing(identityErr.Error())
 		return nil, identityErr
 	}

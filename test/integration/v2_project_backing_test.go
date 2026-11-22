@@ -263,6 +263,41 @@ func TestV2ProjectContainerFailureSurvivesBackingChanges(t *testing.T) {
 	}
 }
 
+// Verifies that a direct-mode ProjectContainer that fails while its application is still running keeps its
+// failure diagnosis and still reports the application's later finish time and exit code.
+func TestV2ProjectContainerFailedReportsLaterCompletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	namespace := createV2ExecNamespace(t, ctx, client, "v2-project-failed-completion")
+	resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
+		Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir(), LaunchMode: apiv2.ProjectLaunchModeDirect},
+			Container: apiv2.ProjectContainerTemplate{LogicalContainerConfig: apiv2.LogicalContainerConfig{
+				Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Entrypoint: "application",
+			}}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}}
+	require.NoError(t, client.Create(ctx, resource))
+	running := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseActive)
+	var images apiv2.PhysicalContainerImageList
+	require.NoError(t, client.List(ctx, &images, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, images.Items, 1)
+	// Losing the hold on the owned image fails the Project but leaves the trusted container running.
+	removeProjectBackingHold(t, ctx, client, &images.Items[0])
+	failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
+	require.Nil(t, failed.Status.ExitCode)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerExit(ctx, running.Status.ContainerID, 9))
+	completed := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
+		return current.Status.ExitCode != nil, nil
+	})
+	require.Equal(t, int32(9), *completed.Status.ExitCode)
+	require.False(t, completed.Status.FinishedAt.IsZero())
+	require.Equal(t, apiv2.ProjectPhaseFailed, completed.Status.Phase)
+	require.Equal(t, failed.Status.Conditions[0].Message, completed.Status.Conditions[0].Message)
+	require.NoError(t, client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
+}
+
 // Verifies that ProjectProcess keeps namespace lookup failures in Pending/Preparing with diagnostic context
 // and becomes prepared after namespace observation recovers.
 func TestV2ProjectProcessNamespaceLookupRetainsPreparation(t *testing.T) {
