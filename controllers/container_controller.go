@@ -2217,7 +2217,17 @@ func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
 			log.Error(probeErr, "Could not enable health probes for Container")
 		}
 	}
-	return ensureEndpointsForWorkload(ctx, r, ctr, nil, inspected, log)
+	return ensureEndpointsForWorkload(ctx, r, ctr, nil, containerEndpointContext{
+		inspected:      inspected,
+		claimHostPorts: rcd.startupAttempted,
+	}, log)
+}
+
+// containerEndpointContext carries runtime state used to create Container Endpoints.
+type containerEndpointContext struct {
+	inspected *containers.InspectedContainer
+	// Whether this DCP instance created the container and is responsible for claiming its host ports.
+	claimHostPorts bool
 }
 
 // NETWORKING SUPPORT METHODS
@@ -2540,7 +2550,7 @@ func (r *ContainerReconciler) createEndpoints(
 	owner ctrl_client.Object,
 	serviceProducer commonapi.ServiceProducer,
 	existingEndpoints []*apiv1.Endpoint,
-	inspected *containers.InspectedContainer,
+	ecc containerEndpointContext,
 	log logr.Logger,
 ) ([]*apiv1.Endpoint, objectChange, error) {
 	endpointName, _, err := MakeUniqueName(owner.GetName())
@@ -2550,18 +2560,22 @@ func (r *ContainerReconciler) createEndpoints(
 	}
 
 	bindAddress, hostPort, err := getHostBindAddressAndPortForPorts(
-		v1PortsToCreateContainerPorts(owner.(*apiv1.Container).Spec.Ports), serviceProducer.Port, inspected, log)
+		v1PortsToCreateContainerPorts(owner.(*apiv1.Container).Spec.Ports), serviceProducer.Port, ecc.inspected, log)
 	if err != nil {
 		log.Error(err, "Could not determine host address and port for container port")
 		return nil, noChange, err
 	}
 	hostAddress := normalizeHostAddress(bindAddress)
-	if bindAddress == "" {
-		bindAddress = networking.IPv4AllInterfaceAddress
-	}
-	change, reservationErr := reserveServiceProducerEndpointPort(ctx, r, owner, serviceProducer, bindAddress, hostPort, log)
-	if reservationErr != nil {
-		return nil, change, reservationErr
+	change := noChange
+	if ecc.claimHostPorts {
+		if bindAddress == "" {
+			bindAddress = networking.IPv4AllInterfaceAddress
+		}
+		var reservationErr error
+		change, reservationErr = reserveServiceProducerEndpointPort(ctx, r, owner, serviceProducer, bindAddress, hostPort, log)
+		if reservationErr != nil {
+			return nil, change, reservationErr
+		}
 	}
 	endpointExists := slices.Any(existingEndpoints, func(ep *apiv1.Endpoint) bool {
 		return ep.Spec.ServiceName == serviceProducer.ServiceName &&
@@ -2595,10 +2609,10 @@ func (r *ContainerReconciler) validateExistingEndpoints(
 	owner ctrl_client.Object,
 	serviceProducer commonapi.ServiceProducer,
 	existingEndpoints []*apiv1.Endpoint,
-	inspected *containers.InspectedContainer,
+	ecc containerEndpointContext,
 	log logr.Logger,
 ) ([]*apiv1.Endpoint, []*apiv1.Endpoint, error) {
-	hostAddress, hostPort, err := getHostAddressAndPortForContainerPort(owner.(*apiv1.Container).Spec, serviceProducer.Port, inspected, log)
+	hostAddress, hostPort, err := getHostAddressAndPortForContainerPort(owner.(*apiv1.Container).Spec, serviceProducer.Port, ecc.inspected, log)
 	if err != nil {
 		log.Error(err, "Could not determine host address and port for container port")
 		return nil, nil, err

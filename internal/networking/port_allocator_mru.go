@@ -21,7 +21,12 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
-func allocateRandomEphemeralPortWithMruFile(ctx context.Context, protocol commonapi.PortProtocol, address string, log logr.Logger) (int32, error) {
+// ephemeralPortProbeAttempts bounds retries when an OS-selected port is occupied on another probe address.
+const ephemeralPortProbeAttempts = 5
+
+func allocateRandomEphemeralPortWithMruFile(
+	ctx context.Context, protocol commonapi.PortProtocol, address string, probeAddresses []string, log logr.Logger,
+) (int32, error) {
 	if callerErr := ctx.Err(); callerErr != nil {
 		return 0, callerErr
 	}
@@ -37,7 +42,7 @@ func allocateRandomEphemeralPortWithMruFile(ctx context.Context, protocol common
 		if packageMruPortFile.params.failOnPortFileError {
 			return 0, err
 		} else {
-			return getRandomEphemeralPort(protocol, address)
+			return getRandomBindableEphemeralPort(protocol, address, probeAddresses)
 		}
 	}
 
@@ -71,7 +76,7 @@ func allocateRandomEphemeralPortWithMruFile(ctx context.Context, protocol common
 		}()
 
 		for i := 0; i < packageMruPortFile.params.portAllocationsPerRound; i++ {
-			port, portErr := getRandomEphemeralPort(protocol, address)
+			port, portErr := getRandomBindableEphemeralPort(protocol, address, probeAddresses)
 			if portErr != nil {
 				return false, portErr
 			}
@@ -109,7 +114,9 @@ func allocateRandomEphemeralPortWithMruFile(ctx context.Context, protocol common
 	}
 }
 
-func checkPortAvailableWithMruFile(ctx context.Context, protocol commonapi.PortProtocol, address string, port int32, log logr.Logger) error {
+func checkPortAvailableWithMruFile(
+	ctx context.Context, protocol commonapi.PortProtocol, address string, probeAddresses []string, port int32, log logr.Logger,
+) error {
 	portFileLock.Lock()
 	defer portFileLock.Unlock()
 
@@ -119,7 +126,7 @@ func checkPortAvailableWithMruFile(ctx context.Context, protocol commonapi.PortP
 			return err
 		} else {
 			// Do best-effort check without considering the most recently used ports
-			return checkPortCurrentlyBindable(protocol, address, port)
+			return checkPortCurrentlyBindable(protocol, probeAddresses, port)
 		}
 	}
 
@@ -149,7 +156,7 @@ func checkPortAvailableWithMruFile(ctx context.Context, protocol commonapi.PortP
 	if found && usedPorts[i].Instance != programInstanceID {
 		return fmt.Errorf("port %d is already in use by another process", port)
 	} else {
-		return checkPortCurrentlyBindable(protocol, address, port)
+		return checkPortCurrentlyBindable(protocol, probeAddresses, port)
 	}
 }
 
@@ -211,7 +218,17 @@ func releaseSpecificPortWithMruFile(ctx context.Context, address string, port in
 	return nil
 }
 
-func checkPortCurrentlyBindable(protocol commonapi.PortProtocol, address string, port int32) error {
+// checkPortCurrentlyBindable verifies that port can currently be bound on every address.
+func checkPortCurrentlyBindable(protocol commonapi.PortProtocol, addresses []string, port int32) error {
+	for _, address := range addresses {
+		if bindErr := checkPortCurrentlyBindableOnAddress(protocol, address, port); bindErr != nil {
+			return bindErr
+		}
+	}
+	return nil
+}
+
+func checkPortCurrentlyBindableOnAddress(protocol commonapi.PortProtocol, address string, port int32) error {
 	if protocol == commonapi.PortProtocolUDP {
 		udpaddr, err := net.ResolveUDPAddr("udp", AddressAndPort(address, port))
 		if err != nil {
@@ -237,6 +254,22 @@ func checkPortCurrentlyBindable(protocol commonapi.PortProtocol, address string,
 			return nil
 		}
 	}
+}
+
+// getRandomBindableEphemeralPort returns an OS-selected port on address that is also bindable on every probe address.
+func getRandomBindableEphemeralPort(protocol commonapi.PortProtocol, address string, probeAddresses []string) (int32, error) {
+	var probeErr error
+	for attempt := 0; attempt < ephemeralPortProbeAttempts; attempt++ {
+		port, portErr := getRandomEphemeralPort(protocol, address)
+		if portErr != nil {
+			return 0, portErr
+		}
+		probeErr = checkPortCurrentlyBindable(protocol, probeAddresses, port)
+		if probeErr == nil {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("could not find an ephemeral port bindable on all requested addresses: %w", probeErr)
 }
 
 func getRandomEphemeralPort(protocol commonapi.PortProtocol, address string) (int32, error) {

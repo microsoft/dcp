@@ -7,6 +7,8 @@ package networking
 
 import (
 	"context"
+	"fmt"
+	std_slices "slices"
 
 	"github.com/go-logr/logr"
 
@@ -17,12 +19,16 @@ import (
 // Even if this method is called twice in a row, it should not return the same port.
 func GetFreePort(ctx context.Context, protocol commonapi.PortProtocol, address string, log logr.Logger) (int32, error) {
 	protocol = NormalizePortProtocol(protocol)
-	address, addressErr := NormalizePortAllocationAddress(address)
+	normalizedAddress, addressErr := NormalizePortAllocationAddress(address)
 	if addressErr != nil {
 		return 0, addressErr
 	}
+	probeAddresses, probeErr := portProbeAddresses(address, normalizedAddress)
+	if probeErr != nil {
+		return 0, probeErr
+	}
 
-	stateStorePort, _, shouldFallback, stateStoreErr := allocatePortFromStateStoreRange(ctx, protocol, address, log)
+	stateStorePort, _, shouldFallback, stateStoreErr := allocatePortFromStateStoreRange(ctx, protocol, normalizedAddress, probeAddresses, log)
 	if stateStoreErr == nil {
 		return stateStorePort, nil
 	}
@@ -30,25 +36,47 @@ func GetFreePort(ctx context.Context, protocol commonapi.PortProtocol, address s
 		return 0, stateStoreErr
 	}
 	log.V(1).Info("Warning: state store port allocation failed, falling back to MRU port allocation", "Error", stateStoreErr.Error())
-	return allocateRandomEphemeralPortWithMruFile(ctx, protocol, address, log)
+	return allocateRandomEphemeralPortWithMruFile(ctx, protocol, normalizedAddress, probeAddresses, log)
 }
 
 func CheckPortAvailable(ctx context.Context, protocol commonapi.PortProtocol, address string, port int32, log logr.Logger) error {
 	protocol = NormalizePortProtocol(protocol)
-	address, addressErr := NormalizePortAllocationAddress(address)
+	normalizedAddress, addressErr := NormalizePortAllocationAddress(address)
 	if addressErr != nil {
 		return addressErr
 	}
+	probeAddresses, probeErr := portProbeAddresses(address, normalizedAddress)
+	if probeErr != nil {
+		return probeErr
+	}
 
-	_, shouldFallback, stateStoreErr := checkPortAvailableWithStateStore(ctx, protocol, address, port, log)
+	_, shouldFallback, stateStoreErr := checkPortAvailableWithStateStore(ctx, protocol, normalizedAddress, probeAddresses, port, log)
 	if stateStoreErr == nil {
 		return nil
 	}
 	if !shouldFallback {
 		return stateStoreErr
 	}
-	if stateStoreErr != nil {
-		log.V(1).Info("Warning: state store port availability check failed, falling back to MRU port availability check", "Error", stateStoreErr.Error())
+	log.V(1).Info("Warning: state store port availability check failed, falling back to MRU port availability check", "Error", stateStoreErr.Error())
+	return checkPortAvailableWithMruFile(ctx, protocol, normalizedAddress, probeAddresses, port, log)
+}
+
+// portProbeAddresses returns every address that must be bindable for a requested allocation address.
+// Localhost requests must be free on all loopback addresses because listeners commonly bind each of them.
+func portProbeAddresses(requestedAddress string, normalizedAddress string) ([]string, error) {
+	if requestedAddress != "" && requestedAddress != Localhost {
+		return []string{normalizedAddress}, nil
 	}
-	return checkPortAvailableWithMruFile(ctx, protocol, address, port, log)
+	loopbackIps, lookupErr := LookupIP(Localhost)
+	if lookupErr != nil {
+		return nil, fmt.Errorf("could not resolve localhost addresses for port probing: %w", lookupErr)
+	}
+	probeAddresses := []string{normalizedAddress}
+	for _, ip := range loopbackIps {
+		address := IpToString(ip)
+		if !std_slices.Contains(probeAddresses, address) {
+			probeAddresses = append(probeAddresses, address)
+		}
+	}
+	return probeAddresses, nil
 }

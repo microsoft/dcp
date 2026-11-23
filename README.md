@@ -68,6 +68,8 @@ DCP has knowledge of a number of environment variables that can change its behav
 State-store port allocation is initialized in both the API-server and controller processes.
 When using state-store allocation, an explicit API-server `--port` binding is reserved before startup and released after shutdown; automatic API-server port selection is unchanged.
 Claims use the listener's bind IP, not its advertised client address; for example, a wildcard `0.0.0.0` listener remains reserved on `0.0.0.0` even when its Endpoint advertises `127.0.0.1`.
+Requests for `localhost` or an omitted address are claimed on the preferred loopback IP, but the port must be bindable on every loopback address that `localhost` resolves to.
+DCP claims ports only for runtime resources it creates. Reused or adopted Containers, Executables, and LogicalProcesses publish Endpoints without claiming their existing bindings, and tunnel client-proxy addresses inside container networks are not claimed as host bindings.
 IPv6 wildcard `::` claims conservatively conflict with IPv4 bindings because those listeners may serve both address families; specific IPv4 and IPv6 addresses remain independent.
 An omitted transport protocol is treated as TCP.
 Executable template allocations belong to their workload, including while startup waits for dependencies, and are released after confirmed startup failure or workload stop.

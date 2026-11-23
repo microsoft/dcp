@@ -49,7 +49,7 @@ func TestPrepareLogicalPortsReevaluatesDynamicPortsOnRetry(t *testing.T) {
 		{binding: apiv2.LogicalServiceBinding{Name: "dynamic", ServiceRef: firstService.Name}, address: "127.0.0.1"},
 		{binding: apiv2.LogicalServiceBinding{Name: "explicit", ServiceRef: "second"}, address: "127.0.0.1", port: 8080},
 	}
-	partial, preparationErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner, requested, logr.Discard())
+	partial, preparationErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner, requested, true, logr.Discard())
 	require.True(t, apierrors.IsNotFound(preparationErr))
 	require.Len(t, partial, 1)
 	require.Positive(t, partial[0].Port)
@@ -59,7 +59,7 @@ func TestPrepareLogicalPortsReevaluatesDynamicPortsOnRetry(t *testing.T) {
 	defer func() { require.NoError(t, occupied.Close()) }()
 	secondService := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "second", Namespace: owner.Namespace}}
 	require.NoError(t, apiClient.Create(ctx, secondService))
-	prepared, retryErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner, requested, logr.Discard())
+	prepared, retryErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner, requested, true, logr.Discard())
 	require.NoError(t, retryErr)
 	require.Len(t, prepared, 2)
 	require.Positive(t, prepared[0].Port)
@@ -136,7 +136,7 @@ func TestPrepareLogicalPortsClassifiesCreateOutcomes(t *testing.T) {
 			owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "workload", Namespace: "namespace"}}
 			requested := []logicalPortRequest{{binding: apiv2.LogicalServiceBinding{Name: "http",
 				Service: &apiv2.LogicalServiceTemplate{Name: "management"}}, port: 8080}}
-			ports, prepareErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner, requested, logr.Discard())
+			ports, prepareErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner, requested, true, logr.Discard())
 			require.Equal(t, testCase.readCount, apiClient.reads)
 			require.Equal(t, 1, apiClient.creates)
 			switch {
@@ -152,7 +152,7 @@ func TestPrepareLogicalPortsClassifiesCreateOutcomes(t *testing.T) {
 				require.Empty(t, ports)
 			}
 			if testCase.commit && !testCase.exists {
-				recovered, retryErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner, requested, logr.Discard())
+				recovered, retryErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner, requested, true, logr.Discard())
 				require.NoError(t, retryErr)
 				require.Len(t, recovered, 1)
 				require.Equal(t, 1, apiClient.creates)
@@ -183,7 +183,7 @@ func TestPrepareLogicalPortsRejectsTerminalServices(t *testing.T) {
 			apiClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(service).Build()
 			owner := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "process", Namespace: service.Namespace}}
 			ports, prepareErr := prepareLogicalPorts(ctx, apiClient, apiClient, owner,
-				[]logicalPortRequest{{binding: apiv2.LogicalServiceBinding{Name: "http", ServiceRef: service.Name}}}, logr.Discard())
+				[]logicalPortRequest{{binding: apiv2.LogicalServiceBinding{Name: "http", ServiceRef: service.Name}}}, true, logr.Discard())
 			require.ErrorIs(t, prepareErr, errLogicalServiceDependencyFailed)
 			require.Empty(t, ports)
 		})

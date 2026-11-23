@@ -99,7 +99,10 @@ func loadStateStorePortAllocationConfig(log logr.Logger) (*stateStorePortAllocat
 	}, false, nil
 }
 
-func allocatePortFromStateStoreRange(ctx context.Context, protocol commonapi.PortProtocol, address string, log logr.Logger) (int32, *stateStorePortAllocationConfig, bool, error) {
+// allocatePortFromStateStoreRange claims a port for address after verifying that it is bindable on every probe address.
+func allocatePortFromStateStoreRange(
+	ctx context.Context, protocol commonapi.PortProtocol, address string, probeAddresses []string, log logr.Logger,
+) (int32, *stateStorePortAllocationConfig, bool, error) {
 	config, shouldFallback, configErr := getStateStorePortAllocationConfig(log)
 	if configErr != nil {
 		return 0, nil, shouldFallback, configErr
@@ -129,7 +132,7 @@ func allocatePortFromStateStoreRange(ctx context.Context, protocol commonapi.Por
 		if !hasCandidate {
 			break
 		}
-		if checkErr := checkPortCurrentlyBindable(protocol, address, candidate); checkErr != nil {
+		if checkErr := checkPortCurrentlyBindable(protocol, probeAddresses, candidate); checkErr != nil {
 			candidates.excludedPorts[candidate] = struct{}{}
 			continue
 		}
@@ -148,19 +151,21 @@ func allocatePortFromStateStoreRange(ctx context.Context, protocol commonapi.Por
 	return 0, nil, shouldFallback, fmt.Errorf("could not find an available port in configured DCP port allocation range")
 }
 
-func checkPortAvailableWithStateStore(ctx context.Context, protocol commonapi.PortProtocol, address string, port int32, log logr.Logger) (*stateStorePortAllocationConfig, bool, error) {
-	normalizedAddress, addressErr := NormalizePortAllocationAddress(address)
-	if addressErr != nil {
-		return nil, false, addressErr
-	}
-	ip, ipErr := netip.ParseAddr(ToStandaloneAddress(normalizedAddress))
+// checkPortAvailableWithStateStore claims an explicit port for address after verifying every probe address.
+func checkPortAvailableWithStateStore(
+	ctx context.Context, protocol commonapi.PortProtocol, address string, probeAddresses []string, port int32, log logr.Logger,
+) (*stateStorePortAllocationConfig, bool, error) {
+	ip, ipErr := netip.ParseAddr(ToStandaloneAddress(address))
 	if ipErr != nil {
-		return nil, false, fmt.Errorf("could not parse port reservation IP '%s': %w", normalizedAddress, ipErr)
+		return nil, false, fmt.Errorf("could not parse port reservation IP '%s': %w", address, ipErr)
 	}
-	return reserveSpecificStateStorePort(ctx, ports.Binding{Protocol: string(protocol), IP: ip, Port: port}, address, true, log)
+	return reserveSpecificStateStorePort(ctx, ports.Binding{Protocol: string(protocol), IP: ip, Port: port}, probeAddresses, log)
 }
 
-func reserveSpecificStateStorePort(ctx context.Context, binding ports.Binding, bindAddress string, requireBindable bool, log logr.Logger) (*stateStorePortAllocationConfig, bool, error) {
+// reserveSpecificStateStorePort claims binding. When probeAddresses is not empty, the port must be bindable on each address.
+func reserveSpecificStateStorePort(
+	ctx context.Context, binding ports.Binding, probeAddresses []string, log logr.Logger,
+) (*stateStorePortAllocationConfig, bool, error) {
 	config, shouldFallback, configErr := getStateStorePortAllocationConfig(log)
 	if configErr != nil {
 		return nil, shouldFallback, configErr
@@ -175,11 +180,8 @@ func reserveSpecificStateStorePort(ctx context.Context, binding ports.Binding, b
 	}
 	defer stateStorePortReservationLock.Unlock()
 
-	if requireBindable {
-		checkErr := checkPortCurrentlyBindable(commonapi.PortProtocol(binding.Protocol), bindAddress, binding.Port)
-		if checkErr != nil {
-			return nil, false, checkErr
-		}
+	if checkErr := checkPortCurrentlyBindable(commonapi.PortProtocol(binding.Protocol), probeAddresses, binding.Port); checkErr != nil {
+		return nil, false, checkErr
 	}
 	if IsEphemeralPort(binding.Port) && !config.allowEphemeralOverlap {
 		return nil, false, nil

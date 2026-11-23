@@ -346,7 +346,8 @@ func TestPortAllocationMruFallbackHonorsCallerContext(t *testing.T) {
 	expiredCtx, cancelExpired := context.WithDeadline(ctx, time.Now().Add(-time.Second))
 	defer cancelExpired()
 	for _, callerCtx := range []context.Context{cancelledCtx, expiredCtx} {
-		port, allocationErr := allocateRandomEphemeralPortWithMruFile(callerCtx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+		port, allocationErr := allocateRandomEphemeralPortWithMruFile(callerCtx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress,
+			[]string{IPv4LocalhostDefaultAddress}, log)
 		require.ErrorIs(t, allocationErr, callerCtx.Err())
 		require.Zero(t, port)
 		fallbackPort, fallbackErr := GetFreePort(callerCtx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
@@ -363,7 +364,8 @@ func TestPortAllocationMruFallbackHonorsCallerContext(t *testing.T) {
 	_, writeErr := mru.Write([]byte("invalid MRU record\n"))
 	require.NoError(t, writeErr)
 	require.NoError(t, mru.Unlock())
-	port, timeoutFallbackErr := allocateRandomEphemeralPortWithMruFile(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress, log)
+	port, timeoutFallbackErr := allocateRandomEphemeralPortWithMruFile(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress,
+		[]string{IPv4LocalhostDefaultAddress}, log)
 	require.NoError(t, timeoutFallbackErr)
 	require.Positive(t, port)
 	require.NoError(t, ctx.Err())
@@ -381,6 +383,45 @@ func TestPortReservationCheckRejectsOccupiedEphemeralPort(t *testing.T) {
 	defer owner.Release(ctx, log)
 	require.Error(t, owner.CheckPortAvailable(ctx, commonapi.PortProtocolTCP, IPv4LocalhostDefaultAddress,
 		int32(listener.Addr().(*net.TCPAddr).Port), log))
+}
+
+// Verifies that GetFreePort and CheckPortAvailable reject localhost ports occupied on any loopback address,
+// without creating claims, in state-store and MRU modes.
+func TestLocalhostPortChecksProbeEveryLoopbackAddress(t *testing.T) {
+	normalizedAddress, normalizeErr := NormalizePortAllocationAddress(Localhost)
+	require.NoError(t, normalizeErr)
+	loopbackIps, lookupErr := LookupIP(Localhost)
+	require.NoError(t, lookupErr)
+	otherLoopbackAddress := ""
+	for _, ip := range loopbackIps {
+		if address := IpToString(ip); address != normalizedAddress {
+			otherLoopbackAddress = address
+			break
+		}
+	}
+	if otherLoopbackAddress == "" {
+		t.Skip("localhost resolves to a single loopback address")
+	}
+
+	for _, mode := range []string{portAllocatorModeStateStore, portAllocatorModeMru} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, _, db := newPortReservationTestStore(t)
+			listener, listenErr := net.Listen("tcp", AddressAndPort(otherLoopbackAddress, 0))
+			require.NoError(t, listenErr)
+			defer func() { require.NoError(t, listener.Close()) }()
+			occupiedPort := int32(listener.Addr().(*net.TCPAddr).Port)
+			t.Setenv(DCP_PORT_ALLOCATOR, mode)
+			t.Setenv(DCP_PORT_ALLOCATION_RANGE, fmt.Sprintf("%d-%d", occupiedPort, occupiedPort))
+			t.Setenv(DCP_PORT_ALLOCATION_ALLOW_EPHEMERAL_OVERLAP, "true")
+
+			require.Error(t, CheckPortAvailable(ctx, commonapi.PortProtocolTCP, Localhost, occupiedPort, log))
+			if mode == portAllocatorModeStateStore {
+				_, allocationErr := GetFreePort(ctx, commonapi.PortProtocolTCP, Localhost, log)
+				require.Error(t, allocationErr)
+			}
+			require.Zero(t, portReservationCount(t, ctx, db))
+		})
+	}
 }
 
 // Verifies that declared bindings can be reserved while their owner's listener is already bound,

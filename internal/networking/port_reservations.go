@@ -49,14 +49,18 @@ func (reservations *PortReservationSet) GetFreePort(
 	if parseErr != nil {
 		return 0, parseErr
 	}
+	probeAddresses, probeErr := portProbeAddresses(address, normalizedAddress)
+	if probeErr != nil {
+		return 0, probeErr
+	}
 	if lockErr := portReservations.Lock(ctx); lockErr != nil {
 		return 0, lockErr
 	}
 	defer portReservations.Unlock()
-	port, config, fallback, allocationErr := allocatePortFromStateStoreRange(ctx, protocol, normalizedAddress, log)
+	port, config, fallback, allocationErr := allocatePortFromStateStoreRange(ctx, protocol, normalizedAddress, probeAddresses, log)
 	if allocationErr != nil && fallback {
 		log.V(1).Info("State store port allocation unavailable, using MRU allocation", "Error", allocationErr)
-		port, allocationErr = allocateRandomEphemeralPortWithMruFile(ctx, protocol, normalizedAddress, log)
+		port, allocationErr = allocateRandomEphemeralPortWithMruFile(ctx, protocol, normalizedAddress, probeAddresses, log)
 	}
 	if allocationErr != nil {
 		return 0, allocationErr
@@ -83,7 +87,7 @@ func (reservations *PortReservationSet) Reserve(ctx context.Context, binding por
 			return nil
 		}
 	}
-	config, fallback, reserveErr := reserveSpecificStateStorePort(ctx, binding, "", false, log)
+	config, fallback, reserveErr := reserveSpecificStateStorePort(ctx, binding, nil, log)
 	if reserveErr != nil {
 		if !fallback {
 			return reserveErr
@@ -110,17 +114,21 @@ func (reservations *PortReservationSet) CheckPortAvailable(
 	if parseErr != nil {
 		return parseErr
 	}
+	probeAddresses, probeErr := portProbeAddresses(address, normalizedAddress)
+	if probeErr != nil {
+		return probeErr
+	}
 	if lockErr := portReservations.Lock(ctx); lockErr != nil {
 		return lockErr
 	}
 	defer portReservations.Unlock()
-	config, fallback, checkErr := checkPortAvailableWithStateStore(ctx, protocol, normalizedAddress, port, log)
+	config, fallback, checkErr := checkPortAvailableWithStateStore(ctx, protocol, normalizedAddress, probeAddresses, port, log)
 	if checkErr != nil {
 		if !fallback {
 			return checkErr
 		}
 		log.V(1).Info("State store port check unavailable, using MRU availability check", "Error", checkErr)
-		return checkPortAvailableWithMruFile(ctx, protocol, normalizedAddress, port, log)
+		return checkPortAvailableWithMruFile(ctx, protocol, normalizedAddress, probeAddresses, port, log)
 	}
 	if config != nil {
 		reservations.retain(portReservationKey{

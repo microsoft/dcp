@@ -108,7 +108,7 @@ func logicalPortResourceName(owner ctrl_client.Object, name string) string {
 
 func prepareLogicalPorts(
 	ctx context.Context, apiClient ctrl_client.Client, reader ctrl_client.Reader, owner commonapi.DcpModelObject,
-	requested []logicalPortRequest, log logr.Logger,
+	requested []logicalPortRequest, claimFixedPorts bool, log logr.Logger,
 ) (prepared []logicalPortData, preparationErr error) {
 	reservations := &networking.PortReservationSet{}
 	defer func() {
@@ -159,18 +159,26 @@ func prepareLogicalPorts(
 				return prepared, fmt.Errorf("allocate logical port %q: %w", port.Name, allocationErr)
 			}
 			port.Port = allocatedPort
-		} else if _, processPort := owner.(*apiv2.LogicalProcess); processPort {
-			ip, ipErr := portReservationIP(port.Address)
-			if ipErr != nil {
-				return prepared, ipErr
-			}
-			if reserveErr := reservations.Reserve(ctx, ports.Binding{Protocol: string(port.protocol), IP: ip, Port: port.Port}, log); reserveErr != nil {
-				return prepared, fmt.Errorf("reserve logical port %q: %w", port.Name, reserveErr)
+		} else if claimFixedPorts {
+			if reserveErr := reserveLogicalFixedPort(ctx, port, log); reserveErr != nil {
+				return prepared, reserveErr
 			}
 		}
 		prepared = append(prepared, port)
 	}
 	return prepared, nil
+}
+
+// reserveLogicalFixedPort claims a declared port for a process this DCP instance will launch.
+func reserveLogicalFixedPort(ctx context.Context, port logicalPortData, log logr.Logger) error {
+	ip, ipErr := portReservationIP(port.Address)
+	if ipErr != nil {
+		return ipErr
+	}
+	if reserveErr := port.reservations.Reserve(ctx, ports.Binding{Protocol: string(port.protocol), IP: ip, Port: port.Port}, log); reserveErr != nil {
+		return fmt.Errorf("reserve logical port %q: %w", port.Name, reserveErr)
+	}
+	return nil
 }
 
 func releaseLogicalPortReservations(ctx context.Context, selections []logicalPortSelection, log logr.Logger) {

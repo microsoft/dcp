@@ -386,7 +386,7 @@ func handleNewExecutable(
 					return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 				}
 			} else {
-				computed, environmentChange := r.computeExecutableEnvironment(ctx, exe, log, runInfo)
+				computed, environmentChange := r.computeExecutableEnvironment(ctx, exe, log, runInfo, false)
 				if !computed {
 					return environmentChange
 				}
@@ -427,6 +427,10 @@ func handleNewExecutable(
 					}
 				} else {
 					adopted, adoptionChange := r.adoptPersistentExecutableRecord(ctx, exe, runInfo, record, persistentRunner, log)
+					if adopted {
+						// Ports allocated while evaluating the lifecycle key are not used by the adopted process.
+						releaseWorkloadPortReservations(ctx, exe.UID, log)
+					}
 					if adopted || adoptionChange != noChange {
 						return environmentChange | adoptionChange
 					}
@@ -436,6 +440,7 @@ func handleNewExecutable(
 	}
 
 	if !createIfMissing {
+		releaseWorkloadPortReservations(ctx, exe.UID, log)
 		return r.setExecutableState(exe, apiv1.ExecutableStateNotFound) | additionalReconciliationNeeded
 	}
 
@@ -591,7 +596,7 @@ func (r *ExecutableReconciler) startExecutable(
 	}
 
 	if len(ri.startResults) == 0 {
-		computed, startupDataChanged := r.computeExecutableEnvironment(ctx, exe, log, ri)
+		computed, startupDataChanged := r.computeExecutableEnvironment(ctx, exe, log, ri, true)
 		environmentChanged |= startupDataChanged
 		if !computed {
 			// Environment is not ready, or an error occurred; report it and let the next reconciliation try again.
@@ -690,7 +695,7 @@ func (r *ExecutableReconciler) startExecutable(
 			return statusChanged | environmentChanged
 		}
 
-		computed, startupDataChanged := r.computeExecutableEnvironment(ctx, exe, log, ri)
+		computed, startupDataChanged := r.computeExecutableEnvironment(ctx, exe, log, ri, true)
 		environmentChanged |= startupDataChanged
 		if !computed {
 			// Environment is not ready, or an error occurred; report it and let the next reconciliation try again.
@@ -1113,7 +1118,10 @@ func (r *ExecutableReconciler) enableEndpointsAndHealthProbes(
 	runInfo *ExecutableRunInfo,
 	log logr.Logger,
 ) objectChange {
-	change := ensureEndpointsForWorkload(ctx, r, exe, runInfo.ReservedPorts, struct{}{}, log)
+	// Only runs launched by this DCP instance have start results; adopted processes own their existing bindings.
+	change := ensureEndpointsForWorkload(ctx, r, exe, runInfo.ReservedPorts, executableEndpointContext{
+		claimProducerPorts: len(runInfo.startResults) > 0,
+	}, log)
 
 	if len(exe.Spec.HealthProbes) > 0 && pointers.NotTrue(runInfo.healthProbesEnabled) {
 		log.V(1).Info("Enabling health probes for Executable...")
@@ -1129,6 +1137,12 @@ func (r *ExecutableReconciler) enableEndpointsAndHealthProbes(
 		}
 	}
 	return change
+}
+
+// executableEndpointContext carries Executable run state used to create Endpoints.
+type executableEndpointContext struct {
+	// Whether this DCP instance launched the run and is responsible for claiming its producer ports.
+	claimProducerPorts bool
 }
 
 func (r *ExecutableReconciler) disableEndpointsAndHealthProbes(
@@ -1197,7 +1211,7 @@ func (r *ExecutableReconciler) createEndpoints(
 	owner ctrl_client.Object,
 	serviceProducer commonapi.ServiceProducer,
 	existingEndpoints []*apiv1.Endpoint,
-	_ struct{}, // Endpoint creation context data, not used for Executables
+	ecc executableEndpointContext,
 	log logr.Logger,
 ) ([]*apiv1.Endpoint, objectChange, error) {
 	endpointName, _, err := MakeUniqueName(owner.GetName())
@@ -1210,9 +1224,13 @@ func (r *ExecutableReconciler) createEndpoints(
 		return nil, noChange, fmt.Errorf("information about the port to expose the service is missing; service-producer annotation is invalid")
 	}
 
-	change, reservationErr := reserveServiceProducerEndpointPort(ctx, r, owner, serviceProducer, serviceProducer.Address, serviceProducer.Port, log)
-	if reservationErr != nil {
-		return nil, change, reservationErr
+	change := noChange
+	if ecc.claimProducerPorts {
+		var reservationErr error
+		change, reservationErr = reserveServiceProducerEndpointPort(ctx, r, owner, serviceProducer, serviceProducer.Address, serviceProducer.Port, log)
+		if reservationErr != nil {
+			return nil, change, reservationErr
+		}
 	}
 
 	address := serviceProducer.Address
@@ -1260,7 +1278,7 @@ func (r *ExecutableReconciler) validateExistingEndpoints(
 	owner ctrl_client.Object,
 	serviceProducer commonapi.ServiceProducer,
 	existing []*apiv1.Endpoint,
-	_ struct{},
+	_ executableEndpointContext,
 	log logr.Logger,
 ) ([]*apiv1.Endpoint, []*apiv1.Endpoint, error) {
 	// Currently we do not support any scenario when Executable replicas change the ports they listen on
@@ -1372,10 +1390,13 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 }
 
 // Computes effective environment and invocation arguments for the Executable.
+// Fixed producer ports are claimed only when the caller will launch a process; adoption candidates own existing bindings.
 // Returned value indicates whether the method was successful or not, together with objectChange that indicates
 // whether the Executable status was changed and whether another reconciliation iteration is needed.
 // This method is called from the reconciliation loop.
-func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context, exe *apiv1.Executable, log logr.Logger, ri *ExecutableRunInfo) (bool, objectChange) {
+func (r *ExecutableReconciler) computeExecutableEnvironment(
+	ctx context.Context, exe *apiv1.Executable, log logr.Logger, ri *ExecutableRunInfo, claimFixedProducerPorts bool,
+) (bool, objectChange) {
 	// Ports reserved for services that the Executable implements without specifying the desired port to use (via service-producer annotation).
 	reservedServicePorts := ri.ReservedPorts
 	if reservedServicePorts == nil {
@@ -1399,7 +1420,7 @@ func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context,
 		return false, statusChanged
 	}
 	for _, producer := range producers {
-		if producer.Port == 0 {
+		if !claimFixedProducerPorts || producer.Port == 0 {
 			continue
 		}
 		// A missing Service must not prevent startup; its protocol is reserved once available.

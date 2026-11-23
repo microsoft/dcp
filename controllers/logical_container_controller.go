@@ -300,7 +300,7 @@ func (r *LogicalContainerReconciler) prepareLogicalContainerValues(
 	for portIndex, port := range container.Spec.Ports {
 		requests[portIndex] = logicalPortRequest{binding: port.LogicalServiceBinding, address: port.Address, port: port.ContainerPort}
 	}
-	ports, prepareErr := prepareLogicalPorts(ctx, r.Client, r.NoCacheClient, container, requests, log)
+	ports, prepareErr := prepareLogicalPorts(ctx, r.Client, r.NoCacheClient, container, requests, false, log)
 	if prepareErr != nil {
 		log.Error(prepareErr, "Failed to prepare logical container ports")
 		data.reason, data.message = apiv2.LogicalContainerReasonStarting, prepareErr.Error()

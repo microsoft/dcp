@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"sync/atomic"
@@ -402,6 +403,188 @@ func TestContainerFixedPortReservationsReleasedBeforeCreation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// startForeignPortReservationOwner starts a live process that can own conflicting state-store claims.
+func startForeignPortReservationOwner(t *testing.T) process.ProcessHandle {
+	t.Helper()
+	delayPath, pathErr := internal_testutil.GetTestToolPath("delay")
+	require.NoError(t, pathErr)
+	cmd := exec.Command(delayPath, "--delay=3m")
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	handle, handleErr := process.ProcessHandleFromCmd(cmd)
+	require.NoError(t, handleErr)
+	return handle
+}
+
+// Verifies that Container, Executable, and LogicalProcess controllers publish adopted resources
+// without claiming their ports, even when another live DCP owner already claims those bindings.
+func TestAdoptedResourcesDoNotClaimPorts(t *testing.T) {
+	for _, kind := range []string{"container", "executable", "logical-process"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+			controllersToStart := ServiceController | ContainerController | ExecutableController
+			if kind == "logical-process" {
+				controllersToStart = LogicalProcessController | PhysicalProcessController
+			}
+			server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+				controllersToStart, t.Name(), t.TempDir(), TestEnvironmentOptions{ConfigurePortAllocator: true})
+			require.NoError(t, startupErr)
+			t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+			db := reservationDatabase(t, environment)
+			foreignOwner := startForeignPortReservationOwner(t)
+			claimForeignBinding := func(address string, port int32) {
+				_, claimErr := environment.StateStore.CreatePortReservation(ctx, statestore.PortReservationRequest{
+					Binding:      ports.Binding{Protocol: "TCP", IP: netip.MustParseAddr(address), Port: port},
+					OwnerProcess: foreignOwner,
+				})
+				require.NoError(t, claimErr)
+			}
+
+			switch kind {
+			case "container":
+				claimForeignBinding(networking.IPv4AllInterfaceAddress, 26102)
+				service := &apiv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "adopted-container"},
+					Spec: apiv1.ServiceSpec{AddressAllocationMode: apiv1.AddressAllocationModeProxyless}}
+				require.NoError(t, server.Client.Create(ctx, service))
+				container := &apiv1.Container{ObjectMeta: metav1.ObjectMeta{Name: "adopted-container",
+					Annotations: map[string]string{commonapi.ServiceProducerAnnotation: `[{"serviceName":"adopted-container","port":8080}]`}},
+					Spec: apiv1.ContainerSpec{ContainerName: "adopted-container", Mode: apiv1.ContainerModeExisting,
+						Ports: []apiv1.ContainerPort{{ContainerPort: 8080, HostPort: 26102}}}}
+				seedSpec := container.Spec
+				seedSpec.Image = "adopted-container-image"
+				createOptions := createContainerOptionsFromV1Spec(seedSpec)
+				createOptions.Name = container.Spec.ContainerName
+				containerID, createErr := server.ContainerOrchestrator.CreateContainer(ctx, createOptions)
+				require.NoError(t, createErr)
+				_, startErr := server.ContainerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{Containers: []string{containerID}})
+				require.NoError(t, startErr)
+				require.NoError(t, server.Client.Create(ctx, container))
+				ensureContainerRunningEx(t, ctx, server.Client, server.ContainerOrchestrator, container)
+				waitObjectAssumesStateEx(t, ctx, server.Client, service.NamespacedName(), func(current *apiv1.Service) (bool, error) {
+					return current.Status.State == apiv1.ServiceStateReady, nil
+				})
+				require.NoError(t, server.Client.Delete(ctx, container))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
+			case "executable":
+				claimForeignBinding(networking.IPv4LocalhostDefaultAddress, 26103)
+				service := &apiv1.Service{ObjectMeta: metav1.ObjectMeta{Name: "adopted-executable"},
+					Spec: apiv1.ServiceSpec{AddressAllocationMode: apiv1.AddressAllocationModeProxyless}}
+				require.NoError(t, server.Client.Create(ctx, service))
+				executable := &apiv1.Executable{ObjectMeta: metav1.ObjectMeta{Name: "adopted-executable",
+					Annotations: map[string]string{commonapi.ServiceProducerAnnotation: `[{"serviceName":"adopted-executable","address":"127.0.0.1","port":26103}]`}},
+					Spec: apiv1.ExecutableSpec{ExecutablePath: "adopted-executable", Mode: apiv1.ExecutableModePersistent}}
+				handle, _, startErr := environment.TestProcessExecutor.StartProcess(ctx, exec.Command(executable.Spec.ExecutablePath),
+					nil, process.CreationFlagsNone, nil)
+				require.NoError(t, startErr)
+				t.Cleanup(func() { _ = environment.TestProcessExecutor.StopProcess(context.WithoutCancel(ctx), handle) })
+				lifecycleKey, _, lifecycleKeyErr := executable.GetLifecycleKey()
+				require.NoError(t, lifecycleKeyErr)
+				require.NoError(t, environment.StateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+					ResourceKey: executable.GetLeaseKey(), LifecycleKey: lifecycleKey, PID: handle.Pid,
+					IdentityTime: handle.IdentityTime, RunID: strconv.Itoa(int(handle.Pid)),
+					StdOutFile: "adopted-executable.out", StdErrFile: "adopted-executable.err", LifecycleMetadata: "{}",
+				}))
+				require.NoError(t, server.Client.Create(ctx, executable))
+				running := waitObjectAssumesStateEx(t, ctx, server.Client, executable.NamespacedName(), func(current *apiv1.Executable) (bool, error) {
+					return current.Status.State == apiv1.ExecutableStateRunning, nil
+				})
+				require.Equal(t, strconv.Itoa(int(handle.Pid)), running.Status.ExecutionID)
+				waitObjectAssumesStateEx(t, ctx, server.Client, service.NamespacedName(), func(current *apiv1.Service) (bool, error) {
+					return current.Status.State == apiv1.ServiceStateReady, nil
+				})
+				require.NoError(t, server.Client.Delete(ctx, executable))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, executable)
+			case "logical-process":
+				claimForeignBinding(networking.IPv4LocalhostDefaultAddress, 26104)
+				namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "adopted-ports"}}
+				require.NoError(t, server.Client.Create(ctx, namespace))
+				service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "adopted-process", Namespace: namespace.Name},
+					Spec: apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}}
+				require.NoError(t, server.Client.Create(ctx, service))
+				handle, _, startErr := environment.TestProcessExecutor.StartProcess(ctx, exec.Command("adopted-logical-process"),
+					nil, process.CreationFlagsNone, nil)
+				require.NoError(t, startErr)
+				t.Cleanup(func() { _ = environment.TestProcessExecutor.StopProcess(context.WithoutCancel(ctx), handle) })
+				pid := int64(handle.Pid)
+				resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "adopted-process", Namespace: namespace.Name},
+					Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModeExisting, PID: &pid,
+						IdentityTimestamp: metav1.NewMicroTime(handle.IdentityTime),
+						Ports: []apiv2.LogicalProcessPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{
+							Name: "http", ServiceRef: service.Name}, Address: networking.IPv4LocalhostDefaultAddress, Port: 26104}}}}
+				require.NoError(t, server.Client.Create(ctx, resource))
+				waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+					return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+				})
+				require.NoError(t, server.Client.Delete(ctx, resource))
+				ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
+			}
+
+			var claimCount int
+			require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM port_allocations").Scan(&claimCount))
+			require.Equal(t, 1, claimCount)
+			var ownerPID int64
+			require.NoError(t, db.QueryRowContext(ctx, "SELECT owner_pid FROM port_allocations").Scan(&ownerPID))
+			require.Equal(t, int64(foreignOwner.Pid), ownerPID)
+		})
+	}
+}
+
+// Verifies that LogicalProcess claims a fixed port after deciding to replace a stale persistent process,
+// so the replacement launched by DCP owns its binding until it stops.
+func TestLogicalProcessPersistentReplacementClaimsFixedPort(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	server, environment, startupErr := StartTestEnvironmentWithOptions(t, ctx,
+		LogicalProcessController|PhysicalProcessController, t.Name(), t.TempDir(),
+		TestEnvironmentOptions{ConfigurePortAllocator: true})
+	require.NoError(t, startupErr)
+	t.Setenv(networking.DCP_PORT_ALLOCATOR, "statestore")
+	db := reservationDatabase(t, environment)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "replacement-ports"}}
+	require.NoError(t, server.Client.Create(ctx, namespace))
+	service := &apiv2.LogicalService{ObjectMeta: metav1.ObjectMeta{Name: "replacement", Namespace: namespace.Name},
+		Spec: apiv2.LogicalServiceSpec{AddressAllocationMode: apiv2.ServiceAddressAllocationModeProxyless}}
+	require.NoError(t, server.Client.Create(ctx, service))
+	previous, _, startErr := environment.TestProcessExecutor.StartProcess(ctx, exec.Command("persistent-port-previous"),
+		nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startErr)
+	t.Cleanup(func() { _ = environment.TestProcessExecutor.StopProcess(context.WithoutCancel(ctx), previous) })
+	resource := &apiv2.LogicalProcess{ObjectMeta: metav1.ObjectMeta{Name: "replacement", Namespace: namespace.Name},
+		Spec: apiv2.LogicalProcessSpec{Mode: apiv2.LogicalProcessModePersistent, ProcessName: "replacement-ports",
+			Process: &apiv2.LogicalProcessConfig{ExecutablePath: "persistent-port-replacement"},
+			Ports: []apiv2.LogicalProcessPort{{LogicalServiceBinding: apiv2.LogicalServiceBinding{
+				Name: "http", ServiceRef: service.Name}, Address: networking.IPv4LocalhostDefaultAddress, Port: 26105}}}}
+	require.NoError(t, environment.StateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey: resource.GetLeaseKey(), LifecycleKey: "previous-lifecycle", PID: previous.Pid,
+		IdentityTime: previous.IdentityTime, RunID: "previous-run",
+	}))
+	require.NoError(t, server.Client.Create(ctx, resource))
+	running := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
+	})
+	require.NotEqual(t, int64(previous.Pid), *running.Status.PID)
+	waitPortReservationCount(t, ctx, db, 1)
+	requirePortReservationBinding(t, ctx, db, ports.Binding{Protocol: "TCP",
+		IP: netip.MustParseAddr(networking.IPv4LocalhostDefaultAddress), Port: 26105})
+	var ownerPID int64
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT owner_pid FROM port_allocations").Scan(&ownerPID))
+	require.Equal(t, int64(environment.ResourceLeaseOwner.Pid), ownerPID)
+	require.NoError(t, retryOnConflictEx[apiv2.LogicalProcess](ctx, server.Client, resource.NamespacedName(), func(ctx context.Context, current *apiv2.LogicalProcess) error {
+		current.Spec.Stop = true
+		return server.Client.Update(ctx, current)
+	}))
+	waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.LogicalProcess) (bool, error) {
+		return current.Status.Phase == apiv2.LogicalProcessPhaseExited, nil
+	})
+	waitPortReservationCount(t, ctx, db, 0)
+	require.NoError(t, server.Client.Delete(ctx, resource))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
 // Verifies that both Service APIs default unspecified protocols to TCP, stop fixed/dynamic

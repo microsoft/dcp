@@ -3207,9 +3207,6 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 	if cleanupUnconfirmed {
 		tunnelProxyCleanupUnconfirmedCounter.Add(context.Background(), 1)
 	}
-	if cleanupCompleted {
-		releaseWorkloadPortReservations(ctx, proxyObjectID, log)
-	}
 	return cleanupCompleted
 }
 
@@ -3357,17 +3354,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) createEndpoints(
 	}
 
 	var retval []*apiv1.Endpoint
-	change := noChange
 
 	for _, t := range readyTunnels {
 		for _, addr := range t.ClientProxyAddresses {
-			reservationChange, reservationErr := reserveServiceProducerEndpointPort(ctx, r, owner, serviceProducer, addr, t.ClientProxyPort, log)
-			change |= reservationChange
-			if reservationErr != nil {
-				log.Error(reservationErr, "Could not reserve Endpoint port", "Address", addr, "Port", t.ClientProxyPort)
-				change |= additionalReconciliationNeeded
-				continue
-			}
 			exists := slices.Any(existingEndpoints, func(ep *apiv1.Endpoint) bool {
 				return ep.Spec.Port == t.ClientProxyPort && ep.Spec.Address == addr
 				// No need to check service name/namespace as existingEndpoints/readyTunnels is already filtered by that
@@ -3380,7 +3369,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) createEndpoints(
 			if nameErr != nil {
 				// Should never happen
 				log.Error(nameErr, "Failed to create a unique name for the Endpoint object")
-				return nil, change, nameErr
+				return nil, noChange, nameErr
 			}
 
 			retval = append(retval, &apiv1.Endpoint{
@@ -3410,7 +3399,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) createEndpoints(
 		}
 
 	}
-	return retval, change, nil
+	return retval, noChange, nil
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) validateExistingEndpoints(
