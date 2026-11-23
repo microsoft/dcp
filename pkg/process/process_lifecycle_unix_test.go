@@ -10,17 +10,22 @@ package process
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/funcr"
 	"github.com/microsoft/dcp/pkg/testutil"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 
-// Verifies that canceling a stop attempt releases stop ownership,
+// Verifies that canceling a root-only stop attempt releases stop ownership,
 // leaves the process running, and permits a later stop to complete without another waiter.
 func TestCancelledStopCanBeRetriedWithoutAnotherWaiter(t *testing.T) {
 	t.Parallel()
@@ -36,7 +41,7 @@ func TestCancelledStopCanBeRetriedWithoutAnotherWaiter(t *testing.T) {
 	stopCtx, stopCancel := context.WithCancel(testCtx)
 	defer stopCancel()
 	stopped := make(chan error, 1)
-	go func() { stopped <- executor.StopProcess(stopCtx, handle) }()
+	go func() { stopped <- executor.StopProcess(stopCtx, handle, StopRootOnly()) }()
 	ownershipErr := wait.PollUntilContextCancel(testCtx, time.Millisecond, true, func(context.Context) (bool, error) {
 		executor.acquireLock()
 		defer executor.releaseLock()
@@ -53,7 +58,7 @@ func TestCancelledStopCanBeRetriedWithoutAnotherWaiter(t *testing.T) {
 		t.Fatal("cancelled stop did not return")
 	}
 	require.NoError(t, executor.CheckProcessRunning(handle))
-	require.NoError(t, executor.StopProcess(testCtx, handle))
+	require.NoError(t, executor.StopProcess(testCtx, handle, StopRootOnly()))
 	require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(handle)))
 }
 
@@ -239,6 +244,108 @@ func TestStopProcessStopsDelayTreeWhenRootIgnoresSigterm(t *testing.T) {
 		t.Fatal("force-stopped root did not report exit")
 	}
 	require.Equal(t, int32(-1), handler.ExitInfo().ExitCode)
+}
+
+// Verifies that group cleanup precedes tree cleanup, leaving escaped descendants a graceful-stop opportunity
+// only when the group stops gracefully, and force-killing them when the group exhausts the graceful budget.
+func TestStopProcessGroupOutcomeDeterminesTreeCleanup(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name         string
+		ignoreTerm   bool
+		expectedExit int32
+	}{
+		{"graceful", false, 0},
+		{"forced", true, -1},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			testCtx, cancelTest := testutil.GetTestContext(t, 0)
+			t.Cleanup(cancelTest)
+			output := testutil.NewBufferWriter()
+			groupLog := funcr.New(func(_, message string) {
+				_, _ = fmt.Fprintln(output, message)
+			}, funcr.Options{Verbosity: 1})
+			executor := NewOSExecutor(groupLog).(*OSExecutor)
+			t.Cleanup(executor.Dispose)
+			root, rootTree, _ := startDelayTreeForTest(t, testCtx, executor,
+				delayCommandForTest(t, "--delay=120s", "--child-spec=1", "--fork-children"), 2)
+			rootPID, rootPIDErr := PidT_ToInt(root.Pid)
+			require.NoError(t, rootPIDErr)
+			memberArgs := []string{"--delay=120s", "--child-spec=1", "--couple-children"}
+			if testCase.ignoreTerm {
+				memberArgs = append(memberArgs, "--ignore-sigterm")
+			}
+			memberCmd := delayCommandForTest(t, memberArgs...)
+			memberCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: rootPID}
+			member, memberTree, memberHandler := startDelayTreeForTest(t, testCtx, executor, memberCmd, 2)
+
+			group, groupErr := FindProcessGroup(root, false)
+			require.NoError(t, groupErr)
+			require.NotNil(t, group)
+			escaped := rootTree[1]
+			escapedPID, escapedPIDErr := PidT_ToInt(escaped.Pid)
+			require.NoError(t, escapedPIDErr)
+			escapedGroup, escapedGroupErr := unix.Getpgid(escapedPID)
+			require.NoError(t, escapedGroupErr)
+			require.NotEqual(t, rootPID, escapedGroup)
+			escapedSession, escapedSessionErr := unix.Getsid(escapedPID)
+			require.NoError(t, escapedSessionErr)
+			require.Equal(t, escapedPID, escapedSession)
+			treeCleanupStarted := false
+			options := newProcessStopOptions([]ProcessStopOption{StopWithProcessGroup()})
+			if !testCase.ignoreTerm {
+				options.afterRootExit = func() {
+					treeCleanupStarted = true
+					require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(member)))
+					require.NoError(t, executor.CheckProcessRunning(escaped))
+				}
+			}
+			startedAt := time.Now()
+			require.NoError(t, executor.stopProcessInternal(testCtx, root, options))
+			elapsed := time.Since(startedAt)
+			if testCase.ignoreTerm {
+				require.GreaterOrEqual(t, elapsed, gracefulProcessStopTimeout-time.Second)
+				require.Less(t, elapsed, processStopTimeout)
+			} else {
+				require.Less(t, elapsed, signalAndWaitTimeout)
+			}
+			if !testCase.ignoreTerm {
+				require.True(t, treeCleanupStarted)
+			}
+			expectedSignal := syscall.SIGTERM
+			if testCase.ignoreTerm {
+				expectedSignal = syscall.SIGKILL
+			}
+			messages := string(output.Bytes())
+			signalIndex := strings.Index(messages, fmt.Sprintf(`"Signal"=%q`, expectedSignal.String()))
+			treeIndex := strings.Index(messages, "Stopping process tree...")
+			require.NotEqual(t, -1, signalIndex, "expected group signal was not sent: %s", messages)
+			require.Greater(t, treeIndex, signalIndex, "tree cleanup must follow the group signal: %s", messages)
+			escapedGracefulStop := fmt.Sprintf(`"msg"="Process stopped by SIGTERM" "PID"=%d`+"\n", escaped.Pid)
+			escapedForceStop := fmt.Sprintf(`"msg"="Sending SIGKILL to process..." "PID"=%d`+"\n", escaped.Pid)
+			if testCase.ignoreTerm {
+				require.Contains(t, messages, escapedForceStop)
+				require.NotContains(t, messages, escapedGracefulStop)
+				require.NotContains(t, messages, "Giving child processes the remaining graceful-stop budget...")
+			} else {
+				require.Contains(t, messages, escapedGracefulStop)
+				require.NotContains(t, messages, escapedForceStop)
+				require.Contains(t, messages, "Giving child processes the remaining graceful-stop budget...")
+			}
+			for _, stopped := range append(rootTree, memberTree...) {
+				require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(stopped)))
+			}
+			select {
+			case <-memberHandler.Exited():
+			case <-testCtx.Done():
+				t.Fatal("stopped group member did not report exit")
+			}
+			require.Equal(t, testCase.expectedExit, memberHandler.ExitInfo().ExitCode)
+			require.NoError(t, memberHandler.ExitInfo().Err)
+		})
+	}
 }
 
 // Verifies that both overlapping stops return only after every process in a delay tree has exited.

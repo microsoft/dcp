@@ -5,10 +5,11 @@
 
 package process
 
-// processInfo is a cross-platform snapshot of process identity, ancestry, and exit state.
+// processInfo is a cross-platform snapshot of process identity, ancestry, Unix group membership, and exit state.
 type processInfo struct {
 	handle    ProcessHandle
 	parentPID Pid_t
+	groupID   Pid_t
 	birth     uint64
 	exited    bool
 }

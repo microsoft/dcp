@@ -65,9 +65,9 @@ const (
 type ProcessStopOption func(*processStopOptions)
 
 type processStopOptions struct {
-	opts          processStoppingOpts
-	afterRootExit func()
-	group         *ProcessGroup
+	opts             processStoppingOpts
+	afterRootExit    func()
+	knownGroupLeader bool
 }
 
 // StopRootOnly skips descendant enumeration and cleanup after stopping the requested process.
@@ -78,12 +78,14 @@ func StopRootOnly() ProcessStopOption {
 	}
 }
 
-// StopWithProcessGroup includes a previously captured Unix group in tree cleanup.
-// This allows remaining group members to be stopped after the original leader exits.
-// The group's original leader must match the process handle being stopped.
-func StopWithProcessGroup(group *ProcessGroup) ProcessStopOption {
+// StopWithProcessGroup identifies the process being stopped as a known isolated Unix group leader.
+// The process handle also identifies the group, so cleanup does not require the leader to remain alive.
+// Graceful group completion leaves the remaining graceful-stop budget for tree survivors.
+// If the group exhausts that budget, all survivors are force-killed, including descendants outside the group.
+// This option has no effect on Windows.
+func StopWithProcessGroup() ProcessStopOption {
 	return func(options *processStopOptions) {
-		options.group = group
+		options.knownGroupLeader = true
 	}
 }
 

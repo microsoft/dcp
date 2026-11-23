@@ -16,6 +16,10 @@ import (
 
 const (
 	defaultWaitPollInterval = time.Second * 2
+
+	// Stop confirmation should be responsive; polling falls back to the
+	// long-lived monitoring interval after the bounded stop window.
+	stopWaitPollInterval = 100 * time.Millisecond
 )
 
 type waitPollPolicy struct {

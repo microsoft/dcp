@@ -67,6 +67,10 @@ func NewOSExecutor(log logr.Logger) Executor {
 	return e
 }
 
+func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHandle, options processStopOptions) error {
+	return e.stopProcessTreeInternal(ctx, handle, options, GetProcessTree)
+}
+
 func (e *OSExecutor) getWindowsConsoleAvailability(ws *waitState) WindowsConsoleAvailability {
 	e.acquireLock()
 	defer e.releaseLock()

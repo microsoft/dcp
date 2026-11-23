@@ -24,6 +24,7 @@ var (
 	stopPid              process.Pid_t = process.UnknownPID
 	stopProcessStartTime time.Time
 	stopSkipDescendants  bool
+	stopProcessGroup     bool
 )
 
 func NewStopProcessTreeCommand(log logr.Logger) (*cobra.Command, error) {
@@ -44,6 +45,7 @@ func NewStopProcessTreeCommand(log logr.Logger) (*cobra.Command, error) {
 
 	stopProcessTreeCmd.Flags().Var(flags.NewTimeFlag(&stopProcessStartTime, osutil.RFC3339MiliTimestampFormat), "process-start-time", "Specifies the identity time of the root process. If omitted, identity is resolved once at command startup. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
 	stopProcessTreeCmd.Flags().BoolVar(&stopSkipDescendants, "skip-descendants", false, "If specified, stops only the root process and skips force-killing descendants.")
+	stopProcessTreeCmd.Flags().BoolVar(&stopProcessGroup, "process-group", false, "The process was launched as an isolated Unix process group leader. Requires --process-start-time and permits cleanup after the leader exits.")
 
 	return stopProcessTreeCmd, nil
 }
@@ -56,6 +58,9 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 			"SkipDescendants", stopSkipDescendants,
 		)
 
+		if stopProcessGroup && stopProcessStartTime.IsZero() {
+			return errors.New("--process-group requires --process-start-time")
+		}
 		handle, handleErr := process.ResolveProcessHandle(stopPid, stopProcessStartTime)
 		if handleErr != nil {
 			logProcessStopFailure(log, handleErr, "Process to stop already exited", "Could not resolve the process to stop")
@@ -67,6 +72,9 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 		var stopOptions []process.ProcessStopOption
 		if stopSkipDescendants {
 			stopOptions = append(stopOptions, process.StopRootOnly())
+		}
+		if stopProcessGroup {
+			stopOptions = append(stopOptions, process.StopWithProcessGroup())
 		}
 
 		stopErr := runDetachedProcessCleanup(cmd.Context(), func(stopCtx context.Context) error {

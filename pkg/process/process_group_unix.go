@@ -17,9 +17,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// FindProcessGroup captures the group led by handle after verifying its process identity.
+// FindProcessGroup identifies the group led by handle.
 // It returns nil if the process is not a group leader. The caller's own group is never a valid target.
-func FindProcessGroup(handle ProcessHandle) (*ProcessGroup, error) {
+// Set knownLeader only for a process known to have been launched as an isolated group leader;
+// its handle then identifies the group even after the leader exits, with identity checked by group operations.
+func FindProcessGroup(handle ProcessHandle, knownLeader bool) (*ProcessGroup, error) {
+	if handleErr := handle.Validate(); handleErr != nil {
+		return nil, handleErr
+	}
 	pid, pidErr := PidT_ToInt(handle.Pid)
 	if pidErr != nil {
 		return nil, pidErr
@@ -27,22 +32,18 @@ func FindProcessGroup(handle ProcessHandle) (*ProcessGroup, error) {
 	if handle.Pid <= 1 || handle.Pid > math.MaxInt32 {
 		return nil, fmt.Errorf("invalid process group leader PID %d", handle.Pid)
 	}
-	_, processErr := handle.findProcessInfo()
+	if pid == unix.Getpgrp() {
+		return nil, fmt.Errorf("cannot target the current process group %d", pid)
+	}
+	if knownLeader {
+		return &ProcessGroup{leader: handle, WaitPollInterval: defaultWaitPollInterval}, nil
+	}
+	info, processErr := handle.findProcessInfo()
 	if processErr != nil {
 		return nil, processErr
 	}
-	groupID, groupErr := unix.Getpgid(pid)
-	if groupErr != nil {
-		if errors.Is(groupErr, syscall.ESRCH) {
-			return nil, fmt.Errorf("process %d exited: %w", handle.Pid, ErrorProcessNotFound)
-		}
-		return nil, fmt.Errorf("could not get process group for process %d: %w", handle.Pid, groupErr)
-	}
-	if groupID != pid {
+	if info.groupID != handle.Pid {
 		return nil, nil
-	}
-	if groupID == unix.Getpgrp() {
-		return nil, fmt.Errorf("cannot target the current process group %d", groupID)
 	}
 	if _, identityErr := handle.findProcessInfo(); identityErr != nil {
 		return nil, identityErr
@@ -72,14 +73,7 @@ func (g *ProcessGroup) hasLiveLeader() (bool, error) {
 	if identityErr := validateIdentity(g.leader, leader.handle); identityErr != nil {
 		return false, identityErr
 	}
-	groupID, groupErr := unix.Getpgid(leaderPID)
-	if errors.Is(groupErr, syscall.ESRCH) {
-		return false, nil
-	}
-	if groupErr != nil {
-		return false, fmt.Errorf("could not verify process group %d: %w", g.leader.Pid, groupErr)
-	}
-	if groupID != leaderPID {
+	if leader.groupID != g.leader.Pid {
 		return false, fmt.Errorf("process %d no longer identifies an isolated target group", g.leader.Pid)
 	}
 	return !leader.exited, nil
@@ -90,6 +84,10 @@ func (g *ProcessGroup) signal(ctx context.Context, signal syscall.Signal) error 
 		return contextErr
 	}
 	if _, identityErr := g.hasLiveLeader(); identityErr != nil {
+		if errors.Is(identityErr, ErrProcessIdentityMismatch) {
+			// A leader PID cannot be reused while the original group exists. Never signal its replacement.
+			return nil
+		}
 		return identityErr
 	}
 	groupID, groupIDErr := PidT_ToInt(g.leader.Pid)
@@ -117,66 +115,60 @@ func (g *ProcessGroup) signal(ctx context.Context, signal syscall.Signal) error 
 }
 
 func (g *ProcessGroup) isRunning(ctx context.Context) (bool, error) {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return false, contextErr
+	}
 	leaderRunning, identityErr := g.hasLiveLeader()
 	if identityErr != nil {
+		if errors.Is(identityErr, ErrProcessIdentityMismatch) {
+			return false, nil
+		}
 		return false, identityErr
 	}
 	if leaderRunning {
 		return true, nil
 	}
-	members, membersErr := g.members(ctx)
-	if membersErr != nil {
-		return false, membersErr
-	}
-	zombies := make(map[ProcessHandle]struct{}, len(members))
-	for _, member := range members {
-		if !member.exited {
-			return true, nil
-		}
-		zombies[member.handle] = struct{}{}
-	}
+	return isProcessGroupRunning(ctx, g.leader.Pid, snapshotProcesses)
+}
 
+func isProcessGroupRunning(
+	ctx context.Context,
+	groupID Pid_t,
+	snapshotAll func(context.Context) ([]processInfo, error),
+) (bool, error) {
+	zombies := make(map[ProcessHandle]struct{})
 	// A member can fork and exit during enumeration. Only known zombies may remain in the final census.
-	remainingMembers, remainingErr := g.members(ctx)
-	if remainingErr != nil {
-		return false, remainingErr
-	}
-	for _, remaining := range remainingMembers {
-		if _, zombie := zombies[remaining.handle]; !zombie || !remaining.exited {
+	for snapshotIndex := range 2 {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return false, contextErr
+		}
+		processes, snapshotErr := snapshotAll(ctx)
+		if contextErr := ctx.Err(); contextErr != nil {
+			return false, contextErr
+		}
+		newZombie := false
+		for _, info := range processes {
+			if contextErr := ctx.Err(); contextErr != nil {
+				return false, contextErr
+			}
+			if info.groupID != groupID {
+				continue
+			}
+			if !info.exited {
+				return true, nil
+			}
+			if snapshotIndex == 0 {
+				zombies[info.handle] = struct{}{}
+			} else if _, known := zombies[info.handle]; !known {
+				newZombie = true
+			}
+		}
+		if snapshotErr != nil {
+			return false, fmt.Errorf("%w: process enumeration was incomplete: %w", ErrIncompleteProcessTree, snapshotErr)
+		}
+		if newZombie {
 			return true, nil
 		}
 	}
 	return false, nil
-}
-
-func (g *ProcessGroup) members(ctx context.Context) ([]processInfo, error) {
-	targetGroupID, targetGroupIDErr := PidT_ToInt(g.leader.Pid)
-	if targetGroupIDErr != nil {
-		return nil, targetGroupIDErr
-	}
-	processes, snapshotErr := snapshotProcesses(ctx)
-	if snapshotErr != nil {
-		return nil, fmt.Errorf("could not enumerate process group %d: %w", g.leader.Pid, snapshotErr)
-	}
-	members := make([]processInfo, 0)
-	for _, info := range processes {
-		if contextErr := ctx.Err(); contextErr != nil {
-			return nil, contextErr
-		}
-		memberPID, memberPIDErr := PidT_ToInt(info.handle.Pid)
-		if memberPIDErr != nil {
-			return nil, fmt.Errorf("could not get process group for process %d: %w", info.handle.Pid, memberPIDErr)
-		}
-		groupID, groupErr := unix.Getpgid(memberPID)
-		if errors.Is(groupErr, syscall.ESRCH) {
-			continue
-		}
-		if groupErr != nil {
-			return nil, fmt.Errorf("could not get process group for process %d: %w", info.handle.Pid, groupErr)
-		}
-		if groupID == targetGroupID {
-			members = append(members, info)
-		}
-	}
-	return members, nil
 }

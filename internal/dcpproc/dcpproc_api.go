@@ -56,6 +56,7 @@ func MonitorTargetFromFields(monitorPID *int64, monitorTimestamp metav1.MicroTim
 
 // Starts the process monitor for the given child process, using current process as the "monitored", or watched, process.
 // The caller should ensure that the current process is the correct process to monitor.
+// Set knownGroupLeader only for a child known to have been launched as an isolated Unix group leader.
 // Errors are logged, but no error is returned if the process monitor fails to start--
 // process monitor is considered a "best-effort reliability enhancement".
 // Note: DCP process doesn't shut down if DCPCTRL goes away, but DCPCTRL will shut down if DCP process goes away,
@@ -63,6 +64,7 @@ func MonitorTargetFromFields(monitorPID *int64, monitorTimestamp metav1.MicroTim
 func RunProcessWatcher(
 	pe process.Executor,
 	child process.ProcessHandle,
+	knownGroupLeader bool,
 	log logr.Logger,
 ) {
 	monitor, monitorErr := process.This()
@@ -70,13 +72,14 @@ func RunProcessWatcher(
 		log.Error(monitorErr, "Could not determine process monitor identity")
 		return
 	}
-	RunProcessWatcherForMonitor(pe, monitor, child, log)
+	RunProcessWatcherForMonitor(pe, monitor, child, knownGroupLeader, log)
 }
 
 func RunProcessWatcherForMonitor(
 	pe process.Executor,
 	monitor process.ProcessHandle,
 	child process.ProcessHandle,
+	knownGroupLeader bool,
 	log logr.Logger,
 ) {
 	if _, found := os.LookupEnv(DCP_DISABLE_MONITOR_PROCESS); found {
@@ -93,6 +96,9 @@ func RunProcessWatcherForMonitor(
 		cmdArgs = append(cmdArgs, "--child-identity-time", child.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat))
 	}
 	cmdArgs = append(cmdArgs, getMonitorCmdArgs(monitor)...)
+	if knownGroupLeader && !osutil.IsWindows() {
+		cmdArgs = append(cmdArgs, "--child-process-group")
+	}
 
 	startErr := startDcpProc(pe, cmdArgs)
 	if startErr != nil {
@@ -155,7 +161,8 @@ func RunContainerWatcherForMonitorWithOptions(
 	}
 }
 
-// Runs stop-process-tree command to stop the process tree rooted at the given process.
+// Runs stop-process-tree command to stop a DCP-launched process and its descendants.
+// On Unix, root must identify an isolated group leader.
 func StopProcessTree(
 	ctx context.Context,
 	pe process.Executor,
@@ -170,6 +177,9 @@ func StopProcessTree(
 	}
 	if !root.IdentityTime.IsZero() {
 		cmdArgs = append(cmdArgs, "--process-start-time", root.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat))
+	}
+	if !osutil.IsWindows() {
+		cmdArgs = append(cmdArgs, "--process-group")
 	}
 
 	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()

@@ -11,7 +11,7 @@ import (
 )
 
 // ProcessGroup identifies an isolated Unix process group by its original leader.
-// Capture it while the leader is running to monitor and stop members that outlive the leader.
+// Its identity does not depend on retaining a live leader or a snapshot of group membership.
 type ProcessGroup struct {
 	WaitPollInterval time.Duration
 	leader           ProcessHandle
@@ -19,6 +19,8 @@ type ProcessGroup struct {
 
 // Wait waits until the group has no live members, or the context is canceled.
 // Exited processes awaiting reaping do not keep the group alive.
+// Reuse of the original leader PID confirms that the original group no longer exists.
+// Returns ErrIncompleteProcessTree if incomplete enumeration prevents confirming that the group is empty.
 func (g *ProcessGroup) Wait(ctx context.Context) error {
 	return g.wait(ctx, g.WaitPollInterval)
 }

@@ -22,10 +22,6 @@ import (
 const (
 	// The timeout for sending a signal and waiting for the process to exit.
 	signalAndWaitTimeout = 6 * time.Second
-
-	// Stop confirmation should be responsive; polling falls back to the
-	// long-lived monitoring interval after the bounded stop window.
-	stopWaitPollInterval = 100 * time.Millisecond
 )
 
 type OSExecutor struct {
@@ -36,6 +32,69 @@ func NewOSExecutor(log logr.Logger) Executor {
 	return &OSExecutor{
 		osExecutorBase: newOSExecutorBase(log),
 	}
+}
+
+func (e *OSExecutor) stopProcessInternal(ctx context.Context, handle ProcessHandle, options processStopOptions) error {
+	if (options.opts & optSkipDescendants) != 0 {
+		return e.stopProcessTreeInternal(ctx, handle, options, GetProcessTree)
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	if handleErr := handle.Validate(); handleErr != nil {
+		return handleErr
+	}
+	group, groupErr := FindProcessGroup(handle, options.knownGroupLeader)
+	if groupErr != nil && options.knownGroupLeader {
+		return groupErr
+	}
+	if groupErr != nil && !IsProcessGoneErr(groupErr) {
+		e.log.Error(groupErr, "Could not identify process group; falling back to process tree cleanup", "PID", handle.Pid)
+	}
+	if group == nil {
+		return e.stopProcessTreeInternal(ctx, handle, options, GetProcessTree)
+	}
+
+	stopCtx, stopCancel := WithStopTimeout(ctx)
+	defer stopCancel()
+	groupStopped := false
+	// The resolver captures descendants before group signaling and uses the tree routine's grace budget.
+	prepareTree := func(graceCtx context.Context, treeRoot ProcessHandle) ([]ProcessHandle, error) {
+		tree, treeErr := GetProcessTree(graceCtx, treeRoot)
+		if treeErr != nil &&
+			!errors.Is(treeErr, ErrIncompleteProcessTree) &&
+			IsProcessGoneErr(treeErr) &&
+			!errors.Is(treeErr, ErrProcessIdentityMismatch) {
+			// A captured group remains addressable after its original leader exits.
+			tree = []ProcessHandle{treeRoot}
+			treeErr = nil
+		}
+
+		// Group completion, not leader exit, determines how much graceful-stop budget remains for tree survivors.
+		if groupSignalErr := e.signalProcessGroup(graceCtx, group, syscall.SIGTERM); groupSignalErr != nil {
+			e.log.Error(groupSignalErr, "Could not gracefully signal process group", "PGID", treeRoot.Pid)
+		} else if groupWaitErr := group.wait(graceCtx, stopWaitPollInterval); groupWaitErr != nil {
+			e.log.V(1).Info("Graceful group cleanup did not complete", "PGID", treeRoot.Pid, "Error", groupWaitErr)
+		} else {
+			groupStopped = true
+		}
+		if !groupStopped && stopCtx.Err() == nil {
+			if groupForceErr := e.signalProcessGroup(stopCtx, group, syscall.SIGKILL); groupForceErr != nil {
+				e.log.Error(groupForceErr, "Could not force-kill process group; continuing with process tree cleanup", "PGID", treeRoot.Pid)
+			}
+		}
+		return tree, treeErr
+	}
+
+	treeStopErr := e.stopProcessTreeInternal(stopCtx, handle, options, prepareTree)
+	if !groupStopped {
+		if groupWaitErr := group.wait(stopCtx, stopWaitPollInterval); groupWaitErr != nil {
+			return joinProcessTreeStopErrors(treeStopErr, nil, nil, []error{
+				fmt.Errorf("could not confirm process group %d stopped: %w", handle.Pid, groupWaitErr),
+			})
+		}
+	}
+	return treeStopErr
 }
 
 func (e *OSExecutor) forceKillWasUsed(ws *waitState) bool {
@@ -202,45 +261,13 @@ func (e *OSExecutor) waitForTrackedProcessExitOrGone(
 	}
 }
 
-func (e *OSExecutor) stopProcessGroup(ctx context.Context, group *ProcessGroup, opts processStoppingOpts) (singleProcessStopResult, error) {
+func (e *OSExecutor) signalProcessGroup(ctx context.Context, group *ProcessGroup, signal syscall.Signal) error {
 	if contextErr := ctx.Err(); contextErr != nil {
-		return singleProcessStopResult{}, contextErr
-	}
-	if _, identityErr := group.hasLiveLeader(); identityErr != nil {
-		return singleProcessStopResult{}, identityErr
-	}
-	waitable := makeProcessWaitable(e.lifetimeCtx, group.leader, waitPollPolicy{
-		initialInterval: stopWaitPollInterval,
-		initialDuration: processStopTimeout,
-		steadyInterval:  defaultWaitPollInterval,
-	})
-	ws, shouldStopProcess := e.tryStartWaiting(group.leader, waitable, waitReasonStopping)
-	waitEndedCh := ws.waitEndedCh
-	if !shouldStopProcess && (opts&optIsResponsibleForStopping) == 0 {
-		select {
-		case <-ws.waitEndedCh:
-			// A completed wait for the leader does not mean its group has exited.
-		default:
-			return singleProcessStopResult{waitEndedCh: waitEndedCh}, group.wait(ctx, stopWaitPollInterval)
-		}
-	}
-	defer e.finishStopAttempt(ws)
-	if (opts & optWaitForStdio) == 0 {
-		waitEndedCh = makeClosedChan()
+		return contextErr
 	}
 
-	signal := syscall.SIGKILL
-	if (opts & optTrySignal) != 0 {
-		signal = syscall.SIGTERM
-	} else {
-		e.markForceKillUsed(ws)
-	}
-	result := singleProcessStopResult{waitEndedCh: waitEndedCh, forceKillUsed: signal == syscall.SIGKILL}
 	e.log.V(1).Info("Sending signal to process group", "PGID", group.leader.Pid, "Signal", signal.String())
-	if signalErr := group.signal(ctx, signal); signalErr != nil {
-		return result, signalErr
-	}
-	return result, group.wait(ctx, stopWaitPollInterval)
+	return group.signal(ctx, signal)
 }
 
 func (e *OSExecutor) completeDispose() {

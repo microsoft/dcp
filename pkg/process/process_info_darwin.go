@@ -93,7 +93,7 @@ func decodeDarwinProcessInfo(contents []byte) (processInfo, error) {
 		return processInfo{}, nil
 	}
 	start := native.Proc.P_starttime
-	if native.Proc.P_pid < 0 || native.Eproc.Ppid < 0 || start.Sec < 0 ||
+	if native.Proc.P_pid < 0 || native.Eproc.Ppid < 0 || native.Eproc.Pgid < 0 || start.Sec < 0 ||
 		start.Usec < 0 || start.Usec >= 1000000 || uint64(start.Sec) > (math.MaxUint64-999999)/1000000 {
 		return processInfo{}, fmt.Errorf("invalid Darwin process information for pid %d", native.Proc.P_pid)
 	}
@@ -105,6 +105,7 @@ func decodeDarwinProcessInfo(contents []byte) (processInfo, error) {
 	return processInfo{
 		handle:    NewHandle(Pid_t(native.Proc.P_pid), identityTime),
 		parentPID: Pid_t(native.Eproc.Ppid),
+		groupID:   Pid_t(native.Eproc.Pgid),
 		birth:     birth,
 		exited:    native.Proc.P_stat == processStateZombie,
 	}, nil

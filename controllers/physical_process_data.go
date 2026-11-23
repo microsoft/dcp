@@ -38,6 +38,7 @@ type physicalProcessData struct {
 	failureReason      apiv2.ConditionReason
 	failureMessage     string
 	cleanupUnconfirmed bool
+	stopCompleted      bool
 	retryAfter         time.Time
 }
 
@@ -52,6 +53,7 @@ func (data *physicalProcessData) Clone() *physicalProcessData {
 		failureReason:      data.failureReason,
 		failureMessage:     data.failureMessage,
 		cleanupUnconfirmed: data.cleanupUnconfirmed,
+		stopCompleted:      data.stopCompleted,
 		retryAfter:         data.retryAfter,
 	}
 }
@@ -70,6 +72,7 @@ func (data *physicalProcessData) UpdateFrom(other *physicalProcessData) bool {
 		data.failureReason != other.failureReason ||
 		data.failureMessage != other.failureMessage ||
 		data.cleanupUnconfirmed != other.cleanupUnconfirmed ||
+		data.stopCompleted != other.stopCompleted ||
 		!data.retryAfter.Equal(other.retryAfter)
 	if updated {
 		*data = *other.Clone()

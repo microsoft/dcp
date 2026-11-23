@@ -23,6 +23,7 @@ import (
 var (
 	childPid              process.Pid_t = process.UnknownPID
 	childProcessStartTime time.Time
+	childProcessGroup     bool
 )
 
 const childProcessGoneLogMessage = "Child process already exited or its PID was reused; skipping cleanup"
@@ -36,8 +37,8 @@ func NewProcessCommand(log logr.Logger) (*cobra.Command, error) {
 This command is used to ensure that child processes are properly cleaned up when
 DCP terminates unexpectedly. On Unix, an isolated child process group remains
 monitored until it has no live members, even if its leader exits. Cleanup targets
-both the group and any descendants discoverable through the child process tree.
-If child inspection fails, the owner remains monitored so cleanup is still attempted
+the group first, then any survivors discoverable through the child process tree.
+If group inspection fails, the owner remains monitored so cleanup is still attempted
 when the owner exits or monitoring is interrupted.`,
 		RunE:         monitorProcess(log),
 		SilenceUsage: true,
@@ -56,6 +57,7 @@ when the owner exits or monitoring is interrupted.`,
 	}
 
 	processCmd.Flags().Var(flags.NewTimeFlag(&childProcessStartTime, osutil.RFC3339MiliTimestampFormat), "child-identity-time", "Specifies the identity time of the child process. If omitted, identity is resolved once at command startup. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
+	processCmd.Flags().BoolVar(&childProcessGroup, "child-process-group", false, "The child was launched as an isolated Unix process group leader. Requires --child-identity-time and permits monitoring after the leader exits.")
 
 	return processCmd, nil
 }
@@ -71,6 +73,9 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resourceId)
 		}
 
+		if childProcessGroup && childProcessStartTime.IsZero() {
+			return errors.New("--child-process-group requires --child-identity-time")
+		}
 		childHandle, childIdentityErr := process.ResolveProcessHandle(childPid, childProcessStartTime)
 		if childIdentityErr != nil {
 			if process.IsProcessGoneErr(childIdentityErr) {
@@ -81,7 +86,7 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			return childIdentityErr
 		}
 
-		childGroup, childGroupErr := process.FindProcessGroup(childHandle)
+		childGroup, childGroupErr := process.FindProcessGroup(childHandle, childProcessGroup)
 		if childGroupErr != nil {
 			if process.IsProcessGoneErr(childGroupErr) {
 				log.Info(childProcessGoneLogMessage, "Error", childGroupErr)
@@ -89,6 +94,10 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			}
 			log.Error(childGroupErr, "Child process group could not be monitored")
 			return childGroupErr
+		}
+		var stopOptions []process.ProcessStopOption
+		if childGroup != nil {
+			stopOptions = append(stopOptions, process.StopWithProcessGroup())
 		}
 
 		monitorCtx, monitorCtxCancel, monitorCtxErr := cmds.MonitorPid(cmd.Context(), process.NewHandle(monitorPid, monitorProcessStartTime), monitorInterval, log)
@@ -104,10 +113,10 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 				executor := process.NewOSExecutor(log)
 				defer executor.Dispose()
 				stopErr := runDetachedProcessCleanup(cmd.Context(), func(stopCtx context.Context) error {
-					return process.StopViaConsole(stopCtx, log, executor, childHandle, process.StopWithProcessGroup(childGroup))
+					return process.StopViaConsole(stopCtx, log, executor, childHandle, stopOptions...)
 				})
 				if stopErr != nil {
-					if childGroup == nil && process.IsProcessGoneErr(stopErr) {
+					if process.IsProcessGoneErr(stopErr) {
 						log.V(1).Info("Child process exited before cleanup completed", "Error", stopErr)
 						return nil
 					}
@@ -122,73 +131,61 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			}
 		}
 
-		var childProcess *process.WaitableProcess
-		if childGroup == nil {
-			var childMonitorErr error
-			childProcess, childMonitorErr = process.FindWaitableProcess(childHandle)
-			if childMonitorErr != nil {
-				if process.IsProcessGoneErr(childMonitorErr) {
-					log.Info(childProcessGoneLogMessage, "Error", childMonitorErr)
-					return nil
-				}
+		childProcessCtx, childProcessCtxCancel, childMonitorErr := cmds.MonitorPid(cmd.Context(), childHandle, monitorInterval, log)
+		defer childProcessCtxCancel()
+		if childMonitorErr != nil {
+			if process.IsProcessGoneErr(childMonitorErr) && childGroup == nil {
+				log.Info(childProcessGoneLogMessage, "Error", childMonitorErr)
+				return nil
+			} else if !process.IsProcessGoneErr(childMonitorErr) {
 				log.Error(childMonitorErr, "Child process could not be monitored")
 				return childMonitorErr
 			}
-			if monitorInterval > 0 {
-				childProcess.WaitPollInterval = time.Second * time.Duration(monitorInterval)
-			}
-		} else if monitorInterval > 0 {
-			childGroup.WaitPollInterval = time.Second * time.Duration(monitorInterval)
 		}
-		childProcessCtx, childProcessCtxCancel := context.WithCancel(cmd.Context())
-		defer childProcessCtxCancel()
-		childExited := make(chan error, 1)
-		go func() {
-			if childGroup != nil {
-				childExited <- childGroup.Wait(childProcessCtx)
-			} else {
-				childExited <- childProcess.Wait(childProcessCtx)
-			}
-		}()
 		if childGroup != nil {
-			log.Info("Started monitoring process group", "PGID", childPid)
-		} else {
-			log.Info("Started monitoring process", "PID", childPid)
+			if monitorInterval > 0 {
+				childGroup.WaitPollInterval = time.Second * time.Duration(monitorInterval)
+			}
+			log.Info("Started monitoring process group", "PGID", childHandle.Pid)
 		}
 
 		select {
 		case <-monitorCtx.Done():
-		case childWaitErr, received := <-childExited:
-			if !received {
-				return errors.New("child process monitoring ended without a result")
-			}
-			if childWaitErr != nil && cmd.Context().Err() == nil {
-				log.Error(childWaitErr, "Error waiting for child process cleanup target; continuing to monitor owner")
-				<-monitorCtx.Done()
-			} else if cmd.Context().Err() == nil {
-				log.V(1).Info("Child service process exited, DCPPROC is done")
-				return nil
+		case <-childProcessCtx.Done():
+			if childGroup != nil {
+				groupWaitErr := childGroup.Wait(monitorCtx)
+				if groupWaitErr != nil && monitorCtx.Err() == nil {
+					log.Error(groupWaitErr, "Error waiting for process group; monitoring remains active until cancellation")
+					<-monitorCtx.Done()
+				}
 			}
 		}
 
-		if cmd.Context().Err() != nil {
-			log.Info("Process monitor interrupted, shutting down child process")
-		} else {
-			log.Info("Monitored process exited, shutting down child process")
-		}
-		executor := process.NewOSExecutor(log)
-		defer executor.Dispose()
-		stopErr := runDetachedProcessCleanup(cmd.Context(), func(stopCtx context.Context) error {
-			return process.StopViaConsole(stopCtx, log, executor, childHandle, process.StopWithProcessGroup(childGroup))
-		})
-		if stopErr != nil {
-			if childGroup == nil && process.IsProcessGoneErr(stopErr) {
-				log.V(1).Info("Child service process exited before cleanup completed", "Error", stopErr)
-				return nil
+		if cmd.Context().Err() != nil || monitorCtx.Err() != nil {
+			if cmd.Context().Err() != nil {
+				log.Info("Process monitor interrupted, shutting down child process")
+			} else {
+				log.Info("Monitored process exited, shutting down child process")
 			}
-			log.Error(stopErr, "Failed to stop child service process")
+
+			executor := process.NewOSExecutor(log)
+			defer executor.Dispose()
+			stopErr := runDetachedProcessCleanup(cmd.Context(), func(stopCtx context.Context) error {
+				return process.StopViaConsole(stopCtx, log, executor, childHandle, stopOptions...)
+			})
+			if stopErr != nil {
+				if process.IsProcessGoneErr(stopErr) {
+					log.V(1).Info("Child service process exited before cleanup completed", "Error", stopErr)
+					return nil
+				}
+				log.Error(stopErr, "Failed to stop child service process")
+				return stopErr
+			}
+		} else {
+			log.V(1).Info("Child service process exited, DCPPROC is done")
 		}
-		return stopErr
+
+		return nil
 	}
 }
 

@@ -1882,7 +1882,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	pointers.SetValue(&pd.ServerProxyProcessID, int64(handle.Pid))
 	pd.ServerProxyStartupTimestamp = metav1.NewMicroTime(handle.IdentityTime)
 	startWaitForExit()
-	dcpproc.RunProcessWatcher(r.config.ProcessExecutor, handle, log)
+	dcpproc.RunProcessWatcher(r.config.ProcessExecutor, handle, true, log)
 
 	// Wait until the first JSON line is printed to stdout indicating server control address/port
 
@@ -1973,7 +1973,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) stopServerProxyProcess(
 		return errors.New("process executor is unavailable")
 	}
 
-	stopErr := r.config.ProcessExecutor.StopProcess(ctx, handle)
+	stopErr := r.config.ProcessExecutor.StopProcess(ctx, handle, process.StopWithProcessGroup())
 	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
 		return stopErr
 	}

@@ -54,6 +54,7 @@ func TestMonitorTargetFromFieldsRequiresTimestamp(t *testing.T) {
 	require.ErrorContains(t, monitorErr, "monitor timestamp must be set when monitor PID is set")
 }
 
+// Verifies that RunProcessWatcher passes the original child identity, owner identity, and Unix group topology.
 func TestRunProcessWatcher(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
@@ -66,7 +67,7 @@ func TestRunProcessWatcher(t *testing.T) {
 	testPid := process.Pid_t(28869)
 	testStartTime := time.Now()
 
-	RunProcessWatcher(pe, process.NewHandle(testPid, testStartTime), log)
+	RunProcessWatcher(pe, process.NewHandle(testPid, testStartTime), true, log)
 
 	dcpProc, dcpProcErr := findRunningDcp(pe)
 	require.NoError(t, dcpProcErr)
@@ -81,8 +82,10 @@ func TestRunProcessWatcher(t *testing.T) {
 	require.Equal(t, dcpProc.Cmd.Args[5], testStartTime.Format(osutil.RFC3339MiliTimestampFormat), "Should include formatted child start time")
 	require.Equal(t, dcpProc.Cmd.Args[6], "--monitor", "Should include --monitor flag")
 	require.Equal(t, dcpProc.Cmd.Args[7], strconv.FormatInt(int64(os.Getpid()), 10), "Should include current process PID as monitored PID")
+	require.Equal(t, !osutil.IsWindows(), slices.Contains(dcpProc.Cmd.Args, "--child-process-group"))
 }
 
+// Verifies that RunProcessWatcherForMonitor preserves an explicit owner identity without assuming unknown group topology.
 func TestRunProcessWatcherForMonitor(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
@@ -97,7 +100,7 @@ func TestRunProcessWatcherForMonitor(t *testing.T) {
 		IdentityTime: testStartTime.Add(-time.Minute),
 	}
 
-	RunProcessWatcherForMonitor(pe, monitor, process.NewHandle(testPid, testStartTime), log)
+	RunProcessWatcherForMonitor(pe, monitor, process.NewHandle(testPid, testStartTime), false, log)
 
 	dcpProc, dcpProcErr := findRunningDcp(pe)
 	require.NoError(t, dcpProcErr)
@@ -111,6 +114,7 @@ func TestRunProcessWatcherForMonitor(t *testing.T) {
 	require.Equal(t, strconv.FormatInt(int64(monitor.Pid), 10), dcpProc.Cmd.Args[7], "Should include explicit monitored PID")
 	require.Equal(t, "--monitor-identity-time", dcpProc.Cmd.Args[8], "Should include --monitor-identity-time flag")
 	require.Equal(t, monitor.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat), dcpProc.Cmd.Args[9], "Should include explicit monitor identity time")
+	require.NotContains(t, dcpProc.Cmd.Args, "--child-process-group")
 }
 
 func TestRunContainerWatcher(t *testing.T) {

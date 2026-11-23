@@ -1,31 +1,26 @@
-//go:build !windows
+//go:build darwin || linux
 
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package process_test
+package process
 
 import (
-	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"math"
-	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	int_testutil "github.com/microsoft/dcp/internal/testutil"
-	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -38,22 +33,16 @@ func TestStartProcessIsolatesUnixProcessGroup(t *testing.T) {
 			t.Parallel()
 			testCtx, cancelTest := testutil.GetTestContext(t, 0)
 			t.Cleanup(cancelTest)
-			executor := process.NewOSExecutor(log)
+			executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 			t.Cleanup(executor.Dispose)
 
-			cmd := exec.Command("sh", "-c", "read command")
+			cmd := delayCommandForTest(t, "--delay=120s")
 			if newSession {
-				process.ForkFromParent(cmd)
+				ForkFromParent(cmd)
 			}
-			stdin, stdinErr := cmd.StdinPipe()
-			require.NoError(t, stdinErr)
-			t.Cleanup(func() { _ = stdin.Close() })
-			handle, startWait, startErr := executor.StartProcess(testCtx, cmd, nil, process.CreationFlagsNone, nil)
-			require.NoError(t, startErr)
-			startWait()
-			t.Cleanup(func() { stopGroupTestProcess(t, testCtx, executor, handle) })
+			handle, _, _ := startDelayTreeForTest(t, testCtx, executor, cmd, 1)
 
-			pid, pidErr := process.PidT_ToInt(handle.Pid)
+			pid, pidErr := PidT_ToInt(handle.Pid)
 			require.NoError(t, pidErr)
 			groupID, groupErr := unix.Getpgid(pid)
 			require.NoError(t, groupErr)
@@ -77,44 +66,37 @@ func TestStopProcessKillsLateGroupMember(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
 	t.Cleanup(cancelTest)
-	executor := process.NewOSExecutor(log)
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 	t.Cleanup(executor.Dispose)
-	handle, group, output, _ := startProcessGroupShell(t, testCtx, executor,
-		`trap 'sleep 120 </dev/null & echo $!; exit 0' TERM; echo ready; read command`)
-	require.Equal(t, "ready", readProcessGroupLine(t, testCtx, output))
+	output := testutil.NewBufferWriter()
+	cmd := delayCommandForTest(t, "--delay=120s", "--child-spec=1", "--couple-children", "--children-on-exit")
+	cmd.Stdout = output
+	handle, _, _ := startDelayTreeForTest(t, testCtx, executor, cmd, 1)
+	group, groupErr := FindProcessGroup(handle, false)
+	require.NoError(t, groupErr)
+	require.NotNil(t, group)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := WithDetachedStopTimeout(testCtx)
+		defer cleanupCancel()
+		require.NoError(t, group.signal(cleanupCtx, syscall.SIGKILL))
+	})
+	readyErr := wait.PollUntilContextCancel(testCtx, stopWaitPollInterval, true, func(context.Context) (bool, error) {
+		return strings.Contains(string(output.Bytes()), "Ready to create children on exit\n"), nil
+	})
+	require.NoError(t, readyErr)
 
-	tree, treeErr := process.GetProcessTree(testCtx, handle)
+	tree, treeErr := GetProcessTree(testCtx, handle)
 	require.NoError(t, treeErr)
 	require.Len(t, tree, 1)
 	require.NoError(t, executor.StopProcess(testCtx, handle))
 
-	latePID, latePIDErr := process.StringToPidT(readProcessGroupLine(t, testCtx, output))
+	lines := output.Lines([]byte("\n"))
+	require.Len(t, lines, 3)
+	latePID, latePIDErr := StringToPidT(string(lines[1]))
 	require.NoError(t, latePIDErr)
 	require.NotEqual(t, handle.Pid, latePID)
-	require.NoError(t, group.Wait(testCtx))
-	requireUnixProcessesExited(t, testCtx, []process.ProcessHandle{{Pid: latePID}})
-}
-
-// Verifies that StopProcess escalates to group-wide SIGKILL when the leader exits but a member ignores SIGTERM.
-func TestStopProcessKillsIgnoringGroupMemberAfterLeaderExit(t *testing.T) {
-	t.Parallel()
-	testCtx, cancelTest := testutil.GetTestContext(t, 0)
-	t.Cleanup(cancelTest)
-	executor := process.NewOSExecutor(log)
-	t.Cleanup(executor.Dispose)
-	handle, group, output, _ := startProcessGroupShell(t, testCtx, executor,
-		`(trap '' TERM; echo ready; exec sleep 120) & echo $!; read command`)
-	lines := []string{readProcessGroupLine(t, testCtx, output), readProcessGroupLine(t, testCtx, output)}
-	require.Contains(t, lines, "ready")
-	childPIDLine := lines[0]
-	if childPIDLine == "ready" {
-		childPIDLine = lines[1]
-	}
-	childPID, childPIDErr := process.StringToPidT(childPIDLine)
-	require.NoError(t, childPIDErr)
-	require.NoError(t, executor.StopProcess(testCtx, handle))
-	require.NoError(t, group.Wait(testCtx))
-	requireUnixProcessesExited(t, testCtx, []process.ProcessHandle{{Pid: childPID}})
+	_, lateInspectionErr := FindProcessHandle(latePID)
+	require.True(t, IsProcessGoneErr(lateInspectionErr), "late group member is still running: %v", lateInspectionErr)
 }
 
 // Verifies that StopProcess uses only tree cleanup for a root sharing the caller's Unix process group.
@@ -122,110 +104,60 @@ func TestStopProcessInSharedUnixGroupUsesTree(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
 	t.Cleanup(cancelTest)
-	executor := process.NewOSExecutor(log)
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 	t.Cleanup(executor.Dispose)
-	delayDir, delayDirErr := getDelayToolDir()
-	require.NoError(t, delayDirErr)
-	cmd := exec.Command("./delay", "--delay=120s", "--child-spec=1", "--couple-children")
-	cmd.Dir = delayDir
+	cmd := delayCommandForTest(t, "--delay=120s", "--child-spec=1", "--couple-children")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: unix.Getpgrp()}
-	handle, startWait, startErr := executor.StartProcess(testCtx, cmd, nil, process.CreationFlagsNone, nil)
-	require.NoError(t, startErr)
-	startWait()
-	t.Cleanup(func() { stopGroupTestProcess(t, testCtx, executor, handle) })
-	group, groupErr := process.FindProcessGroup(handle)
+	handle, tree, _ := startDelayTreeForTest(t, testCtx, executor, cmd, 2)
+	group, groupErr := FindProcessGroup(handle, false)
 	require.NoError(t, groupErr)
 	require.Nil(t, group)
-	testDeadline, haveTestDeadline := testCtx.Deadline()
-	require.True(t, haveTestDeadline)
-	int_testutil.EnsureProcessTree(t, handle, 2, time.Until(testDeadline))
-	tree, treeErr := process.GetProcessTree(testCtx, handle)
-	require.NoError(t, treeErr)
 	require.NoError(t, executor.StopProcess(testCtx, handle))
-	requireUnixProcessesExited(t, testCtx, tree)
-}
-
-// Verifies that StopProcess retains tree cleanup for descendants in separate groups and sessions.
-func TestStopProcessCleansDescendantsOutsideGroup(t *testing.T) {
-	t.Parallel()
-	testCtx, cancelTest := testutil.GetTestContext(t, 0)
-	t.Cleanup(cancelTest)
-	executor := process.NewOSExecutor(log)
-	t.Cleanup(executor.Dispose)
-	delayDir, delayDirErr := getDelayToolDir()
-	require.NoError(t, delayDirErr)
-	cmd := exec.Command("./delay", "--delay=120s", "--child-spec=2,1", "--fork-children")
-	cmd.Dir = delayDir
-	handle, startWait, startErr := executor.StartProcess(testCtx, cmd, nil, process.CreationFlagsNone, nil)
-	require.NoError(t, startErr)
-	startWait()
-	t.Cleanup(func() { stopGroupTestProcess(t, testCtx, executor, handle) })
-	testDeadline, haveTestDeadline := testCtx.Deadline()
-	require.True(t, haveTestDeadline)
-	int_testutil.EnsureProcessTree(t, handle, 5, time.Until(testDeadline))
-
-	tree, treeErr := process.GetProcessTree(testCtx, handle)
-	require.NoError(t, treeErr)
-	rootPID, rootPIDErr := process.PidT_ToInt(handle.Pid)
-	require.NoError(t, rootPIDErr)
-	for _, child := range tree[1:] {
-		childPID, childPIDErr := process.PidT_ToInt(child.Pid)
-		require.NoError(t, childPIDErr)
-		childGroup, childGroupErr := unix.Getpgid(childPID)
-		require.NoError(t, childGroupErr)
-		require.NotEqual(t, rootPID, childGroup)
-		childSession, childSessionErr := unix.Getsid(childPID)
-		require.NoError(t, childSessionErr)
-		require.Equal(t, childPID, childSession)
+	for _, stopped := range tree {
+		require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(stopped)))
 	}
-	require.NoError(t, executor.StopProcess(testCtx, handle))
-	requireUnixProcessesExited(t, testCtx, tree)
 }
 
-// Verifies that StopRootOnly leaves coupled descendants running and captured group cleanup still stops them.
+// Verifies that StopRootOnly stops the root without signaling its coupled descendants.
 func TestStopRootOnlySkipsUnixGroupCleanup(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
 	t.Cleanup(cancelTest)
-	executor := process.NewOSExecutor(log)
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 	t.Cleanup(executor.Dispose)
-	handle, group, output, _ := startProcessGroupShell(t, testCtx, executor,
-		"sleep 120 </dev/null & echo $!; read command")
-	childPID, childPIDErr := process.StringToPidT(readProcessGroupLine(t, testCtx, output))
-	require.NoError(t, childPIDErr)
-	childHandle, childHandleErr := executor.FindProcessHandle(childPID)
-	require.NoError(t, childHandleErr)
+	handle, tree, _ := startDelayTreeForTest(t, testCtx, executor,
+		delayCommandForTest(t, "--delay=120s", "--child-spec=1", "--couple-children"), 2)
 
-	require.NoError(t, executor.StopProcess(testCtx, handle, process.StopRootOnly()))
-	require.NoError(t, executor.CheckProcessRunning(childHandle))
-	require.NoError(t, executor.StopProcess(testCtx, handle, process.StopWithProcessGroup(group)))
-	requireUnixProcessesExited(t, testCtx, []process.ProcessHandle{childHandle})
+	require.NoError(t, executor.StopProcess(testCtx, handle, StopRootOnly(), StopWithProcessGroup()))
+	require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(handle)))
+	require.NoError(t, executor.CheckProcessRunning(tree[1]))
 }
 
-// Verifies that a captured ProcessGroup survives leader exit and respects canceled waits.
-func TestProcessGroupOutlivesLeader(t *testing.T) {
+// Verifies that FindProcessGroup identifies a known group after its leader is reaped,
+// ProcessGroup.Wait tracks surviving members, and StopWithProcessGroup stops them using the original handle.
+func TestProcessGroupWaitTracksMembersAfterLeaderExit(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
 	t.Cleanup(cancelTest)
-	executor := process.NewOSExecutor(log)
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 	t.Cleanup(executor.Dispose)
-	handle, group, output, input := startProcessGroupShell(t, testCtx, executor,
-		"sleep 120 </dev/null & echo $!; read command; exit 0")
-	childPID, childPIDErr := process.StringToPidT(readProcessGroupLine(t, testCtx, output))
-	require.NoError(t, childPIDErr)
-	childHandle, childHandleErr := executor.FindProcessHandle(childPID)
-	require.NoError(t, childHandleErr)
-	_, writeErr := fmt.Fprintln(input, "exit")
-	require.NoError(t, writeErr)
-	requireUnixProcessesExited(t, testCtx, []process.ProcessHandle{handle})
-	require.NoError(t, executor.CheckProcessRunning(childHandle))
+	handle, tree, _ := startDelayTreeForTest(t, testCtx, executor,
+		delayCommandForTest(t, "--delay=120s", "--child-spec=1", "--couple-children"), 2)
+	require.NoError(t, executor.StopProcess(testCtx, handle, StopRootOnly()))
+	_, discoveryErr := FindProcessGroup(handle, false)
+	require.True(t, IsProcessGoneErr(discoveryErr))
+	group, groupErr := FindProcessGroup(handle, true)
+	require.NoError(t, groupErr)
+	require.NotNil(t, group)
 
-	waitCtx, cancelWait := context.WithCancel(testCtx)
-	cancelWait()
-	require.ErrorIs(t, group.Wait(waitCtx), context.Canceled)
-	require.NoError(t, executor.StopProcess(testCtx, handle, process.StopWithProcessGroup(group)))
+	// A deadline proves that Wait stays blocked while an orphaned group member is alive.
+	waitCtx, cancelWait := context.WithTimeout(testCtx, time.Second)
+	defer cancelWait()
+	require.ErrorIs(t, group.Wait(waitCtx), context.DeadlineExceeded)
+	require.NoError(t, executor.CheckProcessRunning(tree[1]))
+	require.NoError(t, executor.StopProcess(testCtx, handle, StopWithProcessGroup()))
+	require.True(t, IsProcessGoneErr(executor.CheckProcessRunning(tree[1])))
 	require.NoError(t, group.Wait(testCtx))
-	requireUnixProcessesExited(t, testCtx, []process.ProcessHandle{childHandle})
 }
 
 // Verifies that group cleanup stops further signaling on caller cancellation, leaving surviving members addressable.
@@ -233,26 +165,23 @@ func TestStopProcessGroupRespectsCallerCancellation(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
 	t.Cleanup(cancelTest)
-	executor := process.NewOSExecutor(log)
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 	t.Cleanup(executor.Dispose)
-	handle, group, output, _ := startProcessGroupShell(t, testCtx, executor,
-		`(trap '' TERM; echo ready; exec sleep 120) & echo $!; read command`)
-	lines := []string{readProcessGroupLine(t, testCtx, output), readProcessGroupLine(t, testCtx, output)}
-	require.Contains(t, lines, "ready")
-	childPIDLine := lines[0]
-	if childPIDLine == "ready" {
-		childPIDLine = lines[1]
-	}
-	childPID, childPIDErr := process.StringToPidT(childPIDLine)
-	require.NoError(t, childPIDErr)
-	childHandle, childHandleErr := process.FindProcessHandle(childPID)
-	require.NoError(t, childHandleErr)
+	handle, tree, _ := startDelayTreeForTest(t, testCtx, executor,
+		delayCommandForTest(t, "--delay=120s", "--ignore-sigterm", "--child-spec=1", "--couple-children"), 2)
 
 	stopCtx, cancelStop := context.WithCancel(testCtx)
 	defer cancelStop()
 	stopResult := make(chan error, 1)
-	go func() { stopResult <- executor.StopProcess(stopCtx, handle, process.StopWithProcessGroup(group)) }()
-	requireUnixProcessesExited(t, testCtx, []process.ProcessHandle{handle})
+	go func() { stopResult <- executor.StopProcess(stopCtx, handle) }()
+	childExitErr := wait.PollUntilContextCancel(testCtx, stopWaitPollInterval, true, func(context.Context) (bool, error) {
+		inspectionErr := executor.CheckProcessRunning(tree[1])
+		if IsProcessGoneErr(inspectionErr) {
+			return true, nil
+		}
+		return false, inspectionErr
+	})
+	require.NoError(t, childExitErr)
 	cancelStop()
 	select {
 	case <-testCtx.Done():
@@ -261,119 +190,205 @@ func TestStopProcessGroupRespectsCallerCancellation(t *testing.T) {
 		require.True(t, received)
 		require.ErrorIs(t, stopErr, context.Canceled)
 	}
-	require.NoError(t, executor.CheckProcessRunning(childHandle))
-	childProcess, childProcessErr := childHandle.OsProcess()
-	require.NoError(t, childProcessErr)
-	defer func() { require.NoError(t, childProcess.Release()) }()
-	require.NoError(t, childProcess.Kill())
-	require.NoError(t, group.Wait(testCtx))
+	require.NoError(t, executor.CheckProcessRunning(handle))
 }
 
-// Verifies that group discovery and cleanup reject incorrect identities and mismatched cleanup handles.
+// Verifies that group discovery rejects mismatched identities, known groups recognize PID reuse as completion,
+// and invalid or missing identities remain errors.
 func TestProcessGroupValidatesIdentity(t *testing.T) {
 	t.Parallel()
 	testCtx, cancelTest := testutil.GetTestContext(t, 0)
 	t.Cleanup(cancelTest)
-	executor := process.NewOSExecutor(log)
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
 	t.Cleanup(executor.Dispose)
-	handle, group, output, _ := startProcessGroupShell(t, testCtx, executor, "echo ready; read command")
-	require.Equal(t, "ready", readProcessGroupLine(t, testCtx, output))
-	wrongIdentity := process.NewHandle(handle.Pid, handle.IdentityTime.Add(-time.Minute))
-	_, groupErr := process.FindProcessGroup(wrongIdentity)
-	require.ErrorIs(t, groupErr, process.ErrProcessIdentityMismatch)
-	require.Error(t, executor.StopProcess(testCtx, wrongIdentity, process.StopWithProcessGroup(group)))
-	_, missingIdentityErr := process.FindProcessGroup(process.NewHandle(handle.Pid, time.Time{}))
-	require.ErrorIs(t, missingIdentityErr, process.ErrInvalidProcessHandle)
-	require.NoError(t, executor.CheckProcessRunning(handle))
-	for _, invalidPID := range []process.Pid_t{process.UnknownPID, 0, 1, math.MaxInt32 + 1, math.MaxUint32 + 1} {
-		_, invalidErr := process.FindProcessGroup(process.NewHandle(invalidPID, time.Time{}))
-		require.Error(t, invalidErr)
+	handle, _, _ := startDelayTreeForTest(t, testCtx, executor, delayCommandForTest(t, "--delay=120s"), 1)
+	group, groupErr := FindProcessGroup(handle, false)
+	require.NoError(t, groupErr)
+	require.NotNil(t, group)
+	wrongIdentity := NewHandle(handle.Pid, handle.IdentityTime.Add(-time.Minute))
+	for _, knownLeader := range []bool{false, true} {
+		wrongGroup, wrongIdentityErr := FindProcessGroup(wrongIdentity, knownLeader)
+		if knownLeader {
+			require.NoError(t, wrongIdentityErr)
+			require.NoError(t, wrongGroup.Wait(testCtx))
+		} else {
+			require.ErrorIs(t, wrongIdentityErr, ErrProcessIdentityMismatch)
+		}
+		_, missingIdentityErr := FindProcessGroup(NewHandle(handle.Pid, time.Time{}), knownLeader)
+		require.ErrorIs(t, missingIdentityErr, ErrInvalidProcessHandle)
+		for _, invalidPID := range []Pid_t{UnknownPID, 0, 1, math.MaxInt32 + 1, math.MaxUint32 + 1} {
+			_, invalidErr := FindProcessGroup(NewHandle(invalidPID, handle.IdentityTime), knownLeader)
+			require.Error(t, invalidErr)
+		}
 	}
-	emptyGroup := &process.ProcessGroup{}
+	require.ErrorIs(t, executor.StopProcess(testCtx, wrongIdentity, StopWithProcessGroup()), ErrProcessIdentityMismatch)
+	require.NoError(t, executor.CheckProcessRunning(handle))
+	emptyGroup := &ProcessGroup{}
 	require.Error(t, emptyGroup.Wait(testCtx))
 }
 
-func startProcessGroupShell(
-	t *testing.T,
-	ctx context.Context,
-	executor process.Executor,
-	script string,
-) (process.ProcessHandle, *process.ProcessGroup, *bufio.Reader, *os.File) {
-	t.Helper()
-	outputRead, outputWrite, outputErr := os.Pipe()
-	require.NoError(t, outputErr)
-	t.Cleanup(func() { _ = outputRead.Close(); _ = outputWrite.Close() })
-	inputRead, inputWrite, inputErr := os.Pipe()
-	require.NoError(t, inputErr)
-	t.Cleanup(func() { _ = inputRead.Close(); _ = inputWrite.Close() })
-	cmd := exec.Command("sh", "-c", script)
-	cmd.Stdin = inputRead
-	cmd.Stdout = outputWrite
-	cmd.Stderr = os.Stderr
-	handle, startWait, startErr := executor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
-	require.NoError(t, startErr)
-	startWait()
-	group, groupErr := process.FindProcessGroup(handle)
+// Verifies that group waiting and signaling treat a reused leader PID as completion without targeting its replacement,
+// while process-tree stopping retains its original gone-error classification.
+func TestProcessGroupPIDReuseLeavesReplacementUntouched(t *testing.T) {
+	t.Parallel()
+	testCtx, cancelTest := testutil.GetTestContext(t, 0)
+	t.Cleanup(cancelTest)
+	executor := NewOSExecutor(logr.Discard()).(*OSExecutor)
+	t.Cleanup(executor.Dispose)
+	handle, tree, _ := startDelayTreeForTest(t, testCtx, executor,
+		delayCommandForTest(t, "--delay=120s", "--child-spec=1", "--couple-children"), 2)
+	// A stale identity simulates PID reuse without depending on the kernel recycling a PID during the test.
+	original := NewHandle(handle.Pid, handle.IdentityTime.Add(-time.Minute))
+	group, groupErr := FindProcessGroup(original, true)
 	require.NoError(t, groupErr)
 	require.NotNil(t, group)
-	t.Cleanup(func() { stopGroupTestProcess(t, ctx, executor, handle, process.StopWithProcessGroup(group)) })
-	require.NoError(t, outputWrite.Close())
-	require.NoError(t, inputRead.Close())
-	return handle, group, bufio.NewReader(outputRead), inputWrite
-}
-
-func readProcessGroupLine(t *testing.T, ctx context.Context, reader *bufio.Reader) string {
-	t.Helper()
-	type lineResult struct {
-		line string
-		err  error
-	}
-	lines := make(chan lineResult, 1)
-	go func() {
-		line, readErr := reader.ReadString('\n')
-		lines <- lineResult{line: line, err: readErr}
-	}()
-	select {
-	case <-ctx.Done():
-		t.Fatal("process output did not arrive before the test context expired")
-		return ""
-	case result, received := <-lines:
-		require.True(t, received)
-		require.NoError(t, result.err)
-		return strings.TrimSpace(result.line)
-	}
-}
-
-func requireUnixProcessesExited(t *testing.T, ctx context.Context, handles []process.ProcessHandle) {
-	t.Helper()
-	pollErr := wait.PollUntilContextCancel(ctx, 20*time.Millisecond, true, func(_ context.Context) (bool, error) {
-		for _, handle := range handles {
-			var inspectionErr error
-			if handle.IdentityTime.IsZero() {
-				_, inspectionErr = process.FindProcessHandle(handle.Pid)
-			} else {
-				proc, processErr := handle.OsProcess()
-				inspectionErr = processErr
-				if proc != nil {
-					inspectionErr = errors.Join(inspectionErr, proc.Release())
-				}
-			}
-			if process.IsProcessGoneErr(inspectionErr) {
-				continue
-			}
-			return false, inspectionErr
+	_, leaderErr := group.hasLiveLeader()
+	require.ErrorIs(t, leaderErr, ErrProcessIdentityMismatch)
+	running, inspectionErr := group.isRunning(testCtx)
+	require.NoError(t, inspectionErr)
+	require.False(t, running)
+	require.NoError(t, group.Wait(testCtx))
+	for _, signal := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
+		require.NoError(t, group.signal(testCtx, signal))
+		for _, replacement := range tree {
+			require.NoError(t, executor.CheckProcessRunning(replacement))
 		}
-		return true, nil
-	})
-	require.NoError(t, pollErr, "processes should have exited")
+	}
+	stopErr := executor.StopProcess(testCtx, original, StopWithProcessGroup())
+	require.ErrorIs(t, stopErr, ErrProcessIdentityMismatch)
+	require.True(t, IsProcessGoneErr(stopErr))
+	for _, replacement := range tree {
+		require.NoError(t, executor.CheckProcessRunning(replacement))
+	}
+
+	cancelledCtx, cancel := context.WithCancel(testCtx)
+	cancel()
+	require.ErrorIs(t, group.Wait(cancelledCtx), context.Canceled)
+	require.ErrorIs(t, group.signal(cancelledCtx, syscall.SIGKILL), context.Canceled)
 }
 
-func stopGroupTestProcess(t *testing.T, ctx context.Context, executor process.Executor, handle process.ProcessHandle, options ...process.ProcessStopOption) {
-	t.Helper()
-	cleanupCtx, cleanupCancel := process.WithDetachedStopTimeout(ctx)
-	defer cleanupCancel()
-	stopErr := executor.StopProcess(cleanupCtx, handle, options...)
-	if stopErr != nil && !process.IsProcessGoneErr(stopErr) {
-		t.Errorf("could not clean up process %d: %v", handle.Pid, stopErr)
+// Verifies that group inspection filters shared snapshot metadata, uses readable live members despite partial errors,
+// and requires complete snapshots containing only previously observed zombies before confirming completion.
+func TestIsProcessGroupRunningUsesPartialSnapshots(t *testing.T) {
+	t.Parallel()
+	member := treeProcess(11, 99, 11)
+	member.groupID = 10
+	zombie := member
+	zombie.exited = true
+	newZombie := treeProcess(12, 1, 12)
+	newZombie.groupID = 10
+	newZombie.exited = true
+	unrelated := treeProcess(20, 10, 20)
+	unrelated.groupID = 20
+	snapshotFailure := fmt.Errorf("could not inspect unrelated process: %w", syscall.EACCES)
+	type snapshotResult struct {
+		processes []processInfo
+		err       error
+	}
+	for _, testCase := range []struct {
+		name      string
+		snapshots []snapshotResult
+		running   bool
+		err       error
+	}{
+		{
+			name:      "live member in partial snapshot",
+			snapshots: []snapshotResult{{[]processInfo{unrelated, member}, snapshotFailure}},
+			running:   true,
+		},
+		{
+			name:      "live member in partial second snapshot",
+			snapshots: []snapshotResult{{[]processInfo{zombie}, nil}, {[]processInfo{member}, snapshotFailure}},
+			running:   true,
+		},
+		{
+			name:      "unrelated group with matching parent",
+			snapshots: []snapshotResult{{[]processInfo{unrelated}, nil}, {[]processInfo{unrelated}, nil}},
+		},
+		{
+			name:      "unrelated live process cannot resolve partial snapshot",
+			snapshots: []snapshotResult{{[]processInfo{unrelated}, snapshotFailure}},
+			err:       ErrIncompleteProcessTree,
+		},
+		{
+			name:      "empty partial snapshot",
+			snapshots: []snapshotResult{{nil, snapshotFailure}},
+			err:       ErrIncompleteProcessTree,
+		},
+		{
+			name:      "zombie in partial snapshot",
+			snapshots: []snapshotResult{{[]processInfo{zombie}, snapshotFailure}},
+			err:       ErrIncompleteProcessTree,
+		},
+		{
+			name:      "known zombie in complete snapshots",
+			snapshots: []snapshotResult{{[]processInfo{zombie}, nil}, {[]processInfo{zombie}, nil}},
+		},
+		{
+			name:      "zombie removed between snapshots",
+			snapshots: []snapshotResult{{[]processInfo{zombie}, nil}, {nil, nil}},
+		},
+		{
+			name:      "new zombie requires another census",
+			snapshots: []snapshotResult{{[]processInfo{zombie}, nil}, {[]processInfo{newZombie}, nil}},
+			running:   true,
+		},
+		{
+			name:      "incomplete second snapshot",
+			snapshots: []snapshotResult{{[]processInfo{zombie}, nil}, {[]processInfo{zombie}, snapshotFailure}},
+			err:       ErrIncompleteProcessTree,
+		},
+		{
+			name:      "new zombie cannot resolve partial second snapshot",
+			snapshots: []snapshotResult{{[]processInfo{zombie}, nil}, {[]processInfo{newZombie}, snapshotFailure}},
+			err:       ErrIncompleteProcessTree,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			t.Cleanup(cancel)
+			snapshotsTaken := 0
+			running, inspectionErr := isProcessGroupRunning(ctx, 10, func(context.Context) ([]processInfo, error) {
+				require.Less(t, snapshotsTaken, len(testCase.snapshots))
+				snapshot := testCase.snapshots[snapshotsTaken]
+				snapshotsTaken++
+				return snapshot.processes, snapshot.err
+			})
+			require.Equal(t, testCase.running, running)
+			require.ErrorIs(t, inspectionErr, testCase.err)
+			if testCase.err != nil {
+				require.ErrorIs(t, inspectionErr, syscall.EACCES)
+			}
+			require.Equal(t, len(testCase.snapshots), snapshotsTaken)
+		})
+	}
+}
+
+// Verifies that group inspection honors cancellation before and during capture even when a partial snapshot has a live member.
+func TestIsProcessGroupRunningHonorsSnapshotCancellation(t *testing.T) {
+	t.Parallel()
+	for _, cancelBeforeSnapshot := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancel-before-snapshot=%t", cancelBeforeSnapshot), func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, 0)
+			t.Cleanup(cancel)
+			if cancelBeforeSnapshot {
+				cancel()
+			}
+			snapshotsTaken := 0
+			running, inspectionErr := isProcessGroupRunning(ctx, 10, func(context.Context) ([]processInfo, error) {
+				snapshotsTaken++
+				cancel()
+				return []processInfo{{handle: NewHandle(11, time.Now()), groupID: 10}}, syscall.EACCES
+			})
+			require.False(t, running)
+			require.ErrorIs(t, inspectionErr, context.Canceled)
+			if cancelBeforeSnapshot {
+				require.Zero(t, snapshotsTaken)
+			} else {
+				require.Equal(t, 1, snapshotsTaken)
+			}
+		})
 	}
 }
