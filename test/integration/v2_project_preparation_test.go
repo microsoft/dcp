@@ -144,7 +144,7 @@ func (apiClient *projectRejectedCreateClient) Create(ctx context.Context, obj ct
 }
 
 // Verifies that a rejected container declaration leaves ProjectContainer Pending rather than inventing
-// observation uncertainty, and retries the same prepared inputs to realize one backing.
+// observation uncertainty, and retries the same prepared inputs to realize one physical resource.
 func TestV2ProjectContainerRejectedCreatePreservesPreparationState(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -169,7 +169,7 @@ func TestV2ProjectContainerRejectedCreatePreservesPreparationState(t *testing.T)
 	select {
 	case <-rejectedCreate.entered:
 	case <-ctx.Done():
-		t.Fatal("Project did not attempt backing creation")
+		t.Fatal("Project did not attempt physical resource creation")
 	}
 	release()
 	pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
@@ -181,15 +181,15 @@ func TestV2ProjectContainerRejectedCreatePreservesPreparationState(t *testing.T)
 	releaseRetry()
 	waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
 	require.EqualValues(t, 2, rejectedCreate.attempts.Load())
-	var backings apiv2.PhysicalContainerList
-	require.NoError(t, server.Client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-	require.Len(t, backings.Items, 1)
+	var physicalResources apiv2.PhysicalContainerList
+	require.NoError(t, server.Client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, physicalResources.Items, 1)
 	require.NoError(t, server.Client.Delete(ctx, resource))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
 // Verifies that ProjectContainer resolves network references again after a rejected declaration and uses
-// the current published backing when no container declaration committed the earlier selection.
+// the current published physical resource when no container declaration committed the earlier selection.
 func TestV2ProjectContainerResolvesNetworksAfterRejectedCreate(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -385,9 +385,9 @@ func TestV2ProjectProcessTerminalServicePreparation(t *testing.T) {
 			terminal := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
 			requireReadyCondition(t, terminal.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
 			require.Equal(t, failed.Status.Conditions[0].Message, terminal.Status.Conditions[0].Message)
-			var backings apiv2.PhysicalContainerList
-			require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-			require.Empty(t, backings.Items)
+			var physicalResources apiv2.PhysicalContainerList
+			require.NoError(t, client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+			require.Empty(t, physicalResources.Items)
 			require.NoError(t, client.Delete(ctx, namespace))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
 		})
@@ -439,9 +439,9 @@ func TestV2ProjectContainerTerminalServicePreparation(t *testing.T) {
 			terminal := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
 			requireReadyCondition(t, terminal.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
 			require.Equal(t, failed.Status.Conditions[0].Message, terminal.Status.Conditions[0].Message)
-			var backings apiv2.PhysicalContainerList
-			require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-			require.Empty(t, backings.Items)
+			var physicalResources apiv2.PhysicalContainerList
+			require.NoError(t, client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+			require.Empty(t, physicalResources.Items)
 			require.NoError(t, client.Delete(ctx, namespace))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, client, namespace)
 		})
@@ -681,7 +681,7 @@ func TestV2ProjectContainerServicePortsAndEvaluatedValues(t *testing.T) {
 
 }
 
-// Verifies that a missing service template dependency retries without launching a backing,
+// Verifies that a missing service template dependency retries without launching a physical resource,
 // malformed templates remain terminal after Stop, and deletion can clean either preparation outcome.
 func TestV2ProjectProcessTemplatePreparationFailures(t *testing.T) {
 	t.Parallel()
@@ -732,7 +732,7 @@ func TestV2ProjectProcessTemplatePreparationFailures(t *testing.T) {
 
 }
 
-// Verifies that a missing service template dependency retries without launching a backing,
+// Verifies that a missing service template dependency retries without launching a physical resource,
 // malformed templates remain terminal after Stop, and deletion can clean either preparation outcome.
 func TestV2ProjectContainerTemplatePreparationFailures(t *testing.T) {
 	t.Parallel()
@@ -804,7 +804,7 @@ func (apiClient *projectEvaluatedCreateClient) Create(ctx context.Context, objec
 		case <-apiClient.release:
 		case <-ctx.Done():
 		}
-		return errors.New("evaluated backing create response lost")
+		return errors.New("evaluated physical resource create response lost")
 	}
 	return nil
 }
@@ -842,9 +842,9 @@ func TestV2ProjectContainerPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 			resource.Spec.Container.Ports = nil
 
 			require.NoError(t, server.Client.Create(ctx, resource))
-			var backing ctrl_client.Object
+			var physicalResource ctrl_client.Object
 			select {
-			case backing = <-decorated.created:
+			case physicalResource = <-decorated.created:
 			case <-ctx.Done():
 				t.Fatal("Project did not declare evaluated execution")
 			}
@@ -860,10 +860,10 @@ func TestV2ProjectContainerPinsEvaluatedSnapshotAcrossLostCreate(t *testing.T) {
 			})
 			release()
 			running := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
-			require.Equal(t, backing.GetUID(), running.Status.RuntimeLogs.UID)
+			require.Equal(t, physicalResource.GetUID(), running.Status.RuntimeLogs.UID)
 
 			physical := &apiv2.PhysicalContainer{}
-			require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(backing), physical))
+			require.NoError(t, server.Client.Get(ctx, ctrl_client.ObjectKeyFromObject(physicalResource), physical))
 			require.Equal(t, []string{"43210"}, running.Status.EffectiveArgs)
 			require.Equal(t, "adapter", physical.Spec.Container.Entrypoint)
 			simulated := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)

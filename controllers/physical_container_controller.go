@@ -960,7 +960,7 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(
 		return false, "", "", fmt.Errorf("%w: %s", errPhysicalContainerDependencyFailed, message)
 	}
 	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() &&
-		!hasFinalizer(&image, LogicalBackingFinalizer) {
+		!hasFinalizer(&image, LogicalPhysicalHoldFinalizer) {
 		return false, "", fmt.Sprintf("PhysicalContainerImage %q is terminating.", imageRef), nil
 	}
 	if image.Status.Phase != apiv2.PhysicalContainerImagePhaseReady || image.Status.ImageID == "" {

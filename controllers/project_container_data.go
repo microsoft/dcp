@@ -45,7 +45,7 @@ func (data *projectContainerData) portData(resource *apiv2.ProjectContainer) []l
 
 func (data *projectContainerData) updateLifecycleFromContainer(resource *apiv2.ProjectContainer, physical *apiv2.PhysicalContainer) {
 	condition := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
-	message := logicalBackingStatusMessage("PhysicalContainer", physical.Status.Conditions)
+	message := physicalStatusMessage("PhysicalContainer", physical.Status.Conditions)
 	switch physical.Status.Phase {
 	case apiv2.PhysicalContainerPhaseRunning:
 		if condition != nil && condition.Status == metav1.ConditionTrue {
@@ -120,7 +120,7 @@ func (data *projectContainerData) applyTo(resource *apiv2.ProjectContainer) (obj
 		imageRef = data.imageName
 	}
 	change |= setValue(&resource.Status.ImageRef, imageRef)
-	// Retained backings publish their own capture state; a Project stopped before creating one has no runtime output.
+	// Retained physical resources publish their own capture state; a Project stopped before creating one has no runtime output.
 	if data.state == projectStateStopped && data.physicalUID == "" {
 		source := &apiv2.LogSource{Complete: true}
 		if !reflect.DeepEqual(resource.Status.RuntimeLogs, source) {

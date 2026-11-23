@@ -5603,7 +5603,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerExecStatus(ref common.Reference
 					},
 					"physicalExecRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PhysicalExecRef identifies the same-namespace backing PhysicalContainerExec.",
+							Description: "PhysicalExecRef identifies the same-namespace PhysicalContainerExec.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -5902,7 +5902,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref common.Refere
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "LogicalContainerNetworkStatus describes the observed network and its physical backing resource.",
+				Description: "LogicalContainerNetworkStatus describes the observed network and its physical resource.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"phase": {
@@ -5914,7 +5914,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerNetworkStatus(ref common.Refere
 					},
 					"physicalNetworkRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>. Published after PhysicalContainerNetwork creation; logical consumers may use it before the container network is ready unless the network has failed. Cross-namespace references are not supported.",
+							Description: "PhysicalNetworkRef identifies the PhysicalContainerNetwork using <name> or <namespace>/<name>. Published after PhysicalContainerNetwork creation; logical consumers may use it before the container network is ready unless the network has failed. Cross-namespace references are not supported.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -6287,7 +6287,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 					},
 					"runtimeLogs": {
 						SchemaProps: spec.SchemaProps{
-							Description: "RuntimeLogs identifies output from the backing physical container.",
+							Description: "RuntimeLogs identifies output from the physical container.",
 							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
 						},
 					},
@@ -6300,7 +6300,7 @@ func schema_microsoft_dcp_api_v2_LogicalContainerStatus(ref common.ReferenceCall
 					},
 					"physicalContainerRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PhysicalContainerRef identifies the backing PhysicalContainer using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
+							Description: "PhysicalContainerRef identifies the PhysicalContainer using <name> or <namespace>/<name>. Cross-namespace references are not supported.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -6780,7 +6780,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "LogicalProcessStatus describes the observed process and its backing PhysicalProcess.",
+				Description: "LogicalProcessStatus describes the observed process and its PhysicalProcess.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"effectiveArgs": {
@@ -6846,7 +6846,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 					},
 					"runtimeLogs": {
 						SchemaProps: spec.SchemaProps{
-							Description: "RuntimeLogs describes output captured or referenced by the backing PhysicalProcess.",
+							Description: "RuntimeLogs describes output captured or referenced by the PhysicalProcess.",
 							Ref:         ref(v2.LogSource{}.OpenAPIModelName()),
 						},
 					},
@@ -6859,7 +6859,7 @@ func schema_microsoft_dcp_api_v2_LogicalProcessStatus(ref common.ReferenceCallba
 					},
 					"physicalProcessRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PhysicalProcessRef identifies the same-namespace backing PhysicalProcess.",
+							Description: "PhysicalProcessRef identifies the same-namespace PhysicalProcess.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -9959,7 +9959,7 @@ func schema_microsoft_dcp_api_v2_ProjectContainerStatus(ref common.ReferenceCall
 					},
 					"physicalContainerRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PhysicalContainerRef identifies the same-namespace backing PhysicalContainer. Cross-namespace references are not supported.",
+							Description: "PhysicalContainerRef identifies the same-namespace PhysicalContainer. Cross-namespace references are not supported.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

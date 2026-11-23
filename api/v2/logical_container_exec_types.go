@@ -79,7 +79,7 @@ type LogicalContainerExecStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-	// PhysicalExecRef identifies the same-namespace backing PhysicalContainerExec.
+	// PhysicalExecRef identifies the same-namespace PhysicalContainerExec.
 	PhysicalExecRef string `json:"physicalExecRef,omitempty"`
 	// ContainerID is the runtime container identity selected by the physical execution.
 	ContainerID string `json:"containerID,omitempty"`

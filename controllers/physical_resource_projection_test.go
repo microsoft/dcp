@@ -15,9 +15,9 @@ import (
 	apiv2 "github.com/microsoft/dcp/api/v2"
 )
 
-// Verifies that logical backing state helpers use observed runtime status despite a newer Stop
+// Verifies that logical physical resource state helpers use observed runtime status despite a newer Stop
 // generation, and that process/execution status projection and startup settlement retain those observations.
-func TestLogicalBackingStateUsesObservedStatusWithoutGenerationGate(t *testing.T) {
+func TestLogicalPhysicalStateUsesObservedStatusWithoutGenerationGate(t *testing.T) {
 	t.Parallel()
 	physicalProcess := &apiv2.PhysicalProcess{
 		ObjectMeta: metav1.ObjectMeta{Generation: 2},
@@ -28,12 +28,12 @@ func TestLogicalBackingStateUsesObservedStatusWithoutGenerationGate(t *testing.T
 		},
 	}
 	logicalProcess := &apiv2.LogicalProcess{}
-	_, processState := applyLogicalProcessBackingStatus(logicalProcess, physicalProcess)
+	_, processState := applyLogicalProcessPhysicalStatus(logicalProcess, physicalProcess)
 	require.Equal(t, logicalProcessStateRunning, processState)
 	require.True(t, logicalPhysicalProcessStartupSettled(physicalProcess))
 	physicalProcess.Status.Phase = apiv2.PhysicalProcessPhaseExited
 	physicalProcess.Status.Conditions[0].Status = metav1.ConditionFalse
-	_, processState = applyLogicalProcessBackingStatus(logicalProcess, physicalProcess)
+	_, processState = applyLogicalProcessPhysicalStatus(logicalProcess, physicalProcess)
 	require.Equal(t, logicalProcessStateExited, processState)
 	require.True(t, logicalPhysicalProcessStartupSettled(physicalProcess))
 
@@ -45,10 +45,10 @@ func TestLogicalBackingStateUsesObservedStatusWithoutGenerationGate(t *testing.T
 			Conditions: []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionTrue, ObservedGeneration: 1}},
 		},
 	}
-	require.Equal(t, logicalContainerStateRunning, logicalContainerBackingState(physicalContainer))
+	require.Equal(t, logicalContainerStateRunning, logicalContainerPhysicalState(physicalContainer))
 	physicalContainer.Status.Phase = apiv2.PhysicalContainerPhaseExited
 	physicalContainer.Status.Conditions[0].Status = metav1.ConditionFalse
-	require.Equal(t, logicalContainerStateExited, logicalContainerBackingState(physicalContainer))
+	require.Equal(t, logicalContainerStateExited, logicalContainerPhysicalState(physicalContainer))
 
 	physicalExecution := &apiv2.PhysicalContainerExec{
 		ObjectMeta: metav1.ObjectMeta{Generation: 2},
@@ -58,17 +58,17 @@ func TestLogicalBackingStateUsesObservedStatusWithoutGenerationGate(t *testing.T
 		}},
 	}
 	logicalExecution := &apiv2.LogicalContainerExec{}
-	_, executionState := applyLogicalContainerExecBackingStatus(logicalExecution, physicalExecution)
+	_, executionState := applyLogicalContainerExecPhysicalStatus(logicalExecution, physicalExecution)
 	require.Equal(t, logicalContainerExecStateRunning, executionState)
 	physicalExecution.Status.Phase = apiv2.ContainerExecPhaseExited
 	physicalExecution.Status.Conditions[0].Status = metav1.ConditionFalse
-	_, executionState = applyLogicalContainerExecBackingStatus(logicalExecution, physicalExecution)
+	_, executionState = applyLogicalContainerExecPhysicalStatus(logicalExecution, physicalExecution)
 	require.Equal(t, logicalContainerExecStateExited, executionState)
 }
 
-// Verifies that shared logical backing projections preserve physical source completion independently
+// Verifies that shared logical physical resource projections preserve physical source completion independently
 // of logical phases, including terminal process/execution captures and owned startup image output.
-func TestLogicalBackingLogSourceProjection(t *testing.T) {
+func TestLogicalPhysicalLogSourceProjection(t *testing.T) {
 	t.Parallel()
 	for _, complete := range []bool{false, true} {
 		name := "draining"
@@ -96,7 +96,7 @@ func TestLogicalBackingLogSourceProjection(t *testing.T) {
 				logicalContainerStateUnknown, logicalContainerStateFailed, logicalContainerStateExited, logicalContainerStateStopped,
 			} {
 				logicalContainer := &apiv2.LogicalContainer{}
-				applyLogicalContainerBackingStatus(logicalContainer, physicalContainer)
+				applyLogicalContainerPhysicalStatus(logicalContainer, physicalContainer)
 				applyLogicalContainerStartupImageStatus(logicalContainer, image)
 				containerData := &logicalContainerData{state: state, physicalContainerUID: physicalContainer.UID}
 				_, _, containerValid := containerData.applyTo(logicalContainer)
@@ -111,7 +111,7 @@ func TestLogicalBackingLogSourceProjection(t *testing.T) {
 				},
 			}
 			logicalProcess := &apiv2.LogicalProcess{}
-			applyLogicalProcessBackingStatus(logicalProcess, physicalProcess)
+			applyLogicalProcessPhysicalStatus(logicalProcess, physicalProcess)
 			processData := &logicalProcessData{state: logicalProcessStateExited, physicalUID: physicalProcess.UID}
 			_, _, processValid := processData.applyTo(logicalProcess)
 			require.True(t, processValid)
@@ -124,7 +124,7 @@ func TestLogicalBackingLogSourceProjection(t *testing.T) {
 				},
 			}
 			logicalExecution := &apiv2.LogicalContainerExec{}
-			applyLogicalContainerExecBackingStatus(logicalExecution, physicalExecution)
+			applyLogicalContainerExecPhysicalStatus(logicalExecution, physicalExecution)
 			executionData := &logicalContainerExecData{state: logicalContainerExecStateExited, physicalUID: physicalExecution.UID}
 			_, _, executionValid := executionData.applyTo(logicalExecution)
 			require.True(t, executionValid)
@@ -144,7 +144,7 @@ func TestLogicalObservationUncertaintyRequiresSuccessfulStartup(t *testing.T) {
 			Conditions: []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
 				Reason: string(apiv2.PhysicalContainerReasonRuntimeContainerInspectFailed), Message: "inspection unavailable"}},
 		}}
-		data := &logicalContainerData{state: logicalContainerStatePending, physicalContainerUID: "backing"}
+		data := &logicalContainerData{state: logicalContainerStatePending, physicalContainerUID: "physical-uid"}
 		resource := &apiv2.LogicalContainer{}
 		data.updateLifecycleFromPhysicalContainer(physical)
 		_, _, startupValid := data.applyTo(resource)
@@ -169,7 +169,7 @@ func TestLogicalObservationUncertaintyRequiresSuccessfulStartup(t *testing.T) {
 			Conditions: []metav1.Condition{{Type: string(apiv2.ConditionReady), Status: metav1.ConditionFalse,
 				Reason: string(apiv2.PhysicalContainerNetworkReasonRuntimeNetworkInspectFailed), Message: "inspection unavailable"}},
 		}}
-		data := &logicalContainerNetworkData{state: logicalContainerNetworkStatePending, physicalNetworkUID: "backing"}
+		data := &logicalContainerNetworkData{state: logicalContainerNetworkStatePending, physicalNetworkUID: "physical-uid"}
 		resource := &apiv2.LogicalContainerNetwork{}
 		data.updateLifecycleFromPhysicalContainerNetwork(physical)
 		_, _, startupValid := data.applyTo(resource)

@@ -31,7 +31,7 @@ import (
 )
 
 // Verifies that the LogicalContainer controller waits for namespace readiness and delegates
-// image readiness to its backing physical container before reporting the runtime as running.
+// image readiness to its physical container before reporting the runtime as running.
 func TestV2LogicalContainerControllerWaitsForNamespace(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -175,7 +175,7 @@ func (client *unavailableNamespaceClient) Get(ctx context.Context, key ctrl_clie
 }
 
 // Verifies that LogicalContainer remains Pending while reporting and retrying initial namespace lookup errors, then
-// forwards stop and observes its backing despite namespace read failures after initialization.
+// forwards stop and observes its physical resource despite namespace read failures after initialization.
 func TestV2LogicalContainerControllerHandlesNamespaceReadFailures(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -233,12 +233,12 @@ func TestV2LogicalContainerControllerForwardsStopBeforePhysicalStatus(t *testing
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	var conflicts *backingStatusConflicts
+	var conflicts *physicalResourceStatusConflicts
 	server, _, startErr := StartTestEnvironmentWithOptions(t, ctx,
 		NamespaceController|LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController,
 		t.Name(), t.TempDir(), TestEnvironmentOptions{
 			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-				conflicts = &backingStatusConflicts{
+				conflicts = &physicalResourceStatusConflicts{
 					Client: client, imageConflict: make(chan struct{}), containerConflict: make(chan struct{}),
 				}
 				return conflicts
@@ -405,7 +405,7 @@ func TestV2LogicalContainerControllerFailsStartupWhenImageAcquisitionFails(t *te
 			require.NoError(t, client.Delete(ctx, image))
 			require.NoError(t, client.Get(ctx, image.NamespacedName(), image))
 			require.NotNil(t, image.DeletionTimestamp)
-			require.Contains(t, image.Finalizers, controllers.LogicalBackingFinalizer)
+			require.Contains(t, image.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 			_, pullErr := containerOrchestrator.PullImage(ctx, containers.PullImageOptions{Image: sourceImage})
 			require.NoError(t, pullErr)
 			require.NoError(t, retryOnConflict(ctx, container.NamespacedName(), func(updateCtx context.Context, current *apiv2.LogicalContainer) error {
@@ -1038,7 +1038,7 @@ func (inspector *blockingLogicalContainerInspector) InspectContainers(
 }
 
 // Verifies that LogicalContainer reconciliation lets unrelated resources progress during lookup
-// and honors deletion on the next reconciliation by removing its backing and releasing its lease.
+// and honors deletion on the next reconciliation by removing its physical resource and releasing its lease.
 func TestV2LogicalContainerControllerDeletesAfterLookup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -1089,15 +1089,15 @@ func TestV2LogicalContainerControllerDeletesAfterLookup(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted[apiv2.LogicalContainer](t, ctx, serverInfo.Client, blocked)
 	leaseErr := environmentInfo.StateStore.VerifyResourceLeaseHeld(ctx, blocked, environmentInfo.ResourceLeaseOwner)
 	require.ErrorIs(t, leaseErr, statestore.ErrResourceLeaseNotHeld)
-	var backings apiv2.PhysicalContainerList
-	require.NoError(t, serverInfo.Client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-	for _, backing := range backings.Items {
-		require.False(t, metav1.IsControlledBy(&backing, blocked))
+	var physicalResources apiv2.PhysicalContainerList
+	require.NoError(t, serverInfo.Client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+	for _, physicalResource := range physicalResources.Items {
+		require.False(t, metav1.IsControlledBy(&physicalResource, blocked))
 	}
 }
 
 // Verifies that adopting a runtime container never claims it for workload cleanup or reassigns
-// an existing ownership record, including deletion before the backing reports readiness.
+// an existing ownership record, including deletion before the physical resource reports readiness.
 func TestV2LogicalContainerControllerDoesNotClaimAdoptedContainers(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -1114,12 +1114,12 @@ func TestV2LogicalContainerControllerDoesNotClaimAdoptedContainers(t *testing.T)
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
-			var conflicts *backingStatusConflicts
+			var conflicts *physicalResourceStatusConflicts
 			server, environment, startErr := StartTestEnvironmentWithOptions(t, ctx,
 				LogicalContainerController|PhysicalContainerController, t.Name(), t.TempDir(), TestEnvironmentOptions{
 					WorkloadID: "adopting-workload",
 					DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-						conflicts = &backingStatusConflicts{
+						conflicts = &physicalResourceStatusConflicts{
 							Client: client, imageConflict: make(chan struct{}), containerConflict: make(chan struct{}),
 						}
 						conflicts.containerBlocked.Store(testCase.deleteBeforeReady)
@@ -1431,7 +1431,7 @@ func TestV2LogicalContainerControllerStopsExistingRuntimeDuringReplacement(t *te
 }
 
 // Verifies that a stop request received during lookup is forwarded to the resulting physical
-// backing on a subsequent reconciliation, regardless of the initial creation decision.
+// physical resource on a subsequent reconciliation, regardless of the initial creation decision.
 func TestV2LogicalContainerControllerForwardsStopAfterLookup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

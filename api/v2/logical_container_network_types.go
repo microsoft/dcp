@@ -50,11 +50,11 @@ type LogicalContainerNetworkPhase string
 const (
 	// LogicalContainerNetworkReasonStarting qualifies Pending while prerequisites and creation are in progress.
 	LogicalContainerNetworkReasonStarting ConditionReason = "Starting"
-	// LogicalContainerNetworkReasonReady indicates that the backing network is available.
+	// LogicalContainerNetworkReasonReady indicates that the physical network is available.
 	LogicalContainerNetworkReasonReady ConditionReason = "Ready"
 	// LogicalContainerNetworkReasonFailedToStart indicates that network preparation could not complete.
 	LogicalContainerNetworkReasonFailedToStart ConditionReason = "FailedToStart"
-	// LogicalContainerNetworkReasonMissing indicates that a previously available backing is unavailable or no longer owned.
+	// LogicalContainerNetworkReasonMissing indicates that a previously available physical resource is unavailable or no longer owned.
 	LogicalContainerNetworkReasonMissing ConditionReason = "Missing"
 	// LogicalContainerNetworkReasonLookupFailed indicates that current availability cannot be confirmed.
 	LogicalContainerNetworkReasonLookupFailed ConditionReason = "LookupFailed"
@@ -131,7 +131,7 @@ type LogicalContainerNetworkConfig struct {
 	Labels []commonapi.Label `json:"labels,omitempty"`
 }
 
-// LogicalContainerNetworkStatus describes the observed network and its physical backing resource.
+// LogicalContainerNetworkStatus describes the observed network and its physical resource.
 // +k8s:openapi-gen=true
 type LogicalContainerNetworkStatus struct {
 	// Phase summarizes network availability.
@@ -139,7 +139,7 @@ type LogicalContainerNetworkStatus struct {
 	// +optional
 	Phase LogicalContainerNetworkPhase `json:"phase,omitempty"`
 
-	// PhysicalNetworkRef identifies the backing PhysicalContainerNetwork using <name> or <namespace>/<name>.
+	// PhysicalNetworkRef identifies the PhysicalContainerNetwork using <name> or <namespace>/<name>.
 	// Published after PhysicalContainerNetwork creation; logical consumers may use it before the container network is ready unless the network has failed.
 	// Cross-namespace references are not supported.
 	PhysicalNetworkRef string `json:"physicalNetworkRef,omitempty"`
@@ -216,7 +216,7 @@ func (*LogicalContainerNetwork) GenericSubResources() []apiserver_resource.Gener
 	return []apiserver_resource.GenericSubResource{&LogicalContainerNetworkLogResource{}}
 }
 
-// LogicalContainerNetworkLogResource registers system diagnostics for a logical network and its physical backing.
+// LogicalContainerNetworkLogResource registers system diagnostics for a logical network and its physical resource.
 // +k8s:openapi-gen=false
 // +kubebuilder:object:generate=false
 type LogicalContainerNetworkLogResource struct{}

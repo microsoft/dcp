@@ -447,8 +447,8 @@ func TestV2ContainerStartupLogsExcludeReferencedImageBuild(t *testing.T) {
 }
 
 // Verifies that an existing container remains Running with an active logical-only follower after
-// backing deletion is requested, and logical deletion releases the backing and finishes the follower.
-func TestV2LogicalContainerLogFollowerKeepsBackingUntilLogicalDeletion(t *testing.T) {
+// physical resource deletion is requested, and logical deletion releases the physical resource and finishes the follower.
+func TestV2LogicalContainerLogFollowerKeepsPhysicalUntilLogicalDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -497,7 +497,7 @@ func TestV2LogicalContainerLogFollowerKeepsBackingUntilLogicalDeletion(t *testin
 	physical = waitObjectAssumesStateEx(t, ctx, server.Client, physical.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
 		return !slices.Contains(current.Finalizers, apiv2.GroupName+"/physicalcontainer-reconciler"), nil
 	})
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	observed := &apiv2.LogicalContainer{}
 	require.NoError(t, server.Client.Get(ctx, container.NamespacedName(), observed))
 	require.Equal(t, apiv2.LogicalContainerPhaseRunning, observed.Status.Phase)

@@ -128,25 +128,25 @@ func TestV2PhysicalContainerNetworkControllerRemovesCreatedNetworkOnDeletion(t *
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "deleted-network",
 			Namespace:  namespace.Name,
-			Finalizers: []string{controllers.LogicalBackingFinalizer},
+			Finalizers: []string{controllers.LogicalPhysicalHoldFinalizer},
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
 			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
-	removeDependencyHoldOnCleanup(t, ctx, network, controllers.LogicalBackingFinalizer)
+	removeDependencyHoldOnCleanup(t, ctx, network, controllers.LogicalPhysicalHoldFinalizer)
 
 	updatedNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	networkID := updatedNetwork.Status.NetworkID
 
 	require.NoError(t, client.Delete(ctx, network))
 	cleaned := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(current *apiv2.PhysicalContainerNetwork) (bool, error) {
-		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalPhysicalHoldFinalizer, nil
 	})
 	requireReadyCondition(t, cleaned.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoved)
 	waitRuntimeNetworkMissing(t, ctx, networkID)
-	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+	require.NoError(t, controllers.ReleaseLogicalPhysicalHoldFinalizer(ctx, client, cleaned))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
 }
 

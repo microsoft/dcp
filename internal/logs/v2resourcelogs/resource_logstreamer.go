@@ -49,7 +49,7 @@ type logSession struct {
 	cancel  context.CancelFunc
 	done    chan struct{}
 	writer  *usvc_io.FollowWriter
-	// Closed when the runtime capture backing the session has written all output; nil for file-backed sources.
+	// Closed when the runtime capture physical resource the session has written all output; nil for file-backed sources.
 	captureClosed <-chan struct{}
 	finishing     bool
 	destination   io.Writer

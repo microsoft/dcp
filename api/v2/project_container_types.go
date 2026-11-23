@@ -51,7 +51,7 @@ type ProjectContainerSource struct {
 // +k8s:openapi-gen=true
 type ProjectContainerStatus struct {
 	ProjectCommonStatus `json:",inline"`
-	// PhysicalContainerRef identifies the same-namespace backing PhysicalContainer.
+	// PhysicalContainerRef identifies the same-namespace PhysicalContainer.
 	// Cross-namespace references are not supported.
 	PhysicalContainerRef string `json:"physicalContainerRef,omitempty"`
 	// ContainerRuntime identifies the controller-selected runtime for the prepared container.

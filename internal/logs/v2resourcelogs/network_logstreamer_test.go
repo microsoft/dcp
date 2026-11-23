@@ -45,7 +45,7 @@ func TestNetworkLogPreflightSupportsOnlySystem(t *testing.T) {
 	}
 }
 
-// Verifies that network system sessions ignore readiness/backing changes and physical-child
+// Verifies that network system sessions ignore readiness/physical resource changes and physical-child
 // deletion, and stop only when their own watched API resource is deleted.
 func TestNetworkSystemSessionsFollowOwnResourceLifecycle(t *testing.T) {
 	physical := &apiv2.PhysicalContainerNetwork{ObjectMeta: metav1.ObjectMeta{UID: "physical-uid"}}
@@ -66,7 +66,7 @@ func TestNetworkSystemSessionsFollowOwnResourceLifecycle(t *testing.T) {
 		},
 	}
 	logical.Status.Phase = apiv2.LogicalContainerNetworkPhaseFailed
-	logical.Status.PhysicalNetworkRef = "changed-backing"
+	logical.Status.PhysicalNetworkRef = "changed-physical"
 	streamer.OnResourceUpdated(apiv2.ResourceWatcherEvent{Type: watch.Modified, Object: logical}, logr.Discard())
 	require.False(t, logicalSession.finishing)
 	require.NoError(t, logicalCtx.Err())

@@ -30,7 +30,7 @@ const (
 	LogicalServiceReasonStarting ConditionReason = "Starting"
 	// LogicalServiceReasonAllocated indicates that a serving address and port are known, without guaranteeing service readiness.
 	LogicalServiceReasonAllocated ConditionReason = "Allocated"
-	// LogicalServiceReasonReady indicates that the service is up and has backing endpoints.
+	// LogicalServiceReasonReady indicates that the service is up and has physical resource endpoints.
 	LogicalServiceReasonReady ConditionReason = "Ready"
 	// LogicalServiceReasonFailedToStart indicates that listener startup could not complete.
 	LogicalServiceReasonFailedToStart ConditionReason = "FailedToStart"
@@ -45,7 +45,7 @@ const (
 	LogicalServicePhasePending LogicalServicePhase = "Pending"
 
 	// LogicalServicePhaseRunning indicates that a serving address and port are allocated.
-	// The Ready condition uses Allocated until the service is up with backing endpoints, then Ready, without probing reachability.
+	// The Ready condition uses Allocated until the service is up with physical resource endpoints, then Ready, without probing reachability.
 	LogicalServicePhaseRunning LogicalServicePhase = "Running"
 
 	// LogicalServicePhaseUnknown indicates that service availability cannot be determined.

@@ -266,7 +266,7 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 		change |= setValue(&image.Status.LogsComplete, true)
 		if change&statusChanged == 0 {
 			change = deleteFinalizer(&image, physicalContainerImageFinalizer, log)
-			if !hasFinalizer(&image, LogicalBackingFinalizer) {
+			if !hasFinalizer(&image, LogicalPhysicalHoldFinalizer) {
 				r.discardPhysicalContainerImageData(image.NamespacedName(), data, log)
 				defer logger.ReleaseResourceLog(image.GetResourceId())
 			}

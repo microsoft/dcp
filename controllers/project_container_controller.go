@@ -40,7 +40,7 @@ const (
 )
 
 var projectContainerFinalizer = apiv2.GroupName + "/projectcontainer-reconciler"
-var errMultipleProjectBackings = errors.New("multiple owned project backings")
+var errMultipleProjectPhysicalResources = errors.New("multiple owned project physical resources")
 
 type projectContainerDataHandlerFunc = stateInitializerFunc[
 	apiv2.ProjectContainer, *apiv2.ProjectContainer, ProjectContainerReconciler, *ProjectContainerReconciler,
@@ -54,7 +54,7 @@ var projectContainerDataHandlers = map[projectState]projectContainerDataHandlerF
 	projectStateReady:         handleProjectContainerReady,
 	projectStateActive:        handleProjectContainerActive,
 	projectStateRunning:       handleProjectContainerRunning,
-	projectStateExited:        handleProjectContainerExited,
+	projectStateExited:        handleProjectContainerTerminal,
 	projectStatePaused:        handleProjectContainerReady,
 	projectStateStopping:      handleProjectContainerStopping,
 	projectStateStopped:       handleProjectContainerTerminal,
@@ -96,8 +96,8 @@ func (r *ProjectContainerReconciler) SetupWithManager(mgr ctrl.Manager, name str
 	if indexErr != nil {
 		return fmt.Errorf("index container project %s: %w", projectContainerNetworkRefField, indexErr)
 	}
-	for _, backing := range []ctrl_client.Object{&apiv2.PhysicalContainer{}, &apiv2.PhysicalContainerImage{}, &apiv2.ServiceEndpoint{}} {
-		ownerIndexErr := mgr.GetFieldIndexer().IndexField(r.LifetimeCtx, backing, projectContainerOwnerUIDField, func(obj ctrl_client.Object) []string {
+	for _, physicalResource := range []ctrl_client.Object{&apiv2.PhysicalContainer{}, &apiv2.PhysicalContainerImage{}, &apiv2.ServiceEndpoint{}} {
+		ownerIndexErr := mgr.GetFieldIndexer().IndexField(r.LifetimeCtx, physicalResource, projectContainerOwnerUIDField, func(obj ctrl_client.Object) []string {
 			owner := metav1.GetControllerOf(obj)
 			if owner == nil || owner.Kind != "ProjectContainer" {
 				return nil
@@ -105,7 +105,7 @@ func (r *ProjectContainerReconciler) SetupWithManager(mgr ctrl.Manager, name str
 			return []string{string(owner.UID)}
 		})
 		if ownerIndexErr != nil {
-			return fmt.Errorf("index container project backing owner: %w", ownerIndexErr)
+			return fmt.Errorf("index container project physical resource owner: %w", ownerIndexErr)
 		}
 	}
 	return ctrl.NewControllerManagedBy(mgr).
@@ -192,8 +192,13 @@ func (r *ProjectContainerReconciler) manageProject(
 		r.projects.Store(resource.NamespacedName(), resource.UID, data.Clone())
 	}
 
+	change := noChange
+	if resource.Spec.Stop {
+		data.enterStopping()
+		change |= r.forwardProjectStop(ctx, resource, data, log)
+	}
 	stateHandler := getStateInitializer(projectContainerDataHandlers, data.state, log)
-	change := stateHandler(ctx, r, resource, data.state, data, log)
+	change |= stateHandler(ctx, r, resource, data.state, data, log)
 	_ = r.projects.Update(resource.NamespacedName(), resource.UID, data)
 	projectionChange, delay, valid := data.applyTo(resource)
 	if !valid {
@@ -250,17 +255,14 @@ func handleProjectContainerPending(
 	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
 	_ projectState, data *projectContainerData, log logr.Logger,
 ) objectChange {
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
 	data.reason, data.message = "", ""
-	backing, getErr := reconciler.findProjectContainer(ctx, resource, data)
+	physicalResource, getErr := reconciler.findProjectContainer(ctx, resource, data)
 	if getErr != nil {
 		log.Error(getErr, "Failed to resolve Project physical creation outcome")
 		return additionalReconciliationNeeded
 	}
 	change := noChange
-	if backing == nil {
+	if physicalResource == nil {
 		if data.physicalUID != "" {
 			data.message = "Waiting to observe the owned PhysicalContainer."
 			return additionalReconciliationNeeded
@@ -308,16 +310,16 @@ func handleProjectContainerPending(
 		spec.Container.Networks = networks
 		created, createErr := reconciler.createProjectPhysicalContainer(ctx, resource, data, spec)
 		if createErr != nil {
-			log.Error(createErr, "Failed to prepare Project physical backing")
+			log.Error(createErr, "Failed to prepare Project physical resource")
 			if apierrors.IsAlreadyExists(createErr) {
 				data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonPreparationFailed, createErr.Error()
 				return change
 			}
 			return change | additionalReconciliationNeeded
 		}
-		backing = created
+		physicalResource = created
 	}
-	data.physicalUID, data.physicalName = backing.UID, backing.Name
+	data.physicalUID, data.physicalName = physicalResource.UID, physicalResource.Name
 	data.state = projectStateCreating
 	return change | additionalReconciliationNeeded
 }
@@ -326,9 +328,6 @@ func handleProjectContainerAwaitingStart(
 	_ context.Context, _ *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
 	_ projectState, data *projectContainerData, _ logr.Logger,
 ) objectChange {
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
 	if resource.Spec.ShouldStart() {
 		data.state = projectStatePending
 		return additionalReconciliationNeeded
@@ -351,7 +350,7 @@ func (r *ProjectContainerReconciler) ensureProjectPhysicalContainerImage(ctx con
 		}
 		image = &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: name.Name, Namespace: name.Namespace},
 			Spec: apiv2.PhysicalContainerImageSpec{Image: resource.Spec.Container.Image.DeepCopy()}}
-		declared, createErr := createLogicalBacking(ctx, r.Client, r.NoCacheClient, resource, image, physicalContainerImageFinalizer,
+		declared, createErr := createPhysicalResource(ctx, r.Client, r.NoCacheClient, resource, image, physicalContainerImageFinalizer,
 			&data.imageUID, &data.unobservedChildren, func(existing *apiv2.PhysicalContainerImage) error {
 				if !reflect.DeepEqual(existing.Spec, image.Spec) {
 					return fmt.Errorf("physical image %q has a different spec", existing.NamespacedName())
@@ -370,11 +369,11 @@ func (r *ProjectContainerReconciler) ensureProjectPhysicalContainerImage(ctx con
 func (r *ProjectContainerReconciler) createProjectPhysicalContainer(
 	ctx context.Context, resource *apiv2.ProjectContainer, data *projectContainerData, spec apiv2.PhysicalContainerSpec,
 ) (*apiv2.PhysicalContainer, error) {
-	backing := &apiv2.PhysicalContainer{
+	physicalResource := &apiv2.PhysicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: projectContainerPhysicalName(resource), Namespace: resource.Namespace},
 		Spec:       spec,
 	}
-	return createLogicalBacking(ctx, r.Client, r.NoCacheClient, resource, backing, physicalContainerFinalizer,
+	return createPhysicalResource(ctx, r.Client, r.NoCacheClient, resource, physicalResource, physicalContainerFinalizer,
 		&data.physicalUID, &data.unobservedChildren, nil)
 }
 
@@ -382,36 +381,29 @@ func handleProjectContainerCreating(
 	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
 	state projectState, data *projectContainerData, log logr.Logger,
 ) objectChange {
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
 	physical, change, getErr := reconciler.observeProjectContainer(ctx, resource, data)
 	if getErr != nil {
 		log.Error(getErr, "Failed to observe Project container preparation")
 		return change | additionalReconciliationNeeded
 	}
-	data.updateLifecycleFromContainer(resource, physical)
-	if data.state != projectStateCreating {
-		if data.state != state {
-			return change | additionalReconciliationNeeded
-		}
-		return change
-	}
+	// Startup logs are refreshed before the lifecycle transition so a physical resource that leaves Creating still records them.
 	image, imageErr := reconciler.findProjectImage(ctx, resource, data)
 	if imageErr != nil {
 		log.Error(imageErr, "Failed to observe Project startup image")
 		return change | additionalReconciliationNeeded
 	}
-	return change | applyProjectContainerImageLogs(resource, image)
+	change |= applyProjectContainerImageLogs(resource, image)
+	data.updateLifecycleFromContainer(resource, physical)
+	if data.state != state {
+		return change | additionalReconciliationNeeded
+	}
+	return change
 }
 
 func handleProjectContainerReady(
 	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
 	_ projectState, data *projectContainerData, log logr.Logger,
 ) objectChange {
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
 	physical, change, contextReady := reconciler.observePreparedProject(ctx, resource, data, log)
 	if !contextReady {
@@ -433,9 +425,6 @@ func handleProjectContainerActive(
 	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
 	_ projectState, data *projectContainerData, log logr.Logger,
 ) objectChange {
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
 	physical, change, contextReady := reconciler.observePreparedProject(ctx, resource, data, log)
 	if !contextReady {
@@ -458,9 +447,6 @@ func handleProjectContainerRunning(
 	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
 	_ projectState, data *projectContainerData, log logr.Logger,
 ) objectChange {
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
 	physical, change, ready := reconciler.observePreparedProject(ctx, resource, data, log)
 	if !ready && data.state == projectStateRunning {
@@ -469,27 +455,6 @@ func handleProjectContainerRunning(
 	change |= reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
 	if !ready {
 		return change | additionalReconciliationNeeded
-	}
-	return change
-}
-
-func handleProjectContainerExited(
-	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
-	_ projectState, data *projectContainerData, log logr.Logger,
-) objectChange {
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
-	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
-	physical, change, getErr := reconciler.observeProjectContainer(ctx, resource, data)
-	if getErr != nil {
-		log.Error(getErr, "Failed to observe exited Project container")
-		return change | reconciler.syncProjectEndpoints(ctx, resource, data, nil, log) | additionalReconciliationNeeded
-	}
-	data.updateLifecycleFromContainer(resource, physical)
-	change |= reconciler.syncProjectEndpoints(ctx, resource, data, physical, log)
-	if data.state != projectStateExited {
-		change |= additionalReconciliationNeeded
 	}
 	return change
 }
@@ -531,7 +496,7 @@ func (r *ProjectContainerReconciler) syncProjectEndpoints(
 		projectContainerOwnerUIDField, mappings, log)
 }
 
-// handleProjectContainerTerminal observes retained backings of a Stopped or Failed Project without changing its outcome.
+// handleProjectContainerTerminal observes retained physical resources of an Exited, Stopped or Failed Project without changing its outcome.
 func handleProjectContainerTerminal(
 	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
 	_ projectState, data *projectContainerData, log logr.Logger,
@@ -563,9 +528,6 @@ func handleProjectContainerUnknown(
 	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
 	_ projectState, data *projectContainerData, log logr.Logger,
 ) objectChange {
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
 	physical, change, ready := reconciler.observePreparedProject(ctx, resource, data, log)
 	if !ready {
@@ -581,26 +543,26 @@ func handleProjectContainerUnknown(
 	return change | reconciler.syncProjectEndpoints(ctx, resource, data, physical, log) | additionalReconciliationNeeded
 }
 
-func (r *ProjectContainerReconciler) listProjectBackings(
+func (r *ProjectContainerReconciler) listProjectPhysicalResources(
 	ctx context.Context, resource *apiv2.ProjectContainer, reader ctrl_client.Reader, list ctrl_client.ObjectList, options ...ctrl_client.ListOption,
 ) ([]ctrl_client.Object, error) {
 	listOptions := append([]ctrl_client.ListOption{ctrl_client.InNamespace(resource.Namespace)}, options...)
 	if listErr := reader.List(ctx, list, listOptions...); listErr != nil {
-		return nil, fmt.Errorf("list project backings: %w", listErr)
+		return nil, fmt.Errorf("list project physical resources: %w", listErr)
 	}
-	return projectBackingItems(resource, list)
+	return projectPhysicalResourceItems(resource, list)
 }
 
-func projectBackingItems(resource *apiv2.ProjectContainer, list ctrl_client.ObjectList) ([]ctrl_client.Object, error) {
+func projectPhysicalResourceItems(resource *apiv2.ProjectContainer, list ctrl_client.ObjectList) ([]ctrl_client.Object, error) {
 	items, extractErr := apimeta.ExtractList(list)
 	if extractErr != nil {
-		return nil, fmt.Errorf("extract project backings: %w", extractErr)
+		return nil, fmt.Errorf("extract project physical resources: %w", extractErr)
 	}
 	var children []ctrl_client.Object
 	for _, item := range items {
 		child, valid := item.(ctrl_client.Object)
 		if !valid {
-			return nil, fmt.Errorf("invalid project backing type %T", item)
+			return nil, fmt.Errorf("invalid project physical resource type %T", item)
 		}
 		if metav1.IsControlledBy(child, resource) {
 			children = append(children, child)
@@ -609,16 +571,16 @@ func projectBackingItems(resource *apiv2.ProjectContainer, list ctrl_client.Obje
 	return children, nil
 }
 
-func (r *ProjectContainerReconciler) findProjectBacking(
+func (r *ProjectContainerReconciler) findProjectPhysicalResource(
 	ctx context.Context, resource *apiv2.ProjectContainer, list ctrl_client.ObjectList,
 ) (ctrl_client.Object, error) {
-	children, listErr := r.listProjectBackings(ctx, resource, r.Client, list,
+	children, listErr := r.listProjectPhysicalResources(ctx, resource, r.Client, list,
 		ctrl_client.MatchingFields{projectContainerOwnerUIDField: string(resource.UID)})
 	if listErr != nil {
 		return nil, listErr
 	}
 	if len(children) > 1 {
-		return nil, fmt.Errorf("%w: %T", errMultipleProjectBackings, list)
+		return nil, fmt.Errorf("%w: %T", errMultipleProjectPhysicalResources, list)
 	}
 	if len(children) == 0 {
 		return nil, nil
@@ -683,9 +645,9 @@ func (r *ProjectContainerReconciler) observeProjectContainer(
 }
 
 func (r *ProjectContainerReconciler) findProjectContainer(ctx context.Context, resource *apiv2.ProjectContainer, data *projectContainerData) (*apiv2.PhysicalContainer, error) {
-	observed, getErr := r.findProjectBacking(ctx, resource, &apiv2.PhysicalContainerList{})
+	observed, getErr := r.findProjectPhysicalResource(ctx, resource, &apiv2.PhysicalContainerList{})
 	if getErr != nil {
-		if errors.Is(getErr, errMultipleProjectBackings) {
+		if errors.Is(getErr, errMultipleProjectPhysicalResources) {
 			data.failMissing(getErr.Error())
 		}
 		return nil, getErr
@@ -698,7 +660,7 @@ func (r *ProjectContainerReconciler) findProjectContainer(ctx context.Context, r
 			return nil, nil
 		}
 		if lookupErr != nil {
-			return nil, fmt.Errorf("get Project container backing: %w", lookupErr)
+			return nil, fmt.Errorf("get Project physical container: %w", lookupErr)
 		}
 		observed = physical
 	} else {
@@ -706,7 +668,7 @@ func (r *ProjectContainerReconciler) findProjectContainer(ctx context.Context, r
 	}
 	physical := observed.(*apiv2.PhysicalContainer)
 	if !metav1.IsControlledBy(physical, resource) || (data.physicalUID != "" && physical.UID != data.physicalUID) ||
-		!hasFinalizer(physical, LogicalBackingFinalizer) {
+		!hasFinalizer(physical, LogicalPhysicalHoldFinalizer) {
 		identityErr := fmt.Errorf("physical container %q owner, UID, or logical hold changed", physical.NamespacedName())
 		data.failMissing(identityErr.Error())
 		return nil, identityErr
@@ -719,9 +681,9 @@ func (r *ProjectContainerReconciler) findProjectImage(ctx context.Context, resou
 	if resource.Spec.Container.Image == nil {
 		return nil, nil
 	}
-	observed, getErr := r.findProjectBacking(ctx, resource, &apiv2.PhysicalContainerImageList{})
+	observed, getErr := r.findProjectPhysicalResource(ctx, resource, &apiv2.PhysicalContainerImageList{})
 	if getErr != nil {
-		if errors.Is(getErr, errMultipleProjectBackings) {
+		if errors.Is(getErr, errMultipleProjectPhysicalResources) {
 			data.failMissing(getErr.Error())
 		}
 		return nil, getErr
@@ -734,7 +696,7 @@ func (r *ProjectContainerReconciler) findProjectImage(ctx context.Context, resou
 			return nil, nil
 		}
 		if lookupErr != nil {
-			return nil, fmt.Errorf("get Project image backing: %w", lookupErr)
+			return nil, fmt.Errorf("get Project physical image: %w", lookupErr)
 		}
 		observed = image
 	} else {
@@ -742,7 +704,7 @@ func (r *ProjectContainerReconciler) findProjectImage(ctx context.Context, resou
 	}
 	image := observed.(*apiv2.PhysicalContainerImage)
 	if !metav1.IsControlledBy(image, resource) || (data.imageUID != "" && image.UID != data.imageUID) ||
-		!hasFinalizer(image, LogicalBackingFinalizer) {
+		!hasFinalizer(image, LogicalPhysicalHoldFinalizer) {
 		identityErr := fmt.Errorf("physical image %q owner, UID, or logical hold changed", image.NamespacedName())
 		data.failMissing(identityErr.Error())
 		return nil, identityErr
@@ -798,7 +760,7 @@ func (r *ProjectContainerReconciler) handleDeletionRequest(
 	}
 
 	observeProjectProcesses(r.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
-	cleaned, cleanupErr := r.cleanupProjectBackings(ctx, resource, data, log)
+	cleaned, cleanupErr := r.cleanupProjectPhysicalResources(ctx, resource, data, log)
 	if cleanupErr != nil {
 		delay = LongDelay
 		return additionalReconciliationNeeded, delay
@@ -809,7 +771,7 @@ func (r *ProjectContainerReconciler) handleDeletionRequest(
 	return deleteFinalizer(resource, projectContainerFinalizer, log), delay
 }
 
-func (r *ProjectContainerReconciler) cleanupProjectBackings(
+func (r *ProjectContainerReconciler) cleanupProjectPhysicalResources(
 	ctx context.Context, resource *apiv2.ProjectContainer, data *projectContainerData, log logr.Logger,
 ) (bool, error) {
 	for _, group := range []struct {
@@ -819,7 +781,7 @@ func (r *ProjectContainerReconciler) cleanupProjectBackings(
 		{&apiv2.PhysicalContainerList{}, physicalContainerFinalizer},
 		{&apiv2.PhysicalContainerImageList{}, physicalContainerImageFinalizer},
 	} {
-		children, listErr := r.listProjectBackings(ctx, resource, r.Client, group.list,
+		children, listErr := r.listProjectPhysicalResources(ctx, resource, r.Client, group.list,
 			ctrl_client.MatchingFields{projectContainerOwnerUIDField: string(resource.UID)})
 		if listErr == nil {
 			switch list := group.list.(type) {
@@ -829,39 +791,39 @@ func (r *ProjectContainerReconciler) cleanupProjectBackings(
 				listErr = resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, resource, data.unobservedChildren, &list.Items)
 			}
 			if listErr == nil {
-				children, listErr = projectBackingItems(resource, group.list)
+				children, listErr = projectPhysicalResourceItems(resource, group.list)
 			}
 		}
 		if listErr != nil {
-			log.Error(listErr, "Failed to verify Project backings before deletion")
+			log.Error(listErr, "Failed to verify Project physical resources before deletion")
 			return false, listErr
 		}
 		if len(children) == 0 {
 			continue
 		}
 		var cleanupErr error
-		for _, backing := range children {
-			if physical, isContainer := backing.(*apiv2.PhysicalContainer); isContainer &&
+		for _, physicalResource := range children {
+			if physical, isContainer := physicalResource.(*apiv2.PhysicalContainer); isContainer &&
 				resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect &&
 				(data.physicalUID == "" || data.physicalUID == physical.UID) {
 				data.finishedAt = physical.Status.FinishedAt
 				data.exitCode = cloneInt32Pointer(physical.Status.ExitCode)
 			}
-			if backing.GetDeletionTimestamp().IsZero() {
-				uid := backing.GetUID()
-				deleteErr := r.Delete(ctx, backing, ctrl_client.Preconditions{UID: &uid})
+			if physicalResource.GetDeletionTimestamp().IsZero() {
+				uid := physicalResource.GetUID()
+				deleteErr := r.Delete(ctx, physicalResource, ctrl_client.Preconditions{UID: &uid})
 				if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-					log.Error(deleteErr, "Failed to delete Project backing")
+					log.Error(deleteErr, "Failed to delete Project physical resource")
 					cleanupErr = errors.Join(cleanupErr, deleteErr)
 				}
 				continue
 			}
-			if hasFinalizer(backing, group.finalizer) {
+			if hasFinalizer(physicalResource, group.finalizer) {
 				continue
 			}
-			releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, backing)
+			releaseErr := ReleaseLogicalPhysicalHoldFinalizer(ctx, r.Client, physicalResource)
 			if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
-				log.Error(releaseErr, "Failed to release Project backing")
+				log.Error(releaseErr, "Failed to release Project physical resource")
 				cleanupErr = errors.Join(cleanupErr, releaseErr)
 			}
 		}
@@ -870,6 +832,7 @@ func (r *ProjectContainerReconciler) cleanupProjectBackings(
 	return true, nil
 }
 
+// handleProjectContainerStopping observes the stopped physical container; manageProject forwards the stop request.
 func handleProjectContainerStopping(
 	ctx context.Context, reconciler *ProjectContainerReconciler, resource *apiv2.ProjectContainer,
 	_ projectState, data *projectContainerData, log logr.Logger,
@@ -894,13 +857,12 @@ func handleProjectContainerStopping(
 			return additionalReconciliationNeeded
 		}
 	}
-	// Like LogicalContainer, stop is forwarded to the retained backing; only Project deletion removes it.
 	physical, change, getErr := reconciler.observeProjectContainer(ctx, resource, data)
 	if getErr != nil {
 		log.Error(getErr, "Failed to observe stopping Project container")
 		return change | additionalReconciliationNeeded
 	}
-	message := logicalBackingStatusMessage("PhysicalContainer", physical.Status.Conditions)
+	message := physicalStatusMessage("PhysicalContainer", physical.Status.Conditions)
 	switch physical.Status.Phase {
 	case apiv2.PhysicalContainerPhaseExited:
 		data.state, data.message = projectStateStopped, message
@@ -909,20 +871,37 @@ func handleProjectContainerStopping(
 		data.failMissing(message)
 		return change | additionalReconciliationNeeded
 	}
-	return change | reconciler.requestBackingStop(ctx, physical, data, log)
+	return change | additionalReconciliationNeeded
 }
 
-func (r *ProjectContainerReconciler) requestBackingStop(
-	ctx context.Context, physical *apiv2.PhysicalContainer, data *projectContainerData, log logr.Logger,
+// forwardProjectStop writes stop to the owned physical container once debug sessions have had a chance to shut down
+// gracefully. Like LogicalContainer, only Project deletion removes the physical container; stopping an already
+// terminal physical container does not change its outcome.
+func (r *ProjectContainerReconciler) forwardProjectStop(
+	ctx context.Context, resource *apiv2.ProjectContainer, data *projectContainerData, log logr.Logger,
 ) objectChange {
-	if !physical.Spec.Stop {
-		patch := ctrl_client.MergeFromWithOptions(physical.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
-		update := physical.DeepCopy()
-		update.Spec.Stop = true
-		if stopErr := r.Patch(ctx, update, patch); stopErr != nil {
-			log.Error(stopErr, "Failed to forward Project stop request")
-			data.message = fmt.Sprintf("Failed to forward Project stop request: %v", stopErr)
+	if projectDebugSessionsActive(&resource.Status.ProjectCommonStatus) {
+		return additionalReconciliationNeeded
+	}
+	// Discovery uses a copy so identity problems are reported by reconciliation rather than the stop request.
+	lookupData := data.Clone()
+	physical, getErr := r.findProjectContainer(ctx, resource, lookupData)
+	if getErr != nil {
+		if lookupData.state == projectStateFailed && lookupData.message != data.message {
+			return noChange
 		}
+		log.Error(getErr, "Failed to find Project container for stop")
+		return additionalReconciliationNeeded
+	}
+	if physical == nil || physical.Spec.Stop {
+		return noChange
+	}
+	patch := ctrl_client.MergeFromWithOptions(physical.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
+	update := physical.DeepCopy()
+	update.Spec.Stop = true
+	if stopErr := r.Patch(ctx, update, patch); stopErr != nil {
+		log.Error(stopErr, "Failed to forward Project stop request")
+		data.message = fmt.Sprintf("Failed to forward Project stop request: %v", stopErr)
 	}
 	return additionalReconciliationNeeded
 }

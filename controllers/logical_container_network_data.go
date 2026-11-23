@@ -53,7 +53,7 @@ func (state logicalContainerNetworkState) String() string {
 	}
 }
 
-func logicalContainerNetworkBackingState(physical *apiv2.PhysicalContainerNetwork) logicalContainerNetworkState {
+func logicalContainerNetworkPhysicalState(physical *apiv2.PhysicalContainerNetwork) logicalContainerNetworkState {
 	switch physical.Status.Phase {
 	case apiv2.PhysicalContainerNetworkPhaseReady:
 		ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
@@ -112,7 +112,7 @@ func (data *logicalContainerNetworkData) failMissing(message string) {
 }
 
 func (data *logicalContainerNetworkData) updateLifecycleFromPhysicalContainerNetwork(physical *apiv2.PhysicalContainerNetwork) {
-	data.state, data.reason, data.message = logicalContainerNetworkBackingState(physical), "", logicalBackingStatusMessage("PhysicalContainerNetwork", physical.Status.Conditions)
+	data.state, data.reason, data.message = logicalContainerNetworkPhysicalState(physical), "", physicalStatusMessage("PhysicalContainerNetwork", physical.Status.Conditions)
 	switch data.state {
 	case logicalContainerNetworkStateCreating:
 		if data.started {

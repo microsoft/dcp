@@ -67,7 +67,7 @@ func (state logicalProcessState) String() string {
 	}
 }
 
-func logicalProcessBackingState(physical *apiv2.PhysicalProcess) logicalProcessState {
+func logicalProcessPhysicalState(physical *apiv2.PhysicalProcess) logicalProcessState {
 	ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
 	switch physical.Status.Phase {
 	case apiv2.PhysicalProcessPhasePending:
@@ -110,7 +110,7 @@ func logicalPhysicalProcessStartupSettled(physical *apiv2.PhysicalProcess) bool 
 	}
 }
 
-func applyLogicalProcessBackingStatus(resource *apiv2.LogicalProcess, physical *apiv2.PhysicalProcess) (objectChange, logicalProcessState) {
+func applyLogicalProcessPhysicalStatus(resource *apiv2.LogicalProcess, physical *apiv2.PhysicalProcess) (objectChange, logicalProcessState) {
 	change := noChange
 	status := &physical.Status
 	source := physical.GetLogSource()
@@ -128,7 +128,7 @@ func applyLogicalProcessBackingStatus(resource *apiv2.LogicalProcess, physical *
 	}
 	change |= setTimestamp(&resource.Status.IdentityTimestamp, status.IdentityTimestamp)
 	change |= setTimestamp(&resource.Status.FinishedAt, status.FinishedAt)
-	return change, logicalProcessBackingState(physical)
+	return change, logicalProcessPhysicalState(physical)
 }
 
 type logicalProcessData struct {
@@ -206,7 +206,7 @@ func (data *logicalProcessData) failMissing(message string) {
 }
 
 func (data *logicalProcessData) updateLifecycleFromPhysicalProcess(physical *apiv2.PhysicalProcess) {
-	data.state, data.reason, data.message = logicalProcessBackingState(physical), "", logicalBackingStatusMessage("PhysicalProcess", physical.Status.Conditions)
+	data.state, data.reason, data.message = logicalProcessPhysicalState(physical), "", physicalStatusMessage("PhysicalProcess", physical.Status.Conditions)
 	switch data.state {
 	case logicalProcessStateCreating:
 		if data.started {
@@ -228,7 +228,7 @@ func (data *logicalProcessData) updateLifecycleFromPhysicalProcess(physical *api
 			data.reason = apiv2.LogicalProcessReasonStopped
 		}
 		if physical.Status.ExitCode != nil {
-			data.message = fmt.Sprintf("The backing process exited with code %d.", *physical.Status.ExitCode)
+			data.message = fmt.Sprintf("The physical process exited with code %d.", *physical.Status.ExitCode)
 		}
 	case logicalProcessStateMissing, logicalProcessStateRuntimeFailed:
 		data.failMissing(data.message)
@@ -269,7 +269,7 @@ func (data *logicalProcessData) applyTo(resource *apiv2.LogicalProcess) (objectC
 }
 
 func (data *logicalProcessData) applyMissingLogSource(resource *apiv2.LogicalProcess) objectChange {
-	// Preserve the backing identity so logical-only followers can observe its completion.
+	// Preserve the physical resource identity so logical-only followers can observe its completion.
 	source := &apiv2.LogSource{
 		Name: "logical-" + string(resource.UID), UID: data.physicalUID, Complete: true,
 	}

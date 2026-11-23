@@ -370,7 +370,7 @@ func startProjectContainerAdapter(
 	})
 }
 
-// removeProjectRuntimeContainer removes a Project's runtime container out of band, which its backing reports as missing.
+// removeProjectRuntimeContainer removes a Project's runtime container out of band, which its physical resource reports as missing.
 func removeProjectRuntimeContainer(t *testing.T, ctx context.Context, orchestrator *ctrl_testutil.TestContainerOrchestrator, containerID string) {
 	t.Helper()
 	_, removeErr := orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{Containers: []string{containerID}, Force: true})
@@ -893,7 +893,7 @@ func TestV2ProjectProcessDirectExecution(t *testing.T) {
 	physical := &apiv2.PhysicalProcess{}
 	require.NoError(t, client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.PhysicalProcessRef}, physical))
 	require.True(t, metav1.IsControlledBy(physical, resource))
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.Contains(t, physical.Finalizers, apiv2.GroupName+"/physicalprocess-reconciler")
 	require.Equal(t, running.Status.EffectiveArgs, physical.Spec.Process.Args)
 	require.ElementsMatch(t, running.Status.EffectiveEnv, physical.Spec.Process.Env)
@@ -952,9 +952,9 @@ func TestV2ProjectContainerDirectExecution(t *testing.T) {
 	requireReadyCondition(t, prepared.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonAwaitingStart)
 	require.Empty(t, prepared.Status.PhysicalContainerRef)
 	require.Empty(t, prepared.Status.ContainerID)
-	var backings apiv2.PhysicalContainerList
-	require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-	require.Empty(t, backings.Items, "the container is not created before start")
+	var physicalResources apiv2.PhysicalContainerList
+	require.NoError(t, client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+	require.Empty(t, physicalResources.Items, "the container is not created before start")
 	var endpoints apiv2.ServiceEndpointList
 	require.NoError(t, client.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
 	require.Empty(t, endpoints.Items)
@@ -1027,7 +1027,7 @@ func TestV2ProjectContainerDirectExecutionWithRealOrchestrator(t *testing.T) {
 		require.NoError(t, tracker.TrackContainer("project-"+string(resource.UID)))
 		prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
 		requireReadyCondition(t, prepared.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonAwaitingStart)
-		// An unstarted Project creates no backing.
+		// An unstarted Project creates no physical resource.
 		require.Empty(t, prepared.Status.ContainerID)
 		require.Empty(t, prepared.Status.PhysicalContainerRef)
 
@@ -1051,8 +1051,8 @@ func TestV2ProjectContainerDirectExecutionWithRealOrchestrator(t *testing.T) {
 	})
 }
 
-// Verifies that direct Projects start by default, that stop forwards a graceful stop to the retained backing
-// without launching a replacement, and that Project deletion then removes the backing.
+// Verifies that direct Projects start by default, that stop forwards a graceful stop to the retained physical resource
+// without launching a replacement, and that Project deletion then removes the physical resource.
 func TestV2ProjectDirectDefaultStartAndStop(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
@@ -1110,7 +1110,7 @@ func TestV2ProjectDirectDefaultStartAndStop(t *testing.T) {
 	}
 }
 
-// Verifies that both Project kinds defer backing creation until start, that a started adapter-mode container is created
+// Verifies that both Project kinds defer physical resource creation until start, that a started adapter-mode container is created
 // without starting, and that stop before start prevents application launch in both adapter and direct modes.
 func TestV2ProjectStartGateAndEarlyStop(t *testing.T) {
 	t.Parallel()
@@ -1180,9 +1180,9 @@ func TestV2ProjectStartGateAndEarlyStop(t *testing.T) {
 						require.False(t, physical.Spec.ShouldStart())
 						require.Equal(t, "adapter", physical.Spec.Container.Entrypoint)
 					} else {
-						var backings apiv2.PhysicalContainerList
-						require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-						require.Empty(t, backings.Items)
+						var physicalResources apiv2.PhysicalContainerList
+						require.NoError(t, client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+						require.Empty(t, physicalResources.Items)
 					}
 					require.NoError(t, client.Delete(ctx, resource))
 					ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
@@ -1248,7 +1248,7 @@ func TestV2ProjectKindsWithSameNameReconcileIndependently(t *testing.T) {
 	waitProjectPhase(t, ctx, client, replacement, apiv2.ProjectPhaseReady)
 	require.NoError(t, client.Delete(ctx, containerProject))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, containerProject)
-	waitProjectBackingDeleted(t, ctx, client, physical)
+	waitProjectPhysicalDeleted(t, ctx, client, physical)
 	retainedProcess := waitProjectPhase(t, ctx, client, replacement, apiv2.ProjectPhaseReady)
 	require.Equal(t, replacement.UID, retainedProcess.UID)
 	require.True(t, retainedProcess.DeletionTimestamp.IsZero())

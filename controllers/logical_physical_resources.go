@@ -67,7 +67,7 @@ func resolveLogicalContainerNetworks(
 		}
 		if network.Status.PhysicalNetworkRef == "" {
 			if pendingMessage == "" {
-				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q has not published its backing physical network reference.", networkName)
+				pendingMessage = fmt.Sprintf("LogicalContainerNetwork %q has not published its physical network reference.", networkName)
 			}
 			continue
 		}
@@ -84,7 +84,7 @@ func resolveLogicalContainerNetworks(
 	return true, resolved, "", nil
 }
 
-func logicalBackingStatusMessage(kind string, conditions []metav1.Condition) string {
+func physicalStatusMessage(kind string, conditions []metav1.Condition) string {
 	ready := apimeta.FindStatusCondition(conditions, string(apiv2.ConditionReady))
 	if ready == nil {
 		return fmt.Sprintf("%s has not reported its state.", kind)
@@ -143,17 +143,17 @@ func resolveUnobservedLogicalChildren[T commonapi.ObjectStruct, PT commonapi.POb
 	return nil
 }
 
-// LogicalBackingFinalizer retains an owned physical API object until its logical owner observes cleanup.
-const LogicalBackingFinalizer = "usvc-dev.developer.microsoft.com/logical-backing"
+// LogicalPhysicalHoldFinalizer retains an owned physical API object until its logical owner observes cleanup.
+const LogicalPhysicalHoldFinalizer = "usvc-dev.developer.microsoft.com/logical-physical-hold"
 
-// createLogicalBacking declares an owned physical resource and validates AlreadyExists collisions.
+// createPhysicalResource declares an owned physical resource and validates AlreadyExists collisions.
 // validateExisting checks immutable inputs where an earlier committed declaration is not authoritative.
-func createLogicalBacking[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
+func createPhysicalResource[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 	ctx context.Context, client ctrl_client.Client, reader ctrl_client.Reader, owner ctrl_client.Object,
 	child PT, physicalFinalizer string, expectedUID *types.UID, pending *unobservedLogicalChildren,
 	validateExisting func(PT) error,
 ) (PT, error) {
-	InitializeLogicalBackingFinalizers(child, physicalFinalizer)
+	InitializePhysicalResourceFinalizers(child, physicalFinalizer)
 	if ownerErr := ctrl.SetControllerReference(owner, child, client.Scheme()); ownerErr != nil {
 		return nil, fmt.Errorf("set physical resource owner: %w", ownerErr)
 	}
@@ -183,16 +183,16 @@ func createLogicalBacking[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T
 
 func validatePhysicalResourceIdentity(owner, physical ctrl_client.Object, expectedUID types.UID) error {
 	if !metav1.IsControlledBy(physical, owner) || (expectedUID != "" && physical.GetUID() != expectedUID) ||
-		!hasFinalizer(physical, LogicalBackingFinalizer) || !physical.GetDeletionTimestamp().IsZero() {
+		!hasFinalizer(physical, LogicalPhysicalHoldFinalizer) || !physical.GetDeletionTimestamp().IsZero() {
 		return fmt.Errorf("physical resource %q has a different owner, UID, or logical hold, or is terminating", ctrl_client.ObjectKeyFromObject(physical))
 	}
 	return nil
 }
 
-// InitializeLogicalBackingFinalizers installs the logical hold and physical cleanup finalizer at creation.
-func InitializeLogicalBackingFinalizers(obj ctrl_client.Object, physicalFinalizer string) {
+// InitializePhysicalResourceFinalizers installs the logical hold and physical cleanup finalizer at creation.
+func InitializePhysicalResourceFinalizers(obj ctrl_client.Object, physicalFinalizer string) {
 	finalizers := slices.Clone(obj.GetFinalizers())
-	for _, finalizer := range []string{LogicalBackingFinalizer, physicalFinalizer} {
+	for _, finalizer := range []string{LogicalPhysicalHoldFinalizer, physicalFinalizer} {
 		if !slices.Contains(finalizers, finalizer) {
 			finalizers = append(finalizers, finalizer)
 		}
@@ -200,15 +200,15 @@ func InitializeLogicalBackingFinalizers(obj ctrl_client.Object, physicalFinalize
 	obj.SetFinalizers(finalizers)
 }
 
-// ReleaseLogicalBackingFinalizer removes only the logical owner's hold using optimistic concurrency.
+// ReleaseLogicalPhysicalHoldFinalizer removes only the logical owner's hold using optimistic concurrency.
 // The caller must verify the physical resource's identity and controller owner first.
-func ReleaseLogicalBackingFinalizer(ctx context.Context, client ctrl_client.Client, obj ctrl_client.Object) error {
-	if !slices.Contains(obj.GetFinalizers(), LogicalBackingFinalizer) {
+func ReleaseLogicalPhysicalHoldFinalizer(ctx context.Context, client ctrl_client.Client, obj ctrl_client.Object) error {
+	if !slices.Contains(obj.GetFinalizers(), LogicalPhysicalHoldFinalizer) {
 		return nil
 	}
 	patch := ctrl_client.MergeFromWithOptions(obj.DeepCopyObject().(ctrl_client.Object), ctrl_client.MergeFromWithOptimisticLock{})
 	obj.SetFinalizers(slices.DeleteFunc(slices.Clone(obj.GetFinalizers()), func(finalizer string) bool {
-		return finalizer == LogicalBackingFinalizer
+		return finalizer == LogicalPhysicalHoldFinalizer
 	}))
 	return client.Patch(ctx, obj, patch)
 }

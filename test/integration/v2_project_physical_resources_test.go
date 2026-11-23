@@ -34,7 +34,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-type projectBackingClient struct {
+type projectPhysicalClient struct {
 	ctrl_client.Client
 	kind                    string
 	blockFinalStatus        atomic.Bool
@@ -42,7 +42,7 @@ type projectBackingClient struct {
 	finalStatusOnce         sync.Once
 	loseHoldResponse        atomic.Bool
 	holdResponseLost        atomic.Bool
-	hideBackings            atomic.Bool
+	hidePhysicalResources   atomic.Bool
 	undecodedCreates        atomic.Int32
 	failNetwork             atomic.Bool
 	networkLookups          atomic.Int32
@@ -60,7 +60,7 @@ type projectBackingClient struct {
 // Verifies that a Failed ProjectContainer preserves its original readable capture on ambiguous discovery
 // or logical-hold loss, including existing followers and clients opening logs after the transition.
 // Later capture completion is observed without reopening the terminal lifecycle.
-func TestV2ProjectContainerBackingInterferencePreservesRuntimeLogs(t *testing.T) {
+func TestV2ProjectContainerPhysicalInterferencePreservesRuntimeLogs(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"ambiguous", "hold-removed"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -92,9 +92,9 @@ func TestV2ProjectContainerBackingInterferencePreservesRuntimeLogs(t *testing.T)
 				duplicate.ObjectMeta = metav1.ObjectMeta{Name: "duplicate", Namespace: namespace.Name,
 					OwnerReferences: physical.OwnerReferences, Finalizers: physical.Finalizers}
 				require.NoError(t, client.Create(ctx, duplicate))
-				cleanupProjectBacking(t, duplicate)
+				cleanupProjectPhysical(t, duplicate)
 			} else {
-				removeProjectBackingHold(t, ctx, client, physical)
+				removeProjectPhysicalHold(t, ctx, client, physical)
 			}
 			unknown := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
 			requireReadyCondition(t, unknown.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
@@ -117,7 +117,7 @@ func TestV2ProjectContainerBackingInterferencePreservesRuntimeLogs(t *testing.T)
 			require.Equal(t, "before-unknown\nafter-unknown\n", string(output))
 			if duplicate != nil {
 				require.NoError(t, client.Delete(ctx, duplicate))
-				removeProjectBackingHold(t, ctx, client, duplicate)
+				removeProjectPhysicalHold(t, ctx, client, duplicate)
 				ctrl_testutil.WaitObjectDeleted(t, ctx, client, duplicate)
 				require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, prepared.Status.ContainerID, containers.ContainerStatusDead))
 				completed := waitObjectAssumesStateEx(t, ctx, client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
@@ -137,9 +137,9 @@ func TestV2ProjectContainerBackingInterferencePreservesRuntimeLogs(t *testing.T)
 	}
 }
 
-func (apiClient *projectBackingClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
+func (apiClient *projectPhysicalClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
 	owner := metav1.GetControllerOf(obj)
-	if owner == nil || owner.Kind != "ProjectContainer" || !apiClient.hideBackings.Load() {
+	if owner == nil || owner.Kind != "ProjectContainer" || !apiClient.hidePhysicalResources.Load() {
 		return apiClient.Client.Create(ctx, obj, options...)
 	}
 	committed := obj.DeepCopyObject().(ctrl_client.Object)
@@ -150,10 +150,10 @@ func (apiClient *projectBackingClient) Create(ctx context.Context, obj ctrl_clie
 	if apiClient.onUndecodedCreate != nil {
 		apiClient.onUndecodedCreate(committed)
 	}
-	return errors.New("Project backing create committed without a decoded response")
+	return errors.New("Project physical resource create committed without a decoded response")
 }
 
-func (apiClient *projectBackingClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+func (apiClient *projectPhysicalClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
 	if _, containers := list.(*apiv2.PhysicalContainerList); containers && apiClient.failContainerLists.Load() {
 		apiClient.containerListFailures.Add(1)
 		return errors.New("injected Project container lookup failure")
@@ -177,7 +177,7 @@ func (apiClient *projectBackingClient) List(ctx context.Context, list ctrl_clien
 			}
 			for conditionIndex := range containers.Items[index].Status.Conditions {
 				if apiClient.reportContainerPending.Load() {
-					containers.Items[index].Status.Conditions[conditionIndex].Message = "injected pending backing observation"
+					containers.Items[index].Status.Conditions[conditionIndex].Message = "injected pending physical resource observation"
 				}
 				if apiClient.staleContainerCondition.Load() {
 					containers.Items[index].Status.Conditions[conditionIndex].ObservedGeneration = containers.Items[index].Generation - 1
@@ -189,7 +189,7 @@ func (apiClient *projectBackingClient) List(ctx context.Context, list ctrl_clien
 		}
 	}
 	listOptions := (&ctrl_client.ListOptions{}).ApplyOptions(options)
-	if !apiClient.hideBackings.Load() || listOptions.FieldSelector == nil ||
+	if !apiClient.hidePhysicalResources.Load() || listOptions.FieldSelector == nil ||
 		!strings.Contains(listOptions.FieldSelector.String(), ".metadata.projectContainerOwnerUID") {
 		return nil
 	}
@@ -204,9 +204,9 @@ func (apiClient *projectBackingClient) List(ctx context.Context, list ctrl_clien
 	return nil
 }
 
-// Verifies that ProjectContainer retains its terminal Failed state and original diagnostic after backing
+// Verifies that ProjectContainer retains its terminal Failed state and original diagnostic after physical resource
 // disappearance or identity replacement, while still completing missing log sources.
-func TestV2ProjectContainerFailureSurvivesBackingChanges(t *testing.T) {
+func TestV2ProjectContainerFailureSurvivesPhysicalChanges(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"missing", "replaced"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -229,11 +229,11 @@ func TestV2ProjectContainerFailureSurvivesBackingChanges(t *testing.T) {
 			replacement.ObjectMeta = metav1.ObjectMeta{Name: physical.Name, Namespace: namespace.Name,
 				OwnerReferences: physical.OwnerReferences, Finalizers: physical.Finalizers}
 			require.NoError(t, client.Delete(ctx, physical))
-			removeProjectBackingHold(t, ctx, client, physical)
+			removeProjectPhysicalHold(t, ctx, client, physical)
 			ctrl_testutil.WaitObjectDeleted(t, ctx, client, physical)
 			if scenario == "replaced" {
 				require.NoError(t, client.Create(ctx, replacement))
-				cleanupProjectBacking(t, replacement)
+				cleanupProjectPhysical(t, replacement)
 				require.NotEqual(t, physical.UID, replacement.UID)
 			}
 			require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
@@ -256,9 +256,9 @@ func TestV2ProjectContainerFailureSurvivesBackingChanges(t *testing.T) {
 			}
 			require.NoError(t, client.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, client, resource)
-			var backings apiv2.PhysicalContainerList
-			require.NoError(t, client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-			require.Empty(t, backings.Items)
+			var physicalResources apiv2.PhysicalContainerList
+			require.NoError(t, client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+			require.Empty(t, physicalResources.Items)
 		})
 	}
 }
@@ -281,7 +281,7 @@ func TestV2ProjectContainerFailedReportsLaterCompletion(t *testing.T) {
 	require.NoError(t, client.List(ctx, &images, ctrl_client.InNamespace(namespace.Name)))
 	require.Len(t, images.Items, 1)
 	// Losing the hold on the owned image fails the Project but leaves the trusted container running.
-	removeProjectBackingHold(t, ctx, client, &images.Items[0])
+	removeProjectPhysicalHold(t, ctx, client, &images.Items[0])
 	failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
 	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
 	require.Nil(t, failed.Status.ExitCode)
@@ -304,10 +304,10 @@ func TestV2ProjectProcessNamespaceLookupRetainsPreparation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	var decorated *projectBackingClient
+	var decorated *projectPhysicalClient
 	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-			decorated = &projectBackingClient{Client: apiClient}
+			decorated = &projectPhysicalClient{Client: apiClient}
 			return decorated
 		}})
 	require.NoError(t, startupErr)
@@ -332,7 +332,7 @@ func TestV2ProjectProcessNamespaceLookupRetainsPreparation(t *testing.T) {
 }
 
 // Verifies that ProjectContainer distinguishes preparation failure from loss of an established context,
-// retaining successful preparation through Unknown and subsequent Pending backing observations.
+// retaining successful preparation through Unknown and subsequent Pending physical resource observations.
 func TestV2ProjectContainerContextLossReasons(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"preparing", "prepared", "unknown"} {
@@ -340,10 +340,10 @@ func TestV2ProjectContainerContextLossReasons(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
-			var decorated *projectBackingClient
+			var decorated *projectPhysicalClient
 			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
 				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-					decorated = &projectBackingClient{Client: apiClient}
+					decorated = &projectPhysicalClient{Client: apiClient}
 					decorated.reportContainerUnknown.Store(scenario == "preparing")
 					return decorated
 				}})
@@ -384,7 +384,7 @@ func TestV2ProjectContainerContextLossReasons(t *testing.T) {
 						[]byte(`{"metadata":{"annotations":{"context-observation":"pending"}}}`))))
 					pending := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 						return current.Status.Phase == apiv2.ProjectPhaseUnknown && len(current.Status.Conditions) != 0 &&
-							strings.Contains(current.Status.Conditions[0].Message, "injected pending backing observation"), nil
+							strings.Contains(current.Status.Conditions[0].Message, "injected pending physical resource observation"), nil
 					})
 					requireReadyCondition(t, pending.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonLookupFailed)
 				}
@@ -409,16 +409,16 @@ func TestV2ProjectContainerContextLossReasons(t *testing.T) {
 	}
 }
 
-// Verifies that ProjectContainer recovers from backing lookup errors during startup and after preparation,
+// Verifies that ProjectContainer recovers from physical resource lookup errors during startup and after preparation,
 // eventually becoming ready with the same container and log identity without creating a replacement.
-func TestV2ProjectContainerRecoversFromBackingLookupErrors(t *testing.T) {
+func TestV2ProjectContainerRecoversFromPhysicalLookupErrors(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	var decorated *projectBackingClient
+	var decorated *projectPhysicalClient
 	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-			decorated = &projectBackingClient{Client: client}
+			decorated = &projectPhysicalClient{Client: client}
 			return decorated
 		}})
 	require.NoError(t, startupErr)
@@ -452,24 +452,24 @@ func TestV2ProjectContainerRecoversFromBackingLookupErrors(t *testing.T) {
 	requireReadyCondition(t, recovered.Status.Conditions, metav1.ConditionTrue, apiv2.ProjectReasonPrepared)
 	require.Equal(t, prepared.Status.ContainerID, recovered.Status.ContainerID)
 	require.Equal(t, prepared.Status.RuntimeLogs, recovered.Status.RuntimeLogs)
-	var backings apiv2.PhysicalContainerList
-	require.NoError(t, server.Client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-	require.Len(t, backings.Items, 1)
-	require.Equal(t, prepared.Status.RuntimeLogs.UID, backings.Items[0].UID)
+	var physicalResources apiv2.PhysicalContainerList
+	require.NoError(t, server.Client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, physicalResources.Items, 1)
+	require.Equal(t, prepared.Status.RuntimeLogs.UID, physicalResources.Items[0].UID)
 	require.NoError(t, server.Client.Delete(ctx, resource))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
-// Verifies that Stop selects the ProjectContainer Stopping handler before backing lookup and remains
-// Stopping while lookup fails, then finishes cleanup after reconciliation can observe the backing.
-func TestV2ProjectContainerStopPrecedesBackingLookup(t *testing.T) {
+// Verifies that Stop selects the ProjectContainer Stopping handler before physical resource lookup and remains
+// Stopping while lookup fails, then finishes cleanup after reconciliation can observe the physical resource.
+func TestV2ProjectContainerStopPrecedesPhysicalLookup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	var decorated *projectBackingClient
+	var decorated *projectPhysicalClient
 	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-			decorated = &projectBackingClient{Client: client}
+			decorated = &projectPhysicalClient{Client: client}
 			return decorated
 		}})
 	require.NoError(t, startupErr)
@@ -499,11 +499,11 @@ func TestV2ProjectContainerObservesContainerWithoutGenerationGate(t *testing.T) 
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	var decorated *projectBackingClient
+	var decorated *projectPhysicalClient
 	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{
 			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-				decorated = &projectBackingClient{Client: client}
+				decorated = &projectPhysicalClient{Client: client}
 				decorated.staleContainerCondition.Store(true)
 				return decorated
 			},
@@ -553,7 +553,7 @@ func TestV2ProjectContainerObservesContainerWithoutGenerationGate(t *testing.T) 
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
 }
 
-func (apiClient *projectBackingClient) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
+func (apiClient *projectPhysicalClient) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
 	if _, namespace := obj.(*apiv2.Namespace); namespace && apiClient.failNamespace.Load() {
 		apiClient.namespaceLookups.Add(1)
 		return errors.New("injected Project namespace lookup failure")
@@ -565,9 +565,9 @@ func (apiClient *projectBackingClient) Get(ctx context.Context, key ctrl_client.
 	return apiClient.Client.Get(ctx, key, obj, options...)
 }
 
-func (apiClient *projectBackingClient) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.PatchOption) error {
+func (apiClient *projectPhysicalClient) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.PatchOption) error {
 	if owner := metav1.GetControllerOf(obj); owner != nil && owner.Kind == "ProjectContainer" &&
-		!obj.GetDeletionTimestamp().IsZero() && !slices.Contains(obj.GetFinalizers(), controllers.LogicalBackingFinalizer) &&
+		!obj.GetDeletionTimestamp().IsZero() && !slices.Contains(obj.GetFinalizers(), controllers.LogicalPhysicalHoldFinalizer) &&
 		apiClient.loseHoldResponse.CompareAndSwap(true, false) {
 		if patchErr := apiClient.Client.Patch(ctx, obj, patch, options...); patchErr != nil {
 			return patchErr
@@ -578,25 +578,25 @@ func (apiClient *projectBackingClient) Patch(ctx context.Context, obj ctrl_clien
 	return apiClient.Client.Patch(ctx, obj, patch, options...)
 }
 
-func (apiClient *projectBackingClient) Status() ctrl_client.SubResourceWriter {
-	return &projectBackingStatusWriter{SubResourceWriter: apiClient.Client.Status(), client: apiClient}
+func (apiClient *projectPhysicalClient) Status() ctrl_client.SubResourceWriter {
+	return &projectPhysicalStatusWriter{SubResourceWriter: apiClient.Client.Status(), client: apiClient}
 }
 
-type projectBackingStatusWriter struct {
+type projectPhysicalStatusWriter struct {
 	ctrl_client.SubResourceWriter
-	client *projectBackingClient
+	client *projectPhysicalClient
 }
 
-type projectBackingReader struct {
+type projectPhysicalReader struct {
 	ctrl_client.Reader
 	failLists    atomic.Bool
 	listFailures atomic.Int32
 }
 
-func (reader *projectBackingReader) Get(ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption) error {
+func (reader *projectPhysicalReader) Get(ctx context.Context, key ctrl_client.ObjectKey, object ctrl_client.Object, options ...ctrl_client.GetOption) error {
 	if _, container := object.(*apiv2.PhysicalContainer); container && reader.failLists.Load() {
 		reader.listFailures.Add(1)
-		return errors.New("uncached Project backing confirmation unavailable")
+		return errors.New("uncached Project physical resource confirmation unavailable")
 	}
 	return reader.Reader.Get(ctx, key, object, options...)
 }
@@ -607,12 +607,12 @@ func TestV2ProjectContainerReconcilesAmbiguousCreate(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	var decorated *projectBackingClient
+	var decorated *projectPhysicalClient
 	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{
 			DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-				decorated = &projectBackingClient{Client: client}
-				decorated.hideBackings.Store(true)
+				decorated = &projectPhysicalClient{Client: client}
+				decorated.hidePhysicalResources.Store(true)
 				return decorated
 			},
 		})
@@ -625,16 +625,16 @@ func TestV2ProjectContainerReconcilesAmbiguousCreate(t *testing.T) {
 	require.NoError(t, server.Client.Create(ctx, resource))
 	prepared := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
 	require.Equal(t, int32(2), decorated.undecodedCreates.Load())
-	decorated.hideBackings.Store(false)
-	var backings apiv2.PhysicalContainerList
-	require.NoError(t, server.Client.List(ctx, &backings, ctrl_client.InNamespace(namespace.Name)))
-	require.Len(t, backings.Items, 1)
-	require.Equal(t, backings.Items[0].UID, prepared.Status.RuntimeLogs.UID)
+	decorated.hidePhysicalResources.Store(false)
+	var physicalResources apiv2.PhysicalContainerList
+	require.NoError(t, server.Client.List(ctx, &physicalResources, ctrl_client.InNamespace(namespace.Name)))
+	require.Len(t, physicalResources.Items, 1)
+	require.Equal(t, physicalResources.Items[0].UID, prepared.Status.RuntimeLogs.UID)
 	require.NoError(t, server.Client.Delete(ctx, resource))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
 }
 
-func (writer *projectBackingStatusWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
+func (writer *projectPhysicalStatusWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
 	complete := false
 	switch physical := obj.(type) {
 	case *apiv2.PhysicalProcess:
@@ -644,31 +644,31 @@ func (writer *projectBackingStatusWriter) Patch(ctx context.Context, obj ctrl_cl
 	}
 	if complete && !obj.GetDeletionTimestamp().IsZero() && writer.client.blockFinalStatus.Load() {
 		writer.client.finalStatusOnce.Do(func() { writer.client.finalStatus <- obj.DeepCopyObject().(ctrl_client.Object) })
-		return apierrors.NewConflict(schema.GroupResource{Group: apiv2.GroupName, Resource: "projectbackings"},
-			obj.GetName(), errors.New("Project backing final status conflict"))
+		return apierrors.NewConflict(schema.GroupResource{Group: apiv2.GroupName, Resource: "projectphysicalresources"},
+			obj.GetName(), errors.New("Project physical resource final status conflict"))
 	}
 	return writer.SubResourceWriter.Patch(ctx, obj, patch, options...)
 }
 
 // Verifies that ProjectContainer requests child deletion immediately, retains both finalizers through
 // cleanup status conflicts, and retries a committed logical-hold release with a lost response.
-func TestV2ProjectContainerDeletionRetainsBackingUntilCleanupIsDurable(t *testing.T) {
+func TestV2ProjectContainerDeletionRetainsPhysicalUntilCleanupIsDurable(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"image"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
-			var decorated *projectBackingClient
+			var decorated *projectPhysicalClient
 			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
 				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-					decorated = &projectBackingClient{Client: apiClient, kind: kind, finalStatus: make(chan ctrl_client.Object, 1)}
+					decorated = &projectPhysicalClient{Client: apiClient, kind: kind, finalStatus: make(chan ctrl_client.Object, 1)}
 					return decorated
 				}})
 			require.NoError(t, startupErr)
 			namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-project-durable-"+kind)
 			resource := &apiv2.ProjectContainer{ObjectMeta: metav1.ObjectMeta{Name: "project", Namespace: namespace.Name},
 				Spec: apiv2.ProjectContainerSpec{ProjectCommonSpec: apiv2.ProjectCommonSpec{RootDirectory: t.TempDir()}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}}
-			backing := &apiv2.PhysicalContainerImage{}
+			physicalResource := &apiv2.PhysicalContainerImage{}
 			cleanupFinalizer := apiv2.GroupName + "/physicalcontainerimage-reconciler"
 
 			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
@@ -686,9 +686,9 @@ func TestV2ProjectContainerDeletionRetainsBackingUntilCleanupIsDurable(t *testin
 			})
 
 			name := types.NamespacedName{Namespace: namespace.Name, Name: "project-" + string(resource.UID)}
-			require.NoError(t, server.Client.Get(ctx, name, backing))
-			require.Contains(t, backing.GetFinalizers(), controllers.LogicalBackingFinalizer)
-			require.Contains(t, backing.GetFinalizers(), cleanupFinalizer)
+			require.NoError(t, server.Client.Get(ctx, name, physicalResource))
+			require.Contains(t, physicalResource.GetFinalizers(), controllers.LogicalPhysicalHoldFinalizer)
+			require.Contains(t, physicalResource.GetFinalizers(), cleanupFinalizer)
 			decorated.blockFinalStatus.Store(true)
 			t.Cleanup(func() { decorated.blockFinalStatus.Store(false) })
 			decorated.loseHoldResponse.Store(true)
@@ -696,34 +696,34 @@ func TestV2ProjectContainerDeletionRetainsBackingUntilCleanupIsDurable(t *testin
 			select {
 			case <-decorated.finalStatus:
 			case <-ctx.Done():
-				t.Fatal("Project backing cleanup did not publish its disposition")
+				t.Fatal("Project physical resource cleanup did not publish its disposition")
 			}
-			require.NoError(t, server.Client.Get(ctx, name, backing))
-			require.False(t, backing.GetDeletionTimestamp().IsZero())
-			require.Contains(t, backing.GetFinalizers(), cleanupFinalizer)
-			require.Contains(t, backing.GetFinalizers(), controllers.LogicalBackingFinalizer)
+			require.NoError(t, server.Client.Get(ctx, name, physicalResource))
+			require.False(t, physicalResource.GetDeletionTimestamp().IsZero())
+			require.Contains(t, physicalResource.GetFinalizers(), cleanupFinalizer)
+			require.Contains(t, physicalResource.GetFinalizers(), controllers.LogicalPhysicalHoldFinalizer)
 			require.NoError(t, server.Client.Get(ctx, resource.NamespacedName(), &apiv2.ProjectContainer{}))
 			decorated.blockFinalStatus.Store(false)
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
-			waitProjectBackingDeleted(t, ctx, server.Client, backing)
+			waitProjectPhysicalDeleted(t, ctx, server.Client, physicalResource)
 			require.True(t, decorated.holdResponseLost.Load())
 		})
 	}
 }
 
 // Verifies that ProjectContainer observes undecoded creates through the cache and deletes
-// every owned backing, including duplicates with unexpected names and no recorded UID.
-func TestV2ProjectContainerDiscoversAndDeletesBackingsByOwner(t *testing.T) {
+// every owned physical resource, including duplicates with unexpected names and no recorded UID.
+func TestV2ProjectContainerDiscoversAndDeletesPhysicalResourcesByOwner(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"container"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
-			var decorated *projectBackingClient
+			var decorated *projectPhysicalClient
 			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
 				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-					decorated = &projectBackingClient{Client: apiClient}
-					decorated.hideBackings.Store(true)
+					decorated = &projectPhysicalClient{Client: apiClient}
+					decorated.hidePhysicalResources.Store(true)
 					return decorated
 				}})
 			require.NoError(t, startupErr)
@@ -737,7 +737,7 @@ func TestV2ProjectContainerDiscoversAndDeletesBackingsByOwner(t *testing.T) {
 			waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 				return decorated.undecodedCreates.Load() >= 1, nil
 			})
-			decorated.hideBackings.Store(false)
+			decorated.hidePhysicalResources.Store(false)
 			require.NoError(t, server.Client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType,
 				[]byte(`{"metadata":{"annotations":{"cache-observation":"released"}}}`))))
 			running := waitProjectPhase(t, ctx, server.Client, resource, apiv2.ProjectPhaseReady)
@@ -746,7 +746,7 @@ func TestV2ProjectContainerDiscoversAndDeletesBackingsByOwner(t *testing.T) {
 
 			require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: running.Status.RuntimeLogs.Name}, original))
 			duplicate := original.DeepCopyObject().(ctrl_client.Object)
-			duplicate.SetName("unexpected-owned-backing")
+			duplicate.SetName("unexpected-owned-physical")
 			duplicate.SetUID("")
 			duplicate.SetResourceVersion("")
 			duplicate.SetManagedFields(nil)
@@ -763,15 +763,15 @@ func TestV2ProjectContainerDiscoversAndDeletesBackingsByOwner(t *testing.T) {
 			require.Equal(t, running.Status.RuntimeLogs.UID, stillUnknown.Status.RuntimeLogs.UID)
 			require.NoError(t, server.Client.Delete(ctx, resource))
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
-			waitProjectBackingDeleted(t, ctx, server.Client, original)
-			waitProjectBackingDeleted(t, ctx, server.Client, duplicate)
+			waitProjectPhysicalDeleted(t, ctx, server.Client, original)
+			waitProjectPhysicalDeleted(t, ctx, server.Client, duplicate)
 		})
 	}
 }
 
-func waitProjectBackingDeleted(t *testing.T, ctx context.Context, apiClient ctrl_client.Client, backing ctrl_client.Object) {
+func waitProjectPhysicalDeleted(t *testing.T, ctx context.Context, apiClient ctrl_client.Client, physicalResource ctrl_client.Object) {
 	t.Helper()
-	switch physical := backing.(type) {
+	switch physical := physicalResource.(type) {
 	case *apiv2.PhysicalProcess:
 		ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, physical)
 	case *apiv2.PhysicalContainer:
@@ -779,7 +779,7 @@ func waitProjectBackingDeleted(t *testing.T, ctx context.Context, apiClient ctrl
 	case *apiv2.PhysicalContainerImage:
 		ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, physical)
 	default:
-		t.Fatalf("unsupported Project backing %T", backing)
+		t.Fatalf("unsupported Project physical resource %T", physicalResource)
 	}
 }
 
@@ -789,17 +789,17 @@ func TestV2ProjectContainerDeletionConfirmsUnobservedCreate(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	var reader *projectBackingReader
-	var decorated *projectBackingClient
+	var reader *projectPhysicalReader
+	var decorated *projectPhysicalClient
 	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{
 			DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-				decorated = &projectBackingClient{Client: apiClient}
-				decorated.hideBackings.Store(true)
+				decorated = &projectPhysicalClient{Client: apiClient}
+				decorated.hidePhysicalResources.Store(true)
 				return decorated
 			},
 			DecorateAPIReader: func(apiReader ctrl_client.Reader) ctrl_client.Reader {
-				reader = &projectBackingReader{Reader: apiReader}
+				reader = &projectPhysicalReader{Reader: apiReader}
 				return reader
 			},
 		})
@@ -835,17 +835,17 @@ func TestV2ProjectContainerDeletionConfirmsUnobservedCreate(t *testing.T) {
 }
 
 // Verifies that ProjectContainer evaluates later network failures and lookup errors despite an earlier
-// missing reference, and delegates readiness after a logical network publishes its backing reference.
+// missing reference, and delegates readiness after a logical network publishes its physical resource reference.
 func TestV2ProjectContainerChecksAllNetworkReferences(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"failed", "lookup", "published"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
-			var decorated *projectBackingClient
+			var decorated *projectPhysicalClient
 			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, projectTestControllers, t.Name(), t.TempDir(),
 				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-					decorated = &projectBackingClient{Client: apiClient}
+					decorated = &projectPhysicalClient{Client: apiClient}
 					return decorated
 				}})
 			require.NoError(t, startupErr)
@@ -980,7 +980,7 @@ func TestV2ProjectContainerValidatesPhysicalCreateCollisions(t *testing.T) {
 							return server.Client.Update(ctx, collision)
 						}))
 					} else {
-						removeProjectBackingHold(t, ctx, server.Client, collision)
+						removeProjectPhysicalHold(t, ctx, server.Client, collision)
 					}
 					require.NoError(t, server.Client.Delete(ctx, collision))
 				}
@@ -1040,9 +1040,9 @@ func TestV2ProjectContainerRecoversLostCreateAndMutableStop(t *testing.T) {
 					LogicalContainerConfig: apiv2.LogicalContainerConfig{Image: &apiv2.PhysicalContainerImageConfig{Image: namespace.Name + "-image"}, Command: []string{"application"}},
 				}, DebugAdapter: &apiv2.ContainerDebugAdapterConfig{DebugAdapterConfig: apiv2.DebugAdapterConfig{Directory: t.TempDir(), Args: []string{"adapter"}}}}}
 			require.NoError(t, server.Client.Create(ctx, resource))
-			var backing ctrl_client.Object
+			var physicalResource ctrl_client.Object
 			select {
-			case backing = <-decorated.created:
+			case physicalResource = <-decorated.created:
 			case <-ctx.Done():
 				t.Fatal("container was not declared")
 			}
@@ -1058,12 +1058,12 @@ func TestV2ProjectContainerRecoversLostCreateAndMutableStop(t *testing.T) {
 				require.NoError(t, server.Client.Delete(ctx, resource))
 			}
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, resource)
-			physical := &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{Name: backing.GetName(), Namespace: namespace.Name}}
+			physical := &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{Name: physicalResource.GetName(), Namespace: namespace.Name}}
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
-			image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: backing.GetName(), Namespace: namespace.Name}}
+			image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: physicalResource.GetName(), Namespace: namespace.Name}}
 			ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, image)
 			orchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
-			require.LessOrEqual(t, orchestrator.CreateContainerCallCount(backing.GetName()), 1)
+			require.LessOrEqual(t, orchestrator.CreateContainerCallCount(physicalResource.GetName()), 1)
 		})
 	}
 }
@@ -1198,9 +1198,9 @@ func TestV2ProjectProcessRecoversLostCreateAndShutdown(t *testing.T) {
 	}
 }
 
-// Verifies that ProjectProcess rejects an owned process backing whose launch inputs or
+// Verifies that ProjectProcess rejects an owned physical process whose launch inputs or
 // lifetime policy do not match the prepared application configuration.
-func TestV2ProjectProcessRejectsIncompatibleOwnedBacking(t *testing.T) {
+func TestV2ProjectProcessRejectsIncompatibleOwnedPhysical(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"command", "args", "retained"} {
 		t.Run(scenario, func(t *testing.T) {
@@ -1235,9 +1235,9 @@ func TestV2ProjectProcessRejectsIncompatibleOwnedBacking(t *testing.T) {
 			case "retained":
 				physical.Spec.Process.RetainRuntimeProcess = true
 			}
-			controllers.InitializeLogicalBackingFinalizers(physical, apiv2.GroupName+"/physicalprocess-reconciler")
+			controllers.InitializePhysicalResourceFinalizers(physical, apiv2.GroupName+"/physicalprocess-reconciler")
 			require.NoError(t, client.Create(ctx, physical))
-			cleanupProjectBacking(t, physical)
+			cleanupProjectPhysical(t, physical)
 			require.NoError(t, client.Patch(ctx, resource, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"start":true}}`))))
 			failed := waitProjectPhase(t, ctx, client, resource, apiv2.ProjectPhaseFailed)
 			requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonPreparationFailed)
@@ -1296,7 +1296,7 @@ func (observer *projectFailedStopObserver) List(ctx context.Context, list ctrl_c
 	return nil
 }
 
-// Verifies that a later stop request does not replace a direct Project's terminal backing-failure
+// Verifies that a later stop request does not replace a direct Project's terminal physical-failure
 // diagnosis, while deletion still cleans up the owned execution.
 func TestV2ProjectDirectFailureRemainsTerminalAfterStop(t *testing.T) {
 	t.Parallel()
@@ -1326,8 +1326,8 @@ func TestV2ProjectDirectFailureRemainsTerminalAfterStop(t *testing.T) {
 	physicalContainer := &apiv2.PhysicalContainer{}
 	require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: processRunning.Status.PhysicalProcessRef}, physicalProcess))
 	require.NoError(t, server.Client.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: containerRunning.Status.PhysicalContainerRef}, physicalContainer))
-	removeProjectBackingHold(t, ctx, server.Client, physicalProcess)
-	removeProjectBackingHold(t, ctx, server.Client, physicalContainer)
+	removeProjectPhysicalHold(t, ctx, server.Client, physicalProcess)
+	removeProjectPhysicalHold(t, ctx, server.Client, physicalContainer)
 	processFailed := waitProjectPhase(t, ctx, server.Client, processProject, apiv2.ProjectPhaseFailed)
 	containerFailed := waitProjectPhase(t, ctx, server.Client, containerProject, apiv2.ProjectPhaseFailed)
 	requireReadyCondition(t, processFailed.Status.Conditions, metav1.ConditionFalse, apiv2.ProjectReasonMissing)
@@ -1385,7 +1385,7 @@ func (writer *projectStatusConflictWriter) Patch(ctx context.Context, obj ctrl_c
 
 // Verifies that forced disappearance of a prepared container retains either its observed termination
 // failure or missing-context outcome, preserves capture identity through conflicts, and completes followers.
-func TestV2ProjectContainerMissingBackingCompletesFollowerThroughConflict(t *testing.T) {
+func TestV2ProjectContainerMissingPhysicalCompletesFollowerThroughConflict(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
@@ -1415,7 +1415,7 @@ func TestV2ProjectContainerMissingBackingCompletesFollowerThroughConflict(t *tes
 	require.NoError(t, readErr)
 	physical := &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{Name: prepared.Status.PhysicalContainerRef, Namespace: namespace.Name}}
 	require.NoError(t, server.Client.Delete(ctx, physical))
-	removeProjectBackingHold(t, ctx, server.Client, physical)
+	removeProjectPhysicalHold(t, ctx, server.Client, physical)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)
 	failed := waitObjectAssumesStateEx(t, ctx, server.Client, resource.NamespacedName(), func(current *apiv2.ProjectContainer) (bool, error) {
 		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
@@ -1435,35 +1435,35 @@ func TestV2ProjectContainerMissingBackingCompletesFollowerThroughConflict(t *tes
 	require.Empty(t, remaining)
 }
 
-func cleanupProjectBacking(t *testing.T, backing ctrl_client.Object) {
+func cleanupProjectPhysical(t *testing.T, physicalResource ctrl_client.Object) {
 	t.Helper()
-	key := ctrl_client.ObjectKeyFromObject(backing)
-	uid := backing.GetUID()
+	key := ctrl_client.ObjectKeyFromObject(physicalResource)
+	uid := physicalResource.GetUID()
 	t.Cleanup(func() {
 		ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 		defer cancel()
-		current := backing.DeepCopyObject().(ctrl_client.Object)
+		current := physicalResource.DeepCopyObject().(ctrl_client.Object)
 		require.NoError(t, retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			if getErr := client.Get(ctx, key, current); getErr != nil {
 				return ctrl_client.IgnoreNotFound(getErr)
 			}
 			if current.GetUID() != uid {
-				return fmt.Errorf("project backing %s was replaced before cleanup", key)
+				return fmt.Errorf("project physical resource %s was replaced before cleanup", key)
 			}
 			if deleteErr := client.Delete(ctx, current); deleteErr != nil {
 				return ctrl_client.IgnoreNotFound(deleteErr)
 			}
-			return ctrl_client.IgnoreNotFound(controllers.ReleaseLogicalBackingFinalizer(ctx, client, current))
+			return ctrl_client.IgnoreNotFound(controllers.ReleaseLogicalPhysicalHoldFinalizer(ctx, client, current))
 		}))
 	})
 }
 
-func removeProjectBackingHold(t *testing.T, ctx context.Context, apiClient ctrl_client.Client, backing ctrl_client.Object) {
+func removeProjectPhysicalHold(t *testing.T, ctx context.Context, apiClient ctrl_client.Client, physicalResource ctrl_client.Object) {
 	t.Helper()
 	require.NoError(t, retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if getErr := apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(backing), backing); getErr != nil {
+		if getErr := apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(physicalResource), physicalResource); getErr != nil {
 			return getErr
 		}
-		return controllers.ReleaseLogicalBackingFinalizer(ctx, apiClient, backing)
+		return controllers.ReleaseLogicalPhysicalHoldFinalizer(ctx, apiClient, physicalResource)
 	}))
 }

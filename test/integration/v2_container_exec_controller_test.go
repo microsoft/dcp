@@ -164,7 +164,7 @@ func TestV2LogicalContainerExecWaitsForPrerequisites(t *testing.T) {
 }
 
 // Verifies that terminal container execution launch failure remains terminal across updates,
-// completes output, forwards its diagnostic, and does not poll after logical backing read failures.
+// completes output, forwards its diagnostic, and does not poll after logical physical resource read failures.
 func TestV2ContainerExecLaunchFailureIsTerminal(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -279,19 +279,19 @@ func TestV2ContainerExecDeletionSettlesAttachedExecution(t *testing.T) {
 	}
 }
 
-// Verifies that forcibly removing a backing physical execution fails its logical owner without
+// Verifies that forcibly removing a physical execution fails its logical owner without
 // recreating the child or launching the command again.
-func TestV2LogicalContainerExecDoesNotRecreateMissingBacking(t *testing.T) {
+func TestV2LogicalContainerExecDoesNotRecreateMissingPhysical(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
-	target := createV2ExecTarget(t, ctx, client, "v2-exec-missing-backing")
+	target := createV2ExecTarget(t, ctx, client, "v2-exec-missing-physical")
 	resource := &apiv2.LogicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: "execution", Namespace: target.Namespace},
-		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: "v2-exec-missing-backing-command"}}}
+		Spec: apiv2.LogicalContainerExecSpec{ContainerRef: target.Name, Execution: apiv2.ContainerExecConfig{Command: "v2-exec-missing-physical-command"}}}
 	require.NoError(t, client.Create(ctx, resource))
 	running := waitV2LogicalExecPhase(t, ctx, resource, apiv2.LogicalContainerExecPhaseRunning)
 	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalExecRef, Namespace: target.Namespace}}
-	forceRemoveLogicalContainerExecBacking(t, ctx, client, physical)
+	forceRemoveLogicalContainerExecPhysical(t, ctx, client, physical)
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerExec](t, ctx, client, physical)
 	failed := waitObjectAssumesState(t, ctx, resource.NamespacedName(), func(current *apiv2.LogicalContainerExec) (bool, error) {
 		return current.Status.Phase == apiv2.LogicalContainerExecPhaseFailed &&
@@ -387,10 +387,10 @@ func TestV2ContainerExecRejectsStoppingOrExitedTargets(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			t.Cleanup(cancel)
-			var conflicts *backingStatusConflicts
+			var conflicts *physicalResourceStatusConflicts
 			server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, containerExecTestControllers, t.Name(), t.TempDir(),
 				TestEnvironmentOptions{DecorateAPIClient: func(apiClient ctrl_client.Client) ctrl_client.Client {
-					conflicts = &backingStatusConflicts{Client: apiClient, imageConflict: make(chan struct{}), containerConflict: make(chan struct{})}
+					conflicts = &physicalResourceStatusConflicts{Client: apiClient, imageConflict: make(chan struct{}), containerConflict: make(chan struct{})}
 					return conflicts
 				}})
 			require.NoError(t, startupErr)

@@ -1707,7 +1707,7 @@ func TestV2PhysicalContainerImageControllerFailsUnresolvedImageOnDeletion(t *tes
 		ObjectMeta: metav1.ObjectMeta{Name: "unresolved-image", Namespace: namespace.Name},
 		Spec:       apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: "v2-pci-unresolved-source"}},
 	}
-	controllers.InitializeLogicalBackingFinalizers(image, apiv2.GroupName+"/physicalcontainerimage-reconciler")
+	controllers.InitializePhysicalResourceFinalizers(image, apiv2.GroupName+"/physicalcontainerimage-reconciler")
 	require.NoError(t, server.Client.Create(ctx, image))
 	container := &apiv2.PhysicalContainer{
 		ObjectMeta: metav1.ObjectMeta{Name: "dependent-container", Namespace: namespace.Name},
@@ -1735,7 +1735,7 @@ func TestV2PhysicalContainerImageControllerFailsUnresolvedImageOnDeletion(t *tes
 
 	require.NoError(t, server.Client.Delete(ctx, container))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
-	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, server.Client, cancelled))
+	require.NoError(t, controllers.ReleaseLogicalPhysicalHoldFinalizer(ctx, server.Client, cancelled))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, image)
 }
 
@@ -1755,12 +1755,12 @@ func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "deleted-pulling-image",
 			Namespace:  namespace.Name,
-			Finalizers: []string{controllers.LogicalBackingFinalizer},
+			Finalizers: []string{controllers.LogicalPhysicalHoldFinalizer},
 		},
 		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
 	}
 	require.NoError(t, client.Create(ctx, image))
-	removeDependencyHoldOnCleanup(t, ctx, image, controllers.LogicalBackingFinalizer)
+	removeDependencyHoldOnCleanup(t, ctx, image, controllers.LogicalPhysicalHoldFinalizer)
 	waitPullImageCallCount(t, ctx, sourceImage, 1)
 
 	pullingImage := waitObjectAssumesState(t, ctx, image.NamespacedName(), func(currentImage *apiv2.PhysicalContainerImage) (bool, error) {
@@ -1771,7 +1771,7 @@ func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 	require.NoError(t, client.Delete(ctx, image))
 
 	cleaned := waitObjectAssumesState(t, ctx, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
-		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalPhysicalHoldFinalizer, nil
 	})
 	require.True(t, cleaned.Status.LogsComplete)
 	require.Equal(t, apiv2.PhysicalContainerImagePhaseFailed, cleaned.Status.Phase)
@@ -1783,6 +1783,6 @@ func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 		return containerOrchestrator.HasImage(sourceImage)
 	}, 2*time.Second, 250*time.Millisecond)
 	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
-	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+	require.NoError(t, controllers.ReleaseLogicalPhysicalHoldFinalizer(ctx, client, cleaned))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
 }

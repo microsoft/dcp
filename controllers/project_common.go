@@ -113,14 +113,15 @@ func (data *projectData) failMissing(message string) {
 	}
 }
 
-func (data *projectData) requestStop() bool {
-	switch data.state {
-	case projectStatePending, projectStateCreating, projectStateAwaitingStart, projectStateReady, projectStateActive,
-		projectStateRunning, projectStateExited, projectStatePaused, projectStateUnknown:
+// terminal reports whether the run has a final outcome that a later stop request must not rewrite.
+func (data *projectData) terminal() bool {
+	return data.state == projectStateExited || data.state == projectStateStopped || data.state == projectStateFailed
+}
+
+// enterStopping records stop intent for a run without a final outcome, so no further execution is prepared.
+func (data *projectData) enterStopping() {
+	if !data.terminal() && data.state != projectStateStopping {
 		data.state, data.reason, data.message = projectStateStopping, apiv2.ProjectReasonStopping, ""
-		return true
-	default:
-		return false
 	}
 }
 

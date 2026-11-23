@@ -32,7 +32,7 @@ import (
 
 const execCleanupFinalizer = apiv2.GroupName + "/physicalcontainerexec-reconciler"
 
-type execBackingClient struct {
+type execPhysicalClient struct {
 	ctrl_client.Client
 	blockFinalStatus              atomic.Bool
 	finalStatus                   chan *apiv2.PhysicalContainerExec
@@ -48,25 +48,25 @@ type execBackingClient struct {
 	observationOnce               sync.Once
 }
 
-func (client *execBackingClient) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
+func (client *execPhysicalClient) Get(ctx context.Context, key ctrl_client.ObjectKey, obj ctrl_client.Object, options ...ctrl_client.GetOption) error {
 	if _, namespace := obj.(*apiv2.Namespace); namespace && client.failNamespace.Load() {
 		return errors.New("execution namespace lookup unavailable")
 	}
 	return client.Client.Get(ctx, key, obj, options...)
 }
 
-func (client *execBackingClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
+func (client *execPhysicalClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
 	if _, execution := obj.(*apiv2.PhysicalContainerExec); execution && client.failNamespaceOnPhysicalCreate {
 		client.failNamespace.Store(true)
 	}
 	return client.Client.Create(ctx, obj, options...)
 }
 
-func (client *execBackingClient) Status() ctrl_client.SubResourceWriter {
-	return &execBackingStatusWriter{SubResourceWriter: client.Client.Status(), client: client}
+func (client *execPhysicalClient) Status() ctrl_client.SubResourceWriter {
+	return &execPhysicalStatusWriter{SubResourceWriter: client.Client.Status(), client: client}
 }
 
-func (client *execBackingClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
+func (client *execPhysicalClient) List(ctx context.Context, list ctrl_client.ObjectList, options ...ctrl_client.ListOption) error {
 	if _, executions := list.(*apiv2.PhysicalContainerExecList); executions && client.failObservation.Load() {
 		client.observationOnce.Do(func() { close(client.observation) })
 		return errors.New("execution observation unavailable")
@@ -74,7 +74,7 @@ func (client *execBackingClient) List(ctx context.Context, list ctrl_client.Obje
 	return client.Client.List(ctx, list, options...)
 }
 
-func (client *execBackingClient) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.PatchOption) error {
+func (client *execPhysicalClient) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.PatchOption) error {
 	if physical, execution := obj.(*apiv2.PhysicalContainerExec); execution && !physical.DeletionTimestamp.IsZero() {
 		if !slices.Contains(physical.Finalizers, execCleanupFinalizer) {
 			var stored apiv2.PhysicalContainerExec
@@ -85,7 +85,7 @@ func (client *execBackingClient) Patch(ctx context.Context, obj ctrl_client.Obje
 			if !stored.Status.LogsComplete || stored.Status.FinishedAt.IsZero() {
 				return errors.New("execution cleanup finalizer released before final status was durable")
 			}
-			if slices.Contains(physical.Finalizers, controllers.LogicalBackingFinalizer) &&
+			if slices.Contains(physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer) &&
 				client.loseCleanupResponse.CompareAndSwap(true, false) {
 				patchErr := client.Client.Patch(ctx, obj, patch, options...)
 				if patchErr != nil {
@@ -95,7 +95,7 @@ func (client *execBackingClient) Patch(ctx context.Context, obj ctrl_client.Obje
 				return errors.New("applied execution cleanup response lost")
 			}
 		}
-		if !slices.Contains(physical.Finalizers, controllers.LogicalBackingFinalizer) &&
+		if !slices.Contains(physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer) &&
 			client.loseHoldResponse.CompareAndSwap(true, false) {
 			patchErr := client.Client.Patch(ctx, obj, patch, options...)
 			if patchErr != nil {
@@ -108,12 +108,12 @@ func (client *execBackingClient) Patch(ctx context.Context, obj ctrl_client.Obje
 	return client.Client.Patch(ctx, obj, patch, options...)
 }
 
-type execBackingStatusWriter struct {
+type execPhysicalStatusWriter struct {
 	ctrl_client.SubResourceWriter
-	client *execBackingClient
+	client *execPhysicalClient
 }
 
-func (writer *execBackingStatusWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
+func (writer *execPhysicalStatusWriter) Patch(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch, options ...ctrl_client.SubResourcePatchOption) error {
 	if physical, execution := obj.(*apiv2.PhysicalContainerExec); execution &&
 		!physical.DeletionTimestamp.IsZero() && physical.Status.LogsComplete && writer.client.blockFinalStatus.Load() {
 		writer.client.finalStatusOnce.Do(func() { writer.client.finalStatus <- physical.DeepCopy() })
@@ -129,10 +129,10 @@ func TestV2ContainerExecDeletionPreservesDurableDisposition(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	var decorated *execBackingClient
+	var decorated *execPhysicalClient
 	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, containerExecTestControllers, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-			decorated = &execBackingClient{Client: client, finalStatus: make(chan *apiv2.PhysicalContainerExec, 1)}
+			decorated = &execPhysicalClient{Client: client, finalStatus: make(chan *apiv2.PhysicalContainerExec, 1)}
 			return decorated
 		}})
 	require.NoError(t, startupErr)
@@ -145,7 +145,7 @@ func TestV2ContainerExecDeletionPreservesDurableDisposition(t *testing.T) {
 	})
 	physical := &apiv2.PhysicalContainerExec{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalExecRef, Namespace: target.Namespace}}
 	require.NoError(t, server.Client.Get(ctx, physical.NamespacedName(), physical))
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.Contains(t, physical.Finalizers, execCleanupFinalizer)
 	decorated.blockFinalStatus.Store(true)
 	defer decorated.blockFinalStatus.Store(false)
@@ -161,7 +161,7 @@ func TestV2ContainerExecDeletionPreservesDurableDisposition(t *testing.T) {
 	require.NoError(t, server.Client.Get(ctx, physical.NamespacedName(), physical))
 	require.False(t, physical.DeletionTimestamp.IsZero(), "deletion must be requested before cleanup observation")
 	require.Contains(t, physical.Finalizers, execCleanupFinalizer)
-	require.Contains(t, physical.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, physical.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.False(t, physical.Status.LogsComplete)
 	_, stdoutErr := os.Stat(final.Status.StdoutFile)
 	require.NoError(t, stdoutErr, "capture must survive failed final status projection")
@@ -181,10 +181,10 @@ func TestV2ContainerExecDisposalFailureDoesNotBlockDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	var decorated *execBackingClient
+	var decorated *execPhysicalClient
 	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, containerExecTestControllers, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-			decorated = &execBackingClient{Client: client, finalStatus: make(chan *apiv2.PhysicalContainerExec, 1)}
+			decorated = &execPhysicalClient{Client: client, finalStatus: make(chan *apiv2.PhysicalContainerExec, 1)}
 			return decorated
 		}})
 	require.NoError(t, startupErr)
@@ -222,16 +222,16 @@ func TestV2ContainerExecDisposalFailureDoesNotBlockDeletion(t *testing.T) {
 	require.NoError(t, captureErr, "failed output deletion must not block resource finalization")
 }
 
-// Verifies that LogicalContainerExec completes its original execution after backing observation
-// recovers, without relaunching, and cleans up the original backing.
+// Verifies that LogicalContainerExec completes its original execution after physical resource observation
+// recovers, without relaunching, and cleans up the original physical resource.
 func TestV2LogicalContainerExecRetriesOwnerObservation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	var decorated *execBackingClient
+	var decorated *execPhysicalClient
 	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, containerExecTestControllers, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-			decorated = &execBackingClient{Client: client, observation: make(chan struct{})}
+			decorated = &execPhysicalClient{Client: client, observation: make(chan struct{})}
 			return decorated
 		}})
 	require.NoError(t, startupErr)
@@ -273,10 +273,10 @@ func TestV2LogicalContainerExecReportsCancellationBeforeLaunch(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	t.Cleanup(cancel)
-	var decorated *execBackingClient
+	var decorated *execPhysicalClient
 	server, _, startupErr := StartTestEnvironmentWithOptions(t, ctx, containerExecTestControllers, t.Name(), t.TempDir(),
 		TestEnvironmentOptions{DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-			decorated = &execBackingClient{Client: client, failNamespaceOnPhysicalCreate: true}
+			decorated = &execPhysicalClient{Client: client, failNamespaceOnPhysicalCreate: true}
 			return decorated
 		}})
 	require.NoError(t, startupErr)
@@ -308,7 +308,7 @@ func TestV2LogicalContainerExecReportsCancellationBeforeLaunch(t *testing.T) {
 	require.True(t, stopped.Status.StartedAt.IsZero())
 	require.False(t, stopped.Status.FinishedAt.IsZero())
 	require.Nil(t, stopped.Status.ExitCode)
-	require.Contains(t, cancelled.Finalizers, controllers.LogicalBackingFinalizer)
+	require.Contains(t, cancelled.Finalizers, controllers.LogicalPhysicalHoldFinalizer)
 	require.NoError(t, server.Client.Delete(ctx, logical))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, logical)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, physical)

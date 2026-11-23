@@ -21,7 +21,7 @@ import (
 
 type logicalContainerState int
 
-func logicalContainerBackingState(physical *apiv2.PhysicalContainer) logicalContainerState {
+func logicalContainerPhysicalState(physical *apiv2.PhysicalContainer) logicalContainerState {
 	ready := apimeta.FindStatusCondition(physical.Status.Conditions, string(apiv2.ConditionReady))
 	switch physical.Status.Phase {
 	case apiv2.PhysicalContainerPhasePending:
@@ -149,7 +149,7 @@ func (data *logicalContainerData) failMissing(message string) {
 }
 
 func (data *logicalContainerData) updateLifecycleFromPhysicalContainer(physical *apiv2.PhysicalContainer) {
-	data.state, data.reason, data.message = logicalContainerBackingState(physical), "", logicalBackingStatusMessage("PhysicalContainer", physical.Status.Conditions)
+	data.state, data.reason, data.message = logicalContainerPhysicalState(physical), "", physicalStatusMessage("PhysicalContainer", physical.Status.Conditions)
 	switch data.state {
 	case logicalContainerStateCreating:
 		if data.started {
@@ -167,7 +167,7 @@ func (data *logicalContainerData) updateLifecycleFromPhysicalContainer(physical 
 			data.state, data.reason = logicalContainerStateStopped, apiv2.LogicalContainerReasonStopped
 		}
 		if physical.Status.ExitCode != nil {
-			data.message = fmt.Sprintf("The backing container exited with code %d.", *physical.Status.ExitCode)
+			data.message = fmt.Sprintf("The physical container exited with code %d.", *physical.Status.ExitCode)
 		}
 	case logicalContainerStateFailed:
 		data.failMissing(data.message)
@@ -187,7 +187,7 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 	if data.physicalContainerUID == "" {
 		change |= setValue(&container.Status.PhysicalContainerRef, "")
 	}
-	// After handoff, inline image references come from the backing physical creation spec.
+	// After handoff, inline image references come from the physical creation spec.
 	if container.Spec.Container == nil || container.Spec.Container.Image == nil || data.physicalContainerUID == "" {
 		imageRef := ""
 		if container.Spec.Container != nil && container.Spec.Container.ImageRef != "" {
@@ -201,7 +201,7 @@ func (data *logicalContainerData) applyTo(container *apiv2.LogicalContainer) (ob
 	}
 	change |= setValue(&container.Status.LifecycleKey, lifecycleKey)
 	if data.physicalContainerUID == "" {
-		change |= applyLogicalContainerBackingStatus(container, &apiv2.PhysicalContainer{})
+		change |= applyLogicalContainerPhysicalStatus(container, &apiv2.PhysicalContainer{})
 	}
 	message := data.message
 	if !data.terminal() && data.leaseFailureMessage != "" {

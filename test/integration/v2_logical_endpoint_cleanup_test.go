@@ -60,7 +60,7 @@ func (apiClient *endpointStopFailureClient) List(ctx context.Context, list ctrl_
 	}
 	if fail {
 		apiClient.lookupAttempts.Add(1)
-		return errors.New("physical backing lookup unavailable")
+		return errors.New("physical resource lookup unavailable")
 	}
 	return apiClient.Client.List(ctx, list, options...)
 }
@@ -84,7 +84,7 @@ func (apiClient *endpointStopFailureClient) Patch(
 	return apiClient.Client.Patch(ctx, object, patch, options...)
 }
 
-// Verifies that Stop withdraws logical endpoints despite backing lookup or stop-patch failures,
+// Verifies that Stop withdraws logical endpoints despite physical resource lookup or stop-patch failures,
 // while endpoint deletion failures do not block physical Stop and withdrawal retries preserve the service.
 // Failed stop requests and API lookups preserve the observed Running lifecycle.
 func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
@@ -116,13 +116,13 @@ func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 					ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 				if failure == "endpoint" {
 					require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-						if getErr := apiClient.Get(pollCtx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing); getErr != nil {
+						if getErr := apiClient.Get(pollCtx, ctrl_client.ObjectKeyFromObject(workload.physicalResource), workload.physicalResource); getErr != nil {
 							return false, getErr
 						}
-						if physical, isProcess := workload.backing.(*apiv2.PhysicalProcess); isProcess {
+						if physical, isProcess := workload.physicalResource.(*apiv2.PhysicalProcess); isProcess {
 							return physical.Spec.Stop, nil
 						}
-						return workload.backing.(*apiv2.PhysicalContainer).Spec.Stop, nil
+						return workload.physicalResource.(*apiv2.PhysicalContainer).Spec.Stop, nil
 					}))
 					require.Positive(t, decorated.attempts.Load())
 					decorated.fail.Store(false)
@@ -142,8 +142,8 @@ func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 				require.NoError(t, apiClient.List(ctx, &endpoints, ctrl_client.InNamespace(namespace.Name)))
 				require.Empty(t, endpoints.Items)
 				if failure == "stop" || failure == "lookup" {
-					require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing))
-					if physical, isProcess := workload.backing.(*apiv2.PhysicalProcess); isProcess {
+					require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.physicalResource), workload.physicalResource))
+					if physical, isProcess := workload.physicalResource.(*apiv2.PhysicalProcess); isProcess {
 						require.False(t, physical.Spec.Stop)
 						require.Equal(t, apiv2.PhysicalProcessPhaseRunning, physical.Status.Phase)
 						observed := waitObjectAssumesStateEx(t, ctx, apiClient, ctrl_client.ObjectKeyFromObject(workload.logical), func(current *apiv2.LogicalProcess) (bool, error) {
@@ -153,7 +153,7 @@ func TestV2LogicalEndpointsWithdrawBeforeStopCompletes(t *testing.T) {
 						require.Equal(t, apiv2.LogicalProcessPhaseRunning, observed.Status.Phase)
 						requireReadyCondition(t, observed.Status.Conditions, metav1.ConditionTrue, apiv2.LogicalProcessReasonRunning)
 					} else {
-						physical := workload.backing.(*apiv2.PhysicalContainer)
+						physical := workload.physicalResource.(*apiv2.PhysicalContainer)
 						require.False(t, physical.Spec.Stop)
 						require.Equal(t, apiv2.PhysicalContainerPhaseRunning, physical.Status.Phase)
 						observed := waitObjectAssumesStateEx(t, ctx, apiClient, ctrl_client.ObjectKeyFromObject(workload.logical), func(current *apiv2.LogicalContainer) (bool, error) {
@@ -184,9 +184,9 @@ func (client *endpointDeletionFailureClient) Delete(
 }
 
 type endpointCleanupWorkload struct {
-	logical ctrl_client.Object
-	backing ctrl_client.Object
-	service *apiv2.LogicalService
+	logical          ctrl_client.Object
+	physicalResource ctrl_client.Object
+	service          *apiv2.LogicalService
 }
 
 // Verifies that an exited logical process withdraws endpoints without forwarding a later Stop,
@@ -227,8 +227,8 @@ func TestV2LogicalProcessTerminalHandlerIgnoresLaterStop(t *testing.T) {
 	require.Equal(t, exited.Status.PID, observed.Status.PID)
 	require.Equal(t, exited.Status.ExitCode, observed.Status.ExitCode)
 	require.Zero(t, decorated.stopAttempts.Load())
-	require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing))
-	require.False(t, workload.backing.(*apiv2.PhysicalProcess).Spec.Stop)
+	require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.physicalResource), workload.physicalResource))
+	require.False(t, workload.physicalResource.(*apiv2.PhysicalProcess).Spec.Stop)
 	expectedStatus := observed.DeepCopy().Status
 	decorated.failLookup.Store(true)
 	defer decorated.failLookup.Store(false)
@@ -248,7 +248,7 @@ func TestV2LogicalProcessTerminalHandlerIgnoresLaterStop(t *testing.T) {
 }
 
 // Verifies that terminal logical containers preserve their lifecycle after later Stop requests,
-// failed backing/image reads, or image identity changes, without polling except for cleanup.
+// failed physical resource/image reads, or image identity changes, without polling except for cleanup.
 func TestV2LogicalContainerTerminalHandlerIgnoresLaterStop(t *testing.T) {
 	t.Parallel()
 	for _, terminal := range []string{"exit", "failed", "image-read", "image-identity", "preparation", "startup-lease"} {
@@ -335,9 +335,9 @@ func TestV2LogicalContainerTerminalHandlerIgnoresLaterStop(t *testing.T) {
 			}
 			require.NotEqual(t, string(apiv2.LogicalContainerReasonStopped), observed.Status.Conditions[0].Reason)
 			require.Zero(t, decorated.stopAttempts.Load())
-			if workload.backing != nil {
-				require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing))
-				require.False(t, workload.backing.(*apiv2.PhysicalContainer).Spec.Stop)
+			if workload.physicalResource != nil {
+				require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.physicalResource), workload.physicalResource))
+				require.False(t, workload.physicalResource.(*apiv2.PhysicalContainer).Spec.Stop)
 			}
 			expectedStatus := observed.DeepCopy().Status
 			switch terminal {
@@ -346,7 +346,7 @@ func TestV2LogicalContainerTerminalHandlerIgnoresLaterStop(t *testing.T) {
 			case "image-identity":
 				image := &apiv2.PhysicalContainerImage{}
 				require.NoError(t, apiClient.Get(ctx, types.NamespacedName{Namespace: namespace.Name, Name: observed.Status.ImageRef}, image))
-				image.Finalizers = slices.DeleteFunc(image.Finalizers, func(finalizer string) bool { return finalizer == controllers.LogicalBackingFinalizer })
+				image.Finalizers = slices.DeleteFunc(image.Finalizers, func(finalizer string) bool { return finalizer == controllers.LogicalPhysicalHoldFinalizer })
 				require.NoError(t, apiClient.Update(ctx, image))
 			default:
 				decorated.failLookup.Store(true)
@@ -399,7 +399,7 @@ func createEndpointCleanupWorkload(
 			return current.Status.Phase == apiv2.LogicalProcessPhaseRunning, nil
 		})
 		workload.logical = running
-		workload.backing = &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalProcessRef, Namespace: namespace}}
+		workload.physicalResource = &apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalProcessRef, Namespace: namespace}}
 	} else {
 		logical := &apiv2.LogicalContainer{ObjectMeta: metav1.ObjectMeta{Name: name.Name, Namespace: name.Namespace},
 			Spec: apiv2.LogicalContainerSpec{
@@ -411,9 +411,9 @@ func createEndpointCleanupWorkload(
 			return current.Status.Phase == apiv2.LogicalContainerPhaseRunning, nil
 		})
 		workload.logical = running
-		workload.backing = &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalContainerRef, Namespace: namespace}}
+		workload.physicalResource = &apiv2.PhysicalContainer{ObjectMeta: metav1.ObjectMeta{Name: running.Status.PhysicalContainerRef, Namespace: namespace}}
 	}
-	require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing))
+	require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.physicalResource), workload.physicalResource))
 	workload.service = waitObjectAssumesStateEx(t, ctx, apiClient, types.NamespacedName{Name: "workload-http", Namespace: namespace},
 		func(current *apiv2.LogicalService) (bool, error) {
 			return logicalServiceReady(current), nil
@@ -423,7 +423,7 @@ func createEndpointCleanupWorkload(
 
 // Verifies that endpoint deletion errors preserve Running readiness or normal deletion progress,
 // while cleanup removes obsolete owned bindings, preserves unrelated endpoints, and retries independently of physical cleanup.
-func TestV2LogicalEndpointDeletionDoesNotWaitForBackingCleanup(t *testing.T) {
+func TestV2LogicalEndpointDeletionDoesNotWaitForPhysicalCleanup(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []string{"process", "container"} {
 		for _, failEndpoints := range []bool{false, true} {
@@ -480,15 +480,15 @@ func TestV2LogicalEndpointDeletionDoesNotWaitForBackingCleanup(t *testing.T) {
 						Addresses: []apiv2.ServiceAddress{{Address: "127.0.0.1", Port: 9000}}},
 				}
 				require.NoError(t, apiClient.Create(ctx, unrelated))
-				const backingHold = "tests.dcp.microsoft.com/endpoint-cleanup-hold"
-				workload.backing.SetFinalizers(append(workload.backing.GetFinalizers(), backingHold))
-				require.NoError(t, apiClient.Update(ctx, workload.backing))
+				const physicalResourceHold = "tests.dcp.microsoft.com/endpoint-cleanup-hold"
+				workload.physicalResource.SetFinalizers(append(workload.physicalResource.GetFinalizers(), physicalResourceHold))
+				require.NoError(t, apiClient.Update(ctx, workload.physicalResource))
 				deletionClient.fail.Store(failEndpoints)
 				require.NoError(t, apiClient.Delete(ctx, workload.logical))
 				require.NoError(t, wait.PollUntilContextCancel(ctx, time.Millisecond, true, func(pollCtx context.Context) (bool, error) {
-					getErr := apiClient.Get(pollCtx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing)
-					return getErr == nil && !workload.backing.GetDeletionTimestamp().IsZero() &&
-						!slices.Contains(workload.backing.GetFinalizers(), apiv2.GroupName+"/physical"+kind+"-reconciler"), getErr
+					getErr := apiClient.Get(pollCtx, ctrl_client.ObjectKeyFromObject(workload.physicalResource), workload.physicalResource)
+					return getErr == nil && !workload.physicalResource.GetDeletionTimestamp().IsZero() &&
+						!slices.Contains(workload.physicalResource.GetFinalizers(), apiv2.GroupName+"/physical"+kind+"-reconciler"), getErr
 				}))
 				if failEndpoints {
 					require.Positive(t, deletionClient.attempts.Load())
@@ -523,13 +523,13 @@ func TestV2LogicalEndpointDeletionDoesNotWaitForBackingCleanup(t *testing.T) {
 				require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.logical), workload.logical))
 				require.False(t, workload.logical.GetDeletionTimestamp().IsZero())
 				require.NoError(t, clientretry.RetryOnConflict(clientretry.DefaultRetry, func() error {
-					if getErr := apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing); getErr != nil {
+					if getErr := apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.physicalResource), workload.physicalResource); getErr != nil {
 						return getErr
 					}
-					workload.backing.SetFinalizers(slices.DeleteFunc(workload.backing.GetFinalizers(), func(finalizer string) bool {
-						return finalizer == backingHold
+					workload.physicalResource.SetFinalizers(slices.DeleteFunc(workload.physicalResource.GetFinalizers(), func(finalizer string) bool {
+						return finalizer == physicalResourceHold
 					}))
-					return apiClient.Update(ctx, workload.backing)
+					return apiClient.Update(ctx, workload.physicalResource)
 				}))
 				require.NoError(t, apiClient.Delete(ctx, namespace))
 				ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
@@ -538,7 +538,7 @@ func TestV2LogicalEndpointDeletionDoesNotWaitForBackingCleanup(t *testing.T) {
 	}
 }
 
-// Verifies that normal exit, missing runtime or process backing, and invalid logical backing holds
+// Verifies that normal exit, missing runtime or physical process, and invalid logical physical resource holds
 // withdraw endpoints without deleting their services, including retry after an endpoint deletion failure.
 func TestV2LogicalEndpointsWithdrawOnTerminalState(t *testing.T) {
 	t.Parallel()
@@ -575,17 +575,17 @@ func TestV2LogicalEndpointsWithdrawOnTerminalState(t *testing.T) {
 					}
 				case "invalid":
 					require.NoError(t, clientretry.RetryOnConflict(clientretry.DefaultRetry, func() error {
-						if getErr := apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing); getErr != nil {
+						if getErr := apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.physicalResource), workload.physicalResource); getErr != nil {
 							return getErr
 						}
-						workload.backing.SetFinalizers(slices.DeleteFunc(workload.backing.GetFinalizers(), func(finalizer string) bool {
-							return finalizer == controllers.LogicalBackingFinalizer
+						workload.physicalResource.SetFinalizers(slices.DeleteFunc(workload.physicalResource.GetFinalizers(), func(finalizer string) bool {
+							return finalizer == controllers.LogicalPhysicalHoldFinalizer
 						}))
-						return apiClient.Update(ctx, workload.backing)
+						return apiClient.Update(ctx, workload.physicalResource)
 					}))
 				case "missing":
-					if physicalProcess, isProcess := workload.backing.(*apiv2.PhysicalProcess); isProcess {
-						forceRemoveLogicalProcessBacking(t, ctx, apiClient, physicalProcess)
+					if physicalProcess, isProcess := workload.physicalResource.(*apiv2.PhysicalProcess); isProcess {
+						forceRemoveLogicalProcessPhysical(t, ctx, apiClient, physicalProcess)
 					} else {
 						containerLogical := workload.logical.(*apiv2.LogicalContainer)
 						_, removeErr := server.ContainerOrchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
@@ -594,13 +594,13 @@ func TestV2LogicalEndpointsWithdrawOnTerminalState(t *testing.T) {
 						require.NoError(t, removeErr)
 					}
 				case "terminating":
-					workload.backing.SetFinalizers(append(workload.backing.GetFinalizers(), "tests.dcp.microsoft.com/hold"))
-					require.NoError(t, apiClient.Update(ctx, workload.backing))
-					require.NoError(t, apiClient.Delete(ctx, workload.backing))
+					workload.physicalResource.SetFinalizers(append(workload.physicalResource.GetFinalizers(), "tests.dcp.microsoft.com/hold"))
+					require.NoError(t, apiClient.Update(ctx, workload.physicalResource))
+					require.NoError(t, apiClient.Delete(ctx, workload.physicalResource))
 				}
 				if terminal == "terminating" {
-					require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing))
-					require.False(t, workload.backing.GetDeletionTimestamp().IsZero())
+					require.NoError(t, apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.physicalResource), workload.physicalResource))
+					require.False(t, workload.physicalResource.GetDeletionTimestamp().IsZero())
 				} else if kind == "process" {
 					waitObjectAssumesStateEx(t, ctx, apiClient, ctrl_client.ObjectKeyFromObject(workload.logical), func(current *apiv2.LogicalProcess) (bool, error) {
 						if terminal == "exit" {
@@ -632,19 +632,19 @@ func TestV2LogicalEndpointsWithdrawOnTerminalState(t *testing.T) {
 				require.True(t, workload.logical.GetDeletionTimestamp().IsZero())
 				if terminal == "terminating" {
 					require.NoError(t, clientretry.RetryOnConflict(clientretry.DefaultRetry, func() error {
-						if getErr := apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing); getErr != nil {
+						if getErr := apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.physicalResource), workload.physicalResource); getErr != nil {
 							return getErr
 						}
-						workload.backing.SetFinalizers(slices.DeleteFunc(workload.backing.GetFinalizers(), func(finalizer string) bool {
+						workload.physicalResource.SetFinalizers(slices.DeleteFunc(workload.physicalResource.GetFinalizers(), func(finalizer string) bool {
 							return finalizer == "tests.dcp.microsoft.com/hold"
 						}))
-						return apiClient.Update(ctx, workload.backing)
+						return apiClient.Update(ctx, workload.physicalResource)
 					}))
 				}
 				require.NoError(t, apiClient.Delete(ctx, namespace))
 				ctrl_testutil.WaitObjectDeleted(t, ctx, apiClient, namespace)
 				if terminal == "missing" {
-					require.True(t, apierrors.IsNotFound(apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.backing), workload.backing)))
+					require.True(t, apierrors.IsNotFound(apiClient.Get(ctx, ctrl_client.ObjectKeyFromObject(workload.physicalResource), workload.physicalResource)))
 				}
 			})
 		}

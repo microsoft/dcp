@@ -287,7 +287,7 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 			monitorTimestamp := metav1.NewMicroTime(time.Now().Add(-time.Minute))
 			physicalProcess := &apiv2.PhysicalProcess{
 				ObjectMeta: metav1.ObjectMeta{Name: testCase.slug + "-process", Namespace: namespace.Name,
-					Finalizers: []string{controllers.LogicalBackingFinalizer}},
+					Finalizers: []string{controllers.LogicalPhysicalHoldFinalizer}},
 				Spec: apiv2.PhysicalProcessSpec{
 					Process: &apiv2.PhysicalProcessConfig{
 						ExecutablePath:       executablePath,
@@ -301,7 +301,7 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 				physicalProcess.Spec.Process.MonitorTimestamp = metav1.MicroTime{}
 			}
 			require.NoError(t, client.Create(ctx, physicalProcess))
-			removeDependencyHoldOnCleanup(t, ctx, physicalProcess, controllers.LogicalBackingFinalizer)
+			removeDependencyHoldOnCleanup(t, ctx, physicalProcess, controllers.LogicalPhysicalHoldFinalizer)
 			runningProcess := waitPhysicalProcessPhase(t, ctx, physicalProcess.NamespacedName(), apiv2.PhysicalProcessPhaseRunning)
 			if testCase.customMonitorPID != nil {
 				require.NotNil(t, runningProcess.Spec.Process.MonitorPID)
@@ -330,7 +330,7 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 
 			require.NoError(t, client.Delete(ctx, runningProcess))
 			cleaned := waitObjectAssumesState(t, ctx, physicalProcess.NamespacedName(), func(current *apiv2.PhysicalProcess) (bool, error) {
-				return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+				return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalPhysicalHoldFinalizer, nil
 			})
 			if !testCase.retain {
 				require.Equal(t, apiv2.PhysicalProcessPhaseExited, cleaned.Status.Phase)
@@ -342,7 +342,7 @@ func TestV2PhysicalProcessControllerDeletesOrRetainsCreatedProcess(t *testing.T)
 			if testCase.retain {
 				testProcessExecutor.SimulateProcessExit(t, pid, 0)
 			}
-			require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+			require.NoError(t, controllers.ReleaseLogicalPhysicalHoldFinalizer(ctx, client, cleaned))
 			ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalProcess](t, ctx, client, physicalProcess)
 		})
 	}

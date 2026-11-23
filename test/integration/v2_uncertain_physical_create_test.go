@@ -24,7 +24,7 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-type uncertainBackingCreateClient struct {
+type uncertainPhysicalCreateClient struct {
 	ctrl_client.Client
 	kind          string
 	attempts      atomic.Int32
@@ -34,7 +34,7 @@ type uncertainBackingCreateClient struct {
 	foreign       bool
 }
 
-func (client *uncertainBackingCreateClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
+func (client *uncertainPhysicalCreateClient) Create(ctx context.Context, obj ctrl_client.Object, options ...ctrl_client.CreateOption) error {
 	target := false
 	switch obj.(type) {
 	case *apiv2.PhysicalContainer:
@@ -67,15 +67,15 @@ func (client *uncertainBackingCreateClient) Create(ctx context.Context, obj ctrl
 			}
 			return apierrors.NewAlreadyExists(apiv2.GroupVersion.WithResource(resource).GroupResource(), obj.GetName())
 		}
-		return errors.New("injected response failure after committed backing create")
+		return errors.New("injected response failure after committed physical resource create")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-// Verifies that lifecycle preparation, lookup, and backing declaration run in one Pending pass,
-// committed creates recover on reconciliation, AlreadyExists validates ownership, and concurrent stop reaches owned backings.
-func TestV2LogicalContainerResolvesUncertainBackingCreate(t *testing.T) {
+// Verifies that lifecycle preparation, lookup, and physical resource declaration run in one Pending pass,
+// committed creates recover on reconciliation, AlreadyExists validates ownership, and concurrent stop reaches owned physical resources.
+func TestV2LogicalContainerResolvesUncertainPhysicalCreate(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
 		name          string
@@ -98,12 +98,12 @@ func TestV2LogicalContainerResolvesUncertainBackingCreate(t *testing.T) {
 			var releaseOnce sync.Once
 			releaseResponse := func() { releaseOnce.Do(func() { close(release) }) }
 			defer releaseResponse()
-			var decorated *uncertainBackingCreateClient
+			var decorated *uncertainPhysicalCreateClient
 			server, environment, startErr := StartTestEnvironmentWithOptions(t, ctx,
 				NamespaceController|LogicalContainerController|PhysicalContainerController|PhysicalContainerImageController,
 				t.Name(), t.TempDir(), TestEnvironmentOptions{
 					DecorateAPIClient: func(client ctrl_client.Client) ctrl_client.Client {
-						decorated = &uncertainBackingCreateClient{
+						decorated = &uncertainPhysicalCreateClient{
 							Client: client, kind: testCase.kind, created: make(chan struct{}), release: release,
 							alreadyExists: testCase.alreadyExists, foreign: testCase.foreign,
 						}
@@ -129,7 +129,7 @@ func TestV2LogicalContainerResolvesUncertainBackingCreate(t *testing.T) {
 			}
 			pending := &apiv2.LogicalContainer{}
 			require.NoError(t, server.Client.Get(ctx, logical.NamespacedName(), pending))
-			require.Empty(t, pending.Status.LifecycleKey, "preparation and lookup must not publish intermediate phases before declaring the backing")
+			require.Empty(t, pending.Status.LifecycleKey, "preparation and lookup must not publish intermediate phases before declaring the physical resource")
 			name := types.NamespacedName{Namespace: namespace.Name, Name: "logical-" + string(logical.UID)}
 			expectedPhase := apiv2.LogicalContainerPhaseRunning
 			if testCase.kind == "container" && !testCase.foreign {

@@ -139,7 +139,11 @@ func TestV2ProjectProcessObservesTargetsWithoutCleanupOwnership(t *testing.T) {
 			switch ending {
 			case "stop":
 				require.NoError(t, client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
-				stopped := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseStopped)
+				// Stop after the run ended keeps the exited outcome.
+				stopped := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
+					return len(current.Status.Conditions) != 0 && current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
+				})
+				require.Equal(t, apiv2.ProjectPhaseExited, stopped.Status.Phase)
 				for _, target := range stopped.Status.Debug.Sessions[0].Processes[1:] {
 					require.Equal(t, apiv2.ProjectDebugProcessRunning, target.Observation.Phase)
 				}

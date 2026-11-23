@@ -160,7 +160,7 @@ func (r *PhysicalContainerExecReconciler) Reconcile(ctx context.Context, req ctr
 			change, delay = r.managePhysicalContainerExec(ctx, &resource, data, log)
 		}
 	}
-	if !hasFinalizer(&resource, physicalContainerExecFinalizer) && !hasFinalizer(&resource, LogicalBackingFinalizer) {
+	if !hasFinalizer(&resource, physicalContainerExecFinalizer) && !hasFinalizer(&resource, LogicalPhysicalHoldFinalizer) {
 		defer logger.ReleaseResourceLog(resource.GetResourceId())
 	}
 	return r.SaveChangesWithDelay(ctx, &resource, patch, change, delay, nil, log)
@@ -338,7 +338,7 @@ func (r *PhysicalContainerExecReconciler) handleExecutionDeletion(
 	if closeErr != nil {
 		log.Error(closeErr, "Failed to close execution output capture")
 	}
-	if !hasFinalizer(resource, LogicalBackingFinalizer) {
+	if !hasFinalizer(resource, LogicalPhysicalHoldFinalizer) {
 		enqueueCaptureFileCleanup(r.outputCleanupQueue,
 			r.Log.WithValues("PhysicalContainerExec", resource.NamespacedName(), "UID", resource.UID), data.stdout, data.stderr)
 	}

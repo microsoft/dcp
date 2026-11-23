@@ -31,7 +31,7 @@ const DefaultContainerDebugAdapterPort int32 = 4711
 // DefaultContainerDebugAdapterDirectory is the installation directory for container adapters.
 const DefaultContainerDebugAdapterDirectory = "/opt/dcp/debug-adapter"
 
-// ProjectDebugShutdownGrace bounds protocol shutdown before forced session and backing cleanup.
+// ProjectDebugShutdownGrace bounds protocol shutdown before forced session and physical resource cleanup.
 const ProjectDebugShutdownGrace = 5 * time.Second
 
 // Project reconciliation condition reasons.
@@ -52,7 +52,7 @@ const (
 	ProjectReasonDebugSessionsActive ConditionReason = "DebugSessionsActive"
 	// ProjectReasonPaused indicates that the prepared container is paused.
 	ProjectReasonPaused ConditionReason = "Paused"
-	// ProjectReasonStopping indicates that session, adapter, or backing cleanup is in progress.
+	// ProjectReasonStopping indicates that session, adapter, or physical resource cleanup is in progress.
 	ProjectReasonStopping ConditionReason = "Stopping"
 	// ProjectReasonStopped indicates that requested shutdown has completed.
 	ProjectReasonStopped ConditionReason = "Stopped"

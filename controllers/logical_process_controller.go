@@ -328,7 +328,7 @@ func handleLogicalProcessPhysical(
 			return additionalReconciliationNeeded
 		}
 		data.replacementUID = previous.UID
-		if logicalProcessBackingState(previous) != logicalProcessStateExited {
+		if logicalProcessPhysicalState(previous) != logicalProcessStateExited {
 			data.message = "Waiting for the physical controller to stop the previous persistent process."
 			if previous.Status.Phase == apiv2.PhysicalProcessPhaseFailed {
 				data.state, data.message = logicalProcessStatePhysicalFailed, "The physical controller could not stop the previous persistent process."
@@ -403,7 +403,7 @@ func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
 	var creationCollision error
 	if apierrors.IsNotFound(getErr) {
 		if expectedUID != "" {
-			return nil, fmt.Errorf("logical process backing changed: physical process %q no longer exists", physical.NamespacedName())
+			return nil, fmt.Errorf("logical physical process changed: physical process %q no longer exists", physical.NamespacedName())
 		}
 		ready, reason, namespaceErr := checkNamespaceReadiness(ctx, r.Client, resource.Namespace)
 		if namespaceErr != nil {
@@ -416,7 +416,7 @@ func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
 		if ownerErr != nil {
 			return nil, fmt.Errorf("could not set physical process owner: %w", ownerErr)
 		}
-		InitializeLogicalBackingFinalizers(physical, physicalProcessFinalizer)
+		InitializePhysicalResourceFinalizers(physical, physicalProcessFinalizer)
 		data.unobservedChildren.recordCreateAttempt(physical)
 		createErr := r.Create(ctx, physical)
 		if physical.UID != "" {
@@ -461,7 +461,7 @@ func (r *LogicalProcessReconciler) ensureLogicalPhysicalProcess(
 		}
 		return nil, fmt.Errorf("physical process %q has a different identity, owner, or spec", physical.NamespacedName())
 	}
-	if !hasFinalizer(physical, LogicalBackingFinalizer) {
+	if !hasFinalizer(physical, LogicalPhysicalHoldFinalizer) {
 		return nil, fmt.Errorf("physical process %q no longer has its logical hold", physical.NamespacedName())
 	}
 	return physical, nil
@@ -475,10 +475,10 @@ func handleLogicalProcessCreating(
 	physical, getErr := reconciler.findPhysicalProcess(ctx, resource, data, "")
 	if getErr != nil {
 
-		log.Error(getErr, "Failed to get creating process backing")
+		log.Error(getErr, "Failed to get creating physical process")
 		return additionalReconciliationNeeded
 	}
-	change, _ := applyLogicalProcessBackingStatus(resource, physical)
+	change, _ := applyLogicalProcessPhysicalStatus(resource, physical)
 	previouslyStarted := data.started
 	data.updateLifecycleFromPhysicalProcess(physical)
 	if data.lease != nil && logicalPhysicalProcessStartupSettled(physical) {
@@ -488,7 +488,7 @@ func handleLogicalProcessCreating(
 		if data.state == logicalProcessStateCreating {
 			data.message = "Waiting for the physical controller to cancel process startup."
 		}
-		return change | reconciler.requestBackingStop(ctx, physical, data, log)
+		return change | reconciler.requestPhysicalStop(ctx, physical, data, log)
 	}
 	if data.state == logicalProcessStateRunning && len(resource.Spec.Ports) > 0 {
 		if _, endpointErr := syncLogicalEndpoints(ctx, reconciler.Client, reconciler.NoCacheClient, resource, data, logicalProcessOwnerUIDField, &data.unobservedChildren, true); endpointErr != nil {
@@ -521,14 +521,14 @@ func handleLogicalProcessRunning(
 	physical, getErr := reconciler.findPhysicalProcess(ctx, resource, data, "")
 	if getErr != nil {
 
-		log.Error(getErr, "Failed to get running process backing")
+		log.Error(getErr, "Failed to get running physical process")
 		return change | additionalReconciliationNeeded
 	}
-	statusChange, _ := applyLogicalProcessBackingStatus(resource, physical)
+	statusChange, _ := applyLogicalProcessPhysicalStatus(resource, physical)
 	change |= statusChange
 	data.updateLifecycleFromPhysicalProcess(physical)
 	if resource.Spec.Stop && !data.terminal() {
-		return change | reconciler.requestBackingStop(ctx, physical, data, log)
+		return change | reconciler.requestPhysicalStop(ctx, physical, data, log)
 	}
 	if data.state != logicalProcessStateRunning {
 		return change | additionalReconciliationNeeded
@@ -557,23 +557,23 @@ func handleLogicalProcessStopping(
 	physical, getErr := reconciler.findPhysicalProcess(ctx, resource, data, "")
 	if getErr != nil {
 
-		log.Error(getErr, "Failed to get stopping process backing")
+		log.Error(getErr, "Failed to get stopping physical process")
 		return change | additionalReconciliationNeeded
 	}
-	statusChange, _ := applyLogicalProcessBackingStatus(resource, physical)
+	statusChange, _ := applyLogicalProcessPhysicalStatus(resource, physical)
 	change |= statusChange
 	data.updateLifecycleFromPhysicalProcess(physical)
 	if data.terminal() {
 		return change | additionalReconciliationNeeded
 	}
-	change |= reconciler.requestBackingStop(ctx, physical, data, log)
+	change |= reconciler.requestPhysicalStop(ctx, physical, data, log)
 	if data.lease != nil && logicalPhysicalProcessStartupSettled(physical) {
 		change |= reconciler.persistLogicalProcess(ctx, resource, data, physical, log)
 	}
 	return change
 }
 
-func (r *LogicalProcessReconciler) requestBackingStop(
+func (r *LogicalProcessReconciler) requestPhysicalStop(
 	ctx context.Context, physical *apiv2.PhysicalProcess, data *logicalProcessData, log logr.Logger,
 ) objectChange {
 	if !physical.Spec.Stop {
@@ -611,13 +611,13 @@ func handleLogicalProcessTerminal(
 	lookupData := *data
 	physical, getErr := reconciler.findPhysicalProcess(ctx, resource, &lookupData, "")
 	if getErr != nil {
-		log.Error(getErr, "Failed to get terminal process backing")
+		log.Error(getErr, "Failed to get terminal physical process")
 		if lookupData.state == logicalProcessStateMissing {
 			change |= data.applyMissingLogSource(resource)
 		}
 		return change
 	}
-	statusChange, _ := applyLogicalProcessBackingStatus(resource, physical)
+	statusChange, _ := applyLogicalProcessPhysicalStatus(resource, physical)
 	change |= statusChange
 	return change
 }
@@ -669,7 +669,7 @@ func (r *LogicalProcessReconciler) findPhysicalProcess(
 		if getErr != nil {
 			if apierrors.IsNotFound(getErr) {
 				if expectedUID != "" && suffix == "" {
-					data.failMissing("The backing PhysicalProcess no longer exists; the logical process cannot recover.")
+					data.failMissing("The PhysicalProcess no longer exists; the logical process cannot recover.")
 					data.state = logicalProcessStateMissing
 				}
 			}
@@ -677,8 +677,8 @@ func (r *LogicalProcessReconciler) findPhysicalProcess(
 		}
 	}
 	if !metav1.IsControlledBy(physical, resource) || (expectedUID != "" && physical.UID != expectedUID) ||
-		!hasFinalizer(physical, LogicalBackingFinalizer) {
-		identityErr := fmt.Errorf("logical process backing changed: physical process %q has a different identity, owner, or logical hold", name)
+		!hasFinalizer(physical, LogicalPhysicalHoldFinalizer) {
+		identityErr := fmt.Errorf("logical physical process changed: physical process %q has a different identity, owner, or logical hold", name)
 		data.failMissing(identityErr.Error())
 		return nil, identityErr
 	}
@@ -717,7 +717,7 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 			}
 		}
 	}()
-	// Endpoint failures must not prevent requesting backing deletion.
+	// Endpoint failures must not prevent requesting physical resource deletion.
 	portsDeleted, portDeleteErr := cleanupLogicalEndpoints(ctx, r.Client, r.NoCacheClient, resource, logicalProcessOwnerUIDField, data.unobservedChildren)
 	if portDeleteErr != nil {
 		log.Error(portDeleteErr, "Failed to delete logical process endpoints")
@@ -749,7 +749,7 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 			}
 			if physical.UID == data.physicalUID {
 				current = physical
-				statusChange, _ := applyLogicalProcessBackingStatus(resource, physical)
+				statusChange, _ := applyLogicalProcessPhysicalStatus(resource, physical)
 				change |= statusChange
 				if !data.terminal() {
 					data.updateLifecycleFromPhysicalProcess(physical)
@@ -763,7 +763,7 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 			uid := physical.UID
 			deleteErr := r.Delete(ctx, physical, ctrl_client.Preconditions{UID: &uid})
 			if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-				log.Error(deleteErr, "Failed to delete backing physical process")
+				log.Error(deleteErr, "Failed to delete physical process")
 
 			}
 			cleanupSettled = false
@@ -776,9 +776,9 @@ func (r *LogicalProcessReconciler) handleLogicalProcessDeletion(
 		if data.lease != nil {
 			continue
 		}
-		releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, physical)
+		releaseErr := ReleaseLogicalPhysicalHoldFinalizer(ctx, r.Client, physical)
 		if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
-			log.Error(releaseErr, "Failed to release logical process backing")
+			log.Error(releaseErr, "Failed to release logical physical process")
 
 		}
 	}
@@ -820,9 +820,9 @@ func handleLogicalProcessUnknown(
 	physical, getErr := reconciler.findPhysicalProcess(ctx, resource, data, "")
 	if getErr != nil {
 
-		log.Error(getErr, "Failed to get unknown process backing")
+		log.Error(getErr, "Failed to get unknown physical process")
 		if apierrors.IsNotFound(getErr) && data.physicalUID == "" {
-			data.state, data.reason, data.message = logicalProcessStatePrepare, apiv2.LogicalProcessReasonStarting, "Preparing the process backing."
+			data.state, data.reason, data.message = logicalProcessStatePrepare, apiv2.LogicalProcessReasonStarting, "Preparing the physical process."
 			return change | additionalReconciliationNeeded
 		}
 		if data.state == logicalProcessStateMissing {
@@ -836,7 +836,7 @@ func handleLogicalProcessUnknown(
 		}
 		return change
 	}
-	statusChange, _ := applyLogicalProcessBackingStatus(resource, physical)
+	statusChange, _ := applyLogicalProcessPhysicalStatus(resource, physical)
 	change |= statusChange
 	if data.lease != nil && logicalPhysicalProcessStartupSettled(physical) {
 		change |= reconciler.persistLogicalProcess(ctx, resource, data, physical, log)
@@ -844,7 +844,7 @@ func handleLogicalProcessUnknown(
 	previouslyStarted := data.started
 	data.updateLifecycleFromPhysicalProcess(physical)
 	if resource.Spec.Stop && !data.terminal() {
-		return change | reconciler.requestBackingStop(ctx, physical, data, log)
+		return change | reconciler.requestPhysicalStop(ctx, physical, data, log)
 	}
 	if data.state != logicalProcessStateUnknown {
 		if data.state == logicalProcessStateRunning {

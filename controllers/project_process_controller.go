@@ -47,7 +47,7 @@ var projectProcessDataHandlers = map[projectState]projectProcessDataHandlerFunc{
 	projectStateReady:         handleProjectProcessReady,
 	projectStateActive:        handleProjectProcessReady,
 	projectStateRunning:       handleProjectProcessPhysical,
-	projectStateExited:        handleProjectProcessExited,
+	projectStateExited:        handleProjectProcessTerminal,
 	projectStateUnknown:       handleProjectProcessPhysical,
 	projectStateStopping:      handleProjectProcessStopping,
 	projectStateStopped:       handleProjectProcessTerminal,
@@ -73,8 +73,8 @@ func NewProjectProcessReconciler(
 }
 
 func (r *ProjectProcessReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
-	for _, backing := range []ctrl_client.Object{&apiv2.PhysicalProcess{}, &apiv2.ServiceEndpoint{}} {
-		indexErr := mgr.GetFieldIndexer().IndexField(r.LifetimeCtx, backing, projectProcessOwnerUIDField, func(obj ctrl_client.Object) []string {
+	for _, physicalResource := range []ctrl_client.Object{&apiv2.PhysicalProcess{}, &apiv2.ServiceEndpoint{}} {
+		indexErr := mgr.GetFieldIndexer().IndexField(r.LifetimeCtx, physicalResource, projectProcessOwnerUIDField, func(obj ctrl_client.Object) []string {
 			owner := metav1.GetControllerOf(obj)
 			if owner == nil || owner.Kind != "ProjectProcess" {
 				return nil
@@ -82,7 +82,7 @@ func (r *ProjectProcessReconciler) SetupWithManager(mgr ctrl.Manager, name strin
 			return []string{string(owner.UID)}
 		})
 		if indexErr != nil {
-			return fmt.Errorf("index process project backing owner: %w", indexErr)
+			return fmt.Errorf("index process project physical resource owner: %w", indexErr)
 		}
 	}
 	return ctrl.NewControllerManagedBy(mgr).
@@ -153,8 +153,13 @@ func (r *ProjectProcessReconciler) manageProject(
 		r.projects.Store(resource.NamespacedName(), resource.UID, data.Clone())
 	}
 
+	change := noChange
+	if resource.Spec.Stop {
+		data.enterStopping()
+		change |= r.forwardProjectStop(ctx, resource, data, log)
+	}
 	stateHandler := getStateInitializer(projectProcessDataHandlers, data.state, log)
-	change := stateHandler(ctx, r, resource, data.state, data, log)
+	change |= stateHandler(ctx, r, resource, data.state, data, log)
 	_ = r.projects.Update(resource.NamespacedName(), resource.UID, data)
 	projectionChange, delay, valid := data.applyTo(resource)
 	if !valid {
@@ -231,7 +236,7 @@ func (r *ProjectProcessReconciler) findProjectProcess(
 	listErr := r.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace),
 		ctrl_client.MatchingFields{projectProcessOwnerUIDField: string(resource.UID)})
 	if listErr != nil {
-		return nil, fmt.Errorf("list Project process backings: %w", listErr)
+		return nil, fmt.Errorf("list Project physical processes: %w", listErr)
 	}
 	var physical *apiv2.PhysicalProcess
 	for index := range children.Items {
@@ -240,7 +245,7 @@ func (r *ProjectProcessReconciler) findProjectProcess(
 			continue
 		}
 		if physical != nil || child.Name != name.Name {
-			identityErr := fmt.Errorf("ProjectProcess has unexpected or multiple PhysicalProcess backings")
+			identityErr := fmt.Errorf("ProjectProcess has unexpected or multiple PhysicalProcess physical resources")
 			data.failMissing(identityErr.Error())
 			return nil, identityErr
 		}
@@ -259,12 +264,12 @@ func (r *ProjectProcessReconciler) findProjectProcess(
 			return nil, nil
 		}
 		if getErr != nil {
-			return nil, fmt.Errorf("get Project process backing: %w", getErr)
+			return nil, fmt.Errorf("get Project physical process: %w", getErr)
 		}
 	}
-	// A held backing that is being deleted is still ours; its controller reports the teardown through its lifecycle.
+	// A held physical resource that is being deleted is still ours; its controller reports the teardown through its lifecycle.
 	if !metav1.IsControlledBy(physical, resource) || (data.physicalUID != "" && physical.UID != data.physicalUID) ||
-		!hasFinalizer(physical, LogicalBackingFinalizer) {
+		!hasFinalizer(physical, LogicalPhysicalHoldFinalizer) {
 		identityErr := fmt.Errorf("physical process %q has a different owner, UID, or logical hold", physical.NamespacedName())
 		data.failMissing(identityErr.Error())
 		return nil, identityErr
@@ -291,7 +296,7 @@ func (r *ProjectProcessReconciler) createProjectProcess(
 		ObjectMeta: metav1.ObjectMeta{Name: projectProcessPhysicalName(resource), Namespace: resource.Namespace},
 		Spec:       projectProcessPhysicalSpec(resource, data),
 	}
-	return createLogicalBacking(ctx, r.Client, r.NoCacheClient, resource, physical, physicalProcessFinalizer,
+	return createPhysicalResource(ctx, r.Client, r.NoCacheClient, resource, physical, physicalProcessFinalizer,
 		&data.physicalUID, &data.unobservedChildren, func(existing *apiv2.PhysicalProcess) error {
 			actual, expected := existing.Spec.DeepCopy(), physical.Spec.DeepCopy()
 			actual.Stop, expected.Stop = false, false
@@ -310,8 +315,8 @@ func (data *projectProcessData) observePhysical(physical *apiv2.PhysicalProcess)
 }
 
 func (data *projectProcessData) updateLifecycleFromProcess(physical *apiv2.PhysicalProcess) {
-	message := logicalBackingStatusMessage("PhysicalProcess", physical.Status.Conditions)
-	switch logicalProcessBackingState(physical) {
+	message := physicalStatusMessage("PhysicalProcess", physical.Status.Conditions)
+	switch logicalProcessPhysicalState(physical) {
 	case logicalProcessStateRunning:
 		data.prepared = true
 		data.state, data.reason, data.message = projectStateRunning, "", ""
@@ -338,13 +343,13 @@ func (r *ProjectProcessReconciler) cleanupProjectProcesses(
 	listErr := r.List(ctx, &children, ctrl_client.InNamespace(resource.Namespace),
 		ctrl_client.MatchingFields{projectProcessOwnerUIDField: string(resource.UID)})
 	if listErr != nil {
-		log.Error(listErr, "Failed to list Project process backings")
+		log.Error(listErr, "Failed to list Project physical processes")
 		return false, listErr
 	}
 	data.unobservedChildren.recordCreateAttempt(&apiv2.PhysicalProcess{ObjectMeta: metav1.ObjectMeta{Name: projectProcessPhysicalName(resource)}})
 	resolveErr := resolveUnobservedLogicalChildren(ctx, r.NoCacheClient, resource, data.unobservedChildren, &children.Items)
 	if resolveErr != nil {
-		log.Error(resolveErr, "Failed to resolve Project process backings")
+		log.Error(resolveErr, "Failed to resolve Project physical processes")
 		return false, resolveErr
 	}
 	var cleanupErr error
@@ -363,7 +368,7 @@ func (r *ProjectProcessReconciler) cleanupProjectProcesses(
 			uid := physical.UID
 			deleteErr := r.Delete(ctx, physical, ctrl_client.Preconditions{UID: &uid})
 			if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-				log.Error(deleteErr, "Failed to delete Project process backing")
+				log.Error(deleteErr, "Failed to delete Project physical process")
 				cleanupErr = errors.Join(cleanupErr, deleteErr)
 			}
 			continue
@@ -371,9 +376,9 @@ func (r *ProjectProcessReconciler) cleanupProjectProcesses(
 		if hasFinalizer(physical, physicalProcessFinalizer) {
 			continue
 		}
-		releaseErr := ReleaseLogicalBackingFinalizer(ctx, r.Client, physical)
+		releaseErr := ReleaseLogicalPhysicalHoldFinalizer(ctx, r.Client, physical)
 		if releaseErr != nil && !apierrors.IsNotFound(releaseErr) {
-			log.Error(releaseErr, "Failed to release Project process backing")
+			log.Error(releaseErr, "Failed to release Project physical process")
 			cleanupErr = errors.Join(cleanupErr, releaseErr)
 		}
 	}
@@ -384,14 +389,11 @@ func handleProjectProcessPending(
 	ctx context.Context, reconciler *ProjectProcessReconciler, resource *apiv2.ProjectProcess,
 	_ projectState, data *projectProcessData, log logr.Logger,
 ) objectChange {
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
 	data.reason, data.message = "", ""
 	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
 		physical, lookupErr := reconciler.findProjectProcess(ctx, resource, data)
 		if lookupErr != nil {
-			log.Error(lookupErr, "Failed to discover Project process backing")
+			log.Error(lookupErr, "Failed to discover Project physical process")
 			return additionalReconciliationNeeded
 		}
 		if physical != nil {
@@ -427,7 +429,7 @@ func handleProjectProcessPending(
 	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
 		physical, createErr := reconciler.createProjectProcess(ctx, resource, data)
 		if createErr != nil {
-			log.Error(createErr, "Failed to create Project process backing")
+			log.Error(createErr, "Failed to create Project physical process")
 			if apierrors.IsAlreadyExists(createErr) {
 				data.state, data.reason, data.message = projectStateFailed, apiv2.ProjectReasonPreparationFailed, createErr.Error()
 				return noChange
@@ -446,9 +448,6 @@ func handleProjectProcessAwaitingStart(
 	_ context.Context, _ *ProjectProcessReconciler, resource *apiv2.ProjectProcess,
 	_ projectState, data *projectProcessData, _ logr.Logger,
 ) objectChange {
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
 	if resource.Spec.ShouldStart() {
 		data.state = projectStatePending
 		return additionalReconciliationNeeded
@@ -460,9 +459,6 @@ func handleProjectProcessPhysical(
 	ctx context.Context, reconciler *ProjectProcessReconciler, resource *apiv2.ProjectProcess,
 	state projectState, data *projectProcessData, log logr.Logger,
 ) objectChange {
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
 	if !data.inputsPrepared {
 		if state == projectStateUnknown {
@@ -474,7 +470,7 @@ func handleProjectProcessPhysical(
 	physical, lookupErr := reconciler.findProjectProcess(ctx, resource, data)
 	if lookupErr != nil || physical == nil {
 		if lookupErr != nil {
-			log.Error(lookupErr, "Failed to observe Project process backing")
+			log.Error(lookupErr, "Failed to observe Project physical process")
 		}
 		if data.state != projectStateFailed {
 			data.state, data.reason, data.message = projectStateUnknown, apiv2.ProjectReasonLookupFailed, "Waiting to observe the owned PhysicalProcess."
@@ -486,14 +482,11 @@ func handleProjectProcessPhysical(
 	return reconciler.syncProjectEndpoints(ctx, resource, data, log)
 }
 
-// handleProjectProcessReady tracks debug session activity; a prepared process context has no backing to observe.
+// handleProjectProcessReady tracks debug session activity; a prepared process context has no physical resource to observe.
 func handleProjectProcessReady(
 	ctx context.Context, reconciler *ProjectProcessReconciler, resource *apiv2.ProjectProcess,
 	_ projectState, data *projectProcessData, log logr.Logger,
 ) objectChange {
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
 	if mainSession := projectProcessMainSession(&resource.Status.ProjectCommonStatus); mainSession != nil &&
 		(mainSession.Phase == apiv2.ProjectDebugPhaseExited || mainSession.Phase == apiv2.ProjectDebugPhaseFailed) {
@@ -523,21 +516,7 @@ func projectProcessMainSession(status *apiv2.ProjectCommonStatus) *apiv2.Project
 	return nil
 }
 
-// handleProjectProcessExited observes the exited backing in direct mode; an adapter-mode run has no backing after it ends.
-func handleProjectProcessExited(
-	ctx context.Context, reconciler *ProjectProcessReconciler, resource *apiv2.ProjectProcess,
-	state projectState, data *projectProcessData, log logr.Logger,
-) objectChange {
-	if resource.Spec.EffectiveLaunchMode() == apiv2.ProjectLaunchModeDirect {
-		return handleProjectProcessPhysical(ctx, reconciler, resource, state, data, log)
-	}
-	if resource.Spec.Stop && data.requestStop() {
-		return additionalReconciliationNeeded
-	}
-	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
-	return reconciler.syncProjectEndpoints(ctx, resource, data, log)
-}
-
+// handleProjectProcessStopping observes the stopped physical process; manageProject forwards the stop request.
 func handleProjectProcessStopping(
 	ctx context.Context, reconciler *ProjectProcessReconciler, resource *apiv2.ProjectProcess,
 	_ projectState, data *projectProcessData, log logr.Logger,
@@ -549,7 +528,6 @@ func handleProjectProcessStopping(
 		return change | additionalReconciliationNeeded
 	}
 	observeProjectProcesses(reconciler.processExecutor, &resource.Status.ProjectCommonStatus, &data.projectData, log)
-	// Like LogicalProcess, stop is forwarded to the retained backing; only Project deletion removes it.
 	physical, lookupErr := reconciler.findProjectProcess(ctx, resource, data)
 	if lookupErr != nil {
 		log.Error(lookupErr, "Failed to observe stopping Project process")
@@ -560,29 +538,44 @@ func handleProjectProcessStopping(
 		return change | additionalReconciliationNeeded
 	}
 	data.observePhysical(physical)
-	message := logicalBackingStatusMessage("PhysicalProcess", physical.Status.Conditions)
-	switch logicalProcessBackingState(physical) {
+	message := physicalStatusMessage("PhysicalProcess", physical.Status.Conditions)
+	switch logicalProcessPhysicalState(physical) {
 	case logicalProcessStateExited:
 		data.state, data.message = projectStateStopped, message
-		return change | additionalReconciliationNeeded
 	case logicalProcessStateMissing, logicalProcessStateRuntimeFailed:
 		data.failMissing(message)
-		return change | additionalReconciliationNeeded
 	}
-	return change | reconciler.requestBackingStop(ctx, physical, data, log)
+	return change | additionalReconciliationNeeded
 }
 
-func (r *ProjectProcessReconciler) requestBackingStop(
-	ctx context.Context, physical *apiv2.PhysicalProcess, data *projectProcessData, log logr.Logger,
+// forwardProjectStop writes stop to the owned physical process once debug sessions have had a chance to shut down
+// gracefully. Like LogicalProcess, only Project deletion removes the physical process; stopping an already
+// terminal physical process does not change its outcome.
+func (r *ProjectProcessReconciler) forwardProjectStop(
+	ctx context.Context, resource *apiv2.ProjectProcess, data *projectProcessData, log logr.Logger,
 ) objectChange {
-	if !physical.Spec.Stop {
-		patch := ctrl_client.MergeFromWithOptions(physical.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
-		update := physical.DeepCopy()
-		update.Spec.Stop = true
-		if stopErr := r.Patch(ctx, update, patch); stopErr != nil {
-			log.Error(stopErr, "Failed to forward Project stop request")
-			data.message = fmt.Sprintf("Failed to forward Project stop request: %v", stopErr)
+	if projectDebugSessionsActive(&resource.Status.ProjectCommonStatus) {
+		return additionalReconciliationNeeded
+	}
+	// Discovery uses a copy so identity problems are reported by reconciliation rather than the stop request.
+	lookupData := data.Clone()
+	physical, lookupErr := r.findProjectProcess(ctx, resource, lookupData)
+	if lookupErr != nil {
+		if apierrors.IsNotFound(lookupErr) || (lookupData.state == projectStateFailed && lookupData.message != data.message) {
+			return noChange
 		}
+		log.Error(lookupErr, "Failed to find Project process for stop")
+		return additionalReconciliationNeeded
+	}
+	if physical == nil || physical.Spec.Stop {
+		return noChange
+	}
+	patch := ctrl_client.MergeFromWithOptions(physical.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
+	update := physical.DeepCopy()
+	update.Spec.Stop = true
+	if stopErr := r.Patch(ctx, update, patch); stopErr != nil {
+		log.Error(stopErr, "Failed to forward Project stop request")
+		data.message = fmt.Sprintf("Failed to forward Project stop request: %v", stopErr)
 	}
 	return additionalReconciliationNeeded
 }
@@ -597,7 +590,7 @@ func handleProjectProcessTerminal(
 		if physical, lookupErr := reconciler.findProjectProcess(ctx, resource, lookupData); lookupErr == nil && physical != nil {
 			data.observePhysical(physical)
 		} else if lookupErr != nil {
-			log.Error(lookupErr, "Failed to observe terminal Project process backing")
+			log.Error(lookupErr, "Failed to observe terminal Project physical process")
 		}
 	}
 	return reconciler.syncProjectEndpoints(ctx, resource, data, log)

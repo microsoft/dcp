@@ -653,7 +653,7 @@ func TestV2ProjectProcessEndpointsFollowLaunchedSession(t *testing.T) {
 
 // Verifies that the ProjectProcess controller keeps service endpoints published when a secondary launched session ends,
 // and that the end of the main (first connected) session ends the run, withdrawing endpoints and refusing new sessions
-// while remaining sessions continue until the Project is stopped.
+// while remaining sessions continue until the Project is stopped, which does not rewrite the exited outcome.
 func TestV2ProjectProcessMainSessionEndsRun(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -733,8 +733,13 @@ func TestV2ProjectProcessMainSessionEndsRun(t *testing.T) {
 	require.NoError(t, client.Patch(ctx, project, ctrl_client.RawPatch(types.MergePatchType, []byte(`{"spec":{"stop":true}}`))))
 	event = readProjectDebugMessage(t, connections[1])
 	require.JSONEq(t, `"terminated"`, string(event["event"]), "stop must shut down remaining sessions")
-	stopped := waitProjectPhase(t, ctx, client, project, apiv2.ProjectPhaseStopped)
-	require.True(t, stopped.Status.Debug.Sessions[1].Progress.ResourceTerminating)
+	settled := waitObjectAssumesStateEx(t, ctx, client, project.NamespacedName(), func(current *apiv2.ProjectProcess) (bool, error) {
+		running, _ := readySessions(current)
+		return running == 0 && len(current.Status.Conditions) != 0 &&
+			current.Status.Conditions[0].ObservedGeneration == current.Generation, nil
+	})
+	require.Equal(t, apiv2.ProjectPhaseExited, settled.Status.Phase)
+	require.True(t, settled.Status.Debug.Sessions[1].Progress.ResourceTerminating)
 	require.NoError(t, client.Delete(ctx, project))
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, project)
 }

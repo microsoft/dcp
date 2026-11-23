@@ -1805,14 +1805,14 @@ func TestV2PhysicalContainerControllerDeletesCreatedContainer(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "deleted-created-container",
 			Namespace:  namespace.Name,
-			Finalizers: []string{controllers.LogicalBackingFinalizer},
+			Finalizers: []string{controllers.LogicalPhysicalHoldFinalizer},
 		},
 		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
 			ContainerName: "v2-pctr-delete-created"},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
-	removeDependencyHoldOnCleanup(t, ctx, container, controllers.LogicalBackingFinalizer)
+	removeDependencyHoldOnCleanup(t, ctx, container, controllers.LogicalPhysicalHoldFinalizer)
 
 	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
 	containerID := updatedContainer.Status.ContainerID
@@ -1820,13 +1820,13 @@ func TestV2PhysicalContainerControllerDeletesCreatedContainer(t *testing.T) {
 
 	require.NoError(t, client.Delete(ctx, updatedContainer))
 	cleaned := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
-		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalBackingFinalizer, nil
+		return len(current.Finalizers) == 1 && current.Finalizers[0] == controllers.LogicalPhysicalHoldFinalizer, nil
 	})
 	requireReadyCondition(t, cleaned.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing)
 	require.Equal(t, apiv2.PhysicalContainerPhaseFailed, cleaned.Status.Phase)
 	require.Equal(t, containerID, cleaned.Status.ContainerID)
 	waitContainerMissing(t, ctx, containerID)
-	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, client, cleaned))
+	require.NoError(t, controllers.ReleaseLogicalPhysicalHoldFinalizer(ctx, client, cleaned))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
 }
 

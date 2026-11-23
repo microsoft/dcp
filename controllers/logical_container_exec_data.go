@@ -19,7 +19,7 @@ import (
 
 type logicalContainerExecState int
 
-func applyLogicalContainerExecBackingStatus(
+func applyLogicalContainerExecPhysicalStatus(
 	resource *apiv2.LogicalContainerExec, physical *apiv2.PhysicalContainerExec,
 ) (objectChange, logicalContainerExecState) {
 	change := setValue(&resource.Status.ContainerID, physical.Status.ContainerID)
@@ -56,7 +56,7 @@ const (
 	logicalContainerExecStateCreating
 	logicalContainerExecStateRunning
 	logicalContainerExecStateExited
-	logicalContainerExecStateRuntimeFailed // Backing failure observation, not a stored lifecycle state.
+	logicalContainerExecStateRuntimeFailed // Physical resource failure observation, not a stored lifecycle state.
 	logicalContainerExecStateMissing
 	logicalContainerExecStateFailed
 	logicalContainerExecStateStopping
@@ -137,7 +137,7 @@ func (data *logicalContainerExecData) failMissing(message string) {
 }
 
 func (data *logicalContainerExecData) updateLifecycleFromPhysicalContainerExec(physical *apiv2.PhysicalContainerExec, state logicalContainerExecState) {
-	data.state, data.reason, data.message = state, "", logicalBackingStatusMessage("PhysicalContainerExec", physical.Status.Conditions)
+	data.state, data.reason, data.message = state, "", physicalStatusMessage("PhysicalContainerExec", physical.Status.Conditions)
 	switch state {
 	case logicalContainerExecStateCreating:
 		if data.started {

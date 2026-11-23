@@ -54,9 +54,9 @@ type LogicalProcessPhase string
 const (
 	// LogicalProcessReasonStarting qualifies Pending while prerequisites and startup are in progress.
 	LogicalProcessReasonStarting ConditionReason = "Starting"
-	// LogicalProcessReasonRunning indicates that the backing process is running.
+	// LogicalProcessReasonRunning indicates that the physical process is running.
 	LogicalProcessReasonRunning ConditionReason = "Running"
-	// LogicalProcessReasonCompleted indicates that the backing process exited on its own.
+	// LogicalProcessReasonCompleted indicates that the physical process exited on its own.
 	LogicalProcessReasonCompleted ConditionReason = "Completed"
 	// LogicalProcessReasonStopping indicates that process termination has been requested.
 	LogicalProcessReasonStopping ConditionReason = "Stopping"
@@ -64,7 +64,7 @@ const (
 	LogicalProcessReasonStopped ConditionReason = "Stopped"
 	// LogicalProcessReasonFailedToStart indicates that startup could not complete.
 	LogicalProcessReasonFailedToStart ConditionReason = "FailedToStart"
-	// LogicalProcessReasonMissing indicates that a previously running backing is unavailable or no longer owned.
+	// LogicalProcessReasonMissing indicates that a previously running physical resource is unavailable or no longer owned.
 	LogicalProcessReasonMissing ConditionReason = "Missing"
 	// LogicalProcessReasonLookupFailed indicates that current state cannot be confirmed.
 	LogicalProcessReasonLookupFailed ConditionReason = "LookupFailed"
@@ -180,7 +180,7 @@ func (spec *LogicalProcessSpec) GetLifecycleKey() (string, bool, error) {
 	return fmt.Sprintf("%x", fnvHash.Sum(nil)), true, hashErr
 }
 
-// LogicalProcessStatus describes the observed process and its backing PhysicalProcess.
+// LogicalProcessStatus describes the observed process and its PhysicalProcess.
 // +k8s:openapi-gen=true
 type LogicalProcessStatus struct {
 	// EffectiveArgs contains evaluated process launch arguments.
@@ -196,12 +196,12 @@ type LogicalProcessStatus struct {
 	// +listMapKey=name
 	Ports []LogicalPortStatus `json:"ports,omitempty"`
 
-	// RuntimeLogs describes output captured or referenced by the backing PhysicalProcess.
+	// RuntimeLogs describes output captured or referenced by the PhysicalProcess.
 	RuntimeLogs *LogSource `json:"runtimeLogs,omitempty"`
 	// Phase summarizes process availability.
 	// +kubebuilder:validation:Enum=Pending;Running;Exited;Unknown;Failed
 	Phase LogicalProcessPhase `json:"phase,omitempty"`
-	// PhysicalProcessRef identifies the same-namespace backing PhysicalProcess.
+	// PhysicalProcessRef identifies the same-namespace PhysicalProcess.
 	PhysicalProcessRef string `json:"physicalProcessRef,omitempty"`
 	// LifecycleKey is the supplied or calculated key for the desired process configuration.
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
@@ -244,7 +244,7 @@ func (resource *LogicalProcess) GetResourceId() string {
 	return fmt.Sprintf("logicalprocess-%s", resource.UID)
 }
 
-// GetLogSource returns the output source published by the backing PhysicalProcess.
+// GetLogSource returns the output source published by the PhysicalProcess.
 func (resource *LogicalProcess) GetLogSource() *LogSource {
 	return resource.Status.RuntimeLogs
 }

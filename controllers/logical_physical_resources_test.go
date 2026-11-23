@@ -25,13 +25,13 @@ type logicalChildConfirmationReader struct {
 	calls []types.NamespacedName
 }
 
-// Verifies that logicalBackingStatusMessage retains backing identity and detailed reasons in
+// Verifies that physicalStatusMessage retains physical resource identity and detailed reasons in
 // messages without requiring those details in the logical resource's public reason vocabulary.
-func TestLogicalBackingStatusMessage(t *testing.T) {
+func TestPhysicalStatusMessage(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, "PhysicalProcess has not reported its state.", logicalBackingStatusMessage("PhysicalProcess", nil))
+	require.Equal(t, "PhysicalProcess has not reported its state.", physicalStatusMessage("PhysicalProcess", nil))
 	require.Equal(t, "PhysicalProcess reports LaunchFailed: executable unavailable",
-		logicalBackingStatusMessage("PhysicalProcess", []metav1.Condition{{
+		physicalStatusMessage("PhysicalProcess", []metav1.Condition{{
 			Type: string(apiv2.ConditionReady), Reason: "LaunchFailed", Message: "executable unavailable",
 		}}))
 }
@@ -102,16 +102,16 @@ func TestLogicalChildTrackingClonesIndependently(t *testing.T) {
 	}
 }
 
-// Verifies that InitializeLogicalBackingFinalizers preserves existing finalizers without aliasing
+// Verifies that InitializePhysicalResourceFinalizers preserves existing finalizers without aliasing
 // their storage and installs each required finalizer only once.
-func TestInitializeLogicalBackingFinalizers(t *testing.T) {
+func TestInitializePhysicalResourceFinalizers(t *testing.T) {
 	t.Parallel()
 	existing := make([]string, 1, 3)
 	existing[0] = "other.example.com/owner"
 	image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Finalizers: existing}}
-	InitializeLogicalBackingFinalizers(image, physicalContainerImageFinalizer)
-	InitializeLogicalBackingFinalizers(image, physicalContainerImageFinalizer)
-	require.Equal(t, []string{existing[0], LogicalBackingFinalizer, physicalContainerImageFinalizer}, image.Finalizers)
+	InitializePhysicalResourceFinalizers(image, physicalContainerImageFinalizer)
+	InitializePhysicalResourceFinalizers(image, physicalContainerImageFinalizer)
+	require.Equal(t, []string{existing[0], LogicalPhysicalHoldFinalizer, physicalContainerImageFinalizer}, image.Finalizers)
 	require.Equal(t, []string{existing[0], "", ""}, existing[:cap(existing)])
 }
 
@@ -134,7 +134,7 @@ func TestValidatePhysicalResourceIdentity(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{Name: "image", Namespace: owner.Namespace, UID: "image-uid",
 				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(owner, apiv2.GroupVersion.WithKind("LogicalContainer"))},
-				Finalizers:      []string{LogicalBackingFinalizer}}}
+				Finalizers:      []string{LogicalPhysicalHoldFinalizer}}}
 			if testCase.change != nil {
 				testCase.change(image)
 			}
@@ -148,9 +148,9 @@ func TestValidatePhysicalResourceIdentity(t *testing.T) {
 	}
 }
 
-// Verifies that ReleaseLogicalBackingFinalizer removes only the logical hold, preserves physical
+// Verifies that ReleaseLogicalPhysicalHoldFinalizer removes only the logical hold, preserves physical
 // and independent cleanup finalizers, and safely repeats after a successful release.
-func TestReleaseLogicalBackingFinalizer(t *testing.T) {
+func TestReleaseLogicalPhysicalHoldFinalizer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, 0)
 	defer cancel()
@@ -158,12 +158,12 @@ func TestReleaseLogicalBackingFinalizer(t *testing.T) {
 	require.NoError(t, apiv2.AddToScheme(scheme))
 	image := &apiv2.PhysicalContainerImage{ObjectMeta: metav1.ObjectMeta{
 		Name: "image", Namespace: "test",
-		Finalizers: []string{LogicalBackingFinalizer, physicalContainerImageFinalizer, "other.example.com/owner"},
+		Finalizers: []string{LogicalPhysicalHoldFinalizer, physicalContainerImageFinalizer, "other.example.com/owner"},
 	}}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(image).Build()
 	require.NoError(t, client.Get(ctx, image.NamespacedName(), image))
-	require.NoError(t, ReleaseLogicalBackingFinalizer(ctx, client, image))
-	require.NoError(t, ReleaseLogicalBackingFinalizer(ctx, client, image))
+	require.NoError(t, ReleaseLogicalPhysicalHoldFinalizer(ctx, client, image))
+	require.NoError(t, ReleaseLogicalPhysicalHoldFinalizer(ctx, client, image))
 	saved := &apiv2.PhysicalContainerImage{}
 	require.NoError(t, client.Get(ctx, image.NamespacedName(), saved))
 	require.Equal(t, []string{physicalContainerImageFinalizer, "other.example.com/owner"}, saved.Finalizers)
