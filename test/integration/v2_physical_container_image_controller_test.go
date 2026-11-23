@@ -1689,6 +1689,56 @@ func TestV2PhysicalContainerImageControllerPreservesBasePullBudgetWhenRuntimeBec
 	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
 }
 
+// Verifies that PhysicalContainerImage reports a terminal AcquisitionCancelled failure when deleted before its image ID
+// was resolved, so a dependent PhysicalContainer fails startup instead of waiting on the held image.
+func TestV2PhysicalContainerImageControllerFailsUnresolvedImageOnDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	t.Cleanup(cancel)
+	server, _, startErr := StartTestEnvironmentWithOptions(t, ctx, PhysicalContainerImageController|PhysicalContainerController,
+		t.Name(), t.TempDir(), TestEnvironmentOptions{})
+	require.NoError(t, startErr)
+	orchestrator, isTestOrchestrator := server.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTestOrchestrator)
+	// An unhealthy runtime keeps the image unresolved without a pull in flight.
+	orchestrator.SetRuntimeHealth(false)
+	namespace := createV2ExecNamespace(t, ctx, server.Client, "v2-pci-delete-unresolved")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{Name: "unresolved-image", Namespace: namespace.Name},
+		Spec:       apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: "v2-pci-unresolved-source"}},
+	}
+	controllers.InitializeLogicalBackingFinalizers(image, apiv2.GroupName+"/physicalcontainerimage-reconciler")
+	require.NoError(t, server.Client.Create(ctx, image))
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{Name: "dependent-container", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef: image.Name, ContainerName: namespace.Name + "-runtime",
+		}},
+	}
+	require.NoError(t, server.Client.Create(ctx, container))
+	waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		ready := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerImagePhasePending && ready != nil &&
+			apiv2.ConditionReason(ready.Reason) == apiv2.PhysicalResourceReasonContainerRuntimeUnhealthy, nil
+	})
+
+	require.NoError(t, server.Client.Delete(ctx, image))
+	cancelled := waitObjectAssumesStateEx(t, ctx, server.Client, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerImagePhaseFailed && current.Status.LogsComplete, nil
+	})
+	requireReadyCondition(t, cancelled.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonAcquisitionCancelled)
+	failed := waitObjectAssumesStateEx(t, ctx, server.Client, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		return current.Status.Phase == apiv2.PhysicalContainerPhaseFailed, nil
+	})
+	requireReadyCondition(t, failed.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonDependencyFailed)
+	require.Zero(t, orchestrator.CreateContainerCallCount(container.Spec.Container.ContainerName))
+
+	require.NoError(t, server.Client.Delete(ctx, container))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, container)
+	require.NoError(t, controllers.ReleaseLogicalBackingFinalizer(ctx, server.Client, cancelled))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, server.Client, image)
+}
+
 // Verifies that PhysicalContainerImage cancels acquisition and publishes completed logs on
 // deletion even while a logical hold retains the API object.
 func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {

@@ -89,6 +89,9 @@ const (
 
 	// PhysicalContainerImageReasonBuildResultMissingImageID indicates that a completed build did not produce an image ID.
 	PhysicalContainerImageReasonBuildResultMissingImageID ConditionReason = "BuildResultMissingImageID"
+
+	// PhysicalContainerImageReasonAcquisitionCancelled indicates that the image was deleted before its runtime image ID was resolved.
+	PhysicalContainerImageReasonAcquisitionCancelled ConditionReason = "AcquisitionCancelled"
 )
 
 // PhysicalContainerImageSpec describes either an existing runtime image or how to create one.

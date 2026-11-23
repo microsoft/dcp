@@ -47,21 +47,22 @@ var (
 	errPhysicalContainerImageIDMissing        = errors.New("image ID file is empty")
 
 	physicalContainerImageDataHandlers = map[physicalContainerImageState]physicalContainerImageDataHandlerFunc{
-		physicalContainerImageStateResolve:            handlePhysicalContainerImageResolve,
-		physicalContainerImageStatePull:               handlePhysicalContainerImageOperation,
-		physicalContainerImageStatePulled:             handlePhysicalContainerImageOperation,
-		physicalContainerImageStatePullRetry:          handlePhysicalContainerImageOperation,
-		physicalContainerImageStateBuild:              handlePhysicalContainerImageOperation,
-		physicalContainerImageStateBuilt:              handlePhysicalContainerImageOperation,
-		physicalContainerImageStatePullFailed:         handlePhysicalContainerImageTerminal,
-		physicalContainerImageStateBuildFailed:        handlePhysicalContainerImageTerminal,
-		physicalContainerImageStateBuildResultMissing: handlePhysicalContainerImageTerminal,
-		physicalContainerImageStateReady:              handlePhysicalContainerImageReady,
-		physicalContainerImageStateMissing:            handlePhysicalContainerImageUnknown,
-		physicalContainerImageStateInspectFailed:      handlePhysicalContainerImageUnknown,
-		physicalContainerImageStateUnavailable:        handlePhysicalContainerImageTerminal,
-		physicalContainerImageStateInvalid:            handlePhysicalContainerImageTerminal,
-		0:                                             handleUnknownPhysicalContainerImageState,
+		physicalContainerImageStateResolve:              handlePhysicalContainerImageResolve,
+		physicalContainerImageStatePull:                 handlePhysicalContainerImageOperation,
+		physicalContainerImageStatePulled:               handlePhysicalContainerImageOperation,
+		physicalContainerImageStatePullRetry:            handlePhysicalContainerImageOperation,
+		physicalContainerImageStateBuild:                handlePhysicalContainerImageOperation,
+		physicalContainerImageStateBuilt:                handlePhysicalContainerImageOperation,
+		physicalContainerImageStateAcquisitionCancelled: handlePhysicalContainerImageTerminal,
+		physicalContainerImageStatePullFailed:           handlePhysicalContainerImageTerminal,
+		physicalContainerImageStateBuildFailed:          handlePhysicalContainerImageTerminal,
+		physicalContainerImageStateBuildResultMissing:   handlePhysicalContainerImageTerminal,
+		physicalContainerImageStateReady:                handlePhysicalContainerImageReady,
+		physicalContainerImageStateMissing:              handlePhysicalContainerImageUnknown,
+		physicalContainerImageStateInspectFailed:        handlePhysicalContainerImageUnknown,
+		physicalContainerImageStateUnavailable:          handlePhysicalContainerImageTerminal,
+		physicalContainerImageStateInvalid:              handlePhysicalContainerImageTerminal,
+		0:                                               handleUnknownPhysicalContainerImageState,
 	}
 )
 
@@ -240,6 +241,16 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 	patch := ctrl_client.MergeFromWithOptions(image.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if !image.DeletionTimestamp.IsZero() && !data.operationInProgress() {
+		// Owners that still hold the image observe a terminal outcome when it was never resolved. Without in-memory
+		// state, only an image whose deletion this controller has not yet finished is still unresolved.
+		if data == nil && hasFinalizer(&image, physicalContainerImageFinalizer) {
+			data = &physicalContainerImageData{}
+			data.cancelUnresolvedAcquisition()
+			r.imageData.Store(image.NamespacedName(), physicalContainerImageDataKey(&image), data.Clone())
+		} else if data != nil {
+			data.cancelUnresolvedAcquisition()
+			_ = r.imageData.Update(image.NamespacedName(), physicalContainerImageDataKey(&image), data)
+		}
 		if data != nil {
 			dataChange, _, valid := data.applyTo(&image)
 			change |= dataChange
